@@ -1,29 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Plectoneme Formation
-#
-# A cable hangs between two fixed endpoints and supercoils into a plectoneme
-# when the endpoints are twisted:
-#
-#   1. the cable sags under gravity into a smooth loop (initialized on a
-#      hanging arc to avoid a snap-in transient);
-#   2. the two endpoints are gradually counter-twisted about the cable tangent;
-#   3. past the buckling threshold the centerline leaves the plane and folds
-#      back on itself into a plectoneme held open by rod self-contact.
-#
-# Plectoneme formation requires self-contact (the strands press against each
-# other), so this uses hard-history contact at the true capsule radius with a
-# healthy substep/iteration budget.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme --test --viewer null
-#
-###########################################################################
+"""Cable Plectoneme Formation
+
+A cable hangs between two fixed endpoints and supercoils into a plectoneme
+when the endpoints are twisted:
+
+  1. the cable sags under gravity into a smooth loop (initialized on a
+     hanging arc to avoid a snap-in transient);
+  2. the two endpoints are gradually counter-twisted about the cable tangent;
+  3. past the buckling threshold the centerline leaves the plane and folds
+     back on itself into a plectoneme held open by rod self-contact.
+
+Plectoneme formation requires self-contact (the strands press against each
+other), so this uses hard-history contact at the true capsule radius with a
+healthy substep/iteration budget.
+
+Success criteria:
+- The cable initially hangs in a smooth loop between fixed endpoints.
+- As the endpoints counter-twist, the centerline buckles out of plane and folds into a supercoil.
+- Self-contact keeps the twisted strands from simply passing through each other; the cable remains
+  connected and bounded.
+
+Runs:
+- `python -m newton.examples cable_plectoneme`
+"""
 
 import math
 
@@ -134,10 +135,9 @@ class Example:
             kd=self.CONTACT_DAMPING,
             gap=self.contact_gap,
         )
+        rod = newton.Rod(points, radius=self.cable_radius)
         bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=None,
-            radius=self.cable_radius,
+            rod=rod,
             cfg=shape_cfg,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
@@ -147,7 +147,6 @@ class Example:
             twist_damping=self.TWIST_DAMPING,
             label="plectoneme",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         self.bodies = list(map(int, bodies))
         self.joints = list(map(int, joints))
@@ -170,7 +169,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=1024,
         )
@@ -198,11 +196,10 @@ class Example:
         self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
-            if hasattr(self.viewer, "camera"):
-                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
-                self.viewer.camera.fov = 35.0
+        self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
+            self.viewer.camera.fov = 35.0
 
         self.graph = None
         self.capture()

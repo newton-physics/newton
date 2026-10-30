@@ -7,9 +7,8 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
-from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
-from .builder import PDMatrixBuilder
+from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
 from .kernels import (
     accumulate_dragging_pd_diag_kernel,
@@ -101,7 +100,6 @@ class SolverStyle3D(SolverBase):
 
     """
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
@@ -166,7 +164,16 @@ class SolverStyle3D(SolverBase):
         self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+    def step(
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control,
+        contacts: Contacts,
+        dt: float,
+        *,
+        observables: SolverBase.Observables | None = None,
+    ) -> None:
         """Advance the Style3D solver by one time step.
 
         The solver performs non-linear projective dynamics iterations with
@@ -180,7 +187,11 @@ class SolverStyle3D(SolverBase):
             control: :class:`newton.Control` input (currently unused).
             contacts: :class:`newton.Contacts` used for collision response.
             dt: Time step in seconds.
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
         """
+        self.validate_observables(observables, contacts)
         # Model masses and flags may change between solver steps.
         wp.copy(self._particle_flags, self.model.particle_flags)
         if self.model.particle_count > 0:
@@ -423,23 +434,28 @@ class SolverStyle3D(SolverBase):
                     "Call SolverStyle3D.register_custom_attributes() before building the model."
                 )
 
-            pd_matrix_builder = PDMatrixBuilder(model.particle_count)
-            tri_indices = model.tri_indices.numpy().tolist()
+            tri_indices = model.tri_indices.numpy()
             tri_poses = model.tri_poses.numpy().tolist()
             tri_areas = model.tri_areas.numpy().tolist()
-            edge_indices = model.edge_indices.numpy().tolist()
+            edge_indices = model.edge_indices.numpy()
             edge_bending_properties = model.edge_bending_properties.numpy().tolist()
             tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
             edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()
             edge_bending_cot = model.style3d.edge_bending_cot.numpy().tolist()
 
-            pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
-            pd_matrix_builder.add_bend_constraints(
-                edge_indices,
-                edge_bending_properties,
-                edge_rest_area,
-                edge_bending_cot,
-            )
+            def assemble(max_neighbors):
+                """Assemble from scratch so failed attempts never contribute partial entries."""
+                matrix = PDMatrixBuilder(model.particle_count, max_neighbor=max_neighbors)
+                matrix.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
+                matrix.add_bend_constraints(edge_indices, edge_bending_properties, edge_rest_area, edge_bending_cot)
+                return matrix
+
+            try:
+                pd_matrix_builder = assemble(32)
+            except ValueError:
+                # Only overflowing meshes pay for counting stretch and bending connections.
+                max_neighbors = _compute_max_neighbors(model.particle_count, tri_indices, edge_indices)
+                pd_matrix_builder = assemble(max_neighbors)
             self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = pd_matrix_builder.finalize(self.device)
 
     def _update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):

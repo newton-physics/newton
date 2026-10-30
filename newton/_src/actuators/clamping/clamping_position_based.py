@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 import numpy as np
 import warp as wp
 
-from .base import Clamping
+from .base import ClampingBase
 
 
 @wp.func
@@ -82,7 +82,7 @@ def _position_based_clamp_kernel(
     dst[i] = wp.clamp(src[i], -limit, limit)
 
 
-class ClampingPositionBased(Clamping):
+class ClampingPositionBased(ClampingBase):
     """Position-dependent effort clamping via lookup table.
 
     Provides position-dependent effort limits interpolated from a

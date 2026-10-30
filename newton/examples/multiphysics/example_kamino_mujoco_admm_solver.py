@@ -1,17 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Kamino-MuJoCo ADMM Coupled Solver
-#
-# A closed four-bar linkage is split across two rigid solvers: two links are
-# owned by Kamino and two links are owned by MuJoCo. SolverCoupledADMM detects
-# the model revolute joints that connect bodies owned by different solvers and
-# turns them into ADMM attachments.
-#
-# Command: python -m newton.examples kamino_mujoco_admm_solver
-#
-###########################################################################
+"""Example Kamino-MuJoCo ADMM Coupled Solver
+
+A closed four-bar linkage is split across two rigid solvers: two links are
+owned by Kamino and two links are owned by MuJoCo. SolverCoupledADMM detects
+the model revolute joints that connect bodies owned by different solvers and
+turns them into ADMM attachments.
+
+Success criteria:
+- A closed four-bar linkage appears.
+- The scene is replicated across multiple worlds by default.
+- Two links are owned by Kamino and two links are owned by MuJoCo.
+- ADMM attachments keep the cross-solver revolute joints connected.
+- The linkage should remain assembled without excessive joint drift. It's expected that the colored
+  bars fall through the grey one.
+- The simulation should run without contact truncation warnings.
+
+Runs:
+- `python -m newton.examples kamino_mujoco_admm_solver`
+"""
 
 from __future__ import annotations
 
@@ -108,7 +116,6 @@ def _quat_from_x_axis(direction: np.ndarray) -> wp.quat:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -127,7 +134,7 @@ class Example:
         joints_per_world = template.joint_count
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        builder.replicate(template, world_count=self.world_count)
+        builder.replicate(template, copy_count=self.world_count)
         builder.add_ground_plane()
         self._expand_world_indices(bodies_per_world, joints_per_world)
 

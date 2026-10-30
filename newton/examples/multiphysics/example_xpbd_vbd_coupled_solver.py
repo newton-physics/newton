@@ -1,24 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example XPBD-VBD Coupled Solver
-#
-# A VBD cloth patch pushes into an XPBD particle bed through SolverCoupledProxy's
-# proxy-particle path. XPBD resolves particle-particle contact against the VBD
-# proxy particles, and the harvested proxy impulse is applied back to the VBD
-# particles on the next coupled step.
-#
-# Pass ``--solver xpbd`` to run a monolithic XPBD reference, or``--solver vbd``
-# to run the same scene with VBD only.
-# Those baselines are provided for comparison purposes, it is expected that the
-# behavior will differ as they support different features and/or parameters.
-#
-# Command: python -m newton.examples xpbd_vbd_coupled_solver
-#          python -m newton.examples xpbd_vbd_coupled_solver --solver xpbd
-#          python -m newton.examples xpbd_vbd_coupled_solver --solver vbd
-#
-###########################################################################
+"""Example XPBD-VBD Coupled Solver
+
+An XPBD particle bed drops onto a pinned VBD cloth patch through SolverCoupledProxy's
+proxy-particle path. XPBD resolves particle-particle contact against the VBD
+proxy particles, and the harvested proxy impulse is applied back to the VBD
+particles on the next coupled step.
+
+Pass ``--solver xpbd`` to run a monolithic XPBD reference, or``--solver vbd``
+to run the same scene with VBD only.
+Those baselines are provided for comparison purposes, it is expected that the
+behavior will differ as they support different features and/or parameters.
+
+Success criteria:
+- A cloth patch and particle bed appear in the scene.
+- The cloth and particles remain bounded above the ground without escaping upward.
+
+Runs:
+- `python -m newton.examples xpbd_vbd_coupled_solver`
+  - The XPBD particle bed lands on and deforms the pinned VBD cloth; cloth contact reactions support
+    the bed.
+- `python -m newton.examples xpbd_vbd_coupled_solver --solver xpbd`
+  - The scene runs as a monolithic XPBD reference.
+- `python -m newton.examples xpbd_vbd_coupled_solver --solver vbd`
+  - The scene runs as a monolithic VBD reference; record particle pass-through separately for
+    review.
+"""
 
 from __future__ import annotations
 
@@ -124,8 +132,7 @@ class Example:
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
-        if hasattr(self.viewer, "show_particles"):
-            self.viewer.show_particles = True
+        self.viewer.show_particles = True
 
         self.capture()
 

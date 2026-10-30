@@ -10,34 +10,42 @@ import operator
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, SupportsIndex
 
 import numpy as np
 import warp as wp
 
-from ..core.types import Devicelike, override
+from ..core.types import Devicelike
+from ..exceptions import NewtonDeprecationWarning
+from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
-from ..utils.deprecation import RemovedAttribute
+from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
 logger = logging.getLogger(__name__)
+
+_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
+    "Model.joint_twist_lower and Model.joint_twist_upper are deprecated in Newton 1.7 and will be removed "
+    "in a future release. They were never populated or used by any solver; limit joint rotations with the "
+    "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
+)
+
+_COLLISION_EDGE_DEPRECATION_MSG = (
+    "Model.{name} is deprecated in Newton 1.8 and will be removed in Newton 1.9. "
+    "Packed collision edges are internal acceleration data; use CollisionPipeline for collision detection. "
+    "Low-level NarrowPhase mesh-SDF collision relies on internal edge data without a stable public accessor."
+)
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
-
-
-_SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG = (
-    "Mutating Model.shape_collision_filter_pairs after ModelBuilder.finalize() is deprecated. "
-    "Configure collision filters on ModelBuilder before finalizing; post-finalize filter changes "
-    "do not rebuild Model.shape_contact_pairs."
-)
 
 
 def _pack_shape_pair_codes(shape_a: np.ndarray, shape_b: np.ndarray) -> np.ndarray:
@@ -64,61 +72,40 @@ def _unpack_shape_pair_codes(codes: np.ndarray) -> np.ndarray:
     return pairs
 
 
-class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
-    """Mutation-deprecated compat view over the canonical filter-pair array.
+class _ShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
+    """Read-only set view over sorted, unique packed filter-pair codes."""
 
-    The canonical store is ``packed``: a sorted, unique 1-D ``int64`` array of
-    pair codes (see :func:`_pack_shape_pair_codes`). The public
-    :attr:`Model.shape_collision_filter_pairs` descriptor materializes this
-    view into native set contents on access, so plain ``set`` reads work
-    unchanged; internal consumers use :meth:`contains_pair`,
-    :meth:`mask_pairs`, and :meth:`pairs_array`, which query the packed array
-    while it exists and transparently fall back to native set contents after a
-    deprecated mutation drops it.
-    """
-
-    __hash__ = None
-
-    def __init__(self, pairs: Iterable[tuple[int, int]] = (), packed: np.ndarray | None = None):
-        super().__init__((shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a) for shape_a, shape_b in pairs)
+    def __init__(self, packed: np.ndarray):
         self._packed = packed
         self._pairs_array: np.ndarray | None = None
-        self._materialized = packed is None
-
-    @staticmethod
-    def _canonical_pair(shape_a: int, shape_b: int) -> tuple[int, int]:
-        return (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
 
     @classmethod
-    def _canonical_pair_from_object(cls, pair: object) -> tuple[int, int] | None:
+    def _from_iterable(cls, iterable: Iterable[tuple[int, int]]) -> frozenset[tuple[int, int]]:
+        return frozenset(iterable)
+
+    def __bool__(self) -> bool:
+        return self._packed.shape[0] > 0
+
+    def __contains__(self, pair: object) -> bool:
         if not isinstance(pair, tuple) or len(pair) != 2:
-            return None
-        shape_a, shape_b = pair
-        return cls._canonical_pair(shape_a, shape_b)
+            return False
+        try:
+            shape_a, shape_b = operator.index(pair[0]), operator.index(pair[1])
+            if shape_a > shape_b:
+                return False
+            return self._contains_code((shape_a << 32) | shape_b)
+        except (OverflowError, TypeError, ValueError):
+            return False
 
-    @classmethod
-    def _iter_canonical_pairs(cls, pairs: Iterable[object]) -> Iterator[tuple[int, int]]:
-        for pair in pairs:
-            canonical_pair = cls._canonical_pair_from_object(pair)
-            if canonical_pair is not None:
-                yield canonical_pair
+    def __iter__(self) -> Iterator[tuple[int, int]]:
+        return iter(map(tuple, self.pairs_array().tolist()))
 
-    def _ensure_materialized(self) -> None:
-        if not self._materialized:
-            if self._packed is not None and self._packed.shape[0] > 0:
-                super().update(map(tuple, _unpack_shape_pair_codes(self._packed).tolist()))
-            self._materialized = True
+    def __len__(self) -> int:
+        return self._packed.shape[0]
 
-    @property
-    def is_materialized(self) -> bool:
-        return self._materialized
-
-    def materialize(self) -> None:
-        self._ensure_materialized()
-
-    def packed_pairs(self) -> np.ndarray | None:
-        """Sorted unique packed pair codes, or ``None`` after mutation."""
-        return self._packed
+    def _contains_code(self, code: int) -> bool:
+        index = int(np.searchsorted(self._packed, code))
+        return bool(index < self._packed.shape[0] and self._packed[index] == code)
 
     def contains_pair(self, shape_a: SupportsIndex, shape_b: SupportsIndex) -> bool:
         """Return membership of a shape pair in any argument order."""
@@ -127,22 +114,12 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
         shape_a, shape_b = operator.index(shape_a), operator.index(shape_b)
         if shape_a > shape_b:
             shape_a, shape_b = shape_b, shape_a
-        if self._packed is None:
-            return super().__contains__((shape_a, shape_b))
-        code = (shape_a << 32) | shape_b
-        index = int(np.searchsorted(self._packed, code))
-        return bool(index < self._packed.shape[0] and self._packed[index] == code)
+        return self._contains_code((shape_a << 32) | shape_b)
 
     def mask_pairs(self, pairs: np.ndarray) -> np.ndarray:
         """Return a boolean membership mask for shape pairs in any order."""
         if pairs.shape[0] == 0:
             return np.zeros(0, dtype=bool)
-        if self._packed is None:
-            return np.fromiter(
-                (self.contains_pair(shape_a, shape_b) for shape_a, shape_b in pairs),
-                dtype=bool,
-                count=pairs.shape[0],
-            )
         if self._packed.shape[0] == 0:
             return np.zeros(pairs.shape[0], dtype=bool)
         codes = _pack_shape_pair_codes(pairs[:, 0], pairs[:, 1])
@@ -155,145 +132,12 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
 
         The returned array is read-only: while the packed store exists it
         aliases the cached canonical pairs, and mutating it would corrupt
-        every later filter query and the materialized public set.
+        every later filter query and public set iteration.
         """
-        if self._packed is None:
-            pairs = np.asarray(sorted(self), dtype=np.int32).reshape((-1, 2))
-        else:
-            if self._pairs_array is None:
-                self._pairs_array = _unpack_shape_pair_codes(self._packed)
-                self._pairs_array.setflags(write=False)
-            return self._pairs_array
-        pairs.setflags(write=False)
-        return pairs
-
-    def _prepare_mutation(self) -> None:
-        self._ensure_materialized()
-        self._packed = None
-        self._pairs_array = None
-        warnings.warn(_SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
-
-    def __bool__(self) -> bool:
-        if self._packed is not None and self._packed.shape[0] > 0:
-            return True
-        return super().__len__() != 0
-
-    # Generic consumers (viewer-file serialization, deepcopy) iterate the raw
-    # __dict__ value without the materializing descriptor; keep iteration and
-    # length lazy-safe so they never observe a half-empty set.
-    @override
-    def __iter__(self) -> Iterator[tuple[int, int]]:
-        self._ensure_materialized()
-        return super().__iter__()
-
-    @override
-    def __len__(self) -> int:
-        self._ensure_materialized()
-        return super().__len__()
-
-    @override
-    def add(self, element: tuple[int, int]) -> None:
-        self._prepare_mutation()
-        shape_a, shape_b = element
-        super().add(self._canonical_pair(shape_a, shape_b))
-
-    @override
-    def clear(self) -> None:
-        self._prepare_mutation()
-        super().clear()
-
-    @override
-    def discard(self, element: object) -> None:
-        self._prepare_mutation()
-        canonical_pair = self._canonical_pair_from_object(element)
-        if canonical_pair is not None:
-            super().discard(canonical_pair)
-
-    @override
-    def pop(self) -> tuple[int, int]:
-        self._prepare_mutation()
-        return super().pop()
-
-    @override
-    def remove(self, element: tuple[int, int]) -> None:
-        self._prepare_mutation()
-        shape_a, shape_b = element
-        super().remove(self._canonical_pair(shape_a, shape_b))
-
-    @override
-    def update(self, *others: Iterable[tuple[int, int]]) -> None:
-        self._prepare_mutation()
-        super().update(self._canonical_pair(shape_a, shape_b) for other in others for shape_a, shape_b in other)
-
-    @override
-    def difference_update(self, *others: Iterable[object]) -> None:
-        self._prepare_mutation()
-        for other in others:
-            for canonical_pair in self._iter_canonical_pairs(other):
-                super().discard(canonical_pair)
-
-    @override
-    def intersection_update(self, *others: Iterable[object]) -> None:
-        self._prepare_mutation()
-        canonical_others = [set(self._iter_canonical_pairs(other)) for other in others]
-        super().intersection_update(*canonical_others)
-
-    @override
-    def symmetric_difference_update(self, other: Iterable[tuple[int, int]]) -> None:
-        self._prepare_mutation()
-        super().symmetric_difference_update(self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in other)
-
-    @override
-    def __ior__(self, other: Iterable[tuple[int, int]]):
-        self._prepare_mutation()
-        super().update(self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in other)
-        return self
-
-    @override
-    def __iand__(self, other: AbstractSet[object]):
-        self._prepare_mutation()
-        super().intersection_update(set(self._iter_canonical_pairs(other)))
-        return self
-
-    @override
-    def __isub__(self, other: AbstractSet[object]):
-        self._prepare_mutation()
-        super().difference_update(set(self._iter_canonical_pairs(other)))
-        return self
-
-    @override
-    def __ixor__(self, other: Iterable[tuple[int, int]]):
-        self._prepare_mutation()
-        super().symmetric_difference_update({self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in other})
-        return self
-
-
-class _ShapeCollisionFilterPairsAttribute:
-    """Set of canonical shape index pairs that should not collide.
-
-    Mutating or reassigning this finalized-model set is deprecated. Configure
-    collision filters on :class:`ModelBuilder` before calling
-    :meth:`ModelBuilder.finalize` instead; post-finalize changes do not rebuild
-    :attr:`Model.shape_contact_pairs`.
-    """
-
-    def __get__(self, instance: Any, owner: Any = None) -> Any:
-        if instance is None:
-            return self
-        filters = instance.__dict__.get("shape_collision_filter_pairs")
-        if filters is None:
-            filters = _DeprecatedShapeCollisionFilterSet()
-            instance.__dict__["shape_collision_filter_pairs"] = filters
-        if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
-            filters.materialize()
-        return filters
-
-    def __set__(self, instance: Any, value: Iterable[tuple[int, int]]) -> None:
-        if instance.__dict__.get("shape_collision_filter_pairs") is value:
-            return
-        if "shape_collision_filter_pairs" in instance.__dict__:
-            warnings.warn(_SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        instance.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(value)
+        if self._pairs_array is None:
+            self._pairs_array = _unpack_shape_pair_codes(self._packed)
+            self._pairs_array.setflags(write=False)
+        return self._pairs_array
 
 
 class Model:
@@ -318,11 +162,6 @@ class Model:
         It is strongly recommended to use the :class:`ModelBuilder` to construct a Model.
         Direct instantiation and manual population of Model fields is possible but discouraged.
     """
-
-    if TYPE_CHECKING:
-        shape_collision_filter_pairs: set[tuple[int, int]]
-    else:
-        shape_collision_filter_pairs = _ShapeCollisionFilterPairsAttribute()
 
     class AttributeAssignment(IntEnum):
         """Enumeration of attribute assignment categories.
@@ -379,6 +218,37 @@ class Model:
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+        ATTACHMENT_PARTICLE_BODY = 16
+        """Attribute frequency follows the number of particle-body attachments."""
+        CONTACT = 17
+        """Packed rigid and soft-rigid contact slots, sized by the sum of their capacities.
+
+        The soft segment starts at ``rigid_contact_max``, not the live rigid count.
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
+        CONTACT_RIGID = 18
+        """Rigid-rigid contact slots, sized by ``rigid_contact_max``.
+
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
+        CONTACT_SOFT = 19
+        """Soft-rigid contact slots, sized by ``soft_contact_max``; excludes soft self-contact.
+
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
+
+        TENDON = 20
+        """Experimental massless routed tendons."""
+        TENDON_GUIDE = 21
+        """Guides in flattened tendon routes."""
+        TENDON_SEGMENT = 22
+        """Straight spans between consecutive tendon guides."""
+        CURVE = 23
+        """Experimental frequency for recorded deformable curves (see :attr:`~newton.Model.curve_count`)."""
+        SURFACE = 24
+        """Experimental frequency for recorded deformable surfaces (see :attr:`~newton.Model.surface_count`)."""
+        VOLUME = 25
+        """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -386,8 +256,8 @@ class Model:
 
         .. experimental::
 
-            ``compaction_policy`` is part of the experimental coupled-solver
-            framework and may change without a deprecation period.
+            ``compaction_policy`` and ``default`` are part of the experimental
+            coupled-solver framework and may change without a deprecation period.
         """
 
         frequency: Model.AttributeFrequency | str
@@ -404,15 +274,26 @@ class Model:
         """Whether this is a deprecated compatibility alias that generic consumers should skip."""
         alias_of: str | None = None
         """Canonical name used when explicitly accessing this alias through a model view."""
-        compaction_policy: Literal["generic", "end", "start", "world_start", "color_groups", "passthrough"] = "generic"
+        compaction_policy: Literal[
+            "generic", "end", "start", "range_start", "world_start", "color_groups", "passthrough"
+        ] = "generic"
         """Experimental policy used by coupled model views.
 
         ``"generic"`` selects and remaps rows using this spec; ``"end"``
-        remaps exclusive boundaries in the referenced domain; ``"start"``,
-        ``"world_start"``, and ``"color_groups"`` select their corresponding
+        remaps exclusive boundaries in the referenced domain; ``"range_start"``
+        remaps inclusive boundaries for independent ranges without a sentinel.
+        Deformable ``*_start`` attributes use it with matching ``*_end`` attributes.
+        ``"start"``, ``"world_start"``, and ``"color_groups"`` select their corresponding
         structured handling; and ``"passthrough"`` disables automatic count
         limiting. Non-generic policies may still be overridden by the coupled
         solver when constructing a compact view.
+        """
+        default: Any = field(default=None, compare=False)
+        """Experimental value of one row for entities without authored data, or ``None`` for the dtype's zero.
+
+        :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` sets it to
+        :attr:`ModelBuilder.CustomAttribute.default <newton.ModelBuilder.CustomAttribute.default>`.
+        Coupled model views use it for the rows they synthesize.
         """
 
         def __post_init__(self) -> None:
@@ -422,18 +303,40 @@ class Model:
                 "generic",
                 "end",
                 "start",
+                "range_start",
                 "world_start",
                 "color_groups",
                 "passthrough",
             }:
                 raise ValueError(f"Unknown attribute compaction policy {self.compaction_policy!r}")
-            if self.compaction_policy == "end" and self.references is None:
-                raise ValueError("Attribute compaction policy 'end' requires a reference domain")
+            if self.compaction_policy in {"end", "range_start"} and self.references is None:
+                raise ValueError(f"Attribute compaction policy {self.compaction_policy!r} requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
+        "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
+        "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
+        "tendon_start": AttributeSpec(
+            AttributeFrequency.TENDON, references=AttributeFrequency.TENDON_GUIDE, compaction_policy="start"
+        ),
+        "tendon_guide_body": AttributeSpec(AttributeFrequency.TENDON_GUIDE, references=AttributeFrequency.BODY),
+        "tendon_guide_type": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_radius": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_orientation": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_mu": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_flags": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_offset": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_axis": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_segment_compliance": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_damping": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_rest_length": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_attachment_l_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "_tendon_initialized": AttributeSpec(AttributeFrequency.TENDON),
         # particles
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE),
@@ -498,6 +401,7 @@ class Model:
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_scale": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
@@ -506,11 +410,29 @@ class Model:
             AttributeFrequency.SHAPE,
             requires_empty_sentinel=True,
         ),
-        "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
+        "_shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
+        "shape_edge_range": AttributeSpec(
+            AttributeFrequency.SHAPE, alias_of="_shape_edge_range", deprecated=True, requires_empty_sentinel=True
+        ),
+        "_mesh_edge_indices": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_mesh_edge_centers": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_mesh_edge_halves": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "mesh_edge_indices": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_indices", deprecated=True, compaction_policy="passthrough"
+        ),
+        "mesh_edge_centers": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_centers", deprecated=True, compaction_policy="passthrough"
+        ),
+        "mesh_edge_halves": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_halves", deprecated=True, compaction_policy="passthrough"
+        ),
+        "_shape_support_data": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_boundary_start": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_interior_point": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world_start": AttributeSpec(
             AttributeFrequency.SHAPE,
@@ -535,6 +457,23 @@ class Model:
         "spring_damping": AttributeSpec(AttributeFrequency.SPRING),
         "spring_control": AttributeSpec(AttributeFrequency.SPRING),
         "spring_constraint_lambdas": AttributeSpec(AttributeFrequency.SPRING),
+        # particle-body attachments
+        "attachment_particle_body_body": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+            references=AttributeFrequency.BODY,
+        ),
+        "attachment_particle_body_particle": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+            references=AttributeFrequency.PARTICLE,
+        ),
+        "attachment_particle_body_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_world": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+            references=AttributeFrequency.WORLD,
+        ),
         "tri_indices": AttributeSpec(
             AttributeFrequency.TRIANGLE,
             references=AttributeFrequency.PARTICLE,
@@ -543,6 +482,8 @@ class Model:
         "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE),
         "edge_indices": AttributeSpec(
             AttributeFrequency.EDGE,
             references=AttributeFrequency.PARTICLE,
@@ -570,12 +511,17 @@ class Model:
             AttributeFrequency.JOINT,
             references=AttributeFrequency.ARTICULATION,
         ),
+        "joint_mimic_joint": AttributeSpec(
+            AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT,
+        ),
+        "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT),
         "joint_X_p": AttributeSpec(AttributeFrequency.JOINT),
         "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
         "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
+        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
@@ -608,6 +554,7 @@ class Model:
         "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
         "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF),
@@ -622,7 +569,7 @@ class Model:
         "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        # articulations and mimic constraints
+        # articulations and deprecated mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
             references=AttributeFrequency.JOINT,
@@ -641,6 +588,55 @@ class Model:
         "articulation_world_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
             compaction_policy="world_start",
+        ),
+        # experimental deformable object identities and independent ranges
+        "curve_label": AttributeSpec(AttributeFrequency.CURVE),
+        "curve_world": AttributeSpec(AttributeFrequency.CURVE, references=AttributeFrequency.WORLD),
+        "curve_body_start": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.BODY, compaction_policy="range_start"
+        ),
+        "curve_body_end": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.BODY, compaction_policy="end"
+        ),
+        "curve_joint_start": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.JOINT, compaction_policy="range_start"
+        ),
+        "curve_joint_end": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.JOINT, compaction_policy="end"
+        ),
+        "surface_label": AttributeSpec(AttributeFrequency.SURFACE),
+        "surface_world": AttributeSpec(AttributeFrequency.SURFACE, references=AttributeFrequency.WORLD),
+        "surface_particle_start": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.PARTICLE, compaction_policy="range_start"
+        ),
+        "surface_particle_end": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.PARTICLE, compaction_policy="end"
+        ),
+        "surface_tri_start": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.TRIANGLE, compaction_policy="range_start"
+        ),
+        "surface_tri_end": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.TRIANGLE, compaction_policy="end"
+        ),
+        "surface_edge_start": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.EDGE, compaction_policy="range_start"
+        ),
+        "surface_edge_end": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.EDGE, compaction_policy="end"
+        ),
+        "volume_label": AttributeSpec(AttributeFrequency.VOLUME),
+        "volume_world": AttributeSpec(AttributeFrequency.VOLUME, references=AttributeFrequency.WORLD),
+        "volume_particle_start": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.PARTICLE, compaction_policy="range_start"
+        ),
+        "volume_particle_end": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.PARTICLE, compaction_policy="end"
+        ),
+        "volume_tet_start": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="range_start"
+        ),
+        "volume_tet_end": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="end"
         ),
         "constraint_mimic_joint0": AttributeSpec(
             AttributeFrequency.CONSTRAINT_MIMIC,
@@ -673,8 +669,18 @@ class Model:
         AttributeFrequency.TRIANGLE: "tri_count",
         AttributeFrequency.TETRAHEDRON: "tet_count",
         AttributeFrequency.SPRING: "spring_count",
+        AttributeFrequency.TENDON: "tendon_count",
+        AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
+        AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
+        AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
+        AttributeFrequency.CONTACT: "contact_max",
+        AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
+        AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
+        AttributeFrequency.CURVE: "curve_count",
+        AttributeFrequency.SURFACE: "surface_count",
+        AttributeFrequency.VOLUME: "volume_count",
     }
 
     class AttributeNamespace:
@@ -708,7 +714,7 @@ class Model:
             warnings.warn(
                 "Model.AttributeNamespace.add_deprecated_alias() is deprecated; "
                 "define an explicit property on a custom namespace instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             if name in self.__dict__ or name in self._deprecated_aliases:
@@ -719,7 +725,7 @@ class Model:
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
-                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -728,7 +734,7 @@ class Model:
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
-                    warnings.warn(message, DeprecationWarning, stacklevel=2)
+                    warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)
@@ -851,33 +857,46 @@ class Model:
         """List of source geometry objects (e.g., :class:`~newton.Mesh`) used for broadphase collision detection and rendering, shape [shape_count]."""
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         """Geometry source pointers to be used inside the Warp kernels which are generated by finalizing the geometry objects, see for example :meth:`newton.Mesh.finalize`, shape [shape_count], uint64."""
+
+        self._shape_support_data: wp.array[wp.vec4i] | None = None
+        """Per-shape LUT, vertex-offset, and neighbor-block starts, and resolution.
+
+        The final entry packs the LUT resolution in its low 16 bits and the
+        strict hull-validity flag in bit 16. Zero resolution disables acceleration.
+        """
+        self._convex_support_lut: wp.array[wp.int32] | None = None
+        """Packed octahedral directional seed tables shared by convex geometries."""
+        self._convex_support_vertex_offsets: wp.array[wp.int32] | None = None
+        """Packed CSR vertex-neighbor offsets shared by convex geometries.
+
+        Offsets index ``_convex_support_neighbors`` past each hull's edge records.
+        """
+        self._convex_support_neighbors: wp.array[wp.int32] | None = None
+        """Packed per-hull neighbor blocks shared by convex geometries.
+
+        A verified hull's block starts with its edge count and one ``(a, b, c1, c2)``
+        record per edge (vertex indices of the edge and of its two outward faces),
+        followed by the CSR vertex neighbors of accelerated hulls.
+        """
         self.shape_scale: wp.array[wp.vec3] | None = None
         """Shape 3D scale, shape [shape_count], vec3."""
         self.shape_color: wp.array[wp.vec3] | None = None
         """Shape display colors [0, 1], shape [shape_count], vec3."""
+        self.shape_opacity: wp.array[wp.float32] | None = None
+        """Shape display opacity [0, 1], shape [shape_count], float."""
         self.shape_filter: wp.array[wp.int32] | None = None
         """Shape filter group, shape [shape_count], int."""
 
         self.shape_collision_group: wp.array[wp.int32] | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
-        self.shape_collision_filter_pairs = _DeprecatedShapeCollisionFilterSet()
-        """Set of canonical shape index pairs that should not collide.
-
-        .. deprecated:: 1.4
-            Mutating or reassigning this finalized-model set is deprecated. Configure collision
-            filters on :class:`ModelBuilder` before calling :meth:`ModelBuilder.finalize` instead;
-            post-finalize changes do not rebuild :attr:`shape_contact_pairs`.
-        """
+        self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(np.empty(0, dtype=np.int64))
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
-        """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.
-
-        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic pairs
-        are retained so consumers can opt into them during contact generation.
-        """
-        self.shape_contact_pair_count: int = 0
-        """Number of shape contact pairs."""
+        self._shape_contact_pairs: wp.array[wp.vec2i] | None = None
+        self._shape_contact_pair_data: _ShapeContactPairs | None = None
+        """Finalized collision topology for lazy pair construction and statistics."""
+        self._shape_contact_pair_count: int = 0
+        self._shape_contact_pair_counts: dict[bytes | tuple[bytes, int | None] | None, np.ndarray] = {}
         self.shape_world: wp.array[wp.int32] | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start: wp.array[wp.int32] | None = None
@@ -938,21 +957,32 @@ class Model:
         self._mesh_keep_alive: list[wp.Mesh] = []
         """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
 
-        # Mesh edge data (packed arrays + per-shape slice)
-        self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
+        # Internal collision edges; public names remain as deprecated property aliases.
+        self._mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
-        self.mesh_edge_centers: wp.array[wp.vec4] | None = None
-        """Packed shape-scaled collision-edge centers and radii, shape [total_edge_count, 4] [m]."""
-        self.mesh_edge_halves: wp.array[wp.vec4] | None = None
+        self._mesh_edge_centers: wp.array[wp.vec4] | None = None
+        """Packed collision-edge centers and radii, shape [total_edge_count, 4] [m].
+
+        Components ``xyz`` are edge centers and ``w`` is the edge half-length, both in
+        unscaled mesh coordinates; collision applies :attr:`shape_scale` when reading them.
+        """
+        self._mesh_edge_halves: wp.array[wp.vec4] | None = None
         """Packed collision-edge half-vectors and corner ownership, shape [total_edge_count, 4].
 
-        Components ``xyz`` are shape-scaled half-vectors [m]. Component ``w``
+        Components ``xyz`` are half-vectors in unscaled mesh coordinates [m];
+        collision applies :attr:`shape_scale` when reading them. Component ``w``
         is a unitless internal endpoint-ownership code.
         """
-        self.shape_edge_range: wp.array[wp.vec2i] | None = None
+        self._shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh edge arrays, shape [shape_count]. (-1,0) if no edges."""
         self._shape_mesh_properties: wp.array[wp.int32] | None = None
         """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
+        self._mesh_boundary_flags: wp.array[wp.uint8] | None = None
+        """Packed per-face open-boundary bits of non-watertight collision meshes, shape [face_count].
+
+        Bit ``i`` marks the edge opposite face vertex ``i`` and bit ``3 + i`` marks vertex ``i``."""
+        self._shape_mesh_boundary_start: wp.array[wp.int32] | None = None
+        """Per-shape start into :attr:`_mesh_boundary_flags`, or -1 without boundary bits, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed
@@ -987,6 +1017,9 @@ class Model:
         """Scaled local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Includes shape scale but excludes margin and gap (those are applied at runtime).
         Used for broadphase AABB computation and voxel-based contact reduction."""
+        self._shape_interior_point: wp.array[wp.vec3] | None = None
+        """Scaled local-space point [m] inside each shape, shape [shape_count, 3], float.
+        Convex meshes use their volume centroid; other shapes use their origin."""
         self._shape_voxel_resolution: wp.array[wp.vec3i] | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
@@ -1003,6 +1036,57 @@ class Model:
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
+        # tendons (cable-driven mechanisms)
+        self.tendon_count: int = 0
+        """Total number of tendons in the system."""
+        self.tendon_label: list[str] = []
+        """Tendon names, shape (tendon_count,)."""
+        self.tendon_world: wp.array[int] | None = None
+        """Owning world for each tendon; -1 denotes the global world."""
+        self.tendon_guide_count: int = 0
+        """Total number of tendon guides (waypoints) across all tendons."""
+        self.tendon_segment_count: int = 0
+        """Total number of tendon segments (= tendon_guide_count - tendon_count)."""
+        self.tendon_start: wp.array[wp.int32] | None = None
+        """Start index into guide arrays for each tendon, shape [tendon_count + 1], int."""
+        self.tendon_guide_body: wp.array[wp.int32] | None = None
+        """Body index for each tendon guide, shape [tendon_guide_count], int."""
+        self.tendon_guide_type: wp.array[wp.int32] | None = None
+        """Guide type for each tendon guide (TendonGuideType enum), shape [tendon_guide_count], int."""
+        self.tendon_guide_radius: wp.array[wp.float32] | None = None
+        """Contact radius [m] for each tendon guide, shape [tendon_guide_count], float."""
+        self.tendon_guide_orientation: wp.array[wp.int32] | None = None
+        """Winding direction (+1 or -1) for each tendon guide, shape [tendon_guide_count], int."""
+        self.tendon_guide_mu: wp.array[wp.float32] | None = None
+        """Friction coefficient [dimensionless] at each tendon guide, shape [tendon_guide_count], float."""
+        self.tendon_guide_flags: wp.array[wp.int32] | None = None
+        """Routing flags for each tendon guide, shape [tendon_guide_count], int."""
+        self.tendon_guide_offset: wp.array[wp.vec3] | None = None
+        """Local-frame offset of the cable plane center on each body [m], shape [tendon_guide_count], vec3."""
+        self.tendon_guide_axis: wp.array[wp.vec3] | None = None
+        """Local-frame normal of the cable plane on each body [dimensionless], shape [tendon_guide_count], vec3."""
+        self.tendon_segment_compliance: wp.array[wp.float32] | None = None
+        """Compliance [m/N] for each tendon segment, shape [tendon_segment_count], float."""
+        self.tendon_segment_damping: wp.array[wp.float32] | None = None
+        """Damping [N·s/m] for each tendon segment, shape [tendon_segment_count], float."""
+        self.tendon_segment_rest_length: wp.array[wp.float32] | None = None
+        """Initial rest length [m] for each tendon segment, shape [tendon_segment_count], float."""
+
+        self.attachment_particle_body_body: wp.array[wp.int32] | None = None
+        """Rigid body indices, shape [attachment_particle_body_count], int."""
+        self.attachment_particle_body_particle: wp.array[wp.int32] | None = None
+        """Particle indices, shape [attachment_particle_body_count], int."""
+        self.attachment_particle_body_body_point: wp.array[wp.vec3] | None = None
+        """Attachment points in body-local coordinates [m], shape [attachment_particle_body_count, 3]."""
+        self.attachment_particle_body_stiffness: wp.array[wp.float32] | None = None
+        """Attachment stiffness [N/m], shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_damping: wp.array[wp.float32] | None = None
+        """Attachment damping [N·s/m], shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_enabled: wp.array[wp.bool] | None = None
+        """Whether each attachment is active, shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_world: wp.array[wp.int32] | None = None
+        """World index for each attachment, shape [attachment_particle_body_count], int."""
+
         self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""
         self.tri_poses: wp.array[wp.mat22] | None = None
@@ -1015,6 +1099,10 @@ class Model:
         Stored per-element; kernels multiply by rest area internally."""
         self.tri_areas: wp.array[wp.float32] | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
+        self.tri_color: wp.array[wp.vec3] | None = None
+        """Triangle surface display colors [0, 1], shape [tri_count], vec3."""
+        self.tri_opacity: wp.array[wp.float32] | None = None
+        """Triangle surface display opacity [0, 1], shape [tri_count], float."""
 
         self.edge_indices: wp.array[wp.int32] | None = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
@@ -1044,6 +1132,8 @@ class Model:
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
+        self._deformable_visual_meshes: tuple[DeformableVisualMesh, ...] = ()
+        self._deformable_visual_skin_batches: _DeformableVisualSkinBatches | None = None
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params: wp.array2d[wp.float32] | None = None
@@ -1100,18 +1190,19 @@ class Model:
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
         self.joint_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float.
-        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
         self.joint_f: wp.array[wp.float32] | None = None
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
-        For FREE and DISTANCE joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_q: wp.array[wp.float32] | None = None
-        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
+        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]``, float.
 
-        Shape matches :attr:`joint_q` (``joint_coord_count``) when
-        :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
-        is shaped ``(joint_dof_count,)`` (legacy layout). Index via
-        :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
-        :attr:`joint_qd_start` to match the active layout.
+        Shape matches :attr:`joint_q`. Index via :attr:`joint_target_q_start`,
+        which aliases :attr:`joint_q_start`. Ball and free joint rotations use
+        unit quaternions.
+
+        For ROD joints, this Model-owned array defines structural rest;
+        see :ref:`Rod joints`.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.
@@ -1125,12 +1216,21 @@ class Model:
         self._has_rod_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
+        self.joint_mimic_joint: wp.array[wp.int32] | None = None
+        """Independent reference joint index for each mimic joint, or -1 for an independent joint, shape [joint_count], int."""
+        self.joint_mimic_coeffs: wp.array[wp.vec2] | None = None
+        """Mimic offset and multiplier applied componentwise [m or rad, dimensionless], shape [joint_count, 2], float."""
         self.joint_parent: wp.array[wp.int32] | None = None
         """Joint parent body indices, shape [joint_count], int."""
         self.joint_child: wp.array[wp.int32] | None = None
         """Joint child body indices, shape [joint_count], int."""
         self.joint_ancestor: wp.array[wp.int32] | None = None
-        """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
+        """Incoming joint of each joint's parent body (-1 if none exists), shape [joint_count], int.
+
+        Articulated joints resolve ancestors only within their own articulation,
+        terminating at external roots. For unarticulated joints, articulation
+        tree joints take precedence over loop-closing joints.
+        """
         self.joint_X_p: wp.array[wp.transform] | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c: wp.array[wp.transform] | None = None
@@ -1165,10 +1265,8 @@ class Model:
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array[wp.float32] | None = None
         """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_twist_lower: wp.array[wp.float32] | None = None
-        """Joint lower twist limit [rad], shape [joint_count], float."""
-        self.joint_twist_upper: wp.array[wp.float32] | None = None
-        """Joint upper twist limit [rad], shape [joint_count], float."""
+        self._deprecated_joint_twist_lower: wp.array[wp.float32] | None = None
+        self._deprecated_joint_twist_upper: wp.array[wp.float32] | None = None
         self.joint_q_start: wp.array[wp.int32] | None = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start: wp.array[wp.int32] | None = None
@@ -1255,6 +1353,12 @@ class Model:
         """
         self.articulation_end: wp.array[wp.int32] | None = None
         """Exclusive end index of regular tree joints per articulation, shape [articulation_count], int."""
+        self._fk_articulation_level_start: wp.array[wp.int32] | None = None
+        self._fk_level_joint_start: wp.array[wp.int32] | None = None
+        self._fk_level_joints: wp.array[wp.int32] | None = None
+        self._fk_level_parent_pos: wp.array[wp.int32] | None = None
+        self._fk_level_capacity: int = 0
+        self._fk_joint_order: wp.array[wp.int32] | None = None
         self.articulation_label: list[str] = []
         """Articulation labels, shape [articulation_count], str."""
         self.articulation_world: wp.array[wp.int32] | None = None
@@ -1281,6 +1385,61 @@ class Model:
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
+        self.curve_label: list[str] = []
+        """Experimental labels of rod-backed deformable objects, shape [curve_count].
+
+        Copied from :attr:`ModelBuilder.curve_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
+        """
+        self.curve_world: wp.array[wp.int32] | None = None
+        """Experimental world indices for :attr:`curve_label`, shape [curve_count]. -1 means global."""
+        self.curve_body_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each curve's body range, shape [curve_count]."""
+        self.curve_body_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each curve's body range, shape [curve_count]."""
+        self.curve_joint_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each curve's joint range, shape [curve_count]."""
+        self.curve_joint_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each curve's joint range, shape [curve_count]."""
+
+        self.surface_label: list[str] = []
+        """Experimental labels of triangle-surface deformable objects, shape [surface_count].
+
+        Copied from :attr:`ModelBuilder.surface_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
+        """
+        self.surface_world: wp.array[wp.int32] | None = None
+        """Experimental world indices for :attr:`surface_label`, shape [surface_count]. -1 means global."""
+        self.surface_particle_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each surface's particle range, shape [surface_count]."""
+        self.surface_particle_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each surface's particle range, shape [surface_count]."""
+        self.surface_tri_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each surface's triangle range, shape [surface_count]."""
+        self.surface_tri_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each surface's triangle range, shape [surface_count]."""
+        self.surface_edge_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each surface's edge range, shape [surface_count]."""
+        self.surface_edge_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each surface's edge range, shape [surface_count]."""
+
+        self.volume_label: list[str] = []
+        """Experimental labels of tetrahedral deformable objects, shape [volume_count].
+
+        Copied from :attr:`ModelBuilder.volume_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
+        """
+        self.volume_world: wp.array[wp.int32] | None = None
+        """Experimental world indices for :attr:`volume_label`, shape [volume_count]. -1 means global."""
+        self.volume_particle_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each volume's particle range, shape [volume_count]."""
+        self.volume_particle_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each volume's particle range, shape [volume_count]."""
+        self.volume_tet_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each volume's tetrahedron range, shape [volume_count]."""
+        self.volume_tet_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each volume's tetrahedron range, shape [volume_count]."""
+
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd: float = 10.0
@@ -1292,8 +1451,9 @@ class Model:
         self.soft_contact_restitution: float = 0.0
         """Restitution coefficient of soft contacts [dimensionless] (used by :class:`SolverXPBD`)."""
 
-        self.rigid_contact_max: int = 0
-        """Number of potential contact points between rigid bodies."""
+        self._rigid_contact_max: int | None = None
+        self._soft_contact_max: int | None = None
+        self._contact_capacity_initialized = False
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -1307,19 +1467,47 @@ class Model:
         """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
-        """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        """Follower indices for sparse mimic constraints, shape [constraint_mimic_count], int.
+
+        .. deprecated:: 1.7
+            Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
-        """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        """Reference indices for sparse mimic constraints, shape [constraint_mimic_count], int.
+
+        .. deprecated:: 1.7
+            Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_coef0: wp.array[wp.float32] | None = None
-        """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        """Offset coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
+
+        .. deprecated:: 1.7
+            Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
-        """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        """Multiplier coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
+
+        .. deprecated:: 1.7
+            Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
+        """
         self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
-        """Whether constraint is active, shape [constraint_mimic_count], bool."""
+        """Active flags for sparse mimic constraints, shape [constraint_mimic_count], bool.
+
+        .. deprecated:: 1.7
+            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
+        """
         self.constraint_mimic_label: list[str] = []
-        """Constraint name/label, shape [constraint_mimic_count], str."""
+        """Sparse mimic constraint labels, shape [constraint_mimic_count], str.
+
+        .. deprecated:: 1.7
+            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
+        """
         self.constraint_mimic_world: wp.array[wp.int32] | None = None
-        """World index for each constraint, shape [constraint_mimic_count], int."""
+        """World indices for sparse mimic constraints, shape [constraint_mimic_count], int.
+
+        .. deprecated:: 1.7
+            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
+        """
 
         self.particle_count: int = 0
         """Total number of particles in the system."""
@@ -1337,10 +1525,18 @@ class Model:
         """Total number of edges in the system."""
         self.spring_count: int = 0
         """Total number of springs in the system."""
+        self.attachment_particle_body_count: int = 0
+        """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
+        self.curve_count: int = 0
+        """Experimental number of recorded rod-backed deformable objects."""
+        self.surface_count: int = 0
+        """Experimental number of recorded triangle-surface deformable objects."""
+        self.volume_count: int = 0
+        """Experimental number of recorded tetrahedral deformable objects."""
         self.joint_dof_count: int = 0
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
         self.joint_coord_count: int = 0
@@ -1348,7 +1544,11 @@ class Model:
         self.joint_constraint_count: int = 0
         """Total number of joint constraints of all joints."""
         self.constraint_mimic_count: int = 0
-        """Total number of mimic constraints in the system."""
+        """Total number of sparse mimic constraints in the system.
+
+        .. deprecated:: 1.7
+            Use :attr:`joint_mimic_joint` to identify joints with joint-owned mimic metadata instead.
+        """
 
         # indices of particles sharing the same color
         self.particle_color_groups: list[wp.array[wp.int32]] = []
@@ -1364,26 +1564,20 @@ class Model:
         self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-        import newton  # noqa: PLC0415
-
-        self.use_coord_layout_targets: bool = newton.use_coord_layout_targets
-        """Snapshot of :data:`newton.use_coord_layout_targets` taken at
-        :meth:`ModelBuilder.finalize`. All layout decisions for this Model
-        consult this — toggling the global later doesn't change behavior."""
-
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
+
+        self.custom_frequency_articulation: dict[str, wp.array[Any]] = {}
+        """Per-row articulation owners for articulation-scoped custom frequencies."""
+
+        self.custom_frequency_label_attributes: dict[str, str] = {}
+        """Attribute keys containing labels for custom-frequency rows."""
 
         self._requested_state_attributes: set[str] = set()
         self._collision_pipeline: CollisionPipeline | None = None
         # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
-        target_q_freq = (
-            Model.AttributeFrequency.JOINT_COORD
-            if self.use_coord_layout_targets
-            else Model.AttributeFrequency.JOINT_DOF
-        )
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
@@ -1391,10 +1585,8 @@ class Model:
         registry describes their indexing, ownership, and reference semantics.
         """
 
-        self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
-
-        # Extended state attributes live on State and are allocated only when
-        # explicitly requested via request_state_attributes().
+        # Deprecated solver-produced State attributes remain registered for
+        # compatibility with request_state_attributes().
         for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
             self.attribute_specs[full_name] = Model.AttributeSpec(getattr(Model.AttributeFrequency, template.frequency))
 
@@ -1411,25 +1603,70 @@ class Model:
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
 
+    @property
+    def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
+        """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
+
+        Constructed on first access; access it before CUDA graph capture if needed.
+
+        Default pairs omit static-static pairs and retain static-kinematic and
+        kinematic-kinematic pairs.
+
+        Assign a replacement array to change pairs, or ``None`` to remove the
+        model's pair array and set its count to zero. In-place edits are unsupported.
+        """
+        pairs = self._shape_contact_pairs
+        if pairs is None and self._shape_contact_pair_data is not None:
+            topology = self._shape_contact_pair_data
+            if self.device.is_cuda and self.device.is_capturing and topology.counts.any():
+                raise RuntimeError(
+                    "Initialize model.shape_contact_pairs before CUDA graph capture, "
+                    "for example by constructing the explicit CollisionPipeline before capture."
+                )
+            pairs = wp.array(topology.build_pairs(), dtype=wp.vec2i, device=self.device, copy=False)
+            self._shape_contact_pairs = pairs
+        return pairs
+
+    @shape_contact_pairs.setter
+    def shape_contact_pairs(self, pairs: wp.array[wp.vec2i] | None) -> None:
+        self._shape_contact_pairs = pairs
+        self._shape_contact_pair_data = None
+        self._shape_contact_pair_count = len(pairs) if pairs is not None else 0
+        self._shape_contact_pair_counts.clear()
+
+    @property
+    def shape_contact_pair_count(self) -> int:
+        """Number of shape pairs. Read-only; does not construct the full pair array."""
+        if self._shape_contact_pairs is not None:
+            return len(self._shape_contact_pairs)
+        return self._shape_contact_pair_count
+
     def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
         """Install the canonical filter store: sorted unique packed pair codes."""
-        self.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(packed=packed)
+        self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(packed)
 
-    def _shape_collision_filter_store(self) -> _DeprecatedShapeCollisionFilterSet | None:
-        """Return the stored filter view without triggering materialization.
+    def _set_shape_collision_filter_pairs(self, pairs: Iterable[tuple[int, int]]) -> None:
+        """Install canonical filter pairs from a serialized model."""
+        pair_array = np.asarray(tuple(pairs), dtype=np.int64).reshape((-1, 2))
+        if pair_array.shape[0] == 0:
+            self._set_shape_collision_filter_packed(np.empty(0, dtype=np.int64))
+            return
 
-        The store shares the instance-dict slot with the public
-        ``shape_collision_filter_pairs`` descriptor, whose ``__get__``
-        materializes the set; array-backed queries read the slot directly so
-        they stay materialization-free.
-        """
-        return self.__dict__.get("shape_collision_filter_pairs")
+        packed = _pack_shape_pair_codes(pair_array[:, 0], pair_array[:, 1])
+        packed.sort()
+        if packed.shape[0] > 1:
+            packed = packed[np.concatenate(([True], packed[1:] != packed[:-1]))]
+        self._set_shape_collision_filter_packed(packed)
+
+    @property
+    def shape_collision_filter_pairs(self) -> AbstractSet[tuple[int, int]]:
+        """Read-only set of explicit canonical shape index pairs that should not collide."""
+        return self._shape_collision_filter_pairs
 
     def shape_collision_filter_contains(self, shape_a: SupportsIndex, shape_b: SupportsIndex) -> bool:
         """Return whether a canonicalized shape pair is collision-filtered.
 
-        This queries the canonical filter-pair array when available, avoiding
-        materialization of :attr:`shape_collision_filter_pairs`.
+        This queries the canonical filter-pair array without copying it.
 
         Args:
             shape_a: First shape index.
@@ -1441,16 +1678,13 @@ class Model:
         Raises:
             TypeError: If either shape index is not an integer.
         """
-        filters = self._shape_collision_filter_store()
-        if filters is None:
-            return False
-        return filters.contains_pair(shape_a, shape_b)
+        return self._shape_collision_filter_pairs.contains_pair(shape_a, shape_b)
 
     def shape_collision_filter_pairs_array(self) -> np.ndarray:
         """Return the collision-filter pairs as an array.
 
         Array counterpart to :attr:`shape_collision_filter_pairs` that returns
-        the canonical filter-pair array without materializing the public set.
+        the canonical filter-pair array without copying the public set.
         Consumers that need every excluded pair — such as the ``"nxn"`` and
         ``"sap"`` broad-phase exclusion arrays — should prefer this form.
 
@@ -1458,10 +1692,7 @@ class Model:
             Canonical shape index pairs sorted lexicographically, shape
             [pair_count, 2].
         """
-        filters = self._shape_collision_filter_store()
-        if filters is None:
-            return np.empty((0, 2), dtype=np.int32)
-        return filters.pairs_array()
+        return self._shape_collision_filter_pairs.pairs_array()
 
     def shape_collision_filter_mask(self, pairs: np.ndarray) -> np.ndarray:
         """Return a boolean mask of which shape pairs are collision-filtered.
@@ -1488,10 +1719,7 @@ class Model:
                 raise OverflowError("unsigned shape indices must fit in a signed 64-bit integer")
             pairs = pairs.astype(np.int64)
         pairs = pairs.reshape((-1, 2))
-        filters = self._shape_collision_filter_store()
-        if filters is None:
-            return np.zeros(pairs.shape[0], dtype=bool)
-        return filters.mask_pairs(pairs)
+        return self._shape_collision_filter_pairs.mask_pairs(pairs)
 
     def _attribute_spec(self, name: str) -> Model.AttributeSpec | None:
         """Return current metadata, including legacy mapping overrides."""
@@ -1527,53 +1755,35 @@ class Model:
         else:
             self.attribute_assignment[name] = spec.assignment
 
-    def _resolve_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return explicitly registered frequency metadata."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.frequency
+    # Keep existing string aliases; new built-in families use enums so their
+    # names remain available to custom frequencies regardless of registration order.
+    _REFERENCE_ALIASES: ClassVar[dict[str, AttributeFrequency]] = {
+        "body": AttributeFrequency.BODY,
+        "shape": AttributeFrequency.SHAPE,
+        "joint": AttributeFrequency.JOINT,
+        "joint_dof": AttributeFrequency.JOINT_DOF,
+        "joint_coord": AttributeFrequency.JOINT_COORD,
+        "joint_constraint": AttributeFrequency.JOINT_CONSTRAINT,
+        "articulation": AttributeFrequency.ARTICULATION,
+        "constraint_mimic": AttributeFrequency.CONSTRAINT_MIMIC,
+        "particle": AttributeFrequency.PARTICLE,
+        "edge": AttributeFrequency.EDGE,
+        "triangle": AttributeFrequency.TRIANGLE,
+        "tetrahedron": AttributeFrequency.TETRAHEDRON,
+        "spring": AttributeFrequency.SPRING,
+        "tendon": AttributeFrequency.TENDON,
+        "tendon_guide": AttributeFrequency.TENDON_GUIDE,
+        "tendon_segment": AttributeFrequency.TENDON_SEGMENT,
+        "attachment_particle_body": AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+        "world": AttributeFrequency.WORLD,
+    }
 
-    def _attribute_reference_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return the entity domain indexed by an attribute's values."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.references
-
-    def _attribute_row_width(self, name: str) -> int:
-        """Return the number of flattened values stored per frequency row."""
-        spec = self._attribute_spec(name)
-        return 1 if spec is None else spec.row_width
-
-    def _attribute_requires_empty_sentinel(self, name: str) -> bool:
-        """Return whether an empty attribute retains one sentinel value."""
-        spec = self._attribute_spec(name)
-        return False if spec is None else spec.requires_empty_sentinel
-
-    def _normalize_attribute_reference(self, references: str | None) -> Model.AttributeFrequency | str | None:
-        """Return the frequency domain addressed by a builder reference declaration."""
-        if references is None:
-            return None
-        built_in = {
-            "body": Model.AttributeFrequency.BODY,
-            "shape": Model.AttributeFrequency.SHAPE,
-            "joint": Model.AttributeFrequency.JOINT,
-            "joint_dof": Model.AttributeFrequency.JOINT_DOF,
-            "joint_coord": Model.AttributeFrequency.JOINT_COORD,
-            "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
-            "articulation": Model.AttributeFrequency.ARTICULATION,
-            "equality_constraint": "mujoco:equality_constraint",
-            "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
-            "particle": Model.AttributeFrequency.PARTICLE,
-            "edge": Model.AttributeFrequency.EDGE,
-            "triangle": Model.AttributeFrequency.TRIANGLE,
-            "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
-            "spring": Model.AttributeFrequency.SPRING,
-            "world": Model.AttributeFrequency.WORLD,
-        }
-        frequency = built_in.get(references)
-        if frequency is not None:
-            return frequency
-        if references in self.custom_frequency_counts:
-            return references
-        raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
+    @staticmethod
+    def _normalize_attribute_reference(
+        references: Model.AttributeFrequency | str | None,
+    ) -> Model.AttributeFrequency | str | None:
+        """Resolve existing built-in aliases without changing the supplied declaration."""
+        return Model._REFERENCE_ALIASES.get(references, references)
 
     # ----- Removed joint-target aliases -------------------------------------
     # Tombstones so that assigning the 1.3-era names fails loudly instead of
@@ -1583,13 +1793,119 @@ class Model:
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     @property
+    def mesh_edge_indices(self) -> wp.array[wp.vec2i] | None:
+        """Packed collision-edge vertex pairs, shape [total_edge_count].
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_indices"))
+        return self._mesh_edge_indices
+
+    @mesh_edge_indices.setter
+    def mesh_edge_indices(self, value: wp.array[wp.vec2i] | None) -> None:
+        """Replace packed edge indices through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_indices"))
+        self._mesh_edge_indices = value
+
+    @property
+    def mesh_edge_centers(self) -> wp.array[wp.vec4] | None:
+        """Packed collision-edge centers (xyz) and half-lengths (w), shape [total_edge_count, 4] [m].
+
+        Centers and half-lengths are in unscaled mesh coordinates.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_centers"))
+        return self._mesh_edge_centers
+
+    @mesh_edge_centers.setter
+    def mesh_edge_centers(self, value: wp.array[wp.vec4] | None) -> None:
+        """Replace packed edge centers through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_centers"))
+        self._mesh_edge_centers = value
+
+    @property
+    def mesh_edge_halves(self) -> wp.array[wp.vec4] | None:
+        """Packed collision-edge half-vectors (xyz) [m] and unitless endpoint-ownership codes (w).
+
+        Shape [total_edge_count, 4]. Half-vectors are in unscaled mesh coordinates.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_halves"))
+        return self._mesh_edge_halves
+
+    @mesh_edge_halves.setter
+    def mesh_edge_halves(self, value: wp.array[wp.vec4] | None) -> None:
+        """Replace packed edge half-vectors through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_halves"))
+        self._mesh_edge_halves = value
+
+    @property
+    def shape_edge_range(self) -> wp.array[wp.vec2i] | None:
+        """Per-shape (start, count) into packed collision-edge arrays, shape [shape_count].
+
+        A range of (-1, 0) means no edges.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="shape_edge_range"))
+        return self._shape_edge_range
+
+    @shape_edge_range.setter
+    def shape_edge_range(self, value: wp.array[wp.vec2i] | None) -> None:
+        """Replace shape edge ranges through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="shape_edge_range"))
+        self._shape_edge_range = value
+
+    @property
+    def joint_twist_lower(self) -> wp.array[wp.float32] | None:
+        """Joint lower twist limit [rad], shape [joint_count], float. Never populated.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._deprecated_joint_twist_lower
+
+    @joint_twist_lower.setter
+    def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._deprecated_joint_twist_lower = value
+
+    @property
+    def joint_twist_upper(self) -> wp.array[wp.float32] | None:
+        """Joint upper twist limit [rad], shape [joint_count], float. Never populated.
+
+        .. deprecated:: 1.7
+            Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
+        """
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._deprecated_joint_twist_upper
+
+    @joint_twist_upper.setter
+    def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._deprecated_joint_twist_upper = value
+
+    @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
-        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start` under coord
-        layout, :attr:`joint_qd_start` otherwise. Solvers and actuators should
-        index :attr:`joint_target_q` through this regardless of layout.
+        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start`.
         """
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     def bvh_build_shapes(
         self,
@@ -1653,6 +1969,7 @@ class Model:
                 self.shape_type,
                 self.shape_flags,
                 int(shape_flags),
+                self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1776,6 +2093,33 @@ class Model:
         )
         self.bvh_particles.refit()
 
+    @property
+    def deformable_visual_meshes(self) -> tuple[DeformableVisualMesh, ...]:
+        """Deformable visual meshes stored at finalization. Read-only.
+
+        The tuple is empty when no meshes were added. See
+        :class:`~newton.geometry.DeformableVisualMesh`.
+
+        .. experimental::
+        """
+        return self._deformable_visual_meshes
+
+    @property
+    def deformable_visual_mesh_count(self) -> int:
+        """Number of deformable visual meshes.
+
+        .. experimental::
+        """
+        return len(self._deformable_visual_meshes)
+
+    def _get_deformable_visual_skin_batches(self) -> _DeformableVisualSkinBatches:
+        """Return the fixed skinning layout, rebuilding loaded recordings once."""
+        if self._deformable_visual_skin_batches is None:
+            self._deformable_visual_skin_batches = _DeformableVisualSkinBatches.from_meshes(
+                self.deformable_visual_meshes, self.device
+            )
+        return self._deformable_visual_skin_batches
+
     def state(self, requires_grad: bool | None = None) -> State:
         """
         Create and return a new :class:`State` object for this model.
@@ -1812,6 +2156,14 @@ class Model:
         if self.joint_count:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
+
+        if self.tendon_count:
+            s.tendon_segment_rest_length = wp.clone(self.tendon_segment_rest_length)
+            s.tendon_segment_attachment_l_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_segment_attachment_r_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_guide_active = wp.ones(self.tendon_guide_count, dtype=wp.bool, device=self.device)
+            s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
+            s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
 
         self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
 
@@ -1855,6 +2207,12 @@ class Model:
 
         if frequency == Model.AttributeFrequency.ONCE:
             return 1
+        if frequency in (
+            Model.AttributeFrequency.CONTACT,
+            Model.AttributeFrequency.CONTACT_RIGID,
+            Model.AttributeFrequency.CONTACT_SOFT,
+        ):
+            self._get_contact_capacity()
         count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
         if count_attr is None:
             raise ValueError(f"Unsupported attribute frequency: {frequency!r}")
@@ -1950,6 +2308,62 @@ class Model:
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
 
+    @property
+    def contact_max(self) -> int | None:
+        """Combined rigid and soft-rigid contact buffer capacity, or ``None`` before collision setup.
+
+        This is the row count for :attr:`AttributeFrequency.CONTACT`, not the
+        number of active contacts. It excludes soft self-contact.
+        """
+        if self.rigid_contact_max is None or self.soft_contact_max is None:
+            return None
+        return self.rigid_contact_max + self.soft_contact_max
+
+    @property
+    def rigid_contact_max(self) -> int | None:
+        """Rigid contact buffer capacity, or ``None`` before collision setup.
+
+        :class:`CollisionPipeline` publishes its resolved capacity, which later
+        pipelines reuse as their default. Zero is a valid capacity.
+        """
+        return self._rigid_contact_max
+
+    @rigid_contact_max.setter
+    def rigid_contact_max(self, value: int | None) -> None:
+        self._validate_contact_capacity(value, self._soft_contact_max)
+        if value != self._rigid_contact_max:
+            self._contact_capacity_initialized = False
+        self._rigid_contact_max = value
+
+    @property
+    def soft_contact_max(self) -> int | None:
+        """Soft contact buffer capacity, or ``None`` before collision setup.
+
+        :class:`CollisionPipeline` publishes its resolved capacity, including
+        any enabled edge/face contact passes. Zero disables soft contacts.
+        """
+        return self._soft_contact_max
+
+    @soft_contact_max.setter
+    def soft_contact_max(self, value: int | None) -> None:
+        self._validate_contact_capacity(self._rigid_contact_max, value)
+        if value != self._soft_contact_max:
+            self._contact_capacity_initialized = False
+        self._soft_contact_max = value
+
+    def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
+        """Reject negative capacities."""
+        if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
+            raise ValueError("Contact capacities must be nonnegative or None.")
+
+    def _get_contact_capacity(self) -> tuple[int, int]:
+        """Return capacities published by a successfully initialized pipeline."""
+        if not self._contact_capacity_initialized or self.rigid_contact_max is None or self.soft_contact_max is None:
+            raise RuntimeError(
+                "Create CollisionPipeline(model) to publish contact capacities before resolving contact frequencies."
+            )
+        return self.rigid_contact_max, self.soft_contact_max
+
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
         """
         Initialize a :class:`CollisionPipeline` for this model.
@@ -1995,7 +2409,7 @@ class Model:
         """
         warnings.warn(
             "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2041,7 +2455,7 @@ class Model:
         warnings.warn(
             "Model.collide() is deprecated; create a CollisionPipeline and call "
             "pipeline.collide(state, contacts) instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2066,24 +2480,52 @@ class Model:
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific state attributes be allocated when creating a State object.
+        """Request optional solver-produced state attributes.
 
-        See :ref:`extended_state_attributes` for details and usage.
+        .. deprecated:: 1.7
+
+            Request :class:`newton.solvers.SolverBase.Observables` from the solver
+            instead.
+
+        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        warnings.warn(
+            "Model.request_state_attributes() is deprecated in Newton 1.7; "
+            "request SolverBase.Observables from the solver instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+        self._request_state_attributes(*attributes)
+
+    def _request_state_attributes(self, *attributes: str) -> None:
+        """Register legacy state fields after the entry point emits its warning."""
         State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def request_contact_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific contact attributes be allocated when creating a Contacts object.
+        """Request optional solver-produced contact attributes.
+
+        .. deprecated:: 1.7
+
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
+            the solver instead.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        warnings.warn(
+            "Model.request_contact_attributes() is deprecated in Newton 1.7; "
+            "request SolverBase.Observables from the solver instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+        self._request_contact_attributes(*attributes)
+
+    def _request_contact_attributes(self, *attributes: str) -> None:
+        """Register legacy contact fields after the entry point emits its warning."""
         Contacts.validate_extended_attributes(attributes)
         self._requested_contact_attributes.update(attributes)
 
@@ -2159,7 +2601,7 @@ class Model:
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
-        references: str | None = None,
+        references: Model.AttributeFrequency | str | None = None,
     ):
         """
         Add a custom attribute to the model.
@@ -2177,6 +2619,11 @@ class Model:
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
             references: Entity or custom-frequency domain indexed by the
                 attribute values, or ``None`` when values are not references.
+                Use a Model.AttributeFrequency enum for built-in domains or a
+                string for custom frequencies. Existing built-in strings such as
+                ``"body"`` and ``"world"`` are also supported. Use enums for
+                ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
+                to custom frequencies.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
@@ -2204,6 +2651,15 @@ class Model:
             full_name = name
 
         reference_frequency = self._normalize_attribute_reference(references)
+        if isinstance(reference_frequency, str) and reference_frequency not in self.custom_frequency_counts:
+            hint = ""
+            enum_name = reference_frequency.upper()
+            if enum_name in Model.AttributeFrequency.__members__:
+                hint = (
+                    f"; to reference the built-in {reference_frequency} domain, "
+                    f"use Model.AttributeFrequency.{enum_name}"
+                )
+            raise ValueError(f"Unknown custom attribute reference frequency {references!r}{hint}")
         if reference_frequency is not None and isinstance(attrib, wp.array):
             integral_dtypes = (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64)
             scalar_dtype = getattr(attrib.dtype, "_wp_scalar_type_", attrib.dtype)
@@ -2261,7 +2717,7 @@ class Model:
         """
         Get the list of requested state attribute names that have been requested on the model.
 
-        See :ref:`extended_state_attributes` for details.
+        See :doc:`Solver Observables </concepts/solver_observables>` for details.
 
         Returns:
             The list of requested state attributes.

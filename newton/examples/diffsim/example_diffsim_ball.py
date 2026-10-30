@@ -1,19 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Ball
-#
-# Shows how to use Newton to optimize the initial velocity of a particle
-# such that it bounces off the wall and floor in order to hit a target.
-#
-# This example uses the built-in wp.Tape() object to compute gradients of
-# the distance to target (loss) w.r.t the initial velocity, followed by
-# a simple gradient-descent optimization step.
-#
-# Command: python -m newton.examples diffsim_ball
-#
-###########################################################################
+"""Example Diffsim Ball
+
+Shows how to use Newton to optimize the initial velocity of a particle
+such that it bounces off the wall and floor in order to hit a target.
+
+This example uses the built-in wp.Tape() object to compute gradients of
+the distance to target (loss) w.r.t the initial velocity, followed by
+a simple gradient-descent optimization step.
+
+Success criteria:
+- A ball bounces off the ground and wall toward a floating target, with previous trajectories
+  retained in the view.
+- Training improves target accuracy and the loss plot shows the optimization trend.
+- When the gradient check runs, numeric and analytic gradients agree within the example check
+  tolerance.
+
+Runs:
+- `python -m newton.examples diffsim_ball`
+"""
+
 import numpy as np
 import warp as wp
 
@@ -101,7 +108,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="explicit",
-            soft_contact_margin=10.0,
+            soft_contact_gap=10.0,
             requires_grad=True,
         )
         self.contacts = self.collision_pipeline.contacts()

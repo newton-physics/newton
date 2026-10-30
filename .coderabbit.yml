@@ -6,6 +6,7 @@ knowledge_base:
     enabled: true
     filePatterns:
       - "CODING_GUIDELINES.rst"
+      - "REVIEW_GUIDELINES.rst"
 reviews:
   profile: "chill"
   request_changes_workflow: false
@@ -22,6 +23,8 @@ reviews:
   path_instructions:
     - path: "**"
       instructions: |
+        Apply REVIEW_GUIDELINES.rst and enforce CODING_GUIDELINES.rst.
+
         Follow changelog/README.md. For user-facing changes, suggest a
         Towncrier fragment instead of a direct CHANGELOG.md edit. Do not require
         a .skip fragment for changes without user-facing impact. When a fragment

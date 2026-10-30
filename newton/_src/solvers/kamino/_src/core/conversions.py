@@ -12,21 +12,29 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
+from .....sim import JointTargetMode
 from .....sim.model import Model
+from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
 from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
     convert_geom_offset_origin_to_com,
+    is_immovable_for_kamino,
 )
 from .geometry import GeometriesModel
 from .joints import (
     JOINT_QMAX,
     JOINT_QMIN,
+    DofActuationPath,
     JointActuationType,
     JointDoFType,
     JointsModel,
+    _has_missing_implicit_pd_gains,
+    has_dynamic_cts_wp,
+    has_effort_cts_wp,
+    has_friction_cts_wp,
 )
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
@@ -48,8 +56,7 @@ __all__ = [
     "convert_model_joint_transforms",
     "convert_model_materials",
     "convert_rigid_bodies",
-    "convert_target_coords_to_target_dofs",
-    "convert_target_dofs_to_target_coords",
+    "refresh_masked_body_inertia",
     "validate_model_structural_updates",
 ]
 
@@ -70,8 +77,9 @@ class StructuralUpdateViolation(IntEnum):
     INVALID_TARGET_MODE = 3
     NONORTHONORMAL_AXES = 4
     GIMBAL_HANDEDNESS = 5
-    MASSLESS = 6
+    IMMOVABILITY_FLIP = 6
     FRICTION_CTS = 7
+    EFFORT_CTS = 8
 
 
 ###
@@ -79,46 +87,85 @@ class StructuralUpdateViolation(IntEnum):
 ###
 
 
-@wp.func
-def joint_actuation_type_from_dofs(
-    dof_start: int,
-    dof_end: int,
-    target_mode: wp.array[wp.int32],
-) -> int:
-    """Aggregate Newton's per-DoF target modes into a Kamino joint actuation type."""
-    joint_target_mode = int(0)
-    for dof in range(dof_start, dof_end):
-        joint_target_mode = max(joint_target_mode, target_mode[dof])
-    return JointActuationType.from_newton_wp(joint_target_mode)
+@wp.kernel
+def compute_body_immovability_kernel(
+    # Inputs:
+    newton_body_inv_mass: wp.array[wp.float32],
+    newton_body_inv_inertia: wp.array[wp.mat33f],
+    newton_body_flags: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
+    # Outputs:
+    kamino_body_is_immovable: wp.array[wp.int32],
+):
+    """Bake Kamino's per-body immovability decision from Newton's arrays.
+
+    A body is immovable if it is physically massless (zero inverse mass and
+    zero inverse inertia) or flagged KINEMATIC. Dynamics solvers that
+    simulate massless bodies only treat KINEMATIC bodies as immovable. The
+    result is written once at build and kept constant for the solver's lifetime;
+    runtime flips are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
+    """
+    body_id = wp.tid()
+    if is_immovable_for_kamino(
+        newton_body_inv_mass[body_id],
+        newton_body_inv_inertia[body_id],
+        newton_body_flags[body_id],
+        kinematic_only_immovable,
+    ):
+        kamino_body_is_immovable[body_id] = 1
+    else:
+        kamino_body_is_immovable[body_id] = 0
 
 
-@wp.func
-def joint_requires_dynamic_constraints(
-    dof_start: int,
-    dof_end: int,
-    armature: wp.array[wp.float32],
-    damping: wp.array[wp.float32],
-    target_ke: wp.array[wp.float32],
-    target_kd: wp.array[wp.float32],
-) -> bool:
-    """Return whether any DoF makes a joint dynamic."""
-    dynamic = bool(False)
-    for dof in range(dof_start, dof_end):
-        dynamic = dynamic or (armature[dof] > 0.0 or damping[dof] > 0.0 or target_ke[dof] > 0.0 or target_kd[dof] > 0.0)
-    return dynamic
+@wp.kernel
+def mask_body_inertia_kernel(
+    # Inputs:
+    newton_body_inv_mass: wp.array[wp.float32],
+    newton_body_inv_inertia: wp.array[wp.mat33f],
+    kamino_body_is_immovable: wp.array[wp.int32],
+    # Outputs:
+    kamino_body_inv_mass: wp.array[wp.float32],
+    kamino_body_inv_inertia: wp.array[wp.mat33f],
+):
+    """Copy Newton's inverse mass / inertia into Kamino's arrays, zeroing entries
+    for bodies marked immovable in Kamino's cached ``is_immovable`` snapshot."""
+    body_id = wp.tid()
+    if kamino_body_is_immovable[body_id] != 0:
+        kamino_body_inv_mass[body_id] = 0.0
+        kamino_body_inv_inertia[body_id] = wp.mat33f(0.0)
+    else:
+        kamino_body_inv_mass[body_id] = newton_body_inv_mass[body_id]
+        kamino_body_inv_inertia[body_id] = newton_body_inv_inertia[body_id]
 
 
-@wp.func
-def joint_requires_friction_constraints(
-    dof_start: int,
-    dof_end: int,
-    friction: wp.array[wp.float32],
-) -> bool:
-    """Return whether any DoF has positive Coulomb friction."""
-    frictional = bool(False)
-    for dof in range(dof_start, dof_end):
-        frictional = frictional or friction[dof] > 0.0
-    return frictional
+def refresh_masked_body_inertia(
+    newton_body_inv_mass: wp.array[wp.float32],
+    newton_body_inv_inertia: wp.array[wp.mat33f],
+    kamino_body_is_immovable: wp.array[wp.int32],
+    kamino_body_inv_mass: wp.array[wp.float32],
+    kamino_body_inv_inertia: wp.array[wp.mat33f],
+    device: wp.context.Device | str,
+) -> None:
+    """Refresh Kamino's masked inverse mass / inertia copies from Newton's.
+
+    The immovability decision is baked at build (in ``kamino_body_is_immovable``)
+    and cannot change at runtime; only the underlying inertial magnitudes are
+    re-read from Newton.
+    """
+    wp.launch(
+        kernel=mask_body_inertia_kernel,
+        dim=kamino_body_inv_mass.shape[0],
+        inputs=[
+            newton_body_inv_mass,
+            newton_body_inv_inertia,
+            kamino_body_is_immovable,
+        ],
+        outputs=[
+            kamino_body_inv_mass,
+            kamino_body_inv_inertia,
+        ],
+        device=device,
+    )
 
 
 @wp.kernel
@@ -129,7 +176,7 @@ def world_max_contacts_kernel(
     model_shape_world: wp.array[wp.int32],
     model_shape_contact_pair: wp.array[wp.vec2i],
     # Outputs:
-    world_max_contacts: wp.array[wp.int32],
+    world_max_contacts: wp.array[wp.int64],
 ):
     # Retrieve the shape pair index from the thread grid
     shape_pair_id = wp.tid()
@@ -139,25 +186,19 @@ def world_max_contacts_kernel(
     shape_type_a = model_shape_type[shape_pair[0]]
     shape_type_b = model_shape_type[shape_pair[1]]
 
-    # Determine the world for this pair — fall back to other shape if one is global
-    world_id_a = model_shape_world[shape_pair[0]]
-    world_id_b = model_shape_world[shape_pair[1]]
-    world_id = world_id_a if world_id_a >= 0 else world_id_b
+    # Assign global-local pairs to the local world and skip global-global pairs.
+    world_id = max(model_shape_world[shape_pair[0]], model_shape_world[shape_pair[1]])
     if world_id < 0:
-        return  # Both shapes are global — skip
+        return
 
-    # Compute max contact count for this pair and add to world total,
-    # ensuring shapes are ordered by type for consistent contact counts.
+    # Order types for consistent contact counts.
     if shape_type_a > shape_type_b:
         shape_type_a, shape_type_b = shape_type_b, shape_type_a
-    num_contacts_a, num_contacts_b = max_contacts_for_shape_pair(
-        type_a=shape_type_a,
-        type_b=shape_type_b,
-    )
+    num_contacts_a, num_contacts_b = max_contacts_for_shape_pair(shape_type_a, shape_type_b)
     num_contacts = num_contacts_a + num_contacts_b
     if max_contacts_per_pair >= 0:
         num_contacts = min(num_contacts, max_contacts_per_pair)
-    wp.atomic_add(world_max_contacts, world_id, num_contacts)
+    wp.atomic_add(world_max_contacts, world_id, wp.int64(num_contacts))
 
 
 @wp.kernel
@@ -235,10 +276,16 @@ def validate_joint_dof_updates_kernel(
     joint_damping: wp.array[wp.float32],
     joint_target_ke: wp.array[wp.float32],
     joint_target_kd: wp.array[wp.float32],
+    joint_target_mode: wp.array[wp.int32],
+    joint_effort_limit: wp.array[wp.float32],
     joint_friction: wp.array[wp.float32],
     joint_dof_type: wp.array[wp.int32],
-    num_dynamic_cts: wp.array[wp.int32],
-    num_friction_cts: wp.array[wp.int32],
+    dynamic_cts_offset: wp.array[wp.int32],
+    dynamic_cts_axis: wp.array[wp.int32],
+    friction_cts_offset: wp.array[wp.int32],
+    friction_cts_axis: wp.array[wp.int32],
+    effort_cts_offset: wp.array[wp.int32],
+    effort_cts_axis: wp.array[wp.int32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
     built_limit_finite: wp.array[wp.int32],
@@ -252,22 +299,50 @@ def validate_joint_dof_updates_kernel(
     if tid < joint_count:
         dof_start = joint_qd_start[tid]
         dof_end = joint_qd_start[tid + 1]
-        if joint_requires_dynamic_constraints(
-            dof_start,
-            dof_end,
-            joint_armature,
-            joint_damping,
-            joint_target_ke,
-            joint_target_kd,
-        ) != (num_dynamic_cts[tid] > 0):
-            wp.atomic_min(violations, StructuralUpdateViolation.DYNAMIC_CTS, tid)
-        frictional = joint_dof_type[tid] != JointDoFType.FREE and joint_requires_friction_constraints(
-            dof_start, dof_end, joint_friction
-        )
-        # Existing rows remain valid at zero bound; only adding friction requires
-        # rows that were not allocated when the model was built.
-        if frictional and num_friction_cts[tid] == 0:
-            wp.atomic_min(violations, StructuralUpdateViolation.FRICTION_CTS, tid)
+        dynamic_row = dynamic_cts_offset[tid]
+        dynamic_row_end = dynamic_cts_offset[tid + 1]
+        friction_row = friction_cts_offset[tid]
+        friction_row_end = friction_cts_offset[tid + 1]
+        effort_row = effort_cts_offset[tid]
+        effort_row_end = effort_cts_offset[tid + 1]
+        for axis in range(dof_end - dof_start):
+            dof = dof_start + axis
+            act_type = JointActuationType.from_newton_wp(joint_target_mode[dof])
+            if act_type < 0:
+                wp.atomic_min(violations, StructuralUpdateViolation.INVALID_TARGET_MODE, tid)
+                return
+            dynamic_required = has_dynamic_cts_wp(
+                act_type,
+                joint_target_ke[dof],
+                joint_target_kd[dof],
+                joint_effort_limit[dof],
+                joint_armature[dof],
+                joint_damping[dof],
+            )
+            dynamic_built = dynamic_row < dynamic_row_end and dynamic_cts_axis[dynamic_row] == axis
+            if dynamic_required != dynamic_built:
+                wp.atomic_min(violations, StructuralUpdateViolation.DYNAMIC_CTS, tid)
+            if dynamic_built:
+                dynamic_row += 1
+
+            friction_required = has_friction_cts_wp(joint_dof_type[tid], joint_friction[dof])
+            friction_built = friction_row < friction_row_end and friction_cts_axis[friction_row] == axis
+            if friction_required and not friction_built:
+                wp.atomic_min(violations, StructuralUpdateViolation.FRICTION_CTS, tid)
+            if friction_built:
+                friction_row += 1
+
+            effort_required = has_effort_cts_wp(
+                act_type,
+                joint_target_ke[dof],
+                joint_target_kd[dof],
+                joint_effort_limit[dof],
+            )
+            effort_built = effort_row < effort_row_end and effort_cts_axis[effort_row] == axis
+            if effort_required != effort_built:
+                wp.atomic_min(violations, StructuralUpdateViolation.EFFORT_CTS, tid)
+            if effort_built:
+                effort_row += 1
 
     if tid < dof_count:
         current_finite = joint_limit_lower[tid] > JOINT_QMIN or joint_limit_upper[tid] < JOINT_QMAX
@@ -286,7 +361,7 @@ def validate_joint_actuation_updates_kernel(
 ):
     """Find the first joint with an invalid or structurally changed actuation type."""
     joint = wp.tid()
-    current_actuation = joint_actuation_type_from_dofs(
+    current_actuation = JointActuationType.aggregate_from_newton_wp(
         joint_qd_start[joint],
         joint_qd_start[joint + 1],
         joint_target_mode,
@@ -349,53 +424,62 @@ def validate_joint_axes_kernel(
         wp.atomic_min(violations, StructuralUpdateViolation.NONORTHONORMAL_AXES, joint)
 
 
-@wp.func
-def has_zero_inverse_inertia(inv_inertia: wp.mat33f) -> bool:
-    """Return whether every element of an inverse inertia matrix is zero."""
-    return (
-        inv_inertia[0, 0] == 0.0
-        and inv_inertia[0, 1] == 0.0
-        and inv_inertia[0, 2] == 0.0
-        and inv_inertia[1, 0] == 0.0
-        and inv_inertia[1, 1] == 0.0
-        and inv_inertia[1, 2] == 0.0
-        and inv_inertia[2, 0] == 0.0
-        and inv_inertia[2, 1] == 0.0
-        and inv_inertia[2, 2] == 0.0
-    )
-
-
 @wp.kernel
-def validate_body_inertial_updates_kernel(
+def validate_body_immovability_updates_kernel(
     # Inputs:
     body_inv_mass: wp.array[wp.float32],
     body_inv_inertia: wp.array[wp.mat33f],
-    built_massless: wp.array[wp.int32],
+    body_flags: wp.array[wp.int32],
+    built_is_immovable: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
     # Outputs:
     violations: wp.array[wp.int32],
 ):
-    """Find the first body made massless after constructing SolverKamino."""
+    """Find the first body whose Kamino immovability status changed after build.
+
+    Kamino freezes the immovability decision at construction (see
+    ``is_immovable_for_kamino``): joint culling, contact culling, and the
+    masking of ``inv_m_i`` / ``inv_i_I_i`` all key on the cached
+    ``bodies.is_immovable`` snapshot. Flipping it at runtime, either by making
+    a body massless (or restoring its mass) or by toggling its KINEMATIC
+    flag, would silently corrupt those layouts. We surface it as a single
+    structural-update violation.
+    """
     body = wp.tid()
-    is_massless = body_inv_mass[body] == 0.0 or has_zero_inverse_inertia(body_inv_inertia[body])
-    if is_massless and built_massless[body] == 0:
-        wp.atomic_min(violations, StructuralUpdateViolation.MASSLESS, body)
+    current_immovable = is_immovable_for_kamino(
+        body_inv_mass[body], body_inv_inertia[body], body_flags[body], kinematic_only_immovable
+    )
+    if current_immovable != (built_is_immovable[body] != 0):
+        wp.atomic_min(violations, StructuralUpdateViolation.IMMOVABILITY_FLIP, body)
 
 
 @wp.kernel
 def update_joint_actuation_kernel(
     # Inputs:
     joint_qd_start: wp.array[wp.int32],
-    joint_target_mode: wp.array[wp.int32],
+    dof_act_types: wp.array[wp.int32],
     # Outputs:
     act_type: wp.array[wp.int32],
 ):
-    """Update each joint's Kamino actuation type from its target modes."""
+    """Aggregate each joint's Kamino actuation type from its DoF modes."""
     joint = wp.tid()
-    act_type[joint] = joint_actuation_type_from_dofs(
+    act_type[joint] = JointActuationType.aggregate_wp(
         joint_qd_start[joint],
         joint_qd_start[joint + 1],
-        joint_target_mode,
+        dof_act_types,
     )
+
+
+@wp.kernel
+def update_joint_dof_actuation_kernel(
+    # Inputs:
+    joint_target_mode: wp.array[wp.int32],
+    # Outputs:
+    dof_act_types: wp.array[wp.int32],
+):
+    """Update each DoF's Kamino actuation type from its Newton target mode."""
+    dof = wp.tid()
+    dof_act_types[dof] = JointActuationType.from_newton_wp(joint_target_mode[dof])
 
 
 @wp.kernel
@@ -437,23 +521,29 @@ def joint_conversion_kernel(
     # Inputs:
     model_joint_world: wp.array[wp.int32],
     model_joint_world_start: wp.array[wp.int32],
+    model_joint_parent: wp.array[wp.int32],
+    model_joint_child: wp.array[wp.int32],
     model_joint_type: wp.array[wp.int32],
-    model_joint_target_mode: wp.array[wp.int32],
     model_joint_dof_dim: wp.array2d[wp.int32],
     model_joint_q_start: wp.array[wp.int32],
     model_joint_qd_start: wp.array[wp.int32],
     model_joint_axis: wp.array[wp.vec3f],
-    model_joint_armature: wp.array[wp.float32],
-    model_joint_damping: wp.array[wp.float32],
+    model_joint_target_mode: wp.array[wp.int32],
     model_joint_target_ke: wp.array[wp.float32],
     model_joint_target_kd: wp.array[wp.float32],
+    model_joint_effort_limit: wp.array[wp.float32],
+    model_joint_armature: wp.array[wp.float32],
+    model_joint_damping: wp.array[wp.float32],
     model_joint_friction: wp.array[wp.float32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
+    body_is_immovable: wp.array[wp.int32],
     # Outputs:
     joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
     joint_act_type: wp.array[wp.int32],
+    joint_dof_act_types: wp.array[wp.int32],
+    joint_dof_act_paths: wp.array[wp.int32],
     joint_num_coords: wp.array[wp.int32],
     joint_num_dofs: wp.array[wp.int32],
     joint_num_bilateral_cts: wp.array[wp.int32],
@@ -461,6 +551,7 @@ def joint_conversion_kernel(
     joint_num_kinematic_cts: wp.array[wp.int32],
     joint_num_bounded_cts: wp.array[wp.int32],
     joint_num_friction_cts: wp.array[wp.int32],
+    joint_num_effort_cts: wp.array[wp.int32],
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
@@ -489,45 +580,72 @@ def joint_conversion_kernel(
     # Get joint type properties
     ncoords_j = JointDoFType.num_coords_wp(dof_type_j)
     ndofs_j = JointDoFType.num_dofs_wp(dof_type_j)
-    ncts_j = JointDoFType.num_cts_wp(dof_type_j)
+    num_kinematic_cts_j = JointDoFType.num_cts_wp(dof_type_j)
     assert ncoords_j >= 0, "Number of joint coordinates must be valid"
     assert ndofs_j >= 0, "Number of joint DoFs must be valid"
-    assert ncts_j >= 0, "Number of joint constraints must be valid"
+    assert num_kinematic_cts_j >= 0, "Number of joint constraints must be valid"
     joint_dof_type[joint_id] = dof_type_j
     joint_num_coords[joint_id] = ncoords_j
     joint_num_dofs[joint_id] = ndofs_j
+    act_type_j = int(JointActuationType.PASSIVE)
+    num_dynamic_cts_j = int(0)
+    num_friction_cts_j = int(0)
+    num_effort_cts_j = int(0)
+    for axis in range(qd_count_j):
+        dof = dofs_start_j + axis
+        dof_act_types = JointActuationType.from_newton_wp(model_joint_target_mode[dof])
+        assert dof_act_types >= 0, "Joint actuation type must be valid"
+        joint_dof_act_types[dof] = dof_act_types
+        act_type_j = max(act_type_j, dof_act_types)
 
-    # Determine Kamino actuation mode for joint
-    act_type_j = joint_actuation_type_from_dofs(dofs_start_j, dofs_start_j + ndofs_j, model_joint_target_mode)
-    assert act_type_j >= 0, "Joint actuation type must be valid"
+        effort = has_effort_cts_wp(
+            dof_act_types,
+            model_joint_target_ke[dof],
+            model_joint_target_kd[dof],
+            model_joint_effort_limit[dof],
+        )
+        dynamic = has_dynamic_cts_wp(
+            dof_act_types,
+            model_joint_target_ke[dof],
+            model_joint_target_kd[dof],
+            model_joint_effort_limit[dof],
+            model_joint_armature[dof],
+            model_joint_damping[dof],
+        )
+        friction = has_friction_cts_wp(dof_type_j, model_joint_friction[dof])
+        if dynamic:
+            num_dynamic_cts_j += 1
+        if friction:
+            num_friction_cts_j += 1
+        if effort:
+            num_effort_cts_j += 1
+            joint_dof_act_paths[dof] = DofActuationPath.EFFORT_CTS
+        elif dynamic:
+            joint_dof_act_paths[dof] = DofActuationPath.DYNAMIC_CTS
+        else:
+            joint_dof_act_paths[dof] = DofActuationPath.BODY_WRENCHES
+
     joint_act_type[joint_id] = act_type_j
 
-    # Infer if the joint requires dynamic constraints
-    is_dynamic_j = joint_requires_dynamic_constraints(
-        dofs_start_j,
-        dofs_start_j + ndofs_j,
-        model_joint_armature,
-        model_joint_damping,
-        model_joint_target_ke,
-        model_joint_target_kd,
-    )
+    # A joint between two bodies that Kamino treats as immovable (both massless
+    # and/or flagged KINEMATIC) contributes only structurally singular
+    # Delassus rows that cannot affect any body's motion, so we cull all its
+    # constraint rows regardless of joint-DoF regularization (armature, damping,
+    # implicit PD). The joint entry is preserved with zero counts so joint
+    # indices, coordinate/DoF offsets, and downstream bookkeeping stay stable.
+    parent_bid = model_joint_parent[joint_id]
+    child_bid = model_joint_child[joint_id]
+    child_dynamic = body_is_immovable[child_bid] == 0
+    parent_dynamic = parent_bid >= 0 and body_is_immovable[parent_bid] == 0
+    has_dynamic_body = child_dynamic or parent_dynamic
 
-    # Set joint dimensions
-    joint_num_kinematic_cts[joint_id] = ncts_j
-    if is_dynamic_j:
-        joint_num_dynamic_cts[joint_id] = ndofs_j
-    joint_num_bilateral_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
-
-    # Coulomb friction rows have static topology. A non-free joint with any
-    # positive friction allocates one friction row for every DoF so row-to-DoF
-    # indexing remains direct even when some component bounds are zero.
-    nfriction_j = int(0)
-    if dof_type_j != JointDoFType.FREE and joint_requires_friction_constraints(
-        dofs_start_j, dofs_start_j + ndofs_j, model_joint_friction
-    ):
-        nfriction_j = ndofs_j
-    joint_num_friction_cts[joint_id] = nfriction_j
-    joint_num_bounded_cts[joint_id] = nfriction_j
+    if has_dynamic_body:
+        joint_num_kinematic_cts[joint_id] = num_kinematic_cts_j
+        joint_num_dynamic_cts[joint_id] = num_dynamic_cts_j
+        joint_num_friction_cts[joint_id] = num_friction_cts_j
+        joint_num_effort_cts[joint_id] = num_effort_cts_j
+        joint_num_bilateral_cts[joint_id] = num_kinematic_cts_j + num_dynamic_cts_j
+        joint_num_bounded_cts[joint_id] = num_friction_cts_j + num_effort_cts_j
 
 
 @wp.kernel
@@ -597,6 +715,7 @@ def joint_indexing_kernel(
     joint_num_dynamic_cts: wp.array[wp.int32],
     joint_num_bounded_cts: wp.array[wp.int32],
     joint_num_friction_cts: wp.array[wp.int32],
+    joint_num_effort_cts: wp.array[wp.int32],
     model_fk_act_flag: wp.array[wp.int32],
     # Outputs:
     num_passive_joints: wp.array[wp.int32],
@@ -613,8 +732,9 @@ def joint_indexing_kernel(
     num_joint_bilateral_cts: wp.array[wp.int32],
     num_joint_dynamic_cts: wp.array[wp.int32],
     num_joint_kinematic_cts: wp.array[wp.int32],
-    num_bounded_cts: wp.array[wp.int32],
-    num_friction_cts: wp.array[wp.int32],
+    num_joint_bounded_cts: wp.array[wp.int32],
+    num_joint_friction_cts: wp.array[wp.int32],
+    num_joint_effort_cts: wp.array[wp.int32],
     joint_coord_start: wp.array[wp.int32],
     joint_dofs_start: wp.array[wp.int32],
     joint_actuated_coord_start: wp.array[wp.int32],
@@ -626,6 +746,7 @@ def joint_indexing_kernel(
     joint_kinematic_cts_start: wp.array[wp.int32],
     joint_bounded_cts_start: wp.array[wp.int32],
     joint_friction_cts_start: wp.array[wp.int32],
+    joint_effort_cts_start: wp.array[wp.int32],
 ):
     world_id = wp.tid()
 
@@ -649,6 +770,7 @@ def joint_indexing_kernel(
     num_kinematic_cts = int(0)
     num_bounded = int(0)
     num_friction = int(0)
+    num_effort = int(0)
 
     for jid in range(num_joints_world):
         joint_id = joints_world_start + jid
@@ -665,6 +787,7 @@ def joint_indexing_kernel(
         joint_kinematic_cts_start[joint_id] = num_kinematic_cts
         joint_bounded_cts_start[joint_id] = num_bounded
         joint_friction_cts_start[joint_id] = num_friction
+        joint_effort_cts_start[joint_id] = num_effort
 
         # Reading off joint properties from previous kernel
         ncoords_j = joint_num_coords[joint_id]
@@ -673,6 +796,7 @@ def joint_indexing_kernel(
         n_dyn_cts_j = joint_num_dynamic_cts[joint_id]
         n_bounded_cts_j = joint_num_bounded_cts[joint_id]
         n_friction_cts_j = joint_num_friction_cts[joint_id]
+        n_effort_cts_j = joint_num_effort_cts[joint_id]
         act_type_j = joint_act_type[joint_id]
 
         # Update world sizes based on joint sizes
@@ -705,6 +829,7 @@ def joint_indexing_kernel(
 
         num_bounded += n_bounded_cts_j
         num_friction += n_friction_cts_j
+        num_effort += n_effort_cts_j
 
     # Write sizes for this world
     num_passive_joints[world_id] = num_passive_j
@@ -715,8 +840,9 @@ def joint_indexing_kernel(
     num_joint_bilateral_cts[world_id] = num_bilateral_cts
     num_joint_kinematic_cts[world_id] = num_kinematic_cts
     num_joint_dynamic_cts[world_id] = num_dynamic_cts
-    num_bounded_cts[world_id] = num_bounded
-    num_friction_cts[world_id] = num_friction
+    num_joint_bounded_cts[world_id] = num_bounded
+    num_joint_friction_cts[world_id] = num_friction
+    num_joint_effort_cts[world_id] = num_effort
     num_joint_actuated_coords[world_id] = num_actuated_coords
     num_joint_fk_actuated_coords[world_id] = num_fk_actuated_coords
     num_joint_actuated_dofs[world_id] = num_actuated_dofs
@@ -740,6 +866,7 @@ def _globalize_joint_offsets(
     world_kinematic_cts_offset: wp.array[wp.int32],
     world_bounded_cts_offset: wp.array[wp.int32],
     world_friction_cts_offset: wp.array[wp.int32],
+    world_effort_cts_offset: wp.array[wp.int32],
     # Outputs:
     joint_coord_start: wp.array[wp.int32],
     joint_dofs_start: wp.array[wp.int32],
@@ -752,6 +879,7 @@ def _globalize_joint_offsets(
     joint_kinematic_cts_start: wp.array[wp.int32],
     joint_bounded_cts_start: wp.array[wp.int32],
     joint_friction_cts_start: wp.array[wp.int32],
+    joint_effort_cts_start: wp.array[wp.int32],
 ):
     jid = wp.tid()
     w = joint_world[jid]
@@ -766,6 +894,70 @@ def _globalize_joint_offsets(
     joint_kinematic_cts_start[jid] += world_kinematic_cts_offset[w]
     joint_bounded_cts_start[jid] += world_bounded_cts_offset[w]
     joint_friction_cts_start[jid] += world_friction_cts_offset[w]
+    joint_effort_cts_start[jid] += world_effort_cts_offset[w]
+
+
+@wp.kernel
+def pack_joint_constraint_axes_kernel(
+    # Inputs:
+    model_joint_qd_start: wp.array[wp.int32],
+    model_joint_target_mode: wp.array[wp.int32],
+    model_joint_target_ke: wp.array[wp.float32],
+    model_joint_target_kd: wp.array[wp.float32],
+    model_joint_effort_limit: wp.array[wp.float32],
+    model_joint_armature: wp.array[wp.float32],
+    model_joint_damping: wp.array[wp.float32],
+    model_joint_friction: wp.array[wp.float32],
+    joint_dof_type: wp.array[wp.int32],
+    joint_num_dynamic_cts: wp.array[wp.int32],
+    joint_num_friction_cts: wp.array[wp.int32],
+    joint_num_effort_cts: wp.array[wp.int32],
+    joint_dynamic_cts_start: wp.array[wp.int32],
+    joint_friction_cts_start: wp.array[wp.int32],
+    joint_effort_cts_start: wp.array[wp.int32],
+    # Outputs:
+    dynamic_cts_axis: wp.array[wp.int32],
+    friction_cts_axis: wp.array[wp.int32],
+    effort_cts_axis: wp.array[wp.int32],
+):
+    """Pack ascending joint-local DoF axes for compact constraint rows."""
+    joint = wp.tid()
+    dof_start = model_joint_qd_start[joint]
+    dof_end = model_joint_qd_start[joint + 1]
+    dynamic_row = joint_dynamic_cts_start[joint]
+    friction_row = joint_friction_cts_start[joint]
+    effort_row = joint_effort_cts_start[joint]
+    dof_type = joint_dof_type[joint]
+    retain_dynamic = joint_num_dynamic_cts[joint] > 0
+    retain_friction = joint_num_friction_cts[joint] > 0
+    retain_effort = joint_num_effort_cts[joint] > 0
+    for axis in range(dof_end - dof_start):
+        dof = dof_start + axis
+        act_type = JointActuationType.from_newton_wp(model_joint_target_mode[dof])
+        dynamic = has_dynamic_cts_wp(
+            act_type,
+            model_joint_target_ke[dof],
+            model_joint_target_kd[dof],
+            model_joint_effort_limit[dof],
+            model_joint_armature[dof],
+            model_joint_damping[dof],
+        )
+        friction = has_friction_cts_wp(dof_type, model_joint_friction[dof])
+        effort = has_effort_cts_wp(
+            act_type,
+            model_joint_target_ke[dof],
+            model_joint_target_kd[dof],
+            model_joint_effort_limit[dof],
+        )
+        if dynamic and retain_dynamic:
+            dynamic_cts_axis[dynamic_row] = axis
+            dynamic_row += 1
+        if friction and retain_friction:
+            friction_cts_axis[friction_row] = axis
+            friction_row += 1
+        if effort and retain_effort:
+            effort_cts_axis[effort_row] = axis
+            effort_row += 1
 
 
 @wp.kernel
@@ -806,95 +998,6 @@ def geometry_conversion_kernel(
 
 
 @wp.kernel
-def target_dofs_to_coords_conversion_kernel(
-    # Inputs
-    model_joints_dof_type: wp.array[wp.int32],
-    model_joints_dofs_offset: wp.array[wp.int32],
-    model_joints_coords_offset: wp.array[wp.int32],
-    joint_target_dofs: wp.array[wp.float32],
-    # Outputs
-    joint_target_coords: wp.array[wp.float32],
-):
-    # Read thread id (= joint id)
-    jid = wp.tid()
-
-    # Get dof/coords offsets and number of dofs
-    dof_offset = model_joints_dofs_offset[jid]
-    num_dofs = model_joints_dofs_offset[jid + 1] - dof_offset
-    coord_offset = model_joints_coords_offset[jid]
-
-    # Check whether coords = dofs for this joint
-    dof_type = model_joints_dof_type[jid]
-    orientation_dofs_offset = -1  # Offset of orientation dofs to convert
-    if dof_type == JointDoFType.FREE or dof_type == JointDoFType.SPHERICAL:
-        # Spherical/free joint: the last 3 dofs / 4 coords differ (Euler angles vs unit quaternion)
-        orientation_dofs_offset = num_dofs - 3
-        num_dofs -= 3
-
-    # Copy all dofs/coords that match
-    for k in range(num_dofs):
-        joint_target_coords[coord_offset + k] = joint_target_dofs[dof_offset + k]
-
-    # Convert Euler angles to unit quaternion if needed
-    if orientation_dofs_offset >= 0:
-        angles_offset = dof_offset + orientation_dofs_offset
-        angles = wp.vec3f(
-            joint_target_dofs[angles_offset],
-            joint_target_dofs[angles_offset + 1],
-            joint_target_dofs[angles_offset + 2],
-        )
-        quat = wp.quat_from_euler(angles, 2, 1, 0)
-        quat_offset = coord_offset + orientation_dofs_offset
-        for k in range(4):
-            joint_target_coords[quat_offset + k] = quat[k]
-
-
-@wp.kernel
-def target_coords_to_dofs_conversion_kernel(
-    # Inputs
-    model_joints_dof_type: wp.array[wp.int32],
-    model_joints_dofs_offset: wp.array[wp.int32],
-    model_joints_coords_offset: wp.array[wp.int32],
-    joint_target_coords: wp.array[wp.float32],
-    # Outputs
-    joint_target_dofs: wp.array[wp.float32],
-):
-    # Read thread id (= joint id)
-    jid = wp.tid()
-
-    # Get dof/coords offsets and number of dofs
-    dof_offset = model_joints_dofs_offset[jid]
-    num_dofs = model_joints_dofs_offset[jid + 1] - dof_offset
-    coord_offset = model_joints_coords_offset[jid]
-
-    # Check whether coords = dofs for this joint
-    dof_type = model_joints_dof_type[jid]
-    orientation_dofs_offset = -1  # Offset of orientation dofs to convert
-    if dof_type == JointDoFType.FREE or dof_type == JointDoFType.SPHERICAL:
-        # Spherical/free joint: the last 3 dofs / 4 coords differ (Euler angles vs unit quaternion)
-        orientation_dofs_offset = num_dofs - 3
-        num_dofs -= 3
-
-    # Copy all dofs/coords that match
-    for k in range(num_dofs):
-        joint_target_dofs[dof_offset + k] = joint_target_coords[coord_offset + k]
-
-    # Convert unit quaternion to Euler angles if needed
-    if orientation_dofs_offset >= 0:
-        quat_offset = coord_offset + orientation_dofs_offset
-        quat = wp.quat(
-            joint_target_coords[quat_offset],
-            joint_target_coords[quat_offset + 1],
-            joint_target_coords[quat_offset + 2],
-            joint_target_coords[quat_offset + 3],
-        )
-        angles = wp.quat_to_euler(quat, 2, 1, 0)
-        angles_offset = dof_offset + orientation_dofs_offset
-        for k in range(3):
-            joint_target_dofs[angles_offset + k] = angles[k]
-
-
-@wp.kernel
 def write_coeff_kernel(a: wp.array[wp.int32], idx: int, v: int):
     """Helper kernel writing a single array coefficient"""
     a[idx] = v
@@ -906,9 +1009,11 @@ def write_coeff_kernel(a: wp.array[wp.int32], idx: int, v: int):
 
 
 def compute_required_contact_capacity(
-    model: Model,
+    model: Model | ModelView,
     max_contacts_per_pair: int | None = None,
     max_contacts_per_world: int | None = None,
+    *,
+    include_shape_contact_pairs: bool = False,
 ) -> tuple[int, list[int]]:
     """
     Computes the required contact capacity for a given Newton model.
@@ -923,6 +1028,7 @@ def compute_required_contact_capacity(
         max_contacts_per_world: Optional maximum number of contacts to allocate per world.
             If `None`, no per-world limit is applied, otherwise caps the computed
             per-world requirements at this value.
+        include_shape_contact_pairs: Whether geometry conversion also requires the pair array.
 
     Returns:
         (model_required_contacts, world_required_contacts):
@@ -936,24 +1042,54 @@ def compute_required_contact_capacity(
 
     """
     # First check if there are any collision geometries
-    if model.shape_count == 0:
+    if model.shape_count == 0 or model.shape_contact_pair_count == 0:
         return 0, [0] * model.world_count
 
-    # Compute maximum contacts per world
-    world_max_contacts_wp = wp.zeros((model.world_count,), dtype=wp.int32, device=model.device)
-    wp.launch(
-        kernel=world_max_contacts_kernel,
-        dim=model.shape_contact_pair_count,
-        inputs=[
-            max_contacts_per_pair if max_contacts_per_pair is not None else -1,
-            model.shape_type,
-            model.shape_world,
-            model.shape_contact_pairs,
-        ],
-        outputs=[world_max_contacts_wp],
-        device=model.device,
-    )
-    world_max_contacts = world_max_contacts_wp.numpy()
+    supplied_pairs, _ = _shape_contact_pair_override(model)
+    topology = None if supplied_pairs else _shape_contact_pair_topology(model)
+    shape_world = model.shape_world
+    # Single-world conversion folds global shapes into world zero without changing pairs.
+    normalized_worlds = topology is not None and model.world_count == 1 and np.all(shape_world.numpy() == 0)
+    if (
+        include_shape_contact_pairs
+        or supplied_pairs
+        or (isinstance(model, Model) and model._shape_contact_pairs is not None)
+    ):
+        if topology is not None and not normalized_worlds:
+            shape_world = wp.array(topology.shape_world, dtype=wp.int32, device=model.device)
+        world_max_contacts_wp = wp.zeros(model.world_count, dtype=wp.int64, device=model.device)
+        wp.launch(
+            kernel=world_max_contacts_kernel,
+            dim=model.shape_contact_pair_count,
+            inputs=[
+                max_contacts_per_pair if max_contacts_per_pair is not None else -1,
+                model.shape_type,
+                shape_world,
+                model.shape_contact_pairs,
+            ],
+            outputs=[world_max_contacts_wp],
+            device=model.device,
+        )
+        world_max_contacts = world_max_contacts_wp.numpy()
+    else:
+        shape_types = model.shape_type.numpy()[: model.shape_count]
+        key = (shape_types.tobytes(), max_contacts_per_pair)
+        cache = model._shape_contact_pair_counts if isinstance(model, Model) else None
+        if cache is not None and key in cache:
+            counts = cache[key]
+        else:
+            types, categories = np.unique(shape_types, return_inverse=True)
+            weights = np.array(
+                [[sum(max_contacts_for_shape_pair(int(a), int(b))) for b in types] for a in types], dtype=np.int64
+            )
+            if max_contacts_per_pair is not None and max_contacts_per_pair >= 0:
+                np.minimum(weights, max_contacts_per_pair, out=weights)
+            counts = topology.count_pairs(categories=categories, weights=weights)
+            counts.setflags(write=False)
+            if cache is not None:
+                cache[key] = counts
+        # Global-global pairs contribute only when conversion renumbers their shapes.
+        world_max_contacts = np.array([counts.sum()], dtype=np.int64) if normalized_worlds else counts[1:]
 
     # Cap per-world totals when a per-world maximum is specified
     if max_contacts_per_world is not None:
@@ -967,13 +1103,14 @@ def validate_model_structural_updates(
     model: Model,
     joints: JointsModel,
     built_limit_finite: wp.array[wp.int32],
-    built_massless: wp.array[wp.int32],
+    built_is_immovable: wp.array[wp.int32],
     violations: wp.array[wp.int32],
     *,
     check_dof: bool,
     check_actuation: bool,
     check_axes: bool,
-    check_inertial: bool,
+    check_body_immovability: bool,
+    kinematic_only_immovable: bool = False,
 ) -> int:
     """Validate that runtime edits preserve Kamino's structural layout.
 
@@ -986,8 +1123,9 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.INVALID_TARGET_MODE`: unsupported target-mode combination
     - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
     - :attr:`StructuralUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
-    - :attr:`StructuralUpdateViolation.MASSLESS`: a built massive body became massless
+    - :attr:`StructuralUpdateViolation.IMMOVABILITY_FLIP`: a body's Kamino immovability status changed
     - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
+    - :attr:`StructuralUpdateViolation.EFFORT_CTS`: effort-row topology changed
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -996,19 +1134,23 @@ def validate_model_structural_updates(
         model: The Newton model containing the updated properties to validate.
         joints: The current Kamino joint model, before applying the updates.
         built_limit_finite: The built finite limit state for each DoF.
-        built_massless: Whether each body was massless at solver construction.
+        built_is_immovable: Kamino's cached per-body immovability snapshot from
+            construction (per-body ``int32``, 0/1).
         violations: The array to store the violations.
         check_dof: Whether to check the DoF updates.
         check_actuation: Whether to check the actuation updates.
         check_axes: Whether to check universal and gimbal axes.
-        check_inertial: Whether to check body inertial updates.
+        check_body_immovability: Whether to check that no body's immovability
+            status changed (via mass, inertia, or KINEMATIC flag flip).
+        kinematic_only_immovable: Whether only KINEMATIC bodies were built as immovable,
+            see :func:`convert_rigid_bodies`.
 
     Returns:
         The sentinel value indicating no violations.
     """
     dim = max(model.body_count, model.joint_count, model.joint_dof_count)
     violations.fill_(dim)
-    if check_dof and dim > 0:
+    if (check_dof or check_actuation) and dim > 0:
         wp.launch(
             kernel=validate_joint_dof_updates_kernel,
             dim=dim,
@@ -1019,10 +1161,16 @@ def validate_model_structural_updates(
                 model.joint_damping,
                 model.joint_target_ke,
                 model.joint_target_kd,
+                model.joint_target_mode,
+                model.joint_effort_limit,
                 model.joint_friction,
                 joints.dof_type,
-                joints.num_dynamic_cts,
-                joints.num_friction_cts,
+                joints.dynamic_cts_offset,
+                joints.dynamic_cts_axis,
+                joints.friction_cts_offset,
+                joints.friction_cts_axis,
+                joints.effort_cts_offset,
+                joints.effort_cts_axis,
                 model.joint_limit_lower,
                 model.joint_limit_upper,
                 built_limit_finite,
@@ -1061,15 +1209,17 @@ def validate_model_structural_updates(
             ],
             device=model.device,
         )
-    if check_inertial and model.body_count > 0:
+    if check_body_immovability and model.body_count > 0:
         wp.launch(
-            kernel=validate_body_inertial_updates_kernel,
+            kernel=validate_body_immovability_updates_kernel,
             dim=model.body_count,
             inputs=[
                 # Inputs:
                 model.body_inv_mass,
                 model.body_inv_inertia,
-                built_massless,
+                model.body_flags,
+                built_is_immovable,
+                kinematic_only_immovable,
                 # Outputs:
                 violations,
             ],
@@ -1080,16 +1230,28 @@ def validate_model_structural_updates(
 
 
 def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
-    """Update Kamino's per-joint actuation types from Newton target modes."""
+    """Update Kamino's joint and DoF actuation types from Newton target modes."""
     if model.joint_count == 0:
         return
+    if model.joint_dof_count > 0:
+        wp.launch(
+            kernel=update_joint_dof_actuation_kernel,
+            dim=model.joint_dof_count,
+            inputs=[
+                # Inputs:
+                model.joint_target_mode,
+                # Outputs:
+                joints.dof_act_types,
+            ],
+            device=model.device,
+        )
     wp.launch(
         kernel=update_joint_actuation_kernel,
         dim=model.joint_count,
         inputs=[
             # Inputs:
             model.joint_qd_start,
-            model.joint_target_mode,
+            joints.dof_act_types,
             # Outputs:
             joints.act_type,
         ],
@@ -1279,6 +1441,7 @@ def convert_rigid_bodies(
     model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
+    kinematic_only_immovable: bool = False,
 ) -> RigidBodiesModel:
     """
     Converts the rigid bodies from a Newton model into Kamino's format. The function
@@ -1290,6 +1453,9 @@ def convert_rigid_bodies(
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
+        kinematic_only_immovable: Whether only KINEMATIC bodies are immovable. Dynamics
+            solvers that simulate massless bodies set it, so that Kamino keeps their
+            joints, limits, and inertia.
 
     Returns:
         Fully converted rigid bodies model in Kamino's format.
@@ -1328,6 +1494,32 @@ def convert_rigid_bodies(
     q_i_0 = wp.empty((model.body_count,), dtype=wp.transformf, device=model.device)
     convert_body_origin_to_com(model.body_com, model.body_q, q_i_0)
 
+    # Bake Kamino's per-body immovability decision once (kinematic or
+    # already massless) and mask its owned inverse mass / inertia copies with
+    # it. See ``is_immovable_for_kamino`` for the predicate. Newton's arrays
+    # are never mutated. Runtime flips are rejected via
+    # ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
+    body_is_immovable = wp.empty((model.body_count,), dtype=wp.int32, device=model.device)
+    if model.body_count > 0:
+        wp.launch(
+            kernel=compute_body_immovability_kernel,
+            dim=model.body_count,
+            inputs=[model.body_inv_mass, model.body_inv_inertia, model.body_flags, kinematic_only_immovable],
+            outputs=[body_is_immovable],
+            device=model.device,
+        )
+    body_inv_m_i = wp.empty_like(model.body_inv_mass)
+    body_inv_i_I_i = wp.empty_like(model.body_inv_inertia)
+    if model.body_count > 0:
+        refresh_masked_body_inertia(
+            newton_body_inv_mass=model.body_inv_mass,
+            newton_body_inv_inertia=model.body_inv_inertia,
+            kamino_body_is_immovable=body_is_immovable,
+            kamino_body_inv_mass=body_inv_m_i,
+            kamino_body_inv_inertia=body_inv_i_I_i,
+            device=model.device,
+        )
+
     # Fill in size data for bodies
     model_size.sum_of_num_bodies = model.body_count
     model_size.max_of_num_bodies = int(num_bodies.numpy().max())
@@ -1358,10 +1550,11 @@ def convert_rigid_bodies(
         wid=model.body_world,
         bid=body_bid,  # TODO: Remove
         m_i=model.body_mass,
-        inv_m_i=model.body_inv_mass,
+        inv_m_i=body_inv_m_i,
         i_r_com_i=model.body_com,
         i_I_i=model.body_inertia,
-        inv_i_I_i=model.body_inv_inertia,
+        inv_i_I_i=body_inv_i_I_i,
+        is_immovable=body_is_immovable,
         q_i_0=q_i_0,
         u_i_0=model.body_qd,
     )
@@ -1378,19 +1571,41 @@ def _warn_ignored_free_joint_friction(
     dof_type_np = joint_dof_type.numpy()
     friction_np = model.joint_friction.numpy()
     qd_start_np = model.joint_qd_start.numpy()
-    for jid in range(model.joint_count):
-        if dof_type_np[jid] != JointDoFType.FREE:
-            continue
-        dof_start = int(qd_start_np[jid])
-        dof_end = int(qd_start_np[jid + 1])
-        if np.any(friction_np[dof_start:dof_end] > 0.0):
-            msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+    positive_friction = friction_np > 0.0
+    free_joint_ids = np.flatnonzero(dof_type_np == JointDoFType.FREE)
+    positive_friction_prefix = np.empty(positive_friction.size + 1, dtype=np.intp)
+    positive_friction_prefix[0] = 0
+    np.cumsum(positive_friction, dtype=np.intp, out=positive_friction_prefix[1:])
+    # A prefix increase across a joint's range means at least one DoF has friction.
+    free_joint_has_friction = (
+        positive_friction_prefix[qd_start_np[free_joint_ids + 1]]
+        > positive_friction_prefix[qd_start_np[free_joint_ids]]
+    )
+    for jid in free_joint_ids[free_joint_has_friction].tolist():
+        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+
+
+def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
+    """Raises if a Newton joint's selected implicit-PD mode has no effective gain."""
+    target_mode = model.joint_target_mode.numpy()
+    k_p = model.joint_target_ke.numpy()
+    k_d = model.joint_target_kd.numpy()
+    act_types = np.full(target_mode.shape, -1, dtype=np.int32)
+    for mode in JointTargetMode:
+        act_types[target_mode == mode] = JointActuationType.from_newton(mode)
+    invalid = (act_types < 0) | _has_missing_implicit_pd_gains(act_types, k_p, k_d)
+    if np.any(invalid):
+        dof = int(np.flatnonzero(invalid)[0])
+        # `from_newton` raises for unsupported target modes.
+        act_type = JointActuationType.from_newton(target_mode[dof])
+        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain (DoF={dof}).")
 
 
 def convert_joints(
     model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
+    model_bodies: RigidBodiesModel,
 ) -> JointsModel:
     """
     Converts the joints from a Newton model into Kamino's format. The function will
@@ -1406,6 +1621,8 @@ def convert_joints(
     Returns:
         Fully converted joints model in Kamino's format.
     """
+    _validate_model_joint_pd_gains(model)
+
     # Compute the number of joints per world
     joint_world_start_np = model.joint_world_start.numpy()
     num_joints_np = joint_world_start_np[1 : model.world_count + 1] - joint_world_start_np[: model.world_count]
@@ -1415,6 +1632,8 @@ def convert_joints(
         joint_jid = wp.empty(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_act_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
+        joint_dof_act_types = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
+        joint_dof_act_paths = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
         joint_num_coords = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_dofs = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_bilateral_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
@@ -1422,11 +1641,16 @@ def convert_joints(
         joint_num_kinematic_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_bounded_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_friction_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
+        joint_num_effort_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_B_r_B = wp.empty(shape=(model.joint_count,), dtype=wp.vec3f)
         joint_F_r_F = wp.empty(shape=(model.joint_count,), dtype=wp.vec3f)
         joint_X_B = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
         joint_X_F = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
 
+    # First classify each DoF and count its joint dynamics, friction, and
+    # effort-limit constraints. The indexing pass then needs those counts to
+    # prefix-sum the world-local offsets; they cannot be inferred from joint
+    # type alone because they depend on per-DoF actuation and parameters.
     wp.launch(
         kernel=joint_conversion_kernel,
         dim=model.joint_count,
@@ -1434,23 +1658,29 @@ def convert_joints(
             # Inputs:
             model.joint_world,
             model.joint_world_start,
+            model.joint_parent,
+            model.joint_child,
             model.joint_type,
-            model.joint_target_mode,
             model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
             model.joint_axis,
-            model.joint_armature,
-            model.joint_damping,
+            model.joint_target_mode,
             model.joint_target_ke,
             model.joint_target_kd,
+            model.joint_effort_limit,
+            model.joint_armature,
+            model.joint_damping,
             model.joint_friction,
             model.joint_limit_lower,
             model.joint_limit_upper,
+            model_bodies.is_immovable,
             # Outputs:
             joint_jid,
             joint_dof_type,
             joint_act_type,
+            joint_dof_act_types,
+            joint_dof_act_paths,
             joint_num_coords,
             joint_num_dofs,
             joint_num_bilateral_cts,
@@ -1458,6 +1688,7 @@ def convert_joints(
             joint_num_kinematic_cts,
             joint_num_bounded_cts,
             joint_num_friction_cts,
+            joint_num_effort_cts,
         ],
         device=model.device,
     )
@@ -1506,8 +1737,9 @@ def convert_joints(
         num_joint_bilateral_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_dynamic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_kinematic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
-        num_bounded_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
-        num_friction_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_bounded_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_friction_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_effort_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         joint_coord_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_dofs_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_actuated_coord_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
@@ -1519,6 +1751,7 @@ def convert_joints(
         joint_kinematic_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_bounded_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_friction_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
+        joint_effort_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
 
     wp.launch(
         kernel=joint_indexing_kernel,
@@ -1532,6 +1765,7 @@ def convert_joints(
             joint_num_dynamic_cts,
             joint_num_bounded_cts,
             joint_num_friction_cts,
+            joint_num_effort_cts,
             model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         ],
         outputs=[
@@ -1549,8 +1783,9 @@ def convert_joints(
             num_joint_bilateral_cts,
             num_joint_dynamic_cts,
             num_joint_kinematic_cts,
-            num_bounded_cts,
-            num_friction_cts,
+            num_joint_bounded_cts,
+            num_joint_friction_cts,
+            num_joint_effort_cts,
             joint_coord_start,
             joint_dofs_start,
             joint_actuated_coord_start,
@@ -1562,6 +1797,7 @@ def convert_joints(
             joint_kinematic_cts_start,
             joint_bounded_cts_start,
             joint_friction_cts_start,
+            joint_effort_cts_start,
         ],
         device=model.device,
     )
@@ -1581,8 +1817,9 @@ def convert_joints(
     num_joint_bilateral_cts_np = num_joint_bilateral_cts.numpy()
     num_joint_dynamic_cts_np = num_joint_dynamic_cts.numpy()
     num_joint_kinematic_cts_np = num_joint_kinematic_cts.numpy()
-    num_joint_bounded_cts_np = num_bounded_cts.numpy()
-    num_joint_friction_cts_np = num_friction_cts.numpy()
+    num_joint_bounded_cts_np = num_joint_bounded_cts.numpy()
+    num_joint_friction_cts_np = num_joint_friction_cts.numpy()
+    num_joint_effort_cts_np = num_joint_effort_cts.numpy()
 
     # Compute offsets per world
     world_joint_offset_np = np.zeros((model.world_count,), dtype=int)
@@ -1597,6 +1834,7 @@ def convert_joints(
     world_joint_kinematic_cts_offset_np = np.zeros((model.world_count,), dtype=int)
     world_joint_bounded_cts_offset_np = np.zeros((model.world_count,), dtype=int)
     world_joint_friction_cts_offset_np = np.zeros((model.world_count,), dtype=int)
+    world_joint_effort_cts_offset_np = np.zeros((model.world_count,), dtype=int)
     for w in range(1, model.world_count):
         world_joint_offset_np[w] = world_joint_offset_np[w - 1] + num_joints_np[w - 1]
         world_joint_coord_offset_np[w] = world_joint_coord_offset_np[w - 1] + num_joint_coords_np[w - 1]
@@ -1628,6 +1866,7 @@ def convert_joints(
         world_joint_friction_cts_offset_np[w] = (
             world_joint_friction_cts_offset_np[w - 1] + num_joint_friction_cts_np[w - 1]
         )
+        world_joint_effort_cts_offset_np[w] = world_joint_effort_cts_offset_np[w - 1] + num_joint_effort_cts_np[w - 1]
 
     # Determine the base body and joint indices per world
     base_body_idx_np = np.full((model.world_count,), -1, dtype=int)
@@ -1713,6 +1952,8 @@ def convert_joints(
     model_size.max_of_num_bounded_joint_cts = int(num_joint_bounded_cts_np.max())
     model_size.sum_of_num_friction_joint_cts = int(num_joint_friction_cts_np.sum())
     model_size.max_of_num_friction_joint_cts = int(num_joint_friction_cts_np.max())
+    model_size.sum_of_num_effort_joint_cts = int(num_joint_effort_cts_np.sum())
+    model_size.max_of_num_effort_joint_cts = int(num_joint_effort_cts_np.max())
     model_size.sum_of_max_total_cts = int(num_joint_bilateral_cts_np.sum() + num_joint_bounded_cts_np.sum())
     model_size.max_of_max_total_cts = int(np.max(num_joint_bilateral_cts_np + num_joint_bounded_cts_np))
 
@@ -1730,8 +1971,9 @@ def convert_joints(
     model_info.num_joint_dynamic_cts = num_joint_dynamic_cts
     model_info.num_joint_kinematic_cts = num_joint_kinematic_cts
     model_info.has_world_without_base_body = has_world_without_base_body
-    model_info.num_joint_bounded_cts = num_bounded_cts
-    model_info.num_joint_friction_cts = num_friction_cts
+    model_info.num_joint_bounded_cts = num_joint_bounded_cts
+    model_info.num_joint_friction_cts = num_joint_friction_cts
+    model_info.num_joint_effort_cts = num_joint_effort_cts
     with wp.ScopedDevice(model.device):
         model_info.num_joints = to_warp_int32_array(num_joints_np)
         model_info.joints_offset = to_warp_int32_array(world_joint_offset_np)
@@ -1746,8 +1988,13 @@ def convert_joints(
         model_info.joint_kinematic_cts_offset = to_warp_int32_array(world_joint_kinematic_cts_offset_np)
         model_info.joint_bounded_cts_offset = to_warp_int32_array(world_joint_bounded_cts_offset_np)
         model_info.joint_friction_cts_offset = to_warp_int32_array(world_joint_friction_cts_offset_np)
+        model_info.joint_effort_cts_offset = to_warp_int32_array(world_joint_effort_cts_offset_np)
         model_info.base_body_index = to_warp_int32_array(base_body_idx_np)
         model_info.base_joint_index = to_warp_int32_array(base_joint_idx_np)
+        # Can only be allocated after the model size is updated
+        dynamic_cts_axis = wp.empty(shape=(model_size.sum_of_num_dynamic_joint_cts,), dtype=wp.int32)
+        friction_cts_axis = wp.empty(shape=(model_size.sum_of_num_friction_joint_cts,), dtype=wp.int32)
+        effort_cts_axis = wp.empty(shape=(model_size.sum_of_num_effort_joint_cts,), dtype=wp.int32)
 
     # Convert local (per-world) joint offsets to global by adding per-world prefix offsets in-place
     wp.launch(
@@ -1766,6 +2013,7 @@ def convert_joints(
             model_info.joint_kinematic_cts_offset,
             model_info.joint_bounded_cts_offset,
             model_info.joint_friction_cts_offset,
+            model_info.joint_effort_cts_offset,
         ],
         outputs=[
             joint_coord_start,
@@ -1779,6 +2027,33 @@ def convert_joints(
             joint_kinematic_cts_start,
             joint_bounded_cts_start,
             joint_friction_cts_start,
+            joint_effort_cts_start,
+        ],
+        device=model.device,
+    )
+
+    wp.launch(
+        kernel=pack_joint_constraint_axes_kernel,
+        dim=model.joint_count,
+        inputs=[
+            model.joint_qd_start,
+            model.joint_target_mode,
+            model.joint_target_ke,
+            model.joint_target_kd,
+            model.joint_effort_limit,
+            model.joint_armature,
+            model.joint_damping,
+            model.joint_friction,
+            joint_dof_type,
+            joint_num_dynamic_cts,
+            joint_num_friction_cts,
+            joint_num_effort_cts,
+            joint_dynamic_cts_start,
+            joint_friction_cts_start,
+            joint_effort_cts_start,
+            dynamic_cts_axis,
+            friction_cts_axis,
+            effort_cts_axis,
         ],
         device=model.device,
     )
@@ -1796,6 +2071,7 @@ def convert_joints(
         (joint_kinematic_cts_start, model_size.sum_of_num_kinematic_joint_cts),
         (joint_bounded_cts_start, model_size.sum_of_num_bounded_joint_cts),
         (joint_friction_cts_start, model_size.sum_of_num_friction_joint_cts),
+        (joint_effort_cts_start, model_size.sum_of_num_effort_joint_cts),
     ):
         wp.launch(
             write_coeff_kernel,
@@ -1812,6 +2088,8 @@ def convert_joints(
         jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
+        dof_act_types=joint_dof_act_types,
+        dof_act_paths=joint_dof_act_paths,
         fk_act_flag=model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         bid_B=model.joint_parent,
         bid_F=model.joint_child,
@@ -1837,6 +2115,7 @@ def convert_joints(
         num_kinematic_cts=joint_num_kinematic_cts,
         num_bounded_cts=joint_num_bounded_cts,
         num_friction_cts=joint_num_friction_cts,
+        num_effort_cts=joint_num_effort_cts,
         coords_offset=joint_coord_start,
         dofs_offset=joint_dofs_start,
         passive_coords_offset=joint_passive_coord_start,
@@ -1848,6 +2127,10 @@ def convert_joints(
         kinematic_cts_offset=joint_kinematic_cts_start,
         bounded_cts_offset=joint_bounded_cts_start,
         friction_cts_offset=joint_friction_cts_start,
+        effort_cts_offset=joint_effort_cts_start,
+        dynamic_cts_axis=dynamic_cts_axis,
+        friction_cts_axis=friction_cts_axis,
+        effort_cts_axis=effort_cts_axis,
     )
     return model_joints
 
@@ -1906,6 +2189,8 @@ def convert_geometries(
     model_size: SizeKamino,
     model_bodies: RigidBodiesModel,
     materials_manager: MaterialManager,
+    *,
+    include_shape_contact_pairs: bool = True,
 ) -> GeometriesModel:
     # Set up materials
     geom_material_np = register_materials(model, materials_manager)
@@ -1940,12 +2225,14 @@ def convert_geometries(
     )
 
     # Compute total number of required contacts per world
-    if model.rigid_contact_max > 0:
+    if model.rigid_contact_max is not None:
         model_min_contacts = int(model.rigid_contact_max)
         min_contacts_per_world = model.rigid_contact_max // model.world_count
         world_min_contacts = [min_contacts_per_world] * model.world_count
     else:
-        model_min_contacts, world_min_contacts = compute_required_contact_capacity(model)
+        model_min_contacts, world_min_contacts = compute_required_contact_capacity(
+            model, include_shape_contact_pairs=include_shape_contact_pairs
+        )
 
     # Convert shape offsets from body-frame-relative to COM-relative
     offset = wp.zeros_like(model.shape_transform)
@@ -1977,50 +2264,21 @@ def convert_geometries(
         params=model.shape_scale,
         offset=offset,
         material=geom_material,
+        torsional_friction=model.shape_material_mu_torsional,
+        rolling_friction=model.shape_material_mu_rolling,
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,
-        collidable_pairs=model.shape_contact_pairs,
+        collidable_pairs=model.shape_contact_pairs if include_shape_contact_pairs else None,
         excluded_pairs=excluded_pairs,
         heightfield_index=model.shape_heightfield_index,
         heightfield_data=model.heightfield_data,
         heightfield_elevations=model.heightfield_elevations,
         collision_aabb_lower=model.shape_collision_aabb_lower,
         collision_aabb_upper=model.shape_collision_aabb_upper,
+        interior_point=model._shape_interior_point,
+        mesh_boundary_flags=model._mesh_boundary_flags,
+        mesh_boundary_start=model._shape_mesh_boundary_start,
         voxel_resolution=model._shape_voxel_resolution,
         collision_radius=model.shape_collision_radius,
-    )
-
-
-def convert_target_dofs_to_target_coords(
-    joint_target_dofs: wp.array[wp.float32], joint_target_coords: wp.array[wp.float32], model: ModelKamino
-):
-    wp.launch(
-        target_dofs_to_coords_conversion_kernel,
-        dim=model.size.sum_of_num_joints,
-        inputs=[
-            model.joints.dof_type,
-            model.joints.dofs_offset,
-            model.joints.coords_offset,
-            joint_target_dofs,
-            joint_target_coords,
-        ],
-        device=model.device,
-    )
-
-
-def convert_target_coords_to_target_dofs(
-    joint_target_coords: wp.array[wp.float32], joint_target_dofs: wp.array[wp.float32], model: ModelKamino
-):
-    wp.launch(
-        target_coords_to_dofs_conversion_kernel,
-        dim=model.size.sum_of_num_joints,
-        inputs=[
-            model.joints.dof_type,
-            model.joints.dofs_offset,
-            model.joints.coords_offset,
-            joint_target_coords,
-            joint_target_dofs,
-        ],
-        device=model.device,
     )

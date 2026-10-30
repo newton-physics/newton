@@ -1,30 +1,36 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sim Cloth Stiff Material Stretch
-#
-# Five cloth sheets pinned at their +/- X edges and stretched along X by a
-# fixed factor. Each sheet uses a different effective Poisson ratio (set
-# via the ratio of `tri_ka` to `tri_ke`, which map to the Lamé parameters
-# of the stable Neo-Hookean membrane). At equilibrium, the orthogonal
-# direction contracts and the area ratio matches the closed-form
-# prediction for the StableNH 2D membrane:
-#
-#     A(lambda) / A_0 = (lmbd_nh + mu) * lambda^2
-#                       ---------------------------------
-#                          mu + lmbd_nh * lambda^2
-#
-# where mu = tri_ke, lmbd_nh = tri_ka + tri_ke, and Poisson ratio
-# nu = tri_ka / (tri_ka + 2 * tri_ke).
-#
-# The example validates the Neo-Hookean membrane against the StableNH
-# closed-form prediction.
-#
-# Command: python -m newton.examples cloth_stiff_material_stretch
-#
-###########################################################################
+"""Example Sim Cloth Stiff Material Stretch
 
+Five cloth sheets pinned at their +/- X edges and stretched along X by a
+fixed factor. Each sheet uses a different effective Poisson ratio (set
+via the ratio of `tri_ka` to `tri_ke`, which map to the Lamé parameters
+of the stable Neo-Hookean membrane). At equilibrium, the orthogonal
+direction contracts and the area ratio matches the closed-form
+prediction for the StableNH 2D membrane:
+
+    A(lambda) / A_0 = (lmbd_nh + mu) * lambda^2
+                      ---------------------------------
+                         mu + lmbd_nh * lambda^2
+
+where mu = tri_ke, lmbd_nh = tri_ka + tri_ke, and Poisson ratio
+nu = tri_ka / (tri_ka + 2 * tri_ke).
+
+The example validates the Neo-Hookean membrane against the StableNH
+closed-form prediction.
+
+Success criteria:
+- 5 blue-and-white checkerboard sheets are oriented so that they are parallel to the ground plane.
+- Each material is stretched so that it elongates towards the camera.
+- The materials oscillate as they are stretched.
+- The oscillations are damped and the materials quickly find a rest pose at the maximum stretch.
+
+Runs:
+- `python -m newton.examples cloth_stiff_material_stretch`
+"""
+
+import numpy as np
 import warp as wp
 
 import newton
@@ -89,6 +95,10 @@ class Example:
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
+        checker_indices = np.indices((self.DIM, self.DIM)).sum(axis=0) % 2
+        checker_palette = np.array(((0.08, 0.24, 0.65), (0.9, 0.9, 0.9)), dtype=np.float32)
+        cloth_colors = np.repeat(checker_palette[checker_indices.reshape(-1)], 2, axis=0)
+
         sheet_starts: list[int] = []
         sheet_right_indices: list[list[int]] = []
         for sheet_idx, nu in enumerate(self.POISSON_RATIOS):
@@ -110,6 +120,7 @@ class Example:
                 tri_kd=self.TRI_KD,
                 edge_ke=self.EDGE_KE,
                 edge_kd=0.0,
+                color=cloth_colors,
             )
             stride = self.DIM + 1
             right = [start + y * stride + self.DIM for y in range(stride)]
@@ -145,7 +156,7 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(8.44, 3.26, 4.23), pitch=-20.0, yaw=-180.0)
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = 53.0
         self.capture()
 

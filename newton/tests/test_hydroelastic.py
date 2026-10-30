@@ -17,6 +17,7 @@ from newton._src.geometry.contact_reduction_hydroelastic import (
     _to_fixed,
 )
 from newton._src.geometry.sdf_hydroelastic import (
+    _MAX_DETERMINISTIC_ISO_VOXELS,
     _extract_mc_corner_pair,
     _mc_corner_offset,
     classify_hydroelastic_contact,
@@ -24,11 +25,13 @@ from newton._src.geometry.sdf_hydroelastic import (
     unpack_hydro_voxel_coords,
     vec8f,
 )
-from newton._src.geometry.sdf_mc import get_triangle_fraction
+from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_fraction
+from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,
+    get_test_devices,
 )
 
 # --- Configuration ---
@@ -56,6 +59,7 @@ MAX_ROTATION_DEG = 10.0
 
 # Devices and solvers
 cuda_devices = get_selected_cuda_test_devices()
+scan_devices = get_test_devices()
 
 solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
@@ -198,7 +202,7 @@ def test_mc_corner_offsets_match_canonical(test, device):
     """Verify canonical marching-cubes corner offsets."""
     offsets = wp.empty(8, dtype=wp.vec3i, device=device)
     wp.launch(_test_mc_corner_offsets, dim=8, inputs=[offsets], device=device)
-    expected = np.asarray(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=np.int32)
+    expected = np.asarray(_get_marching_cubes_class().CUBE_CORNER_OFFSETS, dtype=np.int32)
     np.testing.assert_array_equal(offsets.numpy(), expected)
 
 
@@ -218,6 +222,40 @@ def test_mc_corner_pair_selection(test, device):
         device=device,
     )
     np.testing.assert_array_equal(selected.numpy(), np.column_stack((values_np, depths_np)))
+
+
+def test_scan_with_total_boundaries(test, device):
+    """Match hydroelastic count scans at empty, partial, clamped, and multi-chunk sizes."""
+    capacity = 4099
+    counts_np = (np.arange(capacity, dtype=np.int32) % 7) + 1
+
+    for case, active_count in (
+        ("empty", 0),
+        ("partial", 37),
+        ("clamped", capacity + 19),
+        ("multi_chunk", capacity),
+    ):
+        with test.subTest(case=case):
+            counts = wp.array(counts_np, dtype=wp.int32, device=device)
+            num_elements = wp.array([active_count], dtype=wp.int32, device=device)
+            fallback_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+            scratch_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+            fallback_total = wp.full(1, -1, dtype=wp.int32, device=device)
+            scratch_total = wp.full(1, -1, dtype=wp.int32, device=device)
+            scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int32, device=device)
+
+            scan_with_total(counts, fallback_prefix, num_elements, fallback_total)
+            scan_with_total(counts, scratch_prefix, num_elements, scratch_total, scratch=scratch)
+
+            count = min(max(active_count, 0), capacity)
+            expected_prefix = np.zeros(count, dtype=np.int32)
+            if count > 1:
+                expected_prefix[1:] = np.cumsum(counts_np[: count - 1], dtype=np.int32)
+            scratch_prefix_np = scratch_prefix.numpy()[:count]
+            np.testing.assert_array_equal(scratch_prefix_np, expected_prefix)
+            np.testing.assert_array_equal(scratch_prefix_np, fallback_prefix.numpy()[:count])
+            test.assertEqual(int(scratch_total.numpy()[0]), int(counts_np[:count].sum()))
+            test.assertEqual(int(scratch_total.numpy()[0]), int(fallback_total.numpy()[0]))
 
 
 # --- Helper functions ---
@@ -1359,12 +1397,14 @@ def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
     tid_to_cid = solver._contact_tid_to_cid.numpy()[:contact_count]
     solref = solver.mjw_data.contact.solref.numpy().reshape(-1, 2)
     solimp = solver.mjw_data.contact.solimp.numpy().reshape(-1, 5)
+    inverse_mass = float(np.sum(model.body_inv_mass.numpy()))  # Both fixture bodies have free joints.
     for tid, cid in enumerate(tid_to_cid):
         if cid < 0:
             continue
-        contact_ke = stiffness[tid] * (1.0 - solimp[cid, 1])
+        factor = inverse_mass * (1.0 - solimp[cid, 1])
+        contact_ke = stiffness[tid] * factor
         if damping[tid] > 0.0:
-            expected_timeconst = 2.0 / damping[tid]
+            expected_timeconst = 2.0 / (damping[tid] * factor)
             expected_dampratio = np.sqrt(1.0 / (expected_timeconst**2 * contact_ke))
         else:
             expected_timeconst = np.sqrt(1.0 / contact_ke)
@@ -1426,6 +1466,9 @@ def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False,
     (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
         model, [cfg_reduced, cfg_unreduced], [500, 20000], deterministic=deterministic
     )
+    if deterministic:
+        test.assertLessEqual(pipe_red.hydroelastic_sdf.max_num_iso_voxels, _MAX_DETERMINISTIC_ISO_VOXELS)
+        test.assertLessEqual(pipe_unr.hydroelastic_sdf.max_num_iso_voxels, _MAX_DETERMINISTIC_ISO_VOXELS)
 
     anchor_label = "with anchor" if anchor_contact else "without anchor"
 
@@ -1483,6 +1526,9 @@ def test_reduced_vs_unreduced_contact_moments(test, device, deterministic=False)
     (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
         model, [cfg_reduced, cfg_unreduced], [500, 20000], deterministic=deterministic
     )
+    if deterministic:
+        test.assertLessEqual(pipe_red.hydroelastic_sdf.max_num_iso_voxels, _MAX_DETERMINISTIC_ISO_VOXELS)
+        test.assertLessEqual(pipe_unr.hydroelastic_sdf.max_num_iso_voxels, _MAX_DETERMINISTIC_ISO_VOXELS)
 
     # Filter to the cube-sphere shape pair (shape 1=cube, shape 2=sphere).
     sp = (1, 2)
@@ -2326,7 +2372,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     # Calculate expected and measured penetration for each case
     total_force = gravity * mass_upper + external_force
-    effective_mass = (mass_lower * mass_upper) / (mass_lower + mass_upper)
 
     for i in range(len(test_cases)):
         lower_shape = lower_shape_indices[i]
@@ -2334,10 +2379,9 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         kh_val = kh_values[i]
         area = areas[i]
 
-        # Expected: depth = F / (k_eff * A_eff) / mujoco_scaling
+        # Force-space stiffness gives depth = F / (k_eff * A_eff), independent of body mass.
         effective_area = area
         expected = total_force / (kh_val * effective_area)
-        expected /= effective_mass
 
         # Filter depths for this shape pair
         mask = ((shape_pairs[:, 0] == lower_shape) & (shape_pairs[:, 1] == upper_shape)) | (
@@ -2476,7 +2520,9 @@ def test_scalar_sdf_texture_hydroelastic_contacts(test, device):
 
     paired_channels, paired = collide(True)
     scalar_channels, scalar = collide(False)
-    test.assertEqual(paired_channels, 2)
+    toolkit_version = wp.get_cuda_toolkit_version()
+    paired_samples_supported = device.arch >= 90 or (toolkit_version is not None and toolkit_version >= (13, 1))
+    test.assertEqual(paired_channels, 2 if paired_samples_supported else 1)
     test.assertEqual(scalar_channels, 1)
     test.assertEqual(len(scalar[0]), len(paired[0]))
     paired = _canonicalize_contact_records(paired)
@@ -2917,6 +2963,13 @@ add_function_test(
     "test_mc_corner_pair_selection",
     test_mc_corner_pair_selection,
     devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_scan_with_total_boundaries",
+    test_scan_with_total_boundaries,
+    devices=scan_devices,
 )
 
 add_function_test(
@@ -3382,6 +3435,261 @@ add_function_test(
     TestHydroelastic,
     "test_deep_penetration_contact_surface_has_no_central_hole",
     test_deep_penetration_contact_surface_has_no_central_hole,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def _sanding_contact_builder(resolution, *, delta=0.0, pad_first=False):
+    """Build one round-pad and spherical-workpiece hydroelastic world."""
+    pad_radius = 0.0675
+    pad_half_height = 0.010
+    sphere_radius = 0.9
+
+    def make_cfg(kh):
+        return newton.ModelBuilder.ShapeConfig(
+            kh=kh,
+            is_hydroelastic=True,
+            gap=0.0,
+            sdf_max_resolution=resolution,
+            sdf_narrow_band_range=(-0.002, 0.002),
+        )
+
+    builder = newton.ModelBuilder()
+
+    def add_sphere():
+        builder.add_shape_sphere(
+            body=-1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, -sphere_radius), wp.quat_identity()),
+            radius=sphere_radius,
+            cfg=make_cfg(1.0e9),
+        )
+
+    def add_pad():
+        pad_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, pad_half_height - delta), wp.quat_identity()))
+        builder.add_shape_cylinder(
+            body=pad_body,
+            radius=pad_radius,
+            half_height=pad_half_height,
+            cfg=make_cfg(5.3e6),
+        )
+
+    if pad_first:
+        add_pad()
+        add_sphere()
+    else:
+        add_sphere()
+        add_pad()
+    return builder
+
+
+def test_hydroelastic_replica_buffers_scale_with_traversed_grids(test, device):
+    """Size replica buffers from each pair's finer traversal grid."""
+    world_count = 4
+    one_world = _sanding_contact_builder(64)
+    builder = newton.ModelBuilder()
+    builder.replicate(one_world, world_count)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+    hydro = pipeline.hydroelastic_sdf
+
+    # Each world contributes one pad/sphere pair. The pad's SDF is the finer of
+    # the two (a 0.135 m shape at resolution 64 against a 1.8 m sphere at the
+    # same resolution), so the broadphase traverses the pad's 4x4x8 = 128
+    # subgrids and ignores the sphere's 512. Sizing off the shapes rather than
+    # the traversed grids inflated this to 2560.
+    blocks_per_pair = 128
+    expected_blocks = world_count * blocks_per_pair
+
+    test.assertEqual(len(model.shape_contact_pairs.numpy().reshape(-1, 2)), world_count)
+    test.assertEqual(hydro.total_num_tiles, expected_blocks)
+    # Defaults are buffer_mult_broad=1 and buffer_fraction=1.0, so the
+    # broadphase buffer is exactly the traversed block count.
+    test.assertEqual(hydro.max_num_blocks_broad, expected_blocks)
+
+    # Refinement work follows a two-dimensional contact surface, so size its
+    # buffers from narrow-band subgrids instead of every dense-grid block.
+    test.assertLess(hydro.total_num_active_tiles, hydro.total_num_tiles)
+    expected_iso_dims = tuple(mult * hydro.total_num_active_tiles for mult in (8, 32, 128, 256))
+    test.assertEqual(hydro.iso_max_dims, expected_iso_dims)
+
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline.collide(state, pipeline.contacts())
+    test.assertEqual(int(hydro.block_broad_collide_count.numpy()[0]), expected_blocks)
+
+
+def test_hydroelastic_pair_buffer_grid_selection(test, device):
+    """Match host buffer sizing to broadphase traversal-grid selection."""
+    # Shape A is the finer pad. This exercises the swap branch opposite the
+    # replicated test above, where shape B is finer.
+    model = _sanding_contact_builder(64, pad_first=True).finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+    hydro = pipeline.hydroelastic_sdf
+    test.assertEqual(tuple(model.shape_contact_pairs.numpy()[0]), (0, 1))
+    test.assertEqual(hydro.total_num_tiles, 128)
+
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline.collide(state, pipeline.contacts())
+    test.assertEqual(int(hydro.block_broad_collide_count.numpy()[0]), 128)
+
+    # Give two differently sized grids exactly equal voxel radii. The kernel's
+    # tie rule retains shape B, so both host sizing and device traversal must
+    # use B's larger dense grid.
+    cfg = newton.ModelBuilder.ShapeConfig(
+        kh=1.0e6,
+        is_hydroelastic=True,
+        gap=0.0,
+        sdf_max_resolution=64,
+        sdf_narrow_band_range=(-0.002, 0.002),
+    )
+    builder = newton.ModelBuilder()
+    body = builder.add_body()
+    builder.add_shape_box(body=body, hx=0.9, hy=0.9, hz=0.1, cfg=cfg)
+    builder.add_shape_box(body=-1, hx=0.9, hy=0.9, hz=0.3, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    shape_sdf_index = model._shape_sdf_index.numpy()
+    texture_sdf_data = model._texture_sdf_data.numpy()
+    sdf_idx_a, sdf_idx_b = (int(shape_sdf_index[i]) for i in range(2))
+    texture_sdf_data[sdf_idx_b]["voxel_radius"] = texture_sdf_data[sdf_idx_a]["voxel_radius"]
+    model._texture_sdf_data.assign(texture_sdf_data)
+
+    texture_a = model._texture_sdf_coarse_textures[sdf_idx_a]
+    texture_b = model._texture_sdf_coarse_textures[sdf_idx_b]
+    blocks_a = (texture_a.width - 1) * (texture_a.height - 1) * (texture_a.depth - 1)
+    blocks_b = (texture_b.width - 1) * (texture_b.height - 1) * (texture_b.depth - 1)
+    test.assertNotEqual(blocks_a, blocks_b)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+    hydro = pipeline.hydroelastic_sdf
+    test.assertEqual(hydro.total_num_tiles, blocks_b)
+    hydro._prepare_shape_sdf_data(model._texture_sdf_data, model._shape_sdf_index)
+    hydro._broadphase_sdfs(
+        hydro._shape_sdf_data,
+        wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device),
+        wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i, device=device),
+        wp.array([1], dtype=wp.int32, device=device),
+    )
+    test.assertEqual(int(hydro.block_broad_collide_count.numpy()[0]), blocks_b)
+
+
+def test_hydroelastic_subset_grid_order(test, device):
+    """Match runtime traversal-grid selection after narrow-phase type sorting."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True, sdf_max_resolution=64, sdf_narrow_band_range=(-0.01, 0.01), sdf_padding=0.02, gap=0.01
+    )
+    builder.add_shape_box(builder.add_body(), hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.4, 0.0, 0.0)))
+    builder.add_shape_sphere(body, radius=0.5, cfg=cfg)
+    model = builder.finalize(device=device)
+    indices = model._shape_sdf_index.numpy()
+    sdf_data = model._texture_sdf_data.numpy()
+    # Exercise the tie rule independently of primitive SDF padding/resolution
+    # rounding: type sorting routes this pair as (sphere, box), retaining box B.
+    sdf_data["voxel_radius"] = sdf_data["voxel_radius"].max()
+    model._texture_sdf_data.assign(sdf_data)
+    expected_active = int(sdf_data[indices[0]]["num_subgrids"])
+    tex = model._texture_sdf_coarse_textures[indices[0]]
+    expected_tiles = (tex.width - 1) * (tex.height - 1) * (tex.depth - 1)
+    for broad_phase in ("sap", "explicit"):
+        with test.subTest(broad_phase=broad_phase):
+            pairs = wp.array([[0, 1]], dtype=wp.vec2i, device=device) if broad_phase == "explicit" else None
+            pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, shape_pairs_filtered=pairs)
+            hydro = pipeline.hydroelastic_sdf
+            test.assertEqual(hydro.total_num_tiles, expected_tiles)
+            test.assertEqual(hydro.total_num_active_tiles, expected_active)
+            pipeline.collide(model.state(), pipeline.contacts())
+            test.assertEqual(int(hydro.normalized_shape_pairs.numpy()[0, 1]), 0)
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_replica_buffers_scale_with_traversed_grids",
+    test_hydroelastic_replica_buffers_scale_with_traversed_grids,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_pair_buffer_grid_selection",
+    test_hydroelastic_pair_buffer_grid_selection,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_subset_grid_order",
+    test_hydroelastic_subset_grid_order,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def test_hydroelastic_traversal_buffers_have_headroom(test, device):
+    """Keep every traversal stage within its buffer on a curved deep contact.
+
+    Sizing the buffers from the traversed grid rather than from every
+    hydroelastic shape makes them substantially smaller, so this guards that a
+    demanding contact -- a round pad pressed into a large spherical workpiece
+    until the patch spans most of the pad -- still fits at default settings.
+    """
+    kh_pad = 5.3e6
+    kh_workpiece = 1.0e9
+    sphere_radius = 0.9
+    target_force = 20.0
+    # Hydroelastic pressure is kh * depth, so a sphere indented by delta carries
+    # kh * pi * R * delta**2. Invert that for the penetration hitting target_force.
+    kh_effective = kh_pad * kh_workpiece / (kh_pad + kh_workpiece)
+    delta = np.sqrt(target_force / (np.pi * kh_effective * sphere_radius))
+
+    builder = _sanding_contact_builder(64, delta=delta)
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        rigid_contact_max=100000,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(reduce_contacts=False),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    hydro = pipeline.hydroelastic_sdf
+    # Pairs match verify_collision_step(): broadphase blocks, then the three
+    # octree subblock levels, then iso voxels.
+    stages = [
+        ("broadphase blocks", hydro.block_broad_collide_count, hydro.max_num_blocks_broad),
+        ("iso subblock L0", hydro.iso_buffer_counts[1], hydro.iso_max_dims[0]),
+        ("iso subblock L1", hydro.iso_buffer_counts[2], hydro.iso_max_dims[1]),
+        ("iso subblock L2", hydro.iso_buffer_counts[3], hydro.iso_max_dims[2]),
+        ("iso voxels", hydro.iso_voxel_count, hydro.max_num_iso_voxels),
+    ]
+    for name, count_array, capacity in stages:
+        count = int(count_array.numpy()[0])
+        test.assertGreater(count, 0, f"{name} produced no work; the scene is not exercising the contact")
+        test.assertLessEqual(count, capacity, f"{name} overflowed: {count} > {capacity}")
+
+    face_count = int(hydro.contact_reduction.contact_count.numpy()[0])
+    test.assertLessEqual(face_count, hydro.max_num_face_contacts)
+
+    # Unreduced output uses the contact arrays directly. Hashtable values and
+    # per-bin aggregates are dead storage in this mode and must stay empty.
+    reducer = hydro.contact_reduction.reducer
+    test.assertEqual(reducer.ht_values.shape[0], 0)
+    test.assertEqual(reducer.agg_force.shape[0], 0)
+    test.assertEqual(reducer.contact_nbin_entry.shape[0], 0)
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_traversal_buffers_have_headroom",
+    test_hydroelastic_traversal_buffers_have_headroom,
     devices=cuda_devices,
     check_output=False,
 )

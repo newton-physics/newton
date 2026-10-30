@@ -49,12 +49,33 @@ class DVIConfigStruct:
 
 @wp.struct
 class DVIStatus:
-    """Per-world DVI convergence status."""
+    """Per-world DVI convergence status after bilateral recovery.
+
+    The terminal feasibility, bilateral, and complementarity checks use
+    ``DVISolverConfig.tolerance``, independently of the APGD natural-map
+    tolerance. An inner or nonlinear APGD budget can be exhausted without
+    determining the full-system ``converged`` flag; inspect ``apgd_residual``
+    when requiring the APGD threshold as well. A failed APGD line search
+    always prevents convergence.
+    """
 
     converged: int32
     """Whether all terminal feasibility, equality, and complementarity residuals satisfy tolerance."""
     iterations: int32
-    """Projected sweeps; direct-bilateral solves report block/contact sweeps."""
+    """Projected PGS sweeps or accepted APGD iterations across unilateral phases."""
+    apgd_corrections: int32
+    """Completed De Saxce fixed-point iterations across unilateral phases; zero for PGS."""
+    apgd_backtracks: int32
+    """Rejected APGD trial steps across unilateral phases; zero for PGS."""
+    apgd_residual: float32
+    """Last unilateral APGD phase's nonlinear natural-map residual; zero for PGS.
+
+    Uses the fresh De Saxce correction at the relaxed impulse with a unit
+    projection step and infinity norm. Budget exhaustion can leave this above
+    ``DVIAPGDConfig.tolerance``. A failed line search sets it to ``3e38``.
+    """
+    apgd_line_search_failed: int32
+    """Whether an APGD line search exhausted its budget or encountered non-finite data."""
     r_p: float32
     """Maximum primal box- and cone-feasibility residual."""
     r_d: float32
@@ -104,6 +125,20 @@ class DVIState:
         self.inequality_num_colors: wp.array[int32] | None = None
         self.inequality_ids_by_color: wp.array[int32] | None = None
         self.inequality_color_starts: wp.array[int32] | None = None
+        self.inequality_group_starts: wp.array[int32] | None = None
+        self.inequality_tangent_cross: wp.array[float32] | None = None
+        self.inequality_projected_diagonal: wp.array[float32] | None = None
+        self.projected_D: wp.array[float32] | None = None
+        self.projected_mio: wp.array[int32] | None = None
+        self.bilateral_coupling: wp.array[float32] | None = None
+        self.bilateral_response_mio: wp.array[int32] | None = None
+        self.bilateral_response_stride: wp.array[int32] | None = None
+        self.bilateral_response_factor: wp.array[float32] | None = None
+        self.bilateral_response: wp.array[float32] | None = None
+        self.bilateral_factor_row_start: wp.array[int32] | None = None
+        self.bilateral_delta: wp.array[float32] | None = None
+        self._sparse_projection_allocated = False
+        self._sparse_coupling_allocated = False
         if size is not None:
             self.finalize(size)
 
@@ -125,9 +160,86 @@ class DVIState:
         self.inequality_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
         self.inequality_ids_by_color = wp.full(max(1, size.sum_of_max_inequalities), -1, dtype=int32)
         self.inequality_color_starts = wp.zeros(max(1, size.sum_of_max_inequalities + size.num_worlds), dtype=int32)
+        # Sparse DVI only needs a harmless dummy permutation when RCM is disabled.
+        self.projected_mio = wp.zeros(max(1, size.num_worlds), dtype=int32)
 
-    def reset(self):
-        """Reset scratch arrays to zero."""
+    def allocate_dense_projection(self, size: SizeKamino) -> None:
+        """Allocate dense projected Delassus storage once.
+
+        Args:
+            size: Model dimensions that determine the flattened allocation.
+
+        Raises:
+            ValueError: If the flattened allocation exceeds int32 indexing.
+        """
+        if self.projected_D is None:
+            projected_stride = size.max_of_max_total_cts * size.max_of_max_total_cts
+            projected_size = size.num_worlds * projected_stride
+            if projected_size > 2**31 - 1:
+                raise ValueError("Dense DVI projection exceeds the supported int32 index range.")
+            self.projected_mio = wp.array([world * projected_stride for world in range(size.num_worlds)], dtype=int32)
+            self.projected_D = wp.zeros(max(1, projected_size), dtype=float32)
+
+    def allocate_sparse_projection(
+        self,
+        size: SizeKamino,
+        joint_rows: list[int],
+        unilateral_strides: list[int],
+        bilateral_vector_size: int,
+        use_schur_complement: bool,
+        cache_bilateral_coupling: bool = False,
+    ) -> None:
+        """Allocate sparse bilateral-projection workspace once.
+
+        Args:
+            size: Model dimensions for inequality scratch storage.
+            joint_rows: Bilateral joint-row count for each world.
+            unilateral_strides: Allocated unilateral row stride for each world.
+            bilateral_vector_size: Flattened size of the bilateral solution vector.
+            use_schur_complement: Whether to allocate the bilateral response matrices.
+            cache_bilateral_coupling: Whether direct solves reuse the unilateral coupling.
+
+        Raises:
+            ValueError: If the flattened response workspace exceeds int32 indexing.
+        """
+        if self.inequality_group_starts is None:
+            self.inequality_group_starts = wp.zeros(max(1, size.sum_of_max_inequalities + size.num_worlds), dtype=int32)
+            self.inequality_tangent_cross = wp.zeros(max(1, size.sum_of_max_inequalities), dtype=float32)
+            self.inequality_projected_diagonal = wp.zeros(max(1, size.sum_of_max_total_cts), dtype=float32)
+        if self.bilateral_coupling is None:
+            # Warp kernels require arrays even when their response terms are disabled.
+            self.bilateral_response_mio = wp.zeros(max(1, size.num_worlds), dtype=int32)
+            self.bilateral_response_stride = wp.zeros(max(1, size.num_worlds), dtype=int32)
+            self.bilateral_coupling = wp.zeros(1, dtype=float32)
+            self.bilateral_response_factor = wp.zeros(1, dtype=float32)
+            self.bilateral_response = wp.zeros(1, dtype=float32)
+            self.bilateral_delta = wp.zeros(1, dtype=float32)
+        if (use_schur_complement or cache_bilateral_coupling) and not self._sparse_coupling_allocated:
+            response_offsets = []
+            response_size = 0
+            for num_joint_rows, unilateral_stride in zip(joint_rows, unilateral_strides, strict=True):
+                response_offsets.append(response_size)
+                response_size += num_joint_rows * unilateral_stride
+            if response_size > 2**31 - 1:
+                raise ValueError("Sparse DVI projection exceeds the supported int32 index range.")
+            self.bilateral_response_mio = wp.array(response_offsets, dtype=int32)
+            self.bilateral_response_stride = wp.array(unilateral_strides, dtype=int32)
+            self.bilateral_coupling = wp.zeros(max(1, response_size), dtype=float32)
+            self._sparse_coupling_allocated = True
+        if use_schur_complement and not self._sparse_projection_allocated:
+            self.bilateral_response_factor = wp.zeros(self.bilateral_coupling.size, dtype=float32)
+            self.bilateral_response = wp.zeros(self.bilateral_coupling.size, dtype=float32)
+            self.bilateral_delta = wp.zeros(max(1, bilateral_vector_size), dtype=float32)
+            self.bilateral_factor_row_start = wp.zeros(max(1, bilateral_vector_size), dtype=int32)
+            self._sparse_projection_allocated = True
+
+    def reset(self, *, clear_response: bool = True):
+        """Reset scratch arrays, optionally retaining overwritten response workspace.
+
+        Args:
+            clear_response: Whether to clear the three large response matrices.
+                Solves overwrite their active entries before reading them.
+        """
         self.sigma.zero_()
         self.v_aug.zero_()
         self.s.zero_()
@@ -144,6 +256,18 @@ class DVIState:
         self.inequality_num_colors.zero_()
         self.inequality_ids_by_color.fill_(-1)
         self.inequality_color_starts.zero_()
+        if self.inequality_group_starts is not None:
+            self.inequality_group_starts.zero_()
+            self.inequality_tangent_cross.zero_()
+            self.inequality_projected_diagonal.zero_()
+        if self.projected_D is not None:
+            self.projected_D.zero_()
+        if self.bilateral_coupling is not None:
+            if clear_response:
+                self.bilateral_coupling.zero_()
+                self.bilateral_response_factor.zero_()
+                self.bilateral_response.zero_()
+            self.bilateral_delta.zero_()
 
 
 class DVIData:
@@ -161,6 +285,7 @@ class DVIData:
         self.solution: DualSolution | None = None
         self.info: DVIInfo | None = None
         self.bilateral_operator: DenseLinearOperatorData | None = None
+        self.bilateral_dim: wp.array[int32] | None = None
         if size is not None:
             self.finalize(size=size, collect_info=collect_info, device=device)
 

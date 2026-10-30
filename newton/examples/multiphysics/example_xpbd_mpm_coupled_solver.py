@@ -1,17 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example XPBD-MPM Coupled Solver
-#
-# XPBD point particles fall into an implicit-MPM granular cube through
-# SolverCoupledProxy's particle proxy path.  The MPM view treats XPBD particles
-# as transfer-active proxy particles: they participate in P2G/G2P momentum
-# exchange, but they do not contribute material stress.
-#
-# Command: python -m newton.examples xpbd_mpm_coupled_solver
-#
-###########################################################################
+"""Example XPBD-MPM Coupled Solver
+
+XPBD point particles fall into an implicit-MPM granular cube through
+SolverCoupledProxy's particle proxy path.  The MPM view treats XPBD particles
+as transfer-active proxy particles: they participate in P2G/G2P momentum
+exchange, but they do not contribute material stress.
+
+Success criteria:
+- XPBD point particles appear above an implicit-MPM granular cube.
+- The XPBD particles fall into the MPM granular cube.
+- The XPBD particles participate in momentum exchange with the MPM material through proxy coupling.
+- The XPBD particles and MPM particles should remain bounded and above the ground.
+- Particle velocities should remain finite and within a reasonable range.
+
+Runs:
+- `python -m newton.examples xpbd_mpm_coupled_solver`
+"""
 
 from __future__ import annotations
 
@@ -110,12 +116,10 @@ class Example:
         self.contacts = self.collision_pipeline.contacts()
 
         newton.examples.configure_coupled_view(self, args)
-        if hasattr(self.viewer, "show_particles"):
-            self.viewer.show_particles = False
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(1.15, -1.65, 0.95), pitch=-22.0, yaw=128.0)
-            if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 0.32))
+        self.viewer.show_particles = False
+        self.viewer.set_camera(pos=wp.vec3(1.15, -1.65, 0.95), pitch=-22.0, yaw=128.0)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 0.32))
 
         self.xpbd_particle_ids = wp.array(self.xpbd_particles, dtype=int, device=self.model.device)
         self.mpm_particle_ids = wp.array(self.mpm_particles, dtype=int, device=self.model.device)

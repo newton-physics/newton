@@ -8,21 +8,23 @@ Tests the unified collision detection pipeline.
 """
 
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton import ModelBuilder
+from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
-from newton._src.solvers.kamino._src.core.math import I_3
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.shapes import SphereShape
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
-from newton._src.solvers.kamino._src.models.builders import basics, testing
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton.exceptions import NewtonWarning
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
+from newton.tests.utils import basics, testing
 
 ###
 # Constants
@@ -91,7 +93,7 @@ single edge or corner, generating only 1 contact point.
 
 
 def test_unified_pipeline(
-    builder: ModelBuilderKamino,
+    builder: ModelBuilder,
     expected: dict,
     max_contacts_per_pair: int = 12,
     margin: float = 0.0,
@@ -103,11 +105,11 @@ def test_unified_pipeline(
 ):
     """
     Runs the unified collision detection pipeline using all broad-phase backends
-    on a system specified via a ModelBuilderKamino and checks the results.
+    on a system specified via a ModelBuilder and checks the results.
     """
 
     # Create a test model and data
-    model: ModelKamino = builder.finalize(device)
+    model: ModelKamino = ModelKamino.from_newton(builder.finalize(device))
     data: DataKamino = model.data()
     contacts = ContactsKamino(model=model, device=device)
 
@@ -195,6 +197,33 @@ def test_unified_pipeline_on_shape_pair(
 
 
 class TestCollisionPipelineUnified(unittest.TestCase):
+    def test_primitive_local_bounds(self):
+        """Retain local bounds for primitive-only penetration refinement."""
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+        for device in devices:
+            with self.subTest(device=device):
+                builder = ModelBuilder()
+                builder.add_shape_box(-1, hx=0.6, hy=0.15, hz=0.005)
+                body = builder.add_body(xform=wp.transform(wp.vec3(0.56, 0.0, 0.008), wp.quat_identity()))
+                rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 2)
+                builder.add_shape_cylinder(
+                    body, xform=wp.transform(wp.vec3(0.0), rotation), radius=0.005, half_height=0.025
+                )
+                model = ModelKamino.from_newton(builder.finalize(device))
+                pipeline = CollisionPipelineUnifiedKamino(model)
+                self.assertEqual(pipeline.collision_aabb_lower.size, model.geoms.num_geoms)
+                self.assertEqual(pipeline.collision_aabb_upper.size, model.geoms.num_geoms)
+                contacts = ContactsKamino(model=model, device=device)
+                pipeline.collide(model.data(), contacts)
+                count = int(contacts.model_active_contacts.numpy()[0])
+                self.assertGreater(count, 0)
+                normals = np.array(
+                    [wp.quat_rotate(wp.quat(frame), wp.vec3(0.0, 0.0, 1.0)) for frame in contacts.frame.numpy()[:count]]
+                )
+                np.testing.assert_allclose(np.abs(normals[:, 2]), 1.0, atol=1.0e-3)
+
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -257,7 +286,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         msg.info("Testing unified pipeline tests with exact boundaries")
 
         # Global builder and expected contacts dictionary
-        builder = ModelBuilderKamino()
+        builder = ModelBuilder()
         expected_contacts = {
             "model_active_contacts": 0,
             "world_active_contacts": [],
@@ -279,7 +308,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 distance=0.0,  # Exactly touching
                 **kwargs,
             )
-            builder.add_builder(builder_shape)
+            builder.add_world(builder_shape)
 
             # Retrieve the nominal expected contacts for the shape pair
             expected_contacts_shape = nominal_expected_contacts_per_shape_pair.get(shape_pair, 0)
@@ -303,7 +332,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         msg.info("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
-        builder = ModelBuilderKamino()
+        builder = ModelBuilder()
         expected_contacts = {
             "model_active_contacts": 0,
             "world_active_contacts": [0 for _ in range(len(self.supported_shape_pairs))],
@@ -316,7 +345,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 shapes=shape_pair,
                 distance=1e-6,  # Shapes apart with epsilon distance
             )
-            builder.add_builder(builder_shape)
+            builder.add_world(builder_shape)
 
         # Run the narrow-phase test
         test_unified_pipeline(
@@ -335,7 +364,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         msg.info("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
-        builder = ModelBuilderKamino()
+        builder = ModelBuilder()
         expected_contacts = {
             "model_active_contacts": 0,
             "world_active_contacts": [],
@@ -357,7 +386,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 distance=0.0,  # Shapes apart
                 **kwargs,
             )
-            builder.add_builder(builder_shape)
+            builder.add_world(builder_shape)
 
             # Retrieve the nominal expected contacts for the shape pair
             expected_contacts_shape = nominal_expected_contacts_per_shape_pair.get(shape_pair, 0)
@@ -540,6 +569,31 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             device=self.default_device,
         )
 
+    def test_09_large_pair_warning_only_on_explicit_setup(self):
+        """Warn about large pair workloads only for explicit collision setup."""
+        builder = ModelBuilder()
+        builder.replicate(basics.build_sphere_on_plane(z_offset=0.5), copy_count=2)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        pairs = wp.array([[0, 1], [1, 0], [0, 1], [2, 3]], dtype=wp.vec2i, device=self.default_device)
+        model.geoms.collidable_pairs = pairs
+        model.geoms.num_collidable_pairs = len(pairs)
+        for broadphase in ("sap", "nxn", "explicit"):
+            with (
+                self.subTest(broadphase=broadphase),
+                mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_TOTAL", 3),
+                mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD", 3),
+                mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
+                mock.patch.object(model.geoms.wid, "numpy", wraps=model.geoms.wid.numpy) as read_worlds,
+                warnings.catch_warnings(record=True) as caught,
+            ):
+                warnings.filterwarnings("always", message="Explicit broad phase tests", category=NewtonWarning)
+                CollisionPipelineUnifiedKamino(model, broadphase=broadphase)
+            self.assertEqual(len(caught), int(broadphase == "explicit"))
+            self.assertEqual(read_pairs.call_count, int(broadphase == "explicit"))
+            if broadphase == "explicit":
+                self.assertEqual(read_worlds.call_count, 1)
+                self.assertIn("3 in the busiest world", str(caught[0].message))
+
 
 class TestUnifiedWriterContactDataRegression(unittest.TestCase):
     """
@@ -560,15 +614,15 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
 
-    def _run_pipeline(self, builder: ModelBuilderKamino, default_gap=0.0):
-        model = builder.finalize(self.default_device)
+    def _run_pipeline(self, builder: ModelBuilder, default_gap=0.0):
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
         pipeline = CollisionPipelineUnifiedKamino(
             model=model,
             broadphase="explicit",
             default_gap=default_gap,
         )
-        n_geoms = builder.num_geoms
+        n_geoms = builder.shape_count
         capacity = 8 * ((n_geoms * (n_geoms - 1)) // 2)
         contacts = ContactsKamino(capacity=max(capacity, 8), device=self.default_device)
         contacts.clear()
@@ -608,9 +662,8 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
         builder = testing.make_single_shape_pair_builder(
             shapes=("sphere", "sphere"),
             distance=separation,
+            gap=0.01,
         )
-        for geom in builder.all_geoms:
-            geom.gap = 0.01
         contacts = self._run_pipeline(builder)
         active = contacts.model_active_contacts.numpy()[0]
         self.assertEqual(active, 1, "Contact within gap must be retained")
@@ -621,16 +674,19 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
         builder = testing.make_single_shape_pair_builder(
             shapes=("sphere", "sphere"),
             distance=separation,
+            gap=0.001,
         )
-        for geom in builder.all_geoms:
-            geom.gap = 0.001
         contacts = self._run_pipeline(builder)
         active = contacts.model_active_contacts.numpy()[0]
         self.assertEqual(active, 0, "Contact beyond gap must be rejected")
 
 
 class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
-    """Tests verifying NXN broadphase correctness with collision radii and filter pairs."""
+    """Tests verifying NXN broadphase correctness with collision radii and filter pairs.
+
+    These tests are Kamino-specific and ensure that the combination of model
+    creation/conversion and pipeline setup reproduce the desired behavior.
+    """
 
     def setUp(self):
         if not test_context.setup_done:
@@ -640,28 +696,65 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
 
-    def _make_two_sphere_builder(self, group_a=1, collides_a=1, group_b=1, collides_b=1, same_body=False):
+    def _make_two_sphere_builder(
+        self,
+        group_a=1,
+        group_b=1,
+        same_body=False,
+        collidable_a=True,
+        collidable_b=True,
+    ):
         """Helper: build a single-world scene with two spheres near each other."""
-        builder = ModelBuilderKamino()
-        builder.add_world()
-        bid_a = builder.add_rigid_body(
-            m_i=1.0,
-            i_I_i=I_3,
-            q_i_0=wp.transformf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-            u_i_0=wp.spatial_vectorf(0.0),
+        builder = ModelBuilder()
+        builder.begin_world()
+        bid_a = builder.add_body(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3, dtype=np.float32)),
+            xform=wp.transformf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
         )
         if same_body:
             bid_b = bid_a
         else:
-            bid_b = builder.add_rigid_body(
-                m_i=1.0,
-                i_I_i=I_3,
-                q_i_0=wp.transformf(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                u_i_0=wp.spatial_vectorf(0.0),
+            bid_b = builder.add_body(
+                mass=1.0,
+                inertia=wp.mat33(np.eye(3, dtype=np.float32)),
+                xform=wp.transformf(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             )
-        builder.add_geometry(body=bid_a, shape=SphereShape(radius=0.5), group=group_a, collides=collides_a)
-        builder.add_geometry(body=bid_b, shape=SphereShape(radius=0.5), group=group_b, collides=collides_b)
+        builder.add_shape_sphere(
+            body=bid_a,
+            radius=0.5,
+            cfg=ModelBuilder.ShapeConfig(collision_group=group_a, has_shape_collision=collidable_a),
+        )
+        builder.add_shape_sphere(
+            body=bid_b,
+            radius=0.5,
+            cfg=ModelBuilder.ShapeConfig(collision_group=group_b, has_shape_collision=collidable_b),
+        )
+        builder.end_world()
         return builder
+
+    def _run_two_sphere_pipeline(self, builder: ModelBuilder) -> int:
+        """Helper: convert a Newton builder to `ModelKamino` and run the NXN broadphase.
+
+        Returns the number of active contacts produced.
+        """
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
+        data = model.data()
+
+        pipeline = CollisionPipelineUnifiedKamino(
+            model=model,
+            broadphase="nxn",
+            default_gap=1.0,
+        )
+
+        n_geoms = builder.shape_count
+        capacity = 12 * ((n_geoms * (n_geoms - 1)) // 2)
+        contacts = ContactsKamino(capacity=max(capacity, 12), device=self.default_device)
+        contacts.clear()
+
+        pipeline.collide(data, contacts)
+
+        return int(contacts.model_active_contacts.numpy()[0])
 
     def test_00_nxn_sphere_on_plane_generates_contacts(self):
         """Sphere resting on a plane via NXN broadphase must produce contacts.
@@ -710,32 +803,41 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
             device=self.default_device,
         )
 
-    def test_02_nxn_excludes_non_collidable_pairs(self):
-        """NXN broadphase must exclude pairs whose group/collides bitmasks do not overlap.
+    def test_02_nxn_newton_collision_group_semantics(self):
+        """NXN broadphase must follow Newton's collision-group semantics.
 
-        Creates two spheres in the same world but with non-overlapping
-        collision groups so that they should never collide.
+        Mirrors `newton._src.geometry.broad_phase_common.test_group_pair`:
+          - group 0 never collides with anything, including another group 0.
+          - A positive group collides only with the same positive group, or
+            with any negative group.
+          - A negative group collides with everything except the same
+            negative group.
+
+        Creates two touching spheres on different bodies in the same world
+        and checks every representative combination of group signs/values.
         """
-        builder = self._make_two_sphere_builder(group_a=0b01, collides_a=0b01, group_b=0b10, collides_b=0b10)
+        cases = {
+            "both_positive_equal": (1, 1, True),
+            "both_positive_different": (1, 2, False),
+            "positive_vs_zero": (1, 0, False),
+            "both_zero": (0, 0, False),
+            "positive_vs_negative_different": (1, -1, True),
+            "both_negative_equal": (-2, -2, False),
+            "both_negative_different": (-1, -2, True),
+            "negative_vs_zero": (-1, 0, False),
+        }
 
-        model = builder.finalize(self.default_device)
-        data = model.data()
-
-        pipeline = CollisionPipelineUnifiedKamino(
-            model=model,
-            broadphase="nxn",
-            default_gap=1.0,
-        )
-
-        n_geoms = builder.num_geoms
-        capacity = 12 * ((n_geoms * (n_geoms - 1)) // 2)
-        contacts = ContactsKamino(capacity=max(capacity, 12), device=self.default_device)
-        contacts.clear()
-
-        pipeline.collide(data, contacts)
-
-        active = contacts.model_active_contacts.numpy()[0]
-        self.assertEqual(active, 0, "Non-collidable groups must produce zero contacts via NXN")
+        for case, (group_a, group_b, should_collide) in cases.items():
+            with self.subTest(case=case, group_a=group_a, group_b=group_b):
+                builder = self._make_two_sphere_builder(group_a=group_a, group_b=group_b)
+                active = self._run_two_sphere_pipeline(builder)
+                expected_active = 1 if should_collide else 0
+                self.assertEqual(
+                    active,
+                    expected_active,
+                    f"groups ({group_a}, {group_b}) via nxn broadphase: "
+                    f"expected {'a contact' if should_collide else 'no contacts'}",
+                )
 
     def test_03_nxn_same_body_excluded(self):
         """NXN broadphase must exclude same-body shape pairs.
@@ -744,25 +846,27 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
         that no self-collision contacts are produced.
         """
         builder = self._make_two_sphere_builder(same_body=True)
-
-        model = builder.finalize(self.default_device)
-        data = model.data()
-
-        pipeline = CollisionPipelineUnifiedKamino(
-            model=model,
-            broadphase="nxn",
-            default_gap=1.0,
-        )
-
-        n_geoms = builder.num_geoms
-        capacity = 12 * ((n_geoms * (n_geoms - 1)) // 2)
-        contacts = ContactsKamino(capacity=max(capacity, 12), device=self.default_device)
-        contacts.clear()
-
-        pipeline.collide(data, contacts)
-
-        active = contacts.model_active_contacts.numpy()[0]
+        active = self._run_two_sphere_pipeline(builder)
         self.assertEqual(active, 0, "Same-body shapes must not collide via NXN broadphase")
+
+    def test_04_nxn_excludes_non_collidable_shapes(self):
+        """NXN broadphase must exclude shapes without the `COLLIDE_SHAPES` flag.
+
+        A shape built with `ShapeConfig(has_shape_collision=False)` (e.g. a
+        sensor or visual-only shape) must never generate a contact, even
+        though its collision group would otherwise allow it to collide.
+        """
+        cases = {
+            "shape_a_non_collidable": (False, True),
+            "shape_b_non_collidable": (True, False),
+            "both_non_collidable": (False, False),
+        }
+
+        for case, (collidable_a, collidable_b) in cases.items():
+            with self.subTest(case=case):
+                builder = self._make_two_sphere_builder(collidable_a=collidable_a, collidable_b=collidable_b)
+                active = self._run_two_sphere_pipeline(builder)
+                self.assertEqual(active, 0, "Non-collidable shapes must not collide via NXN broadphase")
 
 
 ###

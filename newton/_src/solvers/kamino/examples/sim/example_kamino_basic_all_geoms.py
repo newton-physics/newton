@@ -10,7 +10,6 @@
 #
 ###########################################################################
 
-import argparse
 
 import warp as wp
 
@@ -18,7 +17,11 @@ import newton
 import newton.examples
 from newton._src.solvers.kamino._src.geometry.primitive.broadphase import PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES
 from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS
-from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import (
+    add_recording_args,
+    enable_recording_from_args,
+)
+from newton._src.solvers.kamino.examples import get_examples_output_path
 from newton.tests.utils import testing
 
 
@@ -33,14 +36,8 @@ class Example:
         self.viewer = viewer
         self.device = wp.get_device()
 
-        video_output_filename = getattr(args, "video_path", None)
-        self.record_video = enable_recording(
-            viewer=self.viewer,
-            record_video=args.record_video if args else False,
-            start_clip=True,
-            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
-            max_frames=getattr(args, "max_video_frames", 1000),
-            fps=self.fps,
+        self.record_video = enable_recording_from_args(
+            self.viewer, args, name="all_geoms", output_root=get_examples_output_path(), fps=self.fps
         )
 
         # Define excluded shape types for broadphase / narrowphase (temporary)
@@ -117,14 +114,11 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.observables = self.solver.observables(contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F})
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets(spacing=(6.0, 6.0, 0.0))
-
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
@@ -138,11 +132,6 @@ class Example:
             yaw = -140.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
 
-        # Set the viewer to start in paused mode so that the user can
-        # observe the initial state before stepping the simulation
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
-            self.viewer._paused = True
-
     def capture(self):
         self.graph = None
         if self.device.is_cuda and not wp.config.verify_cuda:
@@ -155,8 +144,9 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+            self.solver.step(
+                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, observables=self.observables
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -173,7 +163,7 @@ class Example:
         # so contacts are rendered with self.state_1 to match the body positions at the
         # time of contact generation.
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.observables)
         self.viewer.end_frame()
 
     def test_final(self):
@@ -204,24 +194,7 @@ class Example:
             default="unified",
             help="Sets the collision pipeline to be used by SolverKamino.",
         )
-        parser.add_argument(
-            "--record-video",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Record a video of the viewer, up to 1000 frames.",
-        )
-        parser.add_argument(
-            "--video-path",
-            type=str,
-            default=None,
-            help="Output video path (defaults to 'recording.mp4').",
-        )
-        parser.add_argument(
-            "--max-video-frames",
-            type=int,
-            default=1000,
-            help="Maximum number of frames recorded for the video (defaults to 1000).",
-        )
+        add_recording_args(parser, example_name="all_geoms")
         return parser
 
 
@@ -230,5 +203,3 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
-    if hasattr(viewer, "finish_clip"):
-        viewer.finish_clip()

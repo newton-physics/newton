@@ -7,12 +7,10 @@
 def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None, collision=True):
     """Author a GeomBasisCurves marked as a curve deformable (cable).
 
-    Binds a minimal canonical curve-deformable material carrying ``curvesThickness`` (and optional
-    ``density``) so the importer does not warn about an unauthored cable thickness. Pass
-    ``thickness=None`` to leave the cable without a bound material, e.g. to exercise the
-    default-radius fallback or a test's own material binding. ``collision`` authors an
-    enabled ``PhysicsCollisionAPI`` (the common colliding case); pass ``False`` for the
-    collision-gating tests.
+    Authors a constant simulation-geometry ``thicknesses`` array and optionally binds a material
+    carrying ``density``. Pass ``thickness=None`` to exercise the default-radius fallback.
+    ``collision`` authors an enabled ``PhysicsCollisionAPI`` (the common colliding case); pass
+    ``False`` for the collision-gating tests.
     """
     from pxr import UsdGeom
 
@@ -27,11 +25,29 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     if collision:
         curves.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     if thickness is not None:
-        mat_attrs = {"curvesThickness": thickness}
-        if density is not None:
-            mat_attrs["density"] = density
-        _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", **mat_attrs)
+        _author_deformable_element_array(curves.GetPrim(), "thicknesses", [thickness], "constant")
+    if density is not None:
+        _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", density=density)
     return curves
+
+
+def _author_cable_rest_shape(curves, *, points=None, normals=None):
+    """Author rest points and normals at default time when supplied."""
+    from pxr import Sdf
+
+    prim = curves.GetPrim()
+    if points is not None:
+        prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(points)
+    if normals is not None:
+        prim.CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray).Set(normals)
+
+
+def _author_deformable_element_array(prim, name, values, element_type):
+    """Author a deformable simulation array with its required element-type token."""
+    from pxr import Sdf
+
+    prim.CreateAttribute(f"physics:{name}", Sdf.ValueTypeNames.FloatArray).Set(list(values))
+    prim.CreateAttribute(f"physics:{name}:elementType", Sdf.ValueTypeNames.Token).Set(element_type)
 
 
 def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **attrs):
@@ -59,6 +75,17 @@ def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **a
     binding = UsdShade.MaterialBindingAPI.Apply(prim)
     binding.Bind(mat, materialPurpose="physics")
     return mat
+
+
+def _author_newton_curve_damping(material, **attrs):
+    """Apply the Newton curve-material API and author its damping attributes."""
+    from pxr import Sdf
+
+    prim = material.GetPrim()
+    prim.AddAppliedSchema("NewtonCurvesDeformableMaterialAPI")
+    for name, value in attrs.items():
+        prim.CreateAttribute(f"newton:{name}", Sdf.ValueTypeNames.Float).Set(value)
+    return material
 
 
 def _add_physics_attachment(
@@ -138,6 +165,38 @@ def _add_cloth_mesh(stage, path, *, collision=True):
     return mesh
 
 
+def _add_mesh_prim(stage, path, points=((0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)), *, collision=False):
+    """Author a single-face GeomMesh over ``points``, optionally as an enabled collider."""
+    from pxr import UsdGeom
+
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr([tuple(float(c) for c in point) for point in points])
+    mesh.CreateFaceVertexCountsAttr([len(points)])
+    mesh.CreateFaceVertexIndicesAttr(list(range(len(points))))
+    if collision:
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+    return mesh
+
+
+def _author_unit_tet(stage, path, *, sim_api=False, collision=None, y=0.0):
+    """Author a single-tetrahedron TetMesh (volume 1/6), optionally marked as a simulation mesh.
+
+    ``collision`` authors an enabled ``PhysicsCollisionAPI``; defaults to ``sim_api`` so
+    deformable-marked fixtures represent the common colliding case, while bare TetMeshes
+    keep the legacy import untouched. ``y`` offsets the tetrahedron so several fit one stage.
+    """
+    from pxr import UsdGeom
+
+    tet = UsdGeom.TetMesh.Define(stage, path)
+    tet.CreatePointsAttr([(0.0, y, 1.0), (1.0, y, 1.0), (0.0, y + 1.0, 1.0), (0.0, y, 2.0)])
+    tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+    if sim_api:
+        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    if sim_api if collision is None else collision:
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+    return tet
+
+
 def _apply_deformable_body_api(prim, *, mass=None, density=None):
     """Apply PhysicsDeformableBodyAPI with optional mass / density overrides."""
     from pxr import Sdf
@@ -147,6 +206,17 @@ def _apply_deformable_body_api(prim, *, mass=None, density=None):
         prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(mass)
     if density is not None:
         prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
+
+
+def _author_pose(prim, name, points, *, purposes=("bindPose",)):
+    """Author proposal pose attributes without requiring the proposal schema plugin."""
+    from pxr import Sdf
+
+    prim.AddAppliedSchema(f"PhysicsDeformablePoseAPI:{name}")
+    prefix = f"physics:deformablePose:{name}"
+    prim.CreateAttribute(f"{prefix}:purposes", Sdf.ValueTypeNames.TokenArray).Set(purposes)
+    if points is not None:
+        prim.CreateAttribute(f"{prefix}:points", Sdf.ValueTypeNames.Point3fArray).Set(points)
 
 
 def _deformable_stage(up_axis="z"):
@@ -167,10 +237,11 @@ def group_labels(builder, family):
     """Prim-path labels of a deformable family's imported groups (``cable``/``cloth``/``soft``).
 
     The single seam through which tests locate deformable groups: it reads the builder
-    registries, so a change to how group metadata is stored or exposed only touches this
-    helper, not the tests.
+    registry, so a change to its private range storage only touches this helper,
+    not the importer behavior tests.
     """
-    return list(getattr(builder, f"_{family}_label"))
+    family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    return list(getattr(builder, f"{family}_label"))
 
 
 def group_range(builder, family, label, kind, world=None):
@@ -180,12 +251,16 @@ def group_range(builder, family, label, kind, world=None):
     ``particle``/``tet`` for soft volumes. See :func:`group_labels` for why tests must resolve
     ranges through this seam.
     """
-    labels = getattr(builder, f"_{family}_label")
-    worlds = getattr(builder, f"_{family}_world")
+    registry_family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    labels = getattr(builder, f"{registry_family}_label")
+    worlds = getattr(builder, f"{registry_family}_world")
     matches = [i for i, group_label in enumerate(labels) if group_label == label]
     if world is not None:
         matches = [i for i in matches if worlds[i] == world]
     if len(matches) != 1:
         raise LookupError(f"{len(matches)} {family} groups labelled '{label}' (world={world})")
     (i,) = matches
-    return getattr(builder, f"_{family}_{kind}_start")[i], getattr(builder, f"_{family}_{kind}_end")[i]
+    return (
+        getattr(builder, f"_{registry_family}_{kind}_start")[i],
+        getattr(builder, f"_{registry_family}_{kind}_end")[i],
+    )

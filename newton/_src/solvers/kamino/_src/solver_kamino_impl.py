@@ -60,6 +60,7 @@ from .linalg import ConjugateResidualSolver, ConjugateResidualSolverFused, Itera
 from .solvers.common import WarmStartMode
 from .solvers.dvi import DVISolver
 from .solvers.fk import ForwardKinematicsSolver
+from .solvers.lox import LOXSolver
 from .solvers.metrics import SolutionMetrics
 from .solvers.padmm import PADMMSolver
 from .solvers.warmstart import WarmstarterContacts, WarmstarterLimits
@@ -98,7 +99,7 @@ class SolverKaminoImpl(SolverBase):
     options for the linear solver and preconditioning.
     """
 
-    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino], None]
+    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, "wp.array[wp.bool] | None"], None]
     """Defines the type signature for reset callback functions."""
 
     StepCallbackType = Callable[["SolverKaminoImpl", StateKamino, StateKamino, ControlKamino, ContactsKamino], None]
@@ -158,6 +159,9 @@ class SolverKaminoImpl(SolverBase):
         elif config.dynamics_solver == "dvi":
             warmstart_mode = config.dvi.warmstart_mode
             contact_warmstart_method = config.dvi.contact_warmstart_method
+        elif config.dynamics_solver == "lox":
+            warmstart_mode = "containers"
+            contact_warmstart_method = config.lox.contact_warmstart_method
         else:
             raise ValueError(f"Unsupported dynamics solver: {config.dynamics_solver}")
         self._warmstart_mode = WarmStartMode.from_string(warmstart_mode)
@@ -175,9 +179,13 @@ class SolverKaminoImpl(SolverBase):
                 f"{list(LinearSolverNameToType.keys())}, got '{linear_solver_type}'."
             )
 
+        # The dual backends solve the dual problem; LOX solves its own primal problem
+        # and builds the dual problem only for its metrics, without a linear solver.
+        uses_lox = self._config.dynamics_solver == "lox"
+
         # Override the linear solver type to an iterative solver if
         # sparsity is enabled but the provided solver is not iterative
-        if self._config.sparse_dynamics and not issubclass(linear_solver_type, IterativeSolver):
+        if not uses_lox and self._config.sparse_dynamics and not issubclass(linear_solver_type, IterativeSolver):
             msg.warning(
                 f"Sparse dynamics requires an iterative solver, but got '{linear_solver_type.__name__}'."
                 " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver."
@@ -186,7 +194,7 @@ class SolverKaminoImpl(SolverBase):
 
         # ConjugateResidualSolverFused requires a BlockSparseMatrixFreeDelassusOperator,
         # which is only built when both sparse_dynamics and sparse_jacobian are enabled.
-        if issubclass(linear_solver_type, ConjugateResidualSolverFused):
+        if not uses_lox and issubclass(linear_solver_type, ConjugateResidualSolverFused):
             if not self._config.sparse_dynamics:
                 msg.warning(
                     "ConjugateResidualSolverFused requires sparse dynamics. Enabling sparse_dynamics automatically."
@@ -240,20 +248,34 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Allocate the dual problem data on the device
-        self._problem_fd = DualProblem(
-            model=self._model,
-            data=self._data,
-            limits=self._limits,
-            contacts=contacts,
-            jacobians=self._jacobians,
-            config=problem_fd_config,
-            solver=linear_solver_type,
-            solver_kwargs=linear_solver_kwargs,
-            sparse=self._config.sparse_dynamics,
-        )
+        self._problem_fd: DualProblem | None = None
+        if not uses_lox or (self._config.compute_solution_metrics and self._model.size.sum_of_max_total_cts > 0):
+            self._problem_fd = DualProblem(
+                model=self._model,
+                data=self._data,
+                limits=self._limits,
+                contacts=contacts,
+                jacobians=self._jacobians,
+                config=problem_fd_config,
+                solver=None if uses_lox else linear_solver_type,
+                solver_kwargs=None if uses_lox else linear_solver_kwargs,
+                sparse=self._config.sparse_dynamics,
+            )
 
         # Allocate the forward dynamics solver on the device
-        if self._config.dynamics_solver == "padmm":
+        if self._config.dynamics_solver == "lox":
+            self._solver_fd = LOXSolver(
+                model=self._model,
+                data=self._data,
+                jacobians=self._jacobians,
+                limits=self._limits,
+                contacts=contacts,
+                config=self._config.lox,
+                constraints=self._config.constraints,
+                rotation_correction=self._rotation_correction,
+                compute_solution_metrics=self._problem_fd is not None,
+            )
+        elif self._config.dynamics_solver == "padmm":
             self._solver_fd = PADMMSolver(
                 model=self._model,
                 config=self._config.padmm,
@@ -284,19 +306,25 @@ class SolverKaminoImpl(SolverBase):
         if self._config.use_fk_solver:
             self._solver_fk = ForwardKinematicsSolver(model=self._model, config=self._config.fk)
 
+        # LOX solves the velocity of singular (prescribed) bodies, which the integrators then advance
+        integrate_singular_bodies = self._config.dynamics_solver == "lox"
         # Contacts generated externally are evaluated at the start of a step, so they require
         # Euler integration. Moreau-Jean is valid only with the internal mid-step detector.
         if self._config.integrator == "euler":
-            self._integrator = IntegratorEuler(model=self._model)
+            self._integrator = IntegratorEuler(model=self._model, integrate_singular_bodies=integrate_singular_bodies)
         elif self._config.integrator == "moreau":
             if self._config.use_collision_detector:
-                self._integrator = IntegratorMoreauJean(model=self._model)
+                self._integrator = IntegratorMoreauJean(
+                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
+                )
             else:
                 msg.warning(
                     "Falling back to the 'euler' integrator: 'moreau' requires "
                     "`use_collision_detector=True` to generate contacts at the mid-point."
                 )
-                self._integrator = IntegratorEuler(model=self._model)
+                self._integrator = IntegratorEuler(
+                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
+                )
         else:
             raise ValueError(
                 f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
@@ -332,9 +360,20 @@ class SolverKaminoImpl(SolverBase):
         self._mid_step_cb: SolverKaminoImpl.StepCallbackType | None = None
         self._post_step_cb: SolverKaminoImpl.StepCallbackType | None = None
 
+        if self._config.dynamics_solver == "lox":
+            self._forward_dynamics = self._solver_fd.solve_forward_dynamics
+        else:
+            self._forward_dynamics = self._solve_dual_forward_dynamics
+
+        # LOX moves the bodies welded to kinematic bodies with them, when the model has any
+        self._carry_welded_bodies = self._config.dynamics_solver == "lox" and self._solver_fd.has_welded_bodies
+
         # Initialize all internal solver data
         with wp.ScopedDevice(self._model.device):
             self._reset()
+            if self._config.dynamics_solver == "lox":
+                # Seed at the configured reference time step so that no user call is needed
+                self._solver_fd.joint_penalty_scale_seed(float(self._config.lox.joint_penalty_seed_time_step))
 
     ###
     # Properties
@@ -362,14 +401,22 @@ class SolverKaminoImpl(SolverBase):
         return self._data
 
     @property
-    def problem_fd(self) -> DualProblem:
+    def problem_fd(self) -> DualProblem | None:
         """
         Returns the dual forward dynamics problem.
+
+        The dual backends solve it; with LOX, it is only built to evaluate the solution
+        metrics, and is ``None`` when metrics are disabled or the model has no constraints.
         """
         return self._problem_fd
 
     @property
-    def solver_fd(self) -> PADMMSolver | DVISolver:
+    def solver_status(self) -> wp.array[Any]:
+        """Returns the active forward dynamics backend's per-world status array."""
+        return self._solver_fd.data.status
+
+    @property
+    def solver_fd(self) -> PADMMSolver | DVISolver | LOXSolver:
         """
         Returns the forward dynamics solver.
         """
@@ -388,6 +435,15 @@ class SolverKaminoImpl(SolverBase):
         Returns the solution metrics evaluator, if enabled.
         """
         return self._metrics
+
+    @property
+    def cull_speculative_contacts(self) -> bool:
+        """
+        Returns whether external contacts with a positive gap are culled before the dynamics solve.
+
+        LOX keeps them, since its contact law lets a separated contact close its gap within the step.
+        """
+        return self._config.dynamics_solver != "lox" and self._config.dynamics.cull_speculative_contacts
 
     ###
     # Configurations
@@ -525,7 +581,7 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Run the pre-reset callback if it has been set
-        self._run_pre_reset_callback(state_out=state)
+        self._run_pre_reset_callback(state_out=state, world_mask=world_mask)
 
         # Resolve target joint_q
         joint_q = None
@@ -640,12 +696,12 @@ class SolverKaminoImpl(SolverBase):
             if self._solver_fk is None:
                 raise RuntimeError("The FK solver must be enabled to use resets from joint coordinates.")
             self._solver_fk.run_fk_solve(
-                actuators_q=actuator_q,
-                bodies_q=state.q_i,
+                actuator_q=actuator_q,
+                body_q=state.q_i,
                 base_q=base_q,
-                actuators_u=actuator_u,
+                actuator_u=actuator_u,
                 base_u=base_u if actuator_u is not None else None,
-                bodies_u=state.u_i if actuator_u is not None else None,
+                body_u=state.u_i if actuator_u is not None else None,
                 world_mask=world_mask,
             )
         elif isinstance(config.body_poses, SolverKamino.ResetConfig.ToDefault):
@@ -658,9 +714,9 @@ class SolverKaminoImpl(SolverBase):
             if self._solver_fk is None:
                 raise RuntimeError("The FK solver must be enabled to use resets from joint velocities.")
             self._solver_fk.solve_for_body_velocities(
-                actuators_u=actuator_u,
-                bodies_q=state.q_i,
-                bodies_u=state.u_i,
+                actuator_u=actuator_u,
+                body_q=state.q_i,
+                body_u=state.u_i,
                 base_u=base_u,
                 target_rel_transforms=None,
                 world_mask=world_mask,
@@ -693,14 +749,14 @@ class SolverKaminoImpl(SolverBase):
         if success_mask is not None:
             # Currently, only the position-level (iterative) FK solve can fail
             if actuator_q is not None:
-                wp.copy(success_mask, self._solver_fk.newton_success)
+                wp.copy(success_mask, self._solver_fk.data.gauss_newton.success)
             elif world_mask is not None:
                 wp.copy(success_mask, world_mask)
             else:
                 success_mask.fill_(True)
 
         # Run the post-reset callback if it has been set
-        self._run_post_reset_callback(state_out=state)
+        self._run_post_reset_callback(state_out=state, world_mask=world_mask)
 
     @override
     def step(
@@ -732,6 +788,8 @@ class SolverKaminoImpl(SolverBase):
 
         # Copy the new input state and control to the internal solver data
         self._read_step_inputs(state_in=state_in, control_in=control)
+        if self._carry_welded_bodies:
+            self._solver_fd.carry_welded_bodies()
 
         # Execute state integration:
         #  - Optionally calls limit and contact detection to generate unilateral constraints
@@ -748,6 +806,8 @@ class SolverKaminoImpl(SolverBase):
             contacts=contacts,
             detector=detector,
         )
+        if self._carry_welded_bodies:
+            self._solver_fd.carry_welded_bodies()
 
         # Update the internal joint states from the
         # updated body states after time-integration
@@ -769,11 +829,13 @@ class SolverKaminoImpl(SolverBase):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if self._solver_fk is not None:
             self._solver_fk.notify_model_changed(flags)
+        self._solver_fd.notify_model_changed(flags)
 
     def validate_model_changed(self, flags: ModelFlags | int) -> None:
         """Validate solver-specific structural invariants before model updates."""
         if self._solver_fk is not None:
             self._solver_fk.validate_model_changed(flags)
+        self._solver_fd.validate_model_changed(flags)
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
@@ -788,19 +850,19 @@ class SolverKaminoImpl(SolverBase):
     # Internals - Callback Operations
     ###
 
-    def _run_pre_reset_callback(self, state_out: StateKamino):
+    def _run_pre_reset_callback(self, state_out: StateKamino, world_mask: wp.array[wp.bool] | None):
         """
         Runs the pre-reset callback if it has been set.
         """
         if self._pre_reset_cb is not None:
-            self._pre_reset_cb(self, state_out)
+            self._pre_reset_cb(self, state_out, world_mask)
 
-    def _run_post_reset_callback(self, state_out: StateKamino):
+    def _run_post_reset_callback(self, state_out: StateKamino, world_mask: wp.array[wp.bool] | None):
         """
         Runs the post-reset callback if it has been set.
         """
         if self._post_reset_cb is not None:
-            self._post_reset_cb(self, state_out)
+            self._post_reset_cb(self, state_out, world_mask)
 
     def _run_prestep_callback(
         self, state_in: StateKamino, state_out: StateKamino, control: ControlKamino, contacts: ContactsKamino
@@ -854,6 +916,7 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(self._data.joints.lambda_kin_j, state_in.lambda_kin_j)
         wp.copy(self._data.joints.lambda_dyn_j, state_in.lambda_dyn_j)
         wp.copy(self._data.joints.lambda_f_j, state_in.lambda_f_j)
+        wp.copy(self._data.joints.lambda_tau_j, state_in.lambda_tau_j)
         # Alias read-only control inputs
         self._data.joints.tau_j = control_in.tau_j
         self._data.joints.q_j_ref = control_in.q_j_ref
@@ -876,6 +939,7 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(state_out.lambda_kin_j, self._data.joints.lambda_kin_j)
         wp.copy(state_out.lambda_dyn_j, self._data.joints.lambda_dyn_j)
         wp.copy(state_out.lambda_f_j, self._data.joints.lambda_f_j)
+        wp.copy(state_out.lambda_tau_j, self._data.joints.lambda_tau_j)
 
     ###
     # Internals - Reset Operations
@@ -996,11 +1060,14 @@ class SolverKaminoImpl(SolverBase):
         Updates the forward kinematics by building the system Jacobians (of actuation and
         constraints) based on the current state of the system and set of active constraints.
         """
+        jacobian_contacts = contacts
+        if self._config.dynamics_solver == "lox" and not self._config.compute_solution_metrics:
+            jacobian_contacts = None
         self._jacobians.build(
             model=self._model,
             data=self._data,
             limits=self._limits,
-            contacts=contacts,
+            contacts=jacobian_contacts,
             reset_to_zero=True,
         )
 
@@ -1029,12 +1096,7 @@ class SolverKaminoImpl(SolverBase):
         Solves the forward dynamics sub-problem to compute constraint
         reactions and body wrenches effected through constraints.
         """
-        # If warm-starting is enabled, initialize unilateral
-        # constraints containers from the current solver data
         if self._warmstart_mode > WarmStartMode.NONE:
-            if self._warmstart_mode == WarmStartMode.CONTAINERS:
-                self._ws_limits.warmstart(self._limits)
-                self._ws_contacts.warmstart(self._model, self._data, contacts)
             self._solver_fd.warmstart(
                 problem=self._problem_fd,
                 model=self._model,
@@ -1072,13 +1134,6 @@ class SolverKaminoImpl(SolverBase):
             contacts=contacts,
         )
 
-        # If warmstarting is enabled, update the limits and contacts caches
-        # with the constraint reactions generated by the dynamics solver
-        # NOTE: This needs to happen after unpacking the multipliers
-        if self._warmstart_mode == WarmStartMode.CONTAINERS:
-            self._ws_limits.update(self._limits)
-            self._ws_contacts.update(contacts)
-
     def _update_wrenches(self):
         """
         Computes the total (i.e. net) body wrenches by summing up all individual contributions,
@@ -1088,12 +1143,34 @@ class SolverKaminoImpl(SolverBase):
 
     def _forward(self, contacts: ContactsKamino | None = None):
         """
-        Solves the forward dynamics sub-problem to compute constraint reactions
-        and total effective body wrenches applied to each body of the system.
+        Solves the forward dynamics sub-problem and prepares the integrator inputs.
         """
         # Update the dynamics
-        self._update_dynamics(contacts=contacts)
+        if self._problem_fd is not None:
+            self._update_dynamics(contacts=contacts)
 
+        # If warm-starting is enabled, initialize unilateral
+        # constraints containers from the current solver data
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
+            self._ws_limits.warmstart(self._limits)
+            self._ws_contacts.warmstart(self._model, self._data, contacts)
+
+        # Solve the forward dynamics sub-problem to compute the total effective
+        # body wrenches applied to each body of the system
+        self._forward_dynamics(contacts)
+
+        # If warmstarting is enabled, update the limits and contacts caches
+        # with the constraint reactions generated by the dynamics solver
+        # NOTE: This needs to happen after unpacking the multipliers
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
+            self._ws_limits.update(self._limits)
+            self._ws_contacts.update(contacts)
+
+    def _solve_dual_forward_dynamics(self, contacts: ContactsKamino | None = None):
+        """
+        Solves the dual forward dynamics sub-problem to compute constraint reactions
+        and total effective body wrenches applied to each body of the system.
+        """
         # Compute constraint reactions
         self._update_constraints(contacts=contacts)
 
@@ -1170,18 +1247,47 @@ class SolverKaminoImpl(SolverBase):
         """
         if self._config.compute_solution_metrics:
             self.metrics.reset()
-            self._metrics.evaluate(
-                sigma=self._solver_fd.data.state.sigma,
-                lambdas=self._solver_fd.data.solution.lambdas,
-                v_plus=self._solver_fd.data.solution.v_plus,
-                model=self._model,
-                data=self._data,
-                state_p=state_in,
-                problem=self._problem_fd,
-                jacobians=self._jacobians,
-                limits=self._limits,
-                contacts=contacts,
-            )
+            if self._problem_fd is None:
+                # Without constraints, only the primal metrics are defined
+                self._metrics.evaluate_primal(
+                    model=self._model,
+                    data=self._data,
+                    state_p=state_in,
+                    jacobians=self._jacobians,
+                    limits=self._limits,
+                    contacts=contacts,
+                )
+            else:
+                uses_lox = self._config.dynamics_solver == "lox"
+                solution = self._solver_fd.data.solution
+                if uses_lox:
+                    # LOX reports a measured velocity instead of solving the dual problem
+                    # Rebuild the dual solution first
+                    self._solver_fd.build_dual_solution(
+                        model=self._model,
+                        data=self._data,
+                        state_p=state_in,
+                        problem=self._problem_fd,
+                        jacobians=self._jacobians,
+                        limits=self._limits,
+                        contacts=contacts,
+                    )
+                    sigma = solution.sigma
+                else:
+                    sigma = self._solver_fd.data.state.sigma
+                self._metrics.evaluate(
+                    sigma=sigma,
+                    lambdas=solution.lambdas,
+                    v_plus=solution.v_plus,
+                    model=self._model,
+                    data=self._data,
+                    state_p=state_in,
+                    problem=self._problem_fd,
+                    jacobians=self._jacobians,
+                    limits=self._limits,
+                    contacts=contacts,
+                    use_solution_velocity=uses_lox,
+                )
 
     def _advance_time(self):
         """

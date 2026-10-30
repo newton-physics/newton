@@ -18,12 +18,20 @@ class EqType(IntEnum):
     JOINT = 2
     """Constrains one scalar joint coordinate to a quartic polynomial of another."""
 
+    TENDON = 3
+    """Constrains one tendon length to a quartic polynomial of another, or to a constant offset."""
 
+
+# Mirrors of MuJoCo's mjtBias/mjtDyn/mjtGain, duplicated so MJCF and USD import do not
+# need MuJoCo. Types Newton does not support are listed too, so Newton's ordinals track
+# MuJoCo's. TestActuatorTypes pins these against mujoco.mjt*.
 class _ActuatorBiasType(IntEnum):
     NONE = 0
     AFFINE = 1
     MUSCLE = 2
-    USER = 3
+    DCMOTOR = 3
+    SO3 = 4
+    USER = 5
 
 
 class _ActuatorDynamicsType(IntEnum):
@@ -32,14 +40,19 @@ class _ActuatorDynamicsType(IntEnum):
     FILTER = 2
     FILTER_EXACT = 3
     MUSCLE = 4
-    USER = 5
+    DCMOTOR = 5
+    PID = 6
+    USER = 7
 
 
 class _ActuatorGainType(IntEnum):
     FIXED = 0
     AFFINE = 1
     MUSCLE = 2
-    USER = 3
+    DCMOTOR = 3
+    SO3 = 4
+    PID = 5
+    USER = 6
 
 
 __all__ = ["EqType"]

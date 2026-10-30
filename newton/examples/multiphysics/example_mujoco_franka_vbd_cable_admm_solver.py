@@ -1,19 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MuJoCo Franka + Rigid Chain ADMM Pick-and-Place
-#
-# A fixed-base Franka arm tracks a pick-and-place IK sequence through MuJoCo
-# position targets while a short rigid payload chain is simulated by XPBD by
-# default. The original VBD cable payload is kept as an alternate mode for A/B
-# testing. SolverCoupledADMM detects rigid-rigid contacts between the robot and
-# the payload from the model collision pairs, and the same template is
-# replicated across many worlds to exercise ADMM contact scaling.
-#
-# Command: python -m newton.examples mujoco_franka_vbd_cable_admm_solver
-#
-###########################################################################
+"""Example MuJoCo Franka + Rigid Chain ADMM Pick-and-Place
+
+A fixed-base Franka arm tracks a pick-and-place IK sequence through MuJoCo
+position targets while a short rigid payload chain is simulated by XPBD by
+default. The original VBD cable payload is kept as an alternate mode for A/B
+testing. SolverCoupledADMM detects rigid-rigid contacts between the robot and
+the payload from the model collision pairs, and the same template is
+replicated across many worlds to exercise ADMM contact scaling.
+
+Success criteria:
+- A fixed-base Franka arm and payload appear in each replicated world.
+- The arm approaches, descends, grasps and holds, lifts, moves to the target, lowers, releases, and
+  retracts.
+- Robot-payload contacts resolve during grasping and transport; inspect for separation or
+  interpenetration.
+- The arm base stays above the floor and pick/place targets remain aligned with the payload.
+
+Runs:
+- `python -m newton.examples mujoco_franka_vbd_cable_admm_solver`
+  - The payload is a short XPBD rigid chain.
+- `python -m newton.examples mujoco_franka_vbd_cable_admm_solver --payload-kind vbd-cable`
+  - The payload is a VBD cable.
+"""
 
 from __future__ import annotations
 
@@ -108,7 +118,6 @@ def _find_label_index(labels: list[str], suffix: str) -> int:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -135,7 +144,7 @@ class Example:
         shapes_per_world = template.shape_count
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        builder.replicate(template, world_count=self.world_count)
+        builder.replicate(template, copy_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
         self.ground_shapes = [self._emit_ground_plane(builder)]
 
@@ -207,8 +216,7 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             scale = max(1.0, float(np.sqrt(self.world_count)))
             self.viewer.set_camera(pos=wp.vec3(0.9 * scale, -1.7 * scale, 0.95 * scale), pitch=-18.0, yaw=120.0)
-            if hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
+            self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
@@ -221,7 +229,6 @@ class Example:
             return lambda v: SolverVBD(
                 model=v,
                 iterations=vbd_iterations,
-                rigid_compliant_alm=True,
                 rigid_contact_history=False,
             )
         if self.payload_kind == "xpbd-chain":
@@ -287,6 +294,7 @@ class Example:
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[: len(FRANKA_Q)] = FRANKA_Q
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
@@ -310,17 +318,16 @@ class Example:
             margin=0.001,
             gap=0.002,
         )
-        points, quats = newton.utils.rod_straight_points_and_quaternions(
+        rod = newton.Rod.create_straight(
             start=PAYLOAD_CENTER - wp.vec3(0.5 * PAYLOAD_LENGTH, 0.0, 0.0),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=PAYLOAD_LENGTH,
-            num_segments=self.payload_segments,
+            segment_count=self.payload_segments,
             twist_total=0.0,
+            radius=self.payload_radius,
         )
         return builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.payload_radius,
+            rod=rod,
             body_frame_origin="start",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,

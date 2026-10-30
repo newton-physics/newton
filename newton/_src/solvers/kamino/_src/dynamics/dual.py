@@ -29,10 +29,10 @@ Typical usage example:
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Define a linear solver type to use as a back-end for the
@@ -61,7 +61,7 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.math import FLOAT32_EPS
+from ..core.math import FLOAT32_EPS, compute_gyroscopic_torque
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import vec6f
@@ -371,12 +371,12 @@ def gravity_plus_coriolis_wrench(
     m_i: wp.float32,
     I_i: wp.mat33f,
     omega_i: wp.vec3f,
+    dt: wp.float32,
 ) -> wp.spatial_vectorf:
     """
     Compute the gravitational + Coriolis wrench acting on a body.
     """
-    f_gi_i = m_i * g
-    tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
+    f_gi_i, tau_gi_i = gravity_plus_coriolis_wrench_split(g, m_i, I_i, omega_i, dt)
     return wp.spatial_vectorf(*f_gi_i, *tau_gi_i)
 
 
@@ -386,12 +386,13 @@ def gravity_plus_coriolis_wrench_split(
     m_i: wp.float32,
     I_i: wp.mat33f,
     omega_i: wp.vec3f,
+    dt: wp.float32,
 ) -> tuple[wp.vec3f, wp.vec3f]:
     """
     Compute the gravitational+inertial wrench on a body.
     """
     f_gi_i = m_i * g
-    tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
+    tau_gi_i = compute_gyroscopic_torque(dt, I_i, omega_i)
     return f_gi_i, tau_gi_i
 
 
@@ -485,7 +486,7 @@ def _build_nonlinear_generalized_force(
     omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
-    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
+    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i, dt)
 
     # Store the generalized free-velocity vector
     problem_h[bid] = dt * h_i
@@ -529,7 +530,7 @@ def _build_generalized_free_velocity(
     omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
-    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
+    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i, dt)
     f_h_i = wp.spatial_top(h_i)
     tau_h_i = wp.spatial_bottom(h_i)
 
@@ -617,6 +618,9 @@ def _build_joint_friction_bounds(
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_num_friction_cts: wp.array[wp.int32],
     model_joints_friction_cts_offset: wp.array[wp.int32],
+    model_joints_friction_cts_axis: wp.array[wp.int32],
+    model_info_joint_friction_cts_offset: wp.array[wp.int32],
+    model_info_joint_bounded_cts_offset: wp.array[wp.int32],
     model_joints_f_j: wp.array[wp.float32],
     # Outputs:
     problem_bound_lower: wp.array[wp.float32],
@@ -624,14 +628,64 @@ def _build_joint_friction_bounds(
 ):
     """Build per-row Coulomb joint friction impulse bounds."""
     jid = wp.tid()
+    wid = model_joints_wid[jid]
     num_rows = model_joints_num_friction_cts[jid]
     dof_start = model_joints_dofs_offset[jid]
-    row_start = model_joints_friction_cts_offset[jid]
-    dt = model_time_dt[model_joints_wid[jid]]
+    friction_start = model_joints_friction_cts_offset[jid]
+    friction_cts_offset_world = friction_start - model_info_joint_friction_cts_offset[wid]
+    row_start = model_info_joint_bounded_cts_offset[wid] + friction_cts_offset_world
+    dt = model_time_dt[wid]
     for j in range(num_rows):
-        bound = dt * model_joints_f_j[dof_start + j]
+        axis = model_joints_friction_cts_axis[friction_start + j]
+        bound = dt * model_joints_f_j[dof_start + axis]
         problem_bound_lower[row_start + j] = -bound
         problem_bound_upper[row_start + j] = bound
+
+
+@wp.kernel
+def _build_joint_effort_bounds(
+    # Inputs:
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_joint_bounded_cts_offset: wp.array[wp.int32],
+    data_joints_bound_a: wp.array[wp.float32],
+    # Outputs:
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
+):
+    """Scatter precomputed effort-limit implicit-PD impulse bounds."""
+    jid = wp.tid()
+    wid = model_joints_wid[jid]
+    effort_start = model_joints_effort_cts_offset[jid]
+    effort_cts_offset_world = effort_start - model_info_joint_effort_cts_offset[wid]
+    row_start = model_info_joint_bounded_cts_offset[wid] + model_info_num_friction_cts[wid] + effort_cts_offset_world
+    num_rows = model_joints_num_effort_cts[jid]
+    for j in range(num_rows):
+        bound = data_joints_bound_a[effort_start + j]
+        problem_bound_lower[row_start + j] = -bound
+        problem_bound_upper[row_start + j] = bound
+
+
+@wp.kernel
+def _build_joint_effort_bias(
+    # Inputs:
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_joints_effort_cts_offset_total_cts: wp.array[wp.int32],
+    data_joints_dq_b_a: wp.array[wp.float32],
+    # Outputs:
+    problem_v_b: wp.array[wp.float32],
+):
+    """Scatter precomputed effort-row velocity biases into the dual problem."""
+    jid = wp.tid()
+    effort_start = model_joints_effort_cts_offset[jid]
+    row_start = model_joints_effort_cts_offset_total_cts[jid]
+    num_rows = model_joints_num_effort_cts[jid]
+    for j in range(num_rows):
+        problem_v_b[row_start + j] = -data_joints_dq_b_a[effort_start + j]
 
 
 @wp.kernel
@@ -1666,9 +1720,10 @@ class DualProblem:
 
         Primarily builds the free-velocity bias vector ``v_b`` (joint dynamics and
         kinematics, limits, contacts). Also fills auxiliary inequality data that is
-        zeroed in :meth:`zero` and consumed later by the solver: joint friction
-        impulse bounds (``bound_lower``, ``bound_upper``) and contact friction
-        coefficients (``mu``).
+        zeroed in :meth:`zero` and consumed later by the solver: joint-friction
+        and effort-limit impulse bounds (``bound_lower``, ``bound_upper``),
+        effort-row velocity biases in ``v_b``, and contact friction coefficients
+        (``mu``).
         """
 
         if model.size.sum_of_num_joints > 0:
@@ -1683,10 +1738,46 @@ class DualProblem:
                         model.joints.dofs_offset,
                         model.joints.num_friction_cts,
                         model.joints.friction_cts_offset,
+                        model.joints.friction_cts_axis,
+                        model.info.joint_friction_cts_offset,
+                        model.info.joint_bounded_cts_offset,
                         model.joints.f_j,
                         # Outputs:
                         self._data.bound_lower,
                         self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
+            if model.size.sum_of_num_effort_joint_cts > 0:
+                wp.launch(
+                    _build_joint_effort_bounds,
+                    dim=model.size.sum_of_num_joints,
+                    inputs=[
+                        # Inputs:
+                        model.joints.wid,
+                        model.joints.num_effort_cts,
+                        model.joints.effort_cts_offset,
+                        model.info.num_joint_friction_cts,
+                        model.info.joint_effort_cts_offset,
+                        model.info.joint_bounded_cts_offset,
+                        data.joints.bound_a,
+                        # Outputs:
+                        self._data.bound_lower,
+                        self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    _build_joint_effort_bias,
+                    dim=model.size.sum_of_num_joints,
+                    inputs=[
+                        # Inputs:
+                        model.joints.num_effort_cts,
+                        model.joints.effort_cts_offset,
+                        model.joints.effort_cts_offset_total_cts,
+                        data.joints.dq_b_a,
+                        # Outputs:
+                        self._data.v_b,
                     ],
                     device=self.device,
                 )

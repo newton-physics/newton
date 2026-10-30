@@ -6,6 +6,14 @@
 A funnel-shaped mesh collider is filled with viscous fluid particles that
 flow out through a narrow aperture at the bottom, demonstrating viscoplastic
 material behavior with mesh collisions.
+
+Success criteria:
+- A static funnel is floating above the ground and a flow of particles is going out of the funnel.
+- The flow of particles is behaving as a viscous flow and creates a pile on the ground.
+- The pile of particles is slowly spreading.
+
+Runs:
+- `python -m newton.examples mpm_viscous`
 """
 
 import numpy as np
@@ -14,6 +22,8 @@ import warp as wp
 import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
+
+TUBE_OPACITY = 0.5
 
 
 class Example:
@@ -44,6 +54,7 @@ class Example:
             body=-1,
             mesh=mesh,
             cfg=newton.ModelBuilder.ShapeConfig(mu=options.funnel_friction),
+            opacity=TUBE_OPACITY,
         )
 
         # Fill funnel with particles

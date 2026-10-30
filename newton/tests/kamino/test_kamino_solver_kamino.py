@@ -5,12 +5,16 @@
 
 import time
 import unittest
+import warnings
+from typing import Literal
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton._src.solvers.kamino.config as kamino_config
+from newton._src.sim.shape_contact_pairs import _ShapeContactPairs
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
@@ -24,9 +28,6 @@ from newton._src.solvers.kamino._src.integrators import IntegratorEuler, Integra
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.models.builders import testing
-from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -35,7 +36,8 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.utils import basics
-from newton.tests.utils.testing import build_binary_revolute_joint_test
+from newton.tests.utils.basics import build_boxes_fourbar
+from newton.tests.utils.testing import build_binary_revolute_joint_test, build_shape_pairs_test
 
 ###
 # Module configs
@@ -122,6 +124,7 @@ def assert_solver_config(testcase: unittest.TestCase, config: SolverKaminoImpl.C
     testcase.assertIsInstance(config.constraints, kamino_config.ConstraintStabilizationConfig)
     testcase.assertIsInstance(config.dynamics, kamino_config.ConstrainedDynamicsConfig)
     testcase.assertIsInstance(config.padmm, kamino_config.PADMMSolverConfig)
+    testcase.assertIsInstance(config.lox, kamino_config.LOXSolverConfig)
     testcase.assertIsInstance(config.rotation_correction, str)
 
 
@@ -151,6 +154,7 @@ def assert_states_equal(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_array_equal(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy())
     np.testing.assert_array_equal(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy())
     np.testing.assert_array_equal(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_tau_j.numpy(), state_1.lambda_tau_j.numpy())
 
 
 def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state_1: StateKamino):
@@ -165,6 +169,7 @@ def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_allclose(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_tau_j.numpy(), state_1.lambda_tau_j.numpy(), rtol=rtol, atol=atol)
 
 
 def assert_states_close_masked(
@@ -189,7 +194,7 @@ def assert_states_close_masked(
         world_mask: Per-world boolean mask.
         positions: Whether to compare position attributes, i.e. q_i, q_j, q_j_p (skipped if False).
         velocities: Whether to compare velocity attributes, i.e. u_i, dq_j (skipped if False).
-        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_kin_j, lambda_dyn_j, lambda_f_j (skipped if False).
+        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_kin_j, lambda_dyn_j, lambda_f_j, lambda_tau_j (skipped if False).
         match_q_j_p_with_q_j: Whether to compare q_j_p against q_j in the reference (instead of q_j_p).
     """
     bodies_offset = model.info.bodies_offset.numpy()
@@ -202,6 +207,7 @@ def assert_states_close_masked(
     friction_cts_offset = np.array(
         [*model.info.joint_friction_cts_offset.numpy(), model.size.sum_of_num_friction_joint_cts]
     )
+    effort_cts_offset = np.array([*model.info.joint_effort_cts_offset.numpy(), model.size.sum_of_num_effort_joint_cts])
     world_mask_np = world_mask.numpy()
 
     # List state attributes to compare
@@ -220,7 +226,12 @@ def assert_states_close_masked(
     if forces:
         body_attributes.extend(["w_i", "w_i_e"])
         cts_attributes.extend(
-            [("lambda_kin_j", kin_cts_offset), ("lambda_dyn_j", dyn_cts_offset), ("lambda_f_j", friction_cts_offset)]
+            [
+                ("lambda_kin_j", kin_cts_offset),
+                ("lambda_dyn_j", dyn_cts_offset),
+                ("lambda_f_j", friction_cts_offset),
+                ("lambda_tau_j", effort_cts_offset),
+            ]
         )
 
     for wid in range(model.size.num_worlds):
@@ -380,6 +391,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
             msg.reset_log_level()
 
     def test_00_make_default(self):
+        """Construct the default solver configuration."""
         config = SolverKaminoImpl.Config()
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "twopi")
@@ -388,6 +400,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         self.assertEqual(config.padmm.warmstart_scale, 0.9)
 
     def test_01_make_explicit(self):
+        """Construct an explicit solver configuration with requested overrides."""
         config = SolverKaminoImpl.Config(
             dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="CR"),
             padmm=kamino_config.PADMMSolverConfig(warmstart_mode="internal", warmstart_scale=0.5),
@@ -413,6 +426,43 @@ class TestSolverKaminoConfig(unittest.TestCase):
                 padmm=kamino_config.PADMMSolverConfig(penalty_update_method="balanced"),
             )
 
+    def test_02_lox_config_validation(self):
+        """Accept supported LOX settings and reject one invalid value of each validated kind."""
+        with self.assertRaises(TypeError):
+            kamino_config.LOXSolverConfig(10)
+
+        config = SolverKaminoImpl.Config(dynamics_solver="lox")
+        self.assertEqual(config.dynamics_solver, "lox")
+        # Only LOX defaults to sparse Jacobians, which it requires
+        self.assertTrue(config.sparse_jacobian)
+        self.assertFalse(SolverKaminoImpl.Config().sparse_jacobian)
+        with self.assertRaisesRegex(ValueError, "requires `sparse_jacobian=True`"):
+            SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=False)
+        SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
+        self.assertEqual(SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau").integrator, "moreau")
+        kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="anderson")
+        kamino_config.LOXSolverConfig(
+            contact_compliance=True, contact_implicit_restitution=True, contact_spatial_friction=True
+        )
+
+        invalid_values = (
+            ({"contact_warmstart_method": "geom_pair_net_wrench"}, "contact warmstart method is not implemented"),
+            ({"projection_acceleration": "invalid"}, "projection_acceleration"),
+            ({"gauss_seidel_max_colors": 4, "projection_acceleration": "apgd"}, "requires gauss_seidel_max_colors=1"),
+            ({"gauss_seidel_max_colors": True}, "gauss_seidel_max_colors"),
+            ({"max_iterations": 0}, "max_iterations"),
+            ({"use_graph_conditionals": 1}, "use_graph_conditionals"),
+            ({"contact_compliance": 1.0e-3}, "contact_compliance"),
+            ({"position_tolerance": 0.0}, "position_tolerance"),
+            ({"consensus_fraction": 1.1}, "consensus_fraction"),
+            ({"projected_twist_fraction": float("nan")}, "projected_twist_fraction"),
+            ({"weight_beta": 0.5}, "weight_beta"),
+            ({"max_joint_penalty_ratio": 50.0}, "max_joint_penalty_ratio"),
+        )
+        for kwargs, message in invalid_values:
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
+                kamino_config.LOXSolverConfig(**kwargs)
+
 
 class TestCollisionCapacityInitialization(unittest.TestCase):
     def setUp(self):
@@ -427,8 +477,63 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
-        builder.replicate(source_builder, world_count=3)
+        builder.replicate(source_builder, copy_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+    def test_pair_tables_match_collision_mode(self):
+        """Retain pair identities only for collision modes that consume them."""
+        for mode, use_detector, pipeline, broadphase, needs_pairs in (
+            ("external", False, "unified", "explicit", False),
+            ("unified_sap", True, "unified", "sap", False),
+            ("unified_nxn", True, "unified", "nxn", False),
+            ("default", True, None, None, True),
+            ("unified_explicit", True, "unified", "explicit", True),
+            ("primitive_sap", True, "primitive", "sap", True),
+        ):
+            with self.subTest(mode=mode):
+                if pipeline == "primitive":
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                    SolverKamino.register_custom_attributes(builder)
+                    builder.begin_world()
+                    for height in (0.0, 0.15):
+                        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height)))
+                        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+                    builder.end_world()
+                    model = builder.finalize(device=self.default_device)
+                else:
+                    model = self._make_three_world_model()
+                self.assertIsNone(model._shape_contact_pairs)
+                detector_config = (
+                    None
+                    if pipeline is None
+                    else kamino_config.CollisionDetectorConfig(pipeline=pipeline, broadphase=broadphase)
+                )
+                config = SolverKamino.Config(use_collision_detector=use_detector, collision_detector=detector_config)
+                with mock.patch.object(
+                    _ShapeContactPairs,
+                    "build_pairs",
+                    autospec=True,
+                    side_effect=_ShapeContactPairs.build_pairs if needs_pairs else AssertionError("Enumerated pairs"),
+                ) as build:
+                    solver = SolverKamino(model, config=config)
+                    self.assertEqual(solver._model_kamino.geoms.collidable_pairs is not None, needs_pairs)
+                    self.assertEqual(model._shape_contact_pairs is not None, needs_pairs)
+                    if needs_pairs:
+                        build.assert_called_once()
+                        np.testing.assert_array_equal(
+                            solver._model_kamino.geoms.collidable_pairs.numpy(), model.shape_contact_pairs.numpy()
+                        )
+                    if use_detector:
+                        solver._collision_detector_kamino.collide(
+                            data=solver._solver_kamino._data, contacts=solver._contacts_kamino
+                        )
+                    else:
+                        collision_pipeline = newton.CollisionPipeline(model, broad_phase="sap", shape_pairs_max=64)
+                        contacts = collision_pipeline.contacts()
+                        state = model.state()
+                        collision_pipeline.collide(state, contacts)
+                        solver.update_contacts(contacts, state)
+                    self.assertEqual(model._shape_contact_pairs is not None, needs_pairs)
 
     def test_capacity_allocation_for_pipeline_allocated_after_kamino(self):
         """Verify capacity allocation for a pipeline allocated after Kamino."""
@@ -471,6 +576,39 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
+    def test_contact_observables_bind_at_allocation(self):
+        """Allocate from the supplied contacts and populate them with native geometry."""
+        model = self._make_three_world_model()
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
+        flags = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+        with self.assertRaisesRegex(ValueError, "Contacts"):
+            solver.observables(solver.supported_observables)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        observables = solver.observables(solver.supported_observables, contacts=contacts)
+        self.assertEqual(observables.kinds, solver.supported_observables)
+        self.assertEqual(observables.body_qdd.shape, (model.body_count,))
+        self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
+        self.assertIs(observables.contacts, contacts)
+        pointer = observables.contact_f.ptr
+        solver.step(model.state(), model.state(), model.control(), contacts, SIM_DT, observables=observables)
+        self.assertIs(observables.contacts, contacts)
+        self.assertEqual(observables.contact_f.ptr, pointer)
+        self.assertTrue(np.all(np.isfinite(observables.contact_f.numpy())))
+
+        if self.default_device.is_cuda and not wp.config.verify_cuda:
+            state_in, state_out = model.state(), model.state()
+            selected = observables.select(flags)
+            control = model.control()
+            with wp.ScopedCapture() as capture:
+                solver.step(state_in, state_out, control, contacts, SIM_DT, observables=selected)
+            poses = state_in.body_q.numpy()
+            poses[:, 0] += 0.1
+            state_in.body_q.assign(poses)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(solver._contact_observable_state.body_q.numpy(), poses)
+            self.assertEqual(observables.contact_f.ptr, pointer)
+
     def test_moreau_detects_midpoint_contact(self):
         """Verify Moreau-Jean detects contacts created at the midpoint."""
         # Start the sphere surface 0.3 m above the zero-gap ground plane.
@@ -503,6 +641,60 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         # This contact exists only if detection uses the midpoint rather than state_in.
         self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
 
+    def test_contact_observables_use_input_pose(self):
+        """Export wrenches and local geometry in the input frame, even for in-place steps."""
+        for native in (False, True):
+            expected_state_out = None
+            for in_place in (False, True):
+                with self.subTest(native=native, in_place=in_place):
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+                    SolverKamino.register_custom_attributes(builder)
+                    for x in (-0.095, 0.095):
+                        body = builder.add_body(
+                            xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
+                            mass=1.0,
+                            com=wp.vec3(0.01, 0.0, 0.0),
+                            inertia=UNIT_INERTIA,
+                            lock_inertia=True,
+                        )
+                        builder.add_shape_sphere(body, radius=0.1)
+                    model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+                    solver = SolverKamino(
+                        model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
+                    )
+                    pipeline = newton.CollisionPipeline(model)
+                    contacts = pipeline.contacts()
+                    observables = solver.observables(
+                        contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                    )
+                    state_in = model.state()
+                    state_in.body_qd.assign(
+                        np.array([[1.0, 0.0, -0.2, 0.0, 3.0, 0.0], [-1.0, 0.0, 0.2, 0.0, -3.0, 0.0]], dtype=np.float32)
+                    )
+                    reference_state = model.state()
+                    wp.copy(reference_state.body_q, state_in.body_q)
+                    state_out = state_in if in_place else model.state()
+                    if not native:
+                        pipeline.collide(state_in, contacts)
+                    solver.step(state_in, state_out, None, contacts, 0.02, observables=observables)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    self.assertGreater(count, 0)
+                    actual_forces = observables.contact_f.numpy().copy()
+                    actual_points = contacts.rigid_contact_point0.numpy()[:count].copy()
+                    actual_points1 = contacts.rigid_contact_point1.numpy()[:count].copy()
+                    self.assertGreater(np.linalg.norm(actual_forces[:count, :3]), 0.0)
+                    self.assertFalse(np.allclose(state_out.body_q.numpy(), reference_state.body_q.numpy()))
+                    if in_place:
+                        np.testing.assert_allclose(state_out.body_q.numpy(), expected_state_out, atol=1e-6)
+                    else:
+                        expected_state_out = state_out.body_q.numpy().copy()
+                        np.testing.assert_allclose(state_in.body_q.numpy(), reference_state.body_q.numpy(), atol=1e-6)
+                    expected_forces = wp.zeros_like(observables.contact_f)
+                    solver._populate_contact_observables(contacts, reference_state, expected_forces)
+                    np.testing.assert_allclose(actual_forces, expected_forces.numpy(), atol=1e-5)
+                    np.testing.assert_allclose(actual_points, contacts.rigid_contact_point0.numpy()[:count], atol=1e-5)
+                    np.testing.assert_allclose(actual_points1, contacts.rigid_contact_point1.numpy()[:count], atol=1e-5)
+
     def test_external_contacts_use_euler(self):
         """Verify external-contact configurations warn and pick Euler."""
         model = self._make_three_world_model()
@@ -527,8 +719,55 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 1002)
 
         contacts = newton.CollisionPipeline(model).contacts()
-        with self.assertNoLogs(level="WARNING"):
+        with warnings.catch_warnings(), self.assertNoLogs(level="WARNING"):
+            warnings.simplefilter("error", DeprecationWarning)
             solver.update_contacts(contacts, model.state())
+
+    def test_update_contacts_warns_only_for_force_export(self):
+        """Keep geometry-only export warning-free and deprecate only legacy forces."""
+        for native in (False, True):
+            for export_forces in (False, True):
+                with self.subTest(native=native, export_forces=export_forces):
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                    SolverKamino.register_custom_attributes(builder)
+                    basics.build_sphere_on_plane(builder=builder, z_offset=-0.01)
+                    model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+                    solver = SolverKamino(
+                        model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
+                    )
+                    pipeline = newton.CollisionPipeline(model)
+                    contacts = newton.Contacts(
+                        pipeline.rigid_contact_max,
+                        pipeline.soft_contact_max,
+                        device=self.default_device,
+                        requested_attributes={"force"} if export_forces else None,
+                    )
+                    state_in, state_out = model.state(), model.state()
+                    if not native:
+                        pipeline.collide(state_in, contacts)
+                    solver.step(state_in, state_out, None, None if native else contacts, SIM_DT)
+
+                    if export_forces:
+                        with self.assertWarnsRegex(
+                            DeprecationWarning, r"SolverKamino\.update_contacts\(\) force export.*1\.7"
+                        ) as warning:
+                            solver.update_contacts(contacts, state_in)
+                        self.assertEqual(warning.filename, __file__)
+                    else:
+                        self.assertIsNone(contacts.force)
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("error", DeprecationWarning)
+                            solver.update_contacts(contacts, state_in)
+
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    self.assertGreater(count, 0)
+                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point0.numpy()[:count])))
+                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point1.numpy()[:count])))
+                    np.testing.assert_allclose(
+                        np.linalg.norm(contacts.rigid_contact_normal.numpy()[:count], axis=1), 1.0, atol=1e-6
+                    )
+                    if export_forces:
+                        self.assertGreater(np.linalg.norm(contacts.force.numpy()[:count, :3]), 0.0)
 
     def test_step_with_zero_max_contacts(self):
         """Verify SolverKamino.step() succeeds when the model admits no possible contacts."""
@@ -550,6 +789,154 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
+
+
+class TestSolverKaminoStatus(unittest.TestCase):
+    def setUp(self):
+        """Configure the default Warp device for status tests."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _make_three_world_model(self) -> newton.Model:
+        """Build a three-world model for status contract checks."""
+        source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(source_builder)
+        basics.build_sphere_on_plane(builder=source_builder, z_offset=0.5)
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        builder.replicate(source_builder, copy_count=3)
+        return builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+    def _step_and_assert_status_contract(
+        self,
+        solver: newton.solvers.SolverKamino,
+        model: newton.Model,
+    ) -> None:
+        """Advance one step and verify the public terminal-status contract."""
+        solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
+        status = solver.status
+        common_fields = ("converged", "iterations", "r_p", "r_d", "r_c")
+
+        self.assertIsInstance(status, wp.array)
+        self.assertIs(status, solver._solver_kamino.solver_fd.data.status)
+        self.assertEqual(status.shape, (3,))
+        self.assertEqual(status.device, self.default_device)
+        self.assertTrue(set(common_fields).issubset(status.dtype.vars))
+
+        status_host = status.numpy()
+        for field in common_fields:
+            self.assertEqual(status_host[field].shape, (3,))
+        self.assertTrue(np.all((status_host["converged"] == 0) | (status_host["converged"] == 1)))
+        self.assertTrue(np.all(status_host["iterations"] > 0))
+        for field in ("r_p", "r_d", "r_c"):
+            self.assertTrue(np.all(np.isfinite(status_host[field])))
+            self.assertTrue(np.all(status_host[field] >= 0.0))
+
+    def test_padmm_status_is_always_available(self):
+        """Verify PADMM terminal status is available regardless of detailed collection."""
+        model = self._make_three_world_model()
+
+        for collect_solver_info in (False, True):
+            with self.subTest(collect_solver_info=collect_solver_info):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver="padmm",
+                        collect_solver_info=collect_solver_info,
+                    ),
+                )
+                self._step_and_assert_status_contract(solver, model)
+
+    def test_dvi_status_is_always_available(self):
+        """Verify DVI terminal status is available regardless of detailed collection."""
+        model = self._make_three_world_model()
+
+        for collect_solver_info in (False, True):
+            with self.subTest(collect_solver_info=collect_solver_info):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver="dvi",
+                        collect_solver_info=collect_solver_info,
+                    ),
+                )
+                self._step_and_assert_status_contract(solver, model)
+
+    def test_lox_status_is_always_available(self):
+        """Verify LOX terminal status is available with or without solution metrics."""
+        model = self._make_three_world_model()
+
+        for compute_solution_metrics in (False, True):
+            with self.subTest(compute_solution_metrics=compute_solution_metrics):
+                config = newton.solvers.SolverKamino.Config(
+                    dynamics_solver="lox",
+                    compute_solution_metrics=compute_solution_metrics,
+                )
+                solver = newton.solvers.SolverKamino(model, config=config)
+                self._step_and_assert_status_contract(solver, model)
+
+                status_host = solver.status.numpy()
+                np.testing.assert_array_equal(status_host["failed"], 0)
+                self.assertTrue(np.all(status_host["iterations"] <= config.lox.max_iterations))
+
+
+class TestSolverKaminoScratchStateReset(unittest.TestCase):
+    """Check the assumption that every solver iteration reinitializes the scratch state."""
+
+    def setUp(self):
+        """Configure the default Warp device for scratch-state tests."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _assert_step_resets_scratch_state(
+        self,
+        dynamics_solver: Literal["padmm", "dvi"],
+        warmstart_mode: Literal["none", "internal", "containers"],
+    ) -> None:
+        """Assert that a single step resets the dynamics solver scratch state before solving."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        basics.build_sphere_on_plane(builder=builder, z_offset=BASE_HEIGHT)
+        model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+        config = SolverKamino.Config(dynamics_solver=dynamics_solver)
+        if dynamics_solver == "padmm":
+            config.padmm.warmstart_mode = warmstart_mode
+        else:
+            config.dvi.warmstart_mode = warmstart_mode
+        solver = SolverKamino(model, config=config)
+
+        solver_fd = solver._solver_kamino.solver_fd
+        state = solver_fd.data.state
+        recorder = mock.Mock()
+        with (
+            mock.patch.object(state, "reset", wraps=state.reset) as reset_spy,
+            mock.patch.object(solver_fd, "solve", wraps=solver_fd.solve) as solve_spy,
+        ):
+            recorder.attach_mock(reset_spy, "reset")
+            recorder.attach_mock(solve_spy, "solve")
+            solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
+
+        # Require the calls to pair up as (reset, solve), so that a reset that goes missing or
+        # drifts after the solve is caught regardless of how many solves a step performs.
+        call_order = [name for name, _, _ in recorder.mock_calls]
+        self.assertTrue(call_order, "the step performed no dynamics solve")
+        self.assertEqual(call_order, ["reset", "solve"] * (len(call_order) // 2))
+
+    def test_padmm_step_resets_scratch_state(self):
+        """Verify PADMM reinitializes its scratch state on both the cold- and warm-start paths."""
+        for warmstart_mode in ("none", "internal"):
+            with self.subTest(warmstart_mode=warmstart_mode):
+                self._assert_step_resets_scratch_state("padmm", warmstart_mode)
+
+    def test_dvi_step_resets_scratch_state(self):
+        """Verify DVI reinitializes its scratch state on both the cold- and warm-start paths."""
+        for warmstart_mode in ("none", "internal"):
+            with self.subTest(warmstart_mode=warmstart_mode):
+                self._assert_step_resets_scratch_state("dvi", warmstart_mode)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):
@@ -587,8 +974,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test creating a default Kamino solver without support for contacts.
         """
-        builder = make_homogeneous_builder(num_worlds=1, build_fn=build_boxes_fourbar)
-        model = builder.finalize(device=self.default_device)
+        builder = build_boxes_fourbar()
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
         self.assertIsInstance(solver, SolverKaminoImpl)
         assert_solver_components(self, solver)
@@ -597,10 +984,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test creating a default Kamino solver with support for contacts.
         """
-        builder = make_homogeneous_builder(num_worlds=1, build_fn=build_boxes_fourbar)
-        model = builder.finalize(device=self.default_device)
-        _, world_max_contacts = builder.compute_required_contact_capacity(max_contacts_per_pair=16)
-        contacts = ContactsKamino(capacity=world_max_contacts, device=model.device)
+        builder = build_boxes_fourbar()
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        contacts = ContactsKamino(model=model)
         solver = SolverKaminoImpl(model=model, contacts=contacts)
         self.assertIsInstance(solver, SolverKaminoImpl)
         assert_solver_components(self, solver)
@@ -609,8 +995,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test creating a default Kamino solver without support for contacts.
         """
-        builder = make_homogeneous_builder(num_worlds=1, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
+        builder = build_boxes_fourbar(limits=False)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
         self.assertIsInstance(solver, SolverKaminoImpl)
         assert_solver_components(self, solver)
@@ -620,10 +1006,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test creating a default Kamino solver with support for contacts.
         """
-        builder = make_homogeneous_builder(num_worlds=1, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
-        _, world_max_contacts = builder.compute_required_contact_capacity(max_contacts_per_pair=16)
-        contacts = ContactsKamino(capacity=world_max_contacts, device=model.device)
+        builder = build_boxes_fourbar(limits=False)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        contacts = ContactsKamino(model=model)
         solver = SolverKaminoImpl(model=model, contacts=contacts)
         self.assertIsInstance(solver, SolverKaminoImpl)
         assert_solver_components(self, solver)
@@ -637,8 +1022,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test resetting multiple world solvers to default state defined in the model.
         """
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
         # Set a pre-step control callback to apply external forces
@@ -694,8 +1080,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test resetting multiple world solvers while preserving the state.
         """
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
         # Set a pre-step control callback to apply external forces
@@ -760,8 +1147,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test resetting multiple world solvers to specified floating base states.
         """
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
         # Set a pre-step control callback to apply external forces
@@ -888,8 +1276,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test resetting multiple world solvers to specified joint states.
         """
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         config = SolverKaminoImpl.Config(use_fk_solver=True)
         solver = SolverKaminoImpl(model=model, config=config)
 
@@ -1022,8 +1411,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test resetting multiple world solvers to specified actuator states.
         """
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         config = SolverKaminoImpl.Config(use_fk_solver=True)
         solver = SolverKaminoImpl(model=model, config=config)
 
@@ -1160,13 +1550,13 @@ class TestSolverKaminoImpl(unittest.TestCase):
         shape_types = [GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX, GeoType.CONE]
         shape_types = [type_.name.lower() for type_ in shape_types]
         shape_pairs = [(type1, type2) for type1 in shape_types for type2 in shape_types]
-        builder = testing.make_shape_pairs_builder(
+        builder = build_shape_pairs_test(
             shape_pairs=shape_pairs,
             distance=0.0,
             ground_box=True,
             ground_z=-1.0,  # Ensures non-zero contact reactions after just a few steps
         )
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Initialize the solver and step it a few times
         contacts = ContactsKamino(model=model)
@@ -1223,24 +1613,24 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         # Create a single-instance system
         single_builder = build_boxes_fourbar(ground=False)
-        for i, body in enumerate(single_builder.all_bodies):
-            msg.info(f"[single]: [builder]: body {i}: q_i: {body.q_i_0}")
-            msg.info(f"[single]: [builder]: body {i}: u_i: {body.u_i_0}")
+        for i, (q_i_0, u_i_0) in enumerate(zip(single_builder.body_q, single_builder.body_qd, strict=True)):
+            msg.info(f"[single]: [builder]: body {i}: q_i: {q_i_0}")
+            msg.info(f"[single]: [builder]: body {i}: u_i: {u_i_0}")
 
         # Create a model and states from the builder
-        single_model = single_builder.finalize(device=self.default_device)
+        single_model = ModelKamino.from_newton(single_builder.finalize(device=self.default_device))
         single_state_p = single_model.state()
         single_state_n = single_model.state()
         single_control = single_model.control()
         self.assertEqual(single_model.size.sum_of_num_bodies, 4)
         self.assertEqual(single_model.size.sum_of_num_joints, 4)
-        for i, body in enumerate(single_builder.all_bodies):
-            np.testing.assert_allclose(single_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_p.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_n.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_n.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
+        for i, (q_i_0, u_i_0) in enumerate(zip(single_builder.body_q, single_builder.body_qd, strict=True)):
+            np.testing.assert_allclose(single_model.bodies.q_i_0.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_model.bodies.u_i_0.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_p.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_p.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_n.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_n.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
 
         # Optional verbose output - enabled globally via self.verbose
         msg.info(f"[single]: [init]: model.size:\n{single_model.size}\n\n")
@@ -1251,7 +1641,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
-
+        msg.info(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
         # Create simulator and check if the initial state is consistent with the contents of the builder
         single_solver = SolverKaminoImpl(model=single_model)
         self.assertIsInstance(single_solver, SolverKaminoImpl)
@@ -1304,6 +1695,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_dq_j = single_state_n.dq_j.numpy().copy()
         final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
         final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
+        final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
+        final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
@@ -1314,6 +1707,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
         msg.info(
             f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
         )
 
         # Tile the collected states for comparison against the multi-instance simulator
@@ -1335,14 +1732,15 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[samples]: [multi] [final]: dq_j (shape={multi_final_dq_j.shape}):\n{multi_final_dq_j}\n")
 
         # Create a multi-instance system by replicating the single-instance builder
-        multi_builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_fourbar, ground=False)
-        for i, body in enumerate(multi_builder.all_bodies):
-            msg.info(f"[multi]: [builder]: body {i}: bid: {body.bid}")
-            msg.info(f"[multi]: [builder]: body {i}: q_i: {body.q_i_0}")
-            msg.info(f"[multi]: [builder]: body {i}: u_i: {body.u_i_0}")
+        multi_builder = newton.ModelBuilder()
+        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
+        for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
+            msg.info(f"[multi]: [builder]: body {i}: bid: {i}")
+            msg.info(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")
+            msg.info(f"[multi]: [builder]: body {i}: u_i: {u_i_0}")
 
         # Create a model and states from the builder
-        multi_model = multi_builder.finalize(device=self.default_device)
+        multi_model = ModelKamino.from_newton(multi_builder.finalize(device=self.default_device))
         multi_state_p = multi_model.state()
         multi_state_n = multi_model.state()
         multi_control = multi_model.control()
@@ -1351,13 +1749,13 @@ class TestSolverKaminoImpl(unittest.TestCase):
         multi_solver = SolverKaminoImpl(model=multi_model)
         self.assertEqual(multi_model.size.sum_of_num_bodies, single_model.size.sum_of_num_bodies * num_worlds)
         self.assertEqual(multi_model.size.sum_of_num_joints, single_model.size.sum_of_num_joints * num_worlds)
-        for i, body in enumerate(multi_builder.all_bodies):
-            np.testing.assert_allclose(multi_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_p.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_n.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_n.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
+        for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
+            np.testing.assert_allclose(multi_model.bodies.q_i_0.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_model.bodies.u_i_0.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_p.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_p.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_n.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_n.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
 
         # Optional verbose output - enabled globally via self.verbose
         msg.info(f"[multi]: [init]: sim.model.size:\n{multi_model.size}\n\n")
@@ -1414,24 +1812,24 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         # Create a single-instance system
         single_builder = build_boxes_fourbar(ground=True)
-        for i, body in enumerate(single_builder.all_bodies):
-            msg.info(f"[single]: [builder]: body {i}: q_i: {body.q_i_0}")
-            msg.info(f"[single]: [builder]: body {i}: u_i: {body.u_i_0}")
+        for i, (q_i_0, u_i_0) in enumerate(zip(single_builder.body_q, single_builder.body_qd, strict=True)):
+            msg.info(f"[single]: [builder]: body {i}: q_i: {q_i_0}")
+            msg.info(f"[single]: [builder]: body {i}: u_i: {u_i_0}")
 
         # Create a model and states from the builder
-        single_model = single_builder.finalize(device=self.default_device)
+        single_model = ModelKamino.from_newton(single_builder.finalize(device=self.default_device))
         single_state_p = single_model.state()
         single_state_n = single_model.state()
         single_control = single_model.control()
         self.assertEqual(single_model.size.sum_of_num_bodies, 4)
         self.assertEqual(single_model.size.sum_of_num_joints, 4)
-        for i, body in enumerate(single_builder.all_bodies):
-            np.testing.assert_allclose(single_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_p.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_n.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(single_state_n.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
+        for i, (q_i_0, u_i_0) in enumerate(zip(single_builder.body_q, single_builder.body_qd, strict=True)):
+            np.testing.assert_allclose(single_model.bodies.q_i_0.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_model.bodies.u_i_0.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_p.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_p.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_n.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(single_state_n.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
 
         # Optional verbose output - enabled globally via self.verbose
         msg.info(f"[single]: [init]: model.size:\n{single_model.size}\n\n")
@@ -1442,10 +1840,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
-
+        msg.info(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
         # Create a contacts container for the single-instance system
-        _, single_world_max_contacts = single_builder.compute_required_contact_capacity(max_contacts_per_pair=16)
-        single_contacts = ContactsKamino(capacity=single_world_max_contacts, device=single_model.device)
+        single_contacts = ContactsKamino(model=single_model)
 
         # Create simulator and check if the initial state is consistent with the contents of the builder
         single_solver = SolverKaminoImpl(model=single_model, contacts=single_contacts)
@@ -1492,6 +1890,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_dq_j = single_state_n.dq_j.numpy().copy()
         final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
         final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
+        final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
+        final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
@@ -1502,6 +1902,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
         msg.info(
             f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
         )
 
         # Tile the collected states for comparison against the multi-instance simulator
@@ -1523,33 +1927,33 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[samples]: [multi] [final]: dq_j (shape={multi_final_dq_j.shape}):\n{multi_final_dq_j}\n")
 
         # Create a multi-instance system by replicating the single-instance builder
-        multi_builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_fourbar, ground=True)
-        for i, body in enumerate(multi_builder.all_bodies):
-            msg.info(f"[multi]: [builder]: body {i}: bid: {body.bid}")
-            msg.info(f"[multi]: [builder]: body {i}: q_i: {body.q_i_0}")
-            msg.info(f"[multi]: [builder]: body {i}: u_i: {body.u_i_0}")
+        multi_builder = newton.ModelBuilder()
+        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
+        for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
+            msg.info(f"[multi]: [builder]: body {i}: bid: {i}")
+            msg.info(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")
+            msg.info(f"[multi]: [builder]: body {i}: u_i: {u_i_0}")
 
         # Create a model and states from the builder
-        multi_model = multi_builder.finalize(device=self.default_device)
+        multi_model = ModelKamino.from_newton(multi_builder.finalize(device=self.default_device))
         multi_state_p = multi_model.state()
         multi_state_n = multi_model.state()
         multi_control = multi_model.control()
 
         # Create a contacts container for the multi-instance system
-        _, multi_world_max_contacts = multi_builder.compute_required_contact_capacity(max_contacts_per_pair=16)
-        multi_contacts = ContactsKamino(capacity=multi_world_max_contacts, device=multi_model.device)
+        multi_contacts = ContactsKamino(model=multi_model)
 
         # Create simulator and check if the initial state is consistent with the contents of the builder
         multi_solver = SolverKaminoImpl(model=multi_model, contacts=multi_contacts)
         self.assertEqual(multi_model.size.sum_of_num_bodies, single_model.size.sum_of_num_bodies * num_worlds)
         self.assertEqual(multi_model.size.sum_of_num_joints, single_model.size.sum_of_num_joints * num_worlds)
-        for i, body in enumerate(multi_builder.all_bodies):
-            np.testing.assert_allclose(multi_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_p.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_n.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(multi_state_n.u_i.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
+        for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
+            np.testing.assert_allclose(multi_model.bodies.q_i_0.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_model.bodies.u_i_0.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_p.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_p.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_n.q_i.numpy()[i], q_i_0, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(multi_state_n.u_i.numpy()[i], u_i_0, rtol=rtol, atol=atol)
 
         # Optional verbose output - enabled globally via self.verbose
         msg.info(f"[multi]: [init]: sim.model.size:\n{multi_model.size}\n\n")
@@ -1601,7 +2005,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
 
 class TestSolverKaminoMasslessBodies(unittest.TestCase):
-    """Massless bodies are supported when welded to the world and rejected otherwise."""
+    """Massless bodies are supported when fixed or prescribed and rejected otherwise."""
 
     def test_massless_body_welded_to_world_stays_at_rest(self):
         """Verify a massless body welded to the world stays at rest, along with its welded child.

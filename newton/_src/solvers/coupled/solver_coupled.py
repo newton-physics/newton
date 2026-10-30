@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import functools
 import logging
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -158,6 +159,14 @@ def _zero_reset_view_rows_kernel(
         values[local_id] = zero_value
 
 
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare the common dtypes up front.
+for _dtype in (wp.float32, wp.vec3, wp.mat33, wp.transform, wp.spatial_vector):
+    wp.overload(_copy_reset_view_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_scatter_reset_owned_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_zero_reset_view_rows_kernel, {"values": wp.array[_dtype], "zero_value": _dtype})
+
+
 def _identity_index_map(count: int, device) -> wp.array:
     """Return a dense local-to-global identity map."""
     return wp.array(list(range(count)), dtype=int, device=device)
@@ -178,12 +187,67 @@ class _EntryIndexMaps:
 @dataclass(frozen=True)
 class _CompactIndexProjection:
     local_to_global: list[int]
+    """Parent row of each view row; ``-1`` marks a row the view synthesizes."""
     global_to_local: list[int]
+    position_keys: list[int] | None = None
+    """Monotonic parent-domain position of each view row, used to remap exclusive end boundaries.
+
+    ``None`` means the keys equal :attr:`local_to_global`.
+    """
+
+
+@dataclass(frozen=True)
+class _FreeRootLayout:
+    """Rows of the FREE root joints synthesized in a compact entry view.
+
+    An entry-owned body whose incoming articulation joint to a parent body
+    the view hides (enabled in the model and absent from the view) receives
+    a FREE joint to the world, matching what ``ModelBuilder.add_joint_free(body)``
+    produces. Each FREE joint heads its own view articulation, followed by
+    the visible joints of the body's subtree; the remaining joints of the
+    split parent-model articulation keep its original root in their own row.
+    Every local-to-global map stores ``-1`` for these rows.
+    """
+
+    cut_joint: tuple[int, ...]
+    """Hidden parent-model joint replaced by each FREE joint."""
+    body_global: tuple[int, ...]
+    """Parent-model child body of each FREE joint."""
+    joint_local: tuple[int, ...]
+    """View joint row of each FREE joint."""
+    coord_local: tuple[int, ...]
+    """First view joint-coordinate row of each FREE joint."""
+    dof_local: tuple[int, ...]
+    """First view joint-DOF row of each FREE joint."""
+    joint_articulation_local: tuple[int, ...]
+    """View articulation row of every view joint, ``-1`` outside articulations."""
+    own_articulation_rows: tuple[tuple[int, int], ...]
+    """View articulation rows a FREE joint heads, with that joint's index, sorted by row."""
+
+
+@dataclass(frozen=True)
+class _FreeRootJoints:
+    """FREE root joints of a compact entry view, with their row values and state indices."""
+
+    layout: _FreeRootLayout
+    row_values: dict[str, tuple[list[int], list[Any]]]
+    """View rows and values written over projected attributes, keyed by attribute name."""
+    body_local: wp.array[int]
+    """View body row of each FREE joint's child."""
+    coord_local: wp.array[int]
+    """First view joint-coordinate row of each FREE joint."""
+    dof_local: wp.array[int]
+    """First view joint-DOF row of each FREE joint."""
+
+    @property
+    def count(self) -> int:
+        return len(self.layout.cut_joint)
 
 
 @dataclass(frozen=True)
 class _CompactIndexMaps:
     projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection]
+    free_root_joints: _FreeRootJoints | None = None
 
     def order(self, frequency: Model.AttributeFrequency | str) -> list[int]:
         return self.projections[frequency].local_to_global
@@ -199,14 +263,106 @@ class _AttributeProjection:
     row_width: int
     requires_empty_sentinel: bool
     compaction_policy: str
+    default: Any = field(default=None, compare=False)
 
 
-def _compact_index_projection(local_to_global: Sequence[int], source_count: int) -> _CompactIndexProjection:
+def _compact_index_projection(
+    local_to_global: Sequence[int],
+    source_count: int,
+    position_keys: Sequence[int] | None = None,
+) -> _CompactIndexProjection:
     order = [int(index) for index in local_to_global]
     inverse = [-1] * int(source_count)
     for local_id, global_id in enumerate(order):
-        inverse[global_id] = local_id
-    return _CompactIndexProjection(order, inverse)
+        if global_id >= 0:
+            inverse[global_id] = local_id
+    keys = None if position_keys is None else [int(key) for key in position_keys]
+    return _CompactIndexProjection(order, inverse, keys)
+
+
+_FREE_JOINT_DOF_COUNT, _FREE_JOINT_COORD_COUNT = JointType.FREE.dof_count(6)
+_FREE_ROOT_JOINT_FREQUENCIES = (
+    Model.AttributeFrequency.JOINT,
+    Model.AttributeFrequency.JOINT_COORD,
+    Model.AttributeFrequency.JOINT_DOF,
+    Model.AttributeFrequency.ARTICULATION,
+)
+
+
+@functools.cache
+def _free_root_joint_template_values() -> dict[str, np.ndarray | list]:
+    """Return the values of a one-body model built with ``ModelBuilder.add_body()``.
+
+    Its single FREE joint and articulation carry the builder's row values for
+    every built-in joint, joint-coordinate, joint-DOF, and articulation
+    attribute, keyed by attribute name.
+    """
+    from ...sim import ModelBuilder  # noqa: PLC0415
+
+    builder = ModelBuilder()
+    builder.add_body()
+    template = builder.finalize(device="cpu")
+    values: dict[str, np.ndarray | list] = {}
+    for name, spec in template._iter_attribute_specs():
+        if spec.frequency not in _FREE_ROOT_JOINT_FREQUENCIES:
+            continue
+        value = _nested_attribute_value(template, name)
+        if isinstance(value, wp.array):
+            values[name] = value.numpy()
+        elif isinstance(value, (np.ndarray, list)):
+            values[name] = value
+    return values
+
+
+def _attribute_zero_value(value) -> Any:
+    """Return the dtype zero for one row of a registered attribute.
+
+    Synthesized FREE root rows use it for attributes registered without a default.
+    """
+    if isinstance(value, list):
+        return ""
+    if isinstance(value, wp.array):
+        from ...sim import ModelBuilder  # noqa: PLC0415
+
+        return ModelBuilder.CustomAttribute._default_for_dtype(value.dtype)
+    return None
+
+
+@wp.kernel(enable_backward=False)
+def _sync_free_root_joint_state_kernel(
+    body_local: wp.array[int],
+    coord_local: wp.array[int],
+    dof_local: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    # A world-rooted FREE joint with identity anchor frames has joint_q equal
+    # to the child pose and joint_qd equal to the child twist (see the FREE
+    # branch of eval_articulation_ik).
+    i = wp.tid()
+    body = body_local[i]
+    pose = body_q[body]
+    twist = body_qd[body]
+    q = coord_local[i]
+    qd = dof_local[i]
+    position = wp.transform_get_translation(pose)
+    rotation = wp.transform_get_rotation(pose)
+    for k in range(3):
+        joint_q[q + k] = position[k]
+    for k in range(4):
+        joint_q[q + 3 + k] = rotation[k]
+    for k in range(6):
+        joint_qd[qd + k] = twist[k]
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _copy_mapped_rows_kernel(local_to_global: wp.array[int], src: wp.array[Any], dst: wp.array[Any]):
+    local_id = wp.tid()
+    global_id = local_to_global[local_id]
+    if global_id >= 0:
+        dst[local_id] = src[global_id]
 
 
 def _coupling_endpoint_arrays(
@@ -272,6 +428,7 @@ class SolverEntry:
     has_particle_force_input: bool = False
     body_gravity_acceleration: wp.array[wp.vec3] | None = None
     particle_gravity_acceleration: wp.array[wp.vec3] | None = None
+    free_root_joints: _FreeRootJoints | None = None
 
 
 _CORE_RESET_STATE_FLAGS = {
@@ -332,7 +489,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         stepping policy. The factory is called as ``solver(view)`` with the
         per-entry :class:`ModelView` and must return a configured
         :class:`SolverBase`. Bind any extra constructor arguments in the
-        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10, rigid_compliant_alm=True)``).
+        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
         Entry names must be unique. In-place stepping is only valid for solvers
         that explicitly support it. Shape ids remain in the parent model
         namespace so all entries can consume shared contact buffers.
@@ -360,6 +517,62 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substeps: int = 1
         in_place: bool = False
 
+    @dataclass(eq=False)
+    class Observables(SolverBase.Observables):
+        """Global observables and the entry-local containers that populate them.
+
+        See :ref:`solver_observables` for coupled solver support and selection.
+        """
+
+        entry_observables: dict[str, SolverBase.Observables] = field(default_factory=dict, init=False, repr=False)
+        """Observable containers allocated by each owning sub-solver."""
+
+        def select(self, kinds: Iterable[str]) -> SolverCoupled.Observables:
+            """Select global fields and matching entry-local arrays without allocating.
+
+            See :ref:`solver_observables` for selection examples.
+            """
+            selected = super().select(kinds)
+            selected.entry_observables = {
+                name: entry.select(selected.kinds.intersection(entry.kinds))
+                for name, entry in self.entry_observables.items()
+            }
+            return selected
+
+    @property
+    def supported_observables(self):
+        """Return body observables supported by every entry that owns bodies.
+
+        See :ref:`solver_observables` for solver support.
+        """
+        kinds = set()
+        body_entries = [entry for entry in self._entries.values() if entry.body_indices.shape[0] > 0]
+        for kind in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
+            if body_entries and all(kind in entry.solver.supported_observables for entry in body_entries):
+                kinds.add(kind)
+        return frozenset(kinds)
+
+    def observables(
+        self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
+    ) -> SolverCoupled.Observables:
+        """Allocate parent-model observables and matching entry-local containers.
+
+        ``contacts`` is unused because this solver exposes only body observables.
+
+        See :meth:`SolverBase.observables() <newton.solvers.SolverBase.observables>`
+        for the shared allocation contract and errors, and :ref:`solver_observables`
+        for usage and solver support.
+        """
+        if requires_grad is None:
+            requires_grad = self.model.requires_grad
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
+            for entry in self._entries.values():
+                entry_kinds = observables.kinds if entry.body_indices.shape[0] > 0 else ()
+                observables.entry_observables[entry.name] = entry.solver.observables(
+                    kinds=entry_kinds, requires_grad=requires_grad
+                )
+            return observables
+
     @staticmethod
     def _positive_integer(value: int, label: str) -> int:
         """Validate and return an integer greater than zero."""
@@ -378,6 +591,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         coupling: object | None = None,
     ) -> None:
         super().__init__(model)
+
+        if model.tendon_count:
+            raise ValueError("SolverCoupled does not yet support partitioning tendon routes; use XPBD or VBD directly")
 
         self._attribute_projections = self._build_attribute_projections()
         self._joint_constraint_starts = self._build_joint_constraint_starts()
@@ -398,6 +614,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._entry_soft_contact_update: dict[str, wp.array] = {}
         self._entry_rigid_contact_src_to_dst: dict[str, wp.array] = {}
         self._entry_soft_contact_src_to_dst: dict[str, wp.array] = {}
+        self._active_observables: SolverCoupled.Observables | None = None
         self._entry_output_state_valid = False
 
         self._validate_entry_names()
@@ -423,9 +640,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 spec.row_width,
                 spec.requires_empty_sentinel,
                 spec.compaction_policy,
+                spec.default,
             )
             for name, spec in model._iter_attribute_specs()
-            if spec.compaction_policy in {"generic", "end"}
+            if spec.compaction_policy in {"generic", "end", "range_start"}
         )
 
     def _build_joint_constraint_starts(self) -> np.ndarray:
@@ -623,6 +841,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if index_lists is None:
                 visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
                 self._apply_global_shape_metadata(view, cfg, visible_bodies)
+                self._apply_noncompact_body_particle_attachment_visibility(view, cfg)
             self._customize_compact_view(view)
             if cfg.configure_view is not None:
                 cfg.configure_view(view)
@@ -677,7 +896,17 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     wp.array([global_id for _, global_id in owned_pairs], dtype=int, device=device),
                 )
 
-            solver = cfg.solver(view)
+            try:
+                solver = cfg.solver(view)
+            except ValueError as error:
+                if not self._view_world_counts_differ(view):
+                    raise
+                raise ValueError(
+                    f"SolverCoupled entry {cfg.name!r} could not construct its solver: {error} "
+                    "The entry view holds different numbers of bodies, joints, or shapes per world, following the "
+                    "entry's selection in each world; solvers that require identical worlds, such as SolverMuJoCo, "
+                    "need the same selection in every world."
+                ) from error
             _require_supports_coupling(solver)
             self._entries[cfg.name] = SolverEntry(
                 name=cfg.name,
@@ -709,7 +938,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 attribute_local_to_global=attribute_local_to_global,
                 attribute_owned_rows=attribute_owned_rows,
                 in_place=bool(cfg.in_place),
+                free_root_joints=None if index_lists is None else index_lists.free_root_joints,
             )
+
+        restarts = self._iteration_restarts_possible()
+        for entry in self._entries.values():
+            entry.solver.coupling_notify_iteration_restarts(restarts)
 
         self._after_entries_constructed()
 
@@ -831,10 +1065,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if pairs is None:
             return
 
-        pair_count = min(int(getattr(view, "shape_contact_pair_count", pairs.shape[0])), pairs.shape[0])
+        pair_count = len(pairs)
         if pair_count == 0:
             view.shape_contact_pairs = wp.zeros(0, dtype=wp.vec2i, device=self.model.device)
-            view.shape_contact_pair_count = 0
             return
 
         shape_count = int(getattr(view, "shape_count", self.model.shape_count))
@@ -870,7 +1103,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         count = int(filtered_count.numpy()[0])
         view.shape_contact_pairs = filtered_pairs[:count]
-        view.shape_contact_pair_count = count
 
     def _apply_global_shape_metadata(
         self,
@@ -904,7 +1136,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         body_global_to_local = {body_id: body_id for body_id in range(model.body_count)}
         view.body_shapes = self._global_shape_body_shapes(model.body_shapes, body_global_to_local, visible_shapes)
-        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
+        view.shape_collision_filter_pairs = model.shape_collision_filter_pairs
 
     def _build_entry_index_maps(self, view: ModelView, index_lists: _CompactIndexMaps | None) -> _EntryIndexMaps:
         """Build local/global id maps for a completed entry view."""
@@ -992,6 +1224,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         visible_particles = {int(i) for i in cfg.particles} | {int(i) for i in proxy_particle_keep}
         visible_joints = {int(i) for i in cfg.joints} | {int(i) for i in proxy_joint_keep}
         visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
+        free_root_cuts = self._entry_free_root_cut_joints(cfg, visible_joints)
 
         body_order = self._ordered_world_subset(
             visible_bodies,
@@ -1001,7 +1234,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             "bodies",
         )
         joint_order = self._ordered_world_subset(
-            visible_joints,
+            visible_joints | free_root_cuts,
             model.joint_world,
             getattr(model, "joint_world_start", None),
             model.joint_count,
@@ -1016,19 +1249,34 @@ class SolverCoupled(SolverBase, CouplingInterface):
             allow_global=True,
         )
         if body_order is None:
-            self._warn_compaction_fallback(cfg, "the selected bodies do not have a homogeneous world layout")
+            self._warn_compaction_fallback(cfg, "the selected bodies are not grouped by world")
             return None
         if joint_order is None:
-            self._warn_compaction_fallback(cfg, "the selected joints do not have a homogeneous world layout")
+            self._warn_compaction_fallback(cfg, "the selected joints are not grouped by world")
             return None
         if shape_order is None:
-            self._warn_compaction_fallback(cfg, "the selected shapes do not have a homogeneous world layout")
+            self._warn_compaction_fallback(cfg, "the selected shapes are not grouped by world")
             return None
 
         # Particle connectivity remains globally indexed for now. Keeping its
         # projection as identity does not prevent independent rigid compaction.
         particle_order = list(range(model.particle_count)) if visible_particles else []
-        compact, failure_reason = self._compact_index_lists(view, body_order, joint_order, shape_order, particle_order)
+        attachment_order = self._compact_body_particle_attachment_order(
+            {int(i) for i in cfg.bodies},
+            {int(i) for i in cfg.particles},
+        )
+        if attachment_order is None:
+            self._warn_compaction_fallback(cfg, "the selected particle-body attachments are not grouped by world")
+            return None
+        compact, failure_reason = self._compact_index_lists(
+            view,
+            body_order,
+            joint_order,
+            shape_order,
+            particle_order,
+            attachment_order,
+            free_root_cuts,
+        )
         if compact is None:
             self._warn_compaction_fallback(cfg, failure_reason or "the selected topology is not closed")
             return None
@@ -1036,10 +1284,69 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._apply_compact_entry_view(view, compact)
         return compact
 
+    def _entry_free_root_cut_joints(self, cfg: SolverCoupled.Entry, visible_joints: set[int]) -> set[int]:
+        """Return hidden incoming tree joints of entry-owned bodies that receive a FREE root joint.
+
+        A reduced-coordinate solver moves a body only through its incoming
+        joint, so each entry-owned body whose enabled articulation joint to a
+        parent body the entry view hides gets a FREE joint to the world. This
+        holds whether the hidden joint is unowned or owned by another entry.
+        A hidden FREE joint to the world is replaced by an identical one. A
+        hidden joint of another type to the world stays out of the view, with
+        a warning, since no entry simulates it.
+        """
+        model = self.model
+        if model.joint_count == 0 or model.articulation_count == 0 or not cfg.bodies:
+            return set()
+        owned_bodies = {int(body) for body in cfg.bodies}
+        joint_parent = model.joint_parent.numpy()
+        joint_child = model.joint_child.numpy()
+        joint_type = model.joint_type.numpy()
+        joint_articulation = model.joint_articulation.numpy()
+        joint_enabled = model.joint_enabled.numpy()
+        incoming: dict[int, list[int]] = {}
+        for joint in np.flatnonzero(joint_articulation >= 0).tolist():
+            child = int(joint_child[joint])
+            if child in owned_bodies:
+                incoming.setdefault(child, []).append(int(joint))
+        cuts = set()
+        hidden_world_joints = []
+        for joints in incoming.values():
+            if any(joint in visible_joints for joint in joints):
+                continue
+            for joint in joints:
+                if bool(joint_enabled[joint]):
+                    if int(joint_parent[joint]) >= 0 or int(joint_type[joint]) == JointType.FREE:
+                        cuts.add(joint)
+                    else:
+                        hidden_world_joints.append(joint)
+                    break
+        if hidden_world_joints:
+            labels = ", ".join(repr(model.joint_label[joint]) for joint in hidden_world_joints)
+            logger.warning(
+                f"SolverCoupled entry {cfg.name!r} owns the child body of world joint(s) {labels} but not the "
+                "joint itself; no entry simulates these joints.",
+            )
+        return cuts
+
+    @staticmethod
+    def _view_world_counts_differ(view: ModelView) -> bool:
+        """Return whether a view's worlds hold different numbers of bodies, joints, or shapes."""
+        for name in ("body_world_start", "joint_world_start", "shape_world_start"):
+            starts = getattr(view, name, None)
+            if starts is None:
+                continue
+            counts = np.diff(starts.numpy()[: int(view.world_count) + 1])
+            if counts.size and np.any(counts != counts[0]):
+                return True
+        return False
+
     @staticmethod
     def _warn_compaction_fallback(cfg: SolverCoupled.Entry, reason: str) -> None:
-        logger.info(
-            f"SolverCoupled entry {cfg.name!r} could not be compacted because {reason}; using the full model layout.",
+        logger.debug(
+            "SolverCoupled entry %r could not be compacted because %s; using the full model layout.",
+            cfg.name,
+            reason,
         )
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
@@ -1062,7 +1369,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         *,
         allow_global: bool = False,
     ) -> list[int] | None:
-        """Return indices ordered by compact world layout, or None if not homogeneous."""
+        """Return indices ordered by compact world layout, or None when they do not follow the model's world grouping."""
         if not indices:
             return []
 
@@ -1094,15 +1401,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 return None
             buckets[world].append(index - start)
 
-        template = sorted(buckets[0])
-        for bucket in buckets[1:]:
-            if sorted(bucket) != template:
-                return None
-
+        # Worlds may select different rows; the compact world-start arrays follow each world's count.
         ordered = sorted(global_front)
         for world in range(world_count):
             start = self._world_start_for_index(starts, total_count, world_count, world)
-            ordered.extend(start + offset for offset in template)
+            ordered.extend(start + offset for offset in sorted(buckets[world]))
         return ordered
 
     @staticmethod
@@ -1124,15 +1427,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
         joint_order: list[int],
         shape_order: list[int],
         particle_order: list[int],
+        attachment_order: list[int],
+        free_root_cuts: set[int] | None = None,
     ) -> tuple[_CompactIndexMaps | None, str | None]:
         model = self.model
+        free_root_cuts = free_root_cuts or set()
+        real_joint_order = [joint for joint in joint_order if joint not in free_root_cuts]
         body_set = set(body_order)
-        joint_set = set(joint_order)
-        joint_global_to_local = {global_id: local_id for local_id, global_id in enumerate(joint_order)}
+        joint_set = set(real_joint_order)
+        joint_global_to_local = {
+            global_id: local_id for local_id, global_id in enumerate(joint_order) if global_id not in free_root_cuts
+        }
 
         joint_parent = model.joint_parent.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
         joint_child = model.joint_child.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
-        for joint in joint_order:
+        for joint in real_joint_order:
             parent = int(joint_parent[joint])
             child = int(joint_child[joint])
             if child not in body_set or (parent >= 0 and parent not in body_set):
@@ -1147,25 +1456,84 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if body >= 0 and body not in body_set:
                 return None, f"shape {shape} is attached to body {body}, which is outside the entry selection"
 
-        articulation_order = self._compact_articulation_order(view, joint_order, joint_set)
+        articulation_order = self._compact_articulation_order(view, real_joint_order, joint_set)
         if articulation_order is None:
             return None, "the selected joints do not contain complete enabled articulations"
 
         mimic_order = self._compact_mimic_constraint_order(joint_global_to_local)
         if mimic_order is None:
-            return None, "the selected mimic constraints do not have a homogeneous world layout"
+            return None, "the selected mimic constraints are not grouped by world"
 
         joint_q_start = model.joint_q_start.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
         joint_coord_order: list[int] = []
         joint_dof_order: list[int] = []
         joint_constraint_order: list[int] = []
-        for joint in joint_order:
-            joint_coord_order.extend(range(int(joint_q_start[joint]), int(joint_q_start[joint + 1])))
-            joint_dof_order.extend(range(int(joint_qd_start[joint]), int(joint_qd_start[joint + 1])))
-            joint_constraint_order.extend(
-                range(int(self._joint_constraint_starts[joint]), int(self._joint_constraint_starts[joint + 1]))
+        position_keys: dict[Model.AttributeFrequency, list[int]] = {}
+        free_root_layout = None
+        if free_root_cuts:
+            ordered_joints, block_starts, articulation_order, joint_articulation_local, own_articulation_rows = (
+                self._free_root_joint_layout(joint_order, free_root_cuts, joint_parent, joint_child)
             )
+            cut_joint: list[int] = []
+            free_joint_local: list[int] = []
+            free_coord_local: list[int] = []
+            free_dof_local: list[int] = []
+            joint_local_order: list[int] = []
+            joint_keys: list[int] = []
+            coord_keys: list[int] = []
+            dof_keys: list[int] = []
+            for joint, block_start in zip(ordered_joints, block_starts, strict=True):
+                q_begin, q_end = int(joint_q_start[joint]), int(joint_q_start[joint + 1])
+                qd_begin, qd_end = int(joint_qd_start[joint]), int(joint_qd_start[joint + 1])
+                # Joints keep the position of their parent-model articulation
+                # block, which keeps the keys monotonic across reordered blocks.
+                joint_keys.append(block_start)
+                block_q, block_qd = int(joint_q_start[block_start]), int(joint_qd_start[block_start])
+                if joint in free_root_cuts:
+                    cut_joint.append(joint)
+                    free_joint_local.append(len(joint_local_order))
+                    free_coord_local.append(len(joint_coord_order))
+                    free_dof_local.append(len(joint_dof_order))
+                    joint_local_order.append(-1)
+                    joint_coord_order.extend([-1] * _FREE_JOINT_COORD_COUNT)
+                    coord_keys.extend([block_q] * _FREE_JOINT_COORD_COUNT)
+                    joint_dof_order.extend([-1] * _FREE_JOINT_DOF_COUNT)
+                    dof_keys.extend([block_qd] * _FREE_JOINT_DOF_COUNT)
+                    continue
+                joint_local_order.append(joint)
+                joint_coord_order.extend(range(q_begin, q_end))
+                coord_keys.extend([block_q] * (q_end - q_begin))
+                joint_dof_order.extend(range(qd_begin, qd_end))
+                dof_keys.extend([block_qd] * (qd_end - qd_begin))
+                joint_constraint_order.extend(
+                    range(int(self._joint_constraint_starts[joint]), int(self._joint_constraint_starts[joint + 1]))
+                )
+            free_root_layout = _FreeRootLayout(
+                cut_joint=tuple(cut_joint),
+                body_global=tuple(int(joint_child[joint]) for joint in cut_joint),
+                joint_local=tuple(free_joint_local),
+                coord_local=tuple(free_coord_local),
+                dof_local=tuple(free_dof_local),
+                joint_articulation_local=tuple(joint_articulation_local),
+                own_articulation_rows=own_articulation_rows,
+            )
+            joint_order = joint_local_order
+            body_order = self._free_root_body_order(body_order, ordered_joints, joint_child)
+            articulation_keys = list(range(len(articulation_order)))
+            position_keys = {
+                model.AttributeFrequency.JOINT: joint_keys,
+                model.AttributeFrequency.JOINT_COORD: coord_keys,
+                model.AttributeFrequency.JOINT_DOF: dof_keys,
+                model.AttributeFrequency.ARTICULATION: articulation_keys,
+            }
+        else:
+            for joint in joint_order:
+                joint_coord_order.extend(range(int(joint_q_start[joint]), int(joint_q_start[joint + 1])))
+                joint_dof_order.extend(range(int(joint_qd_start[joint]), int(joint_qd_start[joint + 1])))
+                joint_constraint_order.extend(
+                    range(int(self._joint_constraint_starts[joint]), int(self._joint_constraint_starts[joint + 1]))
+                )
 
         keep_deformables = bool(particle_order)
         built_in_frequency_orders = {
@@ -1183,11 +1551,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
+            model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
             model.AttributeFrequency.WORLD: list(range(model.world_count)),
         }
+        built_in_frequency_orders.update(self._compact_deformable_orders(built_in_frequency_orders))
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
         if custom_frequency_orders is None:
-            return None, "a selected custom-frequency domain does not have a homogeneous world layout"
+            return None, "a selected custom-frequency domain is not grouped by world"
 
         frequency_orders = {
             frequency: (order, model._attribute_frequency_count(frequency))
@@ -1197,15 +1567,151 @@ class SolverCoupled(SolverBase, CouplingInterface):
             (frequency, (order, int(model.custom_frequency_counts[frequency])))
             for frequency, order in custom_frequency_orders.items()
         )
+        free_root_joints = None
+        if free_root_layout is not None:
+            free_root_joints = self._free_root_joints(free_root_layout, body_order, joint_order, joint_parent)
         return (
             _CompactIndexMaps(
                 {
-                    frequency: _compact_index_projection(order, source_count)
+                    frequency: _compact_index_projection(order, source_count, position_keys.get(frequency))
                     for frequency, (order, source_count) in frequency_orders.items()
-                }
+                },
+                free_root_joints,
             ),
             None,
         )
+
+    def _compact_deformable_orders(
+        self, frequency_orders: dict[Model.AttributeFrequency, list[int]]
+    ) -> dict[Model.AttributeFrequency, list[int]]:
+        """Keep whole deformable objects whose ranges retain their element order."""
+        model = self.model
+        frequency = model.AttributeFrequency
+        orders = {}
+        range_maps = {}
+        for family_frequency in (frequency.CURVE, frequency.SURFACE, frequency.VOLUME):
+            count = model._attribute_frequency_count(family_frequency)
+            keep = np.ones(count, dtype=bool)
+            if count:
+                for attribute in self._attribute_projections:
+                    if attribute.frequency != family_frequency or attribute.compaction_policy != "range_start":
+                        continue
+                    starts = getattr(model, attribute.name).numpy()
+                    ends = getattr(model, attribute.name.removesuffix("_start") + "_end").numpy()
+                    if attribute.references not in range_maps:
+                        selected = np.asarray(frequency_orders[attribute.references], dtype=np.int32)
+                        inverse = np.full(model._attribute_frequency_count(attribute.references), -1, dtype=np.int32)
+                        # Synthesized FREE roots do not retain the original joint.
+                        original = selected >= 0
+                        inverse[selected[original]] = np.flatnonzero(original)
+                        # Equal run IDs mean a range maps to consecutive rows in its original order.
+                        run_ids = np.zeros_like(inverse)
+                        run_ids[1:] = np.cumsum(np.diff(inverse) != 1)
+                        range_maps[attribute.references] = inverse, run_ids
+                    inverse, run_ids = range_maps[attribute.references]
+                    nonempty = starts != ends
+                    keep[nonempty] &= (inverse[starts[nonempty]] >= 0) & (
+                        run_ids[starts[nonempty]] == run_ids[ends[nonempty] - 1]
+                    )
+            orders[family_frequency] = np.flatnonzero(keep).tolist()
+        return orders
+
+    def _free_root_body_order(
+        self,
+        body_order: Sequence[int],
+        ordered_joints: Sequence[int],
+        joint_child: np.ndarray,
+    ) -> list[int]:
+        """Order joint child bodies like their joints after a FREE root layout.
+
+        Reduced-coordinate solvers such as :class:`~newton.solvers.SolverFeatherstone`
+        expect articulated bodies in the order of their incoming joints, as
+        builder models list them. The child bodies of view joints take the
+        view joint order within the slots they already occupy in each world's
+        run of bodies; every other body keeps its position.
+        """
+        child_rank = {int(joint_child[joint]): rank for rank, joint in enumerate(ordered_joints)}
+        body_world = self.model.body_world.numpy()
+        result = list(body_order)
+        run_start = 0
+        for index in range(1, len(result) + 1):
+            if index < len(result) and int(body_world[result[index]]) == int(body_world[result[run_start]]):
+                continue
+            slots = [slot for slot in range(run_start, index) if result[slot] in child_rank]
+            children = sorted((result[slot] for slot in slots), key=child_rank.__getitem__)
+            for slot, body in zip(slots, children, strict=True):
+                result[slot] = body
+            run_start = index
+        return result
+
+    def _free_root_joint_layout(
+        self,
+        joint_order: Sequence[int],
+        free_root_cuts: set[int],
+        joint_parent: np.ndarray,
+        joint_child: np.ndarray,
+    ) -> tuple[list[int], list[int], list[int], list[int], tuple[tuple[int, int], ...]]:
+        """Order view joints so each FREE root joint heads its own articulation.
+
+        Within the contiguous view block of each parent-model articulation,
+        every joint belongs to the subtree of its nearest view root: a FREE
+        joint (listed as its hidden parent-model joint) or the block's
+        remaining roots. The block lists the remaining-root joints first,
+        then each FREE joint followed by its subtree, all in parent-model
+        order, so parents precede children and every view articulation is a
+        contiguous joint range. Blocks keep their parent-model order, which
+        keeps rows grouped by world.
+
+        Returns:
+            The reordered parent joint ids, the first parent joint id of the
+            block holding each of them, the parent articulation of each view
+            articulation row (``-1`` for rows a FREE joint heads), the view
+            articulation row of each reordered joint, and the rows a FREE
+            joint heads paired with that joint's index.
+        """
+        joint_articulation = self.model.joint_articulation.numpy()
+        blocks: list[tuple[int, list[int]]] = []
+        for joint in joint_order:
+            articulation = int(joint_articulation[joint])
+            if articulation >= 0 and blocks and blocks[-1][0] == articulation:
+                blocks[-1][1].append(int(joint))
+            else:
+                blocks.append((articulation, [int(joint)]))
+
+        ordered: list[int] = []
+        block_starts: list[int] = []
+        rows: list[int] = []
+        joint_rows: list[int] = []
+        for articulation, joints in blocks:
+            block_start = joints[0]
+            if articulation < 0:
+                ordered.extend(joints)
+                block_starts.extend([block_start] * len(joints))
+                joint_rows.extend([-1] * len(joints))
+                continue
+            # Subtree 0 holds the joints reachable from the block's remaining roots.
+            subtrees: list[list[int]] = [[]]
+            body_subtree: dict[int, int] = {}
+            for joint in joints:
+                if joint in free_root_cuts:
+                    subtree = len(subtrees)
+                    subtrees.append([joint])
+                else:
+                    subtree = body_subtree.get(int(joint_parent[joint]), 0)
+                    subtrees[subtree].append(joint)
+                body_subtree[int(joint_child[joint])] = subtree
+            for subtree, members in enumerate(subtrees):
+                if not members:
+                    continue
+                row = len(rows)
+                rows.append(articulation if subtree == 0 else -1)
+                ordered.extend(members)
+                block_starts.extend([block_start] * len(members))
+                joint_rows.extend([row] * len(members))
+        # Rows a FREE joint heads start with that joint, in FREE joint order.
+        cut_rows = [joint_rows[local] for local, joint in enumerate(ordered) if joint in free_root_cuts]
+        own_articulation_rows = tuple(sorted((row, index) for index, row in enumerate(cut_rows)))
+        return ordered, block_starts, rows, joint_rows, own_articulation_rows
 
     def _compact_articulation_order(
         self,
@@ -1369,6 +1875,72 @@ class SolverCoupled(SolverBase, CouplingInterface):
             "mimic constraints",
         )
 
+    def _body_particle_attachment_rows(
+        self,
+        body_set: set[int],
+        particle_set: set[int],
+    ) -> set[int]:
+        """Select attachments whose endpoints are both owned by one entry."""
+        model = self.model
+        if model.attachment_particle_body_count == 0:
+            return set()
+        body = model.attachment_particle_body_body.numpy()
+        particle = model.attachment_particle_body_particle.numpy()
+        return {
+            attachment
+            for attachment in range(model.attachment_particle_body_count)
+            if int(body[attachment]) in body_set and int(particle[attachment]) in particle_set
+        }
+
+    def _compact_body_particle_attachment_order(
+        self,
+        body_set: set[int],
+        particle_set: set[int],
+    ) -> list[int] | None:
+        """Order same-entry attachments for compact model views."""
+        selected = self._body_particle_attachment_rows(body_set, particle_set)
+        return self._ordered_world_subset(
+            selected,
+            self.model.attachment_particle_body_world,
+            None,
+            self.model.attachment_particle_body_count,
+            "particle-body attachments",
+            allow_global=True,
+        )
+
+    def _apply_noncompact_body_particle_attachment_visibility(
+        self,
+        view: ModelView,
+        cfg: SolverCoupled.Entry,
+    ) -> None:
+        """Hide attachments not owned entirely by a non-compacted entry."""
+        model = self.model
+        rows = sorted(
+            self._body_particle_attachment_rows(
+                {int(i) for i in cfg.bodies},
+                {int(i) for i in cfg.particles},
+            )
+        )
+        attachment_frequency = model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY
+        projections = self._entry_attribute_projections(None)
+        world_frequency = model.AttributeFrequency.WORLD
+        projections.setdefault(
+            world_frequency,
+            _compact_index_projection(range(model.world_count), model.world_count),
+        )
+        projections[attachment_frequency] = _compact_index_projection(
+            rows,
+            model.attachment_particle_body_count,
+        )
+        view.attachment_particle_body_count = len(rows)
+        self._project_compact_attributes(
+            view,
+            projections,
+            exclude=set(),
+            include=lambda attribute: attribute.frequency == attachment_frequency,
+            source_model=True,
+        )
+
     def _apply_compact_entry_view(
         self,
         view: ModelView,
@@ -1392,6 +1964,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         tri_order = compact.order(frequency.TRIANGLE)
         tet_order = compact.order(frequency.TETRAHEDRON)
         spring_order = compact.order(frequency.SPRING)
+        attachment_order = compact.order(frequency.ATTACHMENT_PARTICLE_BODY)
 
         body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
         view.body_count = len(body_order)
@@ -1404,27 +1977,34 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_count = len(articulation_order)
         view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
+        view.attachment_particle_body_count = len(attachment_order)
         view.tri_count = len(tri_order)
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        view.curve_count = len(compact.order(frequency.CURVE))
+        view.surface_count = len(compact.order(frequency.SURFACE))
+        view.volume_count = len(compact.order(frequency.VOLUME))
 
         projections_by_frequency = self._compact_projections_by_frequency(compact, shape_order=shape_order)
         self._set_compact_custom_frequency_counts(view, projections_by_frequency)
+        range_attributes = self._project_compact_deformable_ranges(view, projections_by_frequency)
+        free_root_joints = compact.free_root_joints
         self._project_compact_attributes(
             view,
             projections_by_frequency,
-            exclude=set(),
+            exclude=range_attributes,
+            free_root_joints=free_root_joints,
         )
         self._sync_custom_frequency_namespace_metadata(view)
 
         view.joint_q_start = wp.array(
-            self._rebased_joint_starts(model.joint_q_start.numpy(), joint_order),
+            self._rebased_joint_starts(model.joint_q_start.numpy(), joint_order, _FREE_JOINT_COORD_COUNT),
             dtype=wp.int32,
             device=device,
         )
         view.joint_qd_start = wp.array(
-            self._rebased_joint_starts(model.joint_qd_start.numpy(), joint_order),
+            self._rebased_joint_starts(model.joint_qd_start.numpy(), joint_order, _FREE_JOINT_DOF_COUNT),
             dtype=wp.int32,
             device=device,
         )
@@ -1434,16 +2014,82 @@ class SolverCoupled(SolverBase, CouplingInterface):
             body_global_to_local,
             set(visible_shape_order),
         )
-        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
+        view.shape_collision_filter_pairs = model.shape_collision_filter_pairs
 
-        articulation_starts = self._compact_articulation_starts(joint_order, articulation_order)
+        if free_root_joints is None:
+            articulation_starts = self._compact_articulation_starts(joint_order, articulation_order)
+        else:
+            articulation_starts = [len(joint_order)] * (len(articulation_order) + 1)
+            for local, row in reversed(list(enumerate(free_root_joints.layout.joint_articulation_local))):
+                if row >= 0:
+                    articulation_starts[row] = local
         view.articulation_start = wp.array(articulation_starts, dtype=wp.int32, device=device)
         self._set_compact_articulation_extents(view, articulation_order)
+
+        # The parent's CUDA FK topology contains parent-model indices and is
+        # invalid after the compact view renumbers articulations, joints, and bodies.
+        view._fk_articulation_level_start = None
+        view._fk_level_joint_start = None
+        view._fk_level_joints = None
+        view._fk_level_parent_pos = None
+        view._fk_level_capacity = 0
+
+        # Rebuild serial traversal from local topology, including synthetic FREE
+        # roots that have no corresponding joint in the parent model.
+        from ...sim.builder import _build_fk_joint_order  # noqa: PLC0415
+
+        fk_joint_order = _build_fk_joint_order(
+            view.joint_parent.numpy(),
+            view.joint_child.numpy(),
+            view.joint_articulation.numpy(),
+            view.joint_ancestor.numpy(),
+            articulation_starts,
+            view.articulation_end.numpy(),
+        )
+        view._fk_joint_order = (
+            None if fk_joint_order is None else wp.array(fk_joint_order, dtype=wp.int32, device=device)
+        )
 
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
         self._set_world_start_arrays(view, joint_constraint_order)
+
+    def _project_compact_deformable_ranges(
+        self,
+        view: ModelView,
+        projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection],
+    ) -> set[str]:
+        """Map independent ranges by their elements, not by articulation position keys."""
+        projected = set()
+        for attribute in self._attribute_projections:
+            if attribute.compaction_policy != "range_start":
+                continue
+            start_name = attribute.name
+            end_name = start_name.removesuffix("_start") + "_end"
+            rows = projections[attribute.frequency].local_to_global
+            if not rows:
+                continue
+            starts = getattr(self.model, start_name).numpy()[rows]
+            ends = getattr(self.model, end_name).numpy()[rows]
+            reference = projections[attribute.references]
+            inverse = np.asarray(reference.global_to_local, dtype=np.int32)
+            nonempty = starts != ends
+            compact_starts = np.empty_like(starts)
+            compact_ends = np.empty_like(ends)
+            compact_starts[nonempty] = inverse[starts[nonempty]]
+            compact_ends[nonempty] = inverse[ends[nonempty] - 1] + 1
+            if np.any(~nonempty):
+                # Empty ranges own no element to map; keep a bounded insertion position.
+                keys = reference.position_keys if reference.position_keys is not None else reference.local_to_global
+                order = np.asarray(keys, dtype=np.int32)
+                boundaries = np.searchsorted(np.sort(order[order >= 0]), starts[~nonempty])
+                compact_starts[~nonempty] = boundaries
+                compact_ends[~nonempty] = boundaries
+            setattr(view, start_name, wp.array(compact_starts, dtype=wp.int32, device=self.model.device))
+            setattr(view, end_name, wp.array(compact_ends, dtype=wp.int32, device=self.model.device))
+            projected.update((start_name, end_name))
+        return projected
 
     def _compact_projections_by_frequency(
         self,
@@ -1477,6 +2123,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         include: Callable[[_AttributeProjection], bool] | None = None,
         source_model: bool = False,
         update_existing: bool = False,
+        free_root_joints: _FreeRootJoints | None = None,
     ) -> None:
         for attribute in self._attribute_projections:
             full_name = attribute.name
@@ -1504,8 +2151,20 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         f"frequency {attribute.frequency!r}, got {len(value)}"
                     )
                 continue
-            indices = self._expanded_row_indices(projection.local_to_global, attribute.row_width)
-            selected = self._select_attribute_value(value, indices, preserve_empty_sentinel=has_empty_sentinel)
+            rows = projection.local_to_global
+            has_free_root_rows = free_root_joints is not None and attribute.frequency in _FREE_ROOT_JOINT_FREQUENCIES
+            if has_free_root_rows:
+                # Synthesized rows select parent row 0 as a placeholder; the
+                # FREE joint row values replace them below.
+                rows = [max(row, 0) for row in rows]
+            indices = self._expanded_row_indices(rows, attribute.row_width)
+            if has_free_root_rows and source_value_count == 0 and not has_empty_sentinel:
+                # The parent has no rows of this frequency, e.g. joint
+                # coordinates in a model with only FIXED joints, so every view
+                # row is a synthesized FREE joint row.
+                selected = self._zero_rows(value, len(indices))
+            else:
+                selected = self._select_attribute_value(value, indices, preserve_empty_sentinel=has_empty_sentinel)
             if selected is None:
                 raise ValueError(f"Cannot compact model attribute {full_name!r} with indices {indices!r}")
             if attribute.references is not None:
@@ -1515,18 +2174,170 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         f"Cannot compact model attribute {full_name!r}: no projection for reference frequency "
                         f"{attribute.references!r}"
                     )
-                if attribute.compaction_policy == "end":
-                    selected = self._remap_compact_end_value(selected, reference_projection, full_name)
+                if attribute.compaction_policy in {"end", "range_start"}:
+                    selected = self._remap_compact_boundary_value(selected, reference_projection, full_name)
                 else:
                     selected = self._remap_compact_reference_value(
                         selected,
                         reference_projection.global_to_local,
                         full_name,
                     )
+            if free_root_joints is not None and full_name in free_root_joints.row_values:
+                row_indices, row_values = free_root_joints.row_values[full_name]
+                selected = self._write_rows(selected, row_indices, row_values)
             if update_existing:
                 self._update_view_attribute_value(view, full_name, selected)
             else:
                 self._set_view_attribute_value(view, full_name, selected)
+
+    @staticmethod
+    def _zero_rows(value, count: int):
+        """Return ``count`` zero rows with the dtype, row shape, and device of an indexed attribute value."""
+        if isinstance(value, wp.array):
+            return wp.zeros(
+                (count, *value.shape[1:]),
+                dtype=value.dtype,
+                device=value.device,
+                requires_grad=value.requires_grad,
+            )
+        if isinstance(value, list):
+            return [_attribute_zero_value(value)] * count
+        return np.zeros((count, *value.shape[1:]), dtype=value.dtype)
+
+    @staticmethod
+    def _write_rows(value, rows: Sequence[int], row_values: Sequence[Any]):
+        """Return a copy of an indexed attribute value with selected rows replaced."""
+        if isinstance(value, list):
+            result = list(value)
+            for row, row_value in zip(rows, row_values, strict=True):
+                result[row] = row_value
+            return result
+        host = value.numpy() if isinstance(value, wp.array) else value
+        host = np.array(host, copy=True)
+        replacement = np.array([np.asarray(row_value) for row_value in row_values])
+        host[np.asarray(rows, dtype=np.int64)] = replacement.reshape((len(rows), *host.shape[1:])).astype(host.dtype)
+        if isinstance(value, wp.array):
+            return wp.array(host, dtype=value.dtype, device=value.device, requires_grad=value.requires_grad)
+        return host
+
+    def _free_root_joints(
+        self,
+        layout: _FreeRootLayout,
+        body_order: Sequence[int],
+        joint_order: Sequence[int],
+        joint_parent: np.ndarray,
+    ) -> _FreeRootJoints:
+        """Compute the builder row values of the FREE root joints a compact view synthesizes.
+
+        Built-in attributes take the values ``ModelBuilder.add_body()``
+        assigns to its FREE joint and articulation. Other attributes take
+        their registered default.
+
+        Args:
+            layout: FREE root joint rows of the view.
+            body_order: Parent body of each view body row.
+            joint_order: Parent joint of each view joint row, ``-1`` for FREE root joints.
+            joint_parent: Parent body of each parent-model joint.
+        """
+        from ...sim.builder import _build_joint_ancestor  # noqa: PLC0415
+
+        model = self.model
+        device = model.device
+        frequency = model.AttributeFrequency
+        template_values = _free_root_joint_template_values()
+        body_global_to_local = {int(body): local for local, body in enumerate(body_order)}
+        body_local = [body_global_to_local[body] for body in layout.body_global]
+        own_indices = [index for _, index in layout.own_articulation_rows]
+        own_row_ids = [row for row, _ in layout.own_articulation_rows]
+        view_rows = {
+            frequency.JOINT: [[local] for local in layout.joint_local],
+            frequency.JOINT_COORD: [
+                list(range(start, start + _FREE_JOINT_COORD_COUNT)) for start in layout.coord_local
+            ],
+            frequency.JOINT_DOF: [list(range(start, start + _FREE_JOINT_DOF_COUNT)) for start in layout.dof_local],
+            frequency.ARTICULATION: [[row] for row in own_row_ids],
+        }
+        template_rows = {
+            frequency.JOINT: [0],
+            frequency.JOINT_COORD: list(range(_FREE_JOINT_COORD_COUNT)),
+            frequency.JOINT_DOF: list(range(_FREE_JOINT_DOF_COUNT)),
+            frequency.ARTICULATION: [0],
+        }
+
+        row_values: dict[str, tuple[list[int], list[Any]]] = {}
+        for attribute in self._attribute_projections:
+            if attribute.frequency not in _FREE_ROOT_JOINT_FREQUENCIES:
+                continue
+            value = self._model_attribute_value(attribute.name)
+            if not isinstance(value, (wp.array, np.ndarray, list)):
+                continue
+            entity_rows = view_rows[attribute.frequency]
+            if not entity_rows:
+                continue
+            width = attribute.row_width
+            source_rows = self._expanded_row_indices(template_rows[attribute.frequency], width)
+            template_value = template_values.get(attribute.name)
+            if template_value is not None and len(template_value) > max(source_rows):
+                entity_values = [template_value[row] for row in source_rows]
+            else:
+                default = attribute.default if attribute.default is not None else _attribute_zero_value(value)
+                entity_values = [default] * len(source_rows)
+            rows: list[int] = []
+            for group in entity_rows:
+                rows.extend(self._expanded_row_indices(group, width))
+            row_values[attribute.name] = (rows, entity_values * len(entity_rows))
+
+        body_q = model.body_q.numpy()
+        body_world = model.body_world.numpy()
+        body_label = model.body_label
+        joint_child = model.joint_child.numpy()
+        bodies = layout.body_global
+
+        def set_rows(name: str, rows: list[int], values: list[Any]) -> None:
+            if name in row_values:
+                row_values[name] = (rows, values)
+
+        joint_rows = list(layout.joint_local)
+        set_rows("joint_child", joint_rows, body_local)
+        # Reordered joints and split articulations take their view rows explicitly.
+        joint_articulation_local = list(layout.joint_articulation_local)
+        all_joint_rows = list(range(len(joint_articulation_local)))
+        set_rows("joint_articulation", all_joint_rows, joint_articulation_local)
+        free_bodies = dict(zip(layout.joint_local, bodies, strict=True))
+        view_joint_parent = [-1 if joint < 0 else int(joint_parent[joint]) for joint in joint_order]
+        view_joint_child = [
+            free_bodies[local] if joint < 0 else int(joint_child[joint]) for local, joint in enumerate(joint_order)
+        ]
+        # Ancestry depends only on joint connectivity, so parent-model body ids serve here.
+        ancestor = _build_joint_ancestor(view_joint_parent, view_joint_child, joint_articulation_local)
+        set_rows("joint_ancestor", all_joint_rows, ancestor.tolist())
+        set_rows("joint_world", joint_rows, [int(body_world[body]) for body in bodies])
+        set_rows("joint_label", joint_rows, [f"{body_label[body]}_free_joint" for body in bodies])
+        # The builder initializes FREE joint coordinates from the child pose
+        # (ModelBuilder._init_joint_q_from_body_poses); identity anchors make
+        # them equal to the pose.
+        set_rows(
+            "joint_q",
+            [start + k for start in layout.coord_local for k in range(_FREE_JOINT_COORD_COUNT)],
+            [float(component) for body in bodies for component in body_q[body]],
+        )
+        own_bodies = [bodies[index] for index in own_indices]
+        articulation_end: dict[int, int] = {}
+        for local, row in enumerate(joint_articulation_local):
+            if row >= 0:
+                articulation_end[row] = local + 1
+        end_rows = sorted(articulation_end)
+        set_rows("articulation_end", end_rows, [articulation_end[row] for row in end_rows])
+        set_rows("articulation_world", own_row_ids, [int(body_world[body]) for body in own_bodies])
+        set_rows("articulation_label", own_row_ids, [f"{body_label[body]}_articulation" for body in own_bodies])
+
+        return _FreeRootJoints(
+            layout=layout,
+            row_values=row_values,
+            body_local=wp.array(body_local, dtype=int, device=device),
+            coord_local=wp.array(layout.coord_local, dtype=int, device=device),
+            dof_local=wp.array(layout.dof_local, dtype=int, device=device),
+        )
 
     def _view_attribute_value(self, view: ModelView, full_name: str):
         if ":" not in full_name:
@@ -1592,12 +2403,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return getattr(parent, name, None)
 
     @staticmethod
-    def _rebased_joint_starts(starts: np.ndarray, joint_order: Sequence[int]) -> list[int]:
+    def _rebased_joint_starts(starts: np.ndarray, joint_order: Sequence[int], free_root_width: int = 0) -> list[int]:
         rebased: list[int] = []
         cursor = 0
         for joint in joint_order:
             rebased.append(cursor)
-            cursor += int(starts[joint + 1]) - int(starts[joint])
+            cursor += free_root_width if joint < 0 else int(starts[joint + 1]) - int(starts[joint])
         rebased.append(cursor)
         return rebased
 
@@ -1788,22 +2599,25 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return remap_array(np.asarray(value)).tolist()
         return value
 
-    def _remap_compact_end_value(
+    def _remap_compact_boundary_value(
         self,
         value,
         projection: _CompactIndexProjection,
         attribute_name: str,
     ):
-        """Remap exclusive source-domain boundaries into compact indices."""
-        order = np.asarray(projection.local_to_global, dtype=np.int64)
+        """Count retained elements before each inclusive start or exclusive end."""
+        if len(value) == 0:
+            return value
+        keys = projection.position_keys if projection.position_keys is not None else projection.local_to_global
+        order = np.asarray(keys, dtype=np.int64)
         if order.size > 1 and np.any(order[1:] < order[:-1]):
-            raise ValueError(f"Cannot compact end attribute {attribute_name!r}: reference order is not monotonic")
+            raise ValueError(f"Cannot compact boundary attribute {attribute_name!r}: reference order is not monotonic")
 
         host = value.numpy() if isinstance(value, wp.array) else np.asarray(value)
         source_count = len(projection.global_to_local)
         if np.any(host < 0) or np.any(host > source_count):
             raise ValueError(
-                f"Cannot compact end attribute {attribute_name!r}: boundaries must be within [0, {source_count}]"
+                f"Cannot compact boundary attribute {attribute_name!r}: boundaries must be within [0, {source_count}]"
             )
         remapped = np.searchsorted(order, host, side="left")
         if isinstance(value, wp.array):
@@ -1889,6 +2703,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _after_entries_constructed(self) -> None:
         """Hook called after sub-solvers are constructed and before state allocation."""
 
+    def _iteration_restarts_possible(self) -> bool:
+        """Return whether :meth:`step` may re-solve an entry within one step."""
+        return False
+
     def _after_entry_states_created(self) -> None:
         """Hook called after per-entry states and scratch buffers are allocated."""
         self._refresh_gravity_accelerations()
@@ -1896,6 +2714,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _entry_needs_gravity_acceleration(self, entry: SolverEntry) -> bool:
         del entry
         return False
+
+    def _effective_mass_refresh_flags(self) -> int:
+        """Return the model flags after which entry effective masses are evaluated again."""
+        flags = int(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        for entry in self._entries.values():
+            flags |= int(entry.solver.coupling_effective_mass_refresh_flags())
+        return flags
 
     def _gravity_acceleration_refresh_flags(self) -> int:
         return int(ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
@@ -2161,11 +2986,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 selecting which worlds to reset. The final entry selects global
                 entities whose world is ``-1``. If ``None``, all local and
                 global entities are reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
@@ -2199,6 +3019,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Step all coupled sub-solvers for one time step.
 
@@ -2207,11 +3029,42 @@ class SolverCoupled(SolverBase, CouplingInterface):
         need a private contact pipeline (e.g. proxy collisions, ADMM internal
         contacts) own their own buffers internally.
         """
+        self.validate_observables(observables, contacts)
         self._distribute_state(state_in, dt=dt)
-        self._step_coupled(state_in, state_out, control, contacts, dt)
+        self._active_observables = observables
+        try:
+            self._step_coupled(state_in, state_out, control, contacts, dt)
+        finally:
+            self._active_observables = None
         _copy_state(state_in, state_out)
         self._reconcile_state(state_out)
+        if observables is not None:
+            self._reconcile_observables(observables)
         self._entry_output_state_valid = True
+
+    def _reconcile_observables(self, observables: Observables) -> None:
+        """Merge body-indexed entry observables into global observable arrays."""
+        for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
+            if observables.is_requested(flag):
+                getattr(observables, flag).zero_()
+
+        for entry in self._entries.values():
+            entry_observables = observables.entry_observables[entry.name]
+            for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
+                if (
+                    not observables.is_requested(flag)
+                    or not entry_observables.is_requested(flag)
+                    or entry.body_indices.shape[0] == 0
+                ):
+                    continue
+                src = getattr(entry_observables, flag)
+                dst = getattr(observables, flag)
+                wp.launch(
+                    _scatter_spatial_observables_mapped,
+                    dim=entry.body_indices.shape[0],
+                    inputs=[entry.body_indices, entry.body_global_to_local, src, dst],
+                    device=self.model.device,
+                )
 
     def prepare_contacts(self, contacts: Contacts | None) -> None:
         """Preallocate entry-local filtered contact buffers for graph capture."""
@@ -2300,6 +3153,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     src,
                     dst,
                 )
+            _sync_free_root_joint_state(entry, entry.state_1)
         entry_states = (entry.state_0,) if entry.state_1 is entry.state_0 else (entry.state_0, entry.state_1)
         for entry_state in entry_states:
             if entry_state is None:
@@ -2401,6 +3255,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         dst.dtype(0),
                     )
             notify_flags = self._input_state_copy_flags(state_in, entry.state_0)
+            notify_flags |= _sync_free_root_joint_state(entry, entry.state_0)
             self._notify_input_state_update(entry, notify_flags, iteration_restart=True)
 
     def _distribute_state(
@@ -2413,7 +3268,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Copy ``state_in`` into each sub-solver's ``state_0``."""
         for entry in self._entries.values():
             flags = self._input_state_copy_flags(state_in, entry.state_0)
-            _copy_state_to_entry(state_in, entry.state_0, entry)
+            flags |= _copy_state_to_entry(state_in, entry.state_0, entry)
             self._notify_input_state_update(entry, flags, dt=dt, iteration_restart=iteration_restart)
 
     def _reconcile_state(self, state_out: State) -> None:
@@ -2667,14 +3522,28 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control = _copy_control_to_entry(control, entry)
         if control_callback is not None:
             control_callback(control)
+        entry_observables = None
+        if self._active_observables is not None:
+            entry_observables = self._active_observables.entry_observables[entry.name]
+            # Entries without requested observables keep the plain step() call so
+            # sub-solvers that predate the ``observables`` keyword remain usable.
+            if not entry_observables.kinds:
+                entry_observables = None
+
+        def step_solver(state_in: State, state_out: State, step_dt: float) -> None:
+            if entry_observables is None:
+                entry.solver.step(state_in, state_out, control, contacts, step_dt)
+            else:
+                entry.solver.step(state_in, state_out, control, contacts, step_dt, observables=entry_observables)
+
         if entry.in_place:
             substep_dt = dt / float(entry.substeps)
             for _ in range(entry.substeps):
-                entry.solver.step(entry.state_0, entry.state_0, control, contacts, substep_dt)
+                step_solver(entry.state_0, entry.state_0, substep_dt)
             return contacts
 
         if entry.substeps == 1:
-            entry.solver.step(entry.state_0, entry.state_1, control, contacts, dt)
+            step_solver(entry.state_0, entry.state_1, dt)
             return contacts
 
         substep_dt = dt / float(entry.substeps)
@@ -2686,7 +3555,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for substep in range(entry.substeps):
             if substep > 0:
                 _copy_forces(entry.state_0, state_in)
-            entry.solver.step(state_in, state_out, control, contacts, substep_dt)
+            step_solver(state_in, state_out, substep_dt)
             state_in, state_out = state_out, state_in
         if state_in is entry.state_tmp:
             _copy_same_view_state(entry.state_tmp, entry.state_1)
@@ -2699,7 +3568,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return contacts
 
         filtered = self._ensure_entry_contact_buffer(entry, contacts)
-        keep_full_surface_contacts = filtered._enable_rigid_soft_full_surface_contact
         force_contact_update = int(self._entry_contact_sources.get(entry.name) is not contacts)
         if force_contact_update:
             self._entry_contact_sources[entry.name] = contacts
@@ -2723,8 +3591,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     self._entry_soft_contact_generation[entry.name],
                     self._entry_rigid_contact_update[entry.name],
                     self._entry_soft_contact_update[entry.name],
+                    contacts.contact_counters,
                     filtered.contact_counters,
-                    filtered.contact_counters.shape[0],
+                    min(contacts.contact_counters.shape[0], filtered.contact_counters.shape[0]),
                     self._entry_rigid_contact_src_to_dst[entry.name],
                     contacts.rigid_contact_max,
                     self._entry_soft_contact_src_to_dst[entry.name],
@@ -2771,6 +3640,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+            if contacts.rigid_contact_surface_velocity is not None:
+                wp.launch(
+                    _copy_filtered_rigid_contact_surface_velocity_kernel,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        self._entry_rigid_contact_update[entry.name],
+                        rigid_src_to_dst,
+                        contacts.rigid_contact_surface_velocity,
+                        filtered.rigid_contact_surface_velocity,
+                    ],
+                    device=self.model.device,
+                )
             if contacts.rigid_contact_stiffness is not None and filtered.rigid_contact_stiffness is not None:
                 wp.launch(
                     _copy_filtered_rigid_contact_properties_kernel,
@@ -2831,12 +3712,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
                     contacts.soft_contact_indices,
+                    contacts.soft_contact_rigid_indices,
                     contacts.soft_contact_barycentric,
+                    contacts._soft_contact_mesh_features,
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
                     int(ParticleFlags.ACTIVE),
-                    int(keep_full_surface_contacts),
                     filtered.soft_contact_count,
                     filtered.soft_contact_particle,
                     filtered.soft_contact_shape,
@@ -2845,7 +3727,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_normal,
                     filtered.soft_contact_tids,
                     filtered.soft_contact_indices,
+                    filtered.soft_contact_rigid_indices,
                     filtered.soft_contact_barycentric,
+                    filtered._soft_contact_mesh_features,
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -2854,6 +3738,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return filtered
 
     def _ensure_entry_contact_buffer(self, entry: SolverEntry, contacts: Contacts) -> Contacts:
+        # A non-compacted rigid-only view can retain the parent's particle allocation.
+        has_particles = entry.particle_indices.size > 0 or entry.proxy_particle_local_indices.size > 0
+        if has_particles and not entry.solver.coupling_supports_full_surface_soft_contacts():
+            contacts._assert_particle_only_soft_contacts(
+                f"SolverCoupled entry {entry.name!r} ({type(entry.solver).__name__})"
+            )
         filtered = self._entry_contact_buffers.get(entry.name)
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415
@@ -2867,6 +3757,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 per_contact_shape_properties=contacts.per_contact_shape_properties,
                 requested_attributes=requested,
                 contact_matching=contacts.rigid_contact_match_index is not None,
+                rigid_contact_surface_velocity=contacts.rigid_contact_surface_velocity is not None,
             )
             self._entry_contact_buffers[entry.name] = filtered
             self._entry_contact_sources[entry.name] = contacts
@@ -2906,9 +3797,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
         filtered._enable_rigid_soft_full_surface_contact = bool(
-            contacts._enable_rigid_soft_full_surface_contact
-            and entry.solver.coupling_supports_full_surface_soft_contacts()
+            contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
+        if filtered._enable_rigid_soft_full_surface_contact and contacts._soft_contact_mesh_features is not None:
+            if filtered._soft_contact_mesh_features is None:
+                # Entry copies only consume features; detection scratch stays in the source buffer.
+                filtered._soft_contact_mesh_features = wp.full(
+                    contacts.soft_contact_max, wp.vec3i(-1), dtype=wp.vec3i, device=contacts.device
+                )
+            # Shape IDs and deformable feature IDs retain the parent numbering.
+            # Force evaluation supplies the entry view's remapped shape_body and poses.
+            filtered._soft_contact_mesh_data = contacts._soft_contact_mesh_data
+        else:
+            filtered._soft_contact_mesh_features = None
+            filtered._soft_contact_mesh_params = None
+            filtered._soft_contact_mesh_state = None
+            filtered._soft_contact_mesh_data = None
         return filtered
 
     @staticmethod
@@ -2920,6 +3824,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
             and (filtered.force is not None) == (contacts.force is not None)
             and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
+            and (filtered.rigid_contact_surface_velocity is None) == (contacts.rigid_contact_surface_velocity is None)
         )
 
     def _refresh_model_view_overrides(self, flags: int) -> None:
@@ -2933,13 +3838,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 include=lambda attribute: self._attribute_matches_model_flags(attribute, flags),
                 source_model=True,
                 update_existing=True,
+                free_root_joints=entry.free_root_joints,
             )
 
             if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
                 self._refresh_body_inertial_view_overrides(entry)
                 entry.view.mark_proxy_bodies(entry.proxy_body_local_indices)
 
-            if flags & int(ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
+            if flags & int(
+                ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            ):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
 
             if flags & int(ModelFlags.SHAPE_PROPERTIES):
@@ -2951,7 +3859,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 )
                 if self.model.shape_contact_pairs is not None:
                     entry.view.shape_contact_pairs = wp.clone(self.model.shape_contact_pairs)
-                    entry.view.shape_contact_pair_count = int(self.model.shape_contact_pair_count)
                 self._customize_compact_view(entry.view)
                 self._filter_shape_contact_pairs(entry.view)
 
@@ -2962,12 +3869,29 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             if frequency == model_frequency.BODY:
                 return True
+        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD):
+            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name in (
+                "joint_axis",
+                "joint_target_q",
+            ):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
             if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
                 return True
+        if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            if (
+                frequency == model_frequency.JOINT_DOF and attribute.name != "joint_armature" and not configuration_dof
+            ) or attribute.name == "joint_target_q":
+                return True
+        if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
+            "joint_target_q",
+            "mujoco:dof_ref",
+            "mujoco:dof_springref",
+        ):
+            return True
+        if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":
+            return True
         if flags & int(ModelFlags.SHAPE_PROPERTIES):
             if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
                 return True
@@ -2975,7 +3899,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency in (model_frequency.ONCE, model_frequency.WORLD):
                 return True
         if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency == model_frequency.CONSTRAINT_MIMIC:
+            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
                 return True
             if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
                 return True
@@ -3004,21 +3928,17 @@ def _entry_control(view: ModelView) -> Control:
     from ...sim import Control  # noqa: PLC0415
 
     control = Control()
-    use_coord_layout_targets = bool(getattr(view.parent, "use_coord_layout_targets", False))
-    target_q_count = int(view.joint_coord_count if use_coord_layout_targets else view.joint_dof_count)
+    target_q_count = int(view.joint_coord_count)
     dof_count = int(view.joint_dof_count)
     requires_grad = bool(getattr(view.parent, "requires_grad", False))
     device = view.parent.device
     if target_q_count or dof_count:
+        # Initialize targets from the view like Model.control(); rows without
+        # a parent-model counterpart keep these values.
         if target_q_count:
-            control.joint_target_q = wp.zeros(
-                target_q_count,
-                dtype=float,
-                device=device,
-                requires_grad=requires_grad,
-            )
+            control.joint_target_q = _clone_or_zeros(view.joint_target_q, target_q_count, device, requires_grad)
         if dof_count:
-            control.joint_target_qd = wp.zeros(dof_count, dtype=float, device=device, requires_grad=requires_grad)
+            control.joint_target_qd = _clone_or_zeros(view.joint_target_qd, dof_count, device, requires_grad)
         control.joint_act = wp.zeros(dof_count, dtype=float, device=device, requires_grad=requires_grad)
         control.joint_f = wp.zeros(dof_count, dtype=float, device=device, requires_grad=requires_grad)
     if int(view.tri_count):
@@ -3036,6 +3956,12 @@ def _entry_control(view: ModelView) -> Control:
     return control
 
 
+def _clone_or_zeros(value: wp.array | None, count: int, device, requires_grad: bool) -> wp.array:
+    if isinstance(value, wp.array) and value.shape[0] == count:
+        return wp.clone(value, requires_grad=requires_grad)
+    return wp.zeros(count, dtype=float, device=device, requires_grad=requires_grad)
+
+
 def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control | None:
     """Copy full-model controls into an entry-local control object."""
     if src is None:
@@ -3046,15 +3972,15 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
 
     device = entry.view.parent.device
     dof_map = entry.joint_dof_local_to_global
-    use_coord_layout_targets = bool(getattr(entry.view.parent, "use_coord_layout_targets", False))
-    target_q_map = entry.joint_coord_local_to_global if use_coord_layout_targets else dof_map
+    # Entries with synthesized FREE root joint rows always copy through the row map.
+    has_free_root_joints = entry.free_root_joints is not None
     for name, local_to_global in (
         ("joint_f", dof_map),
-        ("joint_target_q", target_q_map),
+        ("joint_target_q", entry.joint_coord_local_to_global),
         ("joint_target_qd", dof_map),
         ("joint_act", dof_map),
     ):
-        _copy_control_float_array(src, dst, name, local_to_global, device)
+        _copy_control_float_array(src, dst, name, local_to_global, device, allow_direct_copy=not has_free_root_joints)
     for name in ("tri_activations", "tet_activations", "muscle_activations"):
         _copy_control_prefix_float_array(src, dst, name)
     model = entry.view.parent
@@ -3064,7 +3990,8 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
         mapping = entry.attribute_local_to_global.get(spec.frequency)
         if mapping is None:
             continue
-        _copy_mapped_control_attribute(src, dst, full_name, mapping)
+        has_unmapped_rows = has_free_root_joints and spec.frequency in _FREE_ROOT_JOINT_FREQUENCIES
+        _copy_mapped_control_attribute(src, dst, full_name, mapping, has_unmapped_rows=has_unmapped_rows)
     return dst
 
 
@@ -3081,6 +4008,8 @@ def _copy_mapped_control_attribute(
     dst_control: Control,
     full_name: str,
     local_to_global: wp.array,
+    *,
+    has_unmapped_rows: bool = False,
 ) -> None:
     src = _nested_attribute_value(src_control, full_name)
     dst = _nested_attribute_value(dst_control, full_name)
@@ -3091,6 +4020,15 @@ def _copy_mapped_control_attribute(
         return
     if dst.shape[0] == 0:
         return
+    if has_unmapped_rows:
+        # Unmapped rows keep their entry-local values.
+        wp.launch(
+            _copy_mapped_rows_kernel,
+            dim=dst.shape[0],
+            inputs=[local_to_global, src, dst],
+            device=dst.device,
+        )
+        return
     wp.copy(dst, src[local_to_global])
 
 
@@ -3100,6 +4038,8 @@ def _copy_control_float_array(
     name: str,
     local_to_global: wp.array,
     device,
+    *,
+    allow_direct_copy: bool = True,
 ) -> None:
     src = getattr(src_control, name, None)
     dst = getattr(dst_control, name, None)
@@ -3108,7 +4048,7 @@ def _copy_control_float_array(
     if src is None:
         dst.zero_()
         return
-    if int(src.shape[0]) == int(dst.shape[0]):
+    if allow_direct_copy and int(src.shape[0]) == int(dst.shape[0]):
         wp.copy(dst, src)
         return
     wp.launch(
@@ -3130,10 +4070,39 @@ def _copy_control_prefix_float_array(src_control: Control, dst_control: Control,
     _copy_prefix(dst, src, name)
 
 
-def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> None:
-    """Copy global state arrays into an entry state through local/global maps."""
+def _sync_free_root_joint_state(entry: SolverEntry, state: State) -> int:
+    """Set synthesized FREE root joint coordinates from their child body state.
+
+    Returns:
+        The state flags updated by the synchronization.
+    """
+    free_root_joints = entry.free_root_joints
+    if free_root_joints is None or state.joint_q is None or state.body_q is None:
+        return int(StateFlags.NONE)
+    wp.launch(
+        _sync_free_root_joint_state_kernel,
+        dim=free_root_joints.count,
+        inputs=[
+            free_root_joints.body_local,
+            free_root_joints.coord_local,
+            free_root_joints.dof_local,
+            state.body_q,
+            state.body_qd,
+        ],
+        outputs=[state.joint_q, state.joint_qd],
+        device=entry.view.parent.device,
+    )
+    return int(StateFlags.JOINT_Q | StateFlags.JOINT_QD)
+
+
+def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> int:
+    """Copy global state arrays into an entry state through local/global maps.
+
+    Returns:
+        The state flags of the synthesized FREE root joint arrays it refreshes.
+    """
     if src is dst:
-        return
+        return int(StateFlags.NONE)
     device = entry.view.parent.device
     if src.body_q is not None and dst.body_q is not None:
         wp.launch(
@@ -3188,6 +4157,7 @@ def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> None:
             inputs=[entry.joint_dof_local_to_global, src.joint_qd, dst.joint_qd],
             device=device,
         )
+    return _sync_free_root_joint_state(entry, dst)
 
 
 def _copy_state(src: State, dst: State) -> None:
@@ -3440,6 +4410,35 @@ def _scatter_scalar_state_mapped(
 
 
 @wp.kernel(enable_backward=False)
+def _scatter_spatial_state_mapped(
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    src: wp.array[wp.spatial_vector],
+    dst: wp.array[wp.spatial_vector],
+):
+    i = wp.tid()
+    global_id = indices[i]
+    local_id = global_to_local[global_id]
+    if local_id < 0:
+        return
+    dst[global_id] = src[local_id]
+
+
+@wp.kernel
+def _scatter_spatial_observables_mapped(
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    src: wp.array[wp.spatial_vector],
+    dst: wp.array[wp.spatial_vector],
+):
+    # Unlike state reconciliation, observable export preserves entry gradients.
+    global_id = indices[wp.tid()]
+    local_id = global_to_local[global_id]
+    if local_id >= 0:
+        dst[global_id] = src[local_id]
+
+
+@wp.kernel(enable_backward=False)
 def _add_mapped_body_forces_kernel(
     body_local_to_global: wp.array[int],
     src_f: wp.array[wp.spatial_vector],
@@ -3475,6 +4474,7 @@ def _prepare_filtered_contact_update_kernel(
     soft_generation: wp.array[wp.int32],
     rigid_update_out: wp.array[wp.int32],
     soft_update_out: wp.array[wp.int32],
+    src_counters: wp.array[wp.int32],
     dst_counters: wp.array[wp.int32],
     counter_count: int,
     rigid_src_to_dst: wp.array[wp.int32],
@@ -3508,6 +4508,14 @@ def _prepare_filtered_contact_update_kernel(
             dst_counters[0] = 0
         if soft_update != 0 and counter_count > 1:
             dst_counters[1] = 0
+        # Slot 2 flags contact-reduction loss for the whole source pass. Filtering cannot tell which
+        # entry lost contacts, so every filtered buffer mirrors the source flag, refreshed or cached.
+        if counter_count > 2:
+            dst_counters[2] = src_counters[2]
+        # Packing truncates the source count to its stored prefix. Preserve overflow
+        # provenance (including an upstream coupled copy) for the force consumer.
+        if soft_update != 0 and counter_count > 3:
+            dst_counters[3] = wp.int32(src_counters[1] > soft_contact_max or src_counters[3] != 0)
     if rigid_update != 0 and tid < rigid_contact_max:
         rigid_src_to_dst[tid] = -1
     if soft_update != 0 and tid < soft_contact_max:
@@ -3575,6 +4583,22 @@ def _filter_rigid_contacts_global_shape_ids_kernel(
     dst_margin0[dst_id] = src_margin0[contact_id]
     dst_margin1[dst_id] = src_margin1[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_filtered_rigid_contact_surface_velocity_kernel(
+    update_filter: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+    src_surface_velocity: wp.array[wp.vec3],
+    dst_surface_velocity: wp.array[wp.vec3],
+):
+    if update_filter[0] == 0:
+        return
+
+    src_id = wp.tid()
+    dst_id = src_to_dst[src_id]
+    if dst_id >= 0:
+        dst_surface_velocity[dst_id] = src_surface_velocity[src_id]
 
 
 @wp.kernel(enable_backward=False)
@@ -3658,12 +4682,13 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_normal: wp.array[wp.vec3],
     src_tids: wp.array[int],
     src_indices: wp.array[wp.vec3i],
+    src_rigid_indices: wp.array[wp.vec3i],
     src_barycentric: wp.array[wp.vec3],
+    src_mesh_features: wp.array[wp.vec3i],
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
     active_particle_mask: int,
-    keep_full_surface_contacts: int,
     dst_count: wp.array[wp.int32],
     dst_particle: wp.array[int],
     dst_shape: wp.array[int],
@@ -3672,7 +4697,9 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_normal: wp.array[wp.vec3],
     dst_tids: wp.array[int],
     dst_indices: wp.array[wp.vec3i],
+    dst_rigid_indices: wp.array[wp.vec3i],
     dst_barycentric: wp.array[wp.vec3],
+    dst_mesh_features: wp.array[wp.vec3i],
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -3684,8 +4711,6 @@ def _filter_soft_contacts_global_shape_ids_kernel(
 
     particle = src_particle[contact_id]
     shape = src_shape[contact_id]
-    if particle < 0 and keep_full_surface_contacts == 0:
-        return
     if shape < 0 or shape >= shape_flags.shape[0]:
         return
     if (shape_flags[shape] & collide_particles_mask) == 0:
@@ -3711,9 +4736,20 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_pos[dst_id] = src_body_pos[contact_id]
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
-    dst_tids[dst_id] = src_tids[contact_id]
+    # soft_contact_tids is indexed by candidate thread, not by contact, and full-surface mesh
+    # contacts are appended past the candidate range, so the source array can be shorter than
+    # soft_contact_count.
+    if contact_id < src_tids.shape[0]:
+        dst_tids[dst_id] = src_tids[contact_id]
+    else:
+        dst_tids[dst_id] = -1
     # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
     # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
     # VBD even with full-surface contact off (E7).
     dst_indices[dst_id] = src_indices[contact_id]
+    dst_rigid_indices[dst_id] = src_rigid_indices[contact_id]
     dst_barycentric[dst_id] = src_barycentric[contact_id]
+    if dst_mesh_features:
+        dst_mesh_features[dst_id] = wp.vec3i(-1, -1, -1)
+        if src_mesh_features:
+            dst_mesh_features[dst_id] = src_mesh_features[contact_id]

@@ -18,8 +18,10 @@ import newton
 from newton import GeoType, Mesh
 from newton._src.geometry.sdf_texture import (
     SIGN_MODE_NORMAL,
+    SLOT_LINEAR,
     QuantizationMode,
     TextureSDFData,
+    _texture_read_voxel_corners_paired,
     _texture_sample_sdf_grad_hw_impl,
     build_sparse_sdf_from_primitive,
     compute_isomesh_from_texture_sdf,
@@ -196,6 +198,20 @@ def _compare_integer_voxel_samples_kernel(
     local_pos = sdf.sdf_box_lower + wp.cw_mul(wp.vec3f(coord), sdf.voxel_size)
     interpolated[tid] = texture_sample_sdf(sdf, local_pos)
     direct[tid] = texture_sample_sdf_at_voxel(sdf, coord[0], coord[1], coord[2])
+
+
+@wp.kernel
+def _read_voxel_corners_kernel(
+    sdf: TextureSDFData,
+    voxel_coords: wp.array[wp.vec3i],
+    corners: wp.array2d[float],
+):
+    """Read adjacent voxel corners through the hydroelastic batched path."""
+    voxel_idx = wp.tid()
+    coord = voxel_coords[voxel_idx]
+    values = _texture_read_voxel_corners_paired(sdf, coord[0], coord[1], coord[2])
+    for corner_idx in range(8):
+        corners[voxel_idx, corner_idx] = values[corner_idx]
 
 
 @wp.kernel
@@ -463,6 +479,57 @@ def test_texture_sdf_integer_voxel_sampling(test, device):
     )
 
     np.testing.assert_allclose(direct.numpy(), interpolated.numpy(), rtol=2.0e-5, atol=2.0e-6)
+
+
+def test_texture_voxel_corners_match_across_coarse_fine_boundary(test, device):
+    """Keep hydroelastic shared vertices coincident across coarse/fine blocks."""
+    mesh = _create_sphere_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _coarse_texture, _subgrid_texture = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.04, 0.04),
+        max_resolution=64,
+        paired_samples=True,
+        device=device,
+    )
+
+    slots = tex_sdf.subgrid_start_slots.numpy()
+    fine = slots < int(SLOT_LINEAR)
+    boundary = None
+    for axis in range(3):
+        lower_slice = [slice(None)] * 3
+        upper_slice = [slice(None)] * 3
+        lower_slice[axis] = slice(None, -1)
+        upper_slice[axis] = slice(1, None)
+        transitions = np.argwhere(fine[tuple(lower_slice)] != fine[tuple(upper_slice)])
+        if len(transitions) > 0:
+            boundary = (axis, transitions[0])
+            break
+    test.assertIsNotNone(boundary, "The fixture must contain a coarse/fine block boundary")
+
+    axis, lower_block = boundary
+    subgrid_size = int(tex_sdf.subgrid_size)
+    left_voxel = lower_block.astype(np.int32) * subgrid_size + subgrid_size // 2
+    left_voxel[axis] = (int(lower_block[axis]) + 1) * subgrid_size - 1
+    right_voxel = left_voxel.copy()
+    right_voxel[axis] += 1
+    coords = wp.array(np.stack((left_voxel, right_voxel)), dtype=wp.vec3i, device=device)
+    corners = wp.empty((2, 8), dtype=wp.float32, device=device)
+    wp.launch(_read_voxel_corners_kernel, dim=2, inputs=[tex_sdf, coords], outputs=[corners], device=device)
+
+    shared_corner_indices = (
+        ((1, 2, 5, 6), (0, 3, 4, 7)),
+        ((3, 2, 7, 6), (0, 1, 4, 5)),
+        ((4, 5, 6, 7), (0, 1, 2, 3)),
+    )
+    left_indices, right_indices = shared_corner_indices[axis]
+    corner_values = corners.numpy()
+    np.testing.assert_array_equal(corner_values[0, list(left_indices)], corner_values[1, list(right_indices)])
 
 
 def test_texture_sdf_software_sampling_honors_layout(test, device):
@@ -1782,6 +1849,12 @@ add_function_test(
     TestTextureSDF,
     "test_texture_sdf_integer_voxel_sampling",
     test_texture_sdf_integer_voxel_sampling,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_voxel_corners_match_across_coarse_fine_boundary",
+    test_texture_voxel_corners_match_across_coarse_fine_boundary,
     devices=devices,
 )
 add_function_test(

@@ -1,32 +1,34 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Michell Threshold Validation
-#
-# Twisted-ring threshold verification for elastic rod stability.
-#
-# A closed isotropic ring with bend stiffness and twist stiffness should lose
-# planar stability when the imposed total material-frame twist exceeds
-#
-#   critical_twist = 2*pi*sqrt(3*bend_stiffness/twist_stiffness)
-#
-# The example fixes the imposed twist to one full material-frame turn and
-# sweeps twist_stiffness / bend_stiffness. This moves the analytical critical
-# twist around the fixed one-turn load and matches the report protocol.
-#
-# Rows at or below the threshold are fixed planar references. Rows above the
-# threshold remain dynamic; the sweep verifies that supercritical rings develop
-# a visible out-of-plane response, while exact post-buckling branch and
-# amplitude are not treated as monotonic calibration targets.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold --test --viewer null
-#
-###########################################################################
+"""Cable Michell Threshold Validation
+
+Twisted-ring threshold verification for elastic rod stability.
+
+A closed isotropic ring with bend stiffness and twist stiffness should lose
+planar stability when the imposed total material-frame twist exceeds
+
+  critical_twist = 2*pi*sqrt(3*bend_stiffness/twist_stiffness)
+
+The example fixes the imposed twist to one full material-frame turn and
+sweeps twist_stiffness / bend_stiffness. This moves the analytical critical
+twist around the fixed one-turn load and matches the report protocol.
+
+Rows at or below the threshold are fixed planar references. Rows above the
+threshold remain dynamic; the sweep verifies that supercritical rings develop
+a visible out-of-plane response, while exact post-buckling branch and
+amplitude are not treated as monotonic calibration targets.
+
+Success criteria:
+- The fixed planar reference rings remain planar; do not count these kinematic references as
+  evidence of dynamic stability.
+- The above-threshold dynamic sweep develops a visible out-of-plane writhe response.
+- Rings remain finite and connected; neither the post-buckling shape nor amplitude is required to
+  vary monotonically with stiffness.
+
+Runs:
+- `python -m newton.examples cable_michell_threshold`
+"""
 
 import math
 
@@ -97,20 +99,22 @@ class Example:
             factor = self.TOTAL_TWIST / case_critical_twist
             label = f"{factor:.2f}x"
             points, quats = self._ring_points_and_quats(x_offset)
-            bodies, _joints = builder.add_rod(
-                positions=points,
+            rod = newton.Rod(
+                points,
                 quaternions=quats,
                 radius=self.CABLE_RADIUS,
+                closed=True,
+            )
+            bodies, _joints = builder.add_rod(
+                rod=rod,
                 stretch_stiffness=self.STRETCH_STIFFNESS,
                 stretch_damping=0.0,
                 bend_stiffness=self.BEND_STIFFNESS,
                 bend_damping=0.0,
                 twist_stiffness=twist_stiffness,
                 twist_damping=0.0,
-                closed=True,
                 label=f"michell_threshold_{label}",
                 wrap_in_articulation=True,
-                body_frame_origin="com",
             )
             is_dynamic = factor > 1.0
             if not is_dynamic:
@@ -131,7 +135,7 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()

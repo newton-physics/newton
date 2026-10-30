@@ -11,6 +11,7 @@ index remap. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 from collections.abc import Mapping, Sequence
@@ -18,18 +19,21 @@ from typing import Any
 
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from .import_usd_deformable_utils import (
     _attachment_vec3_list,
     _attachment_vec3_tuples,
-    _builder_body_xform,
     _cable_attachment_anchors,
     _DeformableImportContext,
     _is_ignored_path,
     _mark_attachment_unsupported,
+    _resolve_attachment_target,
 )
 
+logger = logging.getLogger(__name__)
 
-def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junction_attachment_paths: set[str]) -> None:
+
+def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in_shared_graphs: set[str]) -> None:
     """Lower supported AOUSD ``PhysicsAttachment`` prims onto the imported cables.
 
     Cable ``point`` / ``segment`` sites with ``type1 = "xform"`` become hard ball joints to the
@@ -37,17 +41,14 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     already consumed as rod-graph topology are skipped, and unsupported sites (cloth/volume source,
     non-xform target, ...) are warned and preserved in ``path_attachment_attrs``.
     """
+    from ..usd import utils as usd  # noqa: PLC0415
+
     builder = ctx.builder
-    stage = ctx.stage
     root_prim = ctx.root_prim
     ignore_paths = ctx.ignore_paths
-    incoming_world_xform = ctx.incoming_world_xform
     verbose = ctx.verbose
     deformable_read = ctx.deformable_read
-    get_prim_world_mat = ctx.get_prim_world_mat
-    get_rigid_body_ancestor_path = ctx.get_rigid_body_ancestor_path
     get_first_target = ctx.get_first_target
-    path_body_map = ctx.path_body_map
     path_cable_segments = ctx.path_cable_segments
     path_cable_point_anchors = ctx.path_cable_point_anchors
     path_cloth_map = ctx.path_cloth_map
@@ -55,39 +56,14 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     path_attachment_map = ctx.path_attachment_map
     path_attachment_attrs = ctx.path_attachment_attrs
 
-    def _attachment_world_point_from_xform(target_path: str, local_point: wp.vec3) -> tuple[int, wp.vec3] | None:
-        if target_path in ("", "/"):
-            # A world target's coords are authored in stage space, so they ride the same
-            # import/up-axis transform applied to the cable geometry (otherwise the anchor
-            # stays in original USD coordinates and yanks a translated cable off-position).
-            return -1, wp.transform_point(incoming_world_xform, local_point)
-
-        target_prim = stage.GetPrimAtPath(target_path)
-        if not target_prim or not target_prim.IsValid():
-            return None
-
-        target_mat = get_prim_world_mat(target_prim, None, incoming_world_xform)
-        # Apply the full affine (incl. non-uniform scale, shear, reflection) to the local anchor.
-        world_point = wp.transform_point(target_mat, local_point)
-
-        body_path = get_rigid_body_ancestor_path(target_prim)
-        if body_path is None:
-            return -1, world_point
-
-        body_idx = path_body_map.get(body_path, -1)
-        if body_idx < 0:
-            return None
-        local_body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(builder, body_idx)), world_point)
-        return body_idx, local_body_point
-
     if not (root_prim and root_prim.IsValid()):
         return
     for prim in ctx.prims.attachments:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
             continue
-        if path in consumed_junction_attachment_paths:
-            continue  # already consumed as rod-graph topology (curve-to-curve junction)
+        if path in attachments_in_shared_graphs:
+            continue
 
         src0 = get_first_target(prim, "physics:src0")
         src1 = get_first_target(prim, "physics:src1")
@@ -101,8 +77,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
         enabled = True if enabled_val is None else bool(enabled_val)
         stiffness_val = deformable_read(prim, "stiffness")
         damping_val = deformable_read(prim, "damping")
-        stiffness = math.inf if stiffness_val is None else float(stiffness_val)
-        damping = 0.0 if damping_val is None else float(damping_val)
+        stiffness, damping = usd._resolve_attachment_gains(prim, stiffness_val, damping_val)
 
         attrs: dict[str, Any] = {
             "src0": src0,
@@ -114,11 +89,31 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             "coords0": _attachment_vec3_tuples(coords0),
             "coords1": _attachment_vec3_tuples(coords1),
             "enabled": enabled,
-            "stiffness": stiffness,
-            "damping": damping,
+            "stiffness": stiffness_val if stiffness is None else stiffness,
+            "damping": damping_val if damping is None else damping,
         }
         path_attachment_attrs[path] = attrs
 
+        if path in path_attachment_map:
+            attrs["joint_indices"] = list(path_attachment_map[path])
+            continue
+
+        malformed_gains = [
+            (name, value)
+            for name, value, resolved in (
+                ("stiffness", stiffness_val, stiffness),
+                ("damping", damping_val, damping),
+            )
+            if value is not None and resolved is None
+        ]
+        if malformed_gains:
+            details = ", ".join(f"physics:{name}={value!r}" for name, value in malformed_gains)
+            _mark_attachment_unsupported(
+                attrs,
+                path,
+                f"invalid PhysicsAttachment scalar {details} (expected a numeric scalar); preserved as metadata.",
+            )
+            continue
         if not enabled:
             continue
         # The proposal gives attachment stiffness the range [0, inf] with +inf meaning hard
@@ -218,11 +213,12 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
                     f"PhysicsAttachment type0='{type0}' could not be resolved on cable '{src0}'.",
                 )
                 break
-            target_info = _attachment_world_point_from_xform(src1, coords1[site_idx])
+            target_info = _resolve_attachment_target(ctx, src1, coords1[site_idx])
             if target_info is None:
                 warnings.warn(
                     f"{path}: physics:src1 target '{src1}' could not be resolved as an xform; "
                     "skipping that attachment site.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue
@@ -245,7 +241,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             path_attachment_map[path] = joints
             attrs["joint_indices"] = list(joints)
             if verbose:
-                print(f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
+                logger.info("Added PhysicsAttachment %s with %s joint(s).", path, len(joints))
 
 
 def _deformable_remap_collapsed(
@@ -284,6 +280,7 @@ def _deformable_remap_collapsed(
                 warnings.warn(
                     f"{path}: joint {j} was removed by collapse_fixed_joints; dropping it from "
                     f"the returned index maps.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
         return remapped
@@ -323,6 +320,7 @@ def _element_collision_filter_groups(
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter authors groupElemIndices{which} without "
                 f"groupElemCounts{which}; empty counts select all elements, so the indices are ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return [[]], True  # all elements, paired against every group of the other side
@@ -333,6 +331,7 @@ def _element_collision_filter_groups(
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter groupElemCounts{which} has a negative "
                 f"count {count}; skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -343,6 +342,7 @@ def _element_collision_filter_groups(
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter groupElemCounts{which} sum exceeds the "
                 f"groupElemIndices{which} length ({len(indices)}); skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -352,6 +352,7 @@ def _element_collision_filter_groups(
         warnings.warn(
             f"{filter_path}: PhysicsElementCollisionFilter groupElemIndices{which} has "
             f"{len(indices) - offset} trailing index(es) not covered by groupElemCounts{which}; skipping.",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -401,6 +402,7 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
                         warnings.warn(
                             f"{filter_path}: element index {idx} is not an imported segment of cable "
                             f"'{src_path}'; skipping that element.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         continue
@@ -422,12 +424,14 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter on cloth/volume source '{src_path}' is not "
                 "supported (no per-element rigid shapes); skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
         warnings.warn(
             f"{filter_path}: PhysicsElementCollisionFilter source '{src_path}' is not an imported "
             "deformable or collider; skipping.",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -465,6 +469,7 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
                 f"{path}: PhysicsElementCollisionFilter has {len(groups0)} src0 group(s) but "
                 f"{len(groups1)} src1 group(s); groups must pair one-to-one (or a side must author "
                 "no groupElemCounts to pair against all groups); skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -487,4 +492,4 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         if skip:
             continue
         if verbose:
-            print(f"Applied PhysicsElementCollisionFilter {path}: {len(seen_pairs)} shape pair(s).")
+            logger.info("Applied PhysicsElementCollisionFilter %s: %s shape pair(s).", path, len(seen_pairs))

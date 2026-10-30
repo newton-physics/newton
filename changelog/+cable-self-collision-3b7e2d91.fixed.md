@@ -1,0 +1,1 @@
+Fix `ModelBuilder.add_usd()` ignoring `newton:selfCollisionEnabled` authored on cable prims; it now overrides the `enable_self_collisions` argument for cable-owned articulations, while cables joined to a rigid articulation keep that articulation's setting.

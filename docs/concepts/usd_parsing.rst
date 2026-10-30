@@ -37,6 +37,12 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+**USD angular units:** Newton uses radians internally. UsdPhysics joint angles
+and resolved joint-state angular velocities use degrees and degrees/s, respectively.
+Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
+``mjc:compiler:angle`` setting (degrees by default). The importer converts these
+values to radians or radians/s.
+
 Particle Simulation Geometry
 ----------------------------
 
@@ -104,15 +110,45 @@ The authored workflow is demonstrated by
 ``python -m newton.examples mpm_granular --from-usd`` and
 ``newton/examples/assets/mpm_sand.usda``.
 
+Mapping loaded vertices to authored points
+------------------------------------------
+
+.. experimental::
+   The ``return_source_point_indices`` option of :func:`newton.usd.get_mesh`
+   may change without a formal deprecation cycle.
+
+:func:`newton.usd.get_mesh` can return the source point index for each loaded
+vertex. UV seams and normals can split one authored point into several render
+vertices; the indices preserve that relationship.
+
+.. code-block:: python
+
+   mesh, _, point_indices = newton.usd.get_mesh(
+       visual_prim, load_uvs=True, return_source_point_indices=True
+   )
+   vertex_data = authored_point_data[point_indices]
+
+With this option, :func:`newton.usd.get_mesh` always returns
+``(mesh, uv_indices, source_point_indices)``, where ``uv_indices`` is ``None``
+unless UV indices were requested and are available. The option requires a
+single mesh prim and is not available when merging a stage or file; see the
+function's return table for all combinations.
+
 Deformable Bodies
 -----------------
 
 .. experimental::
 
-   Deformable-body import targets the **proposed** AOUSD UsdPhysics Deformables schema,
-   which is not yet registered in any USD distribution. This is pre-release coverage:
-   the schema, its attribute names, and the import behavior may change without notice as
-   the proposal evolves.
+   Deformable-body import targets commit ``63c74d79`` of the **proposed** AOUSD
+   UsdPhysics Deformables schema, which is not yet registered in any USD distribution.
+   This is pre-release coverage: the schema may continue to evolve. Newton retains
+   compatibility fallbacks for proposal names Newton has already released; using one emits
+   a ``DeprecationWarning`` that names its replacement.
+
+   The packaged ``newton-usd-schemas`` 0.5.x dependency registers Newton's extension schemas,
+   but not these proposed core deformable APIs. Until AOUSD publishes them, the importer
+   discovers their applied-schema tokens and attributes directly; no package upgrade is needed
+   for this proposal revision.
 
    It is an initial implementation of a **subset** of the proposal -- see the supported
    subset and limitations below -- and is not fully proposal-compliant. It also does not
@@ -120,7 +156,7 @@ Deformable Bodies
 
 :meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
 Deformables proposal
-<https://github.com/aousd/OpenUSD-proposals/blob/61d83b54b7efbe97ad2f480de885255cd1e593be/proposals/physics_deformables/wp_deformable_physics.md>`_,
+<https://github.com/PixarAnimationStudios/OpenUSD-proposals/blob/63c74d79aa67dc98d8707af8ad68f2e1a10622b5/proposals/physics_deformables/wp_deformable_physics.md>`_,
 across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI``
@@ -128,8 +164,8 @@ across three families:
   usable by any solver that supports rod joints. A ``wrap=periodic`` curve also gets a body
   for the closing segment.
 * **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
-  cloth: particles with FEM triangles and bending edges. Polygonal faces (such as quads) are
-  fan-triangulated on import.
+  cloth: particles with triangle elements and bending edges. Polygonal faces (such as quads) are
+  fan-triangulated on import as a Newton extension to the proposal's triangle-only input.
 * **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` becomes a soft
   body. Under a ``PhysicsDeformableBodyAPI`` ancestor exactly one simulation TetMesh is
   selected; other TetMeshes in that hierarchy are graphics/collision geometry and are not
@@ -155,20 +191,126 @@ Supported subset
 The first release deliberately supports a narrow, predictable set of inputs:
 
 * Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
-  deformable APIs. A bound simulation material supplies thickness, stiffness, and density.
-  For cables, each authored ``physics:curves*Stiffness`` is a structural stiffness; an
-  unauthored mode is derived instead from ``physics:youngsModulus``, ``physics:poissonsRatio``,
-  and ``physics:curvesThickness``, each of which falls back to the proposal's assumed 1 MPa,
-  0.3, and 1 mm when it is itself unauthored.
-  Newton divides each resolved structural stiffness by that joint's own dual rest length
-  ``0.5 * (L_parent + L_child)``, so unevenly sampled curves keep per-joint accuracy.
-  The earlier unprefixed cable material attributes remain accepted with their former modulus
-  interpretation during a deprecation window and emit a ``DeprecationWarning``.
-* The points and topology **as currently authored**. Newton builds the deformable at that pose;
-  a cable's ``restShapePoints`` may affect stiffness normalization but never establishes an
-  initial strain state.
-* Point attachments only where the authored constraint can be represented without moving any
-  geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
+  deformable APIs. A bound family material supplies stiffness and density. The shared
+  ``physics:youngsModulus`` and ``physics:poissonsRatio`` use the proposal's 1 MPa and 0.3
+  fallbacks when unauthored.
+
+  Surface and curve physical size comes from simulation-geometry ``physics:thicknesses`` and
+  ``physics:thicknesses:elementType``. Surfaces accept ``constant``, ``face``, and ``point``;
+  curves accept ``constant``, ``curve``, ``segment``, and ``point``. Newton averages adjacent
+  samples when it needs thickness at another element type and uses the proposal's 1 mm physical
+  default when no valid thickness source is available. Because Newton previously used 2 mm, this
+  fallback emits a migration warning that includes the equivalent stage-unit value and an explicit
+  ``physics:thicknesses`` authoring recipe. The proposal fallback is
+  ``0.001 / metersPerUnit`` in stage units. To preserve Newton's previous 2 mm shell behavior,
+  author ``physics:thicknesses = [0.002 / metersPerUnit]`` with
+  ``physics:thicknesses:elementType = "constant"``. Completely bare cloth could also inherit
+  ``ModelBuilder.default_particle_radius`` previously; it now receives the physical 0.5 mm radius
+  implied by the proposal thickness. Thickness controls density volume, collision radius, and any
+  stiffness derived from the isotropic material.
+
+  Poisson's ratios in ``(-1, 0.5)`` retain their authored value. Newton approximates ``0.5`` and
+  legacy values in ``(0.5, 1)`` as ``0.499`` with a warning; values in the latter interval are a
+  compatibility extension outside the proposal range. Values at or outside ``[-1, 1]`` and
+  non-finite values warn and use the proposal's ``0.3`` fallback.
+
+  * For cables, each authored ``physics:curves*Stiffness`` is a structural stiffness. A material
+    may additionally apply ``NewtonCurvesDeformableMaterialAPI`` to author independently optional
+    structural damping through ``newton:curves*Damping``. An unauthored stiffness mode is derived
+    from the shared isotropic properties and geometry thickness; an unauthored or ``-inf`` damping
+    mode leaves the rod-joint default unchanged. Newton discretizes both kinds of structural gain
+    using that joint's own dual rest length ``0.5 * (L_parent + L_child)``, so unevenly sampled
+    curves keep per-joint accuracy. Stretch and shear stiffness and damping have units of force and
+    force times time; bend and twist use force times distance squared and force times distance
+    squared times time. Newton damping requires the base
+    ``PhysicsCurvesDeformableMaterialAPI``; without it, the damping is ignored.
+  * For surfaces, ``physics:surfaceStretchStiffness`` and
+    ``physics:surfaceBendStiffness`` map directly to Newton's isotropic membrane and bending
+    modes. An unauthored structural mode is derived independently from the shared isotropic
+    properties and geometry thickness. Newton cannot represent
+    ``physics:surfaceShearStiffness`` independently; it warns and preserves the value in the
+    import results.
+  * For volumes, the shared isotropic properties become Lamé parameters. A bound material that
+    applies ``PhysicsVolumeDeformableMaterialAPI`` receives the proposal's elasticity fallbacks
+    even when it authors no values. A TetMesh with no applicable deformable material retains the
+    builder's elasticity defaults instead.
+
+  Removed material ``physics:surfaceThickness`` / ``physics:curvesThickness`` attributes remain
+  accepted during a deprecation window and supply only a thickness fallback. Move their values to
+  simulation-geometry ``physics:thicknesses`` and author the corresponding
+  ``physics:thicknesses:elementType``; an authored geometry array takes precedence. In particular,
+  migrate scalar cable ``physics:curvesThickness = d`` to ``physics:thicknesses = [d]`` with
+  ``physics:thicknesses:elementType = "constant"``.
+
+  The earlier unprefixed material stiffness attributes have a separate compatibility path. They
+  retain their former modulus interpretation during the deprecation window; convert them to the
+  appropriate family-prefixed structural stiffnesses. Both migrations emit an actionable
+  ``DeprecationWarning``. The ``newton:curves*Damping`` attributes always use structural units and
+  remain independent per mode, including on a material using deprecated stiffness attributes.
+* Typed simulation-geometry ``physics:masses`` arrays. Every non-empty array must author
+  ``physics:masses:elementType``: volume supports ``constant``, ``tetrahedron``, and ``point``;
+  surface supports ``constant``, ``face``, and ``point``; curves support ``constant``, ``curve``,
+  ``segment``, and ``point``. Every value must be finite and strictly positive; one invalid value
+  rejects the entire typed array and continues with the next source in the mass-precedence order.
+  Constant and curve totals are distributed by element volume, point values are converted through
+  the proposal's volume-weighted relation, and simplex element masses are lumped equally to Newton
+  particles. Point conversion preserves the mass authored on points referenced by simulation
+  elements but ignores, with a warning, values on orphan points. It can redistribute the preserved
+  mass relative to Newton's former direct point interpretation, which untyped arrays retain during
+  the deprecation window with a warning.
+* Simulation points, topology, normals, and rest arrays are read at the USD default time.
+* Cloth and volume ``restShapePoints`` define element rest poses and mass distribution.
+  Simulation ``points`` remain the initial pose. Optional ``restTriVertexIndices`` /
+  ``restTetVertexIndices`` allow disjoint rest topology. For fan-triangulated polygons,
+  provide one rest triangle per fan triangle, in face order.
+* Cloth supports ``restAdjTriPairs`` / ``restBendAngles`` overrides. Angles are authored in
+  degrees and converted to radians. Pairs refer to authored faces, including on
+  fan-triangulated meshes.
+
+  ``physics:restBendAnglesDefault`` controls edges without overrides. The default,
+  ``"flat"``, sets zero rest angles. ``"restShape"`` uses rest-geometry dihedrals with the
+  same vertex roles and sign as :meth:`~newton.ModelBuilder.add_cloth_mesh`.
+  For disjoint topology, the dihedral uses both copies of the shared edge as placed in
+  ``restShapePoints``. Coplanar, consistently oriented rest panels therefore remain flat.
+
+  Authored overrides use this same signed dihedral convention after mesh handedness and
+  reflection corrections. Import preserves the authored angle's sign. The linked proposal
+  specifies degrees but does not define a sign convention.
+
+  For non-planar cloth, Newton warns when the unauthored flat default applies without a
+  valid rest shape or bend override. Set ``"restShape"`` to preserve the imported dihedrals.
+  Rejected rest data does not suppress this warning; a valid zero-angle override does.
+  Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
+* Cable ``physics:restShapePoints`` and ``physics:restNormals`` set a rest shape separate from
+  the initial pose. This works for individual curves, periodic curves, cables rooted in an
+  articulation, and welded cable graphs. Rest lengths set capsule sizes, mass volume weights,
+  and the lengths used to convert material stiffness and damping to joint gains.
+  Initial points set segment centers, and initial normals set segment orientations.
+
+  When a segment is longer in the initial pose than in the rest shape, its capsule still
+  uses the rest length. This can leave gaps between capsules and affect contact, as with
+  native :ref:`rod joints <Rod joints>`.
+
+  Missing rest points use the initial points. Missing rest normals use the initial normal
+  values, interpreted against the rest tangents. Normals are read from ``primvars:normals``
+  first, including indexed values, then from ``normals``. Both initial and rest normals use
+  the prim's linear transform as material directions.
+
+  With both rest fields absent, the cable uses its initial geometry as its rest shape,
+  without a rest-shape warning. Welded cables now honor authored initial normals even
+  without rest fields; earlier versions ignored those normals.
+
+  Invalid rest arrays warn and use these fallbacks. A wrong array size or shape rejects that
+  field for the whole prim. Non-finite points or zero-length rest segments reject only that
+  curve's rest points. Invalid rest normals fall back independently, so valid rest lengths
+  still apply. If any segment's normal cannot define a rest frame, Newton rejects that
+  normal source for the curve's rest frames, including when initial normals are the fallback.
+  If neither source works, Newton transports the initial frames to the rest tangents.
+  For the initial pose, invalid normals get a generated frame per segment;
+  valid initial normals on other segments still apply.
+* Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
+  points coincide. See cable attachment positions below for cases where initial and rest
+  segment lengths differ.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -183,6 +325,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
   collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
   ``PhysicsElementCollisionFilter`` support above).
 * Every imported deformable can be found by prim path in the import results (see below).
+  After ``finalize()``, selection views use the recorded deformable object labels.
+  A welded graph is selected by its graph label, not by each source curve's prim path;
+  see :ref:`deformable-objects-welded-usd-graphs`.
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
@@ -197,13 +342,39 @@ Limitations
 
 Known gaps of the experimental importer, tracked as follow-ups:
 
-* **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
-  configuration. Cloth and volume rest attributes are ignored with a warning. For a cable,
-  including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
-  used to discretize material stiffness into joint stiffness; invalid values warn and fall back
-  to the current ``points`` lengths. The rod itself is still built relaxed at the current
-  ``points`` pose, and mass distribution also uses the current geometry. A body saved in a
-  deformed pose therefore resumes relaxed at that pose instead of springing back.
+* **Rest geometry** -- rest shapes are fixed at import time and do not update during
+  simulation. Invalid cloth or volume rest geometry falls back to the simulation shape
+  for the whole prim.
+* **Self-contact filtering** -- :class:`~newton.solvers.SolverVBD`'s
+  ``particle_rest_shape_contact_exclusion_radius`` uses initial positions in
+  :attr:`~newton.Model.particle_q`; imported rest geometry does not change this reference.
+  A nonzero radius can exclude contacts between initially folded or compressed regions,
+  even if they are far apart at rest. The default, ``0``, disables this distance filter.
+  This also applies to ``rest_shape_exclusion_radius`` in
+  :meth:`~newton.CollisionPipeline.init_soft_self_contact`.
+* **Disjoint cloth edges** -- adjacent rest triangles may give their shared edge different
+  lengths. Newton logs a warning and uses the last adjacent triangle's rest length for
+  bending. Both triangles retain their own rest bases and masses.
+* **Invalid simulation geometry** -- cloth with degenerate live triangles is skipped as a
+  whole. Inverted or degenerate live tetrahedra are dropped individually. With valid rest
+  geometry, surviving tetrahedra keep their matching rest poses, volumes, and element masses.
+
+  A volume with valid rest geometry is skipped before builder mutation if its live points
+  or tetrahedron volumes are non-finite, or no tetrahedra survive. Without valid rest
+  geometry, the existing live-shape fallback applies.
+* **Dropped tetrahedra** -- partial volume import keeps the existing particle storage and
+  collision surface generation. Surfaces associated with dropped tetrahedra are not removed.
+* **Precision** -- rest geometry is transformed in float64 without world translation;
+  simulation points are stored in float32. At very large world offsets, rounding of the
+  live points can introduce slight initial strain even when an asset is authored at rest.
+* **Cable attachment positions** -- attachments use native rod material endpoints and
+  rest-length segment coordinates. When initial and rest segment lengths differ, these
+  positions can differ from the proposal's positions on the initial curve. Import preserves
+  the initial poses in ``Model.body_q`` and a newly created state. An attachment can start
+  with separated anchors that the solver must bring together.
+  Import does not call :func:`~newton.eval_fk`. If the application calls it, FK enforces
+  the articulation's root attachment and can translate a cable rooted at an endpoint.
+  Attachments outside articulations remain for the solver to enforce.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -220,48 +391,80 @@ Known gaps of the experimental importer, tracked as follow-ups:
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
-* **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven (embedding is not implemented): untagged
-  PointBased graphics geometry warns and is skipped (a static import would leave a frozen
-  copy behind), and a dedicated point-based collider (every one warns) only toggles the
-  simulation geometry's collision as described above and never becomes a separate rigid
-  shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
+* **Collision and graphics geometry** -- graphics Mesh prims can import as visual meshes; see
+  :ref:`usd-deformable-visual-import` for what is imported and skipped. A dedicated
+  point-based collider (every one warns) only toggles the simulation geometry's collision
+  as described above and never becomes a separate rigid shape. Deformable-owned geometry
+  is owned exclusively by the deformable importer: when a
   deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
   rather than falling back to a rigid representation. A disabled
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
 * **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
-* **Thickness fallbacks** -- for cloth that needs a thickness to convert volumetric density or
-  stiffness, the importer warns and assumes a 2 mm shell thickness if none resolves. A cable
-  without a valid thickness instead uses AOUSD's 1 mm diameter when the bound material follows
-  the current ``physics:curves*`` contract described above; when no curve material is bound or
-  it uses only the deprecated unprefixed attributes, Newton retains its previous 2.5 mm radius.
-  The assumed size affects mass, collision geometry, and stiffness derived from material
-  moduli. At the 1 mm cable diameter, the smallest principal moment of
-  short segments at typical densities may fall below :class:`~newton.ModelBuilder`'s inertia-validation
-  floor, causing their inertia to be corrected during finalization. Explicitly authored
-  comparably thin cables can do the same. Set
+  Newton projects normals perpendicular to each segment and aligns the frame with its
+  tangent. It imports rest bend and twist but cannot preserve an independently tilted
+  material frame for shear. Multi-turn twist is not represented.
+* **Thin cable inertia** -- at the default 1 mm cable diameter, the smallest principal moment
+  of short segments at typical densities may fall below
+  :class:`~newton.ModelBuilder`'s inertia-validation floor, causing their inertia to be corrected
+  during finalization. Explicitly authored comparably thin cables can do the same. Set
   :attr:`~newton.ModelBuilder.validate_inertia_detailed` before finalization to identify corrected
-  bodies. To override the fallback, author ``physics:thickness`` for cloth (or configure
-  ``newton:massModel = "shell"`` with ``newton:shellThickness``) or
-  ``physics:curvesThickness`` for cables.
+  bodies.
 * **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
   the rod representation needs at least two segments. A periodic two-point curve closes into
   two segments and imports.
 
-**Mass distribution** follows the proposal's precedence order. Per-point ``physics:masses`` on
-the simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` total, then
-the body or material density. Density- and total-derived masses are spread over the **current**
-geometry (segment lengths, triangle areas, tet volumes). The proposal spreads them over the rest
-shape instead, but rest state is not imported yet (see the limitations above), so a deformed
-saved pose shifts mass with it.
+**Mass distribution** follows the proposal's precedence order. Typed ``physics:masses`` on the
+simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` total, then body
+density, family-material density, and base ``UsdPhysicsMaterialAPI`` density. If none is authored,
+proposal-marked deformables use the final 1000 kg/m³ fallback rather than
+``ModelBuilder.default_shape_cfg.density`` or ``ModelBuilder.default_tet_density``; only a bare
+TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable element volumes use
+resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
+Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
+Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
+scaled to each resolved segment mass.
+
+Cloth element volumes use rest triangle areas and geometry thickness. Volume deformables use
+rest tetrahedron volumes. Typed mass conversion and total-mass distribution use these same volumes.
+
+**Rest-data validation** requires integer topology and bend-pair arrays. Non-integer values are
+rejected, not truncated to indices. Invalid cloth or volume rest geometry falls back to the
+simulation shape before builder mutation.
+
+Mismatched bend-array lengths fall back to ``restBendAnglesDefault``. Invalid individual entries
+are skipped. For duplicate pairs, the last valid angle wins. Each of these cases is logged.
+
+**Diagnostics** for malformed rest data use the ``newton`` logger at ``WARNING`` level. This also
+applies to malformed cloth or TetMesh topology, non-finite or degenerate cloth simulation geometry,
+and invalid ``restBendAnglesDefault`` tokens. Capture these with logging handlers.
+
+Compatibility and deprecation notices remain Python warnings. This includes the migration notice
+when the unauthored flat-bend default replaces non-planar cloth dihedrals.
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
-``path_cable_map`` holds each cable's body and joint indices, and ``path_cloth_map`` /
-``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
+``path_cable_map`` holds each cable's body and rod-joint indices. Generated root joints
+are excluded. Welded curves return empty joint lists; see :ref:`deformable-objects-welded-usd-graphs`.
+``path_cloth_map`` / ``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
 ranges. Without the flag the return shape carries no deformable entries.
+The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and ``thicknesses``
+values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
+marked ``legacy_implicit_type``.
+
+After finalization, use the recorded labels to select deformable objects with
+:class:`~newton.selection.DeformableCurveView`,
+:class:`~newton.selection.DeformableSurfaceView`, or
+:class:`~newton.selection.DeformableVolumeView`. Each view selects only its family
+and provides state access and simulation-element ranges. Native and USD-created
+deformable objects use the same view API. See :ref:`deformable-selection` for
+world layout, masked resets, and getter buffers. See :ref:`deformable-objects`
+for how replication and fixed-joint collapse affect the recorded ranges.
+
+Imported deformables also populate the experimental builder identity lists
+described in :ref:`deformable-objects`. These lists are separate from the
+import result mappings above.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -283,45 +486,168 @@ A ``point``->``point`` attachment between two imported cables can be a weld. Wel
 only when the attachment is **hard** (no authored stiffness, or infinite; authored damping
 does not affect hardness) **and** the two attached points sit at the same position. Such a junction is shared structure,
 not a runtime constraint: the two points become one node, and every curve connected through such
-junctions is built as one rod graph with a single :meth:`~newton.ModelBuilder.add_rod_graph`
-call (one capsule body per segment, junction nodes shared). Welded junction attachments are
+junctions is built as one :class:`~newton.Rod` with explicit edges and assembled
+through :meth:`~newton.ModelBuilder.add_rod` using ``rod=`` (one capsule body per
+segment, junction nodes shared). Welded junction attachments are
 absorbed into the graph, so they appear in neither ``path_attachment_map`` nor
 ``path_attachment_attrs``. A springy or non-coincident cable-to-cable attachment is **not**
 welded. It warns and is kept as unsupported in ``path_attachment_attrs``, so the authored
 geometry and the constraint intent are never silently rewritten. Cable-to-xform attachments on
 the same curves still import as described above.
 
-Each imported cable is wrapped into its own articulation, labelled ``"<path>_articulation"``
-(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``).
-The model is therefore ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
-A welded rod graph gets one articulation per connected component; each of its curves keeps its
-own body range but shares that articulation. Attachment joints that tie a cable to other bodies
-close a loop, so they stay outside the articulation.
+An imported cable incorporated into an existing rigid-body articulation keeps that articulation's
+existing label. Only cable-owned articulations use the cable-derived label ``"<path>_articulation"``
+(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``). A free cable gets a free
+root joint to the world. When an open cable has exactly one supported hard attachment at an
+endpoint, that ball joint becomes the cable's root instead. An attachment to a rigid body joins
+the cable to that body's articulation, whether the articulation has a fixed or floating base.
+Attachments at interior points and additional attachments remain separate constraints outside
+the articulation. A welded rod graph gets one free-rooted articulation per connected component;
+each of its curves keeps its own body range but shares that articulation. The imported model is
+ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
+
+A cable-owned articulation resolves self-collision from the curve prim (see the articulation
+remapping below), falling back to the ``enable_self_collisions`` argument. The attribute is read
+directly from the curve; no articulation API schema needs to be applied to it. In a welded graph,
+any member curve authoring self-collision off disables it for the whole graph. A cable joined to
+a rigid body's articulation follows that articulation's setting.
 
 .. code-block:: python
 
+    from newton.selection import DeformableCurveView
+
     result = builder.add_usd("cables.usda", return_deformable_results=True)
-    # Look up an imported cable by prim path:
+    # Find a cable's segments while building the scene.
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
+    # Inspect the finalized body range by label.
+    cable = DeformableCurveView(model, "/World/Cable")
+    ((body_start, body_end),) = cable.ranges("body")
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
-``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly
-as authored, independent of any solver. The cable and cloth entries expose the parsed
-authored ``material`` values and the ``resolved_density``. The volume entry exposes the
-``resolved_density`` (a volume material's ``youngsModulus`` / ``poissonsRatio`` are applied to
-the built soft body and not repeated there). A cable entry preserves authored
-``curvesThickness``, ``youngsModulus``, ``poissonsRatio``, and the per-mode structural
-stiffnesses, plus any earlier unprefixed attributes the material still authors during the
-deprecation window; a cloth entry keeps moduli its isotropic membrane cannot express. This
-lets another solver rebuild the deformable without re-parsing the stage. A cable entry carries a
-``graph_component`` identifier only when the curve was welded into a rod graph; curves of one
-graph share it, and independent or fallback cables have no such key.
+``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,
+independent of any solver. Cable and cloth entries expose validated authored ``material`` values
+and ``resolved_density``; valid geometry ``masses`` / ``thicknesses`` arrays are preserved under
+``simulation`` with their element type. The volume entry exposes ``resolved_density`` and typed
+masses (a volume material's ``youngsModulus`` / ``poissonsRatio`` are applied to the built soft
+body and not repeated there). Cable material metadata includes structural stiffness and damping.
+Removed thickness names and earlier unprefixed material attributes remain in ``material`` when
+authored during their deprecation windows; a cloth entry also keeps moduli its isotropic membrane
+cannot express. This lets another solver rebuild the supported state without re-parsing the stage.
+A cable entry carries a ``graph_component`` identifier only when the curve was welded into a rod
+graph; curves of one graph share it, and independent or fallback cables have no such key.
+It is also the label of the complete graph in ``ModelBuilder.curve_label``;
+see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
 
 .. note::
 
-   Solver tuning that is not part of the AOUSD schema (e.g. damping) is not imported; supply it
-   on the builder or model after import.
+   Solver tuning that is not part of the supported AOUSD schemas or a documented Newton schema
+   extension is not imported; supply it on the builder or model after import.
+
+Reading a deformable bind pose
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
+
+Read the reference points used to bind visual geometry:
+
+.. code-block:: python
+
+   import newton.usd
+
+   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
+   points = newton.usd.get_deformable_bind_pose(visual)
+
+The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
+``bindPose``, or the geometry's default-time points when none is authored.
+It does not substitute rest-shape points or an animated sample. Multiple
+bind poses and malformed data raise an error.
+
+The returned array owns its storage. Points remain in authored order, local
+coordinates, and stage length units. Apply transforms and unit conversion
+separately. These are not render vertices split at UV or normal seams.
+
+Finding deformable visual geometry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.find_deformable_visual_prims` follows the AOUSD proposal.
+
+Use this reader to inspect visual geometry without creating a simulation:
+
+.. code-block:: python
+
+   import newton.usd
+
+   body = stage.GetPrimAtPath("/World/SoftBody")
+   visuals = newton.usd.find_deformable_visual_prims(body)
+
+The reader returns PointBased prims in traversal order, including instance
+proxies. It excludes simulation geometry and colliders, even disabled ones.
+It stops at nested deformable bodies, rigid bodies, and articulation roots.
+Visibility is not a filter. The reader does not edit the stage or compute
+embeddings; it only reports which prims the body owns.
+
+.. _usd-deformable-visual-import:
+
+Importing deformable visual meshes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   Deformable visual mesh import follows the AOUSD proposal and may change.
+
+:meth:`ModelBuilder.add_usd` uses these readers to bind graphics Mesh prims to
+their owning simulation geometry. Volume meshes use tetrahedra, cloth meshes
+use triangles, and cable meshes follow imported rigid segments. Graphics add
+no mass or collision geometry. Set ``load_visual_shapes=False`` to omit them.
+
+.. code-block:: python
+
+   import newton
+   import newton.geometry
+
+   builder = newton.ModelBuilder()
+   builder.add_usd("deformable.usda")
+   model = builder.finalize()
+   state = model.state()
+   visuals = newton.geometry.DeformableVisuals(model)
+   visuals.update(state)
+
+Binding pairs the graphics and simulation bind poses in the same world frame.
+Without an authored bind pose, each prim's default-time points provide it.
+UV corner expansion keeps the source-point mapping, so texture seams do not
+change which bind points move the visual mesh. Material textures require UVs.
+Authored ``UsdTransform2d`` texture scale, rotation, and translation are preserved.
+One mesh-level material applies to the whole graphics mesh. Face-level material
+bindings on ``GeomSubset`` prims are not imported; a diagnostic reports that they
+were ignored. Split graphics into separate Mesh prims to use different textures.
+Only meshes a viewport would draw are imported, by the rule that decides
+whether a rigid shape is visible: the prim is visible and its purpose is
+``default`` or ``proxy``. ``ignore_paths`` applies too. A malformed visual is
+logged and skipped without removing valid physics or sibling meshes.
+
+Use the optional import result to look up a visual mesh by its USD path:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   result = builder.add_usd("deformable.usda", return_deformable_results=True)
+   mesh_index = result["path_deformable_visual_map"]["/World/SoftToy/Skin"]
+   model = builder.finalize()
+   skin = model.deformable_visual_meshes[mesh_index]
+
+The map contains only successfully imported visual meshes. Its indices describe
+this builder after import; it does not track copies made by later composition or
+replication. Imported meshes use their graphics prim path as their initial label;
+``world`` identifies each copy. USD namespaces are not rebased automatically.
+
+Embeddings are computed at import time; authored per-vertex embedding weights
+are not imported. PointBased graphics other than meshes are skipped with a
+diagnostic and never become rigid shapes, and Gaussian graphics are not
+imported by this path.
+Triangle bindings discard normal offsets; vertices outside a volume are
+clamped as described in the :ref:`visualization guide <deformable-visual-meshes>`.
 
 Material Color Spaces
 ---------------------
@@ -342,7 +668,30 @@ colors such as ``srgb_rec709_scene`` are kept as authored.
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
 the file attribute, and converts linear/raw color textures to display/sRGB when
-they are loaded. Display/sRGB textures stay display-encoded.
+they are loaded. Display/sRGB textures stay display-encoded, as do untagged
+textures, whose ``sourceColorSpace`` is ``auto`` or unset and whose file
+attribute has no color-space metadata or ``auto``.
+
+Gaussian splat spherical-harmonics radiance uses the color space of its
+coefficient attribute only (``radiance:sphericalHarmonicsCoefficients``, or its
+half-precision ``h`` variant), without ``UsdColorSpaceAPI`` inheritance.
+Untagged radiance is treated as display/sRGB.
+
+Scalar colors, textures and Gaussian radiance classify color-space names the
+same way. The supported names are:
+
+* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``:
+  display/sRGB (:attr:`~newton.utils.ColorSpace.SRGB`).
+  ``srgb_rec709_display`` is a display-referred marker that renderers without
+  special handling treat like ``srgb_rec709_scene``.
+* ``lin_rec709_scene``, ``lin_rec709``, ``lin_srgb``, ``raw``, ``data``,
+  ``identity`` and ``linear``: linear (:attr:`~newton.utils.ColorSpace.LINEAR`).
+
+Newton does not convert color primaries or transfer functions. Any other name,
+such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
+``g22_rec709_scene``, is imported as linear if it looks linear (``lin_*`` or
+``acescg``) and as sRGB otherwise, and a warning naming the prim or attribute
+is logged. The import itself does not fail.
 
 Mass and Inertia Precedence
 ---------------------------
@@ -439,9 +788,20 @@ The table below shows PhysX attribute remapping examples:
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
 
+For mesh colliders with ``physics:approximation = "convexDecomposition"`` and
+``PhysxConvexDecompositionCollisionAPI`` applied, enabling
+:class:`newton.usd.SchemaResolverPhysx` imports
+``physxConvexDecompositionCollision:maxConvexHulls`` (default 32) as CoACD's
+hull-count limit with merging enabled, independently for each connected component.
+``physxConvexDecompositionCollision:hullVertexLimit`` (default 64) sets the mesh's
+hull vertex limit, taking precedence over ``physxConvexHullCollision:hullVertexLimit``
+for these prims. Newton's existing hull reduction applies that vertex limit to each
+output hull. Disconnected components remain separate; the result need not match
+PhysX cooking.
+
 **Newton articulation remapping:**
 
-On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
+On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``) and cable ``BasisCurves`` prims, the following is resolved:
 
 .. list-table:: Newton Articulation Remapping
    :header-rows: 1
@@ -486,6 +846,8 @@ On joint prims (``RevoluteJoint``, ``PrismaticJoint``, ``D6Joint``), the followi
      - ``limit_kd``
      - ``-inf`` = engine default; ignored when ``limitStiffness`` is ``+inf``
 
+On ``SphericalJoint`` prims, only ``newton:armature``, ``newton:damping``, and ``newton:friction`` are resolved; each applies to all three rotational DOFs.
+
 Angular joints store gains per-degree in USD and the importer converts to per-radian internally.
 
 **MuJoCo Attribute Remapping Examples:**
@@ -502,6 +864,9 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:armature``
      - ``armature``
      - Direct mapping
+   * - ``mjc:actuatorfrcrange:min``, ``mjc:actuatorfrcrange:max``
+     - ``effort_limit``
+     - Revolute and prismatic joints: larger magnitude of the range. Ignored when ``mjc:actuatorfrclimited`` is ``"false"``, or ``"auto"`` with an empty range. A smaller drive ``maxForce`` takes precedence.
    * - ``mjc:margin``
      - ``margin``
      - Direct mapping (identity under MuJoCo 3.9+). Pass ``legacy_margin_gap=True`` to :meth:`~newton.ModelBuilder.add_usd` for the pre-3.9 ``margin = mjc:margin - mjc:gap`` translation.
@@ -534,7 +899,7 @@ The following USD example demonstrates how PhysX attributes are authored in a US
        float physxLimit:angular:damping = 10.0  # → limit_angular_kd = 10.0
 
        # Initial joint state
-       float state:angular:physics:position = 1.57  # → joint_q = 1.57 rad
+       float state:angular:physics:position = 90  # degrees → joint_q ≈ 1.57 rad
    }
 
    def Mesh "collision_shape" (
@@ -661,11 +1026,43 @@ The collected attributes are returned in the result dictionary and can be access
                armature_value = attrs["physxJoint:armature"]
                print(f"PhysX joint {prim_path} has armature: {armature_value}")
 
+.. _usd-mujoco-tendons:
+
+MuJoCo Tendons
+--------------
+
+Register :class:`~newton.solvers.SolverMuJoCo` custom attributes before importing
+USD assets containing ``MjcTendon`` prims:
+
+.. code-block:: python
+
+   import newton
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(builder)
+   builder.add_usd("robot.usda")
+
+Both fixed and spatial tendons are supported. An unauthored ``mjc:type`` defaults
+to ``"spatial"``. Spatial paths use ``mjc:path`` and optional ``mjc:path:indices``
+to reference sites and wrapping spheres or cylinders, including repeated targets.
+``mjc:path:segments`` and ``mjc:path:divisors`` define pulley branches;
+``mjc:sideSites`` and ``mjc:sideSites:indices`` select side sites for wrapping
+geometry. Segment and side-site arrays follow the indexed path order.
+
+Referenced shapes must be included by the import options. Paths with invalid
+indices or unresolved targets emit a warning and contribute no wrap entries.
+MuJoCo export also warns when it skips a tendon with no usable path.
+
 Custom Attributes from USD
 --------------------------
 
 USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
 Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
+
+Custom values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency are not imported
+automatically yet. See :ref:`usd_deformable_custom_values` for a builder
+assignment example after import.
 
 **Overview:**
 
@@ -1387,16 +1784,20 @@ Limitations
 -----------
 
 Importing USD files where many (> 30) mesh colliders are under the same rigid body
-can result in a crash in ``UsdPhysics.LoadUsdPhysicsFromRange``.  This is a known
-thread-safety issue in OpenUSD and will be fixed in a future release of
-``usd-core``.  It can be worked around by setting the work concurrency limit to 1
-before ``pxr`` initializes its thread pool.
+can result in a crash in OpenUSD's native physics parser.  This is a known
+thread-safety issue in OpenUSD, **fixed in OpenUSD 26.08**: no workaround is needed
+when the USD runtime is 26.08 or newer, whether it comes from ``usd-core`` or from
+the OpenUSD build bundled in ``usd-exchange``.
+
+Newton still supports older ``usd-core`` releases, so the workaround below remains
+relevant when running against a USD runtime older than 26.08.  It can be applied by
+setting the work concurrency limit to 1 before ``pxr`` initializes its thread pool.
 
 .. note::
 
    Setting the concurrency limit to 1 disables multi-threaded USD processing
    globally and may degrade performance of other OpenUSD workloads in the same
-   process.
+   process.  Prefer upgrading to OpenUSD 26.08 or newer instead.
 
 Choose **one** of the two approaches below — do not combine them.
 ``PXR_WORK_THREAD_LIMIT`` is evaluated once when ``pxr`` is first imported and

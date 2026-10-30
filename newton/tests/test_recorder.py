@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -14,6 +16,7 @@ import newton.examples
 from newton._src.utils.import_mjcf import parse_mjcf
 from newton._src.viewer.viewer_file import (
     HAS_CBOR2,
+    ArrayCache,
     RingBuffer,
     depointer_as_key,
     deserialize,
@@ -194,6 +197,7 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_capsule(body)
+    builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
     model = builder.finalize(device=device)
 
     # Create recorder with ring buffer (capacity 3)
@@ -225,14 +229,25 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
         # Should have loaded the 3 states that were saved
         test.assertEqual(len(new_recorder.history), 3)
 
-        # Test that we can create a new model and restore it
-        restored_model = newton.Model(device=device)
-        new_recorder.playback_model(restored_model)
+        edge_names = ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range")
+        for legacy_names in (False, True):
+            with test.subTest(legacy_names=legacy_names):
+                if legacy_names:
+                    for name in edge_names:
+                        new_recorder.deserialized_model[name] = new_recorder.deserialized_model.pop(f"_{name}")
+                restored_model = newton.Model(device=device)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+                    new_recorder.playback_model(restored_model)
 
-        # Basic model validation
-        test.assertEqual(restored_model.body_count, model.body_count)
-        test.assertEqual(restored_model.joint_count, model.joint_count)
-        test.assertEqual(restored_model.shape_count, model.shape_count)
+                test.assertEqual(restored_model.body_count, model.body_count)
+                test.assertEqual(restored_model.joint_count, model.joint_count)
+                test.assertEqual(restored_model.shape_count, model.shape_count)
+                for name in edge_names:
+                    original = getattr(model, f"_{name}")
+                    restored = getattr(restored_model, f"_{name}")
+                    test.assertIsNotNone(restored, name)
+                    np.testing.assert_array_equal(restored.numpy(), original.numpy(), err_msg=name)
 
         # Test state history comparison
         for original_state_data, loaded_state_data in zip(recorder.history, new_recorder.history, strict=False):
@@ -538,9 +553,14 @@ def test_warp_dtype_roundtrip(test: TestRecorder, device):
             # Create test array with random data
             arr = wp.zeros(shape, dtype=dtype, device=device)
 
-            # Fill with non-zero values to verify data integrity
+            # Fill with representative values to verify data integrity.
             np_data = arr.numpy()
-            np_data[:] = rng.standard_normal(np_data.shape).astype(np_data.dtype)
+            if np.issubdtype(np_data.dtype, np.bool_):
+                np_data[:] = rng.integers(0, 2, size=np_data.shape, dtype=np.uint8).astype(np_data.dtype)
+            elif np.issubdtype(np_data.dtype, np.integer):
+                np_data[:] = rng.integers(1, 10, size=np_data.shape, dtype=np_data.dtype)
+            else:
+                np_data[:] = rng.standard_normal(np_data.shape).astype(np_data.dtype)
             arr = wp.array(np_data, dtype=dtype, device=device)
 
             # Serialize
@@ -665,6 +685,29 @@ def test_warp_dtype_file_roundtrip(test: TestRecorder, device):
                     os.remove(file_path)
 
 
+def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
+    """Keep geometrically shared meshes distinct when appearance differs."""
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+        dtype=np.float32,
+    )
+    indices = np.array([0, 1, 2], dtype=np.int32)
+    mesh_a = newton.Mesh(vertices, indices, compute_inertia=False, color=(1.0, 0.0, 0.0), opacity=0.25)
+    mesh_b = newton.Mesh(vertices, indices, compute_inertia=False, color=(0.0, 1.0, 0.0), opacity=0.75)
+    mesh_b.vertices = mesh_a.vertices
+    mesh_b.indices = mesh_a.indices
+
+    serialized = json.loads(json.dumps(pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())))
+    restored = depointer_as_key(serialized, cache=ArrayCache())
+
+    test.assertIs(restored[0], restored[2])
+    test.assertIsNot(restored[0], restored[1])
+    test.assertEqual(restored[0].opacity, 0.25)
+    test.assertEqual(restored[1].opacity, 0.75)
+    test.assertEqual(restored[0].color, (1.0, 0.0, 0.0))
+    test.assertEqual(restored[1].color, (0.0, 1.0, 0.0))
+
+
 add_function_test(
     TestRecorder,
     "test_warp_dtype_roundtrip",
@@ -686,6 +729,13 @@ add_function_test(
     test_warp_dtype_file_roundtrip,
     devices=devices,
     check_output=False,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_mesh_recording_keeps_distinct_appearance",
+    test_mesh_recording_keeps_distinct_appearance,
+    devices=devices,
 )
 
 

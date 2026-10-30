@@ -12,6 +12,7 @@ from numbers import Real
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from .types import (
     GeoType,
     Heightfield,
@@ -61,6 +62,7 @@ def _validate_hollow_thickness(
     if thickness == 0.0:
         warnings.warn(
             f"A hollow {shape_name} geom with zero thickness has zero mass and inertia.",
+            NewtonWarning,
             stacklevel=2,
         )
         return thickness
@@ -98,13 +100,11 @@ def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec
 
 
 def compute_inertia_sphere_from_mass(mass: float, radius: float) -> wp.mat33:
-    """Helper to compute 3x3 inertia matrix of a solid box with given mass and half-extents.
+    """Helper to compute 3x3 inertia matrix of a solid sphere with given mass and radius.
 
     Args:
-        mass: The box mass [kg]
-        hx: The box half-extent along the x-axis [m]
-        hy: The box half-extent along the y-axis [m]
-        hz: The box half-extent along the z-axis [m]
+        mass: The sphere mass [kg]
+        radius: The sphere radius [m]
 
     Returns:
 
@@ -742,9 +742,13 @@ def compute_inertia_shape(
 
             c_new = wp.cw_mul(c, scale)
 
-            Ixx = I[0, 0] * (sy**2 + sz**2) / 2 * mass_ratio
-            Iyy = I[1, 1] * (sx**2 + sz**2) / 2 * mass_ratio
-            Izz = I[2, 2] * (sx**2 + sy**2) / 2 * mass_ratio
+            # Scale the per-axis second moments, then rebuild the diagonal.
+            Sx = (I[1, 1] + I[2, 2] - I[0, 0]) / 2
+            Sy = (I[0, 0] + I[2, 2] - I[1, 1]) / 2
+            Sz = (I[0, 0] + I[1, 1] - I[2, 2]) / 2
+            Ixx = (sy**2 * Sy + sz**2 * Sz) * mass_ratio
+            Iyy = (sx**2 * Sx + sz**2 * Sz) * mass_ratio
+            Izz = (sx**2 * Sx + sy**2 * Sy) * mass_ratio
             # Products of inertia pick up the sign of the corresponding scale
             # pair, which is the correct mirror behavior under a single-axis
             # sign flip.
@@ -811,24 +815,25 @@ def verify_and_correct_inertia(
     if not np.isfinite(mass) or not np.all(np.isfinite(inertia_array)):
         warnings.warn(
             f"NaN/Inf detected in mass or inertia{body_id}, zeroing out mass and inertia",
+            NewtonWarning,
             stacklevel=2,
         )
         return 0.0, wp.mat33(np.zeros((3, 3))), True
 
     # Check and correct mass
     if mass < 0:
-        warnings.warn(f"Negative mass {mass} detected{body_id}, setting to 0", stacklevel=2)
+        warnings.warn(f"Negative mass {mass} detected{body_id}, setting to 0", NewtonWarning, stacklevel=2)
         corrected_mass = 0.0
         was_corrected = True
     elif bound_mass is not None and mass < bound_mass and mass > 0:
-        warnings.warn(f"Mass {mass} is below bound {bound_mass}{body_id}, clamping", stacklevel=2)
+        warnings.warn(f"Mass {mass} is below bound {bound_mass}{body_id}, clamping", NewtonWarning, stacklevel=2)
         corrected_mass = bound_mass
         was_corrected = True
 
     # For zero mass, inertia should also be zero
     if corrected_mass == 0.0:
         if np.any(inertia_array != 0):
-            warnings.warn(f"Zero mass body{body_id} should have zero inertia, correcting", stacklevel=2)
+            warnings.warn(f"Zero mass body{body_id} should have zero inertia, correcting", NewtonWarning, stacklevel=2)
             corrected_inertia = np.zeros((3, 3))
             was_corrected = True
         return corrected_mass, wp.mat33(corrected_inertia), was_corrected
@@ -841,7 +846,7 @@ def verify_and_correct_inertia(
         rtol=_INERTIA_SYMMETRY_RTOL,
         atol=_INERTIA_SYMMETRY_ATOL,
     ):
-        warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", stacklevel=2)
+        warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", NewtonWarning, stacklevel=2)
         was_corrected = True
     corrected_inertia = symmetrized
 
@@ -857,6 +862,7 @@ def verify_and_correct_inertia(
         if np.any(eigenvalues < eig_threshold):
             warnings.warn(
                 f"Eigenvalues below threshold detected{body_id}: {eigenvalues}, correcting inertia",
+                NewtonWarning,
                 stacklevel=2,
             )
             # Make positive definite by adjusting eigenvalues
@@ -871,7 +877,9 @@ def verify_and_correct_inertia(
             min_eig = np.min(eigenvalues)
             if min_eig < bound_inertia:
                 warnings.warn(
-                    f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting", stacklevel=2
+                    f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting",
+                    NewtonWarning,
+                    stacklevel=2,
                 )
                 adjustment = bound_inertia - min_eig
                 corrected_inertia += np.eye(3, dtype=corrected_inertia.dtype) * adjustment
@@ -889,7 +897,11 @@ def verify_and_correct_inertia(
         has_violations = I1 + I2 < I3 - tri_tol
 
     except np.linalg.LinAlgError:
-        warnings.warn(f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal", stacklevel=2)
+        warnings.warn(
+            f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal",
+            NewtonWarning,
+            stacklevel=2,
+        )
         was_corrected = True
         # Fallback: use diagonal elements
         trace = np.trace(corrected_inertia)
@@ -903,6 +915,7 @@ def verify_and_correct_inertia(
     if has_violations:
         warnings.warn(
             f"Inertia tensor{body_id} violates triangle inequality with principal moments ({I1:.6f}, {I2:.6f}, {I3:.6f})",
+            NewtonWarning,
             stacklevel=2,
         )
 
@@ -929,6 +942,7 @@ def verify_and_correct_inertia(
                 warnings.warn(
                     f"Balanced principal moments{body_id} from ({I1:.6f}, {I2:.6f}, {I3:.6f}) to "
                     f"({new_I1:.6f}, {new_I2:.6f}, {new_I3:.6f})",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -938,13 +952,15 @@ def verify_and_correct_inertia(
         try:
             eigenvalues = np.linalg.eigvalsh(corrected_inertia)
         except np.linalg.LinAlgError:
-            warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", stacklevel=2)
+            warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", NewtonWarning, stacklevel=2)
             eigenvalues = np.array([0.0, 0.0, 0.0])
 
     # Check final eigenvalues
     if np.any(eigenvalues <= 0) or np.any(~np.isfinite(eigenvalues)):
         warnings.warn(
-            f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
+            f"Corrected inertia matrix{body_id} is not positive definite, this should not happen",
+            NewtonWarning,
+            stacklevel=2,
         )
         # As a last resort, make it positive definite by adding a small value to diagonal.
         min_eigenvalue = (

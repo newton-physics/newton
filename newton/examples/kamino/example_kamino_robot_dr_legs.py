@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot DR Legs
-#
-# Shows how to simulate DR Legs with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_robot_dr_legs --world-count 16
-#
-###########################################################################
+"""Example Robot DR Legs
+
+Shows how to simulate DR Legs with multiple worlds using SolverKamino.
+
+Success criteria:
+- A torso-free biped with complex leg linkages appears.
+- Right-drag its movable bodies: leg joints remain connected and the mechanism responds without
+  explosive motion.
+
+Runs:
+- `python -m newton.examples kamino_robot_dr_legs`
+- `python -m newton.examples kamino_robot_dr_legs --world-count 16`
+"""
 
 import warp as wp
 
@@ -46,8 +51,6 @@ class Example:
         robot_builder.default_shape_cfg.gap = 1e-2
         if self.animated:
             robot_builder.default_shape_cfg.mu = 0.1
-        robot_builder.request_contact_attributes("force")  # For contact visualization
-
         # Load the DR Legs USD and add it to the builder.
         # Pinned to an older revision: the current one is better for RL but tips over
         # differently in simulation, which the DVI contact regressions detect. Drop the
@@ -79,10 +82,13 @@ class Example:
                 2.0 if mode != newton.JointTargetMode.NONE else 0.0 for mode in robot_builder.joint_target_mode
             ]
 
+        effort_limit_override = getattr(args, "joint_effort_limit", None) if args else None
+        if effort_limit_override is not None:
+            robot_builder.joint_effort_limit = [effort_limit_override] * robot_builder.joint_dof_count
+
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.request_contact_attributes("force")
         builder.default_shape_cfg.margin = dvi_contact_margin
         builder.default_shape_cfg.gap = 1e-2
         for _ in range(self.world_count):
@@ -100,7 +106,7 @@ class Example:
             self.model,
             dynamics_solver=self.dynamics_solver,
             sparse_dynamics=self.dynamics_solver == "dvi",
-            sparse_jacobian=self.dynamics_solver == "dvi",
+            sparse_jacobian=self.dynamics_solver in ("dvi", "lox"),
         )
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
@@ -130,6 +136,8 @@ class Example:
             self.config.dvi.inequality_sweeps_per_iteration = 3
             self.config.dvi.bilateral_solve_interval = 1
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
+            self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
+            self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -145,15 +153,12 @@ class Example:
         else:
             self.collision_pipeline = None
             self.contacts = newton.CollisionPipeline(self.model).contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
-
-        # Warm-start the simulation
-        if not self.use_kamino_contacts:
-            self.collision_pipeline.collide(self.state_0, self.contacts)
-        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
@@ -200,10 +205,23 @@ class Example:
             self.viewer.apply_forces(self.state_0)
             if not self.use_kamino_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
-                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    observables=self.solver_observables,
+                )
             else:
-                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    observables=self.solver_observables,
+                )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -217,11 +235,13 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        # TODO: Add some assertions here once we have a more meaningful test scenario
+        if self.dynamics_solver == "lox":
+            assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
 
     def _init_animation(self, model_asset: str, animation_asset: str):
         import numpy as np  # noqa: PLC0415
@@ -320,9 +340,21 @@ class Example:
         newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(
             "--dynamics-solver",
-            choices=("padmm", "dvi"),
+            choices=("padmm", "dvi", "lox"),
             default="padmm",
             help="Kamino dynamics solver to use.",
+        )
+        parser.add_argument(
+            "--unilateral-solver",
+            choices=("pgs", "apgd"),
+            default="pgs",
+            help="DVI unilateral subsolver; APGD uses De Saxce contact correction.",
+        )
+        parser.add_argument(
+            "--use-schur-complement",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Eliminate bilateral rows during DVI unilateral solves (automatic for bounded PD drives).",
         )
         parser.add_argument(
             "--linear-solver-type",
@@ -342,6 +374,12 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=False,
             help="Animation the model based on imported motion.",
+        )
+        parser.add_argument(
+            "--joint-effort-limit",
+            type=float,
+            default=None,
+            help="Override effort limit for all joint DOFs (default: use USD values).",
         )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)

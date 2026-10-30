@@ -1,21 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Gripper — Soft Triangle (water-tight FACE contact)
-#
-# A parallel-jaw gripper with CUBE finger pads grips a single soft triangle
-# at its CENTER, then lifts and holds it in the air.
-#
-# The triangle's three vertices sit well outside the gripper's reach, so the
-# legacy per-particle contact path finds nothing between the jaws. Only the
-# water-tight soft-FACE pass detects the triangle face crossing the pinch, so
-# the grip (and the lift that follows) works only with
-# ``enable_rigid_soft_full_surface_contact=True``. With the flag off the
-# triangle slips out and falls.
-#
-# Command: python -m newton.examples vbd_gripper_soft_triangle
-###########################################################################
+"""Example VBD Gripper — Soft Triangle (water-tight FACE contact)
+
+A parallel-jaw gripper with CUBE finger pads grips a single soft triangle
+at its CENTER, then lifts and holds it in the air.
+
+The triangle's three vertices sit well outside the gripper's reach, so the
+legacy per-particle contact path finds nothing between the jaws. Only the
+water-tight soft-FACE pass detects the triangle face crossing the pinch, so
+the grip (and the lift that follows) works only with
+``enable_rigid_soft_full_surface_contact=True``. With the flag off the
+triangle slips out and falls.
+
+Success criteria:
+- Cube finger pads pinch the center of a triangle whose three vertices lie outside the jaws.
+- The triangle lifts with the gripper and remains held during the hold phase; its face does not slip
+  through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_triangle`
+"""
 
 from __future__ import annotations
 
@@ -108,14 +113,13 @@ PARAMS = {
     # collision
     "rigid_body_contact_buffer_size": 512,
     "collision_broad_phase": "nxn",
-    "soft_contact_margin": 0.01,
+    "soft_contact_gap": 0.01,
     # camera (fixed; framed to cover the standing triangle through the grab -> lift range)
     "camera_pos": (0.62, -1.05, 0.50),
     "camera_fov": 34.0,
     "camera_pitch": -8.0,
     "camera_yaw": 121.0,
     "draw_wireframe": False,
-    "initial_paused": False,
 }
 
 
@@ -150,14 +154,13 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
-            rigid_compliant_alm=True,
             integrate_with_external_rigid_solver=False,
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
         )
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase=self.params["collision_broad_phase"],
-            soft_contact_margin=self.params["soft_contact_margin"],
+            soft_contact_gap=self.params["soft_contact_gap"],
             enable_rigid_soft_full_surface_contact=self.params["enable_water_tight"],
         )
 
@@ -175,16 +178,15 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(
-                wp.vec3(*self.params["camera_pos"]),
-                self.params["camera_pitch"],
-                self.params["camera_yaw"],
-            )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        self.viewer.set_camera(
+            wp.vec3(*self.params["camera_pos"]),
+            self.params["camera_pitch"],
+            self.params["camera_yaw"],
+        )
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = self.params["camera_fov"]
+
+        self.capture()
 
     # ── model construction ──────────────────────────────────────────────
 
@@ -331,6 +333,13 @@ class Example:
 
     # ── simulation loop ─────────────────────────────────────────────────
 
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cpu or not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -342,7 +351,10 @@ class Example:
     def step(self):
         self.frame += 1
         self._advance_waypoint()
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):

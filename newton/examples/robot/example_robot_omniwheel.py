@@ -1,7 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Four-wheel warehouse robot with passive barrel rollers."""
+"""Four-wheel warehouse robot with passive barrel rollers.
+
+Success criteria:
+- A four-wheel warehouse robot and a separate ballbot appear supported above the ground.
+- The warehouse robot completes visible forward, lateral, and turning phases.
+- The warehouse robot does not fall through the ground or become unstable during direction changes.
+- The ballbot remains upright, supported by its ball, and does not visibly separate from it.
+
+Runs:
+- `python -m newton.examples robot_omniwheel`
+"""
 
 import math
 
@@ -309,7 +319,6 @@ class Example:
     """Drive a mecanum robot and a self-balancing ballbot."""
 
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 6

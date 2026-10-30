@@ -1,21 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid-XPBD Coupled Solver
-#
-# Rigid boxes and an articulated pendulum chain (driven by MuJoCo or Kamino)
-# interact with a cloth sheet (simulated by XPBD). Contact forces from the
-# deformable side are fed back to the rigid bodies through SolverCoupledProxy's
-# proxy-body coupling path with momentum-based force harvesting.
-#
-# Pass ``--solver xpbd`` to run the same scene with a single XPBD solver
-# (no coupling) as a reference baseline.
-#
-# Command: python -m newton.examples mujoco_xpbd_coupled_solver
-#          python -m newton.examples mujoco_xpbd_coupled_solver --solver xpbd
-#
-###########################################################################
+"""Example Rigid-XPBD Coupled Solver
+
+Rigid boxes and an articulated pendulum chain (driven by MuJoCo or Kamino)
+interact with a cloth sheet (simulated by XPBD). Contact forces from the
+deformable side are fed back to the rigid bodies through SolverCoupledProxy's
+proxy-body coupling path with momentum-based force harvesting.
+
+Pass ``--solver xpbd`` to run the same scene with a single XPBD solver
+(no coupling) as a reference baseline.
+
+Success criteria:
+- Rigid boxes and an articulated chain appear above a cloth sheet.
+- The rigid bodies interact with the deformables, bouncing on contact without flying apart or
+  excessively penetrating the ground.
+- The deformables remain bounded without stretching explosively or sinking through the ground.
+
+Runs:
+- `python -m newton.examples mujoco_xpbd_coupled_solver`
+  - Deformable contact reactions affect the rigid bodies through proxy coupling.
+- `python -m newton.examples mujoco_xpbd_coupled_solver --solver xpbd`
+  - The same scene runs as a single-solver XPBD reference.
+"""
 
 from __future__ import annotations
 
@@ -96,7 +103,6 @@ def _launch_frame_graph(model: newton.Model, graph) -> bool:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
