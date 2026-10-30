@@ -365,7 +365,8 @@ def test_unrequested_parent_wrench_history_skips_moving_articulations(test, devi
     resting = _resting_wrench(model, pipeline, reference, control)
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
 
-    # A gravity change wakes the pairs; a short then a long step put them back to sleep, the first one skipped.
+    # A gravity change wakes the pairs. Short steps run until both turn quiet, which skips their wrenches, and one
+    # long step puts them back to sleep.
     solver = SolverSteel(
         model,
         solve_mode="matrix_free",
@@ -388,8 +389,12 @@ def test_unrequested_parent_wrench_history_skips_moving_articulations(test, devi
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     model.set_gravity((0.0, 0.0, -4.905))
     solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
-    step(0.004)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 1, 1])
+    for _ in range(200):
+        step(0.004)
+        np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 1, 1])
+        if (solver._sleeping.quiet_age.numpy() > 0.0).all():
+            break
+    test.assertTrue(np.isclose(solver._sleeping.quiet_age.numpy(), 0.004).any())
     step(0.007)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
