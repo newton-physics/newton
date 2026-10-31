@@ -723,6 +723,7 @@ def test_linear_row_builder_leaves_the_angular_rows(test, device):
             1.0,
             0,
             0,
+            0.0,
         ],
         outputs=outputs,
         device=device,

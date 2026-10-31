@@ -134,7 +134,7 @@ def launch_free_rigid_angular_friction_rows(solver, state_aug, contacts, threads
             solver._mf_row_mu,
             solver._mf_phi,
             solver._mf_target_velocity,
-            solver._mf_row_restitution,
+            solver._mf_row_rebound_velocity,
         ],
         device=solver.model.device,
     )

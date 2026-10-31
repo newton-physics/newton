@@ -6436,7 +6436,7 @@ def build_mf_angular_friction_rows(
     mf_row_mu: wp.array2d[float],
     mf_phi: wp.array2d[float],
     mf_target_velocity: wp.array2d[float],
-    mf_row_restitution: wp.array2d[float],
+    mf_row_rebound_velocity: wp.array2d[float],
 ):
     """Write the rolling pair and spin row that follow a free-body contact's sliding pair.
 
@@ -6491,7 +6491,7 @@ def build_mf_angular_friction_rows(
             mf_row_parent[world, row] = slot
             mf_row_mu[world, row] = mu
             mf_phi[world, row] = 0.0
-            mf_row_restitution[world, row] = 0.0
+            mf_row_rebound_velocity[world, row] = 0.0
             if has_target_velocity != 0:
                 # A prescribed side's angular rate moves into the target, as its linear rate does for sliding rows.
                 known = float(0.0)
