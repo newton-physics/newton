@@ -75,6 +75,21 @@ _ACTUATOR_SHORTCUT_DEFAULTS = {
     },
 }
 
+# Vector attributes that MuJoCo reads with fewer values than their length, keeping
+# the remaining components from the default class (MuJoCo's mjcf_read_table.inc).
+_SOLVER_LIMIT_VECTORS = frozenset({"solreflimit", "solimplimit", "solreffriction", "solimpfriction"})
+_ACTUATOR_VECTORS = frozenset({"gear", "damping"})
+_MJCF_PARTIAL_VECTORS = {
+    "geom": frozenset({"size", "friction", "solref", "solimp", "fluidcoef"}),
+    "site": frozenset({"size"}),
+    "joint": _SOLVER_LIMIT_VECTORS,
+    "tendon": _SOLVER_LIMIT_VECTORS,
+    "pair": frozenset({"friction", "solref", "solreffriction", "solimp"}),
+    "general": _ACTUATOR_VECTORS | {"dynprm", "gainprm", "biasprm"},
+    **dict.fromkeys(("motor", "position", "velocity", "intvelocity", "damper", "muscle", "dcmotor"), _ACTUATOR_VECTORS),
+    "cylinder": frozenset({"gear"}),
+}
+
 
 def _parse_actuator_parameters(value: str) -> vec10:
     # Actuator parameters use zero-padding, unlike parse_vec's shorthand rules.
@@ -703,10 +718,7 @@ def parse_mjcf(
             if key in attrib:
                 if isinstance(attrib[key], dict):
                     attrib[key] = merge_attrib(attrib[key], value, tag=key)
-                elif (
-                    tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "muscle", "dcmotor"}
-                    and key == "damping"
-                ):
+                elif key in _MJCF_PARTIAL_VECTORS.get(tag, ()):
                     # MuJoCo overrides only the supplied prefix of these vectors.
                     values = value.split()
                     attrib[key] = " ".join(values + attrib[key].split()[len(values) :])
@@ -1240,7 +1252,7 @@ def parse_mjcf(
             if geom_class is not None and is_ignored_class(geom_class):
                 continue
             geom_defaults = resolve_class_defaults(geom_class, defaults)
-            geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib)
+            geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib, tag="geom")
 
             raw_geom_name = geom.attrib.get("name")
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
