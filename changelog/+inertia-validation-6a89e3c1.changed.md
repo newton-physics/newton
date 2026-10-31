@@ -1,0 +1,1 @@
+Honor `ModelBuilder.finalize(skip_all_validations=True)` for mass/inertia validation and correction. Use individual validation skip flags with the default `skip_validation_inertia=False` to retain mass/inertia correction while skipping other checks.
