@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
-from ..core.reset import normalize_reset_world_mask
+from ..core.reset import WorldResetEpochs, normalize_reset_world_mask
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
@@ -31,6 +31,7 @@ from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.soft_contact_match import SoftContactMatcher
 from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
 from ..geometry.soft_contacts_mesh import (
     MeshContactData,
@@ -1631,6 +1632,12 @@ class CollisionPipeline:
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
                 non-disabled mode implies ``deterministic=True`` and
                 populates :attr:`Contacts.rigid_contact_match_index`.
+                ``"sticky"`` also keeps each rigid-soft contact's soft-side and
+                body-side points while they touch and have slipped apart by at
+                most ``contact_matching_pos_threshold``, unless the surface moves
+                (``Contacts.soft_contact_body_vel``); :class:`~newton.solvers.SolverVBD`
+                then measures body-particle friction slip from them. Not applied with
+                ``requires_grad``.
                 Defaults to ``"disabled"``.
 
                 .. experimental::
@@ -1641,7 +1648,9 @@ class CollisionPipeline:
                 ``0.5 * (world(point0) + world(point1))``.  Contacts whose
                 midpoint moves more than this are considered broken. In sticky mode,
                 keep fresh geometry when either saved witness moves farther than this
-                from its fresh contact point under the current body transforms.
+                from its fresh contact point under the current body transforms, and
+                fresh rigid-soft points once the saved ones have slipped apart
+                tangentially by more than this.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
@@ -2293,6 +2302,19 @@ class CollisionPipeline:
             )
         else:
             self._contact_matcher = None
+        # Contact history kept per Contacts buffer catches up on resets through these.
+        self._world_resets = WorldResetEpochs(model.world_count, device=device) if matching_sticky else None
+        if matching_sticky and not requires_grad and model.particle_count > 0 and soft_contact_max > 0:
+            self._soft_contact_matcher = SoftContactMatcher(
+                soft_contact_max,
+                model.particle_count,
+                self._world_resets,
+                pos_threshold=contact_matching_pos_threshold,
+                mesh_features=self._soft_mesh_contact_data is not None,
+                device=device,
+            )
+        else:
+            self._soft_contact_matcher = None
 
         # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
         # the shared detector (re-pointed per Contacts buffer; see
@@ -2409,6 +2431,10 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
+        contacts._soft_contact_points_persist = self._soft_contact_matcher is not None
+        if self._soft_contact_matcher is not None:
+            # Created here rather than on first replay, which may run inside a graph capture.
+            self._soft_contact_matcher.reset_cursor(contacts)
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2604,7 +2630,8 @@ class CollisionPipeline:
         """Clear all or reset-selected previous-frame contact history.
 
         Masked selections accumulate until the next :meth:`collide` call
-        consumes them.
+        consumes them. Sticky rigid-soft contact points restart in every
+        :class:`~newton.Contacts` buffer, on that buffer's next pass.
 
         .. experimental::
 
@@ -2621,6 +2648,8 @@ class CollisionPipeline:
         )
         if self._contact_matcher is not None:
             self._contact_matcher.reset(world_mask)
+        if self._world_resets is not None:
+            self._world_resets.advance(world_mask)
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
@@ -2687,6 +2716,11 @@ class CollisionPipeline:
         # particle-only solvers (XPBD, semi-implicit, Style3D) would not raise and would silently
         # ignore them. Mirrors the assignment in CollisionPipeline.contacts().
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
+
+        # Sticky mode: remember the buffer's soft records as the solver left them, before this pass
+        # rewrites them.
+        if self._soft_contact_matcher is not None:
+            self._soft_contact_matcher.save(contacts)
 
         # A reused buffer can retain mesh tags from a full-surface pipeline. The mesh pass
         # resets them itself; without that pass, replacement particle rows need invalid tags.
@@ -3211,8 +3245,14 @@ class CollisionPipeline:
                     data=self._soft_mesh_contact_data,
                 )
 
+        # Sticky mode: keep matched soft records on the contact points they had, once every soft
+        # producer has written its records.
+        if self._soft_contact_matcher is not None and state.particle_q:
+            self._soft_contact_matcher.replay(model, state, contacts)
+
         # Preserve the previous provenance if validation or collision setup fails.
         contacts._contact_matching_mode = self.contact_matching
+        contacts._soft_contact_points_persist = self._soft_contact_matcher is not None
 
         # Soft (cloth) self-contact detection (opt-in per call; results land in
         # contacts.soft_self_contact_data).
