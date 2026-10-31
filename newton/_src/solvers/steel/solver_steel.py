@@ -3925,8 +3925,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         model = self.model
         dofs = model.joint_qd_start.numpy()[self._revolute_loop_joints]
         lower, upper = model.joint_limit_lower.numpy()[dofs], model.joint_limit_upper.numpy()[dofs]
+        # The builder's +/-MAXVAL default and +/-inf mean unlimited; any other bound is set.
+        unlimited = lower.dtype.type(MAXVAL)
         inputs = {
-            "limits": (np.abs(lower) < MAXVAL) | (np.abs(upper) < MAXVAL),
+            "limits": (np.isfinite(lower) & (lower != -unlimited)) | (np.isfinite(upper) & (upper != unlimited)),
             "drive gains": (model.joint_target_ke.numpy()[dofs] != 0.0) | (model.joint_target_kd.numpy()[dofs] != 0.0),
             "damping": model.joint_damping.numpy()[dofs] != 0.0,
             "armature": model.joint_armature.numpy()[dofs] != 0.0,

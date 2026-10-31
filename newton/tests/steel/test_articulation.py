@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.core.types import MAXVAL
 from newton._src.solvers.steel import kernels as steel_kernels
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_CONNECT,
@@ -3702,11 +3703,12 @@ def test_revolute_loop_overflow_drops_all_five_rows(test, device):
 
 def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
     """Warn at construction about limits, drive gains, damping, armature or a zero axis on a loop-closing REVOLUTE joint."""
-    builder, joint = _build_world_hinged_swing(test, "revolute")
-    dof = builder.joint_qd_start[joint]
-    builder.joint_limit_lower[dof], builder.joint_limit_upper[dof] = -0.5, 0.5
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* limits"):
-        SolverSteel(builder.finalize(device=device))
+    for lower, upper in ((-0.5, 0.5), (-2.0 * MAXVAL, MAXVAL)):
+        builder, joint = _build_world_hinged_swing(test, "revolute")
+        dof = builder.joint_qd_start[joint]
+        builder.joint_limit_lower[dof], builder.joint_limit_upper[dof] = lower, upper
+        with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* limits"):
+            SolverSteel(builder.finalize(device=device))
     builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_target_ke[builder.joint_qd_start[joint]] = 10.0
     with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
