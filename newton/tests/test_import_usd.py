@@ -5492,6 +5492,29 @@ def Xform "Articulation" (
                 self.assertAlmostEqual(value, expected, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unbound_collider_uses_default_mu_static(self):
+        """A collider without a bound material takes mu_static from the builder defaults like mu (#3560)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        for mu_static, expected in ((0.9, 0.9), (None, 0.4)):
+            with self.subTest(mu_static=mu_static):
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg.mu = 0.4
+                builder.default_shape_cfg.mu_static = mu_static
+                result = builder.add_usd(stage)
+                model = builder.finalize(device="cpu")
+                shape_idx = result["path_shape_map"]["/Body/Collider"]
+                self.assertAlmostEqual(float(model.shape_material_mu.numpy()[shape_idx]), 0.4, places=5)
+                self.assertAlmostEqual(float(model.shape_material_mu_static.numpy()[shape_idx]), expected, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_parsing(self):
         """Test that material attributes are parsed correctly from USD."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -5538,6 +5561,8 @@ def Xform "Articulation" (
 
         # Check friction (mu is dynamicFriction)
         self.assertAlmostEqual(model.shape_material_mu.numpy()[shape_idx], 0.5, places=4)
+        # staticFriction above dynamicFriction is kept as the static coefficient
+        self.assertAlmostEqual(model.shape_material_mu_static.numpy()[shape_idx], 0.6, places=4)
 
         # Check restitution
         self.assertAlmostEqual(model.shape_material_restitution.numpy()[shape_idx], 0.3, places=4)
@@ -5549,6 +5574,49 @@ def Xform "Articulation" (
         # Check rolling friction
         rolling = model.shape_material_mu_rolling.numpy()[shape_idx]
         self.assertAlmostEqual(rolling, 0.08, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_bound_material_supplies_the_friction_pair(self):
+        """A bound material sets mu and mu_static together: staticFriction counts only above dynamicFriction,
+        an unauthored one (UsdPhysics default 0) does not fall back to the builder default mu_static, and an
+        authored one below the dynamic coefficient is dropped with one warning (#3560)."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        cases = (
+            # (authored staticFriction, builder default mu_static, expected mu_static, warns)
+            (0.6, None, 0.6, False),
+            (0.5, None, 0.5, False),
+            (None, 0.9, 0.5, False),
+            (0.3, 0.9, 0.5, True),
+        )
+        for static_friction, default_mu_static, expected, warns in cases:
+            with self.subTest(static_friction=static_friction, default_mu_static=default_mu_static):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                material = UsdShade.Material.Define(stage, "/Materials/Rubber")
+                physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+                physics_material.GetDynamicFrictionAttr().Set(0.5)
+                if static_friction is not None:
+                    physics_material.GetStaticFrictionAttr().Set(static_friction)
+                body = UsdGeom.Xform.Define(stage, "/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(material, materialPurpose="physics")
+
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg.mu = 0.4
+                builder.default_shape_cfg.mu_static = default_mu_static
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    result = builder.add_usd(stage)
+                model = builder.finalize(device="cpu")
+
+                shape_idx = result["path_shape_map"]["/Body/Collider"]
+                self.assertAlmostEqual(float(model.shape_material_mu.numpy()[shape_idx]), 0.5, places=5)
+                self.assertAlmostEqual(float(model.shape_material_mu_static.numpy()[shape_idx]), expected, places=5)
+                dropped = [w for w in caught if "staticFriction below" in str(w.message)]
+                self.assertEqual(len(dropped), 1 if warns else 0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_mesh_material_subsets_create_separate_visual_shapes(self):

@@ -1304,7 +1304,10 @@ def parse_mjcf(
                 friction_values = np.array(geom_attrib["friction"].split(), dtype=np.float32)
 
                 if len(friction_values) >= 1:
+                    # MJCF has one sliding coefficient: it replaces the whole friction pair, so a
+                    # builder default mu_static only applies to geoms without an explicit friction.
                     shape_cfg.mu = float(friction_values[0])
+                    shape_cfg.mu_static = None
 
                 if len(friction_values) >= 2:
                     shape_cfg.mu_torsional = float(friction_values[1])

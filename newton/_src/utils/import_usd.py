@@ -463,7 +463,12 @@ def parse_usd(
 
     # Capture material defaults at the start of this import.
     default_material = _PhysicsMaterial(
-        staticFriction=builder.default_shape_cfg.mu,
+        # an unset default mu_static keeps a single coefficient (staticFriction == dynamicFriction)
+        staticFriction=(
+            builder.default_shape_cfg.mu
+            if builder.default_shape_cfg.mu_static is None
+            else builder.default_shape_cfg.mu_static
+        ),
         dynamicFriction=builder.default_shape_cfg.mu,
         torsionalFriction=builder.default_shape_cfg.mu_torsional,
         rollingFriction=builder.default_shape_cfg.mu_rolling,

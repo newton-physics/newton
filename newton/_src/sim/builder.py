@@ -1013,7 +1013,13 @@ class ModelBuilder:
         :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
         :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
-        """The coefficient of friction."""
+        """The coefficient of friction [dimensionless]; the dynamic (kinetic) coefficient when
+        :attr:`mu_static` is set."""
+        mu_static: float | None = None
+        """The coefficient of static friction [dimensionless], the break-away threshold for sticking
+        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
+        below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
+        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -1164,6 +1170,14 @@ class ModelBuilder:
                 )
             if not math.isfinite(self.density) or self.density < 0.0:
                 raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
+            if self.mu_static is not None:
+                if not math.isfinite(self.mu_static) or self.mu_static < 0.0:
+                    raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
+                if self.mu_static < self.mu:
+                    raise ValueError(
+                        f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
+                        "Leave mu_static as None for a single friction coefficient."
+                    )
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -1940,6 +1954,9 @@ class ModelBuilder:
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
         """Restitution coefficients accumulated for :attr:`Model.shape_material_restitution`."""
+        self.shape_material_mu_static: list[float] = []
+        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`; an unset
+        :attr:`ShapeConfig.mu_static` is resolved to the shape's ``mu`` here."""
         self.shape_material_mu_torsional: list[float] = []
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
@@ -8682,6 +8699,7 @@ class ModelBuilder:
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
+        self.shape_material_mu_static.append(cfg.mu_static if cfg.mu_static is not None else cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
@@ -9749,6 +9767,7 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
+                            mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
@@ -14881,6 +14900,9 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_mu_static = wp.array(
+                self.shape_material_mu_static, dtype=wp.float32, requires_grad=requires_grad
+            )
             m.shape_material_mu_torsional = wp.array(
                 self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad
             )
@@ -16164,6 +16186,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_kf": wp.float32,
     "shape_material_ka": wp.float32,
     "shape_material_mu": wp.float32,
+    "shape_material_mu_static": wp.float32,
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,

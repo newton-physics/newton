@@ -389,6 +389,7 @@ class Model:
         "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE),
@@ -832,7 +833,19 @@ class Model:
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu: wp.array[wp.float32] | None = None
-        """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
+        """Shape coefficient of friction [dimensionless], shape [shape_count], float. The dynamic (kinetic)
+        coefficient for solvers that model stick-slip friction (see :attr:`shape_material_mu_static`)."""
+        self.shape_material_mu_static: wp.array[wp.float32] | None = None
+        """Shape coefficient of static friction [dimensionless], shape [shape_count], float.
+        Always holds the effective coefficient: the builder resolves an unset
+        :attr:`ModelBuilder.ShapeConfig.mu_static` to the shape's ``mu`` and rejects a value below it,
+        so no entry is below :attr:`shape_material_mu` at finalize. The two arrays are independent
+        afterwards: code that edits ``shape_material_mu`` at runtime and wants a single coefficient
+        updates this array as well. Set via :attr:`ModelBuilder.ShapeConfig.mu_static` or a USD
+        ``physics:staticFriction`` above ``physics:dynamicFriction``. No built-in solver models
+        stick-slip friction yet: :class:`~newton.solvers.SolverKamino` carries the value into its material
+        tables but its contact model uses the dynamic coefficient, and the other solvers read only
+        ``shape_material_mu``."""
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_mu_torsional: wp.array[wp.float32] | None = None

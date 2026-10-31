@@ -218,6 +218,7 @@ def material_first_shape_kernel(
 @wp.kernel
 def validate_material_update_kernel(
     shape_friction: wp.array[wp.float32],
+    shape_static_friction: wp.array[wp.float32],
     shape_restitution: wp.array[wp.float32],
     geom_material: wp.array[wp.int32],
     first_shape: wp.array[wp.int32],
@@ -231,6 +232,7 @@ def validate_material_update_kernel(
     representative = first_shape[material]
     if (
         shape_friction[shape] != shape_friction[representative]
+        or shape_static_friction[shape] != shape_static_friction[representative]
         or shape_restitution[shape] != shape_restitution[representative]
     ):
         wp.atomic_min(conflict_material, 0, material)
@@ -240,6 +242,7 @@ def validate_material_update_kernel(
 def update_materials_kernel(
     # Inputs:
     shape_friction: wp.array[wp.float32],
+    shape_static_friction: wp.array[wp.float32],
     shape_restitution: wp.array[wp.float32],
     first_shape: wp.array[wp.int32],
     shape_count: int,
@@ -259,12 +262,13 @@ def update_materials_kernel(
     shape = first_shape[material]
     if shape < shape_count:
         friction = shape_friction[shape]
+        friction_static = shape_static_friction[shape]
         restitution[material] = shape_restitution[shape]
-        static_friction[material] = friction
+        static_friction[material] = friction_static
         dynamic_friction[material] = friction
         if material == 0:
             pair_restitution[0] = shape_restitution[shape]
-            pair_static_friction[0] = friction
+            pair_static_friction[0] = friction_static
             pair_dynamic_friction[0] = friction
 
 
@@ -1376,7 +1380,8 @@ def convert_model_materials(
     """Update Kamino's material properties in place from Newton shape materials.
 
     Recomputes per-material friction and restitution from
-    ``model.shape_material_mu`` and ``model.shape_material_restitution`` while
+    ``model.shape_material_mu``, ``model.shape_material_mu_static`` and
+    ``model.shape_material_restitution`` while
     preserving the material arrays referenced by Kamino's collision detector.
 
     Args:
@@ -1399,6 +1404,7 @@ def convert_model_materials(
         inputs=[
             # Inputs:
             model.shape_material_mu,
+            model.shape_material_mu_static,
             model.shape_material_restitution,
             model_kamino.geoms.material,
             first_shape,
@@ -1422,6 +1428,7 @@ def convert_model_materials(
         inputs=[
             # Inputs:
             model.shape_material_mu,
+            model.shape_material_mu_static,
             model.shape_material_restitution,
             first_shape,
             model.shape_count,
@@ -2147,17 +2154,19 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
         NumPy array of material indices for each geom.
     """
     # Set up material parameter dictionary
-    material_param_indices: dict[tuple[float, float], int] = {}
+    material_param_indices: dict[tuple[float, float, float], int] = {}
     for i, material in enumerate(materials_manager.materials):
         # Adding already existing (default) materials from material manager, making sure the values
         # undergo the same transformation as any material parameters in the Newton model (conversion
         # to np.float32)
-        mu = float(np.float32(material.static_friction))
+        mu = float(np.float32(material.dynamic_friction))
+        mu_static = float(np.float32(material.static_friction))
         restitution = float(np.float32(material.restitution))
-        material_param_indices[(mu, restitution)] = i
+        material_param_indices[(mu, mu_static, restitution)] = i
 
     # Newton material parameters
     shape_friction = model.shape_material_mu.numpy().tolist()
+    shape_static_friction = model.shape_material_mu_static.numpy().tolist()
     shape_restitution = model.shape_material_restitution.numpy().tolist()
     # Mapping from geom to material index
     geom_material = np.zeros((model.shape_count,), dtype=int)
@@ -2166,14 +2175,14 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
     for s in range(model.shape_count):
         # Check if material with these parameters already exists
-        material_desc = (shape_friction[s], shape_restitution[s])
+        material_desc = (shape_friction[s], shape_static_friction[s], shape_restitution[s])
         if material_desc in material_param_indices:
             material_id = material_param_indices[material_desc]
         else:
             material = MaterialDescriptor(
                 name=f"{model.shape_label[s]}_material",
                 restitution=shape_restitution[s],
-                static_friction=shape_friction[s],
+                static_friction=shape_static_friction[s],
                 dynamic_friction=shape_friction[s],
                 # wid=shape_world_np[s],
             )
