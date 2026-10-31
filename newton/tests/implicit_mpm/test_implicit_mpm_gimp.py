@@ -39,6 +39,7 @@ def _make_solver(
     air_drag=0.0,
     rheology_solver="gs",
     collider_mass=None,
+    collider_contact_gap=0.0,
 ):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
@@ -70,6 +71,7 @@ def _make_solver(
             solver=rheology_solver,
             gs_colored_contacts=gs_colored_contacts,
             air_drag=air_drag,
+            collider_contact_gap=collider_contact_gap,
         ),
     )
     return solver, model.state()
@@ -373,20 +375,23 @@ def test_colored_contact_default(test, device):
 
 
 def test_pic_speculative_contact(test, device, capture=False):
-    """Allow safe approach and stop predicted penetration without recovering existing overlap."""
+    """Stop approach at the contact band edge, hold particles inside the band with friction, and allow separation."""
+    # Particle contacts measure gaps from the particle surface, 0.2 below the center, to the ground at 0.45.
+    # The band is 0.25 voxel deep; a contact gap of 0.5 activates contacts beyond it.
     cases = (
-        (0.1, 0.1, (0.3, 0.0, -0.4), (0.3, 0.0, -0.4)),
-        (0.1, 0.1, (0.0, 0.0, -2.0), (0.0, 0.0, -1.0)),
-        (0.1, 0.05, (0.0, 0.0, -3.0), (0.0, 0.0, -2.0)),
-        (-0.05, 0.1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
-        (-0.05, 0.1, (0.0, 0.0, 0.4), (0.0, 0.0, 0.4)),
-        (0.3, 0.1, (0.0, 0.0, -0.4), (0.0, 0.0, -0.4)),
+        (0.1, 0.1, (0.3, 0.0, -0.4), (0.0, 0.0, 0.0), 0.0),
+        (0.1, 0.05, (0.0, 0.0, -3.0), (0.0, 0.0, 0.0), 0.0),
+        (0.4, 0.1, (0.0, 0.0, -3.0), (0.0, 0.0, -1.5), 0.5),
+        (0.4, 0.1, (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), 0.5),
+        (-0.05, 0.1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0),
+        (-0.05, 0.1, (0.0, 0.0, 0.4), (0.0, 0.0, 0.4), 0.0),
+        (0.3, 0.1, (0.0, 0.0, -0.4), (0.0, 0.0, -0.4), 0.0),
     )
-    for mode, (gap, dt, velocity, expected) in product(("gs", "gs-soa", "jacobi"), cases):
+    for mode, (gap, dt, velocity, expected, contact_gap) in product(("gs", "gs-soa", "jacobi"), cases):
         with test.subTest(solver=mode, gap=gap, dt=dt, velocity=velocity), wp.ScopedDevice(device):
             solver, state = _make_solver(
                 device,
-                positions=((0.4, 0.4, 0.45 + gap),),
+                positions=((0.4, 0.4, 0.65 + gap),),
                 contact=True,
                 collider_basis="pic27",
                 integration_scheme="pic",
@@ -396,11 +401,12 @@ def test_pic_speculative_contact(test, device, capture=False):
                 young_modulus=12000.0,
                 air_drag=1.0e-4,
                 max_iterations=50,
+                collider_contact_gap=contact_gap,
             )
             state.particle_qd.assign((velocity,))
             if capture:
                 solver.step(state, state, None, None, dt)
-                state.particle_q.assign(((0.4, 0.4, 0.45 + gap),))
+                state.particle_q.assign(((0.4, 0.4, 0.65 + gap),))
                 state.particle_qd.assign((velocity,))
                 solver.reset(state)
                 with wp.ScopedCapture(device=device) as graph:
@@ -409,18 +415,23 @@ def test_pic_speculative_contact(test, device, capture=False):
             else:
                 solver.step(state, state, None, None, dt)
             active = np.linalg.norm(solver._scratchpad.collider_normal_field.dof_values.numpy(), axis=1) > 0.0
-            test.assertEqual(bool(active.any()), gap < 0.25)
+            test.assertEqual(bool(active.any()), gap < max(0.25, contact_gap))
             np.testing.assert_allclose(state.particle_qd.numpy()[0], expected, atol=2.0e-4)
 
 
 def test_pic_speculative_contact_adhesion(test, device):
-    """Hold touching particles with adhesion and let particles within the activation band separate freely."""
-    cases = ((0.1, (0.0, 0.0, 0.4), (0.0, 0.0, 0.4)), (-0.05, (0.0, 0.0, 0.4), (0.0, 0.0, 0.0)))
+    """Hold particles within the contact band with adhesion and let particles beyond it separate freely."""
+    # Gaps are measured from the particle surface, 0.2 below the center, to the ground at 0.45
+    cases = (
+        (0.1, (0.0, 0.0, 0.4), (0.0, 0.0, 0.0)),
+        (-0.05, (0.0, 0.0, 0.4), (0.0, 0.0, 0.0)),
+        (0.3, (0.0, 0.0, 0.4), (0.0, 0.0, 0.4)),
+    )
     for mode, (gap, velocity, expected) in product(("gs", "jacobi"), cases):
         with test.subTest(solver=mode, gap=gap), wp.ScopedDevice(device):
             solver, state = _make_solver(
                 device,
-                positions=((0.4, 0.4, 0.45 + gap),),
+                positions=((0.4, 0.4, 0.65 + gap),),
                 contact=True,
                 collider_basis="pic27",
                 integration_scheme="pic",
