@@ -1574,7 +1574,9 @@ class CollisionPipeline:
                 which the per-particle path misses. Meshes use exact feature contacts without
                 requiring a volume SDF and report every vertex-face, face-vertex, and edge-edge
                 pair within the contact band, including redundant representations of one surface
-                patch; the consuming solver selects the pairs it applies forces to. Only meshes
+                patch, inactive soft features, and pairs with unresolved mesh sign. All rigid
+                triangle edges participate, including edges omitted from SDF preprocessing.
+                The consuming solver selects the pairs it applies forces to. Only meshes
                 with :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES` set at construction get them,
                 others keep per-particle contact. These full-surface contacts are consumed only by
                 :class:`~newton.solvers.SolverVBD`; other solvers raise on such contacts. Records are
@@ -2212,7 +2214,11 @@ class CollisionPipeline:
             self._soft_heightfield_face_pairs = _build_soft_face_rigid_contact_pairs(model, heightfield_capable)
             mesh_vertex_pairs = _build_soft_particle_rigid_contact_pairs(model, shape_ok=mesh_mask)
             if len(mesh_vertex_pairs):
-                self._soft_mesh_contact_data = MeshContactData(model, mesh_mask, mesh_vertex_pairs)
+                self._soft_mesh_contact_data = MeshContactData(
+                    model,
+                    mesh_mask,
+                    mesh_vertex_pairs,
+                )
         else:
             self.soft_edge_rigid_pairs = empty_pairs
             self.soft_face_rigid_pairs = empty_pairs
@@ -2741,6 +2747,10 @@ class CollisionPipeline:
         # afterwards -- otherwise the generation would advance by 2 per collide() call.
         if contacts.clear_buffers:
             contacts.clear(bump_generation=False)
+        elif self._soft_mesh_contact_data is not None or contacts._soft_contact_mesh_features is not None:
+            # Non-mesh emitters must not inherit rigid primitive IDs from mesh rows.
+            # Fresh particle-only buffers already contain -1, and clear() resets them.
+            contacts.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
 
         model = self.model
         # update any additional parameters

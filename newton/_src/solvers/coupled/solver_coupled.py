@@ -643,7 +643,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 spec.default,
             )
             for name, spec in model._iter_attribute_specs()
-            if spec.compaction_policy in {"generic", "end"}
+            if spec.compaction_policy in {"generic", "end", "range_start"}
         )
 
     def _build_joint_constraint_starts(self) -> np.ndarray:
@@ -940,6 +940,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 in_place=bool(cfg.in_place),
                 free_root_joints=None if index_lists is None else index_lists.free_root_joints,
             )
+
+        restarts = self._iteration_restarts_possible()
+        for entry in self._entries.values():
+            entry.solver.coupling_notify_iteration_restarts(restarts)
 
         self._after_entries_constructed()
 
@@ -1550,6 +1554,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
             model.AttributeFrequency.WORLD: list(range(model.world_count)),
         }
+        built_in_frequency_orders.update(self._compact_deformable_orders(built_in_frequency_orders))
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
         if custom_frequency_orders is None:
             return None, "a selected custom-frequency domain is not grouped by world"
@@ -1575,6 +1580,41 @@ class SolverCoupled(SolverBase, CouplingInterface):
             ),
             None,
         )
+
+    def _compact_deformable_orders(
+        self, frequency_orders: dict[Model.AttributeFrequency, list[int]]
+    ) -> dict[Model.AttributeFrequency, list[int]]:
+        """Keep whole deformable objects whose ranges retain their element order."""
+        model = self.model
+        frequency = model.AttributeFrequency
+        orders = {}
+        range_maps = {}
+        for family_frequency in (frequency.CURVE, frequency.SURFACE, frequency.VOLUME):
+            count = model._attribute_frequency_count(family_frequency)
+            keep = np.ones(count, dtype=bool)
+            if count:
+                for attribute in self._attribute_projections:
+                    if attribute.frequency != family_frequency or attribute.compaction_policy != "range_start":
+                        continue
+                    starts = getattr(model, attribute.name).numpy()
+                    ends = getattr(model, attribute.name.removesuffix("_start") + "_end").numpy()
+                    if attribute.references not in range_maps:
+                        selected = np.asarray(frequency_orders[attribute.references], dtype=np.int32)
+                        inverse = np.full(model._attribute_frequency_count(attribute.references), -1, dtype=np.int32)
+                        # Synthesized FREE roots do not retain the original joint.
+                        original = selected >= 0
+                        inverse[selected[original]] = np.flatnonzero(original)
+                        # Equal run IDs mean a range maps to consecutive rows in its original order.
+                        run_ids = np.zeros_like(inverse)
+                        run_ids[1:] = np.cumsum(np.diff(inverse) != 1)
+                        range_maps[attribute.references] = inverse, run_ids
+                    inverse, run_ids = range_maps[attribute.references]
+                    nonempty = starts != ends
+                    keep[nonempty] &= (inverse[starts[nonempty]] >= 0) & (
+                        run_ids[starts[nonempty]] == run_ids[ends[nonempty] - 1]
+                    )
+            orders[family_frequency] = np.flatnonzero(keep).tolist()
+        return orders
 
     def _free_root_body_order(
         self,
@@ -1942,14 +1982,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        view.curve_count = len(compact.order(frequency.CURVE))
+        view.surface_count = len(compact.order(frequency.SURFACE))
+        view.volume_count = len(compact.order(frequency.VOLUME))
 
         projections_by_frequency = self._compact_projections_by_frequency(compact, shape_order=shape_order)
         self._set_compact_custom_frequency_counts(view, projections_by_frequency)
+        range_attributes = self._project_compact_deformable_ranges(view, projections_by_frequency)
         free_root_joints = compact.free_root_joints
         self._project_compact_attributes(
             view,
             projections_by_frequency,
-            exclude=set(),
+            exclude=range_attributes,
             free_root_joints=free_root_joints,
         )
         self._sync_custom_frequency_namespace_metadata(view)
@@ -1990,10 +2034,62 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view._fk_level_parent_pos = None
         view._fk_level_capacity = 0
 
+        # Rebuild serial traversal from local topology, including synthetic FREE
+        # roots that have no corresponding joint in the parent model.
+        from ...sim.builder import _build_fk_joint_order  # noqa: PLC0415
+
+        fk_joint_order = _build_fk_joint_order(
+            view.joint_parent.numpy(),
+            view.joint_child.numpy(),
+            view.joint_articulation.numpy(),
+            view.joint_ancestor.numpy(),
+            articulation_starts,
+            view.articulation_end.numpy(),
+        )
+        view._fk_joint_order = (
+            None if fk_joint_order is None else wp.array(fk_joint_order, dtype=wp.int32, device=device)
+        )
+
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
         self._set_world_start_arrays(view, joint_constraint_order)
+
+    def _project_compact_deformable_ranges(
+        self,
+        view: ModelView,
+        projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection],
+    ) -> set[str]:
+        """Map independent ranges by their elements, not by articulation position keys."""
+        projected = set()
+        for attribute in self._attribute_projections:
+            if attribute.compaction_policy != "range_start":
+                continue
+            start_name = attribute.name
+            end_name = start_name.removesuffix("_start") + "_end"
+            rows = projections[attribute.frequency].local_to_global
+            if not rows:
+                continue
+            starts = getattr(self.model, start_name).numpy()[rows]
+            ends = getattr(self.model, end_name).numpy()[rows]
+            reference = projections[attribute.references]
+            inverse = np.asarray(reference.global_to_local, dtype=np.int32)
+            nonempty = starts != ends
+            compact_starts = np.empty_like(starts)
+            compact_ends = np.empty_like(ends)
+            compact_starts[nonempty] = inverse[starts[nonempty]]
+            compact_ends[nonempty] = inverse[ends[nonempty] - 1] + 1
+            if np.any(~nonempty):
+                # Empty ranges own no element to map; keep a bounded insertion position.
+                keys = reference.position_keys if reference.position_keys is not None else reference.local_to_global
+                order = np.asarray(keys, dtype=np.int32)
+                boundaries = np.searchsorted(np.sort(order[order >= 0]), starts[~nonempty])
+                compact_starts[~nonempty] = boundaries
+                compact_ends[~nonempty] = boundaries
+            setattr(view, start_name, wp.array(compact_starts, dtype=wp.int32, device=self.model.device))
+            setattr(view, end_name, wp.array(compact_ends, dtype=wp.int32, device=self.model.device))
+            projected.update((start_name, end_name))
+        return projected
 
     def _compact_projections_by_frequency(
         self,
@@ -2078,8 +2174,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         f"Cannot compact model attribute {full_name!r}: no projection for reference frequency "
                         f"{attribute.references!r}"
                     )
-                if attribute.compaction_policy == "end":
-                    selected = self._remap_compact_end_value(selected, reference_projection, full_name)
+                if attribute.compaction_policy in {"end", "range_start"}:
+                    selected = self._remap_compact_boundary_value(selected, reference_projection, full_name)
                 else:
                     selected = self._remap_compact_reference_value(
                         selected,
@@ -2503,23 +2599,25 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return remap_array(np.asarray(value)).tolist()
         return value
 
-    def _remap_compact_end_value(
+    def _remap_compact_boundary_value(
         self,
         value,
         projection: _CompactIndexProjection,
         attribute_name: str,
     ):
-        """Remap exclusive source-domain boundaries into compact indices."""
+        """Count retained elements before each inclusive start or exclusive end."""
+        if len(value) == 0:
+            return value
         keys = projection.position_keys if projection.position_keys is not None else projection.local_to_global
         order = np.asarray(keys, dtype=np.int64)
         if order.size > 1 and np.any(order[1:] < order[:-1]):
-            raise ValueError(f"Cannot compact end attribute {attribute_name!r}: reference order is not monotonic")
+            raise ValueError(f"Cannot compact boundary attribute {attribute_name!r}: reference order is not monotonic")
 
         host = value.numpy() if isinstance(value, wp.array) else np.asarray(value)
         source_count = len(projection.global_to_local)
         if np.any(host < 0) or np.any(host > source_count):
             raise ValueError(
-                f"Cannot compact end attribute {attribute_name!r}: boundaries must be within [0, {source_count}]"
+                f"Cannot compact boundary attribute {attribute_name!r}: boundaries must be within [0, {source_count}]"
             )
         remapped = np.searchsorted(order, host, side="left")
         if isinstance(value, wp.array):
@@ -2605,6 +2703,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _after_entries_constructed(self) -> None:
         """Hook called after sub-solvers are constructed and before state allocation."""
 
+    def _iteration_restarts_possible(self) -> bool:
+        """Return whether :meth:`step` may re-solve an entry within one step."""
+        return False
+
     def _after_entry_states_created(self) -> None:
         """Hook called after per-entry states and scratch buffers are allocated."""
         self._refresh_gravity_accelerations()
@@ -2612,6 +2714,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _entry_needs_gravity_acceleration(self, entry: SolverEntry) -> bool:
         del entry
         return False
+
+    def _effective_mass_refresh_flags(self) -> int:
+        """Return the model flags after which entry effective masses are evaluated again."""
+        flags = int(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        for entry in self._entries.values():
+            flags |= int(entry.solver.coupling_effective_mass_refresh_flags())
+        return flags
 
     def _gravity_acceleration_refresh_flags(self) -> int:
         return int(ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
@@ -3603,6 +3712,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
                     contacts.soft_contact_indices,
+                    contacts.soft_contact_rigid_indices,
                     contacts.soft_contact_barycentric,
                     contacts._soft_contact_mesh_features,
                     entry.view.shape_flags,
@@ -3617,6 +3727,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_normal,
                     filtered.soft_contact_tids,
                     filtered.soft_contact_indices,
+                    filtered.soft_contact_rigid_indices,
                     filtered.soft_contact_barycentric,
                     filtered._soft_contact_mesh_features,
                     soft_src_to_dst,
@@ -4571,6 +4682,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_normal: wp.array[wp.vec3],
     src_tids: wp.array[int],
     src_indices: wp.array[wp.vec3i],
+    src_rigid_indices: wp.array[wp.vec3i],
     src_barycentric: wp.array[wp.vec3],
     src_mesh_features: wp.array[wp.vec3i],
     shape_flags: wp.array[wp.int32],
@@ -4585,6 +4697,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_normal: wp.array[wp.vec3],
     dst_tids: wp.array[int],
     dst_indices: wp.array[wp.vec3i],
+    dst_rigid_indices: wp.array[wp.vec3i],
     dst_barycentric: wp.array[wp.vec3],
     dst_mesh_features: wp.array[wp.vec3i],
     src_to_dst: wp.array[wp.int32],
@@ -4634,6 +4747,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
     # VBD even with full-surface contact off (E7).
     dst_indices[dst_id] = src_indices[contact_id]
+    dst_rigid_indices[dst_id] = src_rigid_indices[contact_id]
     dst_barycentric[dst_id] = src_barycentric[contact_id]
     if dst_mesh_features:
         dst_mesh_features[dst_id] = wp.vec3i(-1, -1, -1)

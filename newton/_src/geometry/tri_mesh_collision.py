@@ -249,6 +249,13 @@ def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
     return vals[offs[i] : offs[i + 1]]
 
 
+def _endpoint_edges(v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray, vertex: int) -> np.ndarray:
+    """Return edge indices whose endpoint is ``vertex``, excluding bending-opposite slots."""
+    edge_rows_np = _csr_row(v_adj_edges, v_adj_edges_offsets, vertex)
+    # Slots 0/1 are bending-opposite vertices; only slots 2/3 are endpoints.
+    return edge_rows_np[::2][edge_rows_np[1::2] >= 2]
+
+
 def set_to_csr(
     list_of_sets: list[set[int]], dtype: np.dtype = np.int32, sort: bool = True
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -272,15 +279,12 @@ def one_ring_vertices(
     """Return vertices sharing a collision edge with ``vertex``."""
     edge_v0 = edge_indices[:, 2]
     edge_v1 = edge_indices[:, 3]
-    edge_rows = _csr_row(v_adj_edges, v_adj_edges_offsets, vertex)
-    edge_ids = edge_rows[::2]
-    local_slots = edge_rows[1::2]
-    if edge_ids.size == 0:
+    endpoint_edge_indices_np = _endpoint_edges(v_adj_edges, v_adj_edges_offsets, vertex)
+    if endpoint_edge_indices_np.size == 0:
         return np.empty(0, dtype=np.int32)
 
-    endpoint_edge_ids = edge_ids[np.where(local_slots >= 2)]
-    us = edge_v0[endpoint_edge_ids]
-    vs = edge_v1[endpoint_edge_ids]
+    us = edge_v0[endpoint_edge_indices_np]
+    vs = edge_v1[endpoint_edge_indices_np]
     assert (np.logical_or(us == vertex, vs == vertex)).all()
 
     neighbors = np.unique(np.concatenate([us, vs]))
@@ -361,16 +365,13 @@ def build_edge_n_ring_edge_collision_filter(
         neighbor_vertices = set(v0_neighbors)
         neighbor_vertices.update(v1_neighbors)
 
-        incident_to_v0 = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v0)[::2])
-        incident_to_v1 = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v1)[::2])
+        incident_to_v0 = set(_endpoint_edges(v_adj_edges, v_adj_edges_offsets, v0))
+        incident_to_v1 = set(_endpoint_edges(v_adj_edges, v_adj_edges_offsets, v1))
 
         filter_set = edge_sets[edge_id]
         for neighbor in neighbor_vertices:
             if neighbor != v0 and neighbor != v1:
-                edge_rows = _csr_row(v_adj_edges, v_adj_edges_offsets, neighbor)
-                adj_edges = edge_rows[::2]
-                local_slots = edge_rows[1::2]
-                filter_set.update(adj_edges[np.where(local_slots >= 2)])
+                filter_set.update(_endpoint_edges(v_adj_edges, v_adj_edges_offsets, neighbor))
 
         filter_set.difference_update(incident_to_v0)
         filter_set.difference_update(incident_to_v1)

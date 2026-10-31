@@ -195,6 +195,75 @@ behavior:
      - When ``True``, uses CPU validation with per-body warnings.  When
        ``False``, uses a fast GPU kernel that returns only the count of
        corrected bodies.
+   * - :attr:`~newton.ModelBuilder.inertia_relative_tolerance`
+     - ``1e-6``
+     - Non-negative relative eigenvalue threshold (dimensionless).
+   * - :attr:`~newton.ModelBuilder.inertia_absolute_tolerance`
+     - ``1e-10``
+     - Positive absolute floor for eigenvalue and triangle-inequality
+       tolerances [kg·m²].
+   * - :attr:`~newton.ModelBuilder.inertia_correction`
+     - ``1e-6``
+     - Non-negative extra diagonal shift applied when repairing inertia
+       [kg·m²]. Zero disables the extra shift, not validation.
+
+Small-inertia models
+^^^^^^^^^^^^^^^^^^^^
+
+The eigenvalue threshold is
+``max(inertia_relative_tolerance * largest_moment, inertia_absolute_tolerance)``.
+When the smallest moment is below this threshold, all three moments are
+shifted by ``threshold - smallest_moment + inertia_correction``. Thus the
+correction is not a minimum imposed on every tensor.
+
+For example, a 0.1 mm diameter capsule with 0.5 mm cylindrical length and density
+1,000 kg/m³ has an axial moment of approximately 5.4e-18 kg·m². To preserve this
+valid tensor while retaining validation, lower the absolute tolerance before
+finalization:
+
+.. code-block:: python
+
+    builder.inertia_absolute_tolerance = 1e-20
+    model = builder.finalize()
+
+This example value is specific to that scale, not a universal recommended
+tolerance. Lowering ``inertia_correction`` alone does not prevent a tensor
+below the threshold from being adjusted. The numerical settings apply equally
+to the detailed CPU and fast Warp paths. They must be finite and within the
+float32 range; the absolute tolerance must remain positive in float32.
+Changing ``inertia_correction`` is a separate repair-policy choice. Setting it
+to zero removes the extra padding for tensors that fail validation; for example,
+a positive-mass body with zero inertia is repaired to approximately
+``inertia_absolute_tolerance * identity``. Retaining the default correction
+avoids that change and does not affect tensors that pass validation. A repair
+still includes a representable positive shift if rounding would leave the
+tensor singular. Inverse inertia is computed with float64 intermediates and
+stored in float32; both the tensor and its inverse must remain representable
+in float32.
+
+To skip the entire mass/inertia validation and correction stage:
+
+.. code-block:: python
+
+    model = builder.finalize(skip_validation_inertia=True)
+
+This preserves the builder's mass and inertia, including invalid values.
+Finalization always recomputes derived inverses from the final properties,
+including after manual edits or imports. Non-positive masses receive zero
+inverse mass and zero inverse inertia; singular tensors receive zero inverse
+inertia. Validation skipping omits finiteness, symmetry, positive-definiteness,
+mass and inertia bounds, and triangle-inequality checks. The caller is
+responsible for supplying consistent properties supported by the chosen
+solver. ``finalize(skip_all_validations=True)`` also skips this stage.
+Unlike earlier releases, ``skip_all_validations=True`` now also disables mass
+and inertia bounds and balancing. To retain those corrections while skipping
+other checks, leave ``skip_all_validations=False`` and
+``skip_validation_inertia=False`` and enable the individual skip flags for
+the checks you want to omit.
+
+Neither option undoes earlier importer processing, shape-derived mass
+computation, or fixed-joint merging. These settings are model-compilation
+policy, applied after import; they do not introduce new USD-authored fields.
 
 Checks performed
 ^^^^^^^^^^^^^^^^
@@ -210,7 +279,7 @@ The following checks are applied in order:
    is set).
 3. **Zero mass with non-zero inertia** — inertia zeroed.
 4. **Inertia symmetry** — enforced via :math:`(I + I^T) / 2`.
-5. **Positive definiteness** — negative eigenvalues adjusted.
+5. **Positive definiteness** — eigenvalues below the configured threshold adjusted.
 6. **Eigenvalue bounds** — all eigenvalues clamped to at least
    ``bound_inertia`` (if set).
 7. **Triangle inequality** — principal moments must satisfy

@@ -1,0 +1,1 @@
+Fix the PADMM and DVI backends of `SolverKamino` treating `BodyFlags.PROXY` bodies as immovable; they now simulate them as dynamic bodies, like the LOX backend. Toggling a PROXY flag no longer raises a `RuntimeError` from `notify_model_changed`.

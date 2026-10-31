@@ -42,7 +42,7 @@ from newton.tests.steel._fixtures import (
     fixture,
     set_torsion_radius,
 )
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
 
 # SAT box-box manifolds are a separate collision feature; their subcases run where it exists.
 _HAS_BOX_BOX_SAT = "box_box_sat" in inspect.signature(newton.CollisionPipeline.__init__).parameters
@@ -815,9 +815,16 @@ def test_contact_input_overflow_is_rejected(test, device):
 
 
 def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
-    """Give a patch over two shape pairs the larger radius in either contact order, for every preparation."""
+    """Give a patch over two shape pairs the larger radius, or no row when one pair has none, on both responses.
+
+    Covers either contact order and every preparation; propagation prepares on the device only.
+    """
+    radius_cases = {"positive": [0.0, 0.001, 0.04], "zero_member": [0.0, 0.0, 0.04]}
+    cases = [("positive", preparation, "immediate") for preparation in ("host", "patch_segments", "world_scan")]
+    cases += [("positive", "patch_segments", "propagation"), ("zero_member", "patch_segments", "immediate")]
+    cases += [("zero_member", preparation, "propagation") for preparation in ("patch_segments", "world_scan")]
     results = {}
-    for preparation, reverse in itertools.product(("host", "patch_segments", "world_scan"), (False, True)):
+    for (radii, preparation, response), reverse in itertools.product(cases, (False, True)):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
         pose = wp.transform(wp.vec3(0.0, 0.0, 0.0199), wp.quat_identity())
@@ -837,14 +844,16 @@ def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
                 cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.5),
             )
         model = builder.finalize(device=device)
-        set_torsion_radius(model, np.array([0.0, 0.001, 0.04], dtype=np.float32))
+        set_torsion_radius(model, np.array(radius_cases[radii], dtype=np.float32))
         solver = SolverSteel(
             model,
+            articulated_contact_response=response,
             contact_torsion_device=preparation != "host",
             iterations=128,
             friction_anchor_beta=0.2,
             cfm=0.0,
-            articulation_constraint_max=128,
+            articulation_constraint_max=64,
+            free_body_constraint_max=16,
         )
         solver._rigid_body_angular_damping.zero_()
         if preparation == "world_scan":
@@ -868,15 +877,24 @@ def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
             shape1[:count] = shape1[:count][::-1]
             contacts.rigid_contact_shape1.assign(shape1)
         test.assertEqual(sorted(set(contacts.rigid_contact_shape1.numpy()[:count].tolist())), [1, 2])
-        solver.step(state, output, model.control(), contacts, 0.0025)
-        solver.check_constraint_capacity()
-        stats = solver._torsion_stats if preparation == "host" else solver._device_torsion.read_stats()
-        test.assertEqual(stats["rows"], 1)
-        test.assertAlmostEqual(stats["groups"][0]["effective_radius_m"], 0.04, places=6)
-        results[preparation, reverse] = output.joint_qd.numpy()
-    for key, joint_qd in results.items():
-        with test.subTest(preparation=key[0], reverse=key[1]):
-            np.testing.assert_allclose(joint_qd, results["host", False], rtol=0.0, atol=1.0e-4)
+        with test.subTest(radii=radii, preparation=preparation, response=response, reverse=reverse):
+            solver.step(state, output, model.control(), contacts, 0.0025)
+            solver.check_constraint_capacity()
+            test.assertTrue(np.all(solver._contact_path.numpy()[:count] == (2 if response == "propagation" else 0)))
+            stats = solver._torsion_stats if preparation == "host" else solver._device_torsion.read_stats()
+            if radii == "positive":
+                test.assertEqual(stats["rows"], 1)
+                test.assertAlmostEqual(stats["groups"][0]["effective_radius_m"], 0.04, places=6)
+            else:
+                # The zero-radius pair rejects the whole region.
+                test.assertEqual(stats["rows"], 0)
+            if response == "propagation":
+                test.assertEqual(len(_propagation_torsion_rows(solver)), stats["rows"])
+        results[radii, preparation, response, reverse] = output.joint_qd.numpy()
+    for (radii, preparation, response, reverse), joint_qd in results.items():
+        with test.subTest(radii=radii, preparation=preparation, response=response, reverse=reverse):
+            reference = results[radii, "host" if radii == "positive" else "patch_segments", "immediate", False]
+            np.testing.assert_allclose(joint_qd, reference, rtol=0.0, atol=1.0e-4)
 
 
 class TestContactTorsionRegressions(unittest.TestCase):
@@ -1139,8 +1157,9 @@ def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cp
         _prescribed_articulation=arr(prescribed, int),
         _group_to_art={size: arr(np.flatnonzero(response_sizes == size).astype(np.int32), int) for size in (3, 6)},
         _J_by_size={size: zero((worlds, dense, size)) for size in (3, 6)},
+        _propagation_torsion_rows=False,
     )
-    for name in ("_phi", "_target_velocity", "_row_restitution"):
+    for name in ("_phi", "_target_velocity", "_row_rebound_velocity"):
         setattr(solver, name, zero((worlds, dense)))
     return solver, state, augmented, contacts
 
@@ -1178,7 +1197,7 @@ def compare(test, *, device, modify=None, **options):
         "_row_mu",
         "_phi",
         "_target_velocity",
-        "_row_restitution",
+        "_row_rebound_velocity",
         "_contact_torsion_group",
     ):
         np.testing.assert_allclose(
@@ -2240,6 +2259,719 @@ add_function_test(
     test_final_budget_and_velocity_response,
     devices=get_cuda_test_devices(),
 )
+
+
+_PROPAGATION_TORSION = {"articulated_contact_response": "propagation", "contact_torsion_device": True}
+# A central witness leaves the spin to torsion; spinning corner witnesses slide on the whole budget.
+_CENTER_SPIN = {"center_only": True, "spin": 100.0}
+_CORNER_SPIN = {"spin": 10.0, "sliding": 0.2}
+
+
+def test_propagation_rows_host_groups_in_spares(test, device):
+    """Host each group's row in its last member's spare, keep other spares inert and match immediate's groups."""
+    for options in ({}, PATCH_OPTIONS):
+        with test.subTest(patches=bool(options)):
+            reference, *_ = fixture(0.01, device=device, spin=10.0, contact_torsion_device=True, **options)
+            _, solver, _model, _state, contacts = fixture(
+                0.01, device=device, spin=10.0, **options, **_PROPAGATION_TORSION
+            )
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 1)
+            test.assertTrue(np.all(solver._contact_path.numpy()[:count] == 2))
+            rows = _propagation_torsion_rows(solver)
+            dense_rows = reference["row_type"][0, : int(reference["count"][0])]
+            test.assertEqual(len(rows), int(np.count_nonzero(dense_rows == PGS_CONSTRAINT_TYPE_TORSION)))
+            test.assertEqual(len(rows), 1)
+            spare_rows = _spare_rows(solver, count)
+            row_type = solver._propagation_row_type.numpy()[0]
+            parent = solver._propagation_row_parent.numpy()[0]
+            body_a = solver._propagation_body_a.numpy()[0]
+            body_b = solver._propagation_body_b.numpy()[0]
+            J_a = solver._propagation_J_a.numpy()[0]
+            J_b = solver._propagation_J_b.numpy()[0]
+            normals = -contacts.rigid_contact_normal.numpy()[:count]
+            slots = solver._contact_slot.numpy()[:count]
+            contact_of = {int(slots[c]): c for c in range(count)}
+            for spin, members in rows.items():
+                test.assertEqual(spin, spare_rows[max(contact_of[n] for n in members)])
+                lead_row = int(parent[spin])
+                lead = contact_of[lead_row]
+                test.assertEqual((body_a[spin], body_b[spin]), (body_a[lead_row], body_b[lead_row]))
+                np.testing.assert_array_equal(J_a[spin, :3], 0.0)
+                np.testing.assert_array_equal(J_b[spin, :3], 0.0)
+                np.testing.assert_allclose(J_a[spin, 3:], normals[lead], atol=1e-7)
+                np.testing.assert_allclose(J_b[spin, 3:], -normals[lead], atol=1e-7)
+                test.assertEqual(sorted(members), sorted(int(slots[c]) for c in range(count)))
+            for row in set(spare_rows.values()) - set(rows):
+                test.assertEqual(row_type[row], PGS_CONSTRAINT_TYPE_TORSION)
+                test.assertEqual((body_a[row], body_b[row]), (-1, -1))
+                np.testing.assert_array_equal(J_a[row], 0.0)
+            test.assertEqual(
+                int(solver._propagation_constraint_count.numpy()[0]),
+                int(solver._contact_slots_needed.numpy()[:count].sum()),
+            )
+
+
+def test_propagation_free_body_contacts_reserve_no_spare(test, device):
+    """Give free-body contacts, which immediate solves without torsion, no spare and no torsion row."""
+    b = newton.ModelBuilder()
+    b.add_ground_plane()
+    body = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0099), wp.quat_identity()))
+    b.add_shape_box(body, hx=0.01, hy=0.01, hz=0.01)
+    model = b.finalize(device=device)
+    set_torsion_radius(model, 0.01)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        friction_anchor_beta=0.0,
+        velocity_iterations=0,
+        iterations=8,
+        **_PROPAGATION_TORSION,
+    )
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.collide(state, contacts)
+    solver.step(state, model.state(), model.control(), contacts, 0.0025)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    test.assertTrue(np.all(solver._contact_path.numpy()[:count] == 2))
+    test.assertTrue(np.all(solver._contact_slots_needed.numpy()[:count] == 3))
+    test.assertEqual(int(solver._propagation_torsion_head.numpy()[0]), -1)
+
+
+def test_propagation_budget_holds_after_every_sweep(test, device):
+    """Keep each torsion impulse within its group's residual sliding budget after every plain sweep."""
+    for patches in ({}, PATCH_OPTIONS):
+        for case, options in (("center", _CENTER_SPIN), ("corners", _CORNER_SPIN)):
+            with test.subTest(patches=bool(patches), case=case):
+                sweeps = _record_propagation_sweeps(device, 0.01, **options, **patches)
+                saturated, sliding_saturated = _assert_torsion_budgets(test, sweeps)
+                if case == "center":
+                    test.assertTrue(saturated, "No torsion row reached its residual budget")
+                else:
+                    test.assertTrue(sliding_saturated, "No group's sliding pairs used the whole budget")
+
+
+def test_propagation_spin_decelerates_at_the_coulomb_rate_and_sticks(test, device):
+    """Decelerate a sliding spin by r mu N / I and hold a slow spin, on both responses."""
+    inertia_z = 0.00008
+    for response in ("immediate", "propagation"):
+        with test.subTest(response=response):
+            options = {"articulated_contact_response": response, "contact_torsion_device": True}
+            result, solver, *_ = fixture(0.01, device=device, spin=100.0, center_only=True, **options)
+            if response == "immediate":
+                count = int(result["count"][0])
+                impulses, types = result["impulses"][0, :count], result["row_type"][0, :count]
+            else:
+                count = int(solver._propagation_constraint_count.numpy()[0])
+                impulses = solver._propagation_impulses.numpy()[0, :count]
+                types = solver._propagation_row_type.numpy()[0, :count]
+            load = float(impulses[types == PGS_CONSTRAINT_TYPE_CONTACT].sum())
+            test.assertGreater(load, 0.0)
+            expected = 0.01 * 0.5 * load / inertia_z
+            deceleration = 100.0 - float(result["joint_qd"][5])
+            test.assertAlmostEqual(deceleration, expected, delta=0.02 * expected)
+            held, *_ = fixture(0.01, device=device, spin=1.0, center_only=True, **options)
+            test.assertLess(np.max(np.abs(held["body_qd"][:, 5])), 1e-4)
+
+
+def test_propagation_friction_keeps_its_rows_with_a_spare(test, device):
+    """Solve and report friction as immediate does when the propagation contacts reserve torsion spares."""
+    for patches in ({}, PATCH_OPTIONS):
+        with test.subTest(patches=bool(patches)):
+            results = {}
+            for response in ("immediate", "propagation"):
+                options = {"articulated_contact_response": response, "contact_torsion_device": True}
+                results[response], *_ = fixture(0.01, device=device, spin=10.0, sliding=0.2, **options, **patches)
+            expected, actual = results["immediate"], results["propagation"]
+            test.assertGreater(float(np.abs(expected["contact_f"][:, :2]).max()), 0.0)
+            np.testing.assert_allclose(actual["contact_f"], expected["contact_f"], rtol=1e-3, atol=1e-3)
+            np.testing.assert_allclose(actual["body_qd"], expected["body_qd"], rtol=1e-3, atol=1e-3)
+
+
+def test_propagation_spin_effect_tracks_immediate(test, device):
+    """Require torsion to change a spin far beyond the response gap, and within the shared non-no-op contract."""
+    x = {}
+    for response in ("immediate", "propagation"):
+        for radius in (0.0, 0.01):
+            x[response, radius], _ = _spinner(device, response, 32, radius, spin=4.0)
+    gap_off = float(np.abs(x["propagation", 0.0] - x["immediate", 0.0]).max())
+    gap_on = float(np.abs(x["propagation", 0.01] - x["immediate", 0.01]).max())
+    effect_immediate = float(np.abs(x["immediate", 0.01] - x["immediate", 0.0]).max())
+    effect = float(np.abs(x["propagation", 0.01] - x["propagation", 0.0]).max())
+    test.assertGreaterEqual(effect, 0.5 * effect_immediate)
+    test.assertGreaterEqual(effect, 10.0 * gap_off)
+    test.assertLessEqual(gap_on, 2.0 * gap_off + 1.0e-6)
+
+
+def test_propagation_converges_to_the_immediate_response(test, device):
+    """Close the coupled three-foot gap to immediate as sweeps rise, with torsion deciding stick."""
+    gaps = {}
+    for iterations in (8, 32, 128):
+        expected, _ = _spinner(device, "immediate", iterations, 0.01, spin=1.14)
+        actual, solver = _spinner(device, "propagation", iterations, 0.01, spin=1.14)
+        gaps[iterations] = float(np.abs(actual - expected).max())
+        test.assertEqual(len(_propagation_torsion_rows(solver)), 3)
+    released, _ = _spinner(device, "immediate", 128, 0.0, spin=1.14)
+    held, _ = _spinner(device, "immediate", 128, 0.01, spin=1.14)
+    test.assertGreater(abs(float(released[1])), 10.0 * abs(float(held[1])) + 1.0e-3)
+    test.assertLessEqual(gaps[128], 1.0e-4, gaps)
+    test.assertLessEqual(gaps[128], gaps[32] + 1.0e-6, gaps)
+
+
+def test_propagation_worlds_solve_as_if_isolated(test, device):
+    """Solve each world of an odd world count, packed two per block, as the same world alone."""
+    spins = (4.0, 1.14, 0.3)
+    together, solver = _spinner(device, "propagation", 32, 0.01, spin=spins, steps=2)
+    test.assertEqual(solver_steel._PROPAGATION_WORLDS_PER_BLOCK, 2)
+    for world, spin in enumerate(spins):
+        test.assertEqual(len(_propagation_torsion_rows(solver, world)), 3)
+        alone, _ = _spinner(device, "propagation", 32, 0.01, spin=spin, steps=2)
+        np.testing.assert_allclose(together.reshape(-1, 2)[world], alone, atol=1.0e-6)
+
+
+def test_propagation_contact_order_changes_the_result_no_more_than_on_immediate(test, device):
+    """Reorder the contact buffer: propagation's change stays within immediate's order floor plus float noise."""
+    results = {}
+    for response in ("immediate", "propagation"):
+        for reverse in (False, True):
+            _, solver, model, state, contacts = fixture(
+                0.01,
+                device=device,
+                spin=10.0,
+                sliding=0.2,
+                step=False,
+                articulated_contact_response=response,
+                contact_torsion_device=True,
+            )
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 2)
+            if reverse:
+                _permute_contacts(contacts, np.arange(count)[::-1])
+            output = model.state()
+            solver.step(state, output, model.control(), contacts, 0.0025)
+            results[response, reverse] = output.body_qd.numpy()
+    floor = float(np.abs(results["immediate", True] - results["immediate", False]).max())
+    change = float(np.abs(results["propagation", True] - results["propagation", False]).max())
+    test.assertLessEqual(change, floor + 1.0e-6, (change, floor))
+
+
+def test_propagation_dropped_members_leave_the_highest_kept_host(test, device):
+    """Host a group whose members overflowed the row cap after its last kept member, budgeting kept members only."""
+    _, solver, model, state, contacts = fixture(
+        0.01,
+        device=device,
+        spin=10.0,
+        step=False,
+        enable_joint_velocity_limits=False,
+        articulation_constraint_max=8,
+        free_body_constraint_max=2,
+        **_PROPAGATION_TORSION,
+    )
+    wp.synchronize_device(model.device)
+    capture = StdOutCapture()
+    capture.begin()
+    try:
+        solver.step(state, model.state(), model.control(), contacts, 0.0025)
+    finally:
+        try:
+            wp.synchronize_device(model.device)
+        finally:
+            output = capture.end()
+    lines = [line for line in output.splitlines() if line.strip() and not line.startswith("Module")]
+    test.assertEqual(len(lines), 1, output)
+    test.assertRegex(
+        lines[0],
+        r"Warning: Steel propagation constraint-row overflow in world 0: requested 16 rows, limit 10; "
+        r"dropped 8 contact, friction or torsion rows\.",
+    )
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    slots = solver._contact_slot.numpy()[:count]
+    kept = [c for c in range(count) if slots[c] >= 0]
+    test.assertEqual((len(kept), count), (2, 4))
+    rows = _propagation_torsion_rows(solver)
+    test.assertEqual(len(rows), 1)
+    ((spin, members),) = rows.items()
+    test.assertEqual(sorted(members), sorted(int(slots[c]) for c in kept))
+    test.assertEqual(spin, _spare_rows(solver, count)[max(kept)])
+    test.assertGreater(int(solver._row_dropped_propagation.numpy()[0]), 0)
+
+
+def test_propagation_rows_follow_the_recorded_reservation(test, device):
+    """Write no tangent rows for a contact allocated without them, whatever the builder's own gap test says."""
+    allocator = solver_steel.allocate_world_contact_slots
+    gap_index = [arg.label for arg in allocator.adj.args].index("contact_friction_gap_limit")
+    launch = wp.launch
+
+    def frictionless_allocation(kernel, *args, **kwargs):
+        # Only the allocator sees every contact past the friction gap.
+        if kernel is allocator:
+            kwargs["inputs"] = list(kwargs["inputs"])
+            kwargs["inputs"][gap_index] = -float("inf")
+        return launch(kernel, *args, **kwargs)
+
+    _, solver, model, state, contacts = fixture(0.01, device=device, spin=10.0, step=False, **_PROPAGATION_TORSION)
+    with patch.object(solver_steel.wp, "launch", frictionless_allocation):
+        solver.step(state, model.state(), model.control(), contacts, 0.0025)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertTrue(np.all(solver._contact_slots_needed.numpy()[:count] == 2))
+    rows = int(solver._propagation_constraint_count.numpy()[0])
+    row_type = solver._propagation_row_type.numpy()[0, :rows]
+    test.assertEqual(rows, 2 * count)
+    np.testing.assert_array_equal(row_type[::2], PGS_CONSTRAINT_TYPE_CONTACT)
+    np.testing.assert_array_equal(row_type[1::2], PGS_CONSTRAINT_TYPE_TORSION)
+
+
+def test_propagation_prescribed_spin_turns_a_resting_sphere(test, device):
+    """Spin up a sphere resting on a spinning kinematic platform through torsion alone, as on immediate."""
+    rates = {response: _turntable(device, response) for response in ("immediate", "propagation")}
+    test.assertGreater(rates["immediate"], 0.5)
+    test.assertAlmostEqual(rates["propagation"], rates["immediate"], delta=1.0e-4)
+
+
+def test_propagation_mixed_families_and_contact_lifecycle(test, device):
+    """Solve dense and propagation torsion rows and free-body rows in one step, through contact loss and recovery."""
+    model, spinner_q = _mixed_scene(device)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        iterations=32,
+        velocity_iterations=0,
+        baumgarte=0.05,
+        cfm=0.0,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=64,
+        free_body_constraint_max=16,
+        propagation_same_articulation_rows=False,
+        **_PROPAGATION_TORSION,
+    )
+    pipeline = newton.CollisionPipeline(model, reduce_contacts=False, broad_phase="nxn", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    state, output = model.state(), model.state()
+    velocity = np.zeros(model.joint_dof_count, np.float32)
+    velocity[spinner_q + 5] = 20.0
+    state.joint_qd.assign(velocity)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    def step(lift=None):
+        nonlocal state, output
+        if lift is not None:
+            q = state.joint_q.numpy()
+            q[spinner_q + 2] = lift
+            state.joint_q.assign(q)
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        pipeline.collide(state, contacts)
+        solver.step(state, output, model.control(), contacts, 0.0025)
+        state, output = output, state
+        solver.check_constraint_capacity()
+        return _family_census(solver, contacts)
+
+    for lift, groups in ((None, [1, 1]), (0.2, [0, 1]), (0.0, [1, 1])):
+        with test.subTest(lift=lift):
+            census = step(lift)
+            test.assertEqual(census["propagation_groups"], groups)
+            test.assertTrue(all(count > 0 for count in census["dense_torsion"]), census)
+            test.assertTrue(census["free_body_rows"], census)
+            test.assertTrue(np.isfinite(state.joint_qd.numpy()).all())
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    with test.assertRaisesRegex(RuntimeError, "load ring"):
+        step()
+    solver.reset(state)
+    census = step()
+    test.assertEqual(census["propagation_groups"], [1, 1])
+
+
+def test_propagation_patch_impulse_matches_immediate(test, device):
+    """Give a patch region the same torsion row count and final impulse as immediate at 128 sweeps."""
+    impulses = {}
+    for response in ("immediate", "propagation"):
+        options = {"articulated_contact_response": response, "contact_torsion_device": True, "iterations": 128}
+        result, solver, *_ = fixture(
+            0.01, device=device, spin=1.0, center_only=True, center_count=4, **options, **PATCH_OPTIONS
+        )
+        if response == "immediate":
+            count = int(result["count"][0])
+            torsion = result["impulses"][0, :count][result["row_type"][0, :count] == PGS_CONSTRAINT_TYPE_TORSION]
+        else:
+            rows = _propagation_torsion_rows(solver)
+            test.assertEqual([len(members) for members in rows.values()], [4])
+            torsion = solver._propagation_impulses.numpy()[0, sorted(rows)]
+        impulses[response] = torsion
+    test.assertEqual(len(impulses["immediate"]), 1)
+    test.assertGreater(abs(float(impulses["immediate"][0])), 0.0)
+    np.testing.assert_allclose(impulses["propagation"], impulses["immediate"], rtol=1.0e-4)
+
+
+def test_propagation_captured_steps_match_eager_steps_and_report_errors(test, device):
+    """Replay captured propagation steps as the eager steps do, and fail stop on a latched torsion error."""
+    eager, _ = _spinner(device, "propagation", 16, 0.01, spin=4.0, steps=3)
+    captured, _ = _spinner(device, "propagation", 16, 0.01, spin=4.0, steps=3, graph=True)
+    np.testing.assert_allclose(captured, eager, atol=1.0e-6)
+    _, solver, model, state, contacts = fixture(0.01, device=device, iterations=16, step=False, **_PROPAGATION_TORSION)
+    output = model.state()
+    with wp.ScopedCapture(device=model.device) as capture:
+        solver.step(state, output, model.control(), contacts, 0.0025)
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity()
+    test.assertEqual(len(_propagation_torsion_rows(solver)), 1)
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    wp.capture_launch(capture.graph)
+    with test.assertRaisesRegex(RuntimeError, "load ring"):
+        solver.check_constraint_capacity()
+    np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
+    test.assertTrue(np.all(solver._propagation_constraint_count.numpy() == 0))
+
+
+def test_propagation_unsupported_combinations_raise(test, device):
+    """Keep torsion rejected where its rows are not solved."""
+    for options, error, message in (
+        (
+            {"articulated_contact_response": "propagation_colored", "contact_torsion_device": True},
+            NotImplementedError,
+            "contact torsion is not supported",
+        ),
+        ({**_PROPAGATION_TORSION, "contact_warmstart": True}, ValueError, "contact_warmstart=False"),
+        ({**_PROPAGATION_TORSION, "velocity_iterations": 1}, NotImplementedError, "velocity_iterations=0"),
+        ({"articulated_contact_response": "propagation"}, NotImplementedError, "contact_torsion_device=True"),
+    ):
+        with test.subTest(**options), test.assertRaisesRegex(error, message):
+            fixture(0.01, device=device, step=False, **options)
+
+
+class TestPropagationTorsion(unittest.TestCase):
+    """Contact torsion rows on the plain propagation response, against the immediate response."""
+
+
+for _fn in (
+    test_propagation_rows_host_groups_in_spares,
+    test_propagation_free_body_contacts_reserve_no_spare,
+    test_propagation_budget_holds_after_every_sweep,
+    test_propagation_spin_decelerates_at_the_coulomb_rate_and_sticks,
+    test_propagation_friction_keeps_its_rows_with_a_spare,
+    test_propagation_spin_effect_tracks_immediate,
+    test_propagation_converges_to_the_immediate_response,
+    test_propagation_worlds_solve_as_if_isolated,
+    test_propagation_contact_order_changes_the_result_no_more_than_on_immediate,
+    test_propagation_rows_follow_the_recorded_reservation,
+    test_propagation_prescribed_spin_turns_a_resting_sphere,
+    test_propagation_mixed_families_and_contact_lifecycle,
+    test_propagation_patch_impulse_matches_immediate,
+    test_propagation_captured_steps_match_eager_steps_and_report_errors,
+    test_propagation_unsupported_combinations_raise,
+):
+    add_function_test(TestPropagationTorsion, _fn.__name__, _fn, devices=get_cuda_test_devices())
+
+# The test checks its own output: CheckOutput's capture would receive the device printf.
+add_function_test(
+    TestPropagationTorsion,
+    "test_propagation_dropped_members_leave_the_highest_kept_host",
+    test_propagation_dropped_members_leave_the_highest_kept_host,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+
+def _propagation_torsion_rows(solver, world=0):
+    """Return world ``world``'s propagation torsion rows mapped to their member normal rows, from the sweep's lists."""
+    head = solver._propagation_torsion_head.numpy()
+    first = solver._propagation_torsion_first.numpy()[world]
+    following = solver._propagation_torsion_next.numpy()[world]
+    rows = {}
+    spin = int(head[world])
+    while spin >= 0:
+        members, n = [], int(first[spin])
+        while n >= 0:
+            members.append(n)
+            n = int(following[n])
+        rows[spin] = members
+        spin = int(following[spin])
+    return rows
+
+
+def _spare_rows(solver, count):
+    """Return each spare-reserving propagation contact's spare row, the last of its reserved rows."""
+    slots = solver._contact_slot.numpy()[:count]
+    needed = solver._contact_slots_needed.numpy()[:count]
+    return {c: int(slots[c] + needed[c] - 1) for c in range(count) if slots[c] >= 0 and needed[c] in (2, 4)}
+
+
+def _record_propagation_sweeps(device, radius, **options):
+    """Record world 0's propagation impulses after every sweep of one pad-fixture step."""
+    sweeps = []
+    _, solver, model, state, contacts = fixture(radius, device=device, step=False, **options, **_PROPAGATION_TORSION)
+    launch_tiled = wp.launch_tiled
+
+    def record(kernel, *args, **kwargs):
+        launch_tiled(kernel, *args, **kwargs)
+        if kernel is not solver._pgs_solve_propagation_kernel:
+            return
+        rows = _propagation_torsion_rows(solver)
+        row_type = solver._propagation_row_type.numpy()[0]
+        parent = solver._propagation_row_parent.numpy()[0]
+        count = int(solver._propagation_constraint_count.numpy()[0])
+        pairs = {
+            spin: [
+                n
+                for n in members
+                if n + 2 < count
+                and all(row_type[n + k] == PGS_CONSTRAINT_TYPE_FRICTION and parent[n + k] == n for k in (1, 2))
+            ]
+            for spin, members in rows.items()
+        }
+        sweeps.append(
+            {
+                "after": solver._propagation_impulses.numpy()[0].astype(np.float64),
+                "rows": rows,
+                "pairs": pairs,
+                "mu": solver._propagation_row_mu.numpy()[0],
+                "radius": solver._propagation_torsion_row_radius.numpy()[0],
+            }
+        )
+
+    with patch.object(solver_steel.wp, "launch_tiled", record):
+        solver.step(state, model.state(), model.control(), contacts, 0.0025)
+    return sweeps
+
+
+def _assert_torsion_budgets(test, sweeps):
+    """Check every torsion impulse against its group's residual budget.
+
+    Returns whether a torsion row and whether a group's sliding pairs reached their bounds.
+    """
+    test.assertTrue(sweeps)
+    saturated = sliding_saturated = False
+    for sweep in sweeps:
+        impulses = sweep["after"]
+        for spin, members in sweep["rows"].items():
+            load = sum(max(float(impulses[n]), 0.0) for n in members)
+            sliding = sum(float(np.hypot(impulses[n + 1], impulses[n + 2])) for n in sweep["pairs"][spin])
+            budget = float(sweep["mu"][spin]) * load
+            bound = float(sweep["radius"][spin]) * max(budget - sliding, 0.0)
+            torsion = abs(float(impulses[spin]))
+            # The sweep forms the residual budget in float32, where budget - sliding cancels.
+            slack = 1.0e-5 * budget + 1.0e-12
+            test.assertLessEqual(sliding, budget + slack, f"group {spin} slides past its load")
+            test.assertLessEqual(
+                torsion, bound + float(sweep["radius"][spin]) * slack, f"row {spin} exceeds its residual budget"
+            )
+            saturated |= torsion > 0.99 * bound > 0.0
+            sliding_saturated |= sliding > 0.99 * budget > 0.0
+    return saturated, sliding_saturated
+
+
+def _turntable(device, response, steps=8):
+    """Return the spin rate [rad/s] of a free-D6 sphere centered on a kinematic platform spinning at 5 rad/s."""
+    b = newton.ModelBuilder()
+    platform = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    b.add_shape_box(platform, hx=0.1, hy=0.1, hz=0.01, cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, restitution=0))
+    pose = wp.transform(wp.vec3(0.0, 0.0, 0.0299), wp.quat_identity())
+    sphere = b.add_link(xform=pose, mass=0.3, inertia=wp.mat33(np.eye(3, dtype=np.float32) * 3e-4))
+    axes = [newton.ModelBuilder.JointDofConfig(axis=wp.vec3(*a)) for a in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+    b.add_articulation([b.add_joint_d6(-1, sphere, parent_xform=pose, linear_axes=axes, angular_axes=axes)])
+    b.add_shape_sphere(sphere, radius=0.02, cfg=newton.ModelBuilder.ShapeConfig(density=0, mu=0.5, restitution=0))
+    model = b.finalize(device=device)
+    flags = model.body_flags.numpy()
+    flags[platform] |= int(newton.BodyFlags.KINEMATIC)
+    model.body_flags.assign(flags)
+    set_torsion_radius(model, 0.01)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        articulated_contact_response=response,
+        iterations=64,
+        velocity_iterations=0,
+        baumgarte=0.05,
+        cfm=0.0,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=64,
+        free_body_constraint_max=16,
+        contact_torsion_device=True,
+    )
+    pipeline = newton.CollisionPipeline(model, reduce_contacts=False, broad_phase="nxn", rigid_contact_max=64)
+    contacts = pipeline.contacts()
+    state, output = model.state(), model.state()
+    velocity = np.zeros(model.joint_dof_count, np.float32)
+    velocity[5] = 5.0
+    state.joint_qd.assign(velocity)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    for _ in range(steps):
+        pipeline.collide(state, contacts)
+        solver.step(state, output, model.control(), contacts, 0.0025)
+        state, output = output, state
+        if response == "propagation":
+            # The platform has no response DOFs, so no propagation row, its torsion row included, may name it.
+            rows = int(solver._propagation_constraint_count.numpy()[0])
+            for bodies in (solver._propagation_body_a, solver._propagation_body_b):
+                assert platform not in bodies.numpy()[0, :rows], "a propagation row names the kinematic platform"
+    return float(state.joint_qd.numpy()[11])
+
+
+def _mixed_scene(device):
+    """Return two worlds, each with a same-articulation link pair, a spinning D6 sphere and a free sphere on the ground.
+
+    Also returns the D6 joint's first coordinate and DOF index in world 0, which coincide for D6 joints.
+    The link pair's contact stays on dense rows; the D6 sphere's hosts a propagation torsion row; the free
+    sphere's reserves no spare.
+    """
+    scene = newton.ModelBuilder()
+    SolverSteel.register_custom_attributes(scene)
+    for _ in range(2):
+        world = newton.ModelBuilder()
+        SolverSteel.register_custom_attributes(world)
+        cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, restitution=0.0)
+        base = world.add_link()
+        world.add_shape_box(base, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+        joints = [
+            world.add_joint_revolute(
+                parent=-1,
+                child=base,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
+                child_xform=wp.transform_identity(),
+            )
+        ]
+        for side in (1.0, -1.0):
+            link = world.add_link()
+            world.add_shape_box(link, hx=0.12, hy=0.03, hz=0.04, cfg=cfg)
+            joints.append(
+                world.add_joint_revolute(
+                    parent=base,
+                    child=link,
+                    axis=wp.vec3(0.0, 0.0, 1.0),
+                    parent_xform=wp.transform(wp.vec3(0.06, side * 0.028, 0.0), wp.quat_identity()),
+                    child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+        world.add_articulation(joints)
+        pose = wp.transform(wp.vec3(0.3, 0.0, 0.0199), wp.quat_identity())
+        sphere = world.add_link(xform=pose, mass=0.3, inertia=wp.mat33(np.eye(3, dtype=np.float32) * 3e-4))
+        axes = [newton.ModelBuilder.JointDofConfig(axis=wp.vec3(*a)) for a in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+        world.add_articulation([world.add_joint_d6(-1, sphere, parent_xform=pose, linear_axes=axes, angular_axes=axes)])
+        world.add_shape_sphere(sphere, radius=0.02, cfg=newton.ModelBuilder.ShapeConfig(density=0, mu=0.5))
+        free = world.add_body(xform=wp.transform(wp.vec3(-0.3, 0.0, 0.0199), wp.quat_identity()))
+        world.add_shape_sphere(free, radius=0.02, cfg=cfg)
+        scene.add_world(world)
+    scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, restitution=0.0))
+    model = scene.finalize(device=device)
+    set_torsion_radius(model, 0.01)
+    d6 = int(np.flatnonzero(model.joint_type.numpy() == int(newton.JointType.D6))[0])
+    assert int(model.joint_q_start.numpy()[d6]) == int(model.joint_qd_start.numpy()[d6])
+    return model, int(model.joint_qd_start.numpy()[d6])
+
+
+def _family_census(solver, contacts):
+    """Count each world's dense torsion rows and propagation torsion groups, and check the free-body contacts."""
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape_body = solver.model.shape_body.numpy()
+    body_art = solver._body_to_articulation.numpy()
+    is_free = np.asarray(solver._model_plan.is_free_rigid)
+    shapes = np.stack([contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count]])
+    path = solver._contact_path.numpy()[:count]
+    slot = solver._contact_slot.numpy()[:count]
+    needed = solver._contact_slots_needed.numpy()[:count]
+
+    def free_pair(c):
+        bodies = [shape_body[s] if s >= 0 else -1 for s in shapes[:, c]]
+        return all(b < 0 or is_free[body_art[b]] != 0 for b in bodies)
+
+    free = [c for c in range(count) if slot[c] >= 0 and free_pair(c)]
+    dense_count = solver._constraint_count.numpy()
+    dense_type = solver._row_type.numpy()
+    return {
+        "propagation_groups": [len(_propagation_torsion_rows(solver, w)) for w in range(solver._world_count)],
+        "dense_torsion": [
+            int(np.count_nonzero(dense_type[w, : dense_count[w]] == PGS_CONSTRAINT_TYPE_TORSION))
+            for w in range(solver._world_count)
+        ],
+        "free_body_rows": bool(free) and all(path[c] == 2 and needed[c] in (1, 3) for c in free),
+    }
+
+
+def _permute_contacts(contacts, order):
+    """Reorder the first ``len(order)`` entries of every per-contact rigid array of ``contacts``."""
+    for name, value in vars(contacts).items():
+        if not name.startswith("rigid_contact_") or not isinstance(value, wp.array):
+            continue
+        if value.shape[0] != contacts.rigid_contact_max or name == "rigid_contact_count":
+            continue
+        values = value.numpy()
+        values[: len(order)] = values[order]
+        value.assign(values)
+
+
+def _spinner(device, response, iterations, radius, *, spin, steps=1, graph=False):
+    """Press three spheres fixed to one spinning slider onto the ground and return its joint velocity.
+
+    The feet share the slider's two DOFs, so the propagation sweep splits their mass; the middle foot
+    sits on the spin axis, where only its torsion row resists the spin. A sequence ``spin`` replicates
+    one world per rate.
+    """
+    spins = np.atleast_1d(np.asarray(spin, dtype=np.float32))
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.default_shape_cfg.mu = 0.5
+    slider = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(
+        slider, hx=0.3, hy=0.05, hz=0.02, cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+    )
+    z = newton.ModelBuilder.JointDofConfig(axis=wp.vec3(0.0, 0.0, 1.0))
+    joints = [builder.add_joint_d6(-1, slider, linear_axes=[z], angular_axes=[z])]
+    for x in (-0.2, 0.0, 0.2):
+        foot = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.05), wp.quat_identity()))
+        builder.add_shape_sphere(foot, radius=0.05)
+        joints.append(
+            builder.add_joint_fixed(
+                slider,
+                foot,
+                parent_xform=wp.transform(wp.vec3(x, 0.0, -0.05), wp.quat_identity()),
+                child_xform=wp.transform_identity(),
+            )
+        )
+    builder.add_articulation(joints)
+    builder.add_ground_plane()
+    if len(spins) > 1:
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        scene.replicate(builder, len(spins), spacing=(1.0, 0.0, 0.0))
+        builder = scene
+    model = builder.finalize(device=device)
+    set_torsion_radius(model, radius)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        articulated_contact_response=response,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=64,
+        free_body_constraint_max=16,
+        iterations=iterations,
+        velocity_iterations=0,
+        baumgarte=0.0,
+        cfm=0.0,
+        contact_regularization=3.0,
+        contact_torsion_device=True,
+    )
+    state, output = model.state(), model.state()
+    state.joint_qd.assign(np.stack([np.full_like(spins, -1.0), spins], axis=1).reshape(-1))
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    if graph:
+        pipeline.collide(state, contacts)
+        solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
+        state, output = output, state
+        with wp.ScopedCapture(device=model.device) as capture:
+            pipeline.collide(state, contacts)
+            solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
+            pipeline.collide(output, contacts)
+            solver.step(output, state, model.control(), contacts, 1.0 / 240.0)
+        for _ in range((steps - 1) // 2):
+            wp.capture_launch(capture.graph)
+        solver.check_constraint_capacity()
+        return state.joint_qd.numpy(), solver
+    for _ in range(steps):
+        pipeline.collide(state, contacts)
+        solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
+        state, output = output, state
+    return state.joint_qd.numpy(), solver
 
 
 if __name__ == "__main__":

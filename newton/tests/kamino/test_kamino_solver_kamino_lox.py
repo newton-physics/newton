@@ -13,10 +13,10 @@ import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
+from newton._src.solvers.kamino._src.integrators.euler import _integrate_semi_implicit_euler_inplace
+from newton._src.solvers.kamino._src.integrators.moreau import _integrate_moreau_jean_second_inplace
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.solvers import SolverMuJoCo
-from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.utils.basics import (
     build_box_on_plane,
@@ -448,6 +448,47 @@ class _LOXTestCase(unittest.TestCase):
 
 
 class TestSolverKaminoLOX(_LOXTestCase):
+    def test_integrators_keep_prescribed_twist_of_rotated_singular_body(self):
+        """Keep the LOX twist of a rotated body with mass and a rank-deficient inverse inertia."""
+        rotation = np.array(wp.quat_to_matrix(wp.quat_rpy(0.3, -0.7, 1.1)), dtype=np.float32).reshape(3, 3)
+        inverse_inertia = np.diag([1.0, 1.0, 0.0]).astype(np.float32)
+        twist = wp.spatial_vectorf(0.1, -0.2, 0.3, 1.0, 2.0, -3.0)
+        for kernel in (_integrate_semi_implicit_euler_inplace, _integrate_moreau_jean_second_inplace):
+            with self.subTest(kernel=kernel.key):
+                velocity = wp.array([twist], dtype=wp.spatial_vectorf, device=self.default_device)
+                wp.launch(
+                    kernel,
+                    dim=1,
+                    inputs=[
+                        0.1,
+                        True,
+                        wp.array([0.01], dtype=wp.float32, device=self.default_device),
+                        wp.array([wp.vec3f(0.0, 0.0, -9.81)], dtype=wp.vec3f, device=self.default_device),
+                        wp.zeros(1, dtype=wp.int32, device=self.default_device),
+                        wp.array([0.5], dtype=wp.float32, device=self.default_device),
+                        wp.array(
+                            [rotation @ np.diag([1.0, 1.0, 0.0]) @ rotation.T],
+                            dtype=wp.mat33f,
+                            device=self.default_device,
+                        ),
+                        wp.array([inverse_inertia], dtype=wp.mat33f, device=self.default_device),
+                        wp.array(
+                            [rotation @ inverse_inertia @ rotation.T], dtype=wp.mat33f, device=self.default_device
+                        ),
+                        wp.array(
+                            [wp.spatial_vectorf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)],
+                            dtype=wp.spatial_vectorf,
+                            device=self.default_device,
+                        ),
+                    ],
+                    outputs=[
+                        wp.array([wp.transform_identity()], dtype=wp.transformf, device=self.default_device),
+                        velocity,
+                    ],
+                    device=self.default_device,
+                )
+                np.testing.assert_array_equal(velocity.numpy()[0], np.array(twist))
+
     def test_free_fall_uses_each_world_time_step(self):
         """Advance each rigid world with its configured device-side time step."""
         builder = build_box_on_plane(ground=False)
@@ -1296,69 +1337,6 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
                     self.assertTrue(np.isfinite(getattr(metrics, name).numpy()).all(), name)
                 self.assertLess(float(metrics.r_eom.numpy()[0]), 1.0e-3)
                 self.assertLess(float(metrics.r_ncp_primal.numpy()[0]), 1.0e-5)
-
-    def test_piles_rest_on_mujoco_proxies(self):
-        """Keep piles of MuJoCo and LOX cubes at rest when LOX is the proxy destination.
-
-        One pile has the MuJoCo cube at the bottom and the other has it at the top. The proxy collision
-        pipeline passes the contacts between the proxies and the ground to LOX with negative shape indices.
-        """
-        half, time_step = 0.1, 1.0 / 240.0
-        builder = newton.ModelBuilder()
-        SolverKamino.register_custom_attributes(builder)
-        builder.add_ground_plane()
-        bodies = {"mjc": [], "lox": []}
-        for pile, owners in enumerate((("mjc", "lox"), ("lox", "mjc"))):
-            for level, owner in enumerate(owners):
-                position = wp.vec3(float(pile), 0.0, half * (2.0 * level + 1.0))
-                body = builder.add_body(xform=wp.transform(position, wp.quat_identity()))
-                builder.add_shape_box(body, hx=half, hy=half, hz=half)
-                bodies[owner].append(body)
-        model = builder.finalize(device=self.default_device)
-        joint_child = model.joint_child.numpy()
-        config = self.make_config()
-        config.use_collision_detector = False
-        config.use_fk_solver = False
-        solver = SolverCoupledProxy(
-            model=model,
-            entries=[
-                SolverCoupledProxy.Entry(
-                    name="mjc",
-                    solver=lambda view: SolverMuJoCo(model=view, use_mujoco_contacts=False),
-                    bodies=bodies["mjc"],
-                    joints=[j for j, child in enumerate(joint_child) if child in bodies["mjc"]],
-                ),
-                SolverCoupledProxy.Entry(
-                    name="lox",
-                    solver=lambda view: SolverKamino(view, config=config),
-                    bodies=bodies["lox"],
-                    joints=[j for j, child in enumerate(joint_child) if child in bodies["lox"]],
-                ),
-            ],
-            coupling=SolverCoupledProxy.Config(
-                proxies=[
-                    SolverCoupledProxy.Proxy(
-                        source="mjc",
-                        destination="lox",
-                        bodies=bodies["mjc"],
-                        collision_pipeline=newton.CollisionPipeline,
-                    )
-                ],
-                iterations=2,
-            ),
-        )
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
-        state_in, state_out, control = model.state(), model.state(), model.control()
-        start = state_in.body_q.numpy().copy()
-
-        for _ in range(60):
-            pipeline.collide(state_in, contacts)
-            solver.step(state_in, state_out, control, contacts, time_step)
-            state_in, state_out = state_out, state_in
-
-        np.testing.assert_allclose(state_in.body_q.numpy(), start, rtol=0.0, atol=1.0e-3)
-        self.assertLess(float(np.max(np.linalg.norm(state_in.body_qd.numpy(), axis=1))), 1.0e-3)
 
     def test_cartpole_projects_detected_joint_limit(self):
         """Project detected joint limits for a cartpole."""

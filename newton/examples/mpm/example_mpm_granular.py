@@ -1,6 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Collapse granular MPM material onto a rigid collider and the ground.
+
+Success criteria:
+- A box-shaped volume of particles collapses onto the rigid box collider.
+- Particles flow around the box and accumulate on the ground and collider rather than passing
+  through either.
+
+Runs:
+- `python -m newton.examples mpm_granular`
+"""
+
 import warnings
 
 import numpy as np

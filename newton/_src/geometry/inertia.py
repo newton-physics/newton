@@ -22,6 +22,9 @@ from .types import (
 
 _BARREL_INERTIA_NODES, _BARREL_INERTIA_WEIGHTS = np.polynomial.legendre.leggauss(32)
 
+# Numerical noise floor for triangle-inequality checks in both validation paths.
+_FLOAT32_EPS = wp.constant(float(np.finfo(np.float32).eps))
+
 # Relative tolerance for eigenvalue positivity checks.  An eigenvalue is
 # considered "near-zero" only when it is smaller than this fraction of the
 # largest eigenvalue.  This prevents spurious inflation of physically correct
@@ -44,6 +47,55 @@ _INERTIA_SYMMETRY_RTOL = 1.0e-5
 _INERTIA_SYMMETRY_ATOL = 1.0e-8
 
 _MESH_INERTIA_TILE_SIZE = 256
+
+
+def _inverse_inertia(inertia: wp.mat33) -> wp.mat33:
+    """Invert on the host in float64, preserving Warp's zero result for singular tensors."""
+    try:
+        return wp.mat33(np.linalg.inv(np.asarray(inertia, dtype=np.float64).reshape(3, 3)))
+    except np.linalg.LinAlgError:
+        return wp.mat33(0.0)
+
+
+@wp.func
+def _inverse_inertia_wp(inertia: wp.mat33) -> wp.mat33:
+    # Small valid float32 inertias can underflow the determinant or overflow its
+    # reciprocal. Use float64 intermediates, then store the inverse in float32.
+    return wp.mat33(wp.inverse(wp.mat33d(inertia)))
+
+
+@wp.func
+def _eig_inertia(inertia: wp.mat33):
+    # eig3's absolute numerical thresholds assume entries near unit scale.
+    # Normalize before decomposition and restore the principal moments afterward.
+    scale = float(0.0)
+    for i in range(3):
+        for j in range(3):
+            scale = wp.max(scale, wp.abs(inertia[i, j]))
+    if scale == 0.0:
+        return wp.identity(n=3, dtype=wp.float32), wp.vec3(0.0)
+    # Decompose in float64 to resolve small negative moments accurately during
+    # validation and after a float32 repair. Double-precision division also
+    # avoids reciprocal overflow for subnormal float32 scales.
+    vectors, values = wp.eig3(wp.mat33d(inertia) / wp.float64(scale))
+    return wp.mat33(vectors), wp.vec3(values * wp.float64(scale))
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def compute_body_inverses_kernel(
+    body_mass: wp.array[wp.float32],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[wp.float32],
+    body_inv_inertia: wp.array[wp.mat33],
+):
+    """Derive inverse properties from final mass and inertia, independently of validation."""
+    tid = wp.tid()
+    if body_mass[tid] > 0.0:
+        body_inv_mass[tid] = 1.0 / body_mass[tid]
+        body_inv_inertia[tid] = _inverse_inertia_wp(body_inertia[tid])
+    else:
+        body_inv_mass[tid] = 0.0
+        body_inv_inertia[tid] = wp.mat33(0.0)
 
 
 def _validate_hollow_thickness(
@@ -100,13 +152,11 @@ def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec
 
 
 def compute_inertia_sphere_from_mass(mass: float, radius: float) -> wp.mat33:
-    """Helper to compute 3x3 inertia matrix of a solid box with given mass and half-extents.
+    """Helper to compute 3x3 inertia matrix of a solid sphere with given mass and radius.
 
     Args:
-        mass: The box mass [kg]
-        hx: The box half-extent along the x-axis [m]
-        hy: The box half-extent along the y-axis [m]
-        hz: The box half-extent along the z-axis [m]
+        mass: The sphere mass [kg]
+        radius: The sphere radius [m]
 
     Returns:
 
@@ -777,6 +827,10 @@ def verify_and_correct_inertia(
     bound_mass: float | None = None,
     bound_inertia: float | None = None,
     body_label: str | None = None,
+    *,
+    relative_tolerance: float = _INERTIA_REL_TOL,
+    absolute_tolerance: float = _INERTIA_ABS_FLOOR,
+    correction: float = _INERTIA_ABS_ADJUSTMENT,
 ) -> tuple[float, wp.mat33, bool]:
     """Verify and correct inertia values similar to MuJoCo's balanceinertia compiler setting.
 
@@ -788,10 +842,10 @@ def verify_and_correct_inertia(
     4. Optionally balances inertia to satisfy the triangle inequality exactly
 
     Eigenvalue positivity is checked using a relative threshold
-    (``_INERTIA_REL_TOL * max_eigenvalue``) so that lightweight components with
+    (``relative_tolerance * max_eigenvalue``) so that lightweight components with
     small but physically valid inertia are not spuriously inflated.  When
     correction *is* needed, the adjustment uses a small absolute floor
-    (``_INERTIA_ABS_ADJUSTMENT``) to keep the result well-conditioned.
+    (``correction``) to keep the result well-conditioned.
 
     Args:
         mass: The mass of the body [kg].
@@ -800,6 +854,9 @@ def verify_and_correct_inertia(
         bound_mass: If specified, clamp mass to be at least this value [kg].
         bound_inertia: If specified, clamp inertia diagonal elements to be at least this value [kg*m^2].
         body_label: Optional label/name of the body for more informative warnings.
+        relative_tolerance: Relative eigenvalue threshold (dimensionless).
+        absolute_tolerance: Positive absolute floor for eigenvalue and triangle-inequality tolerances [kg*m^2].
+        correction: Non-negative extra diagonal shift when repairing inertia [kg*m^2].
 
     Returns:
         A tuple of (corrected_mass, corrected_inertia, was_corrected) where was_corrected
@@ -860,7 +917,7 @@ def verify_and_correct_inertia(
         # The threshold is relative to the largest eigenvalue so that small but
         # physically valid inertia (lightweight components) is not inflated.
         max_eig = np.max(eigenvalues)
-        eig_threshold = max(_INERTIA_REL_TOL * max_eig, _INERTIA_ABS_FLOOR)
+        eig_threshold = max(relative_tolerance * max_eig, absolute_tolerance)
         if np.any(eigenvalues < eig_threshold):
             warnings.warn(
                 f"Eigenvalues below threshold detected{body_id}: {eigenvalues}, correcting inertia",
@@ -869,7 +926,7 @@ def verify_and_correct_inertia(
             )
             # Make positive definite by adjusting eigenvalues
             min_eig = np.min(eigenvalues)
-            adjustment = eig_threshold - min_eig + _INERTIA_ABS_ADJUSTMENT
+            adjustment = eig_threshold - min_eig + correction
             corrected_inertia += np.eye(3, dtype=corrected_inertia.dtype) * adjustment
             eigenvalues += adjustment
             was_corrected = True
@@ -895,7 +952,7 @@ def verify_and_correct_inertia(
         # Check triangle inequality on principal moments
         # For a physically valid inertia tensor: I1 + I2 >= I3 (with tolerance)
         # Use float32 machine epsilon scaled by I3 as numerical noise floor.
-        tri_tol = max(np.finfo(np.float32).eps * I3, _INERTIA_ABS_FLOOR)
+        tri_tol = max(_FLOAT32_EPS * I3, absolute_tolerance)
         has_violations = I1 + I2 < I3 - tri_tol
 
     except np.linalg.LinAlgError:
@@ -908,7 +965,7 @@ def verify_and_correct_inertia(
         # Fallback: use diagonal elements
         trace = np.trace(corrected_inertia)
         if trace <= 0:
-            trace = _INERTIA_ABS_ADJUSTMENT
+            trace = max(correction, absolute_tolerance)
         corrected_inertia = np.eye(3) * (trace / 3.0)
         has_violations = False
         principal_moments = [trace / 3.0, trace / 3.0, trace / 3.0]
@@ -930,7 +987,7 @@ def verify_and_correct_inertia(
                 # We need: (I1 + a) + (I2 + a) >= I3 + a
                 # Which simplifies to: I1 + I2 + a >= I3
                 # So: a >= I3 - I1 - I2 = deficit
-                adjustment = deficit + _INERTIA_ABS_ADJUSTMENT
+                adjustment = deficit + correction
 
                 # Add scalar*I to shift all eigenvalues equally
                 corrected_inertia = corrected_inertia + np.eye(3, dtype=corrected_inertia.dtype) * adjustment
@@ -949,8 +1006,8 @@ def verify_and_correct_inertia(
                 )
 
     # Final check: ensure the corrected inertia matrix is positive definite
-    if has_violations and balance_inertia:
-        # Need to recompute after balancing since we modified the matrix
+    if was_corrected:
+        # Recompute from the actual tensor, including float32 rounding of shifts
         try:
             eigenvalues = np.linalg.eigvalsh(corrected_inertia)
         except np.linalg.LinAlgError:
@@ -968,9 +1025,11 @@ def verify_and_correct_inertia(
         min_eigenvalue = (
             np.min(eigenvalues[np.isfinite(eigenvalues)])
             if np.any(np.isfinite(eigenvalues))
-            else -_INERTIA_ABS_ADJUSTMENT
+            else -max(correction, absolute_tolerance)
         )
-        epsilon = abs(min_eigenvalue) + _INERTIA_ABS_ADJUSTMENT
+        epsilon = abs(min_eigenvalue) + max(
+            correction, absolute_tolerance, _FLOAT32_EPS * np.max(np.abs(corrected_inertia))
+        )
         corrected_inertia[0, 0] += epsilon
         corrected_inertia[1, 1] += epsilon
         corrected_inertia[2, 2] += epsilon
@@ -983,11 +1042,12 @@ def verify_and_correct_inertia(
 def validate_and_correct_inertia_kernel(
     body_mass: wp.array[wp.float32],
     body_inertia: wp.array[wp.mat33],
-    body_inv_mass: wp.array[wp.float32],
-    body_inv_inertia: wp.array[wp.mat33],
     balance_inertia: wp.bool,
     bound_mass: wp.float32,
     bound_inertia: wp.float32,
+    relative_tolerance: wp.float32,
+    absolute_tolerance: wp.float32,
+    correction: wp.float32,
     correction_count: wp.array[wp.int32],  # Output: atomic counter of corrected bodies
 ):
     """Warp kernel for parallel inertia validation and correction.
@@ -1066,7 +1126,7 @@ def validate_and_correct_inertia_kernel(
         inertia = sym
 
         # Use eigendecomposition for proper validation
-        _eigvecs, eigvals = wp.eig3(inertia)
+        _eigvecs, eigvals = _eig_inertia(inertia)
 
         # Sort eigenvalues to get principal moments (I1 <= I2 <= I3)
         I1, I2, I3 = eigvals[0], eigvals[1], eigvals[2]
@@ -1079,9 +1139,9 @@ def validate_and_correct_inertia_kernel(
 
         # Check for negative or near-zero eigenvalues (ensure positive-definite).
         # Use a relative threshold so lightweight components are not inflated.
-        eig_threshold = wp.max(1.0e-6 * I3, 1.0e-10)
+        eig_threshold = wp.max(relative_tolerance * I3, absolute_tolerance)
         if I1 < eig_threshold:
-            adjustment = eig_threshold - I1 + 1.0e-6
+            adjustment = eig_threshold - I1 + correction
             # Add scalar to all eigenvalues
             I1 += adjustment
             I2 += adjustment
@@ -1099,31 +1159,30 @@ def validate_and_correct_inertia_kernel(
             was_corrected = True
 
         # Check triangle inequality: I1 + I2 >= I3 (with tolerance)
-        tri_tol = wp.max(1.1920929e-7 * I3, 1.0e-10)  # float32 eps * I3
+        tri_tol = wp.max(_FLOAT32_EPS * I3, absolute_tolerance)
         if balance_inertia and (I1 + I2 < I3 - tri_tol):
             deficit = I3 - I1 - I2
-            adjustment = deficit + 1.0e-6
+            adjustment = deficit + correction
             # Add scalar*I to fix triangle inequality
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
             was_corrected = True
+
+        # A repair can round back to a singular tensor when the requested
+        # threshold/extra shift is small. Check the matrix after rounding and
+        # keep the final shift representable at the tensor's scale.
+        if was_corrected:
+            _eigvecs, eigvals = _eig_inertia(inertia)
+            min_eig = wp.min(eigvals[0], wp.min(eigvals[1], eigvals[2]))
+            if min_eig <= 0.0:
+                scale = wp.max(wp.abs(inertia[0, 0]), wp.max(wp.abs(inertia[1, 1]), wp.abs(inertia[2, 2])))
+                adjustment = wp.abs(min_eig) + wp.max(correction, wp.max(absolute_tolerance, _FLOAT32_EPS * scale))
+                inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
 
     output_inertia = inertia if was_corrected else original_inertia
 
     # Write back corrected values
     body_mass[tid] = mass
     body_inertia[tid] = output_inertia
-
-    # Update inverse mass
-    if mass > 0.0:
-        body_inv_mass[tid] = 1.0 / mass
-    else:
-        body_inv_mass[tid] = 0.0
-
-    # Update inverse inertia
-    if mass > 0.0:
-        body_inv_inertia[tid] = wp.inverse(output_inertia)
-    else:
-        body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     if was_corrected:
         wp.atomic_add(correction_count, 0, 1)

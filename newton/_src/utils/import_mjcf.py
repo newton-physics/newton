@@ -82,6 +82,42 @@ def _parse_actuator_parameters(value: str) -> vec10:
     return vec10(*values, *([0.0] * (10 - len(values))))
 
 
+def _load_mujoco_msh(filename: str) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Read vertices, faces, normals, and UVs from a MuJoCo binary mesh.
+
+    The file holds four int32 counts (vertices, normals, texture coordinates, faces) followed by
+    float32 vertex positions, normals, and texture coordinates, and int32 triangle indices.
+    """
+    data = np.fromfile(filename, dtype=np.uint8)
+    if data.size < 16:
+        raise ValueError(f"MuJoCo mesh file is too short: {filename}")
+    nvert, nnormal, ntexcoord, nface = (int(v) for v in data[:16].view(np.int32))
+    sizes = (3 * nvert * 4, 3 * nnormal * 4, 2 * ntexcoord * 4, 3 * nface * 4)
+    if (
+        nvert < 4
+        or nnormal not in (0, nvert)
+        or ntexcoord not in (0, nvert)
+        or nface < 0
+        or data.size != 16 + sum(sizes)
+    ):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
+    offset = 16
+    arrays = []
+    for size, dtype in zip(sizes, (np.float32, np.float32, np.float32, np.int32), strict=True):
+        arrays.append(data[offset : offset + size].view(dtype))
+        offset += size
+    vertices = arrays[0].reshape(-1, 3)
+    faces = arrays[3].reshape(-1, 3)
+    if np.any(faces < 0) or np.any(faces >= nvert):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
+    normals = arrays[1].reshape(-1, 3) if nnormal else None
+    texcoords = arrays[2].reshape(-1, 2) if ntexcoord else None
+    if texcoords is not None:
+        # MuJoCo uploads image rows unchanged; Newton viewers use bottom-origin UVs.
+        texcoords[:, 1] = 1.0 - texcoords[:, 1]
+    return vertices, faces if nface else None, normals, texcoords
+
+
 def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
     """Parse and validate an MJCF mesh reference pose."""
     try:
@@ -329,6 +365,14 @@ def parse_mjcf(
     Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
     (included in ``newton[sim]``) to resolve native defaults, and raises
     :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
+
+    Geom material defaults and RGBA are preserved. Meshes also retain base-color textures
+    (the ``texture`` attribute or ``rgb``/``rgba`` layers) and non-negative ``roughness``
+    and ``metallic`` values. Texture paths are retained for lazy loading by renderers.
+    RGB bindings take precedence over RGBA bindings, including inherited defaults.
+    MJCF textures default to a white tint. Without an MJCF color or base-color texture,
+    mesh-file appearance and primitive palette colors are retained for compatibility.
+    Other PBR texture layers are not imported.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -617,6 +661,16 @@ def parse_mjcf(
     class_children = {}
     class_defaults = {"__all__": {}}
 
+    def material_attrib(element: ET.Element) -> dict:
+        attrib = element.attrib.copy()
+        # Keep base-color roles separate until defaults have been resolved.
+        for layer in element.findall("layer"):
+            if layer.get("role") == "rgb":
+                attrib["texture"] = layer.get("texture")
+            elif layer.get("role") == "rgba":
+                attrib["texture_rgba"] = layer.get("texture")
+        return attrib
+
     def parse_default(node, parent):
         nonlocal class_parent
         nonlocal class_children
@@ -636,7 +690,9 @@ def parse_mjcf(
             if child.tag == "default":
                 parse_default(child, node.get("class"))
             else:
-                class_defaults[class_name][child.tag] = child.attrib
+                class_defaults[class_name][child.tag] = (
+                    material_attrib(child) if child.tag == "material" else child.attrib
+                )
 
     for default in root.findall("default"):
         parse_default(default, None)
@@ -683,7 +739,8 @@ def parse_mjcf(
         if ambient_defaults is None:
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
-        return merge_attrib(defaults.get(tag, {}), element.attrib, tag=tag)
+        attrib = material_attrib(element) if tag == "material" else element.attrib
+        return merge_attrib(defaults.get(tag, {}), attrib, tag=tag)
 
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
@@ -714,6 +771,7 @@ def parse_mjcf(
                 refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"MJCF mesh {name!r}")
                 mesh_assets[name] = {
                     "file": fname,
+                    "content_type": mesh_attrib.get("content_type"),
                     "scale": mesh_scale,
                     "refpos": refpos,
                     "refquat": refquat,
@@ -814,10 +872,19 @@ def parse_mjcf(
             mat_name = material.attrib.get("name")
             if not mat_name:
                 continue
+            mat_attrib = resolve_element_attrib(material, "material")
+            texture = mat_attrib.get("texture") or mat_attrib.get("texture_rgba")
+            # Default to a neutral tint only when MJCF supplies a base-color texture.
+            default_rgba = "1 1 1 1" if texture else None
             material_assets[mat_name] = {
-                "rgba": material.attrib.get("rgba"),
-                "texture": material.attrib.get("texture"),
+                "rgba": mat_attrib.get("rgba", default_rgba),
+                "texture": texture,
             }
+            for key in ("roughness", "metallic"):
+                value = float(mat_attrib.get(key, "-1"))
+                # Negative values mean unspecified in MJCF; keep mesh-file defaults.
+                if value >= 0.0:
+                    material_assets[mat_name][key] = value
         for hfield in asset.findall("hfield"):
             hfield_name = hfield.attrib.get("name")
             if not hfield_name:
@@ -877,7 +944,13 @@ def parse_mjcf(
         override_texture: str | None = None,
     ) -> list[Mesh]:
         mesh_asset = mesh_assets[mesh_name]
-        if "file" in mesh_asset:
+        mesh_file = mesh_asset.get("file")
+        content_type = mesh_asset.get("content_type")
+        if mesh_file and (
+            content_type == "model/vnd.mujoco.msh" or (not content_type and mesh_file.lower().endswith(".msh"))
+        ):
+            vertices, faces, normals, texcoords = _load_mujoco_msh(mesh_file)
+        elif mesh_file:
             refpos = mesh_asset["refpos"]
             refquat = mesh_asset["refquat"]
             has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
@@ -926,27 +999,31 @@ def parse_mjcf(
                     )
                 )
             return transformed_meshes
+        else:
+            vertices = mesh_asset["vertices"]
+            faces = mesh_asset["faces"]
+            normals = mesh_asset["normals"]
+            texcoords = mesh_asset["texcoords"]
 
         vertices, normals = _apply_mesh_ref_pose(
-            mesh_asset["vertices"], mesh_asset["normals"], mesh_asset["refpos"], mesh_asset["refquat"], scaling
+            vertices, normals, mesh_asset["refpos"], mesh_asset["refquat"], scaling
         )
-        faces = mesh_asset["faces"]
-        texcoords = mesh_asset["texcoords"]
 
         if faces is None:
             hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
-            source_index_by_vertex = {}
-            for index, vertex in enumerate(vertices):
-                source_index_by_vertex.setdefault(tuple(vertex), index)
-            source_indices = np.array(
-                [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
-                dtype=np.int32,
-            )
+            if normals is not None or texcoords is not None:
+                source_index_by_vertex = {}
+                for index, vertex in enumerate(vertices):
+                    source_index_by_vertex.setdefault(tuple(vertex), index)
+                source_indices = np.array(
+                    [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
+                    dtype=np.int32,
+                )
+                if normals is not None:
+                    normals = normals[source_indices]
+                if texcoords is not None:
+                    texcoords = texcoords[source_indices]
             vertices = hull_vertices
-            if normals is not None:
-                normals = normals[source_indices]
-            if texcoords is not None:
-                texcoords = texcoords[source_indices]
 
         return [
             Mesh(
@@ -1495,6 +1572,10 @@ def parse_mjcf(
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
                 for m_mesh in m_meshes:
+                    if "roughness" in material_info:
+                        m_mesh.roughness = material_info["roughness"]
+                    if "metallic" in material_info:
+                        m_mesh.metallic = material_info["metallic"]
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
                             logger.warning("mesh %s has a texture but no UVs; texture will be ignored.", mesh_label)

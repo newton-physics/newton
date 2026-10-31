@@ -9,6 +9,7 @@ import copy
 import ctypes
 import functools
 import gc
+import hashlib
 import logging
 import math
 import warnings
@@ -18,6 +19,7 @@ from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
@@ -28,6 +30,7 @@ from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import (
     pack_transforms,
     pack_warp_values,
+    quat_rotate_rows,
     store_transform_rows,
     transform_inverse,
     transform_inverse_rows,
@@ -63,12 +66,21 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import MeshProperties
-from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.inertia import (
+    _INERTIA_ABS_ADJUSTMENT,
+    _INERTIA_ABS_FLOOR,
+    _INERTIA_REL_TOL,
+    _inverse_inertia,
+    compute_body_inverses_kernel,
+    validate_and_correct_inertia_kernel,
+    verify_and_correct_inertia,
+)
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
-from ..geometry.types import Heightfield
+from ..geometry.types import Heightfield, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
@@ -457,6 +469,40 @@ def _build_joint_ancestor(
     return parent_joint
 
 
+def _build_fk_joint_order(
+    joint_parent: Sequence[int],
+    joint_child: Sequence[int],
+    joint_articulation: Sequence[int],
+    joint_ancestor: Sequence[int],
+    articulation_start: Sequence[int],
+    articulation_end: Sequence[int],
+) -> np.ndarray | None:
+    """Build a parent-first serial traversal, returning None for the identity order."""
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
+    joint_ancestors = np.asarray(joint_ancestor, dtype=np.int32)
+    joint_indices = np.arange(len(joint_articulations), dtype=np.int32)
+    unordered_articulations = np.unique(
+        joint_articulations[(joint_articulations >= 0) & (joint_ancestors > joint_indices)]
+    )
+    if not len(unordered_articulations):
+        return None
+
+    from ..utils import topological_sort  # noqa: PLC0415
+
+    fk_joint_order = joint_indices.copy()
+    for art_idx in unordered_articulations:
+        start, end = articulation_start[art_idx], articulation_end[art_idx]
+        joints = [(int(joint_parent[i]), int(joint_child[i])) for i in range(start, end)]
+        try:
+            order = topological_sort(joints, custom_indices=range(start, end), use_dfs=False)
+        except ValueError:
+            # Preserve the legacy order for non-tree articulations.
+            continue
+        if len(order) == end - start:
+            fk_joint_order[start:end] = order
+    return None if np.array_equal(fk_joint_order, joint_indices) else fk_joint_order
+
+
 def _build_fk_level_topology(
     articulation_count: int,
     joint_articulation: Sequence[int],
@@ -753,6 +799,10 @@ class ModelBuilder:
             Model.AttributeFrequency.ONCE,
             compaction_policy="passthrough",
         ),
+        "_deformable_visual_meshes": Model.AttributeSpec(
+            Model.AttributeFrequency.ONCE,
+            compaction_policy="passthrough",
+        ),
     }
 
     _BUILDER_GROUP_REFERENCES: ClassVar[dict[str, dict[str, Model.AttributeFrequency]]] = {
@@ -971,8 +1021,8 @@ class ModelBuilder:
         on the solver constructor for this field to take effect.
         :class:`~newton.solvers.SolverSteel` uses the arithmetic mean of the
         two shapes' coefficients, each clamped to ``[0, 1]`` (non-finite values
-        count as zero), for contacts whose incident normal speed exceeds its
-        ``restitution_velocity_threshold``.
+        count as zero), for contacts whose closing speed at the start of the step
+        exceeds its ``restitution_velocity_threshold``.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -1334,13 +1384,23 @@ class ModelBuilder:
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
 
-        references: str | None = None
+        references: Model.AttributeFrequency | str | None = None
         """For attributes containing entity indices, specifies how values are transformed during add_builder/add_world/replicate merging.
 
-        Built-in entity types (values are offset by entity count):
+        Use :class:`Model.AttributeFrequency` for a built-in reference domain, such as
+        ``Model.AttributeFrequency.CURVE``, or a string for a custom frequency.
+        Unlike :attr:`frequency`, which indexes the attribute's rows, this field
+        identifies what its stored integer values refer to.
+
+        Built-in string names are also supported (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
               ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
+
+        For experimental deformable object types, use ``Model.AttributeFrequency.CURVE``,
+        ``SURFACE``, or ``VOLUME``. The strings ``"curve"``, ``"surface"``, and ``"volume"``
+        refer to custom frequencies, regardless of registration order.
+        Registration preserves the supplied value of this field.
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -1496,6 +1556,14 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
+        def _values_with_defaults(self, count: int) -> dict[int, Any] | list[Any]:
+            """Return explicit values for existing rows without changing this declaration."""
+            if self.is_custom_frequency:
+                values = list(self.values or [])
+                values.extend([None] * max(0, count - len(values)))
+                return [self.default if value is None else value for value in values]
+            return {**dict.fromkeys(range(count), self.default), **(self.values or {})}
+
         def _build_default_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
         ) -> wp.array[Any] | list:
@@ -1548,8 +1616,8 @@ class ModelBuilder:
         Represents a custom frequency definition for the ModelBuilder.
 
         Custom frequencies allow defining entity types beyond the built-in ones (BODY, SHAPE, JOINT, etc.).
-        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before any custom attributes
-        using them can be added.
+        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before assigning them
+        to an attribute's :attr:`CustomAttribute.frequency` field.
 
         The optional ``usd_prim_filter`` callback enables automatic USD parsing for this frequency.
         When provided, :meth:`ModelBuilder.add_usd` will call this function for each prim in the USD
@@ -1792,6 +1860,22 @@ class ModelBuilder:
         all principal moments of inertia are at least this value. Set to None to disable inertia
         eigenvalue clamping. Default: None."""
 
+        self.inertia_relative_tolerance: float = _INERTIA_REL_TOL
+        """Non-negative relative eigenvalue tolerance (dimensionless).
+        A principal moment below ``max(inertia_relative_tolerance * largest_moment,
+        inertia_absolute_tolerance)`` triggers correction. Must be finite. Default: 1.0e-6."""
+
+        self.inertia_absolute_tolerance: float = _INERTIA_ABS_FLOOR
+        """Positive absolute floor for eigenvalue and triangle-inequality tolerances [kg*m^2].
+        Lower this to preserve physically valid small tensors. Must be finite and positive
+        in float32. Default: 1.0e-10."""
+
+        self.inertia_correction: float = _INERTIA_ABS_ADJUSTMENT
+        """Non-negative extra diagonal shift when repairing inertia [kg*m^2].
+        Added to the shift needed to meet the eigenvalue threshold or triangle inequality;
+        does not affect tensors that pass validation. Zero disables the extra shift, not
+        validation. Must be finite. Default: 1.0e-6."""
+
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
@@ -1993,6 +2077,8 @@ class ModelBuilder:
         """Tetrahedral activations accumulated for :attr:`Model.tet_activations`."""
         self.tet_materials: list[tuple[float, float, float]] = []
         """Tetrahedral material rows accumulated for :attr:`Model.tet_materials`."""
+
+        self._deformable_visual_meshes: list[dict] = []
 
         # muscles
         self.muscle_start: list[int] = []
@@ -2450,7 +2536,8 @@ class ModelBuilder:
             and existing.dtype == incoming.dtype
             and existing.assignment == incoming.assignment
             and existing.namespace == incoming.namespace
-            and existing.references == incoming.references
+            and Model._normalize_attribute_reference(existing.references)
+            == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
         )
 
@@ -2544,7 +2631,10 @@ class ModelBuilder:
 
     def _index_custom_world_reference_attribute(self, attribute: CustomAttribute) -> None:
         """Index a custom-frequency world reference for row insertion."""
-        if not attribute.is_custom_frequency or attribute.references != "world":
+        if (
+            not attribute.is_custom_frequency
+            or Model._normalize_attribute_reference(attribute.references) != Model.AttributeFrequency.WORLD
+        ):
             return
 
         freq_key = attribute.frequency
@@ -2571,7 +2661,8 @@ class ModelBuilder:
         """
         Register a custom frequency for the builder.
 
-        Custom frequencies must be registered before adding any custom attributes that use them.
+        Custom frequencies must be registered before assigning them to an attribute's
+        :attr:`CustomAttribute.frequency` field.
         This enables explicit declaration of custom entity types and optionally provides USD
         parsing support via the ``usd_prim_filter`` callback.
 
@@ -2720,7 +2811,10 @@ class ModelBuilder:
                     )
                 if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
                     raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
-                if owner_attribute.references != "articulation":
+                if (
+                    Model._normalize_attribute_reference(owner_attribute.references)
+                    != Model.AttributeFrequency.ARTICULATION
+                ):
                     raise ValueError(
                         f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
                     )
@@ -3737,6 +3831,36 @@ class ModelBuilder:
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
 
+        # Snapshot for self-composition; copied bindings use destination element IDs.
+        visual_specs = tuple(builder._deformable_visual_meshes)
+        visual_parent_kinds = {
+            DeformableVisualMesh.Kind.PARTICLE: "particle",
+            DeformableVisualMesh.Kind.TRIANGLE: "triangle",
+            DeformableVisualMesh.Kind.TETRAHEDRON: "tetrahedron",
+            DeformableVisualMesh.Kind.BODY: "body",
+        }
+        if visual_specs:
+            for copy_index in range(copy_count):
+                for spec in visual_specs:
+                    merged = dict(spec)
+                    prefix = label_prefixes[copy_index]
+                    if prefix and spec["label"]:
+                        merged["label"] = prefix + "/" + spec["label"]
+                    parents = np.asarray(spec["parent"], dtype=np.int32)
+                    parent_start = int(starts(visual_parent_kinds[spec["kind"]])[copy_index])
+                    merged["parent"] = np.where(parents >= 0, parents + parent_start, parents)
+                    if "_body_worlds" in spec:
+                        merged["_body_worlds"] = np.full(len(parents), worlds[copy_index], dtype=np.int32)
+                    if spec["kind"] == DeformableVisualMesh.Kind.BODY and np.any(parents < 0):
+                        # World-fixed vertices need the same placement as static shapes.
+                        local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
+                        if xforms[copy_index] is not None:
+                            xform = np.asarray(xforms[copy_index], dtype=np.float32)
+                            fixed = parents < 0
+                            local[fixed] = quat_rotate_rows(xform[3:], local[fixed]) + xform[:3]
+                        merged["local_offsets"] = local
+                    self._deformable_visual_meshes.append(merged)
+
         def extend_referenced(attr: str, dst: list | np.ndarray, values: Sequence[Any], kind: str) -> None:
             if len(values) == 0:
                 return
@@ -3986,9 +4110,12 @@ class ModelBuilder:
         self.joint_coord_count += copy_count * counts["joint_coord"]
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
+        custom_attributes = self._prepare_builder_custom_attributes(builder)
         for copy_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
-            self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[copy_index])
+            self._merge_builder_custom_attributes(
+                builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
+            )
             self._merge_builder_actuators(
                 builder,
                 int(joint_dof_starts[copy_index]),
@@ -4012,6 +4139,8 @@ class ModelBuilder:
                 counts[key] = count
             elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                 counts[key] = len(builder.constraint_mimic_joint0)
+            elif key in cls._BUILDER_GROUP_REFERENCES:
+                counts[key] = len(getattr(builder, f"{key}_label"))
         return counts
 
     @staticmethod
@@ -4057,7 +4186,7 @@ class ModelBuilder:
                 specs[name] = Model.AttributeSpec(
                     group,
                     references=reference,
-                    compaction_policy="start" if suffix.endswith("_start") else "end",
+                    compaction_policy="range_start" if suffix.endswith("_start") else "end",
                 )
                 declared_builder_attributes.add(name)
 
@@ -4110,7 +4239,9 @@ class ModelBuilder:
         if validated.get(builder) == cache_key:
             return
 
-        valid_references = entity_kinds | set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        custom_references = set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        valid_references = entity_kinds | custom_references
+        references_resolved = True
 
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
@@ -4130,11 +4261,23 @@ class ModelBuilder:
                         f"existing={merged.default}, incoming={attr.default}"
                     )
 
-            if attr.values and attr.references not in (None, "world") and attr.references not in valid_references:
-                raise ValueError(
-                    f"Unknown references value '{attr.references}'. "
-                    f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+            reference = Model._normalize_attribute_reference(attr.references)
+            reference_key = None if reference is None else self._builder_frequency_key(reference)
+            reference_domains = entity_kinds if isinstance(reference, Model.AttributeFrequency) else custom_references
+            if reference_key not in (None, "world") and reference_key not in reference_domains:
+                unused_custom_reference = (
+                    isinstance(reference, str)
+                    and isinstance(attr.frequency, str)
+                    and not attr.values
+                    and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
                 )
+                if unused_custom_reference:
+                    references_resolved = False
+                else:
+                    raise ValueError(
+                        f"Unknown references value '{attr.references}'. "
+                        f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+                    )
 
             if (
                 attr.values
@@ -4160,7 +4303,10 @@ class ModelBuilder:
                     f"({existing!r} != {finalizer!r})."
                 )
 
-        validated[builder] = cache_key
+        # Adding rows does not change the schema epoch. Recheck deferred references
+        # on the next merge so default-only rows cannot bypass validation.
+        if references_resolved:
+            validated[builder] = cache_key
 
     def add_articulation(
         self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
@@ -4627,6 +4773,7 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+                Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
             load_static_visual_shapes: If True, supported visual-only geometry outside
                 rigid-body hierarchies is loaded as static shapes when
                 ``load_visual_shapes`` is also True. Default is True.
@@ -4665,7 +4812,7 @@ class ModelBuilder:
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
             return_deformable_results: If True, include the experimental deformable entries in the
-                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
             allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
@@ -4755,6 +4902,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+                * - ``"path_deformable_visual_map"``
+                  - Mapping from graphics Mesh prim path (str) to its index in :attr:`Model.deformable_visual_meshes`. Includes only successfully imported visual meshes. Present only with ``return_deformable_results=True``. The indices describe this import, not copies created by later builder composition or replication.
                 * - ``"path_cable_attrs"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_attrs"``
@@ -4870,6 +5019,14 @@ class ModelBuilder:
         Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
         (included in ``newton[sim]``) to resolve native defaults, and raises
         :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
+
+        Geom material defaults and RGBA are preserved. Meshes also retain base-color textures
+        (the ``texture`` attribute or ``rgb``/``rgba`` layers) and non-negative ``roughness``
+        and ``metallic`` values. Texture paths are retained for lazy loading by renderers.
+        RGB bindings take precedence over RGBA bindings, including inherited defaults.
+        MJCF textures default to a white tint. Without an MJCF color or base-color texture,
+        mesh-file appearance and primitive palette colors are retained for compatibility.
+        Other PBR texture layers are not imported.
 
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -5179,17 +5336,43 @@ class ModelBuilder:
 
     # endregion
 
+    def _prepare_builder_custom_attributes(self, builder: ModelBuilder) -> dict[str, ModelBuilder.CustomAttribute]:
+        # Resolve source rows before deciding which attributes need per-copy work.
+        builder._resolve_custom_frequency_articulation_owners()
+        attributes = {}
+        for full_key, attr in builder.custom_attributes.items():
+            # Empty declarations are shared by all copies. Reference defaults on
+            # frequencies with rows still need per-copy remapping.
+            if not attr.values:
+                can_skip_remapping = attr.references is None
+                if not can_skip_remapping:
+                    has_empty_custom_frequency = (
+                        isinstance(attr.frequency, str) and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
+                    )
+                    can_skip_remapping = (
+                        has_empty_custom_frequency and attr.reference_value_transformer is None
+                    ) or attr.references in (Model.AttributeFrequency.WORLD, "world")
+                if can_skip_remapping:
+                    if full_key not in self.custom_attributes:
+                        mapped_values = [] if isinstance(attr.frequency, str) else {}
+                        merged = replace(attr, values=mapped_values)
+                        self.custom_attributes[full_key] = merged
+                        self._custom_schema_epoch += 1
+                        self._index_custom_world_reference_attribute(merged)
+                    continue
+            attributes[full_key] = attr
+        return attributes
+
     def _merge_builder_custom_attributes(
         self,
         builder: ModelBuilder,
         entity_offsets: dict[str, int],
         world: int,
         label_prefix: str | None,
+        attributes: dict[str, ModelBuilder.CustomAttribute],
     ) -> None:
-        # Resolve source rows before ordinary reference remapping copies them.
-        # Resolve existing destination rows too, since its topology may have
+        # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
-        builder._resolve_custom_frequency_articulation_owners()
         self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
@@ -5216,11 +5399,11 @@ class ModelBuilder:
                 if source_domain >= 0:
                     collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
 
-        def get_offset(entity_or_key: str | None) -> int:
+        def get_offset(entity_or_key: Model.AttributeFrequency | str | None) -> int:
             if entity_or_key is None:
                 return 0
-            if entity_or_key in entity_offsets:
-                return entity_offsets[entity_or_key]
+            if isinstance(entity_or_key, Model.AttributeFrequency):
+                return entity_offsets[entity_or_key.name.lower()]
             if entity_or_key in custom_frequency_offsets:
                 return custom_frequency_offsets[entity_or_key]
             if entity_or_key in builder._custom_frequency_counts:
@@ -5230,16 +5413,11 @@ class ModelBuilder:
                 f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
             )
 
-        for full_key, attr in builder.custom_attributes.items():
-            if not attr.values:
-                if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency
-                    mapped_values = [] if isinstance(freq_key, str) else {}
-                    merged = replace(attr, values=mapped_values)
-                    self.custom_attributes[full_key] = merged
-                    self._custom_schema_epoch += 1
-                    self._index_custom_world_reference_attribute(merged)
-                continue
+        source_counts = None
+        for full_key, attr in attributes.items():
+            reference = attr.references
+            if isinstance(reference, str):
+                reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
             if isinstance(freq_key, str):
@@ -5249,10 +5427,10 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.WORLD:
                 index_offset = 0 if world == -1 else world
             else:
-                index_offset = get_offset(attr.frequency.name.lower())
+                index_offset = get_offset(attr.frequency)
 
-            use_current_world = attr.references == "world"
-            value_offset = 0 if use_current_world else get_offset(attr.references)
+            use_current_world = reference == Model.AttributeFrequency.WORLD
+            value_offset = 0 if use_current_world else get_offset(reference)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             source_values = attr.values
@@ -5331,12 +5509,20 @@ class ModelBuilder:
                     if offset == 0:
                         return value
                     if self._is_integer_scalar(value):
-                        return value + offset if value >= 0 else value
+                        index = int(value)
+                        return index + offset if index >= 0 else value
                     if isinstance(value, (list, tuple)):
                         transformed = [
                             item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
                         ]
                         return type(value)(transformed)
+                    value_type = type(value)
+                    if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                        return value_type(*(item + offset if item >= 0 else item for item in value))
+                    if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                        transformed = value.copy()
+                        transformed[value >= 0] += offset
+                        return transformed
                     try:
                         return value + offset
                     except TypeError:
@@ -5353,6 +5539,26 @@ class ModelBuilder:
                     if is_collision_mask_domain:
                         return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
+
+                if value_offset and not self._custom_attribute_defaults_match(
+                    transform_value(attr.default), attr.default
+                ):
+                    # Different copies need different reference values, not a shared shifted default.
+                    if freq_key == Model.AttributeFrequency.ONCE:
+                        # Implicit source defaults must not replace an existing global value.
+                        count = int(full_key not in self.custom_attributes)
+                    elif freq_key == Model.AttributeFrequency.WORLD:
+                        # Each copy uses one destination world, or none for global entities.
+                        count = int(world >= 0)
+                    else:
+                        if source_counts is None:
+                            source_counts = self._builder_merge_counts(builder)
+                        count = (
+                            builder._custom_frequency_counts.get(freq_key, 0)
+                            if isinstance(freq_key, str)
+                            else source_counts.get(self._builder_frequency_key(freq_key), 0)
+                        )
+                    source_values = attr._values_with_defaults(count)
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
@@ -5629,7 +5835,7 @@ class ModelBuilder:
             self.body_inv_mass.append(0.0)
 
         if any(x for x in inertia):
-            self.body_inv_inertia.append(wp.inverse(inertia))
+            self.body_inv_inertia.append(_inverse_inertia(inertia))
         else:
             self.body_inv_inertia.append(inertia)
 
@@ -7321,12 +7527,15 @@ class ModelBuilder:
 
         Note:
             Deformable labels do not change which fixed joints are collapsed. A curve's
-            record is retained only if all of its segment bodies and joints survive.
-            Otherwise the incomplete record is omitted with a warning. Pass the relevant
-            fixed joint through ``joints_to_keep`` to preserve the complete curve.
+            record describes its surviving segment bodies and joints. It is omitted with
+            a warning only when no segment bodies remain. Pass the relevant fixed joints
+            through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
         """
         joints_to_keep = set(joints_to_keep or ())
+
+        original_counts = self._builder_merge_counts(self)
+        original_counts.update(once=1, world=max(1, self.world_count))
 
         body_data = {}
         body_children = {-1: []}
@@ -7721,7 +7930,7 @@ class ModelBuilder:
                 # recompute inverse mass and inertia
                 if m > 0.0:
                     self.body_inv_mass.append(1.0 / m)
-                    self.body_inv_inertia.append(wp.inverse(inertia))
+                    self.body_inv_inertia.append(_inverse_inertia(inertia))
                 else:
                     self.body_inv_mass.append(0.0)
                     self.body_inv_inertia.append(wp.mat33(0.0))
@@ -7735,6 +7944,26 @@ class ModelBuilder:
             else:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
+
+        for spec in self._deformable_visual_meshes:
+            if spec["kind"] != DeformableVisualMesh.Kind.BODY:
+                continue
+            parents = np.asarray(spec["parent"], dtype=np.int32)
+            if "_body_worlds" not in spec:
+                spec["_body_worlds"] = np.asarray(original_body_group, dtype=np.int32)[parents]
+            local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
+            remapped = parents.copy()
+            for parent in np.unique(parents):
+                selected = parents == parent
+                survivor = parent
+                if parent in body_merged_parent:
+                    # The merge transform maps the removed body's local frame to its survivor.
+                    xform = np.asarray(body_merged_transform[parent], dtype=np.float32)
+                    local[selected] = quat_rotate_rows(xform[3:], local[selected]) + xform[:3]
+                    survivor = body_merged_parent[parent]
+                remapped[selected] = body_remap[survivor]
+            spec["parent"] = remapped
+            spec["local_offsets"] = local
 
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
@@ -7786,33 +8015,29 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Rebuild deformable curve ranges after reindexing. Retain a deformable object record only when
-        # every one of its simulation bodies and joints survived collapse; exposing a partial
-        # range would misrepresent the original curve topology.
+        # Records describe the surviving simulation bodies, not the original segments.
+        # Retained bodies and joints preserve their order, so each range stays contiguous.
         curve_records = []
-        incomplete_curve_labels = []
-        for label, world, body_start, body_end, joint_start, joint_end in zip(
-            self.curve_label,
-            self.curve_world,
-            self._curve_body_start,
-            self._curve_body_end,
-            self._curve_joint_start,
-            self._curve_joint_end,
-            strict=True,
+        curve_remap = {}
+        removed_curve_labels = []
+        for curve_index, (label, world, body_start, body_end, joint_start, joint_end) in enumerate(
+            zip(
+                self.curve_label,
+                self.curve_world,
+                self._curve_body_start,
+                self._curve_body_end,
+                self._curve_joint_start,
+                self._curve_joint_end,
+                strict=True,
+            )
         ):
             old_bodies = list(range(body_start, body_end))
             old_joints = list(range(joint_start, joint_end))
             new_bodies = [body_remap[body] for body in old_bodies if body in body_remap]
             new_joints = [joint_remap[joint] for joint in old_joints if joint in joint_remap]
 
-            bodies_complete = len(new_bodies) == len(old_bodies) and all(
-                body == new_bodies[0] + offset for offset, body in enumerate(new_bodies)
-            )
-            joints_complete = len(new_joints) == len(old_joints) and (
-                not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
-            )
-            if not old_bodies or not bodies_complete or not joints_complete:
-                incomplete_curve_labels.append(label)
+            if not new_bodies:
+                removed_curve_labels.append(label)
                 continue
 
             if new_joints:
@@ -7824,6 +8049,7 @@ class ModelBuilder:
                 new_boundary = bisect_left(retained_joints, joint_start, key=lambda joint: joint["original_id"])
                 remapped_joint_range = (new_boundary, new_boundary)
 
+            curve_remap[curve_index] = len(curve_records)
             curve_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
 
         self.curve_label = [record[0] for record in curve_records]
@@ -7833,39 +8059,73 @@ class ModelBuilder:
         self._curve_joint_start = [record[4] for record in curve_records]
         self._curve_joint_end = [record[5] for record in curve_records]
 
-        def remap_articulation_reference(value: Any) -> Any:
+        def remap_object_reference(value: Any, remap: dict[int, int]) -> Any:
             if isinstance(value, bool):
                 return value
             if isinstance(value, list):
-                return [remap_articulation_reference(v) for v in value]
+                return [remap_object_reference(v, remap) for v in value]
             if isinstance(value, tuple):
-                return tuple(remap_articulation_reference(v) for v in value)
+                return tuple(remap_object_reference(v, remap) for v in value)
+            if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                transformed = value.copy()
+                for index in np.ndindex(value.shape):
+                    transformed[index] = remap_object_reference(value[index], remap)
+                return transformed
+            value_type = type(value)
+            if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                return value_type(*(remap_object_reference(v, remap) for v in value))
             # Covers Python int as well as Warp scalar integer types (wp.int32 etc.),
             # whose default `dtype(0)` instances are not Python ints.
             try:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            return articulation_remap.get(idx, -1) if idx >= 0 else value
+            return remap.get(idx, -1) if idx >= 0 else value
 
-        # ARTICULATION-frequency attributes use dict storage by construction
+        object_remaps = {
+            Model.AttributeFrequency.ARTICULATION: articulation_remap,
+            Model.AttributeFrequency.CURVE: curve_remap,
+        }
+        for custom_attr in self.custom_attributes.values():
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
+            if remap is None or self._custom_attribute_defaults_match(
+                remap_object_reference(custom_attr.default, remap), custom_attr.default
+            ):
+                continue
+            # Fill old rows before their indices change; leave defaults for future rows alone.
+            frequency = custom_attr.frequency
+            count = (
+                self._custom_frequency_counts.get(frequency, 0)
+                if isinstance(frequency, str)
+                else original_counts.get(self._builder_frequency_key(frequency), 0)
+            )
+            custom_attr.values = custom_attr._values_with_defaults(count)
+
+        # Built-in frequency attributes use dict storage by construction
         # (see CustomAttribute._create_empty_values_container).
-        for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
-            custom_attr.values = {
-                new_idx: custom_attr.values[old_idx]
-                for old_idx, new_idx in articulation_remap.items()
-                if old_idx in custom_attr.values
-            }
+        for frequency, remap in (
+            (Model.AttributeFrequency.BODY, body_remap),
+            (Model.AttributeFrequency.JOINT, joint_remap),
+            (Model.AttributeFrequency.ARTICULATION, articulation_remap),
+            (Model.AttributeFrequency.CURVE, curve_remap),
+        ):
+            for custom_attr in self.get_custom_attributes_by_frequency([frequency]):
+                custom_attr.values = {
+                    new_idx: custom_attr.values[old_idx]
+                    for old_idx, new_idx in remap.items()
+                    if old_idx in custom_attr.values
+                }
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references != "articulation" or custom_attr.values is None:
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
+            if remap is None or custom_attr.values is None:
                 continue
             if isinstance(custom_attr.values, dict):
                 custom_attr.values = {
-                    entity_idx: remap_articulation_reference(value) for entity_idx, value in custom_attr.values.items()
+                    entity_idx: remap_object_reference(value, remap) for entity_idx, value in custom_attr.values.items()
                 }
             else:
-                custom_attr.values = [remap_articulation_reference(value) for value in custom_attr.values]
+                custom_attr.values = [remap_object_reference(value, remap) for value in custom_attr.values]
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
@@ -8160,9 +8420,10 @@ class ModelBuilder:
             return joint_remap.get(idx, -1)
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references == "body":
+            reference = Model._normalize_attribute_reference(custom_attr.references)
+            if reference == Model.AttributeFrequency.BODY:
                 remap_reference = _remap_body_reference
-            elif custom_attr.references == "joint":
+            elif reference == Model.AttributeFrequency.JOINT:
                 remap_reference = _remap_joint_reference
             else:
                 continue
@@ -8188,10 +8449,10 @@ class ModelBuilder:
                 self.joint_children[p].append((c, i))
 
         # Warning filters may raise, so finish rebuilding all references before emitting these.
-        for label in incomplete_curve_labels:
+        for label in removed_curve_labels:
             warnings.warn(
-                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
-                "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because all "
+                "of its segment bodies were removed; pass the relevant fixed joint through "
                 "joints_to_keep to preserve the complete deformable object.",
                 NewtonWarning,
                 stacklevel=2,
@@ -11315,7 +11576,7 @@ class ModelBuilder:
             pos: The position of the cloth in world space
             rot: The orientation of the cloth in world space
             vel: The velocity of the cloth in world space
-            dim_x_: The number of rectangular cells along the x-axis
+            dim_x: The number of rectangular cells along the x-axis
             dim_y: The number of rectangular cells along the y-axis
             cell_x: The width of each cell in the x-direction
             cell_y: The width of each cell in the y-direction
@@ -11722,7 +11983,7 @@ class ModelBuilder:
             pos: The position of the solid in world space
             rot: The orientation of the solid in world space
             vel: The velocity of the solid in world space
-            dim_x_: The number of rectangular cells along the x-axis
+            dim_x: The number of rectangular cells along the x-axis
             dim_y: The number of rectangular cells along the y-axis
             dim_z: The number of rectangular cells along the z-axis
             cell_x: The width of each cell in the x-direction
@@ -12129,7 +12390,7 @@ class ModelBuilder:
             self.body_inv_mass[i] = 0.0
 
         if any(x for x in new_inertia):
-            self.body_inv_inertia[i] = wp.inverse(new_inertia)
+            self.body_inv_inertia[i] = _inverse_inertia(new_inertia)
         else:
             self.body_inv_inertia[i] = new_inertia
 
@@ -13613,6 +13874,545 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
+    def add_deformable_visual_mesh(
+        self,
+        vertices: list[Vec3] | np.ndarray,
+        indices: list[int] | np.ndarray,
+        *,
+        kind: DeformableVisualMesh.Kind | str,
+        parent: list[int] | np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        tri_range: tuple[int, int] | None = None,
+        tet_range: tuple[int, int] | None = None,
+        surface: int | None = None,
+        volume: int | None = None,
+        curve: int | None = None,
+        bodies: list[int] | np.ndarray | None = None,
+        uvs: list[Vec2] | np.ndarray | None = None,
+        texture: np.ndarray | str | PathLike[str] | None = None,
+        label: str | None = None,
+    ) -> int:
+        """Store a visual triangle mesh bound to particles, triangles, tetrahedra, or rigid bodies.
+
+        Each visual vertex follows the element selected by ``parent``;
+        ``vertices`` only records the bind pose. Triangle and tetrahedron
+        bindings take the owning elements, named either by a recorded surface
+        or volume deformable object or by a raw ``tri_range``/``tet_range``,
+        and barycentric ``weights`` that must be finite, nonnegative, and sum
+        to one (accepted roundoff is normalized). Omit both ``parent`` and
+        ``weights`` for automatic binding: a triangle binding projects each
+        vertex onto the nearest non-degenerate owning triangle without keeping
+        the normal offset, and a tetrahedron binding finds the containing
+        non-degenerate owning tetrahedron, clamping an outside vertex into the
+        one with the nearest centroid and logging the count. Body bindings
+        follow one rigid body per vertex, named through ``parent`` or found by
+        nearest center of mass among ``bodies`` or a recorded curve object's
+        bodies; the bind pose is kept as body-local offsets, so separate body
+        bindings can show seams. Geometry adds no mass or collision. After
+        finalization, evaluate it with
+        :class:`~newton.geometry.DeformableVisuals`.
+
+        Args:
+            vertices: Bind-pose visual positions [m], shape [vertex_count, 3].
+            indices: Flattened triangle indices into ``vertices``.
+            kind: Particle, triangle, tetrahedron or body binding, as
+                :class:`~newton.geometry.DeformableVisualMesh.Kind` or its lowercase name.
+            parent: One global simulation element index per visual vertex, inside
+                the owning elements for triangle and tetrahedron bindings. Omit it
+                together with ``weights`` for automatic triangle or tetrahedron
+                binding. Body bindings take this, ``bodies`` or ``curve``.
+            weights: Three or four barycentric weights per vertex, for triangles
+                or tetrahedra respectively; not accepted for particle bindings.
+            tri_range: Owning [start, end) triangle range for triangle bindings
+                built without a deformable object record.
+            tet_range: Owning [start, end) tetrahedron range for tetrahedron
+                bindings built without a deformable object record.
+            surface: Index of a recorded surface deformable object (its position in
+                :attr:`surface_label`) whose triangles own a triangle binding.
+            volume: Index of a recorded volume deformable object (its position in
+                :attr:`volume_label`) whose tetrahedra own a tetrahedron binding.
+            curve: Index of a recorded curve deformable object (its position in
+                :attr:`curve_label`) whose rigid bodies are the candidates of a
+                nearest-body binding.
+            bodies: Candidate rigid bodies, such as rod segments, for a
+                nearest-center-of-mass binding; equal distances use candidate order.
+            uvs: Per-vertex texture coordinates, shape [vertex_count, 2].
+            texture: Albedo image as an array of shape (H, W, 3) or (H, W, 4), or an
+                image path that the viewer decodes. Requires uvs.
+            label: Display label, which need not be unique.
+
+        Returns:
+            Index in :attr:`Model.deformable_visual_meshes`.
+
+        Raises:
+            ValueError: If the geometry, kind, owning elements or bodies, parent
+                indices, or weights are invalid.
+
+        .. experimental::
+        """
+        return self._add_deformable_visual_mesh(
+            vertices,
+            indices,
+            kind=kind,
+            parent=parent,
+            weights=weights,
+            tri_range=tri_range,
+            tet_range=tet_range,
+            surface=surface,
+            volume=volume,
+            curve=curve,
+            bodies=bodies,
+            uvs=uvs,
+            texture=texture,
+            label=label,
+        )
+
+    def _add_deformable_visual_mesh(
+        self,
+        vertices,
+        indices,
+        *,
+        kind,
+        parent=None,
+        weights=None,
+        tri_range=None,
+        tet_range=None,
+        surface=None,
+        volume=None,
+        curve=None,
+        bodies=None,
+        uvs=None,
+        texture=None,
+        label=None,
+        body_poses=None,
+    ) -> int:
+        """Share validation and storage with importers that supply body bind poses."""
+        vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        indices = Mesh._normalize_indices(indices)
+        vertex_count = len(vertices)
+        if vertex_count == 0 or len(indices) == 0:
+            raise ValueError("add_deformable_visual_mesh: requires non-empty vertices and indices")
+        if not np.all(np.isfinite(vertices)):
+            raise ValueError("add_deformable_visual_mesh: vertices must be finite")
+        Mesh._validate_indices(vertices, indices)
+        if uvs is not None:
+            uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2)
+            if len(uvs) != vertex_count or not np.all(np.isfinite(uvs)):
+                raise ValueError("add_deformable_visual_mesh: uvs must be finite and match the visual vertices")
+        if texture is not None and uvs is None:
+            raise ValueError("add_deformable_visual_mesh: texture requires uvs")
+        texture = _normalize_texture_input(texture)
+        if isinstance(texture, np.ndarray) and (
+            texture.ndim != 3 or texture.shape[2] not in (3, 4) or texture.size == 0
+        ):
+            raise ValueError("add_deformable_visual_mesh: texture arrays must have shape (H, W, 3) or (H, W, 4)")
+        kind = self._resolve_deformable_visual_kind(kind)
+        local_offsets = None
+        if kind == DeformableVisualMesh.Kind.BODY:
+            if any(option is not None for option in (weights, tri_range, tet_range, surface, volume)):
+                raise ValueError(
+                    "add_deformable_visual_mesh: weights, ranges, surface and volume do not apply to body bindings"
+                )
+            candidates = self._resolve_visual_body_candidates(parent, bodies, curve)
+            if parent is not None:
+                parent = self._validate_visual_parent(parent, vertex_count, self.body_count, "bodies")
+                parent, local_offsets = self._bind_visual_vertices_to_bodies(vertices, parent, poses=body_poses)
+            else:
+                parent, local_offsets = self._bind_visual_vertices_to_bodies(
+                    vertices, candidates, nearest=True, poses=body_poses
+                )
+        else:
+            if bodies is not None or curve is not None:
+                raise ValueError("add_deformable_visual_mesh: bodies and curve only apply to body bindings")
+            if kind == DeformableVisualMesh.Kind.PARTICLE:
+                if any(option is not None for option in (weights, tri_range, tet_range, surface, volume)):
+                    raise ValueError(
+                        "add_deformable_visual_mesh: weights, ranges and objects do not apply to particle bindings"
+                    )
+                if parent is None:
+                    raise ValueError("add_deformable_visual_mesh: particle bindings require parent")
+                parent = self._validate_visual_parent(parent, vertex_count, self.particle_count, "particles")
+            else:
+                triangle = kind == DeformableVisualMesh.Kind.TRIANGLE
+                owning_range = self._resolve_visual_owning_range(triangle, tri_range, tet_range, surface, volume)
+                if parent is None and weights is None:
+                    if triangle:
+                        parent, weights = self._embed_visual_vertices_in_triangles(vertices, owning_range)
+                    else:
+                        parent, weights = self._embed_visual_vertices_in_tets(vertices, owning_range)
+                elif parent is None or weights is None:
+                    raise ValueError("add_deformable_visual_mesh: parent and weights must be passed together")
+                parent, weights = self._validate_visual_embedding(
+                    parent, weights, vertex_count, owning_range, 3 if triangle else 4
+                )
+        self._deformable_visual_meshes.append(
+            {
+                "kind": kind,
+                "rest_vertices": vertices,
+                "indices": indices,
+                "parent": parent,
+                "weights": weights,
+                "local_offsets": local_offsets,
+                "label": label or "",
+                "uvs": uvs,
+                "texture": texture,
+            }
+        )
+        return len(self._deformable_visual_meshes) - 1
+
+    @staticmethod
+    def _validate_visual_parent(parent, point_count: int, element_count: int, elements: str) -> np.ndarray:
+        """Check a per-vertex driver index array against the builder's element count."""
+        drivers = Mesh._normalize_indices(parent)
+        if len(drivers) != point_count:
+            raise ValueError("add_deformable_visual_mesh: parent must have one index per visual point")
+        if int(drivers.min()) < 0 or int(drivers.max()) >= element_count:
+            raise ValueError(f"add_deformable_visual_mesh: parent references {elements} outside the current builder")
+        return drivers
+
+    @staticmethod
+    def _resolve_deformable_visual_kind(kind: DeformableVisualMesh.Kind | str) -> DeformableVisualMesh.Kind:
+        """Resolve the binding kind from its enum or name."""
+        if isinstance(kind, str):
+            try:
+                kind = DeformableVisualMesh.Kind[kind.upper()]
+            except KeyError:
+                names = ", ".join(item.name.lower() for item in DeformableVisualMesh.Kind)
+                raise ValueError(
+                    f"add_deformable_visual_mesh: unknown kind {kind!r}; expected one of {names}"
+                ) from None
+        return DeformableVisualMesh.Kind(kind)
+
+    def _resolve_visual_owning_range(
+        self,
+        triangle: bool,
+        tri_range: tuple[int, int] | None,
+        tet_range: tuple[int, int] | None,
+        surface: int | None,
+        volume: int | None,
+    ) -> tuple[int, int]:
+        """Return the owning element range from a raw range or a recorded deformable object."""
+        if triangle:
+            raw, obj, others = tri_range, surface, (tet_range, volume)
+            raw_name, obj_name, count = "tri_range", "surface", self.tri_count
+            labels, starts, ends = self.surface_label, self._surface_tri_start, self._surface_tri_end
+        else:
+            raw, obj, others = tet_range, volume, (tri_range, surface)
+            raw_name, obj_name, count = "tet_range", "volume", self.tet_count
+            labels, starts, ends = self.volume_label, self._volume_tet_start, self._volume_tet_end
+        if any(option is not None for option in others):
+            raise ValueError(f"add_deformable_visual_mesh: only {raw_name} or {obj_name} applies to this binding kind")
+        if (raw is None) == (obj is None):
+            raise ValueError(f"add_deformable_visual_mesh: pass exactly one of {raw_name} or {obj_name}")
+        if obj is not None:
+            index = int(obj)
+            if index < 0 or index >= len(labels):
+                raise ValueError(
+                    f"add_deformable_visual_mesh: {obj_name} {index} is not one of the {len(labels)} recorded objects"
+                )
+            raw = (starts[index], ends[index])
+        return self._validate_visual_range(raw, count, raw_name if obj is None else obj_name)
+
+    def _validate_visual_range(self, rng: tuple[int, int], count: int, name: str) -> tuple[int, int]:
+        """Validate a [start, end) owning-element range against a builder count."""
+        lo, hi = map(int, Mesh._normalize_indices(rng))
+        if not (0 <= lo < hi <= count):
+            raise ValueError(
+                f"add_deformable_visual_mesh: {name} [{lo}, {hi}) is not a valid non-empty range within the current {count} elements"
+            )
+        return lo, hi
+
+    @staticmethod
+    def _validate_visual_embedding(
+        parent,
+        weights,
+        point_count: int,
+        owning_range: tuple[int, int],
+        arity: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Validate precomputed per-vertex parents and barycentric weights."""
+        parent = Mesh._normalize_indices(parent)
+        weights = np.array(weights, dtype=np.float32)
+        if len(parent) != point_count:
+            raise ValueError("add_deformable_visual_mesh: parent must have one index per visual point")
+        if weights.shape != (point_count, arity):
+            raise ValueError(f"add_deformable_visual_mesh: weights must have shape ({point_count}, {arity})")
+        lo, hi = owning_range
+        if int(parent.min()) < lo or int(parent.max()) >= hi:
+            raise ValueError(
+                f"add_deformable_visual_mesh: parent indices must lie within the owning range [{lo}, {hi})"
+            )
+        if not np.all(np.isfinite(weights)) or np.any(weights < -1.0e-4):
+            raise ValueError("add_deformable_visual_mesh: weights must be finite and non-negative")
+        if not np.allclose(weights.sum(axis=1), 1.0, rtol=0.0, atol=1.0e-4):
+            raise ValueError("add_deformable_visual_mesh: barycentric weights must sum to one")
+        # Accepted roundoff must not scale translations or extrapolate points.
+        np.maximum(weights, 0.0, out=weights)
+        weights /= weights.sum(axis=1, keepdims=True)
+        return parent, weights
+
+    def _resolve_visual_body_candidates(self, parent, bodies, curve) -> np.ndarray | None:
+        """Return the candidate bodies of a body binding, or None when ``parent`` names them directly."""
+        if sum(option is not None for option in (parent, bodies, curve)) != 1:
+            raise ValueError("add_deformable_visual_mesh: body bindings take exactly one of parent, bodies, or curve")
+        if curve is None:
+            return bodies
+        index = int(curve)
+        if index < 0 or index >= len(self.curve_label):
+            raise ValueError(
+                f"add_deformable_visual_mesh: curve {index} is not one of the {len(self.curve_label)} recorded objects"
+            )
+        return np.arange(self._curve_body_start[index], self._curve_body_end[index], dtype=np.int32)
+
+    def _bind_visual_vertices_to_bodies(
+        self, vertices: np.ndarray, bodies: np.ndarray, *, nearest: bool = False, poses: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Bind visual vertices to rigid bodies.
+
+        With ``nearest``, ``bodies`` are candidates and each vertex binds to the
+        one whose center of mass is nearest; otherwise ``bodies`` already names
+        each vertex's body. Returns ``(parent, local_offsets)`` where ``parent``
+        is the per-vertex body index and ``local_offsets`` is the bind-pose
+        visual vertex expressed in that body's frame, so skinning can
+        reconstruct the world position from the body's current pose each frame.
+        """
+        verts = np.asarray(vertices, dtype=np.float64)
+        bodies = Mesh._normalize_indices(bodies)
+        if len(bodies) == 0:
+            raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
+        if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
+            raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
+        if poses is None:
+            # Explicit parents can repeat a body for thousands of visual vertices.
+            unique_bodies, inverse = np.unique(bodies, return_inverse=True)
+            body_q = np.asarray([self.body_q[body] for body in unique_bodies], dtype=np.float64).reshape(-1, 7)
+            body_q = body_q[inverse]
+        else:
+            body_q = np.asarray(poses, dtype=np.float64).reshape(-1, 7)
+        if nearest:
+            # The center of mass sits inside a segment whatever its frame origin, so a rod binds
+            # each vertex to the segment around it. Temporary memory is bound by the vertex count.
+            com = body_q[:, :3] + quat_rotate_rows(
+                body_q[:, 3:7], np.asarray([self.body_com[body] for body in bodies], dtype=np.float64)
+            )
+            chosen = np.zeros(len(verts), dtype=np.int32)
+            best_distance = np.full(len(verts), np.inf)
+            for index, center in enumerate(com):
+                delta = verts - center
+                distance = np.einsum("ij,ij->i", delta, delta)
+                closer = distance < best_distance  # Equal distances keep the first candidate.
+                chosen[closer] = index
+                best_distance[closer] = distance[closer]
+            parent = bodies[chosen].astype(np.int32)
+            body_q = body_q[chosen]
+        else:
+            parent = np.asarray(bodies, dtype=np.int32)
+
+        # local_offset = conjugate(q) rotated (vertex - body_pos)
+        quat = body_q[:, 3:7].copy()  # (x, y, z, w)
+        quat[:, :3] *= -1.0
+        local = quat_rotate_rows(quat, verts - body_q[:, :3])
+        return parent, local.astype(np.float32)
+
+    def _embed_visual_vertices_in_triangles(
+        self,
+        vertices: np.ndarray,
+        tri_range: tuple[int, int],
+        positions: np.ndarray | None = None,
+        *,
+        particle_start: int = 0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Project each visual vertex onto its closest owning simulation triangle.
+
+        Build-time, host-side embedding restricted to the owning ``[start, end)``
+        triangle range. The barycentric coordinates of the closest point are
+        stored; the normal offset from the surface is dropped by design (the
+        skinned vertex lies on the simulation surface).
+        When ``positions`` is supplied, ``particle_start`` is its first model particle index.
+        """
+        from ..geometry.deformable_visual_binding import embed_triangles  # noqa: PLC0415
+
+        lo, hi = tri_range
+        tri_idx = np.asarray(self.tri_indices[lo:hi], dtype=np.int64).reshape(-1, 3) - particle_start
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
+        a, b, c = (particles[tri_idx[:, i]] for i in range(3))
+        ab = b - a
+        ac = c - a
+
+        d00 = np.einsum("ij,ij->i", ab, ab)
+        d01 = np.einsum("ij,ij->i", ab, ac)
+        d11 = np.einsum("ij,ij->i", ac, ac)
+        denom = d00 * d11 - d01 * d01
+        nonsingular = np.abs(denom) > 1.0e-20
+        if not np.any(nonsingular):
+            raise ValueError("add_deformable_visual_mesh: owning triangle range contains no non-degenerate triangle")
+        valid = np.flatnonzero(nonsingular)
+        mesh = wp.Mesh(
+            wp.array(particles, dtype=wp.vec3, device="cpu"),
+            wp.array(tri_idx[valid].reshape(-1), dtype=wp.int32, device="cpu"),
+        )
+        parent = wp.empty(len(vertices), dtype=wp.int32, device="cpu")
+        weights = wp.empty(len(vertices), dtype=wp.vec3, device="cpu")
+        wp.launch(
+            embed_triangles,
+            dim=len(vertices),
+            inputs=[
+                mesh.id,
+                wp.array(vertices, dtype=wp.vec3, device="cpu"),
+                wp.array(lo + valid, dtype=wp.int32, device="cpu"),
+            ],
+            outputs=[parent, weights],
+            device="cpu",
+        )
+        return parent.numpy().copy(), weights.numpy().copy()
+
+    def _embed_visual_vertices_in_tets(
+        self,
+        vertices: np.ndarray,
+        tet_range: tuple[int, int],
+        positions: np.ndarray | None = None,
+        *,
+        particle_start: int = 0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the containing owning tet and barycentric weights per visual vertex.
+
+        Build-time, host-side embedding restricted to the owning ``[start, end)``
+        tet range, so a clamp can never cross deformable bodies. A vertex outside
+        every owning tet (gaps, surface overhang) is clamped to the nearest owning
+        tet by centroid distance and a warning-level log is emitted.
+        When ``positions`` is supplied, ``particle_start`` is its first model particle index.
+        """
+        from ..geometry.deformable_visual_binding import embed_tetrahedra  # noqa: PLC0415
+
+        lo, hi = tet_range
+        tet_idx = np.asarray(self.tet_indices[lo:hi], dtype=np.int64).reshape(-1, 4) - particle_start
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
+
+        v0, v1, v2, v3 = (particles[tet_idx[:, i]] for i in range(4))
+        # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
+        edge_mats = np.stack([v1 - v0, v2 - v0, v3 - v0], axis=2)
+        det = np.linalg.det(edge_mats)
+        nonsingular = np.abs(det) > 1.0e-20
+        if not np.any(nonsingular):
+            raise ValueError("add_deformable_visual_mesh: owning tet range contains no non-degenerate tetrahedron")
+        valid = np.flatnonzero(nonsingular)
+        corners = particles[tet_idx[valid]]
+        lower, upper = corners.min(axis=1), corners.max(axis=1)
+        # Expand bounds for the barycentric tolerance and float32 BVH rounding.
+        padding = 4.0e-6 * (upper - lower) + 1.0e-5 * (1.0 + np.maximum(np.abs(lower), np.abs(upper)))
+        bvh = wp.Bvh(
+            wp.array(lower - padding, dtype=wp.vec3, device="cpu"),
+            wp.array(upper + padding, dtype=wp.vec3, device="cpu"),
+        )
+        parent = wp.empty(len(vertices), dtype=wp.int32, device="cpu")
+        weights = wp.empty(len(vertices), dtype=wp.vec4, device="cpu")
+        outside = wp.zeros(len(vertices), dtype=wp.int32, device="cpu")
+        wp.launch(
+            embed_tetrahedra,
+            dim=len(vertices),
+            inputs=[
+                bvh.id,
+                wp.array(vertices, dtype=wp.vec3, device="cpu"),
+                wp.array(v0[valid], dtype=wp.vec3d, device="cpu"),
+                wp.array(np.linalg.inv(edge_mats[valid]), dtype=wp.mat33d, device="cpu"),
+                wp.array(corners.mean(axis=1), dtype=wp.vec3d, device="cpu"),
+                wp.array(lo + valid, dtype=wp.int32, device="cpu"),
+            ],
+            outputs=[parent, weights, outside],
+            device="cpu",
+        )
+        clamped = int(outside.numpy().sum())
+        if clamped:
+            logger.warning(
+                "add_deformable_visual_mesh: %d of %d visual vertices fell outside "
+                "the owning tetrahedra and were clamped into the one with the nearest centroid.",
+                clamped,
+                len(vertices),
+            )
+        return parent.numpy().copy(), weights.numpy().copy()
+
+    def _finalize_deformable_visual_meshes(
+        self,
+    ) -> tuple[tuple[DeformableVisualMesh, ...], _DeformableVisualSkinBatches]:
+        """Upload visual assets on the finalize device and derive their owning worlds."""
+        specs = self._deformable_visual_meshes
+        batches = _DeformableVisualSkinBatches(
+            [spec["kind"] for spec in specs],
+            [spec["parent"] for spec in specs],
+            [
+                spec.get("local_offsets" if spec["kind"] == DeformableVisualMesh.Kind.BODY else "weights")
+                for spec in specs
+            ],
+            [spec["indices"] for spec in specs],
+            wp.get_device(),
+        )
+        if not specs:
+            # Most models have no visual meshes; skip the host-side index conversions below.
+            return (), batches
+        particle_world = np.asarray(self.particle_world, dtype=np.int32)
+        # Replicated copies of a mesh carry the same host arrays (add_builder copies the spec
+        # shallowly) and equal meshes added separately have the same bytes, so the device holds
+        # one copy of each distinct rest mesh however many worlds there are.
+        shared_by_identity: dict[int, wp.array] = {}
+        shared_by_content: dict[tuple, wp.array] = {}
+
+        def shared_asset(value, np_dtype, wp_dtype, columns: int) -> wp.array:
+            array = shared_by_identity.get(id(value))
+            if array is None:
+                host = np.asarray(value, dtype=np_dtype).reshape((-1, columns) if columns > 1 else -1)
+                host = np.ascontiguousarray(host)
+                digest = (host.shape, hashlib.blake2b(host.tobytes(), digest_size=16).digest())
+                array = shared_by_content.get(digest)
+                if array is None:
+                    array = wp.array(host, dtype=wp_dtype)
+                    shared_by_content[digest] = array
+                shared_by_identity[id(value)] = array
+            return array
+
+        tri_indices = np.asarray(self.tri_indices, dtype=np.int32).reshape(-1, 3)
+        tet_indices = np.asarray(self.tet_indices, dtype=np.int32).reshape(-1, 4)
+        body_world = np.asarray(self.body_world, dtype=np.int32)
+        meshes = []
+        for index, spec in enumerate(self._deformable_visual_meshes):
+            drivers = spec["parent"]
+            if spec["kind"] == DeformableVisualMesh.Kind.TRIANGLE:
+                drivers = tri_indices[drivers].reshape(-1)
+            elif spec["kind"] == DeformableVisualMesh.Kind.TETRAHEDRON:
+                drivers = tet_indices[drivers].reshape(-1)
+            if spec["kind"] == DeformableVisualMesh.Kind.BODY:
+                world_values = spec.get("_body_worlds")
+                if world_values is None:
+                    world_values = body_world[drivers]
+            else:
+                world_values = particle_world[drivers]
+            worlds = np.unique(world_values)
+            if len(worlds) != 1:
+                raise ValueError(
+                    f"deformable visual mesh {spec['label']!r}: drivers span worlds "
+                    f"{worlds.tolist()}; a visual mesh must be driven by a single world"
+                )
+            binding_parent, binding_drivers = batches.mesh_bindings(index)
+            is_body = spec["kind"] == DeformableVisualMesh.Kind.BODY
+            meshes.append(
+                DeformableVisualMesh(
+                    kind=spec["kind"],
+                    rest_vertices=shared_asset(spec["rest_vertices"], np.float32, wp.vec3, 3),
+                    indices=shared_asset(spec["indices"], np.int32, wp.int32, 1),
+                    parent=binding_parent,
+                    weights=None if is_body else binding_drivers,
+                    local_offsets=binding_drivers if is_body else None,
+                    uvs=shared_asset(spec["uvs"], np.float32, wp.vec2, 2) if spec.get("uvs") is not None else None,
+                    texture=spec.get("texture"),
+                    world=int(worlds[0]),
+                    label=spec["label"],
+                    index=index,
+                )
+            )
+        batches.meshes = tuple(meshes)
+        return batches.meshes, batches
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -13622,6 +14422,7 @@ class ModelBuilder:
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
         skip_validation_shapes: bool = False,
+        skip_validation_inertia: bool = False,
         skip_validation_structure: bool = False,
         skip_validation_joint_ordering: bool = True,
     ) -> Model:
@@ -13636,12 +14437,18 @@ class ModelBuilder:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
-                you are confident the model is valid. Default is False.
+                you are confident the model is valid. Also skips mass/inertia correction, including bounds
+                and balancing. Use individual skip flags to retain these corrections. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
                 joints cannot connect separate articulations, and non-root joints must belong to an articulation or
                 close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_inertia: If True, skips all rigid body mass/inertia validation and correction,
+                preserving the builder's mass and inertia. Derived inverses are always recomputed.
+                Skipped checks include finiteness, symmetry,
+                positive-definiteness, bounds, and triangle-inequality checks. Does not undo earlier importer
+                processing, shape mass computation, or fixed-joint merging. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 particle topology, array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
@@ -13651,13 +14458,24 @@ class ModelBuilder:
             A fully constructed Model object containing all simulation data on the specified device.
 
         Notes:
-            - Performs validation and correction of rigid body inertia and mass properties.
+            - Validates and corrects rigid body inertia and mass unless ``skip_validation_inertia``
+              or ``skip_all_validations`` is True.
             - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
             - Python's cyclic garbage collector is temporarily disabled during this operation. Its previous state
               is restored before returning or propagating an exception.
         """
+
+        validate_inertia = not skip_validation_inertia and not skip_all_validations
+        if validate_inertia:
+            # Both validation paths consume float32-representable settings.
+            for name in ("inertia_relative_tolerance", "inertia_absolute_tolerance", "inertia_correction"):
+                value = getattr(self, name)
+                if not math.isfinite(value) or value < 0.0 or value > float(np.finfo(np.float32).max):
+                    raise ValueError(f"{name} must be finite, non-negative, and representable in float32")
+                if name == "inertia_absolute_tolerance" and np.float32(value) <= 0.0:
+                    raise ValueError("inertia_absolute_tolerance must be positive in float32")
 
         gc_was_enabled = gc.isenabled()
         gc.disable()
@@ -13686,7 +14504,9 @@ class ModelBuilder:
                 self.validate_joint_ordering()
 
             with self._raw_array_access():
-                return self._finalize_impl(device=device, requires_grad=requires_grad)
+                return self._finalize_impl(
+                    device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
+                )
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -13696,6 +14516,7 @@ class ModelBuilder:
         device: Devicelike | None = None,
         *,
         requires_grad: bool = False,
+        validate_inertia: bool = True,
     ) -> Model:
         # construct world starts by ensuring they are cumulative and appending
         # tail-end global counts and sum total counts over the entire model.
@@ -13724,6 +14545,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m._deformable_visual_meshes, m._deformable_visual_skin_batches = self._finalize_deformable_visual_meshes()
             m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             # Preserve deprecated extended-attribute requests without emitting a
@@ -13865,11 +14687,16 @@ class ModelBuilder:
                     # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
                     # while Heightfield stores row-major data (row=Y, col=X).
                     actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                    # Keep the bottom cap strictly below the lowest terrain height: a cap
+                    # coplanar with flat terrain lets ray queries return its downward-facing
+                    # triangles instead of the surface. The gap scales with the field size
+                    # to stay clear of float32 rounding.
+                    cap_gap = 1.0e-3 * max(1.0, geo.hx, geo.hy, abs(geo.max_z - geo.min_z))
                     hf_geo = Mesh.create_heightfield(
                         heightfield=actual_heights.T,
                         extent_x=geo.hx * 2.0,
                         extent_y=geo.hy * 2.0,
-                        ground_z=geo.min_z,
+                        ground_z=min(geo.min_z, geo.max_z) - cap_gap,
                         compute_inertia=False,
                     )
                     finalized_geos[geo_cache_key] = hf_geo.finalize(
@@ -14835,14 +15662,10 @@ class ModelBuilder:
             # on the returned Model so that finalize() is side-effect-free.
             body_mass = self.body_mass
             body_inertia = self.body_inertia
-            body_inv_mass = self.body_inv_mass
-            body_inv_inertia = self.body_inv_inertia
-            if len(self.body_mass) > 0 and self.validate_inertia_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and self.validate_inertia_detailed:
                 # Use detailed Python validation with per-body warnings on copies of the builder lists.
                 body_mass = list(body_mass)
                 body_inertia = list(body_inertia)
-                body_inv_mass = list(body_inv_mass)
-                body_inv_inertia = list(body_inv_inertia)
                 for i in range(len(body_mass)):
                     body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
                     new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
@@ -14852,19 +15675,20 @@ class ModelBuilder:
                         self.bound_mass,
                         self.bound_inertia,
                         body_label,
+                        relative_tolerance=self.inertia_relative_tolerance,
+                        absolute_tolerance=self.inertia_absolute_tolerance,
+                        correction=self.inertia_correction,
                     )
                     if was_corrected:
                         body_mass[i] = new_mass
                         body_inertia[i] = new_inertia
-                        body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
-                        body_inv_inertia[i] = wp.inverse(new_inertia) if any(x for x in new_inertia) else new_inertia
 
             m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inv_mass = wp.empty(len(body_mass), dtype=wp.float32, requires_grad=requires_grad)
             m.body_inertia = warp_array_from_values(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_inv_inertia = warp_array_from_values(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = wp.empty(len(body_mass), dtype=wp.mat33, requires_grad=requires_grad)
 
-            if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and not self.validate_inertia_detailed:
                 # Use fast Warp kernel validation, correcting the Model arrays in place on device.
                 correction_count = wp.zeros(1, dtype=wp.int32)
                 wp.launch(
@@ -14873,11 +15697,12 @@ class ModelBuilder:
                     inputs=[
                         m.body_mass,
                         m.body_inertia,
-                        m.body_inv_mass,
-                        m.body_inv_inertia,
                         self.balance_inertia,
                         self.bound_mass if self.bound_mass is not None else 0.0,
                         self.bound_inertia if self.bound_inertia is not None else 0.0,
+                        self.inertia_relative_tolerance,
+                        self.inertia_absolute_tolerance,
+                        self.inertia_correction,
                         correction_count,
                     ],
                 )
@@ -14891,6 +15716,16 @@ class ModelBuilder:
                         NewtonWarning,
                         stacklevel=3,
                     )
+
+            if len(body_mass) > 0:
+                # Stored builder inverses can be stale after edits or importer overrides.
+                # Compute from the final properties even when validation is skipped.
+                wp.launch(
+                    compute_body_inverses_kernel,
+                    dim=len(body_mass),
+                    inputs=[m.body_mass, m.body_inertia],
+                    outputs=[m.body_inv_mass, m.body_inv_inertia],
+                )
 
             m.body_q = warp_array_from_values(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = warp_array_from_values(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
@@ -14978,6 +15813,20 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
+
+            # Serial ordering is local to each articulation, even when shared
+            # bodies or non-tree articulations disable the tiled schedule.
+            fk_joint_order = _build_fk_joint_order(
+                joint_parent_np,
+                joint_child_np,
+                joint_articulation_np,
+                parent_joint,
+                articulation_start,
+                articulation_end,
+            )
+            if fk_joint_order is not None:
+                m._fk_joint_order = wp.array(fk_joint_order, dtype=wp.int32)
+
             from .articulation_cuda import FK_TILE_MAX_LEVEL_WIDTH  # noqa: PLC0415
 
             fk_topology = _build_fk_level_topology(
@@ -15006,6 +15855,15 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
+
+            # Snapshot identities so later builder edits cannot change model inspection.
+            for family, references in self._BUILDER_GROUP_REFERENCES.items():
+                labels = list(getattr(self, f"{family}_label"))
+                setattr(m, f"{family}_label", labels)
+                setattr(m, f"{family}_count", len(labels))
+                setattr(m, f"{family}_world", wp.array(getattr(self, f"{family}_world"), dtype=wp.int32))
+                for suffix in references:
+                    setattr(m, f"{family}_{suffix}", wp.array(getattr(self, f"_{family}_{suffix}"), dtype=wp.int32))
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)

@@ -14,6 +14,7 @@ import warp as wp
 
 import newton
 import newton.usd
+from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX, ViewerUSD
 
@@ -654,6 +655,169 @@ class TestViewerUSD(unittest.TestCase):
         mesh = UsdGeom.Mesh.Get(viewer.stage, viewer._get_path("/dynamic_mesh"))
         self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
         np.testing.assert_allclose(mesh.GetNormalsAttr().Get(1), [[0, 0, 1]] * 3)
+
+    def test_log_geo_exports_gprims(self):
+        """Write analytic shapes as Gprims and keep meshes for the rest."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        viewer.log_geo("/sphere", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        for geo_type in (newton.GeoType.CAPSULE, newton.GeoType.CYLINDER, newton.GeoType.CONE):
+            viewer.log_geo(f"/{geo_type.name.lower()}", geo_type, (0.2, 0.3), 0.0, True)
+        viewer.log_geo("/box", newton.GeoType.BOX, (0.1, 0.2, 0.3), 0.0, True)
+        viewer.log_geo("/ellipsoid", newton.GeoType.ELLIPSOID, (0.1, 0.2, 0.3), 0.0, True)
+        viewer.log_geo("/barrel", newton.GeoType.CYLINDER, (0.2, 0.3, 0.5), 0.0, True)
+        viewer.log_geo("/plane", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
+
+        stage = viewer.stage
+        self.assertAlmostEqual(UsdGeom.Sphere.Get(stage, "/root/sphere").GetRadiusAttr().Get(0), 0.5)
+        for name, schema in (("capsule", UsdGeom.Capsule), ("cylinder", UsdGeom.Cylinder), ("cone", UsdGeom.Cone)):
+            gprim = schema.Get(stage, f"/root/{name}")
+            self.assertAlmostEqual(gprim.GetRadiusAttr().Get(0), 0.2, places=6)
+            self.assertAlmostEqual(gprim.GetHeightAttr().Get(0), 0.6, places=6)
+            self.assertEqual(gprim.GetAxisAttr().Get(), UsdGeom.Tokens.z)
+        for name, schema in (("box", UsdGeom.Cube), ("ellipsoid", UsdGeom.Sphere)):
+            gprim = schema.Get(stage, f"/root/{name}/geom")
+            bound = gprim.ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [0.1, 0.2, 0.3], rtol=1e-6)
+        self.assertTrue(stage.GetPrimAtPath("/root/barrel").IsA(UsdGeom.Mesh))
+        self.assertTrue(stage.GetPrimAtPath("/root/plane").IsA(UsdGeom.Mesh))
+
+    def test_log_geo_replaces_prototype_of_another_type(self):
+        """Re-log a name with a new type without stale children, and keep the unit ellipsoid default."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        stage = viewer.stage
+
+        viewer.log_geo("/shape", newton.GeoType.ELLIPSOID, (), 0.0, True)
+        bound = UsdGeom.Sphere.Get(stage, "/root/shape/geom").ComputeLocalBound(0, UsdGeom.Tokens.default_)
+        np.testing.assert_allclose(bound.ComputeAlignedRange().GetMax(), [1.0, 1.0, 1.0], rtol=1e-6)
+
+        with self.assertWarns(NewtonWarning):
+            viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Sphere))
+        self.assertFalse(stage.GetPrimAtPath("/root/shape/geom"))
+
+        with self.assertWarns(NewtonWarning):
+            viewer.log_geo("/shape", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
+        self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Mesh))
+
+        viewer.log_geo("/gprim", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        with self.assertWarns(NewtonWarning):
+            viewer.log_mesh("/gprim", points, indices)
+        self.assertTrue(stage.GetPrimAtPath("/root/gprim").IsA(UsdGeom.Mesh))
+
+    def test_log_geo_replaces_scaled_prototype_of_another_type(self):
+        """Swapping box and ellipsoid replaces the prototype instead of keeping the old scale samples."""
+        viewer = self._make_viewer()
+        stage = viewer.stage
+        viewer.begin_frame(0.0)
+        viewer.log_geo("/shape", newton.GeoType.BOX, (0.1, 0.2, 0.3), 0.0, True)
+
+        for frame, (geo_type, schema) in enumerate(
+            ((newton.GeoType.ELLIPSOID, UsdGeom.Sphere), (newton.GeoType.BOX, UsdGeom.Cube)), start=1
+        ):
+            viewer.begin_frame(frame / viewer.fps)
+            with self.assertWarns(NewtonWarning):
+                viewer.log_geo("/shape", geo_type, (0.4, 0.5, 0.6), 0.0, True)
+            gprim = stage.GetPrimAtPath("/root/shape/geom")
+            self.assertTrue(gprim.IsA(schema))
+            # The replacement's first sample also holds for earlier frames.
+            bound = schema(gprim).ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [0.4, 0.5, 0.6], rtol=1e-6)
+
+    def test_log_geo_drops_appearance_of_replaced_mesh(self):
+        """A Gprim replacing a colored mesh prototype does not inherit the mesh's appearance."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        viewer.log_mesh("/shape", points, indices, color=(0.9, 0.1, 0.1), opacity=0.5)
+        with self.assertWarns(NewtonWarning):
+            viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+        viewer.log_instances("/instances", "/shape", xforms, None, None, None)
+        instance = viewer.stage.GetPrimAtPath("/root/instances/instance_0")
+        material, _binding = UsdShade.MaterialBindingAPI(instance).ComputeBoundMaterial()
+        self.assertFalse(material)
+
+    def test_log_geo_animates_gprim_size(self):
+        """Re-logging a Gprim prototype keeps earlier sizes as time samples."""
+        viewer = self._make_viewer()
+        for frame, radius in ((0, 0.5), (1, 0.25)):
+            viewer.begin_frame(frame / viewer.fps)
+            viewer.log_geo("/sphere", newton.GeoType.SPHERE, (radius,), 0.0, True)
+            viewer.log_geo("/box", newton.GeoType.BOX, (radius, radius, radius), 0.0, True)
+
+        sphere = UsdGeom.Sphere.Get(viewer.stage, "/root/sphere")
+        cube = UsdGeom.Cube.Get(viewer.stage, "/root/box/geom")
+        for frame, radius in ((0, 0.5), (1, 0.25)):
+            self.assertAlmostEqual(sphere.GetRadiusAttr().Get(frame), radius)
+            np.testing.assert_allclose(sphere.GetExtentAttr().Get(frame)[1], [radius] * 3)
+            bound = cube.ComputeLocalBound(frame, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [radius] * 3, rtol=1e-6)
+
+    def test_log_shapes_instances_gprim_prototypes(self):
+        """Render Gprim instances with their color while prototypes stay hidden."""
+        viewer = self._make_viewer()
+        xforms = wp.array([wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())], dtype=wp.transform)
+        colors = wp.array([wp.vec3(0.9, 0.1, 0.1)], dtype=wp.vec3)
+
+        viewer.begin_frame(0.0)
+        viewer.log_shapes("/spheres", newton.GeoType.SPHERE, (0.5,), xforms, colors)
+        viewer.log_shapes("/boxes", newton.GeoType.BOX, (0.1, 0.2, 0.3), xforms, colors)
+
+        sphere = viewer.stage.GetPrimAtPath("/root/spheres/instance_0")
+        cube = viewer.stage.GetPrimAtPath("/root/boxes/instance_0/geom")
+        self.assertTrue(sphere.IsA(UsdGeom.Sphere))
+        self.assertTrue(cube.IsA(UsdGeom.Cube))
+        for prim in (sphere, cube):
+            self.assertEqual(UsdGeom.Imageable(prim).ComputeVisibility(0), UsdGeom.Tokens.inherited)
+            color = UsdGeom.PrimvarsAPI(prim).FindPrimvarWithInheritance("displayColor").Get(0)
+            np.testing.assert_allclose(color, [[0.9, 0.1, 0.1]], rtol=1e-6)
+        bound = UsdGeom.Imageable(cube).ComputeWorldBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+        np.testing.assert_allclose(bound.GetMin(), [0.9, 1.8, 2.7], rtol=1e-6)
+        np.testing.assert_allclose(bound.GetMax(), [1.1, 2.2, 3.3], rtol=1e-6)
+        for prototype in viewer.stage.GetPrimAtPath("/root/geometry").GetChildren():
+            self.assertEqual(UsdGeom.Imageable(prototype).ComputeVisibility(0), UsdGeom.Tokens.invisible)
+
+    def test_accumulated_frame_time_maps_to_consecutive_time_codes(self):
+        """Author one time code per frame when time is accumulated from a float step."""
+        num_frames = 32
+        for steps_per_frame in (1, 2):
+            with self.subTest(steps_per_frame=steps_per_frame):
+                viewer = self._make_viewer()
+                step_dt = 1.0 / (viewer.fps * steps_per_frame)
+                sim_time = 0.0
+                for step in range(num_frames * steps_per_frame):
+                    viewer.begin_frame(sim_time)
+                    points = wp.array([[float(step), 0.0, 0.0]], dtype=wp.vec3)
+                    path = viewer.log_points("/points", points, radii=0.01)
+                    viewer.end_frame()
+                    sim_time += step_dt
+
+                points_attr = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr()
+                self.assertEqual([int(t) for t in points_attr.GetTimeSamples()], list(range(num_frames)))
+                # Each time code holds the last step logged within its frame.
+                last_steps = [int(points_attr.Get(frame)[0][0]) for frame in range(num_frames)]
+                self.assertEqual(last_steps, [(frame + 1) * steps_per_frame - 1 for frame in range(num_frames)])
+                self.assertEqual(viewer.stage.GetEndTimeCode(), num_frames - 1)
+
+    def test_frame_time_maps_to_the_frame_containing_it(self):
+        """Map negative, zero and fractional times to the time code of the frame that contains them."""
+        viewer = self._make_viewer()
+        frame_codes = [-2.0, -1.5, -1.0, 0.0, 0.5]
+        for step, frame_code in enumerate(frame_codes):
+            viewer.begin_frame(frame_code / viewer.fps)
+            points = wp.array([[float(step), 0.0, 0.0]], dtype=wp.vec3)
+            path = viewer.log_points("/points", points, radii=0.01)
+            viewer.end_frame()
+
+        points_attr = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr()
+        self.assertEqual([int(t) for t in points_attr.GetTimeSamples()], [-2, -1, 0])
+        self.assertEqual([int(points_attr.Get(code)[0][0]) for code in (-2, -1, 0)], [1, 2, 4])
 
 
 if __name__ == "__main__":
