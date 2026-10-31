@@ -18,6 +18,9 @@ from .types import GaussianRenderMode, RenderConfig
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
+# Index of an empty hit slot; it sorts after every splat at the same distance.
+NO_SPLAT_INDEX = wp.constant(wp.int32(2147483647))
+
 
 @wp.func
 def compute_gaussian_bounds(gaussians_data: Gaussian.Data, tid: wp.int32) -> tuple[wp.vec3f, wp.vec3f]:
@@ -113,7 +116,7 @@ def ray_gsplat_hit_response(
     else:
         hit_distance = sorting_mode_ray_hit_distance(ray_origin_local, ray_direction_local)
 
-    if hit_distance > 0.0 and hit_distance < max_distance:
+    if hit_distance > 0.0 and hit_distance <= max_distance:
         max_response = canonical_ray_max_kernel_response(ray_origin_local, wp.normalize(ray_direction_local))
 
         alpha = wp.min(wp.float32(1.0), max_response * opacity)
@@ -141,6 +144,7 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
 
         hit_index = wp.int32(0)
         min_distance = wp.float32(0.0)
+        min_index = wp.int32(-1)
         ray_transmittance = wp.float32(1.0)
 
         hit_distances = wp.vector(max_distance, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
@@ -151,13 +155,15 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
             num_hits = wp.int32(0)
 
             for i in range(wp.static(config.gaussians_max_num_hits)):
-                hit_distances[i] = max_distance - min_distance
+                hit_distances[i] = max_distance
+                hit_indices[i] = NO_SPLAT_INDEX
 
             query = wp.bvh_query_ray(
                 gaussian_data.bvh_id, ray_origin_local + ray_direction_local * min_distance, ray_direction_local
             )
 
-            while wp.bvh_query_next(query, hit_index, hit_distances[-1]):
+            # The query ray starts at min_distance, while hit distances count from the ray origin.
+            while wp.bvh_query_next(query, hit_index, hit_distances[-1] - min_distance):
                 hit_alpha, hit_distance = ray_gsplat_hit_response(
                     gaussian_data.transforms[hit_index],
                     gaussian_data.scales[hit_index],
@@ -170,12 +176,15 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                     hit_distances[-1],
                 )
 
-                if hit_distance > min_distance:
+                # Splats sort by distance, then by index, so passes neither repeat nor skip splats at equal distances.
+                if hit_distance > min_distance or (hit_distance == min_distance and hit_index > min_index):
                     if num_hits < wp.static(config.gaussians_max_num_hits):
                         num_hits += 1
 
                     for h in range(num_hits):
-                        if hit_distance < hit_distances[h]:
+                        if hit_distance < hit_distances[h] or (
+                            hit_distance == hit_distances[h] and hit_index < hit_indices[h]
+                        ):
                             for hh in range(num_hits - 1, h, -1):
                                 hit_distances[hh] = hit_distances[hh - 1]
                                 hit_indices[hh] = hit_indices[hh - 1]
@@ -212,7 +221,8 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                     ray_transmittance = wp.float32(0.0)
                     break
 
-            min_distance = hit_distances[-1] + wp.float32(1e-06)
+            min_distance = hit_distances[-1]
+            min_index = hit_indices[-1]
 
             if wp.static(config.gaussians_mode) == GaussianRenderMode.FAST:
                 break

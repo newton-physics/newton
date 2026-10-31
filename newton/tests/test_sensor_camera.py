@@ -1815,20 +1815,45 @@ class TestSensorCamera(unittest.TestCase):
                 self.assertEqual(color >> 24, 255)
 
     def test_gaussian_quality_mode_blends_each_splat_once(self):
-        """Blend every splat once when QUALITY mode gathers the splats over several passes."""
-        for mode, expected in (
-            (SensorCamera.GaussianRenderMode.FAST, 0.5),
-            (SensorCamera.GaussianRenderMode.QUALITY, 0.75),
+        """Blend every splat once, front to back, when QUALITY mode gathers the splats over several passes."""
+        red = [0.5 / SH_C0, -0.5 / SH_C0, -0.5 / SH_C0]
+        blue = [-0.5 / SH_C0, -0.5 / SH_C0, 0.5 / SH_C0]
+        white = [0.5 / SH_C0] * 3
+        fast = SensorCamera.GaussianRenderMode.FAST
+        quality = SensorCamera.GaussianRenderMode.QUALITY
+        for depths, sh_coeffs, mode, expected in (
+            ((2.0, 3.0), [red, blue], fast, [0.5, 0.0, 0.0]),
+            ((2.0, 3.0), [red, blue], quality, [0.5, 0.0, 0.25]),
+            # Coincident splats lie at the same distance, and each one still blends once.
+            ((2.0, 2.0), [white, white], quality, [0.75] * 3),
         ):
-            with self.subTest(mode=mode):
+            with self.subTest(depths=depths, mode=mode):
                 hdr, _, _ = self._render_gaussians(
                     newton.utils.ColorSpace.LINEAR,
-                    [[0.0, 0.0, -2.0], [0.0, 0.0, -3.0]],
+                    [[0.0, 0.0, -depth] for depth in depths],
                     [0.5, 0.5],
-                    [[0.5 / SH_C0] * 3] * 2,
+                    sh_coeffs,
                     render_config=SensorCamera.RenderConfig(gaussians_mode=mode, gaussians_max_num_hits=1),
                 )
-                np.testing.assert_allclose(hdr, [expected] * 3, atol=1e-5)
+                np.testing.assert_allclose(hdr, expected, atol=1e-5)
+
+    def test_gaussian_quality_mode_blends_every_splat_in_front_of_shape(self):
+        """Blend every splat in front of a shape when QUALITY mode gathers the splats over several passes."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -4.0), q=wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.75, color=(1.0, 1.0, 1.0))
+        hdr, _, _ = self._render_gaussians(
+            newton.utils.ColorSpace.LINEAR,
+            [[0.0, 0.0, -2.0], [0.0, 0.0, -3.0]],
+            [0.5, 0.5],
+            [[0.5 / SH_C0] * 3] * 2,
+            builder=builder,
+            render_config=SensorCamera.RenderConfig(
+                gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY, gaussians_max_num_hits=1
+            ),
+        )
+        # Both white splats cover 0.75 of the pixel, and the shape shaded by ambient light fills the remaining 0.25.
+        np.testing.assert_allclose(hdr, 0.75 + 0.25 * np.array([0.2, 0.2, 0.225]), atol=1e-4)
 
 
 class TestSensorCameraDeformable(unittest.TestCase):
