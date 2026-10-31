@@ -11,7 +11,6 @@ import warp as wp
 
 import newton
 from newton._src.solvers.steel.kernels import (
-    PGS_CONSTRAINT_TYPE_CONNECT,
     accumulate_connect_wrenches_from_impulses,
     populate_connect_J_for_size,
 )
@@ -550,6 +549,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
             row_parent = wp.zeros((1, 3), dtype=wp.int32, device=device)
             row_fields = [wp.zeros((1, 3), dtype=float, device=device) for _ in range(3)]
             inv_norm = wp.zeros((1, 3), dtype=float, device=device)
+            at_midpoint = wp.zeros(1, dtype=wp.int32, device=device)
             wp.launch(
                 populate_connect_J_for_size,
                 dim=1,
@@ -568,7 +568,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     anchor_xform,
                     anchor_xform,
                     zero,  # connect_parent_prescribed
-                    ints([1, 1]),  # body_has_response_dofs
+                    ints([0, 0]),  # kinematic_dof_mask
                     body_q,
                     wp.zeros(2, dtype=wp.spatial_vector, device=device),
                     wp.zeros(2, dtype=wp.vec3, device=device),
@@ -578,7 +578,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     motion,
                     origin,
                 ],
-                outputs=[J, row_type, row_parent, *row_fields, inv_norm],
+                outputs=[J, row_type, row_parent, *row_fields, inv_norm, at_midpoint],
                 device=device,
             )
             wrench = wp.zeros(2, dtype=wp.spatial_vector, device=device)
@@ -597,8 +597,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     zero,  # joint_qd_start
                     anchor_xform,
                     anchor_xform,
-                    zero,  # connect_parent_prescribed
-                    ints([1, 1]),  # body_has_response_dofs
+                    at_midpoint,
                     inv_norm,
                     zero,  # art_to_world
                     body_q,
@@ -619,19 +618,66 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
 
 
 def test_open_closure_force_acts_where_the_rows_do(test, device):
-    """An open closure's force acts at the anchors' midpoint, or at each anchor when one body has no response DOFs."""
+    """Apply an open closure's force at the anchors' midpoint, or at each anchor when only one body can move."""
 
     def ints(values):
         return wp.array(values, dtype=wp.int32, device=device)
 
     p_a, p_b = np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.2, 0.0])
     force = np.array([1.0, 0.0, 0.0])
-    for response_dofs, parent_point, child_point in (
-        ([1, 1], 0.5 * (p_a + p_b), 0.5 * (p_a + p_b)),
-        ([0, 1], p_a, p_b),
+    midpoint = 0.5 * (p_a + p_b)
+    zero = ints([0])
+    parent_xform = wp.array([wp.transform(p_a, wp.quat_identity())], dtype=wp.transform, device=device)
+    child_xform = wp.array([wp.transform(p_b, wp.quat_identity())], dtype=wp.transform, device=device)
+    body_q = wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device)
+    # A root hinge carrying a child hinge; the closure joins the root to the child.
+    for case, prescribed, qd_start, kinematic, parent_point, child_point in (
+        ("dynamic root", 0, [0, 1, 2], [0, 0], midpoint, midpoint),
+        ("fixed root", 0, [0, 0, 1], [0], p_a, p_b),
+        ("kinematic root", 0, [0, 1, 2], [1, 0], p_a, p_b),
+        ("prescribed parent", 1, [0, 1, 2], [0, 0], p_a, p_b),
     ):
-        with test.subTest(response_dofs=response_dofs):
-            zero = ints([0])
+        with test.subTest(case=case):
+            n_dofs = qd_start[-1]
+            row_type = wp.zeros((1, 3), dtype=wp.int32, device=device)
+            at_midpoint = wp.zeros(1, dtype=wp.int32, device=device)
+            wp.launch(
+                populate_connect_J_for_size,
+                dim=1,
+                inputs=[
+                    zero,  # articulation_dof_start
+                    zero,  # art_to_world
+                    zero,  # group_to_art
+                    n_dofs,
+                    zero,  # connect_slot
+                    zero,  # connect_art
+                    zero,  # connect_joint
+                    zero,  # connect_body_p
+                    ints([1]),  # connect_body_c
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
+                    parent_xform,
+                    child_xform,
+                    ints([prescribed]),
+                    ints(kinematic),  # kinematic_dof_mask
+                    body_q,
+                    wp.zeros(2, dtype=wp.spatial_vector, device=device),
+                    wp.zeros(2, dtype=wp.vec3, device=device),
+                    ints([0, 1]),  # body_to_joint
+                    ints([-1, 0]),  # joint_ancestor
+                    ints(qd_start),
+                    wp.array([[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]] * n_dofs, dtype=wp.spatial_vector, device=device),
+                    wp.zeros(1, dtype=wp.vec3, device=device),
+                ],
+                outputs=[
+                    wp.zeros((1, 3, n_dofs), dtype=float, device=device),
+                    row_type,
+                    wp.zeros((1, 3), dtype=wp.int32, device=device),  # world_row_parent
+                    *[wp.zeros((1, 3), dtype=float, device=device) for _ in range(4)],
+                    at_midpoint,
+                ],
+                device=device,
+            )
             wrench = wp.zeros(2, dtype=wp.spatial_vector, device=device)
             wp.launch(
                 accumulate_connect_wrenches_from_impulses,
@@ -645,17 +691,16 @@ def test_open_closure_force_acts_where_the_rows_do(test, device):
                     ints([3]),  # connect_rows
                     wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
                     zero,  # joint_qd_start
-                    wp.array([wp.transform(p_a, wp.quat_identity())], dtype=wp.transform, device=device),
-                    wp.array([wp.transform(p_b, wp.quat_identity())], dtype=wp.transform, device=device),
-                    zero,  # connect_parent_prescribed
-                    ints(response_dofs),
+                    parent_xform,
+                    child_xform,
+                    at_midpoint,
                     wp.array([[1.0, 0.0, 0.0]], dtype=float, device=device),  # connect_row_inv_norm
                     zero,  # art_to_world
-                    wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device),
+                    body_q,
                     ints([0, 0]),  # body_to_articulation
                     wp.zeros(1, dtype=wp.vec3, device=device),
                     ints([3]),  # world_constraint_count
-                    ints([[PGS_CONSTRAINT_TYPE_CONNECT] * 3]),
+                    row_type,
                     wp.array([[1.0, 0.0, 0.0]], dtype=wp.float32, device=device),
                     1.0,
                 ],

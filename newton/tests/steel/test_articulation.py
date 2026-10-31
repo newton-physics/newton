@@ -924,6 +924,46 @@ def test_open_closure_from_fixed_root_pulls_at_child_anchor(test, device):
     test.assertLess(spin, 1.0e-3)
 
 
+def test_open_closure_from_kinematic_root_pulls_at_child_anchor(test, device):
+    """Pull a pendulum load toward an anchor on its kinematic free root through its center of mass without spinning it."""
+    b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    root = b.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), is_kinematic=True)
+    b.add_shape_box(root, hx=0.05, hy=0.05, hz=0.05)
+    load = b.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.8), wp.quat_identity()))
+    b.add_shape_box(load, hx=0.04, hy=0.04, hz=0.04)
+    b.add_articulation(
+        [
+            b.add_joint_free(child=root),
+            b.add_joint_ball(
+                parent=root, child=load, child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.2), wp.quat_identity())
+            ),
+        ]
+    )
+    # The root's free joint keeps response DOFs, but they are kinematic, so only the load takes the impulse.
+    _expect_one_warning(
+        test,
+        newton.exceptions.NewtonWarning,
+        "another joint already connects these bodies",
+        lambda: b.add_joint_ball(
+            parent=root, child=load, parent_xform=wp.transform(wp.vec3(0.03, 0.04, -0.2), wp.quat_identity())
+        ),
+    )
+    model = b.finalize(device=device)
+    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    control = model.control()
+    spin = 0.0
+    for _ in range(120):
+        solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+        body_q, body_qd = state_0.body_q.numpy(), state_0.body_qd.numpy()
+        rod_axis = np.array(wp.quat_to_matrix(wp.quat(*body_q[load, 3:]))).reshape(3, 3)[:, 2]
+        spin = max(spin, abs(float(rod_axis @ body_qd[load, 3:])))
+    test.assertGreater(_loop_anchor_gap(model, state_0), 5.0e-3, "the closure should stay open")
+    test.assertLess(spin, 1.0e-3)
+
+
 class TestSteelConnect(unittest.TestCase):
     pass
 
@@ -957,6 +997,7 @@ for _name in (
     "test_open_closure_on_floating_base_conserves_angular_momentum",
     "test_open_world_closure_pulls_at_child_anchor",
     "test_open_closure_from_fixed_root_pulls_at_child_anchor",
+    "test_open_closure_from_kinematic_root_pulls_at_child_anchor",
 ):
     add_function_test(TestSteelConnect, _name, globals()[_name], devices=cuda_devices)
 
@@ -1043,7 +1084,7 @@ class TestPreeliminationKernels(unittest.TestCase):
                 arr([[0.002, 0.001, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.transform),
                 arr([[0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.transform),
                 arr([1]),
-                arr([1]),
+                arr([0]),
                 arr([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.transform),
                 wp.zeros(1, dtype=wp.spatial_vector, device=device),
                 wp.zeros(1, dtype=wp.vec3, device=device),
@@ -1061,6 +1102,7 @@ class TestPreeliminationKernels(unittest.TestCase):
                 phi,
                 target,
                 inv_norm,
+                wp.zeros(1, dtype=int, device=device),
             ],
             device=device,
         )
