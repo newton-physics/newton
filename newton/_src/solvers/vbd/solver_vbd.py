@@ -218,9 +218,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     - Contact handling: interaction distance, detection slack, query radius and motion
       budget; what DAT does to motion; how to set margin and gap.
     - A debug protocol: the jitter pipeline and the explosion checklist, each in order.
-    - Special topics with symptom, cause and fix: contact stiffness too high compared to
-      the elasticity, stiffening only the membrane, a fine mesh converging slowly, DAT
-      damping, bad assets, a smaller time step making things worse, self-contact tunneling.
+    - Special topics with symptom, cause and fix: the stiffness ratio (contact against
+      elasticity, membrane against bending), a fine mesh converging slowly, DAT damping,
+      bad assets, a smaller time step making things worse, self-contact tunneling.
     - Parameter combinations from the shipped examples, and rules of thumb.
 
     The math behind the advice (step objective, block solve, rigid bodies and joints, the

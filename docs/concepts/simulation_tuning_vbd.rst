@@ -37,9 +37,9 @@ too; the other parameters control detection, truncation and the iteration.
 block solve and its call tree, the formula of every energy term, and the
 penetration-free truncation (DAT). The consequences for tuning are:
 
-- Stiff terms dominate :math:`\mathbf{H}_i`. A contact that is far stiffer than
-  the elasticity makes the local step serve the contact and neglect the rest.
-  See :ref:`vbd-fail-contact-stiffness`.
+- Stiff terms dominate :math:`\mathbf{H}_i`. One term far stiffer than the
+  others that share its vertices makes the local step serve that term and
+  neglect the rest. See :ref:`vbd-stiffness-ratio`.
 - Information moves about one ring per iteration. A fine mesh needs more
   iterations to reach the same state. See :ref:`vbd-fail-resolution`.
 - An unfinished solve becomes velocity. Corrections that did not settle inside
@@ -432,10 +432,10 @@ What Can Go Wrong and How to Fix It
      - Likely cause
      - Entry
    * - Cloth or a soft body jitters at a few vertices
-     - Contact stiffness far above the elastic stiffness
+     - Stiffness ratio: contact far above the elasticity
      - :ref:`vbd-fail-contact-stiffness`
    * - Raising one stiffness does not make the object stiffer
-     - Deformation moves into the terms that stayed soft
+     - Stiffness ratio: the deformation moves into the terms that stayed soft
      - :ref:`vbd-fail-membrane-only`
    * - A fine mesh is soft, laggy or slow to settle
      - About one ring of information per iteration
@@ -463,7 +463,8 @@ Work through these steps in order and stop at the first one that fixes it.
 1. If the scene has self-contacts, check whether the self-contact stiffness is
    disproportionately high. Keep the collision stiffness within 10x of the
    elasticity stiffness: ``soft_contact_ke`` against ``tri_ke`` for cloth or
-   ``k_mu`` for soft bodies. This is the stiffness ratio entry below.
+   ``k_mu`` for soft bodies. This is the stiffness ratio
+   (:ref:`vbd-stiffness-ratio`).
 2. If not fixed, tune the self-contact damping, ``soft_contact_kd``.
 3. If it is still not fixed, or there is no contact, increase the elasticity
    damping: bending damping ``edge_kd`` for cloth, tet damping ``k_damp`` for
@@ -509,10 +510,33 @@ Explosion: what to check, in this order
    the rest shape, and check ``vel`` and any prescribed motion in the first
    frame.
 
+.. _vbd-stiffness-ratio:
+
+Stiffness ratio
+```````````````
+
+**Symptom.** One stiffness stands far above the others, and raising it made
+things worse instead of better: a few vertices jitter and do not settle with
+more iterations, or the object does not get stiffer and even wobbles or
+buckles more.
+
+**Cause.** The stiffness ratio. Every term that acts on a vertex enters the
+same local system, so one stiffness far above the others impedes the overall
+convergence and makes some of the elasticity look less stiff. The pair depends
+on the scene: contact against the elasticity of the material it presses on,
+membrane against bending, volume against shear (the ``k_mu``, ``k_lambda`` row
+of the model table), and in general any two terms that share vertices.
+
+**Fix.** Keep the stiffnesses of terms that share vertices within about 10x of
+each other: lower the one that stands out, or raise the others with it. The
+rule is a starting point, not a universal one; after the change, check the
+behaviour the stiff term was there for, such as a grasp that must hold or a
+sheet that must not stretch. The two cases below are the common ones.
+
 .. _vbd-fail-contact-stiffness:
 
-Contact stiffness too high compared to the elasticity
-``````````````````````````````````````````````````````
+Example 1: contact stiffness too high compared to the elasticity
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 **Symptom.** Cloth layers or a grasped sheet jitter at a few vertices. The
 motion is fast, local, and does not settle when you add iterations.
@@ -524,8 +548,7 @@ the elasticity.
 stiffness (``tri_ke``) or the volumetric stiffness (``k_mu``), then check that
 grasps still hold. Lower contact stiffness also means lower friction force, so
 a grasp can slip; in the pouch scene below, lowering the contact stiffness to
-2x the membrane stiffness lost the grasp. The rule is a starting point, not a
-universal one.
+2x the membrane stiffness lost the grasp.
 
 .. figure:: ../images/vbd_tuning_stack_contact_stiffness.gif
    :alt: Animation of five stacked cloth layers with contact stiffness 30,000 N/m (jittering) and 4,000 N/m (still)
@@ -568,13 +591,13 @@ and 0.205 m/s at 200.
 
 .. _vbd-fail-membrane-only:
 
-Stiffening only the membrane does not stiffen the object
-`````````````````````````````````````````````````````````
+Example 2: stiffening only the membrane does not stiffen the object
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 **Symptom.** You raise ``tri_ke`` and ``tri_ka`` by orders of magnitude and the
 object still wobbles; at the highest values it buckles and wrinkles more.
 
-**Cause.** The stiffness ratio between the membrane and the bending terms. Once
+**Cause.** The stiffness ratio: the membrane is far stiffer than bending. Once
 the membrane is near inextensible, the deformation energy moves into bending,
 which stayed soft.
 
@@ -945,7 +968,7 @@ Rules of Thumb
   the resolution (is such a high resolution necessary? reducing it immediately
   improves convergence and so increases stiffness); the stiffness ratio (one
   stiffness far above the others impedes the overall convergence and makes
-  some of the elasticity look less stiff, see :ref:`vbd-fail-membrane-only`);
+  some of the elasticity look less stiff, see :ref:`vbd-stiffness-ratio`);
   then the time step (reducing it always helps, but not below about 1/3000 s;
   more iterations also help, and before ``dt`` gets too small, reducing ``dt``
   improves stiffness more than adding iterations).
