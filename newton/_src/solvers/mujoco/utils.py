@@ -61,14 +61,12 @@ def mjc_eq_custom_attrs(
 
 
 def mjc_parse_polycoef(polycoef: str | Sequence[float]) -> list[float]:
-    """Parse a MuJoCo five-term equality polynomial, padding omitted terms with zeros."""
+    """Parse a MuJoCo five-term equality polynomial, filling omitted terms from MuJoCo's ``0 1 0 0 0`` default."""
     if isinstance(polycoef, str):
         values = [float(x) for x in polycoef.split()]
     else:
         values = [float(x) for x in polycoef]
-    if len(values) < 5:
-        values.extend([0.0] * (5 - len(values)))
-    return values[:5]
+    return (values + [0.0, 1.0, 0.0, 0.0, 0.0][len(values) :])[:5]
 
 
 def mjc_polycoef_has_higher_order(polycoef: Sequence[float]) -> bool:
