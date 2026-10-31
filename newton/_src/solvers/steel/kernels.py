@@ -2710,8 +2710,7 @@ def accumulate_connect_wrenches_from_impulses(
     connect_joint: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
-    connect_parent_prescribed: wp.array[int],
-    body_has_response_dofs: wp.array[int],
+    connect_at_midpoint: wp.array[int],
     connect_row_inv_norm: wp.array2d[float],
     art_to_world: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -2728,8 +2727,8 @@ def accumulate_connect_wrenches_from_impulses(
 
     The row builder normalizes each axis row and stores the factor it applied, so a row impulse
     maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent and ``-`` on the
-    child, at the points the row's Jacobian uses (the anchors' midpoint when both bodies have
-    response DOFs, otherwise each body's own anchor).
+    child, at the points the row's Jacobian uses (the anchors' midpoint where the row builder set
+    ``connect_at_midpoint``, otherwise each body's own anchor).
     """
     k = wp.tid()
     base_slot = connect_slot[k]
@@ -2743,8 +2742,7 @@ def accumulate_connect_wrenches_from_impulses(
     if body_p >= 0:
         p_a = wp.transform_point(body_q[body_p], p_a)
     p_b = wp.transform_point(body_q[body_c], wp.transform_get_translation(joint_X_c[joint]))
-    shared_anchor = connect_parent_prescribed[k] == 0 and body_has_response_dofs[body_p] != 0
-    if shared_anchor and body_has_response_dofs[body_c] != 0:
+    if connect_at_midpoint[k] != 0:
         p_a = 0.5 * (p_a + p_b)
         p_b = p_a
     for axis in range(3):
@@ -3292,6 +3290,24 @@ def allocate_connect_slots(
     )
 
 
+@wp.func
+def _walk_has_free_dof(
+    body: int,
+    body_to_joint: wp.array[int],
+    joint_ancestor: wp.array[int],
+    joint_qd_start: wp.array[int],
+    kinematic_dof_mask: wp.array[int],
+) -> bool:
+    """Return whether a body's ancestor walk has a DOF that is not kinematic."""
+    curr = body_to_joint[body]
+    while curr != -1:
+        for d in range(joint_qd_start[curr], joint_qd_start[curr + 1]):
+            if kinematic_dof_mask[d] == 0:
+                return True
+        curr = joint_ancestor[curr]
+    return False
+
+
 @wp.kernel
 def populate_connect_J_for_size(
     articulation_dof_start: wp.array[int],
@@ -3306,7 +3322,7 @@ def populate_connect_J_for_size(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     connect_parent_prescribed: wp.array[int],
-    body_has_response_dofs: wp.array[int],
+    kinematic_dof_mask: wp.array[int],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
@@ -3323,6 +3339,7 @@ def populate_connect_J_for_size(
     world_phi: wp.array2d[float],
     world_target_velocity: wp.array2d[float],
     connect_row_inv_norm: wp.array2d[float],
+    connect_at_midpoint: wp.array[int],
 ):
     """Fill the Jacobian and metadata of the connect rows of one size group.
 
@@ -3333,8 +3350,9 @@ def populate_connect_J_for_size(
     pair acts at one world point and adds no couple while the closure is open. Once the
     closure is satisfied this is the per-anchor Jacobian. Shared ancestors cancel. The
     anchors are the translations of the closure joint's ``joint_X_p`` / ``joint_X_c``,
-    read every step. If either body has no response DOFs (such as a fixed root of the
-    articulation), only one side takes the impulse, so each body keeps its own anchor.
+    read every step. If either body's ancestor walk has no non-kinematic DOF (such as a
+    fixed or kinematic root of the articulation), only one side takes the impulse, so each
+    body keeps its own anchor. ``connect_at_midpoint`` records the choice for the force report.
 
     A prescribed parent (a kinematic body outside the child's articulation, or the world
     when ``connect_body_p[k] < 0``) contributes no DOFs and takes no reaction, so the row
@@ -3379,7 +3397,13 @@ def populate_connect_J_for_size(
         rel_a = p_a - origin
         rel_b = p_b - origin
         delta = p_a - p_b
-        if not prescribed and body_has_response_dofs[body_p] != 0 and body_has_response_dofs[body_c] != 0:
+        at_midpoint = (
+            not prescribed
+            and _walk_has_free_dof(body_p, body_to_joint, joint_ancestor, joint_qd_start, kinematic_dof_mask)
+            and _walk_has_free_dof(body_c, body_to_joint, joint_ancestor, joint_qd_start, kinematic_dof_mask)
+        )
+        connect_at_midpoint[k] = int(at_midpoint)
+        if at_midpoint:
             # Both walks take their lever arm from the anchors' midpoint, so the impulse pair
             # is not a couple across an open closure.
             rel_a = (p_a - 0.5 * delta) - origin
