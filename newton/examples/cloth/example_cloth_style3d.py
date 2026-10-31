@@ -23,6 +23,7 @@ from newton.solvers import style3d
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the cloth scene and configure the Style3D solver."""
         # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -129,7 +130,7 @@ class Example:
 
         self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
-            iterations=self.iterations,
+            config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

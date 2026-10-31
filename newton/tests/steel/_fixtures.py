@@ -48,6 +48,25 @@ def _heap(device, nx=6, ny=6, nz=3, pitch=0.042, half=0.02, kinematic_tray=False
     return model
 
 
+def _parent_wrench_scene(device):
+    """Two free boxes resting on the ground, each carrying a smaller box welded on top."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    for x in (0.0, 0.5):
+        base = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
+        builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
+        top = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.25), wp.quat_identity()))
+        builder.add_shape_box(top, hx=0.05, hy=0.05, hz=0.05)
+        free = builder.add_joint_free(base)
+        weld = builder.add_joint_fixed(
+            base, top, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity())
+        )
+        builder.add_articulation([free, weld])
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    return model, pipeline
+
+
 def _build_four_bar():
     """Build a planar four-bar: two grounded revolute chains closed by a BALL loop joint.
 
