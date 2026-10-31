@@ -97,6 +97,7 @@ def _simulate(
     support_angular=None,
     observe=None,
     contact_f=False,
+    parent_f=False,
     anchor_deg=None,
     on_solver=None,
     **solver_kwargs,
@@ -143,7 +144,10 @@ def _simulate(
     obj = bodies[0]
     start = state_0.body_q.numpy()[obj][:3].copy()
 
-    observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts) if contact_f else None
+    kinds = {SolverBase.ObservableKind.CONTACT_F} if contact_f else set()
+    if parent_f:
+        kinds.add(SolverBase.ObservableKind.BODY_PARENT_F)
+    observables = solver.observables(kinds, contacts=contacts) if kinds else None
 
     def step(state_in, state_out):
         state_in.clear_forces()
@@ -606,6 +610,29 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertGreater(seen["sliding"], 0.1)
         reported_tangent = float(np.linalg.norm(seen["reported"][:2]))
         self.assertAlmostEqual(reported_tangent, seen["sliding"], delta=1.0e-4 + 1.0e-4 * seen["sliding"])
+
+    def test_free_joint_parent_wrench_balances_the_angular_rows(self):
+        """Report a zero BODY_PARENT_F on a free joint while its spin or rolling rows slow the sphere."""
+        for condim, angular in ((4, (0.0, 0.0, 60.0)), (6, (100.0, 0.0, 0.0))):
+            seen = {}
+
+            def observe(solver, contacts, observables, seen=seen):
+                seen["parent_f"] = observables.body_parent_f.numpy()[1]
+
+            with self.subTest(condim=condim):
+                _, twist, _ = _simulate(
+                    "sphere",
+                    0.0,
+                    steps=2,
+                    angular=angular,
+                    condim=condim,
+                    rolling_material=0.01,
+                    torsional_material=0.01,
+                    parent_f=True,
+                    observe=observe,
+                )
+                self.assertLess(np.linalg.norm(twist[3:6]), 0.99 * np.linalg.norm(angular))
+                np.testing.assert_allclose(seen["parent_f"], 0.0, atol=1.0e-5)
 
     def test_invalid_options_raise(self):
         """Reject invalid condim values and unsupported options; a solver without the rows ignores condim edits."""

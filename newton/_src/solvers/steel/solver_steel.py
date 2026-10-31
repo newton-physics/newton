@@ -26,6 +26,7 @@ from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
 from .contact_angular_friction import (
+    accumulate_free_rigid_angular_wrenches,
     configure_free_rigid_angular_friction,
     free_rigid_angular_friction_gs_sources,
     free_rigid_route_bodies,
@@ -7240,6 +7241,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 outputs=[contact_wrench, dense_slot_contact, propagation_slot_contact],
                 device=model.device,
             )
+            if self._free_rigid_angular_rows:
+                accumulate_free_rigid_angular_wrenches(self, contacts, rigid_contact_max, inv_dt, contact_wrench)
             spin_families = []
             if self._contact_torsion_enabled:
                 spin_families.append(

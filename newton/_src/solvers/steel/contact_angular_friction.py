@@ -18,6 +18,7 @@ import warp as wp
 from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_CONTACT_SPIN,
+    accumulate_free_rigid_angular_wrenches_from_impulses,
     build_mf_angular_friction_rows,
     gate_free_rigid_angular_coefficients,
 )
@@ -136,6 +137,32 @@ def launch_free_rigid_angular_friction_rows(solver, state_aug, contacts, threads
             solver._mf_target_velocity,
             solver._mf_row_rebound_velocity,
         ],
+        device=solver.model.device,
+    )
+
+
+def accumulate_free_rigid_angular_wrenches(solver, contacts, rigid_contact_max: int, inv_dt: float, wrench) -> None:
+    """Add the solved rolling and spin torques of free-body contacts to the ``BODY_PARENT_F`` contact wrenches."""
+    wp.launch(
+        accumulate_free_rigid_angular_wrenches_from_impulses,
+        dim=rigid_contact_max,
+        inputs=[
+            contacts.rigid_contact_count,
+            rigid_contact_max,
+            solver._contact_world,
+            solver._contact_slot,
+            solver._contact_path,
+            solver._contact_slots_needed,
+            contacts.rigid_contact_shape0,
+            contacts.rigid_contact_shape1,
+            solver.model.shape_body,
+            solver._mf_constraint_count,
+            solver._mf_J_a,
+            solver._mf_J_b,
+            solver._mf_impulses,
+            inv_dt,
+        ],
+        outputs=[wrench],
         device=solver.model.device,
     )
 

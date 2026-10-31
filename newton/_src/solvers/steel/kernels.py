@@ -6505,6 +6505,45 @@ def build_mf_angular_friction_rows(
 
 
 @wp.kernel
+def accumulate_free_rigid_angular_wrenches_from_impulses(
+    contact_count: wp.array[wp.int32],
+    rigid_contact_max: int,
+    contact_world: wp.array[wp.int32],
+    contact_slot: wp.array[wp.int32],
+    contact_path: wp.array[wp.int32],
+    contact_slots_needed: wp.array[wp.int32],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
+    mf_constraint_count: wp.array[wp.int32],
+    mf_J_a: wp.array3d[float],
+    mf_J_b: wp.array3d[float],
+    mf_impulses: wp.array2d[wp.float32],
+    inv_dt: float,
+    # outputs
+    body_contact_wrench: wp.array[wp.spatial_vector],
+):
+    """Add the rolling and spin rows of each free-body contact to its two bodies as torques."""
+    c = wp.tid()
+    if c >= wp.min(contact_count[0], rigid_contact_max) or contact_path[c] != 1:
+        return
+    slot = contact_slot[c]
+    if slot < 0:
+        return
+    world = contact_world[c]
+    torque_a = wp.vec3(0.0)
+    torque_b = wp.vec3(0.0)
+    for row in range(slot + 3, wp.min(slot + contact_slots_needed[c], mf_constraint_count[world])):
+        lam = mf_impulses[world, row] * inv_dt
+        torque_a += lam * wp.vec3(mf_J_a[world, row, 3], mf_J_a[world, row, 4], mf_J_a[world, row, 5])
+        torque_b += lam * wp.vec3(mf_J_b[world, row, 3], mf_J_b[world, row, 4], mf_J_b[world, row, 5])
+    if contact_shape0[c] >= 0 and shape_body[contact_shape0[c]] >= 0:
+        wp.atomic_add(body_contact_wrench, shape_body[contact_shape0[c]], wp.spatial_vector(wp.vec3(0.0), torque_a))
+    if contact_shape1[c] >= 0 and shape_body[contact_shape1[c]] >= 0:
+        wp.atomic_add(body_contact_wrench, shape_body[contact_shape1[c]], wp.spatial_vector(wp.vec3(0.0), torque_b))
+
+
+@wp.kernel
 def allocate_rigid_velocity_limit_slots(
     free_rigid_body_indices: wp.array[int],
     body_to_articulation: wp.array[int],
