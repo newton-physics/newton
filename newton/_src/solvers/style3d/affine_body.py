@@ -1,0 +1,164 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+import warp as wp
+
+from ...sim import Model, State
+from ..solver import integrate_rigid_body
+
+
+@wp.func
+def inertia_to_second_moment(inertia: wp.mat33) -> wp.mat33:
+    """Convert a COM inertia tensor to its mass second-moment matrix.
+
+    For positions r relative to the COM, the mass second moment is
+    S = integral(r r^T dm). The inertia tensor satisfies I = trace(S) Id - S,
+    where Id is the identity matrix. In 3D, trace(I) = 2 trace(S), so
+    S = 0.5 trace(I) Id - I. Both tensors have units of kg*m^2.
+    """
+    return 0.5 * wp.trace(inertia) * wp.identity(3, float) - inertia
+
+
+@wp.kernel
+def body_to_affine_kernel(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    dt: float,
+    # outputs
+    x: wp.array[wp.vec3],
+    x_inertia: wp.array[wp.vec3],
+):
+    body = wp.tid()
+    start = 4 * body
+    pose = body_q[body]
+
+    # Use semi-implicit rigid-body integration to define the inertial target pose.
+    next_pose, _ = integrate_rigid_body(
+        pose,
+        body_qd[body],
+        body_f[body],
+        body_com[body],
+        body_inertia[body],
+        body_inv_mass[body],
+        body_inv_inertia[body],
+        gravity[body_world[body]],
+        0.0,  # angular_damping
+        dt,
+    )
+
+    # Anchor the affine map at the COM, accounting for the local body-frame offset.
+    center = wp.transform_point(pose, body_com[body])
+    next_center = wp.transform_point(next_pose, body_com[body])
+
+    # Layout: [COM, A[:, 0], A[:, 1], A[:, 2]], all expressed in the world frame.
+    # Store directions without translation to preserve precision far from the origin.
+    x[start + 0] = center
+    x[start + 1] = wp.transform_vector(pose, wp.vec3(1.0, 0.0, 0.0))
+    x[start + 2] = wp.transform_vector(pose, wp.vec3(0.0, 1.0, 0.0))
+    x[start + 3] = wp.transform_vector(pose, wp.vec3(0.0, 0.0, 1.0))
+
+    # Keep inertial targets in the same affine coordinates as the current state.
+    x_inertia[start + 0] = next_center
+    x_inertia[start + 1] = wp.transform_vector(next_pose, wp.vec3(1.0, 0.0, 0.0))
+    x_inertia[start + 2] = wp.transform_vector(next_pose, wp.vec3(0.0, 1.0, 0.0))
+    x_inertia[start + 3] = wp.transform_vector(next_pose, wp.vec3(0.0, 0.0, 1.0))
+
+
+@wp.kernel
+def affine_to_body_kernel(
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    dt: float,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    body = wp.tid()
+    start = 4 * body
+    center = x[start]
+    linear = v[start]
+    affine = wp.matrix_from_cols(x[start + 1], x[start + 2], x[start + 3])
+    affine_velocity = wp.matrix_from_cols(v[start + 1], v[start + 2], v[start + 3])
+
+    # The COM second moment defines the mass metric for the rigid fit.
+    moment = inertia_to_second_moment(body_inertia[body])
+    moment_scale = wp.trace(moment)
+    if moment_scale > 0.0:
+        moment = moment / moment_scale
+    else:
+        # Bodies without inertia still need a geometric pose fit.
+        moment = wp.identity(3, float)
+
+    # Warp's signed SVD returns proper rotations U and V, even for reflections.
+    U, _, V = wp.svd3(affine @ moment)
+    rotation = wp.normalize(wp.quat_from_matrix(U @ wp.transpose(V)))
+
+    # Recover the previous configuration from the finite-difference velocity.
+    previous_affine = affine - dt * affine_velocity
+    U_previous, _, V_previous = wp.svd3(previous_affine @ moment)
+    previous_rotation = wp.normalize(wp.quat_from_matrix(U_previous @ wp.transpose(V_previous)))
+
+    # Invert integrate_rigid_body's normalized Euler quaternion update:
+    # delta_rotation = normalize(quat(0.5 * dt * angular, 1.0)).
+    delta_rotation = rotation * wp.quat_inverse(previous_rotation)
+    angular = wp.vec3(delta_rotation[0], delta_rotation[1], delta_rotation[2]) * (2.0 / (dt * delta_rotation[3]))
+
+    body_q[body] = wp.transform(center - wp.quat_rotate(rotation, body_com[body]), rotation)
+    body_qd[body] = wp.spatial_vector(linear, angular)
+
+
+class AffineBody:
+    """Represent model bodies by a position and three basis vectors in caller-owned buffers.
+
+    Each body occupies four consecutive vectors: its world-space center of
+    mass followed by the three columns of its affine matrix. The columns
+    encode directions, independent of translation.
+    Inertial targets are predicted using rigid-body integration.
+    Rigid poses are recovered by mass-weighted least squares, using an isotropic
+    metric for bodies with zero inertia. Angular velocities invert the rigid
+    integrator's normalized Euler quaternion update.
+    """
+
+    def __init__(self, model: Model) -> None:
+        self.model = model
+
+    def to_internal_state(self, state: State, x: wp.array[wp.vec3], x_inertia: wp.array[wp.vec3], dt: float) -> None:
+        """Write current affine coordinates and inertial targets for a positive time step."""
+        if self.model.body_count > 0:
+            wp.launch(
+                body_to_affine_kernel,
+                dim=self.model.body_count,
+                inputs=[
+                    state.body_q,
+                    state.body_qd,
+                    state.body_f,
+                    self.model.body_com,
+                    self.model.body_inertia,
+                    self.model.body_inv_mass,
+                    self.model.body_inv_inertia,
+                    self.model.body_world,
+                    self.model.gravity,
+                    dt,
+                ],
+                outputs=[x, x_inertia],
+                device=self.model.device,
+            )
+
+    def from_internal_state(self, state: State, x: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float) -> None:
+        """Fit rigid states from affine coordinates and their finite-difference velocities."""
+        if self.model.body_count > 0:
+            wp.launch(
+                affine_to_body_kernel,
+                dim=self.model.body_count,
+                inputs=[x, v, self.model.body_com, self.model.body_inertia, dt],
+                outputs=[state.body_q, state.body_qd],
+                device=self.model.device,
+            )

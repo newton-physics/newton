@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.style3d.affine_body import AffineBody
 from newton._src.solvers.style3d.builder import PDMatrixBuilder, _compute_max_neighbors
 from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -452,7 +453,156 @@ def test_global_particles_use_global_gravity(test, device):
     test.assertTrue(np.all(state_1.particle_qd.numpy()[:, 2] < -1.0e-6))
 
 
+@wp.kernel
+def _advance_affine_coordinates(x: wp.array[wp.vec3], x_inertia: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float):
+    coordinate = wp.tid()
+    v[coordinate] = (x_inertia[coordinate] - x[coordinate]) / dt
+    x[coordinate] = x_inertia[coordinate]
+
+
+def test_affine_body_state_conversion(test, device):
+    """Recover integrated rigid states and fit deformed affine configurations."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    moments = (
+        np.array([[0.12, 0.02, -0.01], [0.02, 0.3, 0.025], [-0.01, 0.025, 0.6]]),
+        np.eye(3) * 0.25,
+        np.zeros((3, 3)),
+        np.eye(3) * 0.25,
+    )
+    for i, moment in enumerate(moments):
+        if i == 1:
+            builder.begin_world(gravity=(1.0, -2.0, 0.5))
+        builder.add_link(
+            xform=wp.transform(
+                wp.vec3(0.4 * i, -0.2, 1.0),
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7 + i),
+            ),
+            com=wp.vec3(0.2, -0.4, 0.1),
+            mass=0.0 if i == 2 else 2.0,
+            inertia=wp.mat33(np.trace(moment) * np.eye(3) - moment),
+        )
+        if i == 1:
+            builder.end_world()
+        builder.body_qd[i] = wp.spatial_vector(0.3, -0.1, 0.2, 0.4, -0.7, 1.2)
+    builder.body_qd[1] = wp.spatial_vector(-0.4, 0.2, 0.7, 8.0, -10.0, 12.0)
+    builder.body_qd[3] = wp.spatial_vector(0.0)
+    model = builder.finalize(device=device)
+    affine_body = AffineBody(model)
+    rigid_solver = newton.solvers.SolverBase(model)
+    state_in, state_ref, state_out = model.state(), model.state(), model.state()
+    forces = np.zeros((model.body_count, 6), dtype=np.float32)
+    forces[0] = (0.7, -0.3, 0.5, -0.2, 0.4, 0.3)
+    state_in.body_f.assign(forces)
+    poses = state_in.body_q.numpy().copy()
+    velocities = state_in.body_qd.numpy().copy()
+    centers = model.body_com.numpy()
+    inertias = model.body_inertia.numpy()
+
+    # Views leave particle entries and trailing storage outside the component.
+    storage_x = wp.full(4 * model.body_count + 5, wp.vec3(17.0), dtype=wp.vec3, device=device)
+    storage_x_inertia = wp.clone(storage_x)
+    storage_v = wp.clone(storage_x)
+    x, x_inertia, v = storage_x[2:-3], storage_x_inertia[2:-3], storage_v[2:-3]
+    for dt in (0.02, 0.15):
+        with test.subTest(dt=dt):
+            rigid_solver.integrate_bodies(model, state_in, state_ref, dt)
+            affine_body.to_internal_state(state_in, x, x_inertia, dt)
+            coordinates = x.numpy().reshape(-1, 4, 3)
+            inertial_coordinates = x_inertia.numpy().reshape(-1, 4, 3)
+            for i, (pose, next_pose) in enumerate(zip(poses, state_ref.body_q.numpy(), strict=True)):
+                rotation = np.array(wp.quat_to_matrix(wp.quat(*pose[3:]))).reshape(3, 3)
+                next_rotation = np.array(wp.quat_to_matrix(wp.quat(*next_pose[3:]))).reshape(3, 3)
+                expected_coordinates = np.vstack((pose[:3] + rotation @ centers[i], rotation.T))
+                next_coordinates = np.vstack((next_pose[:3] + next_rotation @ centers[i], next_rotation.T))
+                np.testing.assert_allclose(coordinates[i], expected_coordinates, atol=2e-6)
+                np.testing.assert_allclose(inertial_coordinates[i], next_coordinates, atol=2e-6)
+
+            wp.launch(_advance_affine_coordinates, dim=len(x), inputs=[x, x_inertia, v, dt], device=device)
+            affine_body.from_internal_state(state_out, x, v, dt)
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    affine_body.to_internal_state(state_in, x, x_inertia, dt)
+                    wp.launch(_advance_affine_coordinates, dim=len(x), inputs=[x, x_inertia, v, dt], device=device)
+                    affine_body.from_internal_state(state_out, x, v, dt)
+                state_out.body_q.fill_(wp.transform_identity())
+                state_out.body_qd.fill_(wp.spatial_vector(0.0))
+                wp.capture_launch(capture.graph)
+
+            for expected, actual in zip(state_ref.body_q.numpy(), state_out.body_q.numpy(), strict=True):
+                np.testing.assert_allclose(actual[:3], expected[:3], atol=2e-5)
+                np.testing.assert_allclose(
+                    wp.quat_to_matrix(wp.quat(*actual[3:])), wp.quat_to_matrix(wp.quat(*expected[3:])), atol=2e-5
+                )
+            np.testing.assert_allclose(state_out.body_qd.numpy(), state_ref.body_qd.numpy(), atol=1e-4, rtol=2e-5)
+
+    # Stretch, shear, and reflection require fitting beyond a rigid round trip.
+    deformations = (
+        np.array([[1.1, 0.15, 0.0], [-0.05, 0.9, 0.12], [0.03, 0.0, 1.2]]),
+        np.diag([1.2, 0.8, -0.6]),
+        np.diag([1.1, 0.9, 1.2]),
+        np.eye(3),
+    )
+    velocity_gradient = np.array([[0.1, -0.6, 0.3], [0.8, -0.2, 0.1], [-0.4, 0.5, 0.2]])
+    coordinate_velocities = v.numpy().reshape(-1, 4, 3)
+    expected_poses, expected_velocities = [], []
+    for i, deformation in enumerate(deformations):
+        rotation = np.array(wp.quat_to_matrix(wp.quat(*poses[i, 3:]))).reshape(3, 3)
+        affine = rotation @ deformation
+        center = coordinates[i, 0].copy()
+        coordinates[i, 1:] = affine.T
+        coordinate_velocities[i, 0] = velocities[i, :3]
+        coordinate_velocities[i, 1:] = velocity_gradient.T
+        moment = 0.5 * np.trace(inertias[i]) * np.eye(3) - inertias[i]
+        if not np.any(moment):
+            moment = np.eye(3)
+
+        # Six mass samples reproduce the second moment for independent
+        # NumPy Procrustes fits of the current and previous configurations.
+        factor = np.linalg.cholesky(moment)
+        samples = np.vstack((factor.T, -factor.T))
+        fits = []
+        for configuration in (affine, affine - dt * velocity_gradient):
+            target_points = samples @ configuration.T
+            u, _, vt = np.linalg.svd(target_points.T @ samples)
+            fits.append(u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt)
+        fit, previous_fit = fits
+        expected_poses.append((center - fit @ centers[i], fit))
+        # The inverse Cayley transform independently recovers the angular velocity.
+        delta = fit @ previous_fit.T
+        skew = (2.0 / dt) * np.linalg.solve((delta + np.eye(3)).T, (delta - np.eye(3)).T).T
+        omega = np.array([skew[2, 1], skew[0, 2], skew[1, 0]])
+        expected_velocities.append(np.concatenate((velocities[i, :3], omega)))
+    x.assign(coordinates.reshape(-1, 3))
+    v.assign(coordinate_velocities.reshape(-1, 3))
+    affine_body.from_internal_state(state_out, x, v, dt)
+    for actual, (position, rotation) in zip(state_out.body_q.numpy(), expected_poses, strict=True):
+        np.testing.assert_allclose(actual[:3], position, atol=2e-5)
+        actual_rotation = np.array(wp.quat_to_matrix(wp.quat(*actual[3:]))).reshape(3, 3)
+        np.testing.assert_allclose(actual_rotation, rotation, atol=2e-5)
+        test.assertAlmostEqual(float(np.linalg.det(actual_rotation)), 1.0, places=5)
+    np.testing.assert_allclose(state_out.body_qd.numpy(), expected_velocities, atol=2e-5)
+    np.testing.assert_array_equal(state_in.body_q.numpy(), poses)
+    np.testing.assert_array_equal(state_in.body_qd.numpy(), velocities)
+    np.testing.assert_array_equal(state_in.body_f.numpy(), forces)
+    for storage in (storage_x, storage_x_inertia, storage_v):
+        np.testing.assert_array_equal(storage.numpy()[[0, 1, -3, -2, -1]], np.full((5, 3), 17.0))
+
+    empty_model = newton.ModelBuilder().finalize(device=device)
+    empty_affine_body = AffineBody(empty_model)
+    empty_affine_body.to_internal_state(empty_model.state(), x[:0], x_inertia[:0], dt)
+    empty_affine_body.from_internal_state(empty_model.state(), x[:0], v[:0], dt)
+
+
 devices = get_test_devices()
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_affine_body_state_conversion",
+    test_affine_body_state_conversion,
+    devices=devices,
+    check_output=False,
+)
 
 
 add_function_test(
