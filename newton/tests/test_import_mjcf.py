@@ -7180,6 +7180,31 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         np.testing.assert_array_equal(converted.eq_type, native.eq_type)
         np.testing.assert_allclose(converted.eq_data[:, :5], native.eq_data[:, :5], atol=1e-7)
 
+    def test_scale_applies_to_slide_polycoef(self):
+        """Scale polycoef terms of slide endpoints with the import scale."""
+        scale = 2.0
+        cases = (
+            ('<joint joint1="s1" polycoef="0.1"/>', [0.2, 2.0, 0.0, 0.0, 0.0]),
+            ('<joint joint1="s1" joint2="h1" polycoef="0.1 0.5 0.3"/>', [0.2, 1.0, 0.6, 0.0, 0.0]),
+            ('<joint joint1="h1" joint2="s1" polycoef="0.1 0.5 0.3"/>', [0.1, 0.25, 0.075, 0.0, 0.0]),
+        )
+        for equality, expected in cases:
+            with self.subTest(equality=equality):
+                mjcf = f"""<mujoco><worldbody>
+    <body name="a">{_EQUALITY_TEST_JOINTS["h1"]}<geom type="sphere" size="0.05" mass="1"/></body>
+    <body name="b" pos="1 0 0">{_EQUALITY_TEST_JOINTS["s1"]}<geom type="sphere" size="0.05" mass="1"/></body>
+</worldbody><equality>{equality}</equality></mujoco>"""
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                # One-ended rows stay MuJoCo-only; the quadratic term is beyond a Newton mimic.
+                warning = "higher-order polycoef" if 'joint2="' in equality else "omit joint2"
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, warning):
+                    builder.add_mjcf(mjcf, scale=scale)
+                solver = SolverMuJoCo(
+                    builder.finalize(device="cpu"), use_mujoco_cpu=True, kinematic_switchable_roots=False
+                )
+                np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], expected, rtol=1e-6)
+
     def test_unknown_joint_raises(self):
         """Reject an equality that names an unknown joint as either endpoint."""
         for equality in ('<joint joint1="h1" joint2="missing"/>', '<joint joint1="missing" joint2="h1"/>'):
@@ -7224,20 +7249,42 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "of another world"):
             SolverMuJoCo(model, disable_contacts=True)
 
+    def test_reject_cross_world_dof_reference(self):
+        """Reject a DoF selector in one world that targets a DoF of another world."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for _ in range(2):
+            builder.begin_world()
+            builder.add_mjcf(
+                self._two_body_mjcf('<joint joint1="h1" joint2="h2"/>'), convert_mjc_equality_constraints=False
+            )
+            builder.end_world()
+        joint1 = builder.custom_attributes["mujoco:equality_constraint_joint1"].values
+        joint1_dof = builder.custom_attributes["mujoco:equality_constraint_joint1_dof"].values
+        joint1_dof[1] = builder.joint_qd_start[joint1[0]]  # world 1's selector now names world 0's h1 DoF
+        model = builder.finalize()
+        with self.assertRaisesRegex(ValueError, "of another world"):
+            SolverMuJoCo(model, disable_contacts=True)
+
     def test_reject_heterogeneous_dof_selectors(self):
         """Reject separate worlds whose joint equalities select different DoFs of the same joint."""
-        joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"]
-        for swap_world1, error in ((False, None), (True, "joint1_dof mismatch at position 0")):
+        joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"] + _EQUALITY_TEST_JOINTS["s1"]
+        cases = (
+            (("h1", "h2"), None),
+            (("h2", "h1"), "joint1_dof mismatch at position 0"),
+            (("h1", "s1"), "joint2_dof mismatch at position 0"),
+        )
+        for world1_pair, error in cases:
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
             for world in range(2):
-                joint1, joint2 = ("h2", "h1") if swap_world1 and world == 1 else ("h1", "h2")
+                joint1, joint2 = world1_pair if world == 1 else ("h1", "h2")
                 builder.begin_world()
                 with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "multi-DoF joint"):
                     builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
                 builder.end_world()
             model = builder.finalize()
-            with self.subTest(swap_world1=swap_world1):
+            with self.subTest(world1_pair=world1_pair):
                 if error is None:
                     SolverMuJoCo(model, disable_contacts=True)
                 else:

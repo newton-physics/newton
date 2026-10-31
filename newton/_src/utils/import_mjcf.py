@@ -2982,6 +2982,11 @@ def parse_mjcf(
                 custom_attrs["mujoco:equality_constraint_joint1_dof"] = joint1_dof
                 custom_attrs["mujoco:equality_constraint_joint2_dof"] = joint2_dof
                 polycoef_values = mjc_parse_polycoef(polycoef)
+                # Slide coordinates are imported in scaled lengths: q1 = sum(c_k q2^k)
+                # becomes s1 q1 = sum(c_k s1 / s2^k (s2 q2)^k).
+                s1 = scale if sanitize_name(joint1_name) in mjcf_slide_joint_names else 1.0
+                s2 = scale if joint2_name and sanitize_name(joint2_name) in mjcf_slide_joint_names else 1.0
+                polycoef_values = [c * s1 / s2**k for k, c in enumerate(polycoef_values)]
                 # Newton mimic constraints couple two whole scalar joints; other
                 # endpoints stay MuJoCo equality rows resolved per DoF.
                 scalar_pair = joint2_idx >= 0 and all(
