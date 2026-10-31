@@ -888,24 +888,25 @@ def apply_body_deltas(
     deltas: wp.array[wp.spatial_vector],
     constraint_inv_weights: wp.array[float],
     dt: float,
-    # outputs
     q_out: wp.array[wp.transform],
     qd_out: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
+    tf = q_in[tid]
+    velocity = qd_in[tid]
     inv_m = body_inv_m[tid]
     if inv_m == 0.0:
-        q_out[tid] = q_in[tid]
-        qd_out[tid] = qd_in[tid]
+        q_out[tid] = tf
+        qd_out[tid] = velocity
         return
+
     inv_I = body_inv_I[tid]
-
-    tf = q_in[tid]
+    inertia = body_I[tid]
     delta = deltas[tid]
+    com = body_com[tid]
 
-    v0 = wp.spatial_top(qd_in[tid])
-    w0 = wp.spatial_bottom(qd_in[tid])
-
+    v0 = wp.spatial_top(velocity)
+    w0 = wp.spatial_bottom(velocity)
     p0 = wp.transform_get_translation(tf)
     q0 = wp.transform_get_rotation(tf)
 
@@ -918,34 +919,51 @@ def apply_body_deltas(
     dp = wp.spatial_top(delta) * (inv_m * weight)
     dq = wp.spatial_bottom(delta) * weight
 
-    wb = wp.quat_rotate_inv(q0, w0)
-    dwb = inv_I * wp.quat_rotate_inv(q0, dq)
-    # coriolis forces delta from dwb = (wb + dwb) I (wb + dwb) - wb I wb
-    tb = wp.cross(dwb, body_I[tid] * (wb + dwb)) + wp.cross(wb, body_I[tid] * dwb)
-    dw1 = wp.quat_rotate(q0, dwb - dt * inv_I * tb)
+    twice_x = 2.0 * q0[0]
+    twice_y = 2.0 * q0[1]
+    twice_z = 2.0 * q0[2]
+    diagonal = 2.0 * q0[3] * q0[3] - 1.0
+    xx = twice_x * q0[0]
+    yy = twice_y * q0[1]
+    zz = twice_z * q0[2]
+    xy = twice_x * q0[1]
+    xz = twice_x * q0[2]
+    yz = twice_y * q0[2]
+    wx = twice_x * q0[3]
+    wy = twice_y * q0[3]
+    wz = twice_z * q0[3]
+    rotation = wp.mat33(
+        diagonal + xx,
+        xy - wz,
+        xz + wy,
+        xy + wz,
+        diagonal + yy,
+        yz - wx,
+        xz - wy,
+        yz + wx,
+        diagonal + zz,
+    )
+    inverse_rotation = wp.transpose(rotation)
+    wb = inverse_rotation * w0
+    dwb = inv_I * (inverse_rotation * dq)
+    tb = wp.cross(dwb, inertia * (wb + dwb)) + wp.cross(wb, inertia * dwb)
+    dw1 = rotation * (dwb - dt * (inv_I * tb))
 
-    # update orientation
     q1 = q0 + 0.5 * wp.quat(dw1 * dt, 0.0) * q0
     q1 = wp.normalize(q1)
 
-    # update position
-    com = body_com[tid]
-    x_com = p0 + wp.quat_rotate(q0, com)
+    x_com = p0 + rotation * com
     p1 = x_com + dp * dt
     p1 -= wp.quat_rotate(q1, com)
-
     q_out[tid] = wp.transform(p1, q1)
 
-    # update linear and angular velocity
     v1 = v0 + dp
     w1 = w0 + dw1
-
-    # XXX this improves gradient stability
-    if wp.length(v1) < 1e-4:
+    # Keep the float32 squared 1e-4 threshold used for gradient stability.
+    if wp.length_sq(v1) < 9.99999905104687e-9:
         v1 = wp.vec3(0.0)
-    if wp.length(w1) < 1e-4:
+    if wp.length_sq(w1) < 9.99999905104687e-9:
         w1 = wp.vec3(0.0)
-
     qd_out[tid] = wp.spatial_vector(v1, w1)
 
 
