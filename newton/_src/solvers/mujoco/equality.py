@@ -571,7 +571,8 @@ def add_equality_joint(
         builder: Model builder receiving the constraint.
         joint1: Dependent Newton joint index.
         joint2: Reference Newton joint index.
-        polycoef: Up to five polynomial coefficients.
+        polycoef: Up to five polynomial coefficients. Omitted higher-order terms are zero, whereas MJCF
+            ``polycoef`` fills omitted terms from MuJoCo's ``0 1 0 0 0`` default.
         label: Optional constraint label.
         enabled: Whether the constraint is active.
         solref: Optional MuJoCo constraint reference parameters.
@@ -622,7 +623,8 @@ def add_equality_tendon(
         builder: Model builder receiving the constraint.
         tendon1: Dependent ``mujoco:tendon`` index.
         tendon2: Reference ``mujoco:tendon`` index, or ``-1`` for none.
-        polycoef: Up to five polynomial coefficients.
+        polycoef: Up to five polynomial coefficients. Omitted higher-order terms are zero, whereas MJCF
+            ``polycoef`` fills omitted terms from MuJoCo's ``0 1 0 0 0`` default.
         label: Optional constraint label.
         enabled: Whether the constraint is active.
         solref: Optional MuJoCo constraint reference parameters.

@@ -8653,6 +8653,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return ""
             dof = int(dofs[i]) if dofs is not None else -1
             if dof >= 0:
+                first_dof = int(joint_qd_start[joint])
+                if not first_dof <= dof < first_dof + int(joint_dof_dim[joint].sum()):
+                    raise ValueError(
+                        f"Joint equality {i} endpoint {endpoint} selects DoF {dof}, which does not belong to "
+                        f"joint '{model.joint_label[joint]}'."
+                    )
                 mjc_joint = dof_to_mjc_joint[dof] if dof < len(dof_to_mjc_joint) else -1
                 if mjc_joint < 0:
                     raise ValueError(f"Joint equality {i} endpoint {endpoint} DoF {dof} has no MuJoCo joint.")
@@ -11387,6 +11393,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"Equality constraint types mismatch at position {c}: world 0 has type {types[0]}, "
                     f"but other worlds have types {types[1:].tolist()}."
                 )
+
+            # Joint equalities export world 0's joint names, so later worlds must target the same joints and DoFs.
+            dofs_per_world = model.joint_dof_count // world_count
+            for key, per_world in (
+                ("equality_constraint_joint1", joints_per_world),
+                ("equality_constraint_joint2", joints_per_world),
+                ("equality_constraint_joint1_dof", dofs_per_world),
+                ("equality_constraint_joint2_dof", dofs_per_world),
+            ):
+                refs = getattr(model.mujoco, key, None)
+                if refs is None or per_world == 0:
+                    continue
+                refs = refs.numpy().reshape(world_count, constraints_per_world)
+                local_refs = np.where(refs >= 0, refs % per_world, -1)
+                mismatches = local_refs != local_refs[0]
+                if np.any(mismatches):
+                    c = int(np.argmax(np.any(mismatches, axis=0)))
+                    raise ValueError(
+                        "SolverMuJoCo requires homogeneous worlds. "
+                        f"Equality constraint {key.removeprefix('equality_constraint_')} mismatch at position {c}: "
+                        f"world 0 references {local_refs[0, c]}, but other worlds reference "
+                        f"{local_refs[1:, c].tolist()}."
+                    )
 
             # Tendon equalities export world 0's tendon names, so later worlds must target the same tendons.
             tendon_world = getattr(model.mujoco, "tendon_world", None)

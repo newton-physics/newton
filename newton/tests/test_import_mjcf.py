@@ -7048,9 +7048,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
 
 _EQUALITY_TEST_JOINTS = {
+    # Distinct damping lets the tests identify each joint after conversion renames it.
     "h1": '<joint name="h1" type="hinge" axis="1 0 0" damping="0.2"/>',
-    "h2": '<joint name="h2" type="hinge" axis="0 1 0" damping="0.2"/>',
-    "s1": '<joint name="s1" type="slide" axis="0 0 1" damping="0.2"/>',
+    "h2": '<joint name="h2" type="hinge" axis="0 1 0" damping="0.3"/>',
+    "s1": '<joint name="s1" type="slide" axis="0 0 1" damping="0.4"/>',
 }
 
 
@@ -7070,6 +7071,21 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
     <equality>{equality}</equality>
 </mujoco>"""
 
+    @staticmethod
+    def _two_body_mjcf(equality: str) -> str:
+        return f"""<mujoco>
+    <option integrator="implicitfast"/>
+    <worldbody>
+        <body name="a">{_EQUALITY_TEST_JOINTS["h1"]}<geom type="sphere" size="0.05" pos="0 0.2 0.05" mass="1"/></body>
+        <body name="b" pos="1 0 0">{_EQUALITY_TEST_JOINTS["h2"]}<geom type="sphere" size="0.05" pos="0.2 0 0.05" mass="1"/></body>
+    </worldbody>
+    <tendon>
+        <fixed name="t1"><joint joint="h1" coef="1"/></fixed>
+        <fixed name="t2"><joint joint="h2" coef="1"/></fixed>
+    </tendon>
+    <equality>{equality}</equality>
+</mujoco>"""
+
     def _convert(self, mjcf: str):
         import mujoco
 
@@ -7086,7 +7102,8 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
     def _joint_key(mj_model, joint: int):
         if joint < 0:
             return None
-        return int(mj_model.jnt_type[joint]), tuple(np.round(mj_model.jnt_axis[joint], 6))
+        damping = float(np.round(mj_model.dof_damping[mj_model.jnt_dofadr[joint]], 6))
+        return int(mj_model.jnt_type[joint]), tuple(np.round(mj_model.jnt_axis[joint], 6)), damping
 
     def _assert_matches_native(self, native, converted, steps: int = 300, dynamics: bool = True):
         import mujoco
@@ -7106,7 +7123,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         if not dynamics:
             return
 
-        # Newton orders combined DoFs linear-first, so match coordinates by joint type and axis.
+        # Newton orders combined DoFs linear-first, so match coordinates by joint identity.
         converted_joint = {self._joint_key(converted, j): j for j in range(converted.njnt)}
         qpos_map = [converted.jnt_qposadr[converted_joint[self._joint_key(native, j)]] for j in range(native.njnt)]
         native_data, converted_data = mujoco.MjData(native), mujoco.MjData(converted)
@@ -7119,17 +7136,18 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         self.assertGreater(np.abs(native_data.qpos).max(), 1e-3, "the comparison should move the joints")
 
     def test_omitted_joint2_fixes_joint1(self):
-        """An omitted joint2 holds joint1 at the constant term with its solver parameters."""
+        """Hold joint1 at the constant term, with its solver parameters, when joint2 is omitted."""
         joint = '<joint name="hip-lock" type="hinge" axis="1 0 0"/>'
         equality = '<joint joint1="hip-lock" polycoef="0.3 0 0 0 0" solref="0.01 1" solimp="0.8 0.9 0.01 0.5 2"/>'
-        native, converted, model = self._convert(self._mjcf(joint, equality))
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "stay MuJoCo equality constraints"):
+            native, converted, model = self._convert(self._mjcf(joint, equality))
 
         self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(list(converted.eq_obj2id), [-1])
         self._assert_matches_native(native, converted)
 
     def test_equality_on_joints_sharing_a_body(self):
-        """Endpoints resolve to the scalar MuJoCo joints of a combined Newton joint."""
+        """Resolve each endpoint to its own scalar MuJoCo joint when the joints share a body."""
         for first, second in (("h1", "h2"), ("h1", "s1"), ("s1", "h2")):
             for joints in ((first, second), (second, first)):
                 for joint1, joint2 in ((first, second), (second, first)):
@@ -7138,7 +7156,8 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                             "".join(_EQUALITY_TEST_JOINTS[name] for name in joints),
                             f'<joint joint1="{joint1}" joint2="{joint2}" polycoef="0.05 0.5 0 0 0"/>',
                         )
-                        native, converted, model = self._convert(mjcf)
+                        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, f"joint1={joint1}"):
+                            native, converted, model = self._convert(mjcf)
                         self.assertEqual(model.constraint_mimic_count, 0)
                         # Combined joints apply slides before hinges, so a hinge declared
                         # before a slide changes the kinematics independently of the equality.
@@ -7146,25 +7165,62 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                         self._assert_matches_native(native, converted, dynamics=not slide_after_hinge)
 
     def test_partial_polycoef_keeps_mujoco_defaults(self):
-        """Omitted polycoef terms take MuJoCo's ``0 1 0 0 0`` default, not zero."""
-        mjcf = f"""<mujoco>
-    <option integrator="implicitfast"/>
-    <worldbody>
-        <body name="a">{_EQUALITY_TEST_JOINTS["h1"]}<geom type="sphere" size="0.05" pos="0 0.2 0.05" mass="1"/></body>
-        <body name="b" pos="1 0 0">{_EQUALITY_TEST_JOINTS["h2"]}<geom type="sphere" size="0.05" pos="0.2 0 0.05" mass="1"/></body>
-    </worldbody>
-    <equality><joint joint1="h1" joint2="h2" polycoef="0.05"/></equality>
-</mujoco>"""
-        native, converted, model = self._convert(mjcf)
+        """Fill omitted joint polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
+        native, converted, model = self._convert(
+            self._two_body_mjcf('<joint joint1="h1" joint2="h2" polycoef="0.05"/>')
+        )
         np.testing.assert_allclose(native.eq_data[0, :5], [0.05, 1.0, 0.0, 0.0, 0.0])
         self.assertEqual(model.constraint_mimic_count, 1)
         self._assert_matches_native(native, converted)
 
+    def test_partial_tendon_polycoef_keeps_mujoco_defaults(self):
+        """Fill omitted tendon polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
+        native, converted, _ = self._convert(self._two_body_mjcf('<tendon tendon1="t1" tendon2="t2" polycoef="0.05"/>'))
+        np.testing.assert_allclose(native.eq_data[0, :5], [0.05, 1.0, 0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(converted.eq_type, native.eq_type)
+        np.testing.assert_allclose(converted.eq_data[:, :5], native.eq_data[:, :5], atol=1e-7)
+
     def test_unknown_joint_raises(self):
-        mjcf = self._mjcf(_EQUALITY_TEST_JOINTS["h1"], '<joint joint1="h1" joint2="missing"/>')
+        """Reject an equality that names an unknown joint as either endpoint."""
+        for equality in ('<joint joint1="h1" joint2="missing"/>', '<joint joint1="missing" joint2="h1"/>'):
+            with self.subTest(equality=equality):
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, "unknown joint 'missing'"):
+                    builder.add_mjcf(self._mjcf(_EQUALITY_TEST_JOINTS["h1"], equality))
+
+    def test_dof_selector_outside_its_joint_raises(self):
+        """Reject a DoF selector that belongs to another joint than its endpoint."""
         builder = newton.ModelBuilder()
-        with self.assertRaisesRegex(ValueError, "unknown joint 'missing'"):
-            builder.add_mjcf(mjcf)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(
+            self._two_body_mjcf('<joint joint1="h1" joint2="h2"/>'), convert_mjc_equality_constraints=False
+        )
+        joint2 = builder.custom_attributes["mujoco:equality_constraint_joint2"].values[0]
+        builder.custom_attributes["mujoco:equality_constraint_joint1_dof"].values[0] = builder.joint_qd_start[joint2]
+        model = builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "does not belong to joint"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+
+    def test_reject_heterogeneous_dof_selectors(self):
+        """Reject separate worlds whose joint equalities select different DoFs of the same joint."""
+        joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"]
+        for swap_world1, error in ((False, None), (True, "joint1_dof mismatch at position 0")):
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            for world in range(2):
+                joint1, joint2 = ("h2", "h1") if swap_world1 and world == 1 else ("h1", "h2")
+                builder.begin_world()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+                    builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
+                builder.end_world()
+            model = builder.finalize()
+            with self.subTest(swap_world1=swap_world1):
+                if error is None:
+                    SolverMuJoCo(model, disable_contacts=True)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        SolverMuJoCo(model, disable_contacts=True)
 
 
 class TestImportMjcfComposition(unittest.TestCase):
