@@ -2004,8 +2004,8 @@ def _build_chain(device, *, links=6):
     return builder.finalize(device=device)
 
 
-def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
-    """Replicate a contacting tripod, optionally surrounded by separate free bodies."""
+def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, condim=None):
+    """Replicate a contacting tripod, optionally surrounded by separate free bodies with a ``steel:condim``."""
     env = newton.ModelBuilder()
     if prescribed:
         support = env.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.02), wp.quat_identity()), is_kinematic=True)
@@ -2063,6 +2063,8 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
     if not free_first:
         add_objects()
     builder = newton.ModelBuilder()
+    if condim is not None:
+        SolverSteel.register_custom_attributes(builder)
     if heterogeneous:
         builder.add_world(env)
         free_world = newton.ModelBuilder()
@@ -2073,7 +2075,10 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
         builder.replicate(env, 2)
     if not prescribed:
         builder.add_ground_plane()
-    return builder.finalize(device="cuda:0")
+    model = builder.finalize(device="cuda:0")
+    if condim is not None:
+        model.steel.condim.fill_(condim)
+    return model
 
 
 def _make_solver(model, sparse, **overrides):
@@ -2487,6 +2492,24 @@ class TestSteelSparseSolver(unittest.TestCase):
         self.assertIsNone(
             SolverSteel(_build_model(), solve_mode="split", friction_anchor_beta=0.0)._sparse_mass_matrix_size
         )
+
+    def test_free_body_angular_rows_keep_dense_factors(self):
+        """Keep dense factors, and solve the angular rows, when a free body has ``steel:condim`` 6."""
+        model = _build_model(free_count=1, condim=6)
+        solver = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
+        self.assertTrue(solver._free_rigid_angular_rows)
+        self.assertIsNone(solver._sparse_mass_matrix_size)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(4):
+            state_0.clear_forces()
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertIn(6, solver._contact_slots_needed.numpy()[:count].tolist())
+        self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""

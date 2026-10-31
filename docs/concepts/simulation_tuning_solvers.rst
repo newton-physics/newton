@@ -285,6 +285,10 @@ repository examples spend tuning effort, not a shared solver API.
        Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
        a uniformly loaded disk of radius ``R``). ``contact_torsion_device``
        prepares these rows on the device, which CUDA graph capture requires.
+       Free-body contacts get experimental spin and rolling friction rows
+       from shapes whose ``steel:condim`` is 4 (spin, bounded by
+       ``mu_torsional`` times the normal load) or 6 (also rolling, bounded by
+       ``mu_rolling`` times the normal load).
        The experimental ``contact_compliance`` option solves hydroelastic
        contacts with positive stiffness as implicit spring-dampers instead; it
        uses point friction and does not support CUDA graph capture.
