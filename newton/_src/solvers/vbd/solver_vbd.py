@@ -213,7 +213,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     (https://newton-physics.github.io/newton/latest/concepts/simulation_tuning_vbd.html)
     covers cloth and soft bodies, their self-contact and their contact with shapes:
 
-    - Parameter effects: every constructor argument that matters for particle systems,
+    - Parameter effects: the constructor arguments that matter for particle systems,
       the model parameters, and the time step, substeps and iterations.
     - Contact handling: interaction distance, detection slack, query radius and motion
       budget; what DAT does to motion; how to set margin and gap.

@@ -30,17 +30,18 @@ Mental Model
 
 VBD treats every time step as one minimization and solves it one block at a
 time: a particle block has 3 degrees of freedom and a 3x3 local solve, a rigid
-body block has 6 and a 6x6 solve. Every parameter on this page enters through
-one of the energy terms of that minimization, and contacts are energy terms
-too. :ref:`vbd-how-it-works` on the backend page gives the step objective, the
+body block has 6 and a 6x6 solve. The material parameters on this page enter
+through the energy terms of that minimization, and contacts are energy terms
+too; the other parameters control detection, truncation and the iteration.
+:ref:`vbd-how-it-works` on the backend page gives the step objective, the
 block solve and its call tree, the formula of every energy term, and the
 penetration-free truncation (DAT). The consequences for tuning are:
 
 - Stiff terms dominate :math:`\mathbf{H}_i`. A contact that is far stiffer than
   the elasticity makes the local step serve the contact and neglect the rest.
   See :ref:`vbd-fail-contact-stiffness`.
-- Information moves one ring per iteration. A fine mesh needs more iterations
-  to reach the same state. See :ref:`vbd-fail-resolution`.
+- Information moves about one ring per iteration. A fine mesh needs more
+  iterations to reach the same state. See :ref:`vbd-fail-resolution`.
 - An unfinished solve becomes velocity. Corrections that did not settle inside
   the step come back as motion in the next step.
 - Truncation removes motion. A small query radius means a small budget and
@@ -153,8 +154,11 @@ Model parameters are set when the geometry is added, through
 :meth:`~newton.ModelBuilder.add_cloth_mesh`,
 :meth:`~newton.ModelBuilder.add_cloth_grid`,
 :meth:`~newton.ModelBuilder.add_soft_mesh` and
-:meth:`~newton.ModelBuilder.add_soft_grid`, or on the
-:class:`~newton.Model` after :meth:`~newton.ModelBuilder.finalize`. The
+:meth:`~newton.ModelBuilder.add_soft_grid`, under the names below. After
+:meth:`~newton.ModelBuilder.finalize` they live on the :class:`~newton.Model`
+as the arrays ``tri_materials``, ``edge_bending_properties``,
+``tet_materials``, ``particle_radius`` and ``particle_mass``, and as the
+scalars ``soft_contact_ke``, ``soft_contact_kd`` and ``soft_contact_mu``. The
 formulas they enter are in :ref:`vbd-energy-terms`.
 
 .. list-table::
@@ -224,13 +228,15 @@ formulas they enter are in :ref:`vbd-energy-terms`.
      - Never as a fix; set it from the real object.
      - Too small a mass is an explosion cause; see
        :ref:`vbd-explosion-checklist`.
-   * - shape ``ke``, ``kd``, ``mu``, ``margin``, ``gap``
+   * - shape ``ke``, ``kd``, ``mu``, ``margin``
        (:class:`~newton.ModelBuilder.ShapeConfig`)
      - The shape's half of the rigid-soft material and distance.
      - Set once per object; the shape ``margin`` adds to the interaction
        distance.
-     - Shape values are averaged with the particle side, so one side cannot
-       fully override the other.
+     - ``ke`` and ``kd`` are averaged with the particle side; ``mu`` is the
+       geometric mean, so a zero on either side removes friction. The shape
+       ``gap`` is a rigid-rigid broad-phase setting and does not enter
+       rigid-soft detection, which uses ``soft_contact_gap``.
    * - ``CollisionPipeline(soft_contact_gap=...)`` (0.01)
      - Rigid-soft detection slack, added on top of particle radius plus shape
        margin.
@@ -318,7 +324,9 @@ fixed when the solver is built, and it caps every dynamic body and particle in
 the model while the option is on. Kinematic bodies are not truncated. A pair
 without a certifiable separating plane freezes. The option needs a solver-owned
 collision pipeline; for fast bodies raise the pipeline gap first, then the
-detection frequency.
+detection frequency. When self-contact is enabled too, the ``RIGID`` and
+``SOFT_SELF_CONTACT`` slots must use the same schedule type, and the same
+frequency for ``ITERATIONS``; the solver raises otherwise.
 
 Both parts remove motion. A cloth that falls fast onto a shape, or a sheet
 pressed between fingers, can therefore move slower than physics would predict,
@@ -334,10 +342,13 @@ margin.
    Planar truncation for a vertex-triangle pair, from the DAT paper. Top left:
    vertex :math:`v`, triangle :math:`(v_a, v_b, v_c)` and the normal from the
    closest point on the triangle to :math:`v`. The dashed line is the division
-   plane. Top right: :math:`v` moves toward the triangle, so the plane shifts
-   toward :math:`v` and the displacements toward the plane are truncated.
-   Bottom left: the primitives separate, and the plane shifts away. Bottom
-   right: tangential motion, which passes untouched.
+   plane. Top right: both sides approach, :math:`v` faster, so the plane
+   shifts toward the triangle and gives :math:`v` the larger share of the gap;
+   the dashed parts of the displacements, which would cross the plane, are
+   truncated. Bottom left: :math:`v` moves away and the triangle approaches,
+   so the plane sits close to :math:`v` and the triangle gets almost the whole
+   gap. Bottom right: motion that stays on its own side of the plane, along it
+   or away from it, passes untouched.
 
 .. _vbd-margin-gap-guide:
 
@@ -347,9 +358,11 @@ Setting margin and gap
 There is no single right value. The choice trades physical fidelity against
 cost and DAT damping.
 
-**Fidelity first.** The interaction distance is the resting separation you will
-see. Two cloth layers rest one margin apart; a particle rests at its radius plus
-the shape margin from a shape. Pick the interaction distance from the thickness
+**Fidelity first.** The interaction distance is where the contact force starts,
+so it is the separation you see between unloaded surfaces. Two cloth layers
+rest about one margin apart; a particle rests at about its radius plus the
+shape margin from a shape; under load the separation shrinks by the load over
+the contact stiffness. Pick the interaction distance from the thickness
 you want to show. Pairs more than two rings apart are contact candidates, so an
 interaction distance larger than their rest distance creates contact forces at
 rest. Where a mesh is close to itself by design, such as seams or layered
@@ -376,13 +389,19 @@ smaller margin.
      - None
      - Less (larger budget)
      - Dropped pairs when the buffers overflow
-   * - Lower either
+   * - Lower the margin
      - Less
      - Tighter contact
-     - More
+     - More (smaller budget)
      - Without DAT (rigid-soft default) a step that moves further than the
        interaction distance can pass through. With DAT on, tunneling stays
        possible in theory; see :ref:`vbd-fail-tunneling`
+   * - Lower the gap
+     - Less
+     - None
+     - More (smaller budget)
+     - Fewer candidates; without DAT, pairs that close by more than the query
+       radius between two detections are missed
 
 **Starting point and adjustments.** Take the values of the nearest example in
 :ref:`vbd-empirical-table`; they span 1 mm to 40 mm depending on the scene
@@ -419,7 +438,7 @@ What Can Go Wrong and How to Fix It
      - Deformation moves into the terms that stayed soft
      - :ref:`vbd-fail-membrane-only`
    * - A fine mesh is soft, laggy or slow to settle
-     - One ring of information per iteration
+     - About one ring of information per iteration
      - :ref:`vbd-fail-resolution`
    * - Motion is slower than expected, hovers or locks near contact
      - DAT damping, small query radius
@@ -459,6 +478,7 @@ Work through these steps in order and stop at the first one that fixes it.
 
       solver = newton.solvers.SolverVBD(
           model,
+          particle_enable_self_contact=True,  # plus your margin and gap
           collision_frequency_type={
               newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT:
                   newton.solvers.SolverBase.CollisionFrequencyType.ITERATIONS
@@ -623,22 +643,25 @@ A fine mesh converges slowly
 **Symptom.** After refining the mesh, the object looks softer, lags behind
 contacts, or needs many more frames to settle, with unchanged material values.
 
-**Cause.** Information moves one ring per iteration. A disturbance crosses
-:math:`N` rings in no fewer than :math:`N` iterations, so at fixed iterations a
-finer mesh is less converged at the end of every step.
+**Cause.** Information moves about one ring per iteration. A block is solved
+from the current values of its neighbours, colour by colour, so a change
+reaches the next ring within one iteration and crosses :math:`N` rings in
+about :math:`N` iterations. At fixed iterations a finer mesh is therefore less
+converged at the end of every step.
 
 .. figure:: ../images/vbd_tuning_one_ring.svg
-   :alt: A triangle mesh patch with rings around one vertex coloured by the iteration in which they are reached
+   :alt: A triangle mesh patch with rings around one vertex coloured by their ring distance from it
    :width: 85%
    :align: center
 
-   A change at one vertex reaches ring :math:`k` after :math:`k` iterations.
-   Refining the mesh by a factor of two doubles the number of rings across the
-   object and so the iterations needed for the same convergence.
+   A change at one vertex reaches ring :math:`k` after about :math:`k`
+   iterations. Refining the mesh by a factor of two doubles the number of
+   rings across the object and so, roughly, the iterations needed for the same
+   convergence.
 
 **Fix.** Use the lowest resolution that expresses the deformation you need.
-When you refine, raise ``iterations`` in proportion to the number of rings
-across the object.
+When you refine, raise ``iterations`` roughly in proportion to the number of
+rings across the object.
 
 .. _vbd-fail-dat-damping:
 
@@ -723,13 +746,13 @@ Thresholds at the time of writing:
      - Non-manifold face
      - face shared by more than two tetrahedra
 
-A warning looks like this (from a real asset):
+A warning has this form (the numbers are illustrative):
 
 .. code-block:: text
 
-   UserWarning: Mesh quality warning [bag] (873 vertices, 1544 triangles):
-     - 4 sliver triangle(s) with aspect ratio > 20 (worst: 18.9)
-     - 1 triangle(s) with minimum angle < 5° (smallest: 4.0°)
+   NewtonWarning: Mesh quality warning [bag] (873 vertices, 1544 triangles):
+     - 4 sliver triangle(s) with aspect ratio > 20.0 (worst: 27.3)
+     - 1 triangle(s) with minimum angle < 5.0° (smallest: 4.0°)
    Consider remeshing the input geometry.
 
 Apply isotropic explicit remeshing, for example MeshLab's filter
@@ -770,7 +793,8 @@ vertex stores at most ``particle_vertex_contact_buffer_size`` vertex-triangle
 candidates (default 32) and each edge at most
 ``particle_edge_contact_buffer_size`` edge-edge candidates (default 64). Pairs
 beyond the capacity are dropped silently, and a dropped pair has no force and
-no truncation. The topological filter and the rest-shape exclusion radius also
+no division plane; only the radius cap still limits its vertices. The
+topological filter and the rest-shape exclusion radius also
 remove pairs, by design.
 
 **Fix.** Raise the two buffer sizes, and lower the gap if it is far above the
@@ -842,7 +866,8 @@ material measurement.
        (`softbody_hanging <https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_hanging.py>`__)
      - cells 0.1 m, density 1e3; ``k_mu`` 1e5, ``k_lambda`` 1e5, ``k_damp``
        10 to 1e4
-     - none
+     - ground contact only: ``soft_contact_ke`` 100, ``kd`` 0, ``mu`` 1;
+       self-contact off
      - 1/600, 10
      - rubber to foam beams, depending on ``k_damp``
    * - Soft box with ribbon
@@ -880,7 +905,7 @@ material measurement.
      - a tarp struck by thrown objects
    * - Gripper on a soft pad
        (`vbd_gripper_soft_grid <https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_gripper_soft_grid.py>`__)
-     - 0.1 kg pad; ``tri_ke`` 5e2, ``tri_kd`` 0.1
+     - 4 particles of 0.1 kg each (0.4 kg pad); ``tri_ke`` 5e2, ``tri_kd`` 0.1
      - radius 10 mm, pipeline gap 10 mm; ``soft_contact_ke`` 1e3, ``kd`` 10,
        ``mu`` 1
      - 1/1200, 5

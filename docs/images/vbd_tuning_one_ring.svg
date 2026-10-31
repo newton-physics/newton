@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="430" viewBox="0 0 960 430" font-family="DejaVu Sans, Arial, sans-serif">
   <rect x="0" y="0" width="960" height="430" fill="#ffffff"/>
-  <text x="30" y="34" font-size="18" font-weight="bold" fill="#222">Information moves one ring per iteration</text>
+  <text x="30" y="34" font-size="18" font-weight="bold" fill="#222">Information moves about one ring per iteration</text>
   <line x1="124.0" y1="215.0" x2="158.0" y2="215.0" stroke="#bbb" stroke-width="1.2"/>
   <line x1="124.0" y1="215.0" x2="141.0" y2="185.6" stroke="#bbb" stroke-width="1.2"/>
   <line x1="141.0" y1="185.6" x2="175.0" y2="185.6" stroke="#bbb" stroke-width="1.2"/>
@@ -221,15 +221,15 @@
   <circle cx="560" cy="70" r="7" fill="#1f3b73" stroke="#444" stroke-width="0.8"/>
   <text x="578" y="75" font-size="15" fill="#222">disturbed vertex</text>
   <circle cx="560" cy="104" r="7" fill="#2b6ca3" stroke="#444" stroke-width="0.8"/>
-  <text x="578" y="109" font-size="15" fill="#222">reached after 1 iteration</text>
+  <text x="578" y="109" font-size="15" fill="#222">ring 1, reached within 1 iteration</text>
   <circle cx="560" cy="138" r="7" fill="#5aa0d6" stroke="#444" stroke-width="0.8"/>
-  <text x="578" y="143" font-size="15" fill="#222">after 2 iterations</text>
+  <text x="578" y="143" font-size="15" fill="#222">ring 2, about 2 iterations</text>
   <circle cx="560" cy="172" r="7" fill="#a8cde9" stroke="#444" stroke-width="0.8"/>
-  <text x="578" y="177" font-size="15" fill="#222">after 3 iterations</text>
+  <text x="578" y="177" font-size="15" fill="#222">ring 3, about 3 iterations</text>
   <circle cx="560" cy="206" r="7" fill="#e2eef8" stroke="#444" stroke-width="0.8"/>
-  <text x="578" y="211" font-size="15" fill="#222">after 4 iterations</text>
+  <text x="578" y="211" font-size="15" fill="#222">ring 4, about 4 iterations</text>
   <text x="560" y="260" font-size="14" fill="#555">A block is solved from the current values of its</text>
-  <text x="560" y="280" font-size="14" fill="#555">neighbours. A change at one vertex reaches ring k</text>
-  <text x="560" y="300" font-size="14" fill="#555">after k iterations. Crossing N rings needs at least</text>
-  <text x="560" y="320" font-size="14" fill="#555">N iterations.</text>
+  <text x="560" y="280" font-size="14" fill="#555">neighbours, colour after colour. A change at one</text>
+  <text x="560" y="300" font-size="14" fill="#555">vertex reaches ring k after about k iterations.</text>
+  <text x="560" y="320" font-size="14" fill="#555">Crossing N rings takes about N iterations.</text>
 </svg>

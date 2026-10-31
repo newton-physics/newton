@@ -25,12 +25,6 @@ up correctly, and where to find runnable examples. For symptom-driven
 diagnosis and parameter tuning, see :ref:`Tuning VBD` and the
 :ref:`Simulation Tuning` landing page.
 
-.. note::
-
-   This guide is under active development. Each section below states its
-   intended scope and links to existing references until the full content
-   lands.
-
 When to Choose VBD
 ------------------
 
@@ -122,9 +116,18 @@ For a particle this is a 3x3 solve (``solve_elasticity``). For a body it is a
 6x6 solve with the block Hessian
 :math:`\operatorname{diag}(m_b/h^2\,\mathbf{1}_3,\ \mathbf{I}_b/h^2)` plus the
 energy terms, factored once per visit (``solve_rigid_body``, ``ldlt6_solve``).
-Blocks are grouped into colours so that no two blocks of one colour share an
-energy term. The update is Gauss-Seidel across colours and Jacobi inside a
-colour. Rigid blocks are solved before particle blocks in every iteration.
+The energy blocks of :math:`\mathbf{H}_i` are the usual stabilised second
+derivatives, not always the exact ones: the membrane block is projected to be
+positive semi-definite, the bending block keeps only the Gauss-Newton term
+:math:`k\,\nabla\theta\,\nabla\theta^{\mathsf T}`, and the friction block
+holds the contact normal fixed.
+Blocks are grouped into colours so that no two blocks of one colour share a
+mesh element: a triangle, a tetrahedron, a bending edge when
+:meth:`~newton.ModelBuilder.color` is called with ``include_bending=True``, or
+a joint for bodies. Contact pairs are not part of the colouring, so two blocks
+of one colour can be in contact; they then update in Jacobi fashion. The
+update is Gauss-Seidel across colours and Jacobi inside a colour. Rigid blocks
+are solved before particle blocks in every iteration.
 
 The real call tree, with the control flow written out:
 
@@ -150,8 +153,10 @@ The real call tree, with the control flow written out:
      _finalize_rigid_bodies     -> update_body_velocity
      _finalize_particles        -> update_velocity             v = (x_new - x_old) / dt
 
-Two facts follow directly. Information moves one ring of neighbours per
-iteration, because a block only sees its neighbours' current values. And an
+Two facts follow directly. Information moves about one ring of neighbours per
+iteration: a block sees only the current values of its neighbours, so a change
+reaches a neighbour in the same iteration when that neighbour's colour comes
+later in the sweep, and in the next iteration otherwise. And an
 unfinished solve is not discarded: whatever position the last iteration leaves
 becomes the new velocity through :math:`\mathbf{v} = (\mathbf{x}_{\text{new}} -
 \mathbf{x}_{\text{old}})/h`.
@@ -183,7 +188,8 @@ contacts, attachments, tendons) adds its force, its torque and the three
 :math:`3 \times 3` blocks of the Hessian. The block then solves one
 :math:`6 \times 6` system by :math:`LDL^{\mathsf T}` (``ldlt6_solve``) and
 applies the increments (``solve_rigid_body``; the rotation increment acts in
-world space):
+world space and is applied as a normalised small-angle quaternion, which
+approximates the exponential map, ``_USE_SMALL_ANGLE_APPROX``):
 
 .. math::
 
@@ -194,13 +200,20 @@ world space):
    \qquad
    \mathbf{c}_b \leftarrow \mathbf{c}_b + \Delta\mathbf{c},
    \qquad
-   \mathbf{R}_b \leftarrow \exp(\Delta\boldsymbol{\theta})\,\mathbf{R}_b .
+   \mathbf{R}_b \leftarrow \Delta\mathbf{R}\,\mathbf{R}_b,
+   \qquad
+   \Delta\mathbf{R} = \operatorname{normalize}\big(\tfrac{1}{2}\Delta\boldsymbol{\theta},\ 1\big)
+   \approx \exp(\Delta\boldsymbol{\theta}) .
 
 Joints and body-body contacts are constraint rows between two bodies, handled
 as compliant augmented-Lagrangian (ALM) rows. A row has a residual :math:`C`,
 a material stiffness :math:`k`, an internal metric :math:`\rho` that the solver
-sets once per step, and a multiplier :math:`\lambda`. Its force along the row
-and the dual update after every iteration are
+sets when it initialises the row (once per step for joints, at every rigid
+contact detection for body-body contacts), and a multiplier :math:`\lambda`.
+With ``rigid_avbd_alpha`` above zero the residual is stabilised to
+:math:`C - \alpha C_0`; the default under compliant ALM is zero, and the
+formulas below use that default. Its force along the row and the dual update
+after every iteration are
 
 .. math::
 
@@ -223,7 +236,10 @@ restart theirs at zero unless ``rigid_contact_history=True``.
 between parent :math:`p` and child :math:`c` are the offset of the two joint
 anchors and the rotation away from the rest relative orientation, each
 projected onto the locked axes of the joint type
-(``compute_kappa_and_jacobian``, ``build_joint_projectors``):
+(``compute_kappa_and_jacobian``, ``build_joint_projectors``). D6 joints with
+two or three angular axes are the exception: their angular rows use the
+absolute joint coordinates of ``eval_fk`` in the joint-axis basis
+(``compute_joint_kappa_and_jacobian``):
 
 .. math::
 
@@ -392,7 +408,8 @@ a logarithmic barrier at half the interaction distance:
 
 The gradient in the barrier region is :math:`-k\,(r/2)^2/d`, so the force
 grows like :math:`1/d` as the gap closes; below :math:`d_{\min}` it continues
-linearly, so the force stays finite. The pair force is distributed to the
+linearly, so the force stays finite. A pair whose closest points coincide
+(:math:`d = 0`) is skipped. The pair force is distributed to the
 four vertices by the barycentric weights of the two closest points. Friction
 follows the IPC form (``compute_friction``). With :math:`f_n = -\partial
 E_{\text{sc}}/\partial d` the normal force, :math:`\mathbf{u}` the tangential
@@ -440,9 +457,11 @@ the tangential slip of the point relative to the shape surface over the step.
 The force is distributed to the particles by their barycentric weights, and
 the equal and opposite force with its torque acts on the body
 (``accumulate_body_particle_contacts_per_body``). With full-surface mesh
-contact, every detected edge and face record is kept for DAT, but only the
-records that pass the feature-region test of Offset Geometric Contact produce
-force (``mesh_contact_valid``).
+contact, every stored edge and face record is kept for DAT, but normally only
+the records that pass the feature-region test of Offset Geometric Contact
+produce force (``mesh_contact_valid``); penetration-recovery records and rows
+stored after a buffer overflow bypass the test
+(``_soft_contact_force_enabled``).
 
 *Body-body contact* acts between two shapes, on two rigid bodies or on a
 rigid body and a static shape. It is a constraint row of the rigid solve, not
@@ -477,9 +496,12 @@ torques, and the row adds :math:`k_{\text{eff}}\,\mathbf{n}\mathbf{n}^{\mathsf T
 to the body Hessians (``evaluate_rigid_contact_from_collision``). After every
 iteration the multiplier is advanced by the relaxed ascent
 :math:`\lambda_n \leftarrow \max\big(s\,(\lambda_n + \rho_n C),\ 0\big)`
-(``update_duals_body_body_contacts``, ``_compliant_contact_dual_step``), so a
-resting contact carries its load in :math:`\lambda_n` instead of in
-penetration. Friction is a Coulomb bound, not a smooth law: the tangential
+(``update_duals_body_body_contacts``, ``_compliant_contact_dual_step``). At
+the fixed point :math:`\lambda_n = k\,C` and :math:`f_n = k\,C`: a converged
+resting contact carries its load like a penalty of the material stiffness
+:math:`k`, with the penetration :math:`f_n/k`, while each single iteration
+uses the smaller :math:`k_{\text{eff}}`, which keeps the 6x6 systems well
+conditioned. Friction is a Coulomb bound, not a smooth law: the tangential
 force :math:`\rho_t\,\mathbf{u}_t + \boldsymbol{\lambda}_t`, with
 :math:`\mathbf{u}_t` the tangential offset between the two anchored surface
 points and :math:`\rho_t` the tangent metric, is projected onto the disk
@@ -490,10 +512,12 @@ radius :math:`\mu\lambda_n` in the same dual step. Damping is
 bodies approach and the row carries load. The multipliers start from zero in
 every step unless ``rigid_contact_history=True`` warm-starts them from the
 matched contacts of the previous step. The legacy AVBD path
-(``rigid_compliant_alm=False``, deprecated) ramps a penalty stiffness from
-``rigid_contact_k_start`` by ``rigid_avbd_beta`` per iteration up to the pair
-stiffness, and its soft mode uses the IPC friction law instead of the Coulomb
-projection.
+(``rigid_compliant_alm=False``, deprecated) uses the pair stiffness as a fixed
+penalty by default (``rigid_avbd_beta`` is zero). With a positive beta
+(``rigid_avbd_linear_beta``, falling back to ``rigid_avbd_beta``) the penalty
+starts at ``rigid_contact_k_start`` and grows by beta times the penetration
+per iteration, capped at the pair stiffness (``_ramp_penalty_k``). Its soft
+mode uses the IPC friction law instead of the Coulomb projection.
 
 The underlying methods are described in the references cited by
 :class:`~newton.solvers.SolverVBD`: VBD for the particle blocks, AVBD for the
@@ -508,7 +532,8 @@ Penetration-free truncation (DAT)
 
 Self-contact and rigid-soft contact are penalty energies, so a large step
 could jump through a surface between two detections. The Divide and Truncate
-scheme (DAT) prevents that. It works on the displacement each vertex has
+scheme (DAT) prevents that for every pair that detection found separated and
+within the query radius. It works on the displacement each vertex has
 accumulated since the last detection and has two distinct parts
 (``_penetration_free_truncation``).
 
@@ -612,12 +637,15 @@ published rigid contact maximum and body-particle contact state from the
 particle-shape pair count; both grow from ``Contacts`` on the first step.
 During capture that growth needs Warp's stream-ordered memory pool, otherwise
 the solver raises and asks you to pre-size. ``rigid_contact_history=True``
-allocates its warm-start buffers before capture in every case.
+needs its warm-start buffers allocated before capture, on every device:
+construct the :class:`~newton.CollisionPipeline` before the solver, which
+publishes ``rigid_contact_max``, or run one uncaptured step first.
 
 Start at ``dt`` = 1/600 s with 10 iterations and adjust following
-:ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists every
-constructor argument that matters for particle systems, with its effect and
-cost.
+:ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists the
+constructor arguments that matter most for particle systems, with their
+effect and cost; the signature of :class:`~newton.solvers.SolverVBD` is the
+complete list.
 
 Model Inputs
 ~~~~~~~~~~~~
@@ -655,7 +683,7 @@ with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
 
 Rigid constraint rows use the compliant ALM formulation by default
 (``rigid_compliant_alm=True``): the authored stiffness is the physical
-compliance and the solver picks the metric :math:`\rho` itself
+stiffness of the row and the solver picks the metric :math:`\rho` itself
 (:ref:`vbd-rigid-joints`). The legacy AVBD path (``rigid_compliant_alm=False``)
 is deprecated since 1.6, together with its controls: the per-joint
 ``vbd:joint_is_hard`` custom attribute (``model.vbd.joint_is_hard``, declared
@@ -750,13 +778,17 @@ well.
 
 **Forces.** Each contact kind has its own law with friction and damping;
 self-contact, rigid-soft contact and body-body contact are given in
-:ref:`vbd-energy-terms`. Full-surface mesh records produce force only when they
-pass the feature-region test of Offset Geometric Contact
-(``mesh_contact_valid``); every record is kept for truncation.
+:ref:`vbd-energy-terms`. Full-surface mesh records normally produce force only
+when they pass the feature-region test of Offset Geometric Contact
+(``mesh_contact_valid``); recovery records and rows stored after an overflow
+bypass the test, and every stored record is kept for truncation.
 
 **Truncation.** Divide and Truncate keeps self-contact, and with
-``rigid_soft_enable_dat`` also rigid-soft contact, penetration-free between
-detections, through the planar and the radius truncation of :ref:`vbd-dat`.
+``rigid_soft_enable_dat`` also rigid-soft contact, free of new penetrations
+between detections, through the planar and the radius truncation of
+:ref:`vbd-dat`. The guarantee holds for pairs that were separated at
+detection and found within the query radius; the rigid trajectory check is
+sampled unless ``rigid_soft_dat_use_interval_arithmetic`` is on.
 
 How to set the distances, and what they cost, is on the tuning page:
 :ref:`vbd-contact-handling` and :ref:`vbd-margin-gap-guide`. The contact
