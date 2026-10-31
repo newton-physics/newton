@@ -195,7 +195,7 @@ def _save_soft_contacts_kernel(
         prev_indices[i] = corners
         prev_shape[i] = wp.int32(contact_shape[i])
         if prev_features.shape[0] > 0:
-            prev_features[i] = contact_features[i]
+            prev_features[i] = _record_feature(contact_features, i)
         prev_barycentric[i] = contact_barycentric[i]
         prev_body_pos[i] = contact_body_pos[i]
         slot = _key_slot(corners, contact_shape[i], _record_feature(contact_features, i))
