@@ -1,0 +1,1 @@
+Support loop-closing REVOLUTE joints in `SolverSteel`: they are enforced as the three anchor rows of a BALL closure plus two rows that keep the hinge axes on one line. Limits, drive gains, damping and armature on a loop-closing REVOLUTE joint are ignored with a warning.
