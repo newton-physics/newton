@@ -85,9 +85,12 @@ _MJCF_PARTIAL_VECTORS = {
     "joint": _SOLVER_LIMIT_VECTORS,
     "tendon": _SOLVER_LIMIT_VECTORS,
     "pair": frozenset({"friction", "solref", "solreffriction", "solimp"}),
+    "equality": frozenset({"solref", "solimp"}),
     "general": _ACTUATOR_VECTORS | {"dynprm", "gainprm", "biasprm"},
-    **dict.fromkeys(("motor", "position", "velocity", "intvelocity", "damper", "muscle", "dcmotor"), _ACTUATOR_VECTORS),
-    "cylinder": frozenset({"gear"}),
+    **dict.fromkeys(
+        ("motor", "position", "velocity", "intvelocity", "pid", "damper", "cylinder", "muscle", "dcmotor"),
+        _ACTUATOR_VECTORS,
+    ),
 }
 
 

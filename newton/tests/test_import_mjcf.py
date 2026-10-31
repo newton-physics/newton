@@ -9394,7 +9394,8 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
             <joint solreflimit="0.05 2" solimplimit="0.8 0.9 0.003 0.4 3"/>
             <tendon solreflimit="0.06 3"/>
             <pair friction="0.9 0.8 0.01 0.002 0.003"/>
-            <general dyntype="muscle" gaintype="muscle" biastype="muscle" dynprm="0.01 0.04" gear="2 0 0 0 0 0"
+            <equality solref="0.04 3" solimp="0.85 0.9 0.004 0.3 4"/>
+            <general dyntype="muscle" gaintype="muscle" biastype="muscle" dynprm="0.01 0.04" gear="2 0 0 0 0 0.5"
                      gainprm="0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2" biasprm="0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2"/>
             <default class="child">
                 <geom friction="0.6" solimp="0.75"/>
@@ -9413,6 +9414,7 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
         <body name="c" pos="0.5 0 0"><freejoint/><geom name="ball" type="sphere" size="0.05"/></body>
     </worldbody>
     <contact><pair class="parent" geom1="box" geom2="ball" friction="0.4"/></contact>
+    <equality><connect class="parent" body1="c" body2="b" anchor="0 0 0" solref="0.01" solimp="0.7"/></equality>
     <tendon>
         <spatial name="t" class="parent" limited="true" range="0 1" solreflimit="0.05">
             <site site="s0"/><site site="s1"/>
@@ -9425,6 +9427,7 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
 </mujoco>"""
 
     def test_partial_vectors_match_native(self):
+        """Match native MuJoCo for every attribute given with fewer components than its length."""
         import mujoco
 
         native = mujoco.MjModel.from_xml_string(self.MJCF)
@@ -9432,21 +9435,44 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.MJCF)
         # A truncated muscle gainprm would fail MuJoCo's lmin<1<lmax check here.
-        converted = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True).mj_model
+        # Kinematic-root welds would add equality rows absent from the native model.
+        converted = SolverMuJoCo(
+            builder.finalize(device="cpu"), use_mujoco_cpu=True, kinematic_switchable_roots=False
+        ).mj_model
+        self.assertEqual(converted.neq, native.neq)
 
         def box(model):
             return int(np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_BOX)[0])
+
+        def site_positions(model):
+            data = mujoco.MjData(model)
+            mujoco.mj_kinematics(model, data)
+            return data.site_xpos.copy()
+
+        # Conversion renames and reorders sites, so pair them by their world position.
+        native_pos, converted_pos = site_positions(native), site_positions(converted)
+        site_pairs = [
+            (site, int(np.argmin(np.linalg.norm(converted_pos - native_pos[site], axis=1))))
+            for site in range(native.nsite)
+        ]
+        for site, match in site_pairs:
+            np.testing.assert_allclose(converted_pos[match], native_pos[site], atol=1e-6)
 
         fields = {
             "geom_friction": (native.geom_friction[box(native)], converted.geom_friction[box(converted)]),
             "geom_solref": (native.geom_solref[box(native)], converted.geom_solref[box(converted)]),
             "geom_solimp": (native.geom_solimp[box(native)], converted.geom_solimp[box(converted)]),
             "geom_size": (native.geom_size[box(native)], converted.geom_size[box(converted)]),
-            "site_size": (np.sort(native.site_size, axis=0), np.sort(converted.site_size, axis=0)),
+            "site_size": (
+                native.site_size[[site for site, _ in site_pairs]],
+                converted.site_size[[match for _, match in site_pairs]],
+            ),
             "jnt_solref": (native.jnt_solref[0], converted.jnt_solref[0]),
             "jnt_solimp": (native.jnt_solimp[0], converted.jnt_solimp[0]),
             "tendon_solref_lim": (native.tendon_solref_lim[0], converted.tendon_solref_lim[0]),
             "pair_friction": (native.pair_friction[0], converted.pair_friction[0]),
+            "eq_solref": (native.eq_solref[0], converted.eq_solref[0]),
+            "eq_solimp": (native.eq_solimp[0], converted.eq_solimp[0]),
             "actuator_dynprm": (native.actuator_dynprm[0], converted.actuator_dynprm[0]),
             "actuator_gainprm": (native.actuator_gainprm[0], converted.actuator_gainprm[0]),
             "actuator_biasprm": (native.actuator_biasprm[0], converted.actuator_biasprm[0]),
