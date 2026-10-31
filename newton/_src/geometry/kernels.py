@@ -1514,6 +1514,64 @@ def init_triangle_collision_data_kernel(
             resize_flags[i] = 0
 
 
+@wp.func
+def _closest_point_shared_divide(vertex_a: wp.vec3, vertex_b: wp.vec3, vertex_c: wp.vec3, point: wp.vec3):
+    edge_ab = vertex_b - vertex_a
+    edge_ac = vertex_c - vertex_a
+    offset_a = point - vertex_a
+    dot_ab_a = wp.dot(edge_ab, offset_a)
+    dot_ac_a = wp.dot(edge_ac, offset_a)
+    if dot_ab_a <= 0.0 and dot_ac_a <= 0.0:
+        return vertex_a
+
+    offset_b = point - vertex_b
+    dot_ab_b = wp.dot(edge_ab, offset_b)
+    dot_ac_b = wp.dot(edge_ac, offset_b)
+    if dot_ab_b >= 0.0 and dot_ac_b <= dot_ab_b:
+        return vertex_b
+
+    offset_c = point - vertex_c
+    dot_ab_c = wp.dot(edge_ab, offset_c)
+    dot_ac_c = wp.dot(edge_ac, offset_c)
+    if dot_ac_c >= 0.0 and dot_ab_c <= dot_ac_c:
+        return vertex_c
+
+    determinant_ab = dot_ab_a * dot_ac_b - dot_ab_b * dot_ac_a
+    determinant_ac = float(0.0)
+    determinant_bc = float(0.0)
+    origin = vertex_a
+    direction = edge_ab
+    numerator = float(1.0)
+    denominator = float(1.0)
+    face_region = bool(False)
+    if determinant_ab <= 0.0 and dot_ab_a >= 0.0 and dot_ab_b <= 0.0:
+        numerator = dot_ab_a
+        denominator = dot_ab_a - dot_ab_b
+    else:
+        determinant_ac = dot_ab_c * dot_ac_a - dot_ab_a * dot_ac_c
+        if determinant_ac <= 0.0 and dot_ac_a >= 0.0 and dot_ac_c <= 0.0:
+            numerator = dot_ac_a
+            denominator = dot_ac_a - dot_ac_c
+            direction = edge_ac
+        else:
+            determinant_bc = dot_ab_b * dot_ac_c - dot_ab_c * dot_ac_b
+            if determinant_bc <= 0.0 and (dot_ac_b - dot_ab_b) >= 0.0 and (dot_ab_c - dot_ac_c) >= 0.0:
+                numerator = dot_ac_b - dot_ab_b
+                denominator = (dot_ac_b - dot_ab_b) + (dot_ab_c - dot_ac_c)
+                origin = vertex_b
+                direction = vertex_c - vertex_b
+            else:
+                denominator = determinant_bc + determinant_ac + determinant_ab
+                face_region = True
+
+    ratio = numerator / denominator
+    if face_region:
+        weight_ab = determinant_ac * ratio
+        weight_ac = determinant_ab * ratio
+        return vertex_a + weight_ab * edge_ab + weight_ac * edge_ac
+    return origin + ratio * direction
+
+
 @wp.kernel
 def vertex_triangle_collision_detection_kernel(
     max_query_radius: float,
@@ -1587,6 +1645,68 @@ def vertex_triangle_collision_detection_kernel(
     min_dis_to_tris = max_query_radius
     vertex_world = particle_world[v_index]
 
+    fl_start = wp.int32(0)
+    fl_end = wp.int32(0)
+    first_val = wp.int32(0)
+    last_val = wp.int32(-1)
+    run_count = wp.int32(0)
+    run_start0 = wp.int32(2147483647)
+    run_end0 = wp.int32(2147483647)
+    run_start1 = wp.int32(2147483647)
+    run_end1 = wp.int32(2147483647)
+    run_start2 = wp.int32(2147483647)
+    run_end2 = wp.int32(2147483647)
+    run_start3 = wp.int32(2147483647)
+    run_end3 = wp.int32(2147483647)
+    run_start4 = wp.int32(2147483647)
+    run_end4 = wp.int32(2147483647)
+    run_start5 = wp.int32(2147483647)
+    run_end5 = wp.int32(2147483647)
+    run_start6 = wp.int32(2147483647)
+    run_end6 = wp.int32(2147483647)
+    run_start7 = wp.int32(2147483647)
+    run_end7 = wp.int32(2147483647)
+    if vertex_triangle_filtering_list:
+        fl_start = vertex_triangle_filtering_list_offsets[v_index]
+        fl_end = vertex_triangle_filtering_list_offsets[v_index + 1]
+        if fl_end > fl_start:
+            first_val = vertex_triangle_filtering_list[fl_start]
+            last_val = vertex_triangle_filtering_list[fl_end - 1]
+            run_first = first_val
+            run_last = first_val
+            for filter_index in range(fl_start + 1, fl_end + 1):
+                next_value = run_last
+                if filter_index < fl_end:
+                    next_value = vertex_triangle_filtering_list[filter_index]
+                if filter_index == fl_end or next_value > run_last + 1:
+                    if run_count == 0:
+                        run_start0 = run_first
+                        run_end0 = run_last
+                    elif run_count == 1:
+                        run_start1 = run_first
+                        run_end1 = run_last
+                    elif run_count == 2:
+                        run_start2 = run_first
+                        run_end2 = run_last
+                    elif run_count == 3:
+                        run_start3 = run_first
+                        run_end3 = run_last
+                    elif run_count == 4:
+                        run_start4 = run_first
+                        run_end4 = run_last
+                    elif run_count == 5:
+                        run_start5 = run_first
+                        run_end5 = run_last
+                    elif run_count == 6:
+                        run_start6 = run_first
+                        run_end6 = run_last
+                    elif run_count == 7:
+                        run_start7 = run_first
+                        run_end7 = run_last
+                    run_count = run_count + 1
+                    run_first = next_value
+                run_last = next_value
+
     # Only collide a vertex with triangles in its own world or in the global
     # (world -1) group. The BVH is grouped by world, so a real-world vertex queries
     # two subtrees: its own world's, then the global one. A global (world -1) vertex
@@ -1615,6 +1735,38 @@ def vertex_triangle_collision_detection_kernel(
 
             tri_index = wp.int32(0)
             while wp.bvh_query_next(query, tri_index):
+                if fl_end > fl_start:
+                    if (tri_index >= first_val) and (tri_index <= last_val):
+                        if run_count <= 8:
+                            if tri_index <= run_end3:
+                                if tri_index <= run_end1:
+                                    if tri_index <= run_end0:
+                                        if tri_index >= run_start0:
+                                            continue
+                                    elif tri_index >= run_start1:
+                                        continue
+                                elif tri_index <= run_end2:
+                                    if tri_index >= run_start2:
+                                        continue
+                                elif tri_index >= run_start3:
+                                    continue
+                            elif tri_index <= run_end5:
+                                if tri_index <= run_end4:
+                                    if tri_index >= run_start4:
+                                        continue
+                                elif tri_index >= run_start5:
+                                    continue
+                            elif tri_index <= run_end6:
+                                if tri_index >= run_start6:
+                                    continue
+                            elif tri_index <= run_end7:
+                                if tri_index >= run_start7:
+                                    continue
+                        else:
+                            idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
+                            if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
+                                continue
+
                 t1 = tri_indices[tri_index, 0]
                 t2 = tri_indices[tri_index, 1]
                 t3 = tri_indices[tri_index, 2]
@@ -1622,27 +1774,11 @@ def vertex_triangle_collision_detection_kernel(
                 if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
                     continue
 
-                if vertex_triangle_filtering_list:
-                    fl_start = vertex_triangle_filtering_list_offsets[v_index]
-                    fl_end = vertex_triangle_filtering_list_offsets[
-                        v_index + 1
-                    ]  # start of next vertex slice (end exclusive)
-
-                    if fl_end > fl_start:
-                        # Optional fast-fail using first/last elements (remember end is exclusive)
-                        first_val = vertex_triangle_filtering_list[fl_start]
-                        last_val = vertex_triangle_filtering_list[fl_end - 1]
-                        if (tri_index >= first_val) and (tri_index <= last_val):
-                            idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
-                            # `idx` is the first index > tri_index within [fl_start, fl_end)
-                            if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
-                                continue
-
                 u1 = pos[t1]
                 u2 = pos[t2]
                 u3 = pos[t3]
 
-                closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
+                closest_p = _closest_point_shared_divide(u1, u2, u3, v)
 
                 dist = wp.length(closest_p - v)
 
