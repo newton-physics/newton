@@ -470,7 +470,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             iterations: Number of VBD iterations per step. If ``None``, use the registered
                 ``newton:maxSolverIterations`` scene value, or ``10`` if absent or ``-1``.
-                Explicit values override the scene, including ``0`` and ``10``.
+                Scene values must be positive or ``-1``. Explicit values override the scene.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
@@ -804,9 +804,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             iterations = int(scene_iterations.numpy()[0]) if scene_iterations is not None else -1
             if iterations == -1:
                 iterations = 10
-            elif iterations < 0:
+            elif iterations <= 0:
                 raise ValueError(
-                    "Scene-authored newton:maxSolverIterations must be >= 0 or -1 (use the default), "
+                    "Scene-authored newton:maxSolverIterations must be positive or -1 (use the default), "
                     f"got {iterations}. Fix the scene value or pass iterations= explicitly to SolverVBD."
                 )
 
