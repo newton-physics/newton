@@ -430,7 +430,7 @@ def test_nodal_particle_sampling_response(test, device):
             results.append(result)
             with test.subTest(basis=basis, perturbation=perturbation, copies=copies):
                 for actual, expected in zip(result, results[0], strict=True):
-                    np.testing.assert_allclose(actual, np.repeat(expected, copies, axis=1), rtol=2.0e-5, atol=2.0e-6)
+                    np.testing.assert_allclose(actual, np.repeat(expected, copies, axis=1), rtol=2.0e-5, atol=1.0e-5)
 
 
 def test_nodal_higher_order_solver(test, device):

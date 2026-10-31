@@ -1162,7 +1162,7 @@ def interpolate_collider_normals(
     *,
     collider_velocity: wp.array[wp.vec3],
     dt: float,
-    distance_gradients: wp.array[wp.vec3] | None = None,
+    distance_gradients: wp.array | None = None,
     stop_distance: float = 0.0,
     node_radii: wp.array | None = None,
 ):
