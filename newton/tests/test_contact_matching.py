@@ -1601,6 +1601,44 @@ def test_vertex_triangle_anchor_waits_while_triangle_collapses(test, device):
     np.testing.assert_array_equal(dragged, np.broadcast_to(dragged[0], dragged.shape))
 
 
+@wp.kernel
+def _drag_across_gap_change_kernel(
+    p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, anchor: wp.vec3, max_slip: float, dragged: wp.array[wp.vec3]
+):
+    dragged[0] = drag_vertex_triangle_anchor(anchor, p, a, b, c, max_slip)
+
+
+def test_vertex_triangle_anchor_kept_across_gap_change(test, device):
+    """A change in contact gap alone leaves a sub-threshold tangential offset from the anchor in place.
+
+    Normal motion adds nothing to the friction force, so a vertex 0.1 mm from its anchor along the
+    triangle that rises 1 mm keeps the anchor under a 0.17 mm threshold.
+    """
+    rotation = wp.quat_rpy(0.7, -0.4, 1.1)
+    origin = wp.vec3(0.3, -0.2, 0.1)
+
+    def point(x, y, z):
+        return origin + wp.quat_rotate(rotation, wp.vec3(x, y, z))
+
+    anchor = wp.vec3(0.3, 0.3, 0.002)
+    dragged = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _drag_across_gap_change_kernel,
+        dim=1,
+        inputs=[
+            point(0.0301, 0.03, 0.003),
+            point(0.0, 0.0, 0.0),
+            point(0.1, 0.0, 0.0),
+            point(0.0, 0.1, 0.0),
+            anchor,
+            1.7e-4,
+        ],
+        outputs=[dragged],
+        device=device,
+    )
+    np.testing.assert_allclose(dragged.numpy()[0], anchor)
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1809,6 +1847,12 @@ add_function_test(
     TestContactMatchingSticky,
     "test_vertex_triangle_anchor_waits_while_triangle_collapses",
     test_vertex_triangle_anchor_waits_while_triangle_collapses,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_kept_across_gap_change",
+    test_vertex_triangle_anchor_kept_across_gap_change,
     devices=devices,
 )
 add_function_test(

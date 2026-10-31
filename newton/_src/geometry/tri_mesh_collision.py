@@ -203,10 +203,13 @@ def vertex_triangle_anchor_holds(anchor: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.
 
 @wp.func
 def drag_vertex_triangle_anchor(anchor: wp.vec3, p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, max_slip: float):
-    """Return ``anchor`` moved along so vertex ``p`` has slipped at most ``max_slip`` from it."""
+    """Return ``anchor`` moved along so vertex ``p`` has slipped at most ``max_slip`` from it in the
+    triangle plane."""
     if not vertex_triangle_anchor_holds(anchor, a, b, c):
         return anchor
-    slip = vertex_triangle_anchor_slip(anchor, p, a, b, c)
+    n = wp.normalize(wp.cross(b - a, c - a))
+    offset = vertex_triangle_anchor_slip(anchor, p, a, b, c)
+    slip = offset - wp.dot(offset, n) * n
     slip_length = wp.length(slip)
     if slip_length <= max_slip:
         return anchor
