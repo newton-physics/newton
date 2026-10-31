@@ -111,12 +111,44 @@ _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
     r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
     r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
 )
+_ALLEGRO_BODY_DENSITY_WARNING_RE = (
+    r"^.*newton[/\\]_src[/\\]sim[/\\]builder\.py:\d+: NewtonWarning: Body "
+    r"/World/envs/env_0/object/DexCube: authored mass and density without authored diagonalInertia\. "
+    r"Ignoring body-level density\.\n"
+    r"  return parse_usd\(\n?"
+)
+_MULTICCD_UNSUPPORTED_PAIR_WARNING_RE = (
+    r"^.*mujoco_warp[/\\]_src[/\\]io\.py:\d+: UserWarning: MULTICCD is enabled, but the scene contains "
+    r"CCD pairs without multicontact support: \[\('CAPSULE', 'MESH'\)\]\. "
+    r"At most 1 contact will be generated for these pairs\.\n"
+    r"  warnings\.warn\(\n?"
+)
+_MUJOCO_SOLVER_LIMIT_OUTPUT_RE = (
+    r"^solver iterations limit reached - please increase iterations beyond \d+\n"
+    r"To disable the print warning: m\.opt\.warn_overflow &= ~mjw\.OverflowType\.ITERATIONS "
+    r"\(or = 0 for all\)\n?"
+)
+_UR10_INVALID_INERTIA_WARNING_RE = (
+    r"Warning: The rigid body at /ur10/ee_link has a possibly invalid inertia tensor of \{1\.0, 1\.0, 1\.0\}, "
+    r"small sphere approximated inertia was used\. Either specify correct values in the mass properties, or add "
+    r"collider\(s\) to any shape\(s\) that you wish to automatically compute mass properties for\. If you do not "
+    r"want the objects to collide, add colliders regardless then disable the 'enable collision' property\. "
+    r"\[python\d+\.\d+\]\n?"
+)
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
 _registered_examples: set[str] = set()
+
+
+def _material_binding_warning_re(prim_root: str) -> str:
+    """Match OpenUSD material-binding diagnostics below one prim root."""
+    return (
+        r"Warning: in BindingsAtPrim at line \d+ of [^\n]*materialBindingAPI\.cpp -- Found material bindings on "
+        rf"prim at path \({re.escape(prim_root)}/[^\n]+\) but MaterialBindingAPI is not applied on the prim\n?"
+    )
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -892,7 +924,11 @@ add_example_test(
 )
 
 
-class TestRobotExamples(unittest.TestCase):
+class TestRobotExamples(NewtonTestCase):
+    pass
+
+
+class TestRobotExampleBehavior(unittest.TestCase):
     pass
 
 
@@ -930,7 +966,7 @@ def _test_robot_cartpole_capture_matches_eager(test, device):
 
 
 add_function_test(
-    TestRobotExamples,
+    TestRobotExampleBehavior,
     "test_robot_cartpole_capture_matches_eager",
     _test_robot_cartpole_capture_matches_eager,
     devices=cuda_test_devices,
@@ -959,6 +995,7 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
+    allow_output_regexes=[(_material_binding_warning_re("/anymal"), "stderr")],
     use_viewer=True,
 )
 add_example_test(
@@ -966,6 +1003,7 @@ add_example_test(
     name="robot.example_robot_anymal_d",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    allow_output_regexes=[(_material_binding_warning_re("/anymal"), "stderr")],
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1004,6 +1042,7 @@ add_example_test(
     name="robot.example_robot_omniwheel",
     devices=cuda_test_devices,
     test_options={"num-frames": 500},
+    allow_output_regexes=[(_MUJOCO_SOLVER_LIMIT_OUTPUT_RE, "stdout")],
     use_viewer=True,
 )
 add_example_test(
@@ -1011,6 +1050,7 @@ add_example_test(
     name="robot.example_robot_asroballet",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "onnx_required": True},
+    allow_output_regexes=[(_MULTICCD_UNSUPPORTED_PAIR_WARNING_RE, "stderr")],
     use_viewer=True,
 )
 add_example_test(
@@ -1018,6 +1058,7 @@ add_example_test(
     name="robot.example_robot_asroballet",
     devices=cuda_test_devices,
     test_options={"controller": "lqr", "num-frames": 500},
+    allow_output_regexes=[(_MULTICCD_UNSUPPORTED_PAIR_WARNING_RE, "stderr")],
     use_viewer=True,
     test_suffix="LQR",
 )
@@ -1027,6 +1068,7 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
+    allow_output_regexes=[(_UR10_INVALID_INERTIA_WARNING_RE, "stderr")],
     use_viewer=True,
 )
 add_example_test(
@@ -1034,6 +1076,7 @@ add_example_test(
     name="robot.example_robot_ur10",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 100, "world-count": 2, "solver": "kamino"},
+    allow_output_regexes=[(_UR10_INVALID_INERTIA_WARNING_RE, "stderr")],
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1042,6 +1085,10 @@ add_example_test(
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
+    allow_output_regexes=[
+        (_material_binding_warning_re("/World/envs/env_0/object/DexCube"), "stderr"),
+        (_ALLEGRO_BODY_DENSITY_WARNING_RE, "stderr"),
+    ],
     use_viewer=True,
 )
 add_example_test(
@@ -1049,6 +1096,10 @@ add_example_test(
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    allow_output_regexes=[
+        (_material_binding_warning_re("/World/envs/env_0/object/DexCube"), "stderr"),
+        (_ALLEGRO_BODY_DENSITY_WARNING_RE, "stderr"),
+    ],
     use_viewer=True,
     test_suffix="kamino",
 )
