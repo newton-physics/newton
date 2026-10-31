@@ -569,7 +569,7 @@ class Example:
             render_config.gaussians_min_transmittance,
             0.0,
             1.0,
-            "%.2f",
+            "%.4f",
         )
         if changed:
             render_config.gaussians_min_transmittance = value

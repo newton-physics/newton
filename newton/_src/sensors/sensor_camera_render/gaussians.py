@@ -132,9 +132,9 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
         camera_forward: wp.vec3f,
         gaussian_data: Gaussian.Data,
         max_distance: wp.float32,
-    ) -> tuple[wp.float32, wp.vec3f, wp.vec3f]:
-        tracked_distance = max_distance
-        result_normal = wp.vec3f(0.0)
+    ) -> tuple[wp.float32, wp.float32, wp.float32, wp.vec3f]:
+        nearest_distance = wp.float32(-1.0)
+        median_distance = wp.float32(-1.0)
         result_color = wp.vec3f(0.0)
 
         ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction, scale)
@@ -147,7 +147,7 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
         hit_indices = wp.vector(-1, length=wp.static(config.gaussians_max_num_hits), dtype=wp.int32)
         hit_alphas = wp.vector(0.0, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
 
-        while ray_transmittance > 0.003:
+        while ray_transmittance > wp.static(config.gaussians_min_transmittance):
             num_hits = wp.int32(0)
 
             for i in range(wp.static(config.gaussians_max_num_hits)):
@@ -170,7 +170,7 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                     hit_distances[-1],
                 )
 
-                if hit_distance > -1:
+                if hit_distance > min_distance:
                     if num_hits < wp.static(config.gaussians_max_num_hits):
                         num_hits += 1
 
@@ -187,6 +187,8 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
 
             if num_hits == 0:
                 break
+            if nearest_distance < 0.0:
+                nearest_distance = hit_distances[0]
 
             for hit in range(num_hits):
                 hit_index = hit_indices[hit]
@@ -203,21 +205,21 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                 result_color += color * opacity * ray_transmittance
                 ray_transmittance *= 1.0 - opacity
 
-                if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-                    tracked_distance = wp.min(hit_distances[hit], tracked_distance)
+                if median_distance < 0.0 and ray_transmittance < 0.5:
+                    median_distance = hit_distances[hit]
+                if ray_transmittance <= wp.static(config.gaussians_min_transmittance):
+                    # The light left is negligible, so the splats count as opaque.
+                    ray_transmittance = wp.float32(0.0)
+                    break
 
             min_distance = hit_distances[-1] + wp.float32(1e-06)
 
             if wp.static(config.gaussians_mode) == GaussianRenderMode.FAST:
                 break
 
-        result_distance = wp.float32(-1.0)
-        if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-            result_distance = tracked_distance
-            result_color /= 1.0 - ray_transmittance
-            if gaussian_data.sh_color_space == ColorSpace.SRGB:
-                result_color = srgb_to_linear_wp(result_color)
+        if gaussian_data.sh_color_space == ColorSpace.SRGB:
+            result_color = srgb_to_linear_wp(result_color)
 
-        return result_distance, result_normal, result_color
+        return nearest_distance, median_distance, ray_transmittance, result_color
 
     return shade

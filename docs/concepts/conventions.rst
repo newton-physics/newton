@@ -453,13 +453,19 @@ above one are kept as HDR. The deprecated
 :class:`~newton.sensors.SensorTiledCamera` ignores ``sh_color_space``; only
 :class:`~newton.sensors.SensorCamera` honors it.
 
+:class:`~newton.sensors.SensorCamera` composites the blended splats in linear
+light over whatever lies behind them, the nearest shape or the clear color.
+The depth, normal, and shape-index outputs report the splats where their
+accumulated opacity exceeds one half, and report what lies behind them
+elsewhere.
+
 .. note::
 
    The Gaussian color space is a property of the whole :class:`newton.Gaussian`
    asset, not of individual splats. :class:`~newton.sensors.SensorCamera` shades
-   each Gaussian asset on its own and keeps the nearest one along a ray, so
-   splats from different assets, including different ``ParticleField`` prims
-   of one USD stage, are never blended with each other or with other geometry.
+   each Gaussian asset on its own and keeps the one with the nearest splat along
+   a ray, so splats from different assets, including different ``ParticleField``
+   prims of one USD stage, are never blended with each other.
 
    A splat scene that has been partitioned into several ``ParticleField`` prims
    or :class:`~newton.Gaussian` assets is therefore not rendered as one

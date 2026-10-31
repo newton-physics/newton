@@ -190,8 +190,15 @@ class RenderConfig:
     gaussians_mode: GaussianRenderMode = GaussianRenderMode.FAST
     """Gaussian splatting render mode (see :class:`GaussianRenderMode`)."""
 
-    gaussians_min_transmittance: float = 0.49
-    """Minimum transmittance before early-out during Gaussian rendering."""
+    gaussians_min_transmittance: float = 1.0e-4
+    """Transmittance at which a ray stops blending Gaussian splats.
+
+    The renderer blends splats front to back over whatever lies behind them, a
+    shape or the clear color. Once the share of light that passes the splats
+    blended so far falls to this value, the ray treats the splats as opaque and
+    skips the remaining ones. The default matches the 3D Gaussian splatting
+    rasterizer.
+    """
 
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""

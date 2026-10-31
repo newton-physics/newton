@@ -30,7 +30,11 @@ class ClosestHit:
     bary_v: wp.float32
     # Mesh face index, or particle index for particle hits.
     face_idx: wp.int32
-    color: wp.vec3f
+    # Splats in front of the hit; the renderer composites them over its shaded color.
+    gaussian_color: wp.vec3f
+    gaussian_transmittance: wp.float32
+    gaussian_median_distance: wp.float32
+    gaussian_shape_index: wp.uint32
 
 
 @wp.func
@@ -77,8 +81,21 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
     return group_roots[world_index]
 
 
+@wp.func
+def empty_closest_hit(max_distance: wp.float32) -> ClosestHit:
+    closest_hit = ClosestHit()
+    closest_hit.distance = max_distance
+    closest_hit.shape_index = NO_HIT_SHAPE_ID
+    closest_hit.gaussian_color = wp.vec3f(0.0)
+    closest_hit.gaussian_transmittance = wp.float32(1.0)
+    closest_hit.gaussian_median_distance = wp.float32(-1.0)
+    closest_hit.gaussian_shape_index = NO_HIT_SHAPE_ID
+    return closest_hit
+
+
 def create_closest_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
+    max_gaussian_shapes_hit = state.num_gaussians * (2 if config.enable_global_world else 1)
 
     @wp.func
     def closest_hit_shape(
@@ -100,13 +117,13 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
         if bvh_shapes_size:
+            gaussians_hit = wp.vector(length=wp.static(max_gaussian_shapes_hit), dtype=wp.uint32)
+            num_gaussians_hit = wp.int32(0)
+
             for i in range(wp.static(2 if config.enable_global_world else 1)):
                 group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
-
-                gaussians_hit = wp.vector(length=wp.static(state.num_gaussians), dtype=wp.uint32)
-                num_gaussians_hit = wp.int32(0)
 
                 query = wp.bvh_query_ray(bvh_shapes_id, ray_origin_world, ray_dir_world, group_root)
                 shape_index = wp.int32(0)
@@ -119,7 +136,6 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
                     hit_u = wp.float32(0.0)
                     hit_v = wp.float32(0.0)
                     hit_face_id = wp.int32(-1)
-                    hit_color = wp.vec3f(0.0)
 
                     shape_type = shape_types[si]
                     # Heightfields are triangulated meshes; RenderContext remaps
@@ -137,18 +153,9 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
                             closest_hit.distance,
                         )
                     elif shape_type == GeoType.GAUSSIAN:
-                        if num_gaussians_hit < wp.static(state.num_gaussians):
+                        if num_gaussians_hit < wp.static(max_gaussian_shapes_hit):
                             gaussians_hit[num_gaussians_hit] = si
                             num_gaussians_hit += 1
-                            # gaussian_id = shape_source_ptr[si]
-                            # hit_distance, hit_normal, hit_color = shade_gaussians(
-                            #     shape_transforms[si],
-                            #     shape_sizes[si],
-                            #     ray_origin_world,
-                            #     ray_dir_world,
-                            #     gaussians_data[gaussian_id],
-                            #     closest_hit.distance
-                            # )
                     else:
                         hit_distance, hit_normal = raycast.ray_intersect_shape(
                             shape_transforms[si],
@@ -166,35 +173,26 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
                         closest_hit.bary_u = hit_u
                         closest_hit.bary_v = hit_v
                         closest_hit.face_idx = hit_face_id
-                        closest_hit.color = hit_color
 
-                # Temporary workaround. Warp BVH queries share some stack data,
-                # which breaks nested wp.bvh_query_ray calls.
-                # Once it is fixed in Warp, remove this code block and put
-                # the commented out block above back in.
-                # Although, this workaround may actually be a performance improvement
-                # since it only renders gaussians if they are not blocked by other
-                # objects.
-                if num_gaussians_hit > 0:
-                    for gi in range(num_gaussians_hit):
-                        si = gaussians_hit[gi]
-
-                        gaussian_id = shape_source_ptr[si]
-                        hit_distance, hit_normal, hit_color = shade_gaussians(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            camera_forward,
-                            gaussians_data[gaussian_id],
-                            closest_hit.distance,
-                        )
-
-                        if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
-                            closest_hit.distance = hit_distance
-                            closest_hit.normal = hit_normal
-                            closest_hit.shape_index = si
-                            closest_hit.color = hit_color
+            # Splats are shaded last because they composite over the nearest opaque hit, whose distance must be final.
+            gaussian_distance = closest_hit.distance
+            for gi in range(num_gaussians_hit):
+                si = gaussians_hit[gi]
+                nearest_distance, median_distance, transmittance, color = shade_gaussians(
+                    shape_transforms[si],
+                    shape_sizes[si],
+                    ray_origin_world,
+                    ray_dir_world,
+                    camera_forward,
+                    gaussians_data[shape_source_ptr[si]],
+                    closest_hit.distance,
+                )
+                if nearest_distance >= 0.0 and nearest_distance < gaussian_distance:
+                    gaussian_distance = nearest_distance
+                    closest_hit.gaussian_color = color
+                    closest_hit.gaussian_transmittance = transmittance
+                    closest_hit.gaussian_median_distance = median_distance
+                    closest_hit.gaussian_shape_index = si
 
         return closest_hit
 
@@ -303,14 +301,25 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
         ray_dir_world: wp.vec3f,
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
-        closest_hit = ClosestHit()
-        closest_hit.distance = max_distance
-        closest_hit.shape_index = NO_HIT_SHAPE_ID
-        closest_hit.color = wp.vec3f(0.0)
+        closest_hit = empty_closest_hit(max_distance)
 
         closest_hit = closest_hit_triangle_mesh(
             closest_hit, triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world
         )
+
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
+            closest_hit = closest_hit_particles(
+                closest_hit,
+                bvh_particles_size,
+                bvh_particles_id,
+                bvh_particles_group_roots,
+                world_index,
+                particles_position,
+                particles_radius,
+                topology_particle_mask,
+                ray_origin_world,
+                ray_dir_world,
+            )
 
         closest_hit = closest_hit_shape(
             closest_hit,
@@ -331,20 +340,6 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
             camera_forward,
         )
 
-        if wp.static(config.enable_particles) and wp.static(state.has_particles):
-            closest_hit = closest_hit_particles(
-                closest_hit,
-                bvh_particles_size,
-                bvh_particles_id,
-                bvh_particles_group_roots,
-                world_index,
-                particles_position,
-                particles_radius,
-                topology_particle_mask,
-                ray_origin_world,
-                ray_dir_world,
-            )
-
         return closest_hit
 
     return closest_hit
@@ -352,6 +347,7 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
 
 def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
+    max_gaussian_shapes_hit = state.num_gaussians * (2 if config.enable_global_world else 1)
 
     @wp.func
     def closest_hit_shape_depth_only(
@@ -373,13 +369,13 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
         if bvh_shapes_size:
+            gaussians_hit = wp.vector(length=wp.static(max_gaussian_shapes_hit), dtype=wp.uint32)
+            num_gaussians_hit = wp.int32(0)
+
             for i in range(wp.static(2 if config.enable_global_world else 1)):
                 group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
-
-                gaussians_hit = wp.vector(length=wp.static(state.num_gaussians), dtype=wp.uint32)
-                num_gaussians_hit = wp.int32(0)
 
                 query = wp.bvh_query_ray(bvh_shapes_id, ray_origin_world, ray_dir_world, group_root)
                 shape_index = wp.int32(0)
@@ -405,7 +401,7 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
                             closest_hit.distance,
                         )
                     elif shape_type == GeoType.GAUSSIAN:
-                        if num_gaussians_hit < wp.static(state.num_gaussians):
+                        if num_gaussians_hit < wp.static(max_gaussian_shapes_hit):
                             gaussians_hit[num_gaussians_hit] = si
                             num_gaussians_hit += 1
                     else:
@@ -422,24 +418,24 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
                         closest_hit.distance = hit_dist
                         closest_hit.shape_index = si
 
-                if num_gaussians_hit > 0:
-                    for gi in range(num_gaussians_hit):
-                        si = gaussians_hit[gi]
-
-                        gaussian_id = shape_source_ptr[si]
-                        hit_distance, _hit_normal, _hit_color = shade_gaussians(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            camera_forward,
-                            gaussians_data[gaussian_id],
-                            closest_hit.distance,
-                        )
-
-                        if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
-                            closest_hit.distance = hit_distance
-                            closest_hit.shape_index = si
+            gaussian_distance = closest_hit.distance
+            for gi in range(num_gaussians_hit):
+                si = gaussians_hit[gi]
+                nearest_distance, median_distance, transmittance, color = shade_gaussians(
+                    shape_transforms[si],
+                    shape_sizes[si],
+                    ray_origin_world,
+                    ray_dir_world,
+                    camera_forward,
+                    gaussians_data[shape_source_ptr[si]],
+                    closest_hit.distance,
+                )
+                if nearest_distance >= 0.0 and nearest_distance < gaussian_distance:
+                    gaussian_distance = nearest_distance
+                    closest_hit.gaussian_color = color
+                    closest_hit.gaussian_transmittance = transmittance
+                    closest_hit.gaussian_median_distance = median_distance
+                    closest_hit.gaussian_shape_index = si
 
         return closest_hit
 
@@ -543,13 +539,25 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
         ray_dir_world: wp.vec3f,
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
-        closest_hit = ClosestHit()
-        closest_hit.distance = max_distance
-        closest_hit.shape_index = NO_HIT_SHAPE_ID
+        closest_hit = empty_closest_hit(max_distance)
 
         closest_hit = closest_hit_triangle_mesh_depth_only(
             closest_hit, triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world
         )
+
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
+            closest_hit = closest_hit_particles_depth_only(
+                closest_hit,
+                bvh_particles_size,
+                bvh_particles_id,
+                bvh_particles_group_roots,
+                world_index,
+                particles_position,
+                particles_radius,
+                topology_particle_mask,
+                ray_origin_world,
+                ray_dir_world,
+            )
 
         closest_hit = closest_hit_shape_depth_only(
             closest_hit,
@@ -569,20 +577,6 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
             ray_dir_world,
             camera_forward,
         )
-
-        if wp.static(config.enable_particles) and wp.static(state.has_particles):
-            closest_hit = closest_hit_particles_depth_only(
-                closest_hit,
-                bvh_particles_size,
-                bvh_particles_id,
-                bvh_particles_group_roots,
-                world_index,
-                particles_position,
-                particles_radius,
-                topology_particle_mask,
-                ray_origin_world,
-                ray_dir_world,
-            )
 
         return closest_hit
 
