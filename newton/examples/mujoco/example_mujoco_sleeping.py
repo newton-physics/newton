@@ -1,18 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MuJoCo Sleeping
-#
-# Drops four nearby stacks of ants and visualizes MuJoCo Warp's sleeping
-# islands. The stacks topple toward one another in a shared world, allowing
-# their islands to merge. Awake articulations use Newton's display palette,
-# with a shared color for every tree in the same constraint island. Sleeping
-# islands are gray.
-#
-# Command: python -m newton.examples mujoco_sleeping
-#
-###########################################################################
+"""Example MuJoCo Sleeping
+
+Drops four nearby stacks of ants and visualizes MuJoCo Warp's sleeping
+islands. The stacks topple toward one another in a shared world, allowing
+their islands to merge. Awake articulations use Newton's display palette,
+with a shared color for every tree in the same constraint island. Sleeping
+islands are gray.
+
+Success criteria:
+- Four nearby ant stacks topple toward one another in a shared world.
+- Awake articulations in the same constraint island share a display color; sleeping islands become
+  gray.
+- After settling, sleeping bodies remain still; perturbing a body wakes the affected island and
+  restores its active coloring.
+
+Runs:
+- `python -m newton.examples mujoco_sleeping`
+"""
 
 from __future__ import annotations
 
@@ -177,7 +183,6 @@ class Example:
             jacobian="sparse",
             njmax=4096,
             nconmax=2048,
-            update_data_interval=0,
         )
 
         self.state_0 = self.model.state()
@@ -215,11 +220,14 @@ class Example:
 
     def simulate(self):
         """Advance the passive articulation stacks by one rendered frame."""
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         """Advance the stacks by one rendered frame."""

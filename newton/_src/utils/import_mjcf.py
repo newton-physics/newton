@@ -22,6 +22,7 @@ from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
+from ..solvers.mujoco import dcmotor
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -29,7 +30,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from ..solvers.mujoco.enums import EqType
+from ..solvers.mujoco.enums import EqType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
@@ -79,6 +80,42 @@ def _parse_actuator_parameters(value: str) -> vec10:
     # Actuator parameters use zero-padding, unlike parse_vec's shorthand rules.
     values = [float(component) for component in value.split()[:10]]
     return vec10(*values, *([0.0] * (10 - len(values))))
+
+
+def _load_mujoco_msh(filename: str) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Read vertices, faces, normals, and UVs from a MuJoCo binary mesh.
+
+    The file holds four int32 counts (vertices, normals, texture coordinates, faces) followed by
+    float32 vertex positions, normals, and texture coordinates, and int32 triangle indices.
+    """
+    data = np.fromfile(filename, dtype=np.uint8)
+    if data.size < 16:
+        raise ValueError(f"MuJoCo mesh file is too short: {filename}")
+    nvert, nnormal, ntexcoord, nface = (int(v) for v in data[:16].view(np.int32))
+    sizes = (3 * nvert * 4, 3 * nnormal * 4, 2 * ntexcoord * 4, 3 * nface * 4)
+    if (
+        nvert < 4
+        or nnormal not in (0, nvert)
+        or ntexcoord not in (0, nvert)
+        or nface < 0
+        or data.size != 16 + sum(sizes)
+    ):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
+    offset = 16
+    arrays = []
+    for size, dtype in zip(sizes, (np.float32, np.float32, np.float32, np.int32), strict=True):
+        arrays.append(data[offset : offset + size].view(dtype))
+        offset += size
+    vertices = arrays[0].reshape(-1, 3)
+    faces = arrays[3].reshape(-1, 3)
+    if np.any(faces < 0) or np.any(faces >= nvert):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
+    normals = arrays[1].reshape(-1, 3) if nnormal else None
+    texcoords = arrays[2].reshape(-1, 2) if ntexcoord else None
+    if texcoords is not None:
+        # MuJoCo uploads image rows unchanged; Newton viewers use bottom-origin UVs.
+        texcoords[:, 1] = 1.0 - texcoords[:, 1]
+    return vertices, faces if nface else None, normals, texcoords
 
 
 def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
@@ -325,6 +362,17 @@ def parse_mjcf(
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
     MuJoCo-specific custom attributes are registered on the builder automatically.
+    Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+    (included in ``newton[sim]``) to resolve native defaults, and raises
+    :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
+
+    Geom material defaults and RGBA are preserved. Meshes also retain base-color textures
+    (the ``texture`` attribute or ``rgb``/``rgba`` layers) and non-negative ``roughness``
+    and ``metallic`` values. Texture paths are retained for lazy loading by renderers.
+    RGB bindings take precedence over RGBA bindings, including inherited defaults.
+    MJCF textures default to a white tint. Without an MJCF color or base-color texture,
+    mesh-file appearance and primitive palette colors are retained for compatibility.
+    Other PBR texture layers are not imported.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -468,6 +516,7 @@ def parse_mjcf(
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
 
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
+    dcmotor_parameters = dcmotor.resolve_mjcf_parameters(root)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     contact_sections = root.findall("contact")
@@ -612,6 +661,16 @@ def parse_mjcf(
     class_children = {}
     class_defaults = {"__all__": {}}
 
+    def material_attrib(element: ET.Element) -> dict:
+        attrib = element.attrib.copy()
+        # Keep base-color roles separate until defaults have been resolved.
+        for layer in element.findall("layer"):
+            if layer.get("role") == "rgb":
+                attrib["texture"] = layer.get("texture")
+            elif layer.get("role") == "rgba":
+                attrib["texture_rgba"] = layer.get("texture")
+        return attrib
+
     def parse_default(node, parent):
         nonlocal class_parent
         nonlocal class_children
@@ -631,17 +690,26 @@ def parse_mjcf(
             if child.tag == "default":
                 parse_default(child, node.get("class"))
             else:
-                class_defaults[class_name][child.tag] = child.attrib
+                class_defaults[class_name][child.tag] = (
+                    material_attrib(child) if child.tag == "material" else child.attrib
+                )
 
     for default in root.findall("default"):
         parse_default(default, None)
 
-    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
+    def merge_attrib(default_attrib: dict, incoming_attrib: dict, *, tag: str | None = None) -> dict:
         attrib = default_attrib.copy()
         for key, value in incoming_attrib.items():
             if key in attrib:
                 if isinstance(attrib[key], dict):
-                    attrib[key] = merge_attrib(attrib[key], value)
+                    attrib[key] = merge_attrib(attrib[key], value, tag=key)
+                elif (
+                    tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "muscle", "dcmotor"}
+                    and key == "damping"
+                ):
+                    # MuJoCo overrides only the supplied prefix of these vectors.
+                    values = value.split()
+                    attrib[key] = " ".join(values + attrib[key].split()[len(values) :])
                 else:
                     attrib[key] = value
             else:
@@ -671,7 +739,8 @@ def parse_mjcf(
         if ambient_defaults is None:
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
-        return merge_attrib(defaults.get(tag, {}), element.attrib)
+        attrib = material_attrib(element) if tag == "material" else element.attrib
+        return merge_attrib(defaults.get(tag, {}), attrib, tag=tag)
 
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
@@ -702,6 +771,7 @@ def parse_mjcf(
                 refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"MJCF mesh {name!r}")
                 mesh_assets[name] = {
                     "file": fname,
+                    "content_type": mesh_attrib.get("content_type"),
                     "scale": mesh_scale,
                     "refpos": refpos,
                     "refquat": refquat,
@@ -802,10 +872,19 @@ def parse_mjcf(
             mat_name = material.attrib.get("name")
             if not mat_name:
                 continue
+            mat_attrib = resolve_element_attrib(material, "material")
+            texture = mat_attrib.get("texture") or mat_attrib.get("texture_rgba")
+            # Default to a neutral tint only when MJCF supplies a base-color texture.
+            default_rgba = "1 1 1 1" if texture else None
             material_assets[mat_name] = {
-                "rgba": material.attrib.get("rgba"),
-                "texture": material.attrib.get("texture"),
+                "rgba": mat_attrib.get("rgba", default_rgba),
+                "texture": texture,
             }
+            for key in ("roughness", "metallic"):
+                value = float(mat_attrib.get(key, "-1"))
+                # Negative values mean unspecified in MJCF; keep mesh-file defaults.
+                if value >= 0.0:
+                    material_assets[mat_name][key] = value
         for hfield in asset.findall("hfield"):
             hfield_name = hfield.attrib.get("name")
             if not hfield_name:
@@ -865,7 +944,13 @@ def parse_mjcf(
         override_texture: str | None = None,
     ) -> list[Mesh]:
         mesh_asset = mesh_assets[mesh_name]
-        if "file" in mesh_asset:
+        mesh_file = mesh_asset.get("file")
+        content_type = mesh_asset.get("content_type")
+        if mesh_file and (
+            content_type == "model/vnd.mujoco.msh" or (not content_type and mesh_file.lower().endswith(".msh"))
+        ):
+            vertices, faces, normals, texcoords = _load_mujoco_msh(mesh_file)
+        elif mesh_file:
             refpos = mesh_asset["refpos"]
             refquat = mesh_asset["refquat"]
             has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
@@ -914,27 +999,31 @@ def parse_mjcf(
                     )
                 )
             return transformed_meshes
+        else:
+            vertices = mesh_asset["vertices"]
+            faces = mesh_asset["faces"]
+            normals = mesh_asset["normals"]
+            texcoords = mesh_asset["texcoords"]
 
         vertices, normals = _apply_mesh_ref_pose(
-            mesh_asset["vertices"], mesh_asset["normals"], mesh_asset["refpos"], mesh_asset["refquat"], scaling
+            vertices, normals, mesh_asset["refpos"], mesh_asset["refquat"], scaling
         )
-        faces = mesh_asset["faces"]
-        texcoords = mesh_asset["texcoords"]
 
         if faces is None:
             hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
-            source_index_by_vertex = {}
-            for index, vertex in enumerate(vertices):
-                source_index_by_vertex.setdefault(tuple(vertex), index)
-            source_indices = np.array(
-                [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
-                dtype=np.int32,
-            )
+            if normals is not None or texcoords is not None:
+                source_index_by_vertex = {}
+                for index, vertex in enumerate(vertices):
+                    source_index_by_vertex.setdefault(tuple(vertex), index)
+                source_indices = np.array(
+                    [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
+                    dtype=np.int32,
+                )
+                if normals is not None:
+                    normals = normals[source_indices]
+                if texcoords is not None:
+                    texcoords = texcoords[source_indices]
             vertices = hull_vertices
-            if normals is not None:
-                normals = normals[source_indices]
-            if texcoords is not None:
-                texcoords = texcoords[source_indices]
 
         return [
             Mesh(
@@ -1483,6 +1572,10 @@ def parse_mjcf(
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
                 for m_mesh in m_meshes:
+                    if "roughness" in material_info:
+                        m_mesh.roughness = material_info["roughness"]
+                    if "metallic" in material_info:
+                        m_mesh.metallic = material_info["metallic"]
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
                             logger.warning("mesh %s has a texture but no UVs; texture will be ignored.", mesh_label)
@@ -3401,6 +3494,8 @@ def parse_mjcf(
             # Merge class defaults for this actuator element
             # This handles MJCF class inheritance (e.g., <general class="size3" .../>)
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
+            if actuator_type == "dcmotor":
+                merged_attrib.update(dcmotor_parameters[actuator_elem])
 
             joint_name = merged_attrib.get("joint")
             joint_in_parent_name = merged_attrib.get("jointinparent")
@@ -3628,7 +3723,7 @@ def parse_mjcf(
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-            elif actuator_type == "general":
+            elif actuator_type in {"general", "dcmotor"}:
                 gainprm = _parse_actuator_parameters(merged_attrib.get("gainprm", "1"))
                 biasprm = _parse_actuator_parameters(merged_attrib.get("biasprm", "0"))
             else:
@@ -3647,8 +3742,18 @@ def parse_mjcf(
                 parsed_attrs["mujoco:actuator_dynprm"] = vec10(
                     float(timeconst[0]), float(timeconst[1]), tausmooth, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
                 )
+            is_dcmotor = actuator_type == "dcmotor" or (
+                actuator_type == "general" and parsed_attrs.get("mujoco:actuator_gaintype") == _ActuatorGainType.DCMOTOR
+            )
+            if is_dcmotor:
+                # MuJoCo writes compiled DC motors as <general input="...">.
+                # Preserve their signature without allocating high-level parameters.
+                parsed_attrs["mujoco:actuator_ctrlspec"] = dcmotor.parse_input(merged_attrib.get("input", "voltage"))
+            ctrlrange_uses_joint_units = actuator_type in {"position", "velocity", "intvelocity"} or (
+                is_dcmotor and parsed_attrs["mujoco:actuator_ctrlspec"] in (1, 2)
+            )
             if (
-                actuator_type in {"position", "velocity", "intvelocity"}
+                ctrlrange_uses_joint_units
                 and target_joint_name in mjcf_slide_joint_names
                 and not ctrlrange_is_derived
                 and "mujoco:actuator_ctrlrange" in parsed_attrs
@@ -3672,6 +3777,8 @@ def parse_mjcf(
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
             elif actuator_type == "velocity":
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)
+            elif actuator_type == "dcmotor":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.DCMOTOR)
             else:
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.GENERAL)
 

@@ -219,6 +219,20 @@ def update_model_shape_xforms(
 
 
 @wp.kernel
+def detect_shape_color_changes(
+    shape_colors: wp.array[wp.vec3],
+    previous_shape_colors: wp.array[wp.vec3],
+    changed: wp.array[wp.int32],
+):
+    """Set a device flag when any packed shape color changed."""
+    tid = wp.tid()
+    color = shape_colors[tid]
+    previous = previous_shape_colors[tid]
+    if color[0] != previous[0] or color[1] != previous[1] or color[2] != previous[2]:
+        wp.atomic_add(changed, 0, 1)
+
+
+@wp.kernel
 def repack_shape_colors(
     shape_colors: wp.array[wp.vec3],
     slot_to_shape: wp.array[wp.int32],
@@ -1131,3 +1145,22 @@ def transform_points(
 ):
     i = wp.tid()
     transformed_points[i] = wp.transform_point(xform, points[i])
+
+
+@wp.kernel
+def apply_world_offset_and_layer_transform_normals(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    world_offsets: wp.array[wp.vec3],
+    world_index: int,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+):
+    """Transform visual points and normals into a viewer layer."""
+    i = wp.tid()
+    p = points[i]
+    if world_offsets and world_index >= 0 and world_index < world_offsets.shape[0]:
+        p = p + world_offsets[world_index]
+    out_points[i] = wp.transform_point(layer_xform, p)
+    out_normals[i] = wp.quat_rotate(wp.transform_get_rotation(layer_xform), normals[i])

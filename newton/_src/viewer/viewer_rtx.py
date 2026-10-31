@@ -45,7 +45,7 @@ from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
 from .image_logger import ImageLogger, _validate
-from .kernels import flag_changed_floats
+from .kernels import detect_shape_color_changes, flag_changed_floats
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -148,6 +148,8 @@ class ViewerRTX(ViewerUSD):
     and custom mesh instances can also be added after rendering starts.
     """
 
+    # Runtime updates assume mesh prototypes.
+    _export_gprims = False
     _PHASE_BUILD = 0
     _PHASE_RENDER = 1
     _PICKING_LINE_NAME = "picking_line"
@@ -229,10 +231,12 @@ class ViewerRTX(ViewerUSD):
                 applies it to bodies, camera, and debug geometry. The caller
                 owns the stage's content, lights, and lifetime; the viewer adds
                 its camera, render product, and debug geometry under
-                ``/__newton_viewer``. The viewer generates no geometry for the
-                model's shapes, cloth, or particles; ``show_triangles`` (off by
-                default here) and ``show_particles`` draw simulated cloth and
-                particles as debug overlays. :meth:`set_visible_worlds`,
+                ``/__newton_viewer``. Model shapes come from the supplied stage.
+                The viewer does not update its authored deformable prims.
+                ``show_triangles``, ``show_deformable_visual_meshes``, and
+                ``show_particles`` enable separate overlays, all off by default
+                here. Hidden overlay geometry may still be registered under the
+                viewer's subtree. :meth:`set_visible_worlds`,
                 ``show_collision``, and ``show_visual`` affect only the debug
                 geometry, ``environment`` must stay ``"default"``, and layers
                 are not supported. :meth:`set_model` and :meth:`end_frame`
@@ -461,25 +465,27 @@ void main() {
         gl.glGenVertexArrays(1, vao)
         self._gl_vao = vao[0]
 
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
         # ---- input callbacks ------------------------------------------------
         @self._window.event
         def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
         @self._window.event
         def on_mouse_press(x, y, button, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
         @self._window.event
         def on_mouse_release(x, y, button, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_release(x, y, button)
 
         @self._window.event
         def on_mouse_scroll(x, y, scroll_x, scroll_y):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_scroll(scroll_y)
 
         @self._window.event
@@ -492,6 +498,10 @@ void main() {
         @self._window.event
         def on_key_release(symbol, modifiers):
             self._keys_down.discard(symbol)
+
+        @self._window.event
+        def on_deactivate():
+            self._keys_down.clear()
 
         @self._window.event
         def on_resize(width, height):
@@ -842,6 +852,32 @@ void main() {
 
     # ------------------------------------------------------------- OVRTX init
 
+    def _prepare_shape_color_materials(self) -> None:
+        """Let untextured shape materials read each instance's runtime color."""
+        from pxr import Sdf, UsdShade
+
+        for shapes in self._shape_instances.values():
+            if shapes.geo_type == newton.GeoType.PLANE:
+                continue
+            name = self._qualify(shapes.name)
+            # Match the built RTX scene, not batches repopulated by visibility or opacity changes.
+            self._shape_color_batches[name] = shapes.model_shapes.copy()
+            for path in self._instance_prim_paths.get(name, ()):
+                material, _ = UsdShade.MaterialBindingAPI(self.stage.GetPrimAtPath(path)).ComputeBoundMaterial()
+                surface = UsdShade.Shader(self.stage.GetPrimAtPath(f"{material.GetPath()}/PreviewSurface"))
+                if not surface:
+                    continue
+                diffuse = surface.GetInput("diffuseColor")
+                # Preserve texture connections and materials already prepared by another instance.
+                if not diffuse or diffuse.HasConnectedSource():
+                    continue
+                reader = UsdShade.Shader.Define(self.stage, f"{material.GetPath()}/ShapeColor")
+                reader.CreateIdAttr("UsdPrimvarReader_float3")
+                reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+                reader.CreateInput("fallback", Sdf.ValueTypeNames.Float3).Set(diffuse.Get())
+                reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
+                diffuse.ConnectToSource(reader.ConnectableAPI(), "result")
+
     def _prepare_shape_opacity_materials(self) -> None:
         """Read per-instance RTX opacity and IOR without changing displayOpacity."""
         from pxr import Sdf, UsdGeom, UsdShade
@@ -891,6 +927,7 @@ void main() {
         self._apply_ground_material()
         self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
         if self._borrowed_stage is None and not self._use_layered_transform_updates:
+            self._prepare_shape_color_materials()
             self._prepare_shape_opacity_materials()
         ovrtx_usd_path = None
         if self._borrowed_stage is None:
@@ -1303,7 +1340,7 @@ void main() {
             else:
                 self.camera.pos = PyVec3(0.0, 2.0, 10.0)
 
-        self.picking = Picking(model, world_offsets=self.world_offsets)
+        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         self.wind = Wind(model)
 
         if model is not None:
@@ -1331,6 +1368,8 @@ void main() {
 
     @override
     def _populate_shapes(self):
+        self._model_shape_colors_device = None
+        self._shape_colors_changed_device = None
         self._model_shape_opacities_device = None
         self._shape_opacities_changed_device = None
         # The flat RTX geometry and its model indices survive viewer batch repopulation.
@@ -1598,7 +1637,9 @@ void main() {
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
             snap_to: Optional world transform to snap to when this gizmo is
-                released by the user.
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         self._gizmo_log[name] = {
             "transform": transform,
@@ -1658,22 +1699,16 @@ void main() {
                 self._hide_picking_line()
             return
 
-        pick_body_idx = self.picking.pick_body.numpy()[0]
-        if pick_body_idx < 0:
-            if self._phase == self._PHASE_RENDER:
-                self._hide_picking_line()
-            return
-
-        pick_state = self.picking.pick_state.numpy()
-        pick_target = pick_state[0]["picking_target_world"]
-        picked_point = pick_state[0]["picked_point_world"]
+        pick_body_idx = self.picking.pick_body
+        pick_target = self.picking.pick_target
+        picked_point = self.picking.pick_point
 
         body_world = self.model.body_world if self.model is not None else None
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             if body_world is not None:
                 body_world_idx = body_world.numpy()[pick_body_idx]
                 if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
                     pick_target = pick_target + world_offset
                     picked_point = picked_point + world_offset
 
@@ -1690,7 +1725,7 @@ void main() {
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)
@@ -1768,6 +1803,7 @@ void main() {
         self._apply_ovstage_population_changes()
         self._update_ovrtx_camera()
         self._update_ovrtx_transforms()
+        self._update_ovrtx_shape_colors()
         self._update_ovrtx_shape_opacities()
         self._update_ovrtx_instance_visibility()
         self._update_ovrtx_point_batches()
@@ -1806,6 +1842,14 @@ void main() {
             # Avoid the default glass-like IOR so opacity behaves like viewer alpha.
             return 1.0
         return None
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        if hidden and self._phase == self._PHASE_RENDER and name in self._mesh_prim_paths:
+            self._pending_mesh_visibility[name] = False
+            return
+        super()._log_deformable_visual_mesh(name, points, indices, hidden=hidden, **kwargs)
 
     @override
     def log_mesh(
@@ -2322,6 +2366,46 @@ void main() {
                     device=matrices.device,
                 )
                 self._write_ovstage_matrix_attribute(paths[:count], matrices)
+
+    def _update_ovrtx_shape_colors(self) -> None:
+        """Publish changed single-model colors after the previous render finishes."""
+        if (
+            self._use_layered_transform_updates
+            or self.model is None
+            or self.model.shape_color is None
+            or not self._shape_color_batches
+        ):
+            return
+        if self._model_shape_colors_device is not None:
+            self._shape_colors_changed_device.zero_()
+            wp.launch(
+                kernel=detect_shape_color_changes,
+                dim=len(self.model.shape_color),
+                inputs=[self.model.shape_color, self._model_shape_colors_device],
+                outputs=[self._shape_colors_changed_device],
+                device=self.model.shape_color.device,
+                record_tape=False,
+            )
+            # Read only a scalar when the model colors still match the last published values.
+            if not self._shape_colors_changed_device.numpy()[0]:
+                return
+        colors = self.model.shape_color.numpy()
+        for name, shape_indices in self._shape_color_batches.items():
+            batch_colors = colors[shape_indices]
+            previous = self._instance_specs.get(name)
+            paths = self._instance_prim_paths.get(name)
+            if previous is None or paths is None:
+                continue
+            old_colors = previous[2][0]
+            if np.array_equal(batch_colors, old_colors):
+                continue
+            tensors = [self._make_laned_array_dltensor(color, lanes=3) for color in batch_colors]
+            self._write_runtime_attribute(paths, "primvars:displayColor", tensors, is_array=True)
+            self._instance_specs[name] = (previous[0], previous[1], (batch_colors.copy(), *previous[2][1:]))
+        if self._model_shape_colors_device is None:
+            self._model_shape_colors_device = wp.empty_like(self.model.shape_color)
+            self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.model.shape_color.device)
+        wp.copy(self._model_shape_colors_device, self.model.shape_color)
 
     def _update_ovrtx_shape_opacities(self) -> None:
         """Publish changed single-model opacities after the previous render finishes."""
@@ -2946,6 +3030,9 @@ void main() {
         self._prim_world = None
         self._prim_matrices = None
         self._use_layered_transform_updates = False
+        self._model_shape_colors_device = None
+        self._shape_colors_changed_device = None
+        self._shape_color_batches = {}
         self._model_shape_opacities_device = None
         self._shape_opacities_changed_device = None
         self._shape_opacity_batches = {}
@@ -2969,8 +3056,9 @@ void main() {
 
         super().clear_model()
         if self._borrowed_stage is not None:
-            # The stage presents the model, so simulated cloth would duplicate its deformables.
+            # The stage already presents the deformables; overlays are opt-in.
             self.show_triangles = False
+            self.show_deformable_visual_meshes = False
 
     def _has_other_user_layers(self) -> bool:
         active_layer_id = getattr(self, "_active_layer_id", _DEFAULT_LAYER_ID)

@@ -169,6 +169,7 @@ def get_mesh(
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> Mesh: ...
 
 
@@ -189,6 +190,7 @@ def get_mesh(
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
@@ -210,6 +212,7 @@ def get_mesh(
     apply_stage_units: bool = True,
     prim: Usd.Prim,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> Mesh: ...
 
 
@@ -231,7 +234,51 @@ def get_mesh(
     apply_stage_units: bool = True,
     prim: Usd.Prim,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> tuple[Mesh, np.ndarray | None]: ...
+
+
+@overload
+def get_mesh(
+    source: Usd.Prim,
+    *,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: bool = False,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    load_visual_materials: bool = True,
+    return_source_point_indices: Literal[True],
+) -> tuple[Mesh, np.ndarray | None, np.ndarray]: ...
+
+
+@overload
+def get_mesh(
+    source: None = None,
+    *,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: bool = False,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    prim: Usd.Prim,
+    load_visual_materials: bool = True,
+    return_source_point_indices: Literal[True],
+) -> tuple[Mesh, np.ndarray | None, np.ndarray]: ...
 
 
 @deprecate_nonkeyword_arguments
@@ -252,7 +299,8 @@ def get_mesh(
     apply_stage_units: bool = True,
     prim: Usd.Prim | None = None,
     load_visual_materials: bool = True,
-) -> Mesh | tuple[Mesh, np.ndarray | None]:
+    return_source_point_indices: bool = False,
+) -> Mesh | tuple[Mesh, np.ndarray | None] | tuple[Mesh, np.ndarray | None, np.ndarray]:
     """
     Load a triangle mesh from a USD mesh prim, stage, file path, or URL.
 
@@ -327,7 +375,8 @@ def get_mesh(
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
             face-varying UV array. Only supported for a single
-            ``UsdGeom.Mesh`` prim when ``root_path`` is None.
+            ``UsdGeom.Mesh`` prim when ``root_path`` is None. See
+            ``return_source_point_indices`` for the combined return.
         root_path: USD prim path to use as the merge root for stage, file path,
             URL, or non-mesh prim sources. Defaults to the stage pseudo-root for
             stages and paths, or the provided prim for non-mesh prim sources.
@@ -347,10 +396,44 @@ def get_mesh(
             geometry is needed. If ``load_uvs`` is True, the material's shader
             network may still be inspected to select the UV primvar used by
             the texture.
+        return_source_point_indices: If True, return
+            ``(mesh, uv_indices, source_point_indices)``. The second item is
+            ``None`` unless UV indices are requested and available.
+            ``source_point_indices`` is an int32 array with one entry per output
+            vertex, indexing the original USD ``points`` array. Split vertices
+            repeat their source point index; an unchanged vertex layout returns
+            ``arange(point_count)``. This lets
+            callers map other per-point data, such as bind poses, to the loaded
+            mesh. Only supported for a single ``UsdGeom.Mesh`` prim with no
+            ``root_path``.
+
+            .. experimental::
+                This option may change without a formal deprecation cycle.
 
     Returns:
-        newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
-        ``return_uv_indices`` is True.
+        The loaded mesh, with the requested index arrays:
+
+        .. list-table::
+            :header-rows: 1
+
+            * - ``return_uv_indices``
+              - ``return_source_point_indices``
+              - Return value
+            * - ``False``
+              - ``False``
+              - ``mesh``
+            * - ``True``
+              - ``False``
+              - ``(mesh, uv_indices)``
+            * - ``False``
+              - ``True``
+              - ``(mesh, None, source_point_indices)``
+            * - ``True``
+              - ``True``
+              - ``(mesh, uv_indices, source_point_indices)``
+
+        ``uv_indices`` is ``None`` when not requested or unavailable. Source point
+        indices always have one entry per output vertex when requested.
     """
     from .utils import resolve_material_properties_for_prim  # noqa: PLC0415
 
@@ -372,6 +455,8 @@ def get_mesh(
         )
     )
     if should_load_source:
+        if return_source_point_indices:
+            raise ValueError("return_source_point_indices is only supported when loading a single UsdGeom.Mesh prim.")
         if return_uv_indices:
             raise ValueError("return_uv_indices is only supported when loading a single UsdGeom.Mesh prim.")
         return _get_mesh_from_source(
@@ -397,11 +482,22 @@ def get_mesh(
 
     mesh = UsdGeom.Mesh(prim)
 
-    points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
-    indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
+    authored_points = mesh.GetPointsAttr().Get()
+    authored_indices = mesh.GetFaceVertexIndicesAttr().Get()
     counts = mesh.GetFaceVertexCountsAttr().Get()
+    if authored_points is None or authored_indices is None or counts is None:
+        # The render mesh is read at the default time code; time samples alone are
+        # rejected instead of failing later with an unrelated reshape error.
+        raise ValueError(
+            f"Mesh prim '{prim.GetPath()}' has no default-time points, faceVertexIndices, or faceVertexCounts."
+        )
+    points = np.array(authored_points, dtype=np.float64)
+    indices = np.array(authored_indices, dtype=np.int32)
     source_points = points
     source_indices = indices
+    # Source point of every current vertex, gathered alongside ``points`` wherever the
+    # layout changes so per-point data such as bind poses can follow the loaded mesh.
+    source_point_indices = np.arange(len(points), dtype=np.int32) if return_source_point_indices else None
 
     uvs = None
     uvs_interpolation = None
@@ -524,9 +620,11 @@ def get_mesh(
                     if not uvs_facevarying:
                         corner_uvs = corner_uvs[indices]
 
-                points, indices, normals, uvs = _split_corners_into_vertices(
+                points, indices, normals, uvs, split_sources = _split_corners_into_vertices(
                     points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
                 )
+                if return_source_point_indices:
+                    source_point_indices = source_point_indices[split_sources]
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
@@ -593,6 +691,8 @@ def get_mesh(
             else:
                 if not preserve_facevarying_uvs:
                     points_original = points
+                    if return_source_point_indices:
+                        source_point_indices = source_point_indices[indices[corner_flat]]
                     points = points_original[indices[corner_flat]]
                     if normals is not None:
                         if len(normals) == len(points_original):
@@ -621,6 +721,8 @@ def get_mesh(
         normals = np.repeat(face_normals, 3, axis=0)
         vertex_indices = faces.reshape(-1)
         points = points[vertex_indices]
+        if return_source_point_indices:
+            source_point_indices = source_point_indices[vertex_indices]
         if (
             uvs is not None
             and uv_indices is None
@@ -667,6 +769,8 @@ def get_mesh(
             is_solid=mesh_out.is_solid,
         )
         mesh_out.has_inertia = True
+    if return_source_point_indices:
+        return mesh_out, uv_indices, source_point_indices
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out
@@ -858,7 +962,7 @@ def _split_corners_into_vertices(
     corner_dirs: np.ndarray,
     corner_uvs: np.ndarray | None,
     angle_threshold_deg: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
     """Duplicate vertices whose faceVarying corners disagree in normal direction or UV.
 
     The corners of a vertex are clustered greedily in corner order: a corner joins the
@@ -885,13 +989,14 @@ def _split_corners_into_vertices(
         angle_threshold_deg: Maximum angle between a corner normal and its cluster mean [deg].
 
     Returns:
-        Split positions, the remapped corner indices, the per-vertex normals, and the
-        per-vertex UVs (``None`` when ``corner_uvs`` is ``None``).
+        Split positions, the remapped corner indices, the per-vertex normals, the
+        per-vertex UVs (``None`` when ``corner_uvs`` is ``None``), and the index of the
+        source point each split position was copied from.
     """
     corner_count = len(indices)
     if corner_count == 0:
         empty_uvs = None if corner_uvs is None else corner_uvs[:0]
-        return points[:0], indices.copy(), np.zeros((0, 3), dtype=np.float32), empty_uvs
+        return points[:0], indices.copy(), np.zeros((0, 3), dtype=np.float32), empty_uvs, indices.copy()
 
     cos_thresh = math.cos(math.radians(angle_threshold_deg))
     cos_half_thresh = math.cos(math.radians(angle_threshold_deg) * 0.5)
@@ -963,7 +1068,7 @@ def _split_corners_into_vertices(
         split_dir_sums.extend((cluster[0], cluster[1], cluster[2]) for cluster in clusters)
 
     creation_corners = np.concatenate([order[starts[simple_groups]], np.asarray(split_creation, dtype=np.int64)])
-    source_vertices = np.concatenate([group_vertices[simple_groups], np.asarray(split_vertices, dtype=np.int64)])
+    source_vertices = np.concatenate([group_vertices[simple_groups], np.asarray(split_vertices, dtype=indices.dtype)])
     new_dir_sums = np.concatenate(
         [dir_sums[simple_groups], np.asarray(split_dir_sums, dtype=np.float64).reshape(-1, 3)]
     )
@@ -976,7 +1081,8 @@ def _split_corners_into_vertices(
 
     new_indices = np.empty(corner_count, dtype=indices.dtype)
     new_indices[order] = final_of_provisional[provisional_of_corner]
-    new_points = points[source_vertices[provisional_in_final_order]]
+    new_sources = source_vertices[provisional_in_final_order]
+    new_points = points[new_sources]
     ordered_sums = new_dir_sums[provisional_in_final_order]
     lengths = np.clip(np.linalg.norm(ordered_sums, axis=1, keepdims=True), 1e-30, None)
     new_normals = (ordered_sums / lengths).astype(np.float32)
@@ -986,7 +1092,7 @@ def _split_corners_into_vertices(
         split_uv_rows = np.asarray(split_uvs, dtype=grouped_uvs.dtype).reshape(-1, grouped_uvs.shape[1])
         new_uvs = np.concatenate([grouped_uvs[starts[simple_groups]], split_uv_rows])[provisional_in_final_order]
 
-    return new_points, new_indices, new_normals, new_uvs
+    return new_points, new_indices, new_normals, new_uvs, new_sources
 
 
 def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:

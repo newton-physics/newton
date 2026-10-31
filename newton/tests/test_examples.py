@@ -1157,6 +1157,27 @@ add_example_test(
 )
 
 
+class TestSteelExamples(NewtonTestCase):
+    pass
+
+
+add_example_test(
+    TestSteelExamples,
+    name="steel.example_steel_determinism_arms",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 20},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSteelExamples,
+    name="steel.example_steel_sleeping",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 340},
+    use_viewer=True,
+)
+
+
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
 

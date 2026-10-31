@@ -1,19 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example IK Custom (custom collision objective + sphere gizmo)
-#
-# Inverse kinematics on a Franka arm, with collision
-# avoidance against an interactive sphere obstacle.
-#
-# - Adds a custom CollisionSphereAvoidObjective (softplus penalty) for the EE
-# - Adds gizmos for the end-effector target and the obstacle sphere
-# - Re-solves IK every frame from the latest gizmo transforms
-# - EE target gizmo snaps back to solved TCP pose on release
-#
-# Command: python -m newton.examples ik_custom
-###########################################################################
+"""Example IK Custom (custom collision objective + sphere gizmo)
+
+Inverse kinematics on a Franka arm, with collision
+avoidance against an interactive sphere obstacle.
+
+- Adds a custom CollisionSphereAvoidObjective (softplus penalty) for the EE
+- Adds gizmos for the end-effector target and the obstacle sphere
+- Re-solves IK every frame from the latest gizmo transforms
+- EE target gizmo snaps back to solved TCP pose on release
+
+Success criteria:
+- A Franka arm and floating sphere appear with end-effector and obstacle gizmos.
+- Left-drag either gizmo: the sphere follows its gizmo and the arm attempts to track the requested
+  end-effector pose.
+- For reachable targets near the obstacle, the end effector moves away from the sphere instead of
+  tracking through it.
+- Releasing the end-effector gizmo snaps its target to the solved pose.
+
+Runs:
+- `python -m newton.examples ik_custom`
+"""
 
 import warp as wp
 
