@@ -9402,6 +9402,9 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
                 <general dynprm="0.02"/>
             </default>
         </default>
+        <default class="shortcut">
+            <motor gear="4 0 0 0 0 0.25"/>
+        </default>
     </default>
     <worldbody>
         <site name="s0" pos="0.1 0 0.6"/>
@@ -9423,6 +9426,7 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
     <actuator>
         <general name="m" class="child" tendon="t" lengthrange="0.3 0.6" gear="3"
                  gainprm="0.75 1.05 300" biasprm="0.75 1.05 300"/>
+        <motor name="mo" class="shortcut" joint="j" gear="1.5"/>
     </actuator>
 </mujoco>"""
 
@@ -9443,6 +9447,13 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
 
         def box(model):
             return int(np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_BOX)[0])
+
+        # Conversion drops actuator names, so find each actuator by its transmission.
+        def actuator(model, trntype):
+            return int(np.flatnonzero(model.actuator_trntype == trntype)[0])
+
+        muscle = {model: actuator(model, mujoco.mjtTrn.mjTRN_TENDON) for model in (native, converted)}
+        motor = {model: actuator(model, mujoco.mjtTrn.mjTRN_JOINT) for model in (native, converted)}
 
         def site_positions(model):
             data = mujoco.MjData(model)
@@ -9473,10 +9484,18 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
             "pair_friction": (native.pair_friction[0], converted.pair_friction[0]),
             "eq_solref": (native.eq_solref[0], converted.eq_solref[0]),
             "eq_solimp": (native.eq_solimp[0], converted.eq_solimp[0]),
-            "actuator_dynprm": (native.actuator_dynprm[0], converted.actuator_dynprm[0]),
-            "actuator_gainprm": (native.actuator_gainprm[0], converted.actuator_gainprm[0]),
-            "actuator_biasprm": (native.actuator_biasprm[0], converted.actuator_biasprm[0]),
-            "actuator_gear": (native.actuator_gear[0], converted.actuator_gear[0]),
+            "actuator_dynprm": (native.actuator_dynprm[muscle[native]], converted.actuator_dynprm[muscle[converted]]),
+            "actuator_gainprm": (
+                native.actuator_gainprm[muscle[native]],
+                converted.actuator_gainprm[muscle[converted]],
+            ),
+            "actuator_biasprm": (
+                native.actuator_biasprm[muscle[native]],
+                converted.actuator_biasprm[muscle[converted]],
+            ),
+            "actuator_gear": (native.actuator_gear[muscle[native]], converted.actuator_gear[muscle[converted]]),
+            # Shortcut actuators inherit the tail too.
+            "motor_gear": (native.actuator_gear[motor[native]], converted.actuator_gear[motor[converted]]),
         }
         for name, (expected, actual) in fields.items():
             with self.subTest(field=name):
