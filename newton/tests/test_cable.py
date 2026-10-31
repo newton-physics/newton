@@ -3909,15 +3909,14 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
 
 
 def _cable_rod_origin_matches_start_impl(test: unittest.TestCase, device):
-    """Preserve explicitly selected start-node body frames without a warning."""
+    """Warn for deprecated start-node frames while preserving their geometry."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
+    with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"') as warning:
         rod_bodies, rod_joints = _add_prepared_rod(
             builder,
             points,
@@ -3928,6 +3927,7 @@ def _cable_rod_origin_matches_start_impl(test: unittest.TestCase, device):
             body_frame_origin="start",
         )
 
+    test.assertEqual(warning.filename, __file__)
     builder.color()
     model = builder.finalize(device=device)
 
@@ -4017,7 +4017,12 @@ def _cable_rod_graph_body_frame_origin_impl(test: unittest.TestCase, device):
     for origin, (body_origins, body_com) in expected.items():
         with test.subTest(body_frame_origin=origin):
             builder = newton.ModelBuilder()
-            bodies, _ = _add_prepared_rod(builder, points, edges=edges, body_frame_origin=origin)
+            with (
+                test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"')
+                if origin == "start"
+                else nullcontext()
+            ):
+                bodies, _ = _add_prepared_rod(builder, points, edges=edges, body_frame_origin=origin)
             for body, body_origin in zip(bodies, body_origins, strict=True):
                 np.testing.assert_allclose(builder.body_q[body].p, body_origin, atol=1.0e-6)
                 np.testing.assert_allclose(builder.body_com[body], body_com, atol=1.0e-6)
@@ -4221,17 +4226,18 @@ def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, devi
     )
 
     start_builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-    start_bodies, start_joints = _add_prepared_rod(
-        start_builder,
-        points=initial_points,
-        quaternions=initial_quaternions,
-        rest_points=rest_points,
-        rest_quaternions=rest_quaternions,
-        radius=0.01,
-        stretch_stiffness=200.0,
-        bend_stiffness=20.0,
-        body_frame_origin="start",
-    )
+    with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"'):
+        start_bodies, start_joints = _add_prepared_rod(
+            start_builder,
+            points=initial_points,
+            quaternions=initial_quaternions,
+            rest_points=rest_points,
+            rest_quaternions=rest_quaternions,
+            radius=0.01,
+            stretch_stiffness=200.0,
+            bend_stiffness=20.0,
+            body_frame_origin="start",
+        )
 
     def transform_values(xform: wp.transform) -> np.ndarray:
         return np.asarray([float(xform[i]) for i in range(7)])
@@ -6054,7 +6060,17 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
     test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), (0, 0, 0))
 
     invalid_calls = (
-        (graph, {"stretch_stiffness": -1.0, "body_frame_origin": "com"}, "add_rod: stretch_stiffness"),
+        (
+            graph,
+            {"cfg": newton.ModelBuilder.ShapeConfig(density=-1.0), "body_frame_origin": "start"},
+            "density must be finite and >= 0",
+        ),
+        (
+            graph,
+            {"cfg": newton.ModelBuilder.ShapeConfig(is_site=True), "body_frame_origin": "start"},
+            "cannot have collision enabled",
+        ),
+        (graph, {"stretch_stiffness": -1.0, "body_frame_origin": "start"}, "add_rod: stretch_stiffness"),
         (
             graph,
             {"stretch_stiffness": np.nan, "body_frame_origin": "com"},
@@ -6082,8 +6098,10 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         before = (builder.body_count, builder.shape_count, builder.joint_count)
         with test.subTest(message=message):
-            with test.assertRaisesRegex(ValueError, message):
-                builder.add_rod(rod=rod, **kwargs)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with test.assertRaisesRegex(ValueError, message):
+                    builder.add_rod(rod=rod, **kwargs)
         test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
 
     misaligned = graph.copy()
@@ -6093,8 +6111,12 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
     )
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     before = (builder.body_count, builder.shape_count, builder.joint_count)
-    with test.assertRaisesRegex(ValueError, "quaternion at segment index 0"):
-        builder.add_rod(rod=misaligned, body_frame_origin="com")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        with test.assertRaisesRegex(ValueError, "quaternion at segment index 0"):
+            builder.add_rod(rod=misaligned, body_frame_origin="start")
+        with test.assertRaisesRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"'):
+            builder.add_rod(rod=graph, body_frame_origin="start")
     test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
 
     branched = newton.Rod(

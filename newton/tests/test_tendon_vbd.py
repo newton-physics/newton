@@ -69,13 +69,18 @@ def _hinge_z_angle(body_q, body_idx):
     return float(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
 
-def _make_tendon_vbd_solver(model, **overrides):
-    # Retain legacy-mode coverage without suppressing unrelated warnings.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
-        )
-        return newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
+def _make_tendon_vbd_solver(test, model, **overrides):
+    expected_warning = (
+        "^VBD options rigid_compliant_alm=False, rigid_avbd_beta, "
+        "rigid_joint_linear_k_start, rigid_joint_angular_k_start are deprecated"
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.filterwarnings("always", message=expected_warning, category=newton.exceptions.NewtonDeprecationWarning)
+        solver = newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
+    test.assertEqual(len(caught), 1)
+    test.assertIs(caught[0].category, newton.exceptions.NewtonDeprecationWarning)
+    test.assertRegex(str(caught[0].message), expected_warning)
+    return solver
 
 
 def test_vbd_no_tendon_specialization(test, device):
@@ -261,10 +266,10 @@ def build_dynamic_rolling_route():
     return builder.finalize(), candidate, candidate_guide, lower, upper
 
 
-def run_vbd_model(model, num_frames=80, substeps=12, fps=60):
+def run_vbd_model(test, model, num_frames=80, substeps=12, fps=60):
     _set_serial_body_coloring(model)
     dt = 1.0 / fps / substeps
-    solver = _make_tendon_vbd_solver(model)
+    solver = _make_tendon_vbd_solver(test, model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -282,10 +287,10 @@ def run_vbd_model(model, num_frames=80, substeps=12, fps=60):
     return state_0, solver
 
 
-def run_vbd_motorized_model(model, drive_joint, target=2.0, num_frames=70, substeps=10, fps=60):
+def run_vbd_motorized_model(test, model, drive_joint, target=2.0, num_frames=70, substeps=10, fps=60):
     _set_serial_body_coloring(model)
     dt = 1.0 / fps / substeps
-    solver = _make_tendon_vbd_solver(model)
+    solver = _make_tendon_vbd_solver(test, model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -305,11 +310,11 @@ def run_vbd_motorized_model(model, drive_joint, target=2.0, num_frames=70, subst
     return state_0, solver
 
 
-def _run_dynamic_pulley(mu, device, num_frames=40):
+def _run_dynamic_pulley(test, mu, device, num_frames=40):
     model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=mu)
     _set_serial_body_coloring(model)
 
-    solver = _make_tendon_vbd_solver(model)
+    solver = _make_tendon_vbd_solver(test, model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -336,12 +341,12 @@ def _run_dynamic_pulley(mu, device, num_frames=40):
     return body_q, left_idx, right_idx, theta
 
 
-def _dynamic_capstan_metrics(device, mu, num_frames=40):
+def _dynamic_capstan_metrics(test, device, mu, num_frames=40):
     model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=mu)
     _set_serial_body_coloring(model)
     substeps = 12
     dt = 1.0 / 60.0 / substeps
-    solver = _make_tendon_vbd_solver(model)
+    solver = _make_tendon_vbd_solver(test, model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -373,9 +378,9 @@ def _dynamic_capstan_metrics(device, mu, num_frames=40):
     return body_q, left_travel, right_travel, cable_travel, theta, rim_travel, slip
 
 
-def _kinematic_capstan_metrics(device, mu, num_frames=40):
+def _kinematic_capstan_metrics(test, device, mu, num_frames=40):
     model, left_idx, right_idx, pulley_idx = build_kinematic_pulley_atwood(mu=mu)
-    state, _ = run_vbd_model(model, num_frames=num_frames)
+    state, _ = run_vbd_model(test, model, num_frames=num_frames)
     body_q = state.body_q.numpy()
     left_travel = float(body_q[left_idx][2]) - 2.0
     right_travel = 2.0 - float(body_q[right_idx][2])
@@ -391,7 +396,7 @@ def test_vbd_tendon_stretch_pulls_toward_anchor(test, device):
     """A taut VBD tendon segment should pull the dynamic endpoint toward rest length."""
     with wp.ScopedDevice(device):
         model, body_idx = build_single_span_tendon()
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -413,7 +418,7 @@ def test_vbd_tendon_zero_compliance_uses_floor(test, device):
         for compliance in (0.0, 1.0e-8):
             model, body_idx = build_single_span_tendon()
             model.tendon_segment_compliance.fill_(compliance)
-            solver = _make_tendon_vbd_solver(model)
+            solver = _make_tendon_vbd_solver(test, model)
             state_0 = model.state()
             state_1 = model.state()
             solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
@@ -435,7 +440,7 @@ def test_vbd_rolling_chain_tension_matches_accepted_pose(test, device):
         model, slider = build_fixed_rolling_chain()
         solver_kwargs = dict(TENDON_VBD_SOLVER_KWARGS)
         solver_kwargs.update(tendon_max_sweeps=256, tendon_settle_tol=1.0e-5)
-        solver = _make_tendon_vbd_solver(model, **solver_kwargs)
+        solver = _make_tendon_vbd_solver(test, model, **solver_kwargs)
         state_0 = model.state()
         state_1 = model.state()
 
@@ -465,7 +470,7 @@ def test_vbd_dynamic_tendon_route_switches_inside_solver(test, device):
     """VBD should update dynamic routing and its active segment endpoints inside ``step``."""
     with wp.ScopedDevice(device):
         model, candidate, candidate_guide, lower, upper = build_dynamic_rolling_route()
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -510,7 +515,7 @@ def test_vbd_dynamic_route_activation_uses_accepted_pose(test, device):
     with wp.ScopedDevice(device):
         model, candidate, candidate_guide = build_force_driven_dynamic_route(device)
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0, state_1 = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
@@ -553,11 +558,11 @@ def test_vbd_tendon_coloring_separates_segment_endpoints(test, device):
         for color, group in enumerate(model.body_color_groups):
             body_colors[group.numpy()] = color
         test.assertNotEqual(body_colors[body_0], body_colors[body_1])
-        _make_tendon_vbd_solver(model)
+        _make_tendon_vbd_solver(test, model)
 
         model.body_color_groups = [wp.array([body_0, body_1], dtype=wp.int32, device=model.device)]
         with test.assertRaisesRegex(ValueError, "does not separate tendon segment endpoints"):
-            _make_tendon_vbd_solver(model)
+            _make_tendon_vbd_solver(test, model)
 
 
 def test_vbd_tendon_compliance_uses_physical_tension(test, device):
@@ -568,7 +573,7 @@ def test_vbd_tendon_compliance_uses_physical_tension(test, device):
             model, body_idx, mass, compliance, initial_z = build_simple_cable_gravity()
             model.tendon_segment_damping.fill_(100.0)
             _set_serial_body_coloring(model)
-            solver = _make_tendon_vbd_solver(model)
+            solver = _make_tendon_vbd_solver(test, model)
             state_0 = model.state()
             state_1 = model.state()
             control = model.control()
@@ -637,7 +642,7 @@ def test_vbd_slack_damped_tendon_opposes_extension(test, device):
         builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         state_0.body_qd.assign(
@@ -663,7 +668,7 @@ def test_vbd_reset_restores_tendon_state(test, device):
     with wp.ScopedDevice(device):
         model, _ = build_kinematic_rolling_transport(mu=10.0)
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         initial_rest = solver.tendon_segment_rest_length.numpy().copy()
         initial_local_l = solver.tendon_segment_attachment_l_local.numpy().copy()
         initial_active = solver.tendon_guide_active.numpy().copy()
@@ -688,7 +693,7 @@ def test_vbd_reset_rebaselines_tendon_at_custom_pose(test, device):
     with wp.ScopedDevice(device):
         model, pulley = build_kinematic_rolling_transport(mu=10.0)
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         initial_rest = solver.tendon_segment_rest_length.numpy().copy()
@@ -735,7 +740,7 @@ def test_vbd_tendon_diagnostics_match_final_pose(test, device):
         builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
-        with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated"):
+        with test.assertWarnsRegex(DeprecationWarning, "VBD options rigid_compliant_alm=False"):
             solver = newton.solvers.SolverVBD(
                 model,
                 iterations=1,
@@ -803,7 +808,7 @@ def test_vbd_nonrolling_rotation_uses_discrete_length_rate(test, device):
         builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
 
@@ -834,7 +839,7 @@ def test_vbd_rolling_spin_does_not_add_damping_tension(test, device):
         model, pulley = build_kinematic_rolling_transport(mu=10.0)
         model.tendon_segment_damping.fill_(100.0)
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         initial_rest = solver.tendon_segment_rest_length.numpy().copy()
@@ -911,7 +916,7 @@ def test_vbd_frictionless_off_center_roller_retains_body_torque(test, device):
 
         solver_kwargs = dict(TENDON_VBD_SOLVER_KWARGS)
         solver_kwargs["iterations"] = 1
-        solver = _make_tendon_vbd_solver(model, **solver_kwargs)
+        solver = _make_tendon_vbd_solver(test, model, **solver_kwargs)
         state_0 = model.state()
         state_1 = model.state()
         solver.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
@@ -973,7 +978,7 @@ def test_vbd_same_body_rolling_span_applies_net_torque(test, device):
 
         solver_kwargs = dict(TENDON_VBD_SOLVER_KWARGS)
         solver_kwargs.update(iterations=1, tendon_max_sweeps=1)
-        solver = _make_tendon_vbd_solver(model, **solver_kwargs)
+        solver = _make_tendon_vbd_solver(test, model, **solver_kwargs)
         span_lengths = np.linalg.norm(
             solver.tendon_segment_attachment_r.numpy() - solver.tendon_segment_attachment_l.numpy(), axis=1
         )
@@ -1004,7 +1009,7 @@ def test_vbd_tendon_cuda_graph_capture(test, device):
         model, body_idx, _, _, initial_z = build_simple_cable_gravity()
         model.tendon_segment_damping.fill_(100.0)
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -1035,13 +1040,13 @@ def test_vbd_dynamic_tendon_cuda_graph_capture(test, device):
 
     with wp.ScopedDevice(device):
         warm_model, _, _, _, _ = build_dynamic_rolling_route()
-        warm_solver = _make_tendon_vbd_solver(warm_model)
+        warm_solver = _make_tendon_vbd_solver(test, warm_model)
         warm_0 = warm_model.state()
         warm_1 = warm_model.state()
         warm_solver.step(warm_0, warm_1, warm_model.control(), None, 1.0 / 120.0)
 
         model, candidate, candidate_guide, _, _ = build_dynamic_rolling_route()
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -1062,7 +1067,7 @@ def test_vbd_pinhole_slip_atwood(test, device):
     """A pinhole is a frictionless slip waypoint: heavy descends, light rises."""
     with wp.ScopedDevice(device):
         model, left_idx, right_idx = build_pinhole_atwood()
-        state, _ = run_vbd_model(model, num_frames=120)
+        state, _ = run_vbd_model(test, model, num_frames=120)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD pinhole Atwood state")
 
@@ -1077,7 +1082,7 @@ def test_vbd_slack_pinhole_does_not_redistribute(test, device):
     with wp.ScopedDevice(device):
         model = build_slack_pinhole_route()
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -1101,7 +1106,7 @@ def test_vbd_dynamic_pulley_uses_angular_jacobian(test, device):
     """High friction recovers the no-slip angular Jacobian baseline."""
     with wp.ScopedDevice(device):
         model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=10.0)
-        state, _ = run_vbd_model(model, num_frames=60)
+        state, _ = run_vbd_model(test, model, num_frames=60)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD dynamic pulley Atwood state")
 
@@ -1125,7 +1130,7 @@ def test_vbd_pulley_inertia_limit_locks_cable_travel(test, device):
             pulley_mass=20000.0,
             pulley_radius=radius,
         )
-        state, _ = run_vbd_model(model, num_frames=60)
+        state, _ = run_vbd_model(test, model, num_frames=60)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD high-inertia pulley state")
 
@@ -1142,9 +1147,9 @@ def test_vbd_pulley_inertia_limit_locks_cable_travel(test, device):
 def test_vbd_dynamic_capstan_mu_controls_pulley_rotation(test, device):
     """Dynamic capstan: zero mu slips, mid mu grips partially, high mu approaches no-slip."""
     with wp.ScopedDevice(device):
-        low = _dynamic_capstan_metrics(device, mu=0.0)
-        mid = _dynamic_capstan_metrics(device, mu=0.04)
-        high = _dynamic_capstan_metrics(device, mu=10.0)
+        low = _dynamic_capstan_metrics(test, device, mu=0.0)
+        mid = _dynamic_capstan_metrics(test, device, mu=0.04)
+        high = _dynamic_capstan_metrics(test, device, mu=10.0)
 
         for label, metrics in [("low", low), ("mid", mid), ("high", high)]:
             body_q, left_travel, right_travel, *_ = metrics
@@ -1182,9 +1187,9 @@ def test_vbd_dynamic_capstan_mu_controls_pulley_rotation(test, device):
 def test_vbd_kinematic_capstan_mu_controls_slip_and_locking(test, device):
     """Kinematic capstan: zero mu slips, mid mu slips less, high mu locks."""
     with wp.ScopedDevice(device):
-        low = _kinematic_capstan_metrics(device, mu=0.0)
-        mid = _kinematic_capstan_metrics(device, mu=0.08)
-        high = _kinematic_capstan_metrics(device, mu=10.0)
+        low = _kinematic_capstan_metrics(test, device, mu=0.0)
+        mid = _kinematic_capstan_metrics(test, device, mu=0.08)
+        high = _kinematic_capstan_metrics(test, device, mu=10.0)
 
         for label, metrics in [("low", low), ("mid", mid), ("high", high)]:
             body_q, _, _, theta = metrics
@@ -1214,7 +1219,7 @@ def test_vbd_motorized_pulley_drives_slider(test, device):
     """A rolling drive pulley must convert rotation into cable sliding."""
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
-        state, _ = run_vbd_motorized_model(model, drive_joint)
+        state, _ = run_vbd_motorized_model(test, model, drive_joint)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD motorized pulley state")
 
@@ -1231,7 +1236,7 @@ def test_vbd_frictionless_motorized_pulley_does_not_drive_slider(test, device):
     """With mu=0, pulley spin should not inject cable sliding through rolling transfer."""
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=0.0)
-        state, _ = run_vbd_motorized_model(model, drive_joint)
+        state, _ = run_vbd_motorized_model(test, model, drive_joint)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD frictionless motorized pulley state")
 
@@ -1251,7 +1256,7 @@ def test_vbd_motorized_pulley_couples_without_delay(test, device):
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -1282,7 +1287,7 @@ def test_vbd_motorized_pulley_updates_rest_in_first_step(test, device):
     with wp.ScopedDevice(device):
         model, _, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -1316,7 +1321,7 @@ def test_vbd_moving_rolling_route_conserves_material(test, device):
 
         def solver_factory(model):
             _set_serial_body_coloring(model)
-            return _make_tendon_vbd_solver(model)
+            return _make_tendon_vbd_solver(test, model)
 
         cases = ((0.0, None), (0.2, None), (100.0, None), (100.0, 1))
         for mu, short_segment in cases:
@@ -1336,7 +1341,7 @@ def test_vbd_equal_weight_atwood(test, device):
     with wp.ScopedDevice(device):
         model, left_idx, right_idx, pulley_idx = build_atwood_equal_weights()
         _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
+        solver = _make_tendon_vbd_solver(test, model)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
