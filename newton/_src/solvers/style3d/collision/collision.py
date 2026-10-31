@@ -3,7 +3,7 @@
 
 import warp as wp
 
-from newton import Contacts, Model, State
+from newton import Contacts, Model
 from newton._src.solvers.style3d.collision.bvh import BvhEdge, BvhTri
 from newton._src.solvers.style3d.collision.kernels import (
     eval_body_contact_kernel,
@@ -123,9 +123,10 @@ class Collision:
         self,
         dt: float,
         _iter: int,
-        state_in: State,
-        state_out: State,
         contacts: Contacts,
+        body_q_0: wp.array[wp.transform],
+        body_q_1: wp.array[wp.transform],
+        particle_q: wp.array[wp.vec3],
         particle_forces: wp.array[wp.vec3],
         particle_q_prev: wp.array[wp.vec3],
         particle_stiff: wp.array[wp.vec3] = None,
@@ -138,9 +139,10 @@ class Collision:
 
         Args:
             dt: Time step.
-            state_in: Current simulation state (input).
-            state_out: Next simulation state (output).
             contacts: Contact data structure containing contact information.
+            body_q_0: Current body transform
+            body_q_1: Next body transform
+            particle_q: Current position
             particle_forces: Output array for computed contact forces.
             particle_q_prev: Previous positions for velocity-based damping.
             particle_stiff: Optional stiffness array for particles.
@@ -152,11 +154,11 @@ class Collision:
         if self.stiff_vf > 0:
             wp.launch(
                 handle_vertex_triangle_contacts_kernel,
-                dim=len(state_in.particle_q),
+                dim=len(particle_q),
                 inputs=[
                     thickness,
                     self.stiff_vf,
-                    state_in.particle_q,
+                    particle_q,
                     self.model.tri_indices,
                     self.broad_phase_vf,
                     particle_stiff,
@@ -172,7 +174,7 @@ class Collision:
                 inputs=[
                     thickness,
                     self.stiff_ee,
-                    state_in.particle_q,
+                    particle_q,
                     self.model.edge_indices,
                     self.broad_phase_ee,
                     particle_stiff,
@@ -188,7 +190,7 @@ class Collision:
                 inputs=[
                     thickness,
                     self.stiff_ef,
-                    state_in.particle_q,
+                    particle_q,
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.broad_phase_ef,
@@ -204,7 +206,7 @@ class Collision:
             inputs=[
                 dt,
                 particle_q_prev,
-                state_in.particle_q,
+                particle_q,
                 # body-particle contact
                 self.model.soft_contact_ke,
                 self.model.soft_contact_kd,
@@ -216,8 +218,8 @@ class Collision:
                 contacts.soft_contact_max,
                 self.model.shape_material_mu,
                 self.model.shape_body,
-                state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
-                state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                body_q_1 if self.integrate_with_external_rigid_solver else body_q_0,
+                body_q_0 if self.integrate_with_external_rigid_solver else None,
                 self.model.body_qd,
                 self.model.body_com,
                 contacts.soft_contact_shape,
