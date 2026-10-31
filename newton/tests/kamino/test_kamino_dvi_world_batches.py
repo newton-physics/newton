@@ -72,6 +72,7 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
             kamino_config.DVISolverConfig(
+                bilateral_solver_type="LLTB",  # This regression exercises the dense inverse batching path.
                 tolerance=0.0,
                 regularization=1.0e-5,
                 max_alternating_iterations=iterations,

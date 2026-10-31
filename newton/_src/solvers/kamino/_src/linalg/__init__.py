@@ -9,6 +9,7 @@ from .core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
 )
+from .factorize.ldl_sparse import LDLBlockSparseSolver
 
 # Import the RCM-reordered semi-sparse blocked LLT solver here (rather than
 # from .linear) to avoid a circular import: .factorize.llt_blocked_rcm_solver
@@ -29,18 +30,21 @@ from .linear import (
     LLTSequentialSolver,
 )
 
-# Register the reordering solver in the name<->type maps so it can be selected
-# via the string "LLTBRCM" in ConstrainedDynamicsConfig.linear_solver_type.
+# Register the additional factorization backends for selection through
+# ConstrainedDynamicsConfig.linear_solver_type.
 LinearSolverNameToType["LLTBRCM"] = LLTBlockedRCMSolver
 LinearSolverTypeToName[LLTBlockedRCMSolver] = "LLTBRCM"
+LinearSolverNameToType["LDL"] = LDLBlockSparseSolver
+LinearSolverTypeToName[LDLBlockSparseSolver] = "LDL"
 
-# Widen the LinearSolverType alias to include the reordering solver. This
+# Widen the LinearSolverType alias to include the additional backends. This
 # matters because `delassus.py` performs a runtime
 # `issubclass(solver, LinearSolverType)` check and would otherwise reject it.
 LinearSolverType = (
     LLTSequentialSolver
     | LLTBlockedSolver
     | LLTBlockedRCMSolver
+    | LDLBlockSparseSolver
     | ConjugateGradientSolver
     | ConjugateResidualSolver
     | ConjugateResidualSolverFused
@@ -59,6 +63,7 @@ __all__ = [
     "DenseSquareMultiLinearInfo",
     "DirectSolver",
     "IterativeSolver",
+    "LDLBlockSparseSolver",
     "LLTBlockedRCMSolver",
     "LLTBlockedSolver",
     "LLTSequentialSolver",

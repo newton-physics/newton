@@ -108,6 +108,7 @@ class DVIState:
     """Scratch arrays used by the DVI solver."""
 
     def __init__(self, size: SizeKamino | None = None):
+        """Initialize DVI scratch storage and allocate per-world arrays when sizes are supplied."""
         self.sigma: wp.array[vec2f] | None = None
         """Zero proximal terms used when evaluating shared solution metrics."""
         self.v_aug: wp.array[float32] | None = None
@@ -133,6 +134,8 @@ class DVIState:
         self.bilateral_coupling: wp.array[float32] | None = None
         self.bilateral_response_mio: wp.array[int32] | None = None
         self.bilateral_response_stride: wp.array[int32] | None = None
+        self.bilateral_response_active_stride: wp.array[int32] | None = None
+        self.bilateral_response_columns: wp.array[int32] | None = None
         self.bilateral_response_factor: wp.array[float32] | None = None
         self.bilateral_response: wp.array[float32] | None = None
         self.bilateral_factor_row_start: wp.array[int32] | None = None
