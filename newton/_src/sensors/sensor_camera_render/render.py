@@ -459,7 +459,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             return result
 
         closest_hit = trace.closest_hit
-        if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
+        if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID or closest_hit.gaussian_transmittance <= 0.0:
             result.color = closest_hit.gaussian_color
             return result
 
@@ -928,7 +928,11 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                                 )
                                 found = wp.bool(True)
 
-                    if not found and surface_id != raytrace.NO_HIT_SHAPE_ID:
+                    if (
+                        not found
+                        and surface_id != raytrace.NO_HIT_SHAPE_ID
+                        and trace.closest_hit.gaussian_transmittance > 0.0
+                    ):
                         shade = shade_trace(
                             trace,
                             world_index,

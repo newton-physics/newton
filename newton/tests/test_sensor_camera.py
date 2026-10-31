@@ -1855,6 +1855,23 @@ class TestSensorCamera(unittest.TestCase):
         # Both white splats cover 0.75 of the pixel, and the shape shaded by ambient light fills the remaining 0.25.
         np.testing.assert_allclose(hdr, 0.75 + 0.25 * np.array([0.2, 0.2, 0.225]), atol=1e-4)
 
+    def test_gaussian_splats_at_min_transmittance_hide_the_shape(self):
+        """Report the splats instead of the shape behind them once they reach ``gaussians_min_transmittance``."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -4.0), q=wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.75, color=(1.0, 1.0, 1.0))
+        hdr, depth, color = self._render_gaussians(
+            newton.utils.ColorSpace.LINEAR,
+            [[0.0, 0.0, -2.0]],
+            [0.45],
+            [[0.5 / SH_C0] * 3],
+            builder=builder,
+            render_config=SensorCamera.RenderConfig(gaussians_min_transmittance=0.6),
+        )
+        np.testing.assert_allclose(hdr, [0.45] * 3, atol=1e-5)
+        self.assertAlmostEqual(depth, 2.0, places=4)
+        self.assertEqual(color >> 24, 255)
+
 
 class TestSensorCameraDeformable(unittest.TestCase):
     """Render native visual meshes without USD or a viewer window."""

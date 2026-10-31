@@ -213,12 +213,13 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                 opacity = hit_alphas[hit]
                 result_color += color * opacity * ray_transmittance
                 ray_transmittance *= 1.0 - opacity
-
-                if median_distance < 0.0 and ray_transmittance < 0.5:
-                    median_distance = hit_distances[hit]
                 if ray_transmittance <= wp.static(config.gaussians_min_transmittance):
                     # The light left is negligible, so the splats count as opaque.
                     ray_transmittance = wp.float32(0.0)
+
+                if median_distance < 0.0 and ray_transmittance < 0.5:
+                    median_distance = hit_distances[hit]
+                if ray_transmittance == 0.0:
                     break
 
             min_distance = hit_distances[-1]
