@@ -1799,6 +1799,24 @@ class TestSensorCamera(unittest.TestCase):
                     self.assertAlmostEqual(depth, 2.0 if opacity > 0.5 else 0.0, places=5)
                     self.assertAlmostEqual(color >> 24, opacity * 255.0, delta=1.0)
 
+    def test_gaussian_partly_covered_pixel_averages_its_samples(self):
+        """Average a sample through a translucent splat with a sample that misses it in the multisample modes."""
+        rays = self._rays(1, 1).numpy().repeat(2, axis=2)
+        rays[0, 0, 1, 1] = (0.0, 0.0, 1.0)
+        rays = wp.array(rays, dtype=wp.vec3f, device="cpu")
+        for anti_aliasing in (SensorCamera.AntiAliasing.SSAA, SensorCamera.AntiAliasing.MSAA):
+            with self.subTest(anti_aliasing=anti_aliasing):
+                hdr, _, color = self._render_gaussians(
+                    newton.utils.ColorSpace.LINEAR,
+                    [[0.0, 0.0, -2.0]],
+                    [0.6],
+                    [[0.5 / SH_C0] * 3],
+                    rays=rays,
+                    render_config=SensorCamera.RenderConfig(anti_aliasing=anti_aliasing),
+                )
+                np.testing.assert_allclose(hdr, [0.3] * 3, atol=1e-5)
+                self.assertAlmostEqual(color >> 24, 0.3 * 255.0, delta=1.0)
+
     def test_gaussian_translucent_splat_blends_over_shape(self):
         """Blend a translucent splat over the shaded shape behind it."""
         for opacity, depth in ((0.25, 3.25), (0.75, 2.0)):
