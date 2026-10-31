@@ -2962,11 +2962,27 @@ def parse_mjcf(
                         "Joint constraint: %s coupled to %s with polycoef %s", joint1_name, joint2_name, polycoef
                     )
 
-                joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
-                joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
+                endpoints = []
+                for name in (joint1_name, joint2_name):
+                    if not name:
+                        # MuJoCo fixes joint1 to the polynomial's constant term when joint2 is omitted.
+                        endpoints.append((-1, -1))
+                        continue
+                    key = sanitize_name(name)
+                    if key not in joint_name_to_idx:
+                        raise ValueError(f"Joint equality '{common['name']}' references unknown joint '{name}'.")
+                    endpoints.append((joint_name_to_idx[key], mjcf_joint_name_to_dof.get(key, -1)))
+                (joint1_idx, joint1_dof), (joint2_idx, joint2_dof) = endpoints
+                custom_attrs["mujoco:equality_constraint_joint1_dof"] = joint1_dof
+                custom_attrs["mujoco:equality_constraint_joint2_dof"] = joint2_dof
                 polycoef_values = mjc_parse_polycoef(polycoef)
+                # Newton mimic constraints couple two whole scalar joints; other
+                # endpoints stay MuJoCo equality rows resolved per DoF.
+                scalar_pair = joint2_idx >= 0 and all(
+                    sum(builder.joint_dof_dim[index]) == 1 for index in (joint1_idx, joint2_idx)
+                )
 
-                if convert_mjc_equality_constraints:
+                if convert_mjc_equality_constraints and scalar_pair:
                     if mjc_polycoef_has_higher_order(polycoef_values):
                         warnings.warn(
                             f"Joint equality '{common['name']}' uses higher-order polycoef terms. "
