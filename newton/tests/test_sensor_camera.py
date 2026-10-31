@@ -1714,7 +1714,10 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "views_per_row"):
             SensorCamera.Utils.flatten_color_image_to_rgba(color, views_per_row=0)
 
-    def _render_gaussian_hdr(self, color_space, positions, opacities, sh_coeffs):
+    def _render_gaussians(
+        self, color_space, positions, opacities, sh_coeffs, *, builder=None, rays=None, render_config=None
+    ):
+        """Render splats on the camera's -Z axis into one pixel and return its HDR color, depth, and packed color."""
         gaussian = newton.Gaussian(
             positions=np.asarray(positions, dtype=np.float32),
             scales=np.full((len(positions), 3), 0.5, dtype=np.float32),
@@ -1722,14 +1725,25 @@ class TestSensorCamera(unittest.TestCase):
             sh_coeffs=np.asarray(sh_coeffs, dtype=np.float32),
             sh_color_space=color_space,
         )
-        builder = newton.ModelBuilder()
+        if builder is None:
+            builder = newton.ModelBuilder()
         builder.add_shape_gaussian(body=-1, gaussian=gaussian)
         model = builder.finalize(device="cpu")
 
         camera = SensorCamera(model)
         hdr = camera.allocate_image_color_hdr(1, 1, 1)
-        camera.update(model.state(), self._identity_transforms(1), self._rays(1, 1), hdr_color_image=hdr)
-        return hdr.numpy().reshape(-1, 3)[0]
+        depth = camera.allocate_image_depth(1, 1, 1)
+        color = camera.allocate_image_color(1, 1, 1)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1),
+            self._rays(1, 1) if rays is None else rays,
+            hdr_color_image=hdr,
+            depth_image=depth,
+            color_image=color,
+            render_config=render_config,
+        )
+        return hdr.numpy().reshape(3), float(depth.numpy().reshape(-1)[0]), int(color.numpy().reshape(-1)[0])
 
     def test_gaussian_radiance_is_clamped_and_srgb_decoded(self):
         """Clamp negative Gaussian radiance in both color spaces and decode only sRGB radiance to linear light."""
@@ -1740,25 +1754,81 @@ class TestSensorCamera(unittest.TestCase):
             (newton.utils.ColorSpace.LINEAR, [0.0, 0.5, bright]),
         ):
             with self.subTest(color_space=color_space):
-                color = self._render_gaussian_hdr(color_space, [[0.0, 0.0, -2.0]], [1.0], [[-4.0, 0.0, 4.0]])
+                color, _, _ = self._render_gaussians(color_space, [[0.0, 0.0, -2.0]], [1.0], [[-4.0, 0.0, 4.0]])
                 np.testing.assert_allclose(color, expected, atol=1e-4)
 
     def test_gaussian_srgb_overlapping_splats_blend_in_encoded_space(self):
         """Blend overlapping sRGB splats in encoded space and decode the result once."""
         # Two coincident-axis splats with alpha 0.5 each: the near one (0.8) is blended over the far one (0.2).
         sh = [[(0.8 - 0.5) / SH_C0] * 3, [(0.2 - 0.5) / SH_C0] * 3]
-        color = self._render_gaussian_hdr(
+        color, _, _ = self._render_gaussians(
             newton.utils.ColorSpace.SRGB, [[0.0, 0.0, -2.0], [0.0, 0.0, -3.0]], [0.5, 0.5], sh
         )
-        # 3DGS assets are trained by blending display-encoded colors, so the blend happens in sRGB and the
-        # result is decoded once: decode((0.8 * 0.5 + 0.2 * 0.25) / 0.75).
-        expected = newton.utils.color_srgb_to_linear([0.6] * 3)[0]
+        # 3DGS assets are trained by blending display-encoded colors over the background, so the blend happens in
+        # sRGB and the result is decoded once: decode(0.8 * 0.5 + 0.2 * 0.25) over the black HDR background.
+        expected = newton.utils.color_srgb_to_linear([0.45] * 3)[0]
         per_splat_decode = (
             newton.utils.color_srgb_to_linear([0.8] * 3)[0] * 0.5
             + newton.utils.color_srgb_to_linear([0.2] * 3)[0] * 0.25
-        ) / 0.75
+        )
         self.assertGreater(abs(expected - per_splat_decode), 0.05)
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
+
+    def test_gaussian_translucent_splat_blends_over_background(self):
+        """Blend a translucent splat over the clear background with every anti-aliasing mode.
+
+        The depth reports the splat only once it covers more than half of the pixel.
+        """
+        white = [[0.5 / SH_C0] * 3]
+        center_ray = self._rays(1, 1).numpy()
+        for anti_aliasing in SensorCamera.AntiAliasing:
+            sample_count = 1 if anti_aliasing == SensorCamera.AntiAliasing.NONE else 2
+            rays = wp.array(np.repeat(center_ray, sample_count, axis=2), dtype=wp.vec3f, device="cpu")
+            config = SensorCamera.RenderConfig(anti_aliasing=anti_aliasing)
+            for opacity in (0.3, 0.45, 0.5, 0.55, 0.9):
+                with self.subTest(anti_aliasing=anti_aliasing, opacity=opacity):
+                    hdr, depth, color = self._render_gaussians(
+                        newton.utils.ColorSpace.LINEAR,
+                        [[0.0, 0.0, -2.0]],
+                        [opacity],
+                        white,
+                        rays=rays,
+                        render_config=config,
+                    )
+                    np.testing.assert_allclose(hdr, [opacity] * 3, atol=1e-5)
+                    self.assertAlmostEqual(depth, 2.0 if opacity > 0.5 else 0.0, places=5)
+                    self.assertAlmostEqual(color >> 24, opacity * 255.0, delta=1.0)
+
+    def test_gaussian_translucent_splat_blends_over_shape(self):
+        """Blend a translucent splat over the shaded shape behind it."""
+        for opacity, depth in ((0.25, 3.25), (0.75, 2.0)):
+            with self.subTest(opacity=opacity):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -4.0), q=wp.quat_identity()))
+                builder.add_shape_sphere(body, radius=0.75, color=(1.0, 1.0, 1.0))
+                hdr, hit_depth, color = self._render_gaussians(
+                    newton.utils.ColorSpace.LINEAR, [[0.0, 0.0, -2.0]], [opacity], [[0.5 / SH_C0] * 3], builder=builder
+                )
+                # The default ambient light shades a white surface facing the +Z up axis as (0.2, 0.2, 0.225).
+                np.testing.assert_allclose(hdr, opacity + (1.0 - opacity) * np.array([0.2, 0.2, 0.225]), atol=1e-4)
+                self.assertAlmostEqual(hit_depth, depth, places=4)
+                self.assertEqual(color >> 24, 255)
+
+    def test_gaussian_quality_mode_blends_each_splat_once(self):
+        """Blend every splat once when QUALITY mode gathers the splats over several passes."""
+        for mode, expected in (
+            (SensorCamera.GaussianRenderMode.FAST, 0.5),
+            (SensorCamera.GaussianRenderMode.QUALITY, 0.75),
+        ):
+            with self.subTest(mode=mode):
+                hdr, _, _ = self._render_gaussians(
+                    newton.utils.ColorSpace.LINEAR,
+                    [[0.0, 0.0, -2.0], [0.0, 0.0, -3.0]],
+                    [0.5, 0.5],
+                    [[0.5 / SH_C0] * 3] * 2,
+                    render_config=SensorCamera.RenderConfig(gaussians_mode=mode, gaussians_max_num_hits=1),
+                )
+                np.testing.assert_allclose(hdr, [expected] * 3, atol=1e-5)
 
 
 class TestSensorCameraDeformable(unittest.TestCase):
