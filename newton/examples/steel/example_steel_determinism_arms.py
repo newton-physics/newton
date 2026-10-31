@@ -1,25 +1,33 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Steel Determinism Arms
-#
-# Two fixed-base Franka arms follow the same scripted sweep through six
-# boxes. The scene is simulated four times in one process from the same
-# initial state and with the same joint targets: two copies with Steel's
-# default settings (left) and two with
-# deterministic=wp.DeterministicMode.RUN_TO_RUN and
-# CollisionPipeline(deterministic=True) (right). Each side overlays its two
-# copies at one place, one magenta and one green, both half transparent.
-# The default copies push the boxes to different places; in the GL
-# viewer they come apart into two ghosts, while the deterministic copies
-# stay bitwise identical and blend into one gray scene. The plots show,
-# for each side, the largest distance in mm between a body in the magenta
-# copy and the same body in the green copy.
-#
-# Command: python -m newton.examples steel_determinism_arms
-#
-###########################################################################
+"""Example Steel Determinism Arms
+
+Two fixed-base Franka arms follow the same scripted sweep through six
+boxes. The scene is simulated four times in one process from the same
+initial state and with the same joint targets: two copies with Steel's
+default settings (left) and two with
+deterministic=wp.DeterministicMode.RUN_TO_RUN and
+CollisionPipeline(deterministic=True) (right). Each side overlays its two
+copies at one place, one magenta and one green, both half transparent.
+The default copies push the boxes to different places; in the GL
+viewer they come apart into two ghosts, while the deterministic copies
+stay bitwise identical and blend into one gray scene. The plots show,
+for each side, the largest distance in mm between a body in the magenta
+copy and the same body in the green copy.
+
+Requires a CUDA device. Use the GL viewer to compare the overlaid copies.
+
+Success criteria:
+- Both sides show two Franka arms sweeping through six boxes with the same scripted motion.
+- The right-hand deterministic copies stay coincident, blending into one gray scene.
+- After contacts, the left-hand default copies can separate into magenta and green ghosts.
+- The divergence plots update in millimeters; the deterministic divergence stays at zero.
+- Arms remain connected and all copies remain finite without explosive motion.
+
+Runs:
+- `python -m newton.examples steel_determinism_arms`
+"""
 
 import math
 

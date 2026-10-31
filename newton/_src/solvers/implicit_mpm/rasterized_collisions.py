@@ -87,7 +87,13 @@ class Collider:
     """Offsets into ``world_collider_ids`` for each world. Shape (world_count + 1,)."""
 
     face_material_index: wp.array[int]
-    """Material index for each collider mesh face. Shape (sum(mesh.face_count for mesh in meshes),)"""
+    """Collider-local material index for each collider mesh face. Shape (sum(mesh.face_count for mesh in meshes),)"""
+
+    collider_material_offset: wp.array[int]
+    """Global id of the first material of each stable collider. Shape (collider_count,)."""
+
+    collider_material_count: wp.array[int]
+    """Number of materials of each stable collider. Shape (collider_count,)."""
 
     material_thickness: wp.array[float]
     """Thickness for each collider material. Shape (material_count,)"""
@@ -278,7 +284,9 @@ def _query_collider_sdf(
             face_normal = wp.mesh_eval_face_normal(mesh, query.face)
             sign = query.sign
 
-        mesh_material_id = collider.face_material_index[collider.collider_face_offset[stable_collider_id] + query.face]
+        local_material_id = collider.face_material_index[collider.collider_face_offset[stable_collider_id] + query.face]
+        local_material_id = wp.clamp(local_material_id, 0, collider.collider_material_count[stable_collider_id] - 1)
+        mesh_material_id = collider.collider_material_offset[stable_collider_id] + local_material_id
         thickness = collider.material_thickness[mesh_material_id]
 
         offset = x_local - cp

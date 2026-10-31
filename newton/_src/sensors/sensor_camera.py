@@ -913,8 +913,8 @@ class SensorCamera:
         out of the automatic sync. Scenes without simulation triangles or visual
         meshes are a no-op. Shape and particle BVHs are refit separately via
         :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
-        Deformable visual meshes are skinned from *state* in a few launches, however
-        many worlds were replicated. Supplied visual buffers are consumed as-is;
+        Deformable visual meshes are skinned from *state* in at most four launches,
+        however many worlds were replicated. Supplied visual buffers are consumed as-is;
         update or replay them before this call. Their source state and freshness
         are not checked.
 

@@ -1,22 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot asRoBallet
-#
-# Demonstrates LQR and learned-policy control for the asRoBallet robot
-# (RSS 2026: https://arxiv.org/abs/2604.24916).
-#
-# Hold "i"/"k" to move forward/backward and "j"/"l" to move left/right.
-# Hold "u"/"o" to turn left/right. Nonzero velocity arguments select fixed
-# command mode instead of keyboard control. The policy controller is used by
-# default; pass "--controller lqr" to use LQR.
-# Pass "--virtual-ball-joint" to constrain the ball center to the base using
-# the original asRoBallet spherical joint.
-#
-# Command: python -m newton.examples robot_asroballet
-#
-###########################################################################
+"""Example Robot asRoBallet
+
+Demonstrates LQR and learned-policy control for the asRoBallet robot
+(RSS 2026: https://arxiv.org/abs/2604.24916).
+
+Hold "i"/"k" to move forward/backward and "j"/"l" to move left/right.
+Hold "u"/"o" to turn left/right. Nonzero velocity arguments select fixed
+command mode instead of keyboard control. The policy controller is used by
+default; pass "--controller lqr" to use LQR.
+Pass "--virtual-ball-joint" to constrain the ball center to the base using
+the original asRoBallet spherical joint.
+
+Success criteria:
+- The asRoBallet robot appears balanced on its ball.
+- After the viewer has keyboard focus, the robot responds to the i/k, j/l, and u/o controls.
+- The robot remains upright without the base separating from the ball.
+
+Runs:
+- `python -m newton.examples robot_asroballet --controller policy`
+  - The learned-policy controller responds to the commanded motion.
+- `python -m newton.examples robot_asroballet --controller lqr`
+  - The LQR controller responds to the commanded motion.
+- `python -m newton.examples robot_asroballet`
+  - The learned-policy controller responds to the commanded motion.
+"""
 
 import math
 from dataclasses import dataclass
