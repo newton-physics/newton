@@ -2238,7 +2238,8 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - :attr:`~Model.shape_material_mu`
    * - ``mu_static``
      - Coefficient of static (break-away) friction; ``None`` keeps a single
-       coefficient. Not used by any built-in solver yet.
+       coefficient (``mu``), and a value below ``mu`` is rejected. Not used by
+       any built-in solver yet.
      - None
      - :attr:`~ModelBuilder.ShapeConfig.mu_static`
      - :attr:`~Model.shape_material_mu_static`
@@ -2406,7 +2407,9 @@ fields as follows: ``newton:contactStiffness`` → ``ke``,
 default" (see :ref:`Contact Material Properties`). ``physics:dynamicFriction`` maps
 to ``mu``; ``physics:staticFriction`` maps to ``mu_static`` when it is larger than
 the dynamic coefficient (the material below imports ``mu=0.8``, ``mu_static=1.0``),
-and otherwise leaves a single coefficient.
+and otherwise leaves a single coefficient (a positive value below the dynamic one is
+reported with a warning). A bound material supplies both coefficients; only colliders
+without one take ``mu`` and ``mu_static`` from the builder defaults.
 
 .. code-block:: usda
 

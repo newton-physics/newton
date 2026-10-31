@@ -2420,23 +2420,21 @@ class TestShapeConfigValidation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "mu_static must be finite and >= 0"):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
 
-    def test_shape_config_mu_static_below_mu_is_raised_to_mu(self):
-        """A static coefficient below mu validates and resolves to mu, so overriding mu alone never fails."""
-        from newton._src.solvers.kamino._src.core.conversions import effective_static_friction_np  # noqa: PLC0415
-
+    def test_shape_config_rejects_mu_static_below_mu(self):
+        """Reject a static coefficient below mu instead of correcting it quietly; an equal one is accepted."""
         cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=0.3)
-        cfg.validate(shape_type=newton.GeoType.SPHERE)
+        with self.assertRaisesRegex(ValueError, "mu_static must be >= mu"):
+            cfg.validate(shape_type=newton.GeoType.SPHERE)
+
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0)
-        builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
-        model = builder.finalize(device="cpu")
-        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.3])
-        np.testing.assert_allclose(
-            effective_static_friction_np(model.shape_material_mu.numpy(), model.shape_material_mu_static.numpy()), [0.5]
-        )
+        with self.assertRaisesRegex(ValueError, "mu_static must be >= mu"):
+            builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
 
-    def test_shape_material_mu_static_defaults_to_same_as_mu(self):
-        """Unset mu_static is stored as the "same as mu" sentinel and survives replication."""
+        newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=0.5).validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_material_mu_static_resolves_to_mu_when_unset(self):
+        """An unset mu_static is stored as the shape's mu, so the model never carries an "unset" marker."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4))
@@ -2446,7 +2444,7 @@ class TestShapeConfigValidation(unittest.TestCase):
         model = scene.finalize()
 
         np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.4, 0.4, 0.4, 0.4])
-        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [-1.0, 0.9, -1.0, 0.9])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.4, 0.9, 0.4, 0.9])
 
     def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
         """Reject non-positive and non-finite target voxel sizes."""

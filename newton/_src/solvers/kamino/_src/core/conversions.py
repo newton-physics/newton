@@ -215,19 +215,6 @@ def material_first_shape_kernel(
         wp.atomic_min(first_shape, material, shape)
 
 
-def effective_static_friction_np(mu: np.ndarray, mu_static: np.ndarray) -> np.ndarray:
-    """Host-side twin of :func:`effective_static_friction`: negative means "same as mu", otherwise never below mu."""
-    return np.where(mu_static < 0.0, mu, np.maximum(mu_static, mu))
-
-
-@wp.func
-def effective_static_friction(friction: wp.float32, static_friction: wp.float32) -> wp.float32:
-    """Static friction a shape material resolves to: negative means "same as mu", otherwise never below mu."""
-    if static_friction < 0.0:
-        return friction
-    return wp.max(static_friction, friction)
-
-
 @wp.kernel
 def validate_material_update_kernel(
     shape_friction: wp.array[wp.float32],
@@ -245,8 +232,7 @@ def validate_material_update_kernel(
     representative = first_shape[material]
     if (
         shape_friction[shape] != shape_friction[representative]
-        or effective_static_friction(shape_friction[shape], shape_static_friction[shape])
-        != effective_static_friction(shape_friction[representative], shape_static_friction[representative])
+        or shape_static_friction[shape] != shape_static_friction[representative]
         or shape_restitution[shape] != shape_restitution[representative]
     ):
         wp.atomic_min(conflict_material, 0, material)
@@ -276,7 +262,7 @@ def update_materials_kernel(
     shape = first_shape[material]
     if shape < shape_count:
         friction = shape_friction[shape]
-        friction_static = effective_static_friction(friction, shape_static_friction[shape])
+        friction_static = shape_static_friction[shape]
         restitution[material] = shape_restitution[shape]
         static_friction[material] = friction_static
         dynamic_friction[material] = friction
@@ -2179,9 +2165,8 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
         material_param_indices[(mu, mu_static, restitution)] = i
 
     # Newton material parameters
-    mu_np = model.shape_material_mu.numpy()
-    shape_friction = mu_np.tolist()
-    shape_static_friction = effective_static_friction_np(mu_np, model.shape_material_mu_static.numpy()).tolist()
+    shape_friction = model.shape_material_mu.numpy().tolist()
+    shape_static_friction = model.shape_material_mu_static.numpy().tolist()
     shape_restitution = model.shape_material_restitution.numpy().tolist()
     # Mapping from geom to material index
     geom_material = np.zeros((model.shape_count,), dtype=int)

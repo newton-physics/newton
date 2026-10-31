@@ -975,10 +975,9 @@ class ModelBuilder:
         :attr:`mu_static` is set."""
         mu_static: float | None = None
         """The coefficient of static friction [dimensionless], the break-away threshold for sticking
-        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction). A value below :attr:`mu`
-        is treated as :attr:`mu` (the effective coefficient is ``max(mu_static, mu)``), so importers
-        that override :attr:`mu` alone never invalidate the config. No built-in solver models
-        stick-slip friction yet; the value is stored for solvers that do."""
+        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
+        below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
+        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -1129,8 +1128,14 @@ class ModelBuilder:
                 )
             if not math.isfinite(self.density) or self.density < 0.0:
                 raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
-            if self.mu_static is not None and (not math.isfinite(self.mu_static) or self.mu_static < 0.0):
-                raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
+            if self.mu_static is not None:
+                if not math.isfinite(self.mu_static) or self.mu_static < 0.0:
+                    raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
+                if self.mu_static < self.mu:
+                    raise ValueError(
+                        f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
+                        "Leave mu_static as None for a single friction coefficient."
+                    )
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -1874,7 +1879,8 @@ class ModelBuilder:
         self.shape_material_restitution: list[float] = []
         """Restitution coefficients accumulated for :attr:`Model.shape_material_restitution`."""
         self.shape_material_mu_static: list[float] = []
-        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static` (negative: same as mu)."""
+        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`; an unset
+        :attr:`ShapeConfig.mu_static` is resolved to the shape's ``mu`` here."""
         self.shape_material_mu_torsional: list[float] = []
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
@@ -8441,7 +8447,7 @@ class ModelBuilder:
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
-        self.shape_material_mu_static.append(-1.0 if cfg.mu_static is None else cfg.mu_static)
+        self.shape_material_mu_static.append(cfg.mu_static if cfg.mu_static is not None else cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
@@ -9509,11 +9515,7 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
-                            mu_static=(
-                                None
-                                if self.shape_material_mu_static[shape] < 0.0
-                                else self.shape_material_mu_static[shape]
-                            ),
+                            mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],

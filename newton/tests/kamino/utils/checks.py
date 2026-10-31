@@ -14,7 +14,6 @@ import warp as wp
 from newton import BodyFlags, Model
 from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_origin
 from newton._src.solvers.kamino._src.core.control import ControlKamino
-from newton._src.solvers.kamino._src.core.conversions import effective_static_friction_np
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
@@ -462,9 +461,7 @@ def _assert_model_geoms_conversion_consistency(
         has_material = geom_material >= 0
         material_idx = geom_material[has_material]
         shape_mu = model_newton.shape_material_mu.numpy()[has_material]
-        shape_mu_static = effective_static_friction_np(
-            shape_mu, model_newton.shape_material_mu_static.numpy()[has_material]
-        )
+        shape_mu_static = model_newton.shape_material_mu_static.numpy()[has_material]
         shape_restitution = model_newton.shape_material_restitution.numpy()[has_material]
 
         static_friction = model_kamino.materials.static_friction.numpy()
