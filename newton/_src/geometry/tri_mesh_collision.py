@@ -18,6 +18,7 @@ from .kernels import (
     compute_tri_groups,
     edge_colliding_edges_detection_kernel,
     init_triangle_collision_data_kernel,
+    triangle_closest_point,
     triangle_triangle_collision_detection_kernel,
     vertex_triangle_collision_detection_kernel,
 )
@@ -203,11 +204,12 @@ def vertex_triangle_anchor_holds(anchor: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.
 
 @wp.func
 def drag_vertex_triangle_anchor(anchor: wp.vec3, p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, max_slip: float):
-    """Return ``anchor`` moved along so vertex ``p`` has slipped at most ``max_slip`` from it in the
-    triangle plane."""
+    """Return ``anchor`` moved along so vertex ``p`` has slipped at most ``max_slip`` from it across
+    the contact normal, from the triangle's closest point to ``p``."""
     if not vertex_triangle_anchor_holds(anchor, a, b, c):
         return anchor
-    n = wp.normalize(wp.cross(b - a, c - a))
+    closest_p, _bary, _feature = triangle_closest_point(a, b, c, p)
+    n = wp.normalize(p - closest_p)
     offset = vertex_triangle_anchor_slip(anchor, p, a, b, c)
     slip = offset - wp.dot(offset, n) * n
     slip_length = wp.length(slip)

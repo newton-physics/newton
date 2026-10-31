@@ -12,6 +12,7 @@ import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
 from newton._src.geometry.contact_sort import ContactSorter
+from newton._src.geometry.kernels import triangle_closest_point
 from newton._src.geometry.tri_mesh_collision import (
     NO_ANCHOR,
     drag_vertex_triangle_anchor,
@@ -1243,7 +1244,7 @@ def _build_self_contact_scene(device, world_count=1):
         tri_ka=1.0e2,
         tri_kd=0.0,
     )
-    world.add_particle(pos=wp.vec3(0.02, 0.07, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    world.add_particle(pos=wp.vec3(0.02, 0.03, 0.003), vel=wp.vec3(0.0), mass=1.0)
     builder = newton.ModelBuilder()
     for w in range(world_count):
         builder.add_world(world, xform=wp.transform(wp.vec3(0.0, 2.0 * w, 0.0)))
@@ -1416,7 +1417,7 @@ def test_sticky_self_contact_reset_reaches_both_worlds_of_a_pair(test, device):
     square of world 0, so each pair's vertex row belongs to one world and its triangle to the other.
     """
     world = newton.ModelBuilder()
-    world.add_particle(pos=wp.vec3(0.02, 0.07, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    world.add_particle(pos=wp.vec3(0.02, 0.03, 0.003), vel=wp.vec3(0.0), mass=1.0)
     _add_pinned_square(world, (0.0, 1.0, 0.0))
     builder = newton.ModelBuilder()
     _add_pinned_square(builder, (0.0, 0.0, 0.0))
@@ -1639,6 +1640,41 @@ def test_vertex_triangle_anchor_kept_across_gap_change(test, device):
     np.testing.assert_allclose(dragged.numpy()[0], anchor)
 
 
+@wp.kernel
+def _drag_over_triangle_edge_kernel(
+    p_rest: wp.vec3, p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, max_slip: float, slip: wp.array[float]
+):
+    anchor = drag_vertex_triangle_anchor(vertex_triangle_anchor(p_rest, a, b, c), p, a, b, c, max_slip)
+    closest_p, _bary, _feature = triangle_closest_point(a, b, c, p)
+    normal = wp.normalize(p - closest_p)
+    offset = vertex_triangle_anchor_slip(anchor, p, a, b, c)
+    slip[0] = wp.length(offset - wp.dot(offset, normal) * normal)
+
+
+def test_vertex_triangle_anchor_slip_bounded_over_triangle_edge(test, device):
+    """A vertex beside a triangle edge slips at most ``max_slip`` across its contact normal after a drag.
+
+    Off the face the contact normal points from the closest point on the edge, tilted from the triangle
+    normal: a vertex 3 mm beside and 3 mm above the edge that rises 1 mm moves 0.6 mm across it.
+    """
+    slip = wp.zeros(1, dtype=float, device=device)
+    wp.launch(
+        _drag_over_triangle_edge_kernel,
+        dim=1,
+        inputs=[
+            wp.vec3(0.05, -0.003, 0.003),
+            wp.vec3(0.05, -0.003, 0.004),
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(0.1, 0.0, 0.0),
+            wp.vec3(0.0, 0.1, 0.0),
+            1.0e-4,
+        ],
+        outputs=[slip],
+        device=device,
+    )
+    test.assertLessEqual(slip.numpy()[0], 1.0e-4 * (1.0 + 1.0e-4))
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1853,6 +1889,12 @@ add_function_test(
     TestContactMatchingSticky,
     "test_vertex_triangle_anchor_kept_across_gap_change",
     test_vertex_triangle_anchor_kept_across_gap_change,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_slip_bounded_over_triangle_edge",
+    test_vertex_triangle_anchor_slip_bounded_over_triangle_edge,
     devices=devices,
 )
 add_function_test(
