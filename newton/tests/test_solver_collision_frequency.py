@@ -279,10 +279,10 @@ def test_vbd_iteration_schedules_align(test, device):
             self.rigid_collision_passes += 1
             super()._run_rigid_collision(state, dt)
 
-        def _collision_detection_penetration_free(self, current_state, *, reset_reference=True):
+        def _collision_detection_penetration_free(self, current_state, **kwargs):
             """Record the self-contact detection call, then delegate."""
             self.self_collision_passes += 1
-            super()._collision_detection_penetration_free(current_state, reset_reference=reset_reference)
+            super()._collision_detection_penetration_free(current_state, **kwargs)
 
     model = _build_cloth_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
@@ -467,7 +467,7 @@ def test_vbd_dat_collision_schedule_coordination(test, device):
             self.self_detection_positions = []
             super().__init__(*args, **kwargs)
 
-        def _refresh_collision_sets(self, state, dt, *, run_rigid_collision, run_soft_self_collision):
+        def _refresh_collision_sets(self, state, dt, *, run_rigid_collision, run_soft_self_collision, **kwargs):
             """Record which detections were requested, then delegate."""
             self.collision_refreshes.append((run_rigid_collision, run_soft_self_collision))
             super()._refresh_collision_sets(
@@ -475,6 +475,7 @@ def test_vbd_dat_collision_schedule_coordination(test, device):
                 dt,
                 run_rigid_collision=run_rigid_collision,
                 run_soft_self_collision=run_soft_self_collision,
+                **kwargs,
             )
 
         def _run_rigid_collision(self, state, dt=None):
@@ -482,10 +483,10 @@ def test_vbd_dat_collision_schedule_coordination(test, device):
             self.rigid_detection_positions.append(state.particle_q.numpy().copy())
             super()._run_rigid_collision(state, dt)
 
-        def _collision_detection_penetration_free(self, state, *, reset_reference=True):
+        def _collision_detection_penetration_free(self, state, **kwargs):
             """Record the particle positions seen by self-contact detection, then delegate."""
             self.self_detection_positions.append(state.particle_q.numpy().copy())
-            super()._collision_detection_penetration_free(state, reset_reference=reset_reference)
+            super()._collision_detection_penetration_free(state, **kwargs)
 
     def build_solver(rigid_dat, soft_self_dat, frequency_types, frequencies=(1, 1), iterations=3):
         """Build a tracking solver with the given DAT flags and collision schedules."""
@@ -579,12 +580,12 @@ def test_vbd_collision_refresh_resets_only_active_dat_references(test, device):
             self.collision_events.append("rigid_collision")
             super()._run_rigid_collision(state, dt)
 
-        def _collision_detection_penetration_free(self, state, *, reset_reference=True):
+        def _collision_detection_penetration_free(self, state, **kwargs):
             """Record the self-contact detection event, then delegate."""
             self.collision_events.append("soft_self_collision")
-            super()._collision_detection_penetration_free(state, reset_reference=reset_reference)
+            super()._collision_detection_penetration_free(state, **kwargs)
 
-        def _refresh_collision_sets(self, state, dt, *, run_rigid_collision, run_soft_self_collision):
+        def _refresh_collision_sets(self, state, dt, *, run_rigid_collision, run_soft_self_collision, **kwargs):
             """Record which detections were requested, then delegate."""
             self.collision_refreshes.append((run_rigid_collision, run_soft_self_collision))
             super()._refresh_collision_sets(
@@ -592,6 +593,7 @@ def test_vbd_collision_refresh_resets_only_active_dat_references(test, device):
                 dt,
                 run_rigid_collision=run_rigid_collision,
                 run_soft_self_collision=run_soft_self_collision,
+                **kwargs,
             )
 
         def _reset_dat_references(self, state, *, reset_rigid_soft, reset_particles):

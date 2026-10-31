@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
-from ..core.reset import normalize_reset_world_mask
+from ..core.reset import WorldResetEpochs, normalize_reset_world_mask
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
@@ -31,6 +31,7 @@ from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.self_contact_match import SelfContactMatcher
 from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
 from ..geometry.soft_contacts_mesh import (
     MeshContactData,
@@ -1631,6 +1632,10 @@ class CollisionPipeline:
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
                 non-disabled mode implies ``deterministic=True`` and
                 populates :attr:`Contacts.rigid_contact_match_index`.
+                ``"sticky"`` also gives each soft self-contact pair a friction
+                anchor that trails it by at most ``contact_matching_pos_threshold``;
+                :class:`~newton.solvers.SolverVBD` then measures self-contact friction
+                slip from it. Not applied with ``requires_grad``.
                 Defaults to ``"disabled"``.
 
                 .. experimental::
@@ -1641,7 +1646,10 @@ class CollisionPipeline:
                 ``0.5 * (world(point0) + world(point1))``.  Contacts whose
                 midpoint moves more than this are considered broken. In sticky mode,
                 keep fresh geometry when either saved witness moves farther than this
-                from its fresh contact point under the current body transforms.
+                from its fresh contact point under the current body transforms, and
+                drag each soft self-contact friction anchor to at most this from its
+                pair, so a kinematic cloth surface carries resting bodies along at up
+                to about this divided by the step's ``dt``.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
@@ -2298,6 +2306,10 @@ class CollisionPipeline:
         # the shared detector (re-pointed per Contacts buffer; see
         # _get_soft_self_contact_detector).
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
+        self._self_contact_matcher: SelfContactMatcher | None = None
+        self._contact_matching_pos_threshold = contact_matching_pos_threshold
+        # Contact history kept per Contacts buffer catches up on resets through these.
+        self._world_resets = WorldResetEpochs(model.world_count, device=device) if matching_sticky else None
 
         # Publish only after all construction succeeds.
         if publish_capacity:
@@ -2409,6 +2421,8 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
+        if self._self_contact_matcher is not None:
+            self._self_contact_matcher.allocate_anchors(contacts)
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2503,6 +2517,17 @@ class CollisionPipeline:
         )
         if self._soft_mesh_contact_data is not None:
             self._soft_mesh_contact_data.detector = self._soft_self_contact_detector
+        if self._matching_sticky and not self.requires_grad:
+            self._self_contact_matcher = SelfContactMatcher(
+                self.model.particle_count,
+                self.model.edge_count,
+                vertex_buffer_pre_alloc,
+                edge_buffer_pre_alloc,
+                self._world_resets,
+                pos_threshold=self._contact_matching_pos_threshold,
+                edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
+                device=self.model.device,
+            )
 
     def set_collision_detection_range(
         self,
@@ -2584,9 +2609,22 @@ class CollisionPipeline:
         else:
             detector.refit(new_pos)
 
-    def _detect_soft_self_contact(self, particle_q: wp.array[wp.vec3], contacts: Contacts) -> None:
-        """Detect tri-mesh self-contact into ``contacts`` at ``particle_q``."""
+    def _detect_soft_self_contact(
+        self,
+        particle_q: wp.array[wp.vec3],
+        contacts: Contacts,
+        anchor_q: wp.array[wp.vec3] | None,
+    ) -> None:
+        """Detect tri-mesh self-contact into ``contacts`` at ``particle_q``.
+
+        Sticky friction anchors are placed at ``anchor_q``, the positions friction measures motion
+        from. ``None`` leaves them stale, for a pass that another detection replaces before any
+        friction is evaluated.
+        """
         detector = self._get_soft_self_contact_detector(contacts)
+        matcher = self._self_contact_matcher
+        if matcher is not None:
+            matcher.save(contacts)
         detector.refit(particle_q)
         query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
         detector.vertex_triangle_collision_detection(
@@ -2599,12 +2637,20 @@ class CollisionPipeline:
             min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,
             min_distance_filtering_ref_pos=self.model.particle_q,
         )
+        if matcher is None:
+            return
+        if anchor_q is None:
+            matcher.skip()
+        else:
+            matcher.replay(self.model, anchor_q, contacts)
 
     def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Clear all or reset-selected previous-frame contact history.
 
         Masked selections accumulate until the next :meth:`collide` call
-        consumes them.
+        consumes them. Sticky self-contact anchors restart in every
+        :class:`~newton.Contacts` buffer, on that buffer's next self-contact
+        pass.
 
         .. experimental::
 
@@ -2621,6 +2667,8 @@ class CollisionPipeline:
         )
         if self._contact_matcher is not None:
             self._contact_matcher.reset(world_mask)
+        if self._world_resets is not None:
+            self._world_resets.advance(world_mask)
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
@@ -3217,4 +3265,4 @@ class CollisionPipeline:
         # Soft (cloth) self-contact detection (opt-in per call; results land in
         # contacts.soft_self_contact_data).
         if soft_self_contact:
-            self._detect_soft_self_contact(state.particle_q, contacts)
+            self._detect_soft_self_contact(state.particle_q, contacts, state.particle_q)
