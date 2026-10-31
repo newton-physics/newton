@@ -1715,7 +1715,16 @@ class TestSensorCamera(unittest.TestCase):
             SensorCamera.Utils.flatten_color_image_to_rgba(color, views_per_row=0)
 
     def _render_gaussians(
-        self, color_space, positions, opacities, sh_coeffs, *, builder=None, rays=None, render_config=None
+        self,
+        color_space,
+        positions,
+        opacities,
+        sh_coeffs,
+        *,
+        builder=None,
+        rays=None,
+        render_config=None,
+        clear_data=None,
     ):
         """Render splats on the camera's -Z axis into one pixel and return its HDR color, depth, and packed color."""
         gaussian = newton.Gaussian(
@@ -1742,6 +1751,7 @@ class TestSensorCamera(unittest.TestCase):
             depth_image=depth,
             color_image=color,
             render_config=render_config,
+            clear_data=clear_data,
         )
         return hdr.numpy().reshape(3), float(depth.numpy().reshape(-1)[0]), int(color.numpy().reshape(-1)[0])
 
@@ -1804,6 +1814,10 @@ class TestSensorCamera(unittest.TestCase):
         rays = self._rays(1, 1).numpy().repeat(2, axis=2)
         rays[0, 0, 1, 1] = (0.0, 0.0, 1.0)
         rays = wp.array(rays, dtype=wp.vec3f, device="cpu")
+        # The sRGB clear color (128, 64, 192) is (0.2159, 0.0513, 0.5271) in linear light. Half the samples see the white
+        # splat with opacity 0.6 over it, and half see it alone. The pixel is 0.3 + 0.7 * clear, which the sRGB output
+        # packs as (179, 156, 213). The clear alpha of 0 leaves the alpha at 0.3.
+        clear_data = SensorCamera.ClearData(clear_color=0x00C04080)
         for anti_aliasing in (SensorCamera.AntiAliasing.SSAA, SensorCamera.AntiAliasing.MSAA):
             with self.subTest(anti_aliasing=anti_aliasing):
                 hdr, _, color = self._render_gaussians(
@@ -1813,8 +1827,10 @@ class TestSensorCamera(unittest.TestCase):
                     [[0.5 / SH_C0] * 3],
                     rays=rays,
                     render_config=SensorCamera.RenderConfig(anti_aliasing=anti_aliasing),
+                    clear_data=clear_data,
                 )
                 np.testing.assert_allclose(hdr, [0.3] * 3, atol=1e-5)
+                np.testing.assert_allclose([(color >> shift) & 0xFF for shift in (0, 8, 16)], [179, 156, 213], atol=1)
                 self.assertAlmostEqual(color >> 24, 0.3 * 255.0, delta=1.0)
 
     def test_gaussian_translucent_splat_blends_over_shape(self):
