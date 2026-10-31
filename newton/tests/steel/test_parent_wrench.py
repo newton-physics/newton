@@ -497,18 +497,28 @@ def test_parent_wrench_of_a_load_held_by_closures(test, device):
 
 
 def test_parent_wrench_of_a_body_hung_by_a_revolute_closure(test, device):
-    """A FREE body swinging on a REVOLUTE closure to the world transmits nothing through its free joint."""
-    builder, _joint = _build_world_hinged_swing(test, "revolute")
-    model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
-    observables = solver.observables(FLAGS)
-    state_0, state_1 = model.state(), model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-    for _ in range(120):
-        solver.step(state_0, state_1, None, None, 1.0 / 500.0, observables=observables)
-        state_0, state_1 = state_1, state_0
-    # Gravity twists the body about the hinge's perpendicular, which only the hinge rows hold.
-    np.testing.assert_allclose(observables.body_parent_f.numpy()[0], 0.0, atol=2.0e-3)
+    """A FREE body swinging on a REVOLUTE closure to the world transmits nothing through its free joint.
+
+    A non-finite hinge axis leaves the hinge rows inert, and the closure acts like a BALL joint.
+    """
+    for axis in ((1.0, 0.0, 0.0), (np.nan, 0.0, 0.0), (np.inf, 0.0, 0.0)):
+        with test.subTest(axis=axis):
+            builder, joint = _build_world_hinged_swing(test, "revolute")
+            builder.joint_axis[builder.joint_qd_start[joint]] = axis
+            model = builder.finalize(device=device)
+            if np.isfinite(axis).all():
+                solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
+            else:
+                with test.assertWarnsRegex(NewtonWarning, "zero or non-finite axis"):
+                    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
+            observables = solver.observables(FLAGS)
+            state_0, state_1 = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+            for _ in range(120):
+                solver.step(state_0, state_1, None, None, 1.0 / 500.0, observables=observables)
+                state_0, state_1 = state_1, state_0
+            # Gravity twists the body about the hinge's perpendicular, which only the hinge rows hold.
+            np.testing.assert_allclose(observables.body_parent_f.numpy()[0], 0.0, atol=2.0e-3)
 
 
 NEAR_REDUNDANT_LEVERS = (0.02, 0.001, 0.0002, 0.00015)

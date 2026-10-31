@@ -2774,10 +2774,13 @@ def accumulate_connect_wrenches_from_impulses(
         slot = base_slot + 3 + i
         if slot >= world_constraint_count[world] or world_row_type[world, slot] != PGS_CONSTRAINT_TYPE_CONNECT:
             continue
+        inv_norm = connect_row_inv_norm[k, 3 + i]
+        if inv_norm == 0.0:
+            continue
         e = e1
         if i == 1:
             e = e2
-        torque = e * (world_impulses[world, slot] * inv_dt * connect_row_inv_norm[k, 3 + i])
+        torque = e * (world_impulses[world, slot] * inv_dt * inv_norm)
         if body_p >= 0:
             wp.atomic_add(body_contact_wrench, body_p, wp.spatial_vector(wp.vec3(0.0), torque))
         wp.atomic_add(body_contact_wrench, body_c, wp.spatial_vector(wp.vec3(0.0), -torque))
