@@ -1346,6 +1346,41 @@ def test_sticky_soft_contact_reset_reaches_both_worlds_of_a_record(test, device)
             np.testing.assert_allclose(body_points_at(x), [x, x], atol=1.0e-7)
 
 
+def test_sticky_soft_contact_saves_buffer_without_mesh_features(test, device):
+    """A full-surface sticky pass saves records from a buffer last filled by a pipeline without mesh features.
+
+    The buffer carries particle records but no mesh feature array, which the save reads as invalid features.
+    """
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5))
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.4, -0.4, 0.45),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=4,
+            dim_y=4,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        model = builder.finalize(device=device)
+        state = model.state()
+        full_surface = newton.CollisionPipeline(
+            model, soft_contact_gap=0.1, contact_matching="sticky", enable_rigid_soft_full_surface_contact=True
+        )
+        particles_only = newton.CollisionPipeline(
+            model, soft_contact_gap=0.1, contact_matching="sticky", soft_contact_max=full_surface.soft_contact_max
+        )
+        contacts = particles_only.contacts()
+        particles_only.collide(state, contacts)
+        test.assertIsNone(contacts._soft_contact_mesh_features)
+        test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+
+        full_surface.collide(state, contacts)
+        test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1536,6 +1571,12 @@ add_function_test(
     TestContactMatchingSticky,
     "test_sticky_soft_contact_reset_reaches_both_worlds_of_a_record",
     test_sticky_soft_contact_reset_reaches_both_worlds_of_a_record,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_saves_buffer_without_mesh_features",
+    test_sticky_soft_contact_saves_buffer_without_mesh_features,
     devices=devices,
 )
 
