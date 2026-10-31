@@ -11406,6 +11406,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if refs is None or per_world == 0:
                     continue
                 refs = refs.numpy().reshape(world_count, constraints_per_world)
+                worlds = np.arange(world_count)[:, None]
+                if np.any((refs >= 0) & (refs // per_world != worlds)):
+                    world, c = np.argwhere((refs >= 0) & (refs // per_world != worlds))[0]
+                    raise ValueError(
+                        f"Equality constraint {key.removeprefix('equality_constraint_')} at position {c} of world "
+                        f"{world} references index {refs[world, c]} of another world."
+                    )
                 local_refs = np.where(refs >= 0, refs % per_world, -1)
                 mismatches = local_refs != local_refs[0]
                 if np.any(mismatches):

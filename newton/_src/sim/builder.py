@@ -5131,8 +5131,8 @@ class ModelBuilder:
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
                 equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
                 and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
-                target joints sharing a body are preserved this way even when True, with a
-                :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+                target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
+                with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode

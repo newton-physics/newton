@@ -441,8 +441,8 @@ def _validate_equality_constraints(model: Model) -> None:
             f"SolverSteel does not enforce MuJoCo equality constraints: model.mujoco.equality_constraint "
             f"rows {rows[:16].tolist()} are enabled and not converted to a Newton loop joint or mimic "
             "constraint. Import with convert_mjc_equality_constraints=True (joint equalities that omit joint2 or "
-            "target joints sharing a body stay MuJoCo rows even then), model the constraint with Newton joints, "
-            "or disable the rows (equality_constraint_enabled)."
+            "target a multi-DoF joint, such as joints sharing a body, stay MuJoCo rows even then), model the "
+            "constraint with Newton joints, or disable the rows (equality_constraint_enabled)."
         )
 
 

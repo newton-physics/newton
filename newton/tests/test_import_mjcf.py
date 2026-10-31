@@ -7188,6 +7188,13 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unknown joint 'missing'"):
                     builder.add_mjcf(self._mjcf(_EQUALITY_TEST_JOINTS["h1"], equality))
 
+    def test_same_joint_twice_raises(self):
+        """Reject an equality whose endpoints name the same joint, as MuJoCo does."""
+        joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"]
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "uses joint 'h1' as both endpoints"):
+            builder.add_mjcf(self._mjcf(joints, '<joint joint1="h1" joint2="h1"/>'))
+
     def test_dof_selector_outside_its_joint_raises(self):
         """Reject a DoF selector that belongs to another joint than its endpoint."""
         builder = newton.ModelBuilder()
@@ -7201,6 +7208,22 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not belong to joint"):
             SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
+    def test_reject_cross_world_joint_reference(self):
+        """Reject a joint equality in one world that targets a joint of another world."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for _ in range(2):
+            builder.begin_world()
+            builder.add_mjcf(
+                self._two_body_mjcf('<joint joint1="h1" joint2="h2"/>'), convert_mjc_equality_constraints=False
+            )
+            builder.end_world()
+        joint1 = builder.custom_attributes["mujoco:equality_constraint_joint1"].values
+        joint1[1] = joint1[0]  # world 1's row now names world 0's h1
+        model = builder.finalize()
+        with self.assertRaisesRegex(ValueError, "of another world"):
+            SolverMuJoCo(model, disable_contacts=True)
+
     def test_reject_heterogeneous_dof_selectors(self):
         """Reject separate worlds whose joint equalities select different DoFs of the same joint."""
         joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"]
@@ -7210,8 +7233,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
             for world in range(2):
                 joint1, joint2 = ("h2", "h1") if swap_world1 and world == 1 else ("h1", "h2")
                 builder.begin_world()
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "multi-DoF joint"):
                     builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
                 builder.end_world()
             model = builder.finalize()

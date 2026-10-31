@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
@@ -478,7 +479,7 @@ def parse_mjcf(
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
             and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
-            target joints sharing a body are preserved this way even when True, with a
+            target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True, with a
             :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
@@ -2975,6 +2976,8 @@ def parse_mjcf(
                     if key not in joint_name_to_idx:
                         raise ValueError(f"Joint equality '{common['name']}' references unknown joint '{name}'.")
                     endpoints.append((joint_name_to_idx[key], mjcf_joint_name_to_dof.get(key, -1)))
+                if joint2_name and endpoints[0] == endpoints[1]:
+                    raise ValueError(f"Joint equality '{common['name']}' uses joint '{joint1_name}' as both endpoints.")
                 (joint1_idx, joint1_dof), (joint2_idx, joint2_dof) = endpoints
                 custom_attrs["mujoco:equality_constraint_joint1_dof"] = joint1_dof
                 custom_attrs["mujoco:equality_constraint_joint2_dof"] = joint2_dof
@@ -3022,11 +3025,11 @@ def parse_mjcf(
             if len(mujoco_only_joint_equalities) > 5:
                 shown += ", ..."
             warnings.warn(
-                f"{len(mujoco_only_joint_equalities)} joint equalities omit joint2 or target joints that share a "
-                f"body ({shown}), so they stay MuJoCo equality constraints instead of mimic constraints. "
-                "SolverMuJoCo enforces them; other solvers ignore them.",
+                f"{len(mujoco_only_joint_equalities)} joint equalities omit joint2 or target a multi-DoF joint, "
+                f"such as joints sharing a body ({shown}), so they stay MuJoCo equality constraints instead of "
+                "mimic constraints. SolverMuJoCo enforces them; other solvers ignore them.",
                 NewtonWarning,
-                stacklevel=2,
+                stacklevel=_external_warning_stacklevel(),
             )
 
         # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
