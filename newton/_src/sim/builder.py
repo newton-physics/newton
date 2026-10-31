@@ -1878,9 +1878,10 @@ class ModelBuilder:
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
         """Restitution coefficients accumulated for :attr:`Model.shape_material_restitution`."""
-        self.shape_material_mu_static: list[float] = []
-        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`; an unset
-        :attr:`ShapeConfig.mu_static` is resolved to the shape's ``mu`` here."""
+        self.shape_material_mu_static: list[float | None] = []
+        """Static friction coefficients accumulated for :attr:`Model.shape_material_mu_static`. ``None`` means
+        "same as ``mu``" and is resolved in :meth:`finalize`, so a direct edit of :attr:`shape_material_mu` keeps a
+        single coefficient for such shapes; an explicit value is checked against the final ``mu`` there."""
         self.shape_material_mu_torsional: list[float] = []
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
@@ -8447,7 +8448,7 @@ class ModelBuilder:
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
-        self.shape_material_mu_static.append(cfg.mu_static if cfg.mu_static is not None else cfg.mu)
+        self.shape_material_mu_static.append(cfg.mu_static)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
@@ -13910,6 +13911,27 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
+    def _resolve_shape_material_mu_static(self) -> list[float]:
+        """Static friction coefficients for :attr:`Model.shape_material_mu_static`.
+
+        An unset :attr:`ShapeConfig.mu_static` follows the shape's final ``mu``, including direct edits of
+        :attr:`shape_material_mu` made after :meth:`add_shape`. An explicit value below that ``mu`` is rejected
+        rather than corrected quietly.
+        """
+        shape_material_mu = _list_for_iteration(self.shape_material_mu)
+        shape_material_mu_static = _list_for_iteration(self.shape_material_mu_static)
+        resolved = [
+            mu if mu_static is None else mu_static
+            for mu, mu_static in zip(shape_material_mu, shape_material_mu_static, strict=True)
+        ]
+        for shape, (mu, mu_static) in enumerate(zip(shape_material_mu, resolved, strict=True)):
+            if mu_static < mu:
+                raise ValueError(
+                    f"shape_material_mu_static[{shape}] = {mu_static} is below shape_material_mu[{shape}] = {mu}. "
+                    "Update both when editing mu after add_shape, or leave mu_static None for a single coefficient."
+                )
+        return resolved
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -14352,7 +14374,7 @@ class ModelBuilder:
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
             m.shape_material_mu_static = wp.array(
-                self.shape_material_mu_static, dtype=wp.float32, requires_grad=requires_grad
+                self._resolve_shape_material_mu_static(), dtype=wp.float32, requires_grad=requires_grad
             )
             m.shape_material_mu_torsional = wp.array(
                 self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad

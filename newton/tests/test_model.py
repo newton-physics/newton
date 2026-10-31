@@ -2446,6 +2446,26 @@ class TestShapeConfigValidation(unittest.TestCase):
         np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.4, 0.4, 0.4, 0.4])
         np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.4, 0.9, 0.4, 0.9])
 
+    def test_shape_material_mu_edited_in_the_builder_keeps_unset_mu_static_in_step(self):
+        """mu_static is resolved in finalize: an unset value follows a direct edit of the builder's mu, an explicit
+        value below the edited mu is rejected."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        builder.shape_material_mu[0] = 0.7
+        builder.shape_material_mu[1] = 0.5
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.7, 0.5])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.7, 0.9])
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        builder.shape_material_mu[0] = 1.0
+        with self.assertRaisesRegex(ValueError, "is below shape_material_mu"):
+            builder.finalize(device="cpu")
+
     def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
         """Reject non-positive and non-finite target voxel sizes."""
         for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
