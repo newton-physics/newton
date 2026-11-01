@@ -60,22 +60,24 @@ def _build_two_link_planar(device) -> newton.Model:
 
 
 # ----------------------------------------------------------------------------
-# helpers - FREE-REV
+# helpers - quaternion joint followed by REV
 # ----------------------------------------------------------------------------
 
 
-def _build_free_plus_revolute(device) -> newton.Model:
-    """
-    Returns a model whose root link is attached with a FREE joint
-    followed by one REV link.
-    """
+def _build_quaternion_plus_revolute(device, *, joint_type=newton.JointType.FREE) -> newton.Model:
+    """Return a model with a quaternion root joint followed by a revolute joint."""
     builder = newton.ModelBuilder()
 
     link1 = builder.add_link(
         xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
-    joint1 = builder.add_joint_free(
+    add_root_joint = {
+        newton.JointType.FREE: builder.add_joint_free,
+        newton.JointType.BALL: builder.add_joint_ball,
+        newton.JointType.DISTANCE: builder.add_joint_distance,
+    }[joint_type]
+    joint1 = add_root_joint(
         parent=-1,
         child=link1,
         parent_xform=wp.transform_identity(),
@@ -291,7 +293,7 @@ def test_convergence_mixed(test, device):
 def _convergence_test_free(test, device, mode: ik.IKJacobianType):
     with wp.ScopedDevice(device):
         n_problems = 3
-        model = _build_free_plus_revolute(device)
+        model = _build_quaternion_plus_revolute(device)
 
         requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
@@ -448,7 +450,7 @@ def test_joint_dof_mask_free_joint(test, device):
     """A fully-masked FREE joint must keep its pose fixed (up to quaternion
     renormalization roundoff) while the remaining revolute DOF still updates."""
     with wp.ScopedDevice(device):
-        model = _build_free_plus_revolute(device)
+        model = _build_quaternion_plus_revolute(device)
         seed = np.zeros((1, model.joint_coord_count), dtype=np.float32)
         seed[0, 0:3] = [0.1, -0.2, 0.3]
         rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
@@ -477,8 +479,8 @@ def test_joint_dof_mask_free_joint(test, device):
         test.assertGreater(abs(float(result[7])), 1.0e-3)
 
 
-def test_joint_dof_mask_validation(test, device):
-    """IKSolver must reject incompatible joint DOF masks and modes."""
+def test_solver_validation(test, device):
+    """Reject incompatible joint DOF masks and sampling modes."""
     with wp.ScopedDevice(device):
         model = _build_two_link_planar(device)
         target = wp.array([[1.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
@@ -527,7 +529,7 @@ def test_joint_dof_mask_validation(test, device):
                     joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device="cpu"),
                 )
 
-        free_model = _build_free_plus_revolute(device)
+        free_model = _build_quaternion_plus_revolute(device)
         free_target = wp.array([[1.0, 0.5, 0.0]], dtype=wp.vec3, device=device)
         free_objective = ik.IKObjectivePosition(
             link_index=1,
@@ -543,6 +545,34 @@ def test_joint_dof_mask_validation(test, device):
                 [free_objective],
                 joint_dof_mask=wp.array(partial, dtype=wp.bool, device=device),
             )
+
+        for joint_type in (newton.JointType.FREE, newton.JointType.BALL, newton.JointType.DISTANCE):
+            quaternion_model = _build_quaternion_plus_revolute(device, joint_type=joint_type)
+            for optimizer in ik.IKOptimizer:
+                # Both modes preserve the input seed when n_seeds=1.
+                for sampler in (ik.IKSampler.NONE, ik.IKSampler.GAUSS):
+                    solver = ik.IKSolver(quaternion_model, 1, [free_objective], optimizer=optimizer, sampler=sampler)
+                    seed = quaternion_model.joint_q.numpy()[None, :]
+                    joint_q = wp.array(seed, dtype=wp.float32, device=device)
+                    solver.step(joint_q, joint_q, iterations=0)
+                    assert_np_equal(joint_q.numpy(), seed)
+                for sampler, n_seeds in (
+                    (ik.IKSampler.GAUSS, 2),
+                    (ik.IKSampler.UNIFORM, 1),
+                    (ik.IKSampler.UNIFORM, 2),
+                    (ik.IKSampler.ROBERTS, 1),
+                    (ik.IKSampler.ROBERTS, 2),
+                ):
+                    with test.subTest(joint_type=joint_type, optimizer=optimizer, sampler=sampler, n_seeds=n_seeds):
+                        with test.assertRaisesRegex(ValueError, "quaternion.*sampler='none'"):
+                            ik.IKSolver(
+                                quaternion_model,
+                                1,
+                                [free_objective],
+                                optimizer=optimizer,
+                                sampler=sampler,
+                                n_seeds=n_seeds,
+                            )
 
 
 def test_convergence_analytic_descendant_free_distance(test, device, joint_type):
@@ -821,7 +851,7 @@ for mode in ik.IKJacobianType:
         mode=mode,
     )
 add_function_test(TestIKModes, "test_joint_dof_mask_free_joint", test_joint_dof_mask_free_joint, devices)
-add_function_test(TestIKModes, "test_joint_dof_mask_validation", test_joint_dof_mask_validation, devices)
+add_function_test(TestIKModes, "test_solver_validation", test_solver_validation, devices)
 
 # Jacobian equality
 add_function_test(TestIKModes, "test_position_jacobian_compare", test_position_jacobian_compare, devices)
