@@ -81,7 +81,8 @@ Scene-authored settings
 
 Call :meth:`~newton.solvers.SolverVBD.register_custom_attributes` on the
 :class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
-the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored in
+the ``NewtonVbdSceneAPI`` settings and ``NewtonSceneAPI.newton:maxSolverIterations``
+from a USD ``PhysicsScene``. They are stored in
 ``model.vbd`` and used as :class:`~newton.solvers.SolverVBD` defaults:
 
 .. list-table::
@@ -91,6 +92,10 @@ the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored 
      - ``model.vbd`` attribute
      - Constructor argument
      - Default
+   * - ``newton:maxSolverIterations``
+     - ``max_solver_iterations``
+     - ``iterations``
+     - ``10`` (schema fallback ``-1``)
    * - ``newton:vbd:rigid:contactHistory``
      - ``rigid_contact_history``
      - ``rigid_contact_history``
@@ -113,13 +118,22 @@ the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored 
      - ``0.0`` N·m·s/rad
 
 Precedence is explicit constructor argument, then ``model.vbd.*``, then the
-built-in default. Scene-authored stiffness and damping must be finite and
+built-in default. Omitted or ``None`` iterations use the scene value; the schema
+fallback ``-1`` uses ``10``. Positive scene values are accepted; ``0`` and values below ``-1`` raise
+``ValueError``. Zero iterations skip the particle solve and do not produce
+a valid particle output state. An explicit
+``iterations=10`` still overrides the scene. Scene-authored stiffness and damping must be finite and
 non-negative, otherwise the constructor raises ``ValueError``. A scene-authored
 ``contactHistory`` is ignored when VBD does not integrate rigid bodies (no
 bodies, or ``integrate_with_external_rigid_solver=True``). When VBD integrates
 bodies and is given a collision pipeline, the pipeline needs ``contact_matching``
 other than ``"disabled"``; pass ``rigid_contact_history=False`` to override the
 scene value.
+VBD runs a fixed number of iterations, rather than treating the value as a
+convergence limit. Existing assets with large ``newton:maxSolverIterations``
+values therefore perform more work per step once this setting is honored.
+Pass ``iterations=10`` explicitly to retain the previous default workload.
+
 Scene values apply in both constraint modes: they are not skipped when the
 deprecated ``rigid_compliant_alm=False`` path is selected, even though the
 schema scopes them to the compliant ALM path.
