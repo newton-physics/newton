@@ -81,6 +81,7 @@ Supported Features
      - Cloth
      - Soft bodies
      - Differentiable
+     - Deterministic :sup:`3`
    * - :class:`~newton.solvers.SolverFeatherstone`
      - Semi-implicit
      - ✅
@@ -89,6 +90,7 @@ Supported Features
      - 🟨 no self-collision
      - ✅
      - 🟨 basic :sup:`2`
+     - ✅
    * - :class:`~newton.solvers.SolverImplicitMPM`
      - Implicit
      - ❌
@@ -97,10 +99,12 @@ Supported Features
      - ❌
      - ❌
      - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverKamino`
      - Semi-implicit: Euler, Moreau-Jean
      - ✅ maximal coordinates
      - ✅ maximal coordinates
+     - ❌
      - ❌
      - ❌
      - ❌
@@ -113,6 +117,7 @@ Supported Features
      - ❌
      - ❌
      - ❌
+     - 🟨 CPU only
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - Semi-implicit
      - ✅
@@ -121,6 +126,7 @@ Supported Features
      - 🟨 no self-collision
      - ✅
      - 🟨 basic :sup:`2`
+     - ✅
    * - :class:`~newton.solvers.SolverSteel`
      - Semi-implicit, implicit drives
      - ✅
@@ -129,12 +135,14 @@ Supported Features
      - ❌
      - ❌
      - ❌
+     - ✅
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
      - ❌
      - ❌
      - ✅
      - ✅
+     - ❌
      - ❌
      - ❌
    * - :class:`~newton.solvers.SolverVBD`
@@ -145,6 +153,7 @@ Supported Features
      - ✅
      - ✅
      - ❌
+     - ✅
    * - :class:`~newton.solvers.SolverXPBD`
      - Implicit
      - ✅
@@ -153,11 +162,14 @@ Supported Features
      - 🟨 no self-collision
      - 🟨 experimental
      - ❌
+     - ✅
 
 | :sup:`1` Uses MuJoCo's built-in collision pipeline by default.
   Set ``use_mujoco_contacts=False`` to use Newton's collision pipeline.
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
+| :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``;
+  see :doc:`/concepts/determinism` for limitations and performance trade-offs.
 
 .. experimental::
     :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
