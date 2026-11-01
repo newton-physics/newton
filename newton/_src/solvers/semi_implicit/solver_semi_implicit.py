@@ -56,6 +56,17 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
+        - REVOLUTE coordinates in :attr:`~newton.State.joint_q` are inputs to ``step`` and retain
+          their winding across steps. Only REVOLUTE entries of the output ``joint_q`` and
+          ``joint_qd`` are updated; other generalized coordinates are not refreshed.
+          Initialize or reset these coordinates consistently with body poses (for example, using
+          :func:`newton.eval_fk`). Resetting or copying ``body_q`` alone retains the old winding
+          and can produce unintended multi-turn drive and limit errors. Relative rotation must stay below half a turn per step.
+          Writing :func:`newton.eval_ik` output into these coordinates replaces winding with
+          wrapped angles. It only updates articulation joints; standalone and loop-closing
+          REVOLUTE coordinates must be reset directly alongside their body poses.
+          REVOLUTE velocities use the parent-axis projection, as in ``eval_ik`` and
+          joint force evaluation; under transient swing they can differ from the twist-angle derivative.
         - Joint limits and targets are not enforced for BALL joints.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
@@ -138,6 +149,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in deterministic_modules:
             self._set_module_options(options, module=module)
+        self._has_revolute_joints = bool(model.joint_count and JointType.REVOLUTE in model.joint_type.numpy())
         self.angular_damping = angular_damping
         if friction_smoothing is not None:
             warnings.warn(
@@ -286,3 +298,24 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 state_in.body_f = body_f_work
                 self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
                 state_in.body_f = body_f_prev
+
+            if self._has_revolute_joints:
+                wp.launch(
+                    kernels_body.update_revolute_coordinates,
+                    dim=model.joint_count,
+                    inputs=[
+                        state_out.body_q,
+                        state_out.body_qd,
+                        model.joint_type,
+                        model.joint_parent,
+                        model.joint_child,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                        model.joint_axis,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        state_in.joint_q,
+                    ],
+                    outputs=[state_out.joint_q, state_out.joint_qd],
+                    device=model.device,
+                )

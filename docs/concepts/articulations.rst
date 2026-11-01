@@ -43,6 +43,28 @@ For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.S
 use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
 use maximal coordinates.
+For :class:`~newton.solvers.SolverSemiImplicit`, REVOLUTE joints additionally use
+:attr:`~newton.State.joint_q` as persistent winding state. ``step`` reads those
+entries to select the continuous angle and updates only the REVOLUTE entries
+of ``state_out.joint_q`` and ``state_out.joint_qd``. Entries for other joint types
+are not refreshed; these arrays are not a complete generalized-state output.
+
+When migrating code that initializes, resets, or copies only ``body_q``, also
+initialize, reset, or copy the corresponding REVOLUTE ``joint_q`` entries.
+Otherwise the old winding remains and can introduce whole turns into drive
+and limit errors. For joints included in articulation metadata, reset from
+generalized coordinates by assigning the intended ``joint_q`` and ``joint_qd``
+to the state, then call
+``newton.eval_fk(model, state.joint_q, state.joint_qd, state)``.
+For a reset from body poses that intentionally discards winding, call
+``newton.eval_ik(model, state, state.joint_q, state.joint_qd)`` afterward.
+Neither helper updates standalone or loop-closing joints outside articulation
+metadata. Reset their body poses and assign the corresponding REVOLUTE
+``joint_q`` entries directly.
+During normal multi-turn stepping, do not write ``eval_ik`` output back into
+state coordinates: it replaces the continuous REVOLUTE angle with a wrapped angle. Relative rotation must remain
+below half a turn per step for winding reconstruction to be unambiguous.
+
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
 .. _Rod joints:
@@ -262,7 +284,16 @@ including followers. To read joint coordinates from the updated body state, use
 
 .. code-block:: python
 
-  newton.eval_ik(model, state_out, state_out.joint_q, state_out.joint_qd)
+  joint_q_readout = wp.clone(state_out.joint_q)
+  joint_qd_readout = wp.clone(state_out.joint_qd)
+  newton.eval_ik(model, state_out, joint_q_readout, joint_qd_readout)
+
+Keep these read-out arrays separate from the simulation state, and reuse them
+across steps. In particular, writing wrapped angles back to
+``SolverSemiImplicit`` state would discard its REVOLUTE winding and change
+subsequent drive and limit errors by whole turns. Only joints included in
+articulation metadata are refreshed; standalone and loop-closing entries in
+the read-out arrays retain their copied values.
 
 This reads the solved body configuration; it does not project the exact mimic
 formula onto it. Calling :func:`newton.eval_mimic` on the untouched joint

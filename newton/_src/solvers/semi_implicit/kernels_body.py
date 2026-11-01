@@ -11,7 +11,7 @@ from ...sim import (
     Model,
     State,
 )
-from ...sim.articulation import eval_angular_coordinates
+from ...sim.articulation import eval_angular_coordinates, reconstruct_angular_q_qd
 from ...sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
 
 
@@ -161,11 +161,62 @@ def eval_joint_mimic_forces(
             wp.atomic_add(body_f, reference_child, reference_child_gradient * (-multiplier * force))
 
 
+@wp.func
+def unwrap_revolute_angle(angle: float, reference: float) -> float:
+    """Select the equivalent angle nearest the state's continuous coordinate."""
+    period = 2.0 * wp.PI
+    return angle + period * wp.floor((reference - angle + wp.PI) / period)
+
+
+@wp.kernel
+def update_revolute_coordinates(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    reference_q: wp.array[float],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    """Update continuous angles and axis-projected velocities, matching eval_ik.
+
+    As in joint force evaluation, the velocity is projected on the parent axis.
+    With finite attachment penalties, swing can make it differ from the twist
+    angle derivative; it coincides with that derivative for an aligned hinge.
+    """
+    joint = wp.tid()
+    if joint_type[joint] != JointType.REVOLUTE:
+        return
+    parent = joint_parent[joint]
+    child = joint_child[joint]
+    X_wp = joint_X_p[joint]
+    w_parent = wp.vec3(0.0)
+    if parent >= 0:
+        X_wp = body_q[parent] * X_wp
+        w_parent = wp.spatial_bottom(body_qd[parent])
+    X_wc = body_q[child] * joint_X_c[joint]
+    rotation = wp.quat_inverse(wp.transform_get_rotation(X_wp)) * wp.transform_get_rotation(X_wc)
+    q_index = joint_q_start[joint]
+    qd_index = joint_qd_start[joint]
+    w_err = wp.spatial_bottom(body_qd[child]) - w_parent
+    angle, velocity = reconstruct_angular_q_qd(rotation, w_err, X_wp, joint_axis[qd_index])
+    joint_q[q_index] = unwrap_revolute_angle(angle, reference_q[q_index])
+    joint_qd[qd_index] = velocity
+
+
 @wp.kernel
 def eval_body_joints(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
+    joint_q_start: wp.array[int],
+    joint_q: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_type: wp.array[int],
@@ -317,7 +368,7 @@ def eval_body_joints(
         axis_p = wp.transform_vector(X_wp, axis)
         axis_c = wp.transform_vector(X_wc, axis)
 
-        q = wp.quat_twist_angle_signed(axis, r_err)
+        q = unwrap_revolute_angle(wp.quat_twist_angle_signed(axis, r_err), joint_q[joint_q_start[tid]])
         qd = wp.dot(w_err, axis_p)
 
         t_total = axis_p * (
@@ -550,6 +601,8 @@ def eval_body_joint_forces(
                 state.body_q,
                 state.body_qd,
                 model.body_com,
+                model.joint_q_start,
+                state.joint_q,
                 model.joint_qd_start,
                 model.joint_target_q_start,
                 model.joint_type,
