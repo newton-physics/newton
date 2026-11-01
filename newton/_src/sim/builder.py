@@ -87,6 +87,14 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
+from .body_variants import (
+    _BodyVariants,
+    _plan_variant_rows,
+    _snapshot_variants,
+    _validate_variant_builder,
+    _VariantShape,
+    _VariantShapeRows,
+)
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -2141,6 +2149,8 @@ class ModelBuilder:
         """Body flags accumulated for :attr:`Model.body_flags`."""
         self.body_shapes: dict[int, list[int]] = {-1: []}
         """Mapping from body index to attached shape indices, finalized into :attr:`Model.body_shapes`."""
+        self._body_variants: dict[int, _BodyVariants] = {}
+        """Shape variants by body index, declared with :meth:`add_body_variants`."""
         self.body_world: list[int] = []
         """World indices accumulated for :attr:`Model.body_world`."""
         self.body_color_groups: list[Any] = []
@@ -3965,6 +3975,9 @@ class ModelBuilder:
                     self.body_shapes[-1].extend(translated_shapes)
                 else:
                     self.body_shapes[body + int(body_start)] = translated_shapes
+            # Copies share the variant sets by identity.
+            for body, body_variants in builder._body_variants.items():
+                self._body_variants[body + int(body_start)] = body_variants.shifted(int(shape_start))
 
         joint_starts = starts("joint")
         joint_coord_starts = starts("joint_coord")
@@ -5945,6 +5958,142 @@ class ModelBuilder:
 
         return body_id
 
+    def add_body_variants(
+        self,
+        body: int,
+        variants: Sequence[ModelBuilder],
+        *,
+        initial: int = 0,
+        labels: Sequence[str] | None = None,
+    ) -> None:
+        """Declare alternative shape sets for a body, one of which is selected at a time.
+
+        Each variant is a builder with exactly one body, such as an asset loaded with
+        :meth:`add_usd` or :meth:`add_mjcf`: its shapes, colliders and visuals of any type and count,
+        and its body's mass, center of mass, and inertia. ``body`` gets one block of shape rows per
+        role (colliders, then other shapes such as visuals, then sites), each with as many rows as
+        the variant with the most shapes of that role has. Selecting a variant with
+        :meth:`Model.select_body_variants <newton.Model.select_body_variants>` copies each of its
+        shapes into the next row of its role's block, in the variant's order, empties the remaining
+        rows, and sets the body's mass properties to those of the body as built plus the variant's.
+        Shapes added to ``body`` directly stay in place for every variant.
+
+        A row takes everything authored on the variant shape it holds: geometry, flags, color,
+        opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
+        collision group, and filter pairs, so the i-th colliders of all variants must share a
+        collision group. An
+        empty row has its collision and visibility flags cleared, so it neither collides nor
+        renders. Variant shapes are expressed in the variant body's frame, which maps onto
+        ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
+        body custom attributes and shape custom attributes that reference other entities. The
+        variants are copied at declaration, so later edits to the variant builders have no effect, and
+        :meth:`finalize` replaces edits to the rows in this builder, such as by
+        :meth:`approximate_meshes`, with the initial variant; edit the variant builders instead.
+
+        Bodies copied with :meth:`add_builder` or :meth:`replicate` share the variants, which
+        :meth:`finalize` stores once, and select independently per world. Variant ids are positions
+        in ``variants`` and are the same for every copy.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            body: Index of the body that receives the variants.
+            variants: Single-body builders defining the variants.
+            initial: Index of the variant selected in the finalized model.
+            labels: Variant labels. Defaults to each variant's body label.
+
+        Raises:
+            IndexError: If ``body`` or ``initial`` is out of range.
+            ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
+                colliders held by the same row have different collision groups, a shape custom
+                attribute is declared differently than here or in another variant, shapes of a later
+                world or trailing global shapes were added after ``body``'s world, or a variant
+                builder is this builder, declares variants itself, uses a different up axis, does
+                not contain exactly one body, contains shapes not attached to it, contains planes,
+                heightfields, Gaussians, or hydroelastic shapes, or has values for shape custom
+                attributes not assigned to the model.
+        """
+        if not 0 <= body < self.body_count:
+            raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
+        if body in self._body_variants:
+            raise ValueError(f"Body {body} already has variants.")
+        variants = tuple(variants)
+        if not variants:
+            raise ValueError("add_body_variants() requires at least one variant.")
+        labels = (
+            tuple(variant.body_label[0] if variant.body_count else "" for variant in variants)
+            if labels is None
+            else tuple(labels)
+        )
+        if len(labels) != len(variants):
+            raise ValueError(f"Expected {len(variants)} labels, got {len(labels)}.")
+        if not 0 <= initial < len(variants):
+            raise IndexError(f"Initial variant {initial} out of range [0, {len(variants)}).")
+        # The rows join the body's world at the end of the shapes, which must keep shapes ordered by world.
+        world = self.body_world[body]
+        tail = self.shape_world[-1] if self.shape_world else -1
+        if world >= 0 and (tail > world or (tail < 0 and any(w >= 0 for w in self.shape_world))):
+            raise ValueError(
+                f"Variants of body {body} in world {world} must be declared before shapes of later worlds "
+                "or trailing global shapes are added."
+            )
+        for variant in variants:
+            _validate_variant_builder(self, variant)
+        variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
+        rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
+        declarations = dict(self.custom_attributes)
+        for row in rows:
+            for candidate in row.candidates:
+                for key, declaration, _ in candidate.custom:
+                    if not self._custom_attribute_specs_match(declarations.setdefault(key, declaration), declaration):
+                        raise ValueError(
+                            f"Variant shape custom attribute '{key}' is declared differently than in this "
+                            "builder or another variant."
+                        )
+        # Declare every variant's attributes now, so later declarations are checked against them and
+        # finalize() declares nothing.
+        for key, declaration in declarations.items():
+            if key not in self.custom_attributes:
+                self.add_custom_attribute(declaration)
+
+        # A row's builder flags are the union over the shapes it can hold, which all have the row's
+        # role, so contact pairs and joint filters include every one of them.
+        row_start = self.shape_count
+        for row in rows:
+            shape = self._append_shape_row(row.seed, body, world, row.label)
+            flags = 0
+            for candidate in row.candidates:
+                flags |= int(candidate.values["shape_flags"])
+            self.shape_flags[shape] = flags
+            self.body_shapes[body].append(shape)
+            if flags & ShapeFlags.COLLIDE_SHAPES:
+                self._add_joint_collision_filter_pairs(shape, body)
+        self._body_variants[body] = _BodyVariants(variant_set, row_start, initial)
+
+    def _shape_row_attributes(self) -> list[str]:
+        """Builder SHAPE attributes copied verbatim between shapes."""
+        return [
+            name
+            for name, spec in self._builder_merge_attribute_specs().items()
+            if spec.frequency == Model.AttributeFrequency.SHAPE and spec.compaction_policy == "generic"
+        ]
+
+    def _append_shape_row(self, row: _VariantShape, body: int, world: int, label: str) -> int:
+        """Append a shape with the attributes of ``row``, attached to ``body`` in ``world``."""
+        shape = self.shape_count
+        for name, value in row.values.items():
+            getattr(self, name).append(value)
+        self.shape_body[shape] = body
+        self.shape_world[shape] = world
+        self.shape_label[shape] = label
+        for key, declaration, value in row.custom:
+            if key not in self.custom_attributes:
+                self.add_custom_attribute(declaration)
+            self._process_custom_attributes(shape, {key: value}, Model.AttributeFrequency.SHAPE)
+        return shape
+
     # region joints
 
     def add_joint(
@@ -7558,6 +7707,8 @@ class ModelBuilder:
             through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
         """
+        if self._body_variants:
+            raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
         joints_to_keep = set(joints_to_keep or ())
 
         original_counts = self._builder_merge_counts(self)
@@ -8698,20 +8849,7 @@ class ModelBuilder:
         self.shape_sdf_padding.append(cfg.sdf_padding)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
-            for parent_body, joint_idx in self.joint_parents.get(body, ()):
-                if not self.joint_collision_filter_parent[joint_idx]:
-                    continue
-                for parent_shape in self.body_shapes[parent_body]:
-                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
-                        continue
-                    self.add_shape_collision_filter_pair(parent_shape, shape)
-            for child_body, joint_idx in self.joint_children.get(body, ()):
-                if not self.joint_collision_filter_parent[joint_idx]:
-                    continue
-                for child_shape in self.body_shapes[child_body]:
-                    if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
-                        continue
-                    self.add_shape_collision_filter_pair(shape, child_shape)
+            self._add_joint_collision_filter_pairs(shape, body)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
@@ -8727,6 +8865,23 @@ class ModelBuilder:
             )
 
         return shape
+
+    def _add_joint_collision_filter_pairs(self, shape: int, body: int) -> None:
+        """Filter a colliding shape against the shapes of bodies joined to ``body``."""
+        for parent_body, joint_idx in self.joint_parents.get(body, ()):
+            if not self.joint_collision_filter_parent[joint_idx]:
+                continue
+            for parent_shape in self.body_shapes[parent_body]:
+                if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
+                self.add_shape_collision_filter_pair(parent_shape, shape)
+        for child_body, joint_idx in self.joint_children.get(body, ()):
+            if not self.joint_collision_filter_parent[joint_idx]:
+                continue
+            for child_shape in self.body_shapes[child_body]:
+                if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
+                self.add_shape_collision_filter_pair(shape, child_shape)
 
     def add_shape_plane(
         self,
@@ -14532,30 +14687,37 @@ class ModelBuilder:
             # ensure the world count is set correctly
             self.world_count = max(1, self.world_count)
 
-            # validate world ordering and contiguity
-            if not skip_all_validations and not skip_validation_worlds:
-                self._validate_world_ordering()
+            # Variant shapes are appended as detached rows for the duration of finalize(), so that they
+            # are validated and get their collision data like shapes.
+            self._variant_shape_rows = _VariantShapeRows(self)
+            try:
+                # validate world ordering and contiguity
+                if not skip_all_validations and not skip_validation_worlds:
+                    self._validate_world_ordering()
 
-            # validate joints belong to an articulation
-            if not skip_all_validations and not skip_validation_joints:
-                self._validate_joints()
+                # validate joints belong to an articulation
+                if not skip_all_validations and not skip_validation_joints:
+                    self._validate_joints()
 
-            # validate contact materials, gaps, and hydroelastic SDF padding
-            if not skip_all_validations and not skip_validation_shapes:
-                self._validate_shapes()
+                # validate contact materials, gaps, and hydroelastic SDF padding
+                if not skip_all_validations and not skip_validation_shapes:
+                    self._validate_shapes()
 
-            # validate structural invariants (body/joint references, array lengths)
-            if not skip_all_validations and not skip_validation_structure:
-                self._validate_structure()
+                # validate structural invariants (body/joint references, array lengths)
+                if not skip_all_validations and not skip_validation_structure:
+                    self._validate_structure()
 
-            # validate DFS topological joint ordering (opt-in, skipped by default)
-            if not skip_all_validations and not skip_validation_joint_ordering:
-                self.validate_joint_ordering()
+                # validate DFS topological joint ordering (opt-in, skipped by default)
+                if not skip_all_validations and not skip_validation_joint_ordering:
+                    self.validate_joint_ordering()
 
-            with self._raw_array_access():
-                return self._finalize_impl(
-                    device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
-                )
+                with self._raw_array_access():
+                    return self._finalize_impl(
+                        device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
+                    )
+            finally:
+                self._variant_shape_rows.remove(self)
+                del self._variant_shape_rows
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -15559,6 +15721,10 @@ class ModelBuilder:
                 else wp.zeros(1, dtype=wp.vec4, device=device)
             )
 
+            # Variant shape rows got their collision data above like shapes; move them to the variant
+            # table so that the shape arrays, counts, and labels hold real shapes only.
+            shape_count = self._variant_shape_rows.split(self, m)
+
             # ---------------------
             # springs
 
@@ -15935,7 +16101,11 @@ class ModelBuilder:
             # per-world start indices
             m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
             m.body_world_start = wp.array(self.body_world_start, dtype=wp.int32)
-            m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
+            # Variant shape rows were counted as global shapes, in the leading block when no world
+            # shape precedes them; no start lies beyond the real shapes.
+            m.shape_world_start = wp.array(
+                [min(start, shape_count) for start in self.shape_world_start], dtype=wp.int32
+            )
             m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
             m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
             m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
@@ -15950,7 +16120,7 @@ class ModelBuilder:
             m.joint_constraint_count = self.joint_constraint_count
             m.particle_count = len(self.particle_q)
             m.body_count = self.body_count
-            m.shape_count = len(self.shape_type)
+            m.shape_count = shape_count
             m.tri_count = len(self.tri_poses)
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)
@@ -15963,10 +16133,10 @@ class ModelBuilder:
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             m._shape_contact_pair_data = _ShapeContactPairs(
-                self.shape_body,
-                self.shape_world,
-                self.shape_collision_group,
-                self.shape_flags,
+                self.shape_body[:shape_count],
+                self.shape_world[:shape_count],
+                self.shape_collision_group[:shape_count],
+                self.shape_flags[:shape_count],
                 shape_collision_filter_packed,
                 self.world_count,
             )
@@ -16108,6 +16278,7 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
+            self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
 
             m.bvh_build_shapes(
                 m,

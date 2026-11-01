@@ -21,10 +21,12 @@ from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
+from ..geometry.inertia import _inverse_inertia_wp
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
@@ -46,6 +48,165 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
+
+
+_SHAPE_VARIANT_ATTRIBUTES = (
+    "shape_type",
+    "shape_source_ptr",
+    "shape_scale",
+    "shape_transform",
+    "shape_is_solid",
+    "shape_margin",
+    "shape_gap",
+    "shape_collision_radius",
+    "shape_heightfield_index",
+    "_shape_edge_range",
+    "_shape_support_data",
+    "_shape_sdf_index",
+    "_shape_mesh_properties",
+    "_shape_mesh_boundary_start",
+    "shape_collision_aabb_lower",
+    "shape_collision_aabb_upper",
+    "_shape_interior_point",
+    "_shape_voxel_resolution",
+    "shape_flags",
+    "shape_color",
+    "shape_opacity",
+    "shape_material_ke",
+    "shape_material_kd",
+    "shape_material_kf",
+    "shape_material_ka",
+    "shape_material_mu",
+    "shape_material_restitution",
+    "shape_material_mu_torsional",
+    "shape_material_mu_rolling",
+    "shape_material_kh",
+)
+"""Per-shape model arrays a variant row takes from the variant shape it holds: geometry, the collision
+data derived from it in :meth:`ModelBuilder.finalize`, flags, color, opacity, and materials. Everything
+else, such as body, world, label, and collision group, belongs to the row. Model-assigned shape
+custom attributes are copied as well."""
+
+_EMPTY_ROW_CLEARED_FLAGS = wp.constant(
+    int(ShapeFlags.COLLIDE_SHAPES) | int(ShapeFlags.COLLIDE_PARTICLES) | int(ShapeFlags.VISIBLE)
+)
+
+
+@wp.func
+def _variant_row(
+    i: int,
+    row: int,
+    variants: wp.array[wp.int32],
+    bodies: wp.array[wp.int32],
+    body_variant_count: wp.array[wp.int32],
+    body_variant_rows: wp.array[wp.vec2i],
+):
+    """Body, variant, and row shape of entry ``i`` and row ``row`` of a selection, or ``-1`` body."""
+    body = i
+    if bodies.shape[0] > 0:
+        body = bodies[i]
+    shape = int(-1)
+    if body < 0 or body >= body_variant_count.shape[0]:
+        return -1, 0, shape
+    variant = variants[i]
+    if variant < 0 or variant >= body_variant_count[body]:
+        return -1, 0, shape
+    rows = body_variant_rows[body]
+    if row < rows[1]:
+        shape = rows[0] + row
+    return body, variant, shape
+
+
+@wp.kernel(enable_backward=False)
+def _select_body_variants_kernel(
+    variants: wp.array[wp.int32],
+    bodies: wp.array[wp.int32],
+    body_variant_count: wp.array[wp.int32],
+    body_variant_rows: wp.array[wp.vec2i],
+    body_variant_first: wp.array[wp.int32],
+    body_variant_inertia_start: wp.array[wp.int32],
+    variant_row_shape_start: wp.array[wp.int32],
+    variant_row_shape: wp.array[wp.int32],
+    variant_mass: wp.array[wp.float32],
+    variant_com: wp.array[wp.vec3],
+    variant_inertia: wp.array[wp.mat33],
+    # outputs
+    body_variant: wp.array[wp.int32],
+    shape_variant_shape: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    body_mass: wp.array[wp.float32],
+    body_inv_mass: wp.array[wp.float32],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_inertia: wp.array[wp.mat33],
+):
+    i, row = wp.tid()
+    body, variant, shape = _variant_row(i, row, variants, bodies, body_variant_count, body_variant_rows)
+    if body < 0:
+        return
+    global_variant = body_variant_first[body] + variant
+    if shape >= 0:
+        variant_shape = variant_row_shape[variant_row_shape_start[global_variant] + row]
+        shape_variant_shape[shape] = variant_shape
+        if variant_shape < 0:
+            # An empty row neither collides nor renders; its other data keeps the last variant's.
+            shape_flags[shape] = shape_flags[shape] & ~_EMPTY_ROW_CLEARED_FLAGS
+    if row == 0:
+        body_variant[body] = variant
+        k = body_variant_inertia_start[body] + variant
+        mass = variant_mass[k]
+        inertia = variant_inertia[k]
+        body_mass[body] = mass
+        body_com[body] = variant_com[k]
+        body_inertia[body] = inertia
+        # Inverses as ModelBuilder.finalize() derives them.
+        if mass > 0.0:
+            body_inv_mass[body] = 1.0 / mass
+            body_inv_inertia[body] = _inverse_inertia_wp(inertia)
+        else:
+            body_inv_mass[body] = 0.0
+            body_inv_inertia[body] = wp.mat33(0.0)
+
+
+@wp.kernel(enable_backward=False)
+def _copy_variant_shape_kernel(
+    variants: wp.array[wp.int32],
+    bodies: wp.array[wp.int32],
+    body_variant_count: wp.array[wp.int32],
+    body_variant_rows: wp.array[wp.vec2i],
+    shape_variant_shape: wp.array[wp.int32],
+    variant_values: wp.array[Any],
+    # outputs
+    values: wp.array[Any],
+):
+    i, row = wp.tid()
+    body, _variant, shape = _variant_row(i, row, variants, bodies, body_variant_count, body_variant_rows)
+    if body < 0 or shape < 0:
+        return
+    variant_shape = shape_variant_shape[shape]
+    if variant_shape >= 0:
+        values[shape] = variant_values[variant_shape]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_variant_shape_bounds_kernel(
+    variants: wp.array[wp.int32],
+    bodies: wp.array[wp.int32],
+    body_variant_count: wp.array[wp.int32],
+    body_variant_rows: wp.array[wp.vec2i],
+    shape_variant_shape: wp.array[wp.int32],
+    variant_bounds: wp.array2d[wp.vec3],
+    # outputs
+    bounds: wp.array2d[wp.vec3],
+):
+    i, row = wp.tid()
+    body, _variant, shape = _variant_row(i, row, variants, bodies, body_variant_count, body_variant_rows)
+    if body < 0 or shape < 0:
+        return
+    variant_shape = shape_variant_shape[shape]
+    if variant_shape >= 0:
+        bounds[shape, 0] = variant_bounds[variant_shape, 0]
+        bounds[shape, 1] = variant_bounds[variant_shape, 1]
 
 
 def _pack_shape_pair_codes(shape_a: np.ndarray, shape_b: np.ndarray) -> np.ndarray:
@@ -376,6 +537,25 @@ class Model:
             AttributeFrequency.ONCE,
             compaction_policy="passthrough",
         ),
+        "_variant_shape_geometry": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_shape_custom": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_shape_source": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_row_shape_start": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_row_shape": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_set_labels": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_mass": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_com": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_inertia": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_row_shapes": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_row_flags": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "body_variant": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_set": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_count": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_first": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_rows": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_inertia_start": AttributeSpec(AttributeFrequency.BODY),
+        "_shape_variant_row": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
         "shape_label": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_transform": AttributeSpec(AttributeFrequency.SHAPE),
@@ -854,7 +1034,10 @@ class Model:
         self.shape_margin: wp.array[wp.float32] | None = None
         """Shape surface margin [m], shape [shape_count], float."""
         self.shape_source: list[object | None] = []
-        """List of source geometry objects (e.g., :class:`~newton.Mesh`) used for broadphase collision detection and rendering, shape [shape_count]."""
+        """List of source geometry objects (e.g., :class:`~newton.Mesh`) used for broadphase collision detection and rendering, shape [shape_count].
+
+        Body variant rows keep the source they were finalized with; :meth:`select_body_variants`
+        updates :attr:`shape_type` and :attr:`shape_source_ptr` on the device only."""
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         """Geometry source pointers to be used inside the Warp kernels which are generated by finalizing the geometry objects, see for example :meth:`newton.Mesh.finalize`, shape [shape_count], uint64."""
 
@@ -930,8 +1113,13 @@ class Model:
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
         """Shape indices included in the shape BVH, shape ``[bvh_shape_count_enabled]``."""
+        self._bvh_shape_active_leaves: wp.array[wp.uint32] | None = None
+        """:attr:`bvh_shape_enabled` with empty variant rows (see :meth:`select_body_variants`) replaced by ``0xFFFFFFFF``,
+        which ray queries skip; updated by :meth:`bvh_build_shapes` and :meth:`bvh_refit_shapes`."""
         self.bvh_shape_count_enabled: int = 0
         """Number of shapes included in the shape BVH."""
+        self._bvh_shape_flags_mask: int = int(ShapeFlags.VISIBLE)
+        """Shape flags mask the shape BVH was built with."""
         self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
         self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
@@ -1185,6 +1373,67 @@ class Model:
 
             num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]
         """
+        self.body_variant: wp.array[wp.int32] | None = None
+        """Selected shape variant of each body, an index into the body's variants, or ``-1`` for
+        bodies without variants, shape [body_count], int.
+
+        Read-only: change it with :meth:`select_body_variants`. See
+        :meth:`ModelBuilder.add_body_variants <newton.ModelBuilder.add_body_variants>` and
+        :meth:`body_variant_labels`.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+        """
+        self._body_variant_set: np.ndarray | None = None
+        """Variant set of each body, or ``-1``, shape [body_count], int, on the host."""
+        self._body_variant_count: wp.array[wp.int32] | None = None
+        """Number of variants of each body, shape [body_count], int."""
+        self._body_variant_first: wp.array[wp.int32] | None = None
+        """Index of each body's first variant among all variants, shape [body_count], int."""
+        self._body_variant_rows: wp.array[wp.vec2i] | None = None
+        """First variant row and row count of each body, shape [body_count, 2], int."""
+        self._body_variant_inertia_start: wp.array[wp.int32] | None = None
+        """Start of each body's validated mass properties in ``_variant_mass/com/inertia``, shape [body_count], int."""
+        self._variant_set_labels: list[list[str]] = []
+        """Variant labels of each variant set."""
+        self._variant_row_shape_start: wp.array[wp.int32] | None = None
+        """Start of each variant's entries in :attr:`_variant_row_shape`, shape [variant count + 1], int."""
+        self._variant_row_shape: wp.array[wp.int32] | None = None
+        """Per variant, the variant shape each row of its set holds, or ``-1`` for an empty row. Rows
+        form one block per role (colliders, other shapes, sites), so a row's role is fixed."""
+        self._variant_shape_count: int = 0
+        """Number of variant shapes over all variant sets."""
+        self._variant_shape_geometry: dict[str, wp.array] = {}
+        """Arrays of :data:`_SHAPE_VARIANT_ATTRIBUTES` of every variant shape, by attribute name."""
+        self._variant_shape_custom: dict[str, tuple[wp.array, wp.array]] = {}
+        """Model-assigned shape custom attributes by full key: the value of each variant shape and the
+        per-shape array variant rows copy them into."""
+        self._variant_shape_source: list[Any] = []
+        """Geometry source of each variant shape."""
+        self._variant_mass: wp.array[wp.float32] | None = None
+        """Body mass [kg] with each variant selected, per distinct body and variant set, float."""
+        self._variant_com: wp.array[wp.vec3] | None = None
+        """Body center of mass [m] with each variant selected, per distinct body and variant set, float."""
+        self._variant_inertia: wp.array[wp.mat33] | None = None
+        """Body inertia [kg·m²] about the center of mass with each variant selected, per distinct body
+        and variant set, float."""
+        self._variant_row_max: int = 0
+        """Largest number of variant rows of a body."""
+        self._variant_row_shapes: wp.array[wp.int32] | None = None
+        """Shape index of every variant row, int."""
+        self._variant_row_flags: wp.array[wp.int32] | None = None
+        """Flags each variant row was finalized with, the union over the variant shapes it can hold,
+        indexed like :attr:`_variant_row_shapes`, int. Contact pairs and joint filters were built from
+        them, and consumers that must cover every variant read them."""
+        self._shape_variant_row: wp.array[wp.bool] | None = None
+        """Whether each shape is a variant row, shape [shape_count], bool."""
+        self._shape_variant_shape: wp.array[wp.int32] | None = None
+        """Variant shape each variant row holds, or ``-1`` for an empty row, shape [shape_count], int."""
+        self._bvh_variant_bounds: wp.array2d[wp.vec3f] | None = None
+        """Local BVH bounds of each variant shape, built with :attr:`bvh_shape_bounds`."""
+        self._variant_copy_cache: tuple[tuple[int, ...], list[wp.Launch]] | None = None
+        """Recorded variant shape copies, keyed by their arrays."""
 
         self.joint_q: wp.array[wp.float32] | None = None
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
@@ -1960,6 +2209,17 @@ class Model:
             device=device,
         )
 
+        # Variant rows get a leaf if any variant shape they can hold would, whatever the opacity of the
+        # one they hold now; ray queries skip rows that are empty or transparent at the last refit.
+        enabled_flags = self.shape_flags
+        enabled_opacity = self.shape_opacity
+        if self._variant_row_max > 0:
+            enabled_flags = wp.array(self._shape_option_flags(), dtype=wp.int32, device=device)
+            if enabled_opacity is not None:
+                opacity = enabled_opacity.numpy().copy()
+                opacity[self._variant_row_shapes.numpy()] = 1.0
+                enabled_opacity = wp.array(opacity, dtype=wp.float32, device=device)
+        self._bvh_shape_flags_mask = int(shape_flags)
         self.bvh_shape_enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
         num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
         wp.launch(
@@ -1967,9 +2227,9 @@ class Model:
             dim=shape_count,
             inputs=[
                 self.shape_type,
-                self.shape_flags,
+                enabled_flags,
                 int(shape_flags),
-                self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
+                enabled_opacity if enabled_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1977,6 +2237,22 @@ class Model:
         )
         self.bvh_shape_count_enabled = int(num_enabled.numpy()[0])
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
+        # Leaves of empty shapes stay in the BVH; ray queries read a copy masked per refit.
+        self._bvh_shape_active_leaves = wp.empty_like(self.bvh_shape_enabled)
+        if self._variant_shape_count > 0:
+            self._bvh_variant_bounds = wp.empty((self._variant_shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
+            wp.launch_tiled(
+                kernel=compute_shape_local_bounds,
+                dim=self._variant_shape_count,
+                block_dim=SHAPE_BOUNDS_BLOCK_DIM,
+                inputs=[
+                    self._variant_shape_geometry["shape_type"],
+                    self._variant_shape_geometry["shape_source_ptr"],
+                    self.gaussians_data,
+                    self._bvh_variant_bounds,
+                ],
+                device=device,
+            )
 
         if self.bvh_shape_count_enabled == 0:
             # drop any BVH from a previous build, it would index stale shapes
@@ -1999,6 +2275,7 @@ class Model:
             inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
             device=device,
         )
+        self._mark_inactive_bvh_shapes()
 
     def bvh_refit_shapes(self, state: State) -> None:
         """Refit the shape BVH stored on this model for the current state.
@@ -2006,7 +2283,8 @@ class Model:
         The shape BVH is built automatically by :meth:`ModelBuilder.finalize`.
         Manually populated models must call :meth:`bvh_build_shapes` first.
         Updates world-space shape transforms from ``state.body_q`` and refits
-        the BVH in place.
+        the BVH in place, and marks the leaves of empty variant rows (see
+        :meth:`select_body_variants`) so that ray queries skip them.
 
         Args:
             state: Current simulation state with body transforms.
@@ -2028,6 +2306,76 @@ class Model:
         compute_shape_world_transforms_launch(self, state)
         compute_shape_bvh_bounds_launch(self, self.bvh_shapes.lowers, self.bvh_shapes.uppers, self.bvh_shapes.groups)
         self.bvh_shapes.refit()
+        self._mark_inactive_bvh_shapes()
+
+    def _mark_inactive_bvh_shapes(self) -> None:
+        """Mark the BVH leaves of empty or transparent variant rows on the device, so it also works in CUDA graphs."""
+        from ..geometry.bvh import mark_inactive_bvh_shapes  # noqa: PLC0415
+
+        if self.bvh_shape_count_enabled == 0:
+            return
+        if self._shape_variant_row is None or self._variant_row_max == 0:
+            wp.copy(self._bvh_shape_active_leaves, self.bvh_shape_enabled)
+            return
+        wp.launch(
+            mark_inactive_bvh_shapes,
+            dim=self.bvh_shape_count_enabled,
+            inputs=[
+                self.bvh_shape_enabled,
+                self._shape_variant_row,
+                self.shape_flags,
+                self._bvh_shape_flags_mask,
+                self.shape_opacity
+                if self.shape_opacity is not None
+                else wp.empty(0, dtype=wp.float32, device=self.device),
+            ],
+            outputs=[self._bvh_shape_active_leaves],
+            device=self.device,
+        )
+
+    def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
+        """Each variant row with each variant shape it can hold, on the host."""
+        table = self._variant_row_shape.numpy()
+        table_start = self._variant_row_shape_start.numpy()
+        body_set = self._body_variant_set
+        rows = self._body_variant_rows.numpy()
+        first = self._body_variant_first.numpy()
+        counts = self._body_variant_count.numpy()
+        row_shapes, variant_shapes = [], []
+        for k in np.unique(body_set[body_set >= 0]).tolist():
+            bodies = np.flatnonzero(body_set == k)
+            body = bodies[0]
+            # Row offset and variant shape of every option of the set, shared by its bodies.
+            entries = table[table_start[first[body]] : table_start[first[body] + counts[body]]]
+            held = entries >= 0
+            options = entries[held]
+            offsets = (np.arange(len(entries)) % rows[body, 1])[held]
+            row_shapes.append((rows[bodies, 0][:, None] + offsets[None]).ravel())
+            variant_shapes.append(np.tile(options, len(bodies)))
+        if not row_shapes:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+        return np.concatenate(row_shapes), np.concatenate(variant_shapes)
+
+    def _shape_option_flags(self) -> np.ndarray:
+        """Shape flags with each variant row's replaced by the flags it was finalized with.
+
+        Those are the union over the variant shapes the row can hold, which contact pairs and joint
+        filters were built from.
+        """
+        flags = self.shape_flags.numpy().copy()
+        if self._variant_row_max:
+            flags[self._variant_row_shapes.numpy()] = self._variant_row_flags.numpy()
+        return flags
+
+    def _shape_current_sources(self) -> list[Any]:
+        """:attr:`shape_source` with each variant row's replaced by the source of the variant shape it holds; syncs."""
+        sources = list(self.shape_source)
+        if self._variant_row_max:
+            held = self._shape_variant_shape.numpy()
+            for shape in self._variant_row_shapes.numpy().tolist():
+                if held[shape] >= 0:
+                    sources[shape] = self._variant_shape_source[held[shape]]
+        return sources
 
     def bvh_build_particles(self, state: State, *, bvh_constructor: str | None = None) -> None:
         """Build or rebuild the particle BVH stored on this model.
@@ -2307,6 +2655,158 @@ class Model:
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    def select_body_variants(self, variants: wp.array[wp.int32], *, bodies: wp.array[wp.int32] | None = None) -> int:
+        """Select the shape variant of bodies declared with
+        :meth:`ModelBuilder.add_body_variants <newton.ModelBuilder.add_body_variants>`.
+
+        The variant's shapes are copied into the body's variant rows: geometry, the collision data
+        derived from it in :meth:`ModelBuilder.finalize`, flags, color, materials, and shape custom
+        attributes. Rows the variant does not use are emptied: their collision and visibility flags
+        are cleared, so they neither collide in :class:`~newton.CollisionPipeline` nor render, and
+        sensors and ray casts skip them after the next :meth:`bvh_refit_shapes`. The body's mass,
+        center of mass, and inertia, including their inverses, become those of the body as built
+        plus the variant. Edits to the copied arrays, such as :attr:`shape_scale` or materials,
+        last until the next selection, so apply randomization after selecting.
+
+        Each body may appear at most once per call. Entries whose variant is out of range, such as
+        ``-1``, leave their body unchanged. The selection runs without host synchronization, so it
+        can be captured in a CUDA graph. Notify solvers and viewers with the returned flags::
+
+            flags = model.select_body_variants(variants, bodies=bodies)
+            solver.notify_model_changed(flags)
+            viewer.notify_model_changed(flags)
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            variants: Variant index per entry, a position in the variant list of its body.
+            bodies: Body index per entry of ``variants``. If ``None``, ``variants`` must have one
+                entry per body.
+
+        Returns:
+            The :class:`~newton.ModelFlags` bit-mask to pass to ``notify_model_changed``.
+        """
+        if self.body_variant is None:
+            raise RuntimeError("select_body_variants() requires a finalized model.")
+        if bodies is None:
+            if variants.shape[0] != self.body_count:
+                raise ValueError(
+                    f"Expected one variant per body ({self.body_count}) when bodies is None, got {variants.shape[0]}."
+                )
+        elif bodies.shape != variants.shape:
+            raise ValueError(f"bodies shape {bodies.shape} must match variants shape {variants.shape}.")
+        flags = int(
+            ModelFlags.SHAPE_TYPE_AND_SOURCE | ModelFlags.SHAPE_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES
+        )
+        if self._variant_mass is None or self._variant_mass.shape[0] == 0 or variants.shape[0] == 0:
+            return flags
+        bodies = wp.empty(0, dtype=wp.int32, device=self.device) if bodies is None else bodies
+        dim = (variants.shape[0], max(self._variant_row_max, 1))
+        selection = [variants, bodies, self._body_variant_count, self._body_variant_rows]
+        wp.launch(
+            _select_body_variants_kernel,
+            dim=dim,
+            inputs=[
+                *selection,
+                self._body_variant_first,
+                self._body_variant_inertia_start,
+                self._variant_row_shape_start,
+                self._variant_row_shape,
+                self._variant_mass,
+                self._variant_com,
+                self._variant_inertia,
+            ],
+            outputs=[
+                self.body_variant,
+                self._shape_variant_shape,
+                self.shape_flags,
+                self.body_mass,
+                self.body_inv_mass,
+                self.body_com,
+                self.body_inertia,
+                self.body_inv_inertia,
+            ],
+            device=self.device,
+        )
+        if self._variant_row_max == 0:
+            return flags
+        # One copy per attribute keeps the copied set in one list. The launches are recorded once and
+        # replayed, since resolving the generic kernel costs more than the copy itself.
+        for launch in self._variant_copy_launches():
+            launch.set_dim(dim)
+            launch.set_param_at_index(0, variants)
+            launch.set_param_at_index(1, bodies)
+            launch.launch()
+        if self.bvh_shape_bounds is not None and self._bvh_variant_bounds is not None:
+            wp.launch(
+                _copy_variant_shape_bounds_kernel,
+                dim=dim,
+                inputs=[*selection, self._shape_variant_shape, self._bvh_variant_bounds],
+                outputs=[self.bvh_shape_bounds],
+                device=self.device,
+            )
+        return flags
+
+    @property
+    def _has_body_variants(self) -> bool:
+        """Whether any body has shape variants."""
+        return self._body_variant_set is not None and bool(np.any(self._body_variant_set >= 0))
+
+    def _variant_copy_launches(self) -> list[wp.Launch]:
+        """Recorded copies of every variant shape attribute into the variant rows, rebuilt when an
+        array is replaced; :meth:`select_body_variants` sets the selection and dimension."""
+        copies = [(self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES]
+        copies.extend(self._variant_shape_custom.values())
+        key = tuple(id(array) for pair in copies for array in pair)
+        if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:
+            return self._variant_copy_cache[1]
+        empty = wp.empty(0, dtype=wp.int32, device=self.device)
+        launches = [
+            wp.launch(
+                _copy_variant_shape_kernel,
+                dim=(1, 1),
+                inputs=[
+                    empty,
+                    empty,
+                    self._body_variant_count,
+                    self._body_variant_rows,
+                    self._shape_variant_shape,
+                    variant_values,
+                ],
+                outputs=[values],
+                device=self.device,
+                record_cmd=True,
+            )
+            for variant_values, values in copies
+        ]
+        # The key holds ids only; the launches keep the arrays alive, so the ids stay unique.
+        self._variant_copy_cache = (key, launches)
+        return launches
+
+    def body_variant_labels(self, body: int) -> list[str]:
+        """Labels of the shape variants of a body, indexed like :attr:`body_variant`.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            body: Body index.
+
+        Returns:
+            The labels, or an empty list for a body without variants.
+
+        Raises:
+            IndexError: If ``body`` is out of range.
+        """
+        if not 0 <= body < self.body_count:
+            raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
+        if self._body_variant_set is None or self._body_variant_set[body] < 0:
+            return []
+        return list(self._variant_set_labels[self._body_variant_set[body]])
 
     @property
     def contact_max(self) -> int | None:
