@@ -1379,9 +1379,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         Like :class:`~newton.solvers.SolverMuJoCo`, the reconstruction uses the bodies' rigid mass
         and inertia, not :attr:`~newton.Model.joint_armature`. For a dynamic DOF the wrench
         projected onto the joint's motion subspace is therefore its generalized load
-        (:attr:`~newton.Control.joint_f`, explicit passive spring and damping forces and
-        joint-space rows) less ``armature * qdd``. Kinematic DOFs report the rigid-body load of
-        carrying their subtree along the prescribed motion.
+        (:attr:`~newton.Control.joint_f`, explicit passive spring forces, passive damping and
+        joint-space rows) less ``armature * qdd``. Positive passive damping on PRISMATIC,
+        REVOLUTE, BALL and D6 DOFs is evaluated implicitly at the end-of-step velocity,
+        contributing ``-damping * (qd + dt * qdd)`` to that load. Kinematic DOFs report the
+        rigid-body load of carrying their subtree along the prescribed motion.
 
         The accounting has these limits:
 
