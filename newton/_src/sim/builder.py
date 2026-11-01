@@ -4862,8 +4862,10 @@ class ModelBuilder:
             Particle widths are diameters. Newton converts each radius as
             ``width / 2`` after applying stage units and the prim's uniform world
             scale; converted widths and radii are in meters. Authored
-            ``physics:masses`` take precedence over body mass or density, then
-            material density. Density-derived mass uses
+            ``newton:masses`` take precedence over body mass or density, then
+            material density. The deprecated ``physics:masses`` name is read,
+            with a deprecation warning, when ``newton:masses`` is unauthored.
+            Density-derived mass uses
             ``physics:density * width**3``; converted masses are in kilograms.
             Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
             support width of twice that radius. Non-uniform scale or shear is
