@@ -770,7 +770,6 @@ def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, 
         )
         bodies, _ = builder.add_rod(
             rod=cable,
-            body_frame_origin="start",
             cfg=newton.ModelBuilder.ShapeConfig(density=1400.0, ke=5.0e4, kd=1.0e1, mu=0.9, margin=0.001, gap=0.002),
             stretch_stiffness=2.0e5,
             stretch_damping=2.0e-2,
