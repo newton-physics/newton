@@ -1,0 +1,6 @@
+﻿newton.eval\_rigid\_contact\_kinematics
+=======================================
+
+.. currentmodule:: newton
+
+.. autofunction:: eval_rigid_contact_kinematics

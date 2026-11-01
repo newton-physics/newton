@@ -1,0 +1,6 @@
+﻿newton.exceptions.NewtonWarning
+===============================
+
+.. currentmodule:: newton.exceptions
+
+.. autoexception:: NewtonWarning

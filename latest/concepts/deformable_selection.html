@@ -1,0 +1,1641 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Deformable Selection &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6036a7ed" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+
+    <script src="../_static/documentation_options.js?v=300cecfb"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/deformable_selection';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.22.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Mass and Inertia" href="mass_inertia.html" />
+    <link rel="prev" title="Selection API" href="selection.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.8.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#" aria-current="page">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_exceptions.html">
+    newton.exceptions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#" aria-current="page">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_exceptions.html">
+    newton.exceptions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/diagnostics.html">Logging and Warnings</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/source_code_guidelines.html">Source Code Guidelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/review_guidelines.html">Review Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="deformable_objects.html">Deformable Objects</a></li>
+<li class="toctree-l1"><a class="reference internal" href="selection.html">Selection API</a></li>
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">Deformable Selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="solver_observables.html">Solver Observables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning.html">Simulation Tuning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/vbd.html">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_config.html">newton.config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_exceptions.html">newton.exceptions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tendons.html">Massless Routed Tendons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md"> Publications</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Deformable Selection</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="deformable-selection">
+<span id="id1"></span><h1>Deformable Selection<a class="headerlink" href="#deformable-selection" title="Link to this heading">#</a></h1>
+<div class="experimental admonition">
+<p class="admonition-title">Experimental</p>
+<p>The deformable selection views may change while the API is developed.</p>
+</div>
+<p>Use <a class="reference internal" href="../api/_generated/newton.selection.DeformableCurveView.html#newton.selection.DeformableCurveView" title="newton.selection.DeformableCurveView"><code class="xref py py-class docutils literal notranslate"><span class="pre">DeformableCurveView</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.selection.DeformableSurfaceView.html#newton.selection.DeformableSurfaceView" title="newton.selection.DeformableSurfaceView"><code class="xref py py-class docutils literal notranslate"><span class="pre">DeformableSurfaceView</span></code></a>, or
+<a class="reference internal" href="../api/_generated/newton.selection.DeformableVolumeView.html#newton.selection.DeformableVolumeView" title="newton.selection.DeformableVolumeView"><code class="xref py py-class docutils literal notranslate"><span class="pre">DeformableVolumeView</span></code></a> to find deformables in a finalized
+model and read or update their state. The class selects the geometric family:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.selection</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">DeformableCurveView</span><span class="p">,</span>
+    <span class="n">DeformableSurfaceView</span><span class="p">,</span>
+    <span class="n">DeformableVolumeView</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">curves</span> <span class="o">=</span> <span class="n">DeformableCurveView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"*/gripper_cable"</span><span class="p">)</span>
+<span class="n">surfaces</span> <span class="o">=</span> <span class="n">DeformableSurfaceView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"*/table_cloth"</span><span class="p">)</span>
+<span class="n">volumes</span> <span class="o">=</span> <span class="n">DeformableVolumeView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"*/soft_toy"</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Patterns accept glob strings, lists of globs, and compiled regular expressions,
+as in <a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView" title="newton.selection.ArticulationView"><code class="xref py py-class docutils literal notranslate"><span class="pre">ArticulationView</span></code></a>. A broad pattern selects only
+the class’s family. A pattern with no matches in that family raises <code class="docutils literal notranslate"><span class="pre">KeyError</span></code>.</p>
+<p>An integer list selects indices in the family’s Model label array. Indices must
+be unique, in ascending order, and within that array:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cloths</span> <span class="o">=</span> <span class="n">DeformableSurfaceView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span>
+<span class="c1"># Select model.surface_label[0] and model.surface_label[2].</span>
+<span class="c1"># They become rows 0 and 1 of this view.</span>
+</pre></div>
+</div>
+<p>Separate classes make the family clear at the call site. For example, a cloth
+and a soft volume can share a label without sharing a selection:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cloths</span> <span class="o">=</span> <span class="n">DeformableSurfaceView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"object"</span><span class="p">)</span>
+<span class="n">volumes</span> <span class="o">=</span> <span class="n">DeformableVolumeView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"object"</span><span class="p">)</span>
+
+<span class="n">cloths</span><span class="o">.</span><span class="n">ranges</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">TRIANGLE</span><span class="p">)</span>
+<span class="n">volumes</span><span class="o">.</span><span class="n">ranges</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">TETRAHEDRON</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Currently, curve views expose rod body transforms and velocities, with body and
+joint ranges. Surface and volume views share particle methods: positions,
+velocities, inverse masses, and flags. Both expose particle ranges, but surface
+views also expose triangle and edge ranges, while volume views expose tetrahedron
+ranges. A family does not prescribe a solver or storage layout. Particle-based
+curves and solver-owned MPM data are not supported yet.</p>
+<section id="read-and-reset-state">
+<h2>Read and reset state<a class="headerlink" href="#read-and-reset-state" title="Link to this heading">#</a></h2>
+<p>State getters read either a <a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> or the initial values stored in a
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">transforms</span> <span class="o">=</span> <span class="n">curves</span><span class="o">.</span><span class="n">get_body_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">positions</span> <span class="o">=</span> <span class="n">surfaces</span><span class="o">.</span><span class="n">get_particle_positions</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Each row contains one selected deformable object’s values. All selected
+deformable objects must have the same count of the requested element kind.
+For example, cloth particle reads require matching particle counts, but triangle
+counts can differ.
+Three cloths with four particles each produce a Warp array with
+shape <code class="docutils literal notranslate"><span class="pre">(3,</span> <span class="pre">4)</span></code> and <code class="docutils literal notranslate"><span class="pre">wp.vec3</span></code> elements. Its NumPy representation has shape
+<code class="docutils literal notranslate"><span class="pre">(3,</span> <span class="pre">4,</span> <span class="pre">3)</span></code> because each position has three coordinates.</p>
+<p>Save independent reset buffers during setup, then use them to reset the state:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="n">positions_default</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">surfaces</span><span class="o">.</span><span class="n">get_particle_positions</span><span class="p">(</span><span class="n">model</span><span class="p">))</span>
+<span class="n">velocities_default</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">surfaces</span><span class="o">.</span><span class="n">get_particle_velocities</span><span class="p">(</span><span class="n">model</span><span class="p">))</span>
+
+<span class="c1"># Later, reset positions and velocities for all selected cloths.</span>
+<span class="n">surfaces</span><span class="o">.</span><span class="n">set_particle_positions</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">positions_default</span><span class="p">)</span>
+<span class="n">surfaces</span><span class="o">.</span><span class="n">set_particle_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">velocities_default</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="read-particle-properties">
+<h2>Read particle properties<a class="headerlink" href="#read-particle-properties" title="Link to this heading">#</a></h2>
+<p>Surface and volume views also read <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_inv_mass" title="newton.Model.particle_inv_mass"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_inv_mass</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_flags" title="newton.Model.particle_flags"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_flags</span></code></a>. Pass a Model, not a State. Both results have
+shape <code class="docutils literal notranslate"><span class="pre">(count,</span> <span class="pre">particle_count)</span></code>, with the same rows and particle
+order as the position getter. Inverse masses use <code class="docutils literal notranslate"><span class="pre">wp.float32</span></code> in [1/kg]; flags
+use <code class="docutils literal notranslate"><span class="pre">wp.int32</span></code> bitmasks from <a class="reference internal" href="../api/_generated/newton.ParticleFlags.html#newton.ParticleFlags" title="newton.ParticleFlags"><code class="xref py py-class docutils literal notranslate"><span class="pre">ParticleFlags</span></code></a>.</p>
+<p>See the <a class="reference internal" href="selection.html#selection-particle-properties"><span class="std std-ref">particle-property example</span></a> for
+saving independent snapshots with <code class="docutils literal notranslate"><span class="pre">wp.clone()</span></code>. Do not edit getter results:
+they may share Model storage or use a reusable buffer. Applying kinematic targets
+and restoring saved properties remain application responsibilities; the views do
+not provide property setters.</p>
+</section>
+<section id="update-selected-deformable-objects">
+<h2>Update selected deformable objects<a class="headerlink" href="#update-selected-deformable-objects" title="Link to this heading">#</a></h2>
+<p>A Boolean <code class="docutils literal notranslate"><span class="pre">mask</span></code> chooses which selected deformable objects to update.
+Values always contain one row per object in view order. For a view containing
+three cloths, reset only cloths 0 and 2 from their saved rows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mask_cloths</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="kc">True</span><span class="p">,</span> <span class="kc">False</span><span class="p">,</span> <span class="kc">True</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">surfaces</span><span class="o">.</span><span class="n">set_particle_positions</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">positions_default</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask_cloths</span><span class="p">)</span>
+<span class="n">surfaces</span><span class="o">.</span><span class="n">set_particle_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">velocities_default</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask_cloths</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The middle cloth is untouched. <code class="docutils literal notranslate"><span class="pre">mask=None</span></code> updates the whole selection;
+an all-false mask changes nothing. Values must still have their full shape.
+A mask entry refers to a selected object, not a model-global ID or a particle.
+It corresponds to a world only when exactly one object is selected in every
+real model world. See <a class="reference internal" href="#deformable-selection-worlds"><span class="std std-ref">Deformable objects and worlds</span></a> for the mapping.</p>
+<p>Host Boolean sequences are accepted outside capture. Numeric lists are not masks.
+Device masks must have shape <code class="docutils literal notranslate"><span class="pre">(count,)</span></code>, Boolean dtype, and the view’s device.
+Strided masks are supported. Setters do not modify their masks or input values.</p>
+<p>When a reset supplies object indices, convert them into a caller-owned mask:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">surfaces</span><span class="o">.</span><span class="n">set_mask_from_indices</span><span class="p">(</span><span class="n">mask_cloths</span><span class="p">,</span> <span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span>
+<span class="c1"># mask_cloths is [True, False, True]. Values stay in view order.</span>
+<span class="n">surfaces</span><span class="o">.</span><span class="n">set_particle_positions</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">positions_default</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask_cloths</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The helper replaces the complete mask. Repeated indices select an object once;
+an empty selector clears it. Host indices must be integers within the view’s
+range; booleans are rejected. Device indices must be one-dimensional <code class="docutils literal notranslate"><span class="pre">int32</span></code>
+arrays on the view’s device. Invalid device indices are ignored, so a
+fixed-capacity selector can use <code class="docutils literal notranslate"><span class="pre">-1</span></code> for unused entries. No source-row
+selection or compact-value mode is provided.</p>
+<p>For one matching object in every model world, environment IDs can be used as
+object indices. Verify that mapping once during setup. Then reset both active
+states from the same full buffers:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Setup: surfaces selects exactly one named cloth in every world.</span>
+<span class="k">assert</span> <span class="n">surfaces</span><span class="o">.</span><span class="n">worlds</span> <span class="o">==</span> <span class="nb">list</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">world_count</span><span class="p">))</span>
+<span class="n">indices_world</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">mask_cloths</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">surfaces</span><span class="o">.</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+
+<span class="c1"># Runtime: indices_world may be filled on the device before each reset.</span>
+<span class="n">surfaces</span><span class="o">.</span><span class="n">set_mask_from_indices</span><span class="p">(</span><span class="n">mask_cloths</span><span class="p">,</span> <span class="n">indices_world</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">state</span> <span class="ow">in</span> <span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">):</span>
+    <span class="n">surfaces</span><span class="o">.</span><span class="n">set_particle_positions</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">positions_default</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask_cloths</span><span class="p">)</span>
+    <span class="n">surfaces</span><span class="o">.</span><span class="n">set_particle_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">velocities_default</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask_cloths</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Missing matches, multiple objects in one world, and global objects invalidate
+this shortcut. Use selected-object indices or fill the object mask directly
+in those cases. A global-only view has world IDs of <code class="docutils literal notranslate"><span class="pre">-1</span></code>.</p>
+</section>
+<section id="deformable-objects-and-worlds">
+<span id="deformable-selection-worlds"></span><h2>Deformable objects and worlds<a class="headerlink" href="#deformable-objects-and-worlds" title="Link to this heading">#</a></h2>
+<p>Each row represents a complete deformable object, such as a cable or cloth.
+The view provides access to its recorded simulation elements.
+See <a class="reference internal" href="deformable_objects.html#deformable-objects"><span class="std std-ref">Deformable Objects</span></a> for how native calls and USD imports record these elements.</p>
+<p>Each view orders selected deformable objects by world, then by their order in the model.
+This orders the view’s rows; it does not reorder the model’s arrays.
+For example, suppose deformable objects are added in this order within each world:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>World 0: cloth, cable
+World 1: cloth, cable_0, cable_1, volume, cable_2
+World 2: cloth, cable
+</pre></div>
+</div>
+<p>A curve view selecting <code class="docutils literal notranslate"><span class="pre">cable*</span></code> skips the cloth and volume. They do not create
+gaps in the selected list:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cables</span> <span class="o">=</span> <span class="n">DeformableCurveView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"cable*"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cables</span><span class="o">.</span><span class="n">labels</span><span class="p">)</span>
+<span class="c1"># ["cable", "cable_0", "cable_1", "cable_2", "cable"]</span>
+
+<span class="n">worlds</span> <span class="o">=</span> <span class="n">cables</span><span class="o">.</span><span class="n">worlds</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">worlds</span><span class="p">)</span>
+<span class="c1"># [0, 1, 1, 1, 2]</span>
+
+<span class="n">deformable_object_index</span> <span class="o">=</span> <span class="mi">2</span>  <span class="c1"># The third selected cable; Python indices start at 0.</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cables</span><span class="o">.</span><span class="n">labels</span><span class="p">[</span><span class="n">deformable_object_index</span><span class="p">])</span>  <span class="c1"># "cable_1"</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">worlds</span><span class="p">[</span><span class="n">deformable_object_index</span><span class="p">])</span>        <span class="c1"># 1</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">worlds</span></code> has one entry per selected deformable object. Here, <code class="docutils literal notranslate"><span class="pre">&quot;cable_1&quot;</span></code> has
+deformable object index 2 and belongs to world 1. Index 3 refers to <code class="docutils literal notranslate"><span class="pre">&quot;cable_2&quot;</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">worlds_device</span></code> is a Warp copy of this list on the model’s device:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="n">cables</span><span class="o">.</span><span class="n">worlds_device</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="c1"># [0, 1, 1, 1, 2]</span>
+</pre></div>
+</div>
+<p>Both mappings are created with the view. Treat them as read-only: editing one
+does not update the other or change the selection. The <code class="docutils literal notranslate"><span class="pre">numpy()</span></code> call above
+only makes the device values easy to inspect in Python. Use the Python list for
+host-side setup and the Warp array in device kernels.</p>
+<p>To find all selected cables in a world, use <code class="docutils literal notranslate"><span class="pre">deformable_object_ranges()</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">deformable_object_ranges</span> <span class="o">=</span> <span class="n">cables</span><span class="o">.</span><span class="n">deformable_object_ranges</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">deformable_object_ranges</span><span class="p">)</span>
+<span class="c1"># [(0, 1), (1, 4), (4, 5)]</span>
+
+<span class="n">world_id</span> <span class="o">=</span> <span class="mi">1</span>
+<span class="n">start</span><span class="p">,</span> <span class="n">end</span> <span class="o">=</span> <span class="n">deformable_object_ranges</span><span class="p">[</span><span class="n">world_id</span><span class="p">]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cables</span><span class="o">.</span><span class="n">labels</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">end</span><span class="p">])</span>
+<span class="c1"># ["cable_0", "cable_1", "cable_2"]</span>
+</pre></div>
+</div>
+<p>There is one <code class="docutils literal notranslate"><span class="pre">(start,</span> <span class="pre">end)</span></code> pair per world. The end is excluded. World 1 has
+selected deformable object indices 1, 2, and 3. These are positions in the view, not body or
+particle indices. A world with no matches has equal start and end values, so it
+remains represented.</p>
+<p><code class="docutils literal notranslate"><span class="pre">count_per_world</span></code> includes every model world, even those without a match.
+It is <code class="docutils literal notranslate"><span class="pre">None</span></code> when their counts differ. For example, suppose worlds 0 and 2
+each contain two selected cloths, and world 1 has none:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cloth</span> <span class="o">=</span> <span class="n">DeformableSurfaceView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"cloth"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cloth</span><span class="o">.</span><span class="n">count</span><span class="p">)</span>                       <span class="c1"># 4</span>
+
+<span class="c1"># Python list on the host: one world ID per selected cloth object.</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cloth</span><span class="o">.</span><span class="n">worlds</span><span class="p">)</span>                      <span class="c1"># [0, 0, 2, 2]</span>
+
+<span class="c1"># Warp array on model.device: the same IDs, in the same order.</span>
+<span class="c1"># Use .numpy() here only to inspect the values on the host.</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cloth</span><span class="o">.</span><span class="n">worlds_device</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [0, 0, 2, 2]</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">cloth</span><span class="o">.</span><span class="n">deformable_object_ranges</span><span class="p">())</span>  <span class="c1"># [(0, 2), (2, 2), (2, 4)]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cloth</span><span class="o">.</span><span class="n">count_per_world</span><span class="p">)</span>             <span class="c1"># None: the counts are [2, 0, 2]</span>
+
+<span class="n">world_id</span> <span class="o">=</span> <span class="mi">1</span>
+<span class="n">start</span><span class="p">,</span> <span class="n">end</span> <span class="o">=</span> <span class="n">cloth</span><span class="o">.</span><span class="n">deformable_object_ranges</span><span class="p">()[</span><span class="n">world_id</span><span class="p">]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cloth</span><span class="o">.</span><span class="n">labels</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">end</span><span class="p">])</span>           <span class="c1"># []</span>
+
+<span class="c1"># If worlds 0 and 2 also each have two matching robot articulations:</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.selection</span><span class="w"> </span><span class="kn">import</span> <span class="n">ArticulationView</span>
+
+<span class="n">robots</span> <span class="o">=</span> <span class="n">ArticulationView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"robot*"</span><span class="p">,</span> <span class="n">homogeneous</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="c1"># Warp array: one ID per selected world, not per selected object.</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">robots</span><span class="o">.</span><span class="n">world_ids</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [0, 2]</span>
+</pre></div>
+</div>
+<p>Deformable <code class="docutils literal notranslate"><span class="pre">worlds</span></code> and articulation <code class="docutils literal notranslate"><span class="pre">world_ids</span></code> have different meanings.
+<code class="docutils literal notranslate"><span class="pre">worlds</span></code> and its device copy, <code class="docutils literal notranslate"><span class="pre">worlds_device</span></code>, have one entry per selected
+deformable object, so world IDs can repeat. <code class="docutils literal notranslate"><span class="pre">ArticulationView.world_ids</span></code> has
+one entry per selected world. The difference is not just host versus device
+storage.</p>
+<p>For the earlier cable selection, the ranges are also available on the device
+as a compact boundaries array:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">deformable_object_boundaries</span> <span class="o">=</span> <span class="n">cables</span><span class="o">.</span><span class="n">deformable_object_boundaries</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">deformable_object_boundaries</span><span class="p">)</span>
+<span class="c1"># [0, 1, 4, 5]</span>
+
+<span class="n">world_id</span> <span class="o">=</span> <span class="mi">1</span>
+<span class="n">start</span> <span class="o">=</span> <span class="n">deformable_object_boundaries</span><span class="p">[</span><span class="n">world_id</span><span class="p">]</span>      <span class="c1"># 1</span>
+<span class="n">end</span> <span class="o">=</span> <span class="n">deformable_object_boundaries</span><span class="p">[</span><span class="n">world_id</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>    <span class="c1"># 4</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cables</span><span class="o">.</span><span class="n">labels</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">end</span><span class="p">])</span>
+<span class="c1"># ["cable_0", "cable_1", "cable_2"]</span>
+</pre></div>
+</div>
+<p>The final 5 marks the end of the selected list. Three worlds need four boundaries.
+<code class="docutils literal notranslate"><span class="pre">deformable_object_boundaries</span></code> is also a read-only Warp array on the model’s device.</p>
+<p>Global deformable objects (world <code class="docutils literal notranslate"><span class="pre">-1</span></code>) cannot share a view with deformable
+objects assigned to model worlds. A global-only view has one range, <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">count)</span></code>,
+and all its <code class="docutils literal notranslate"><span class="pre">worlds</span></code> and <code class="docutils literal notranslate"><span class="pre">worlds_device</span></code> entries are <code class="docutils literal notranslate"><span class="pre">-1</span></code>. That single range is not indexed by a model
+world ID. Its <code class="docutils literal notranslate"><span class="pre">count_per_world</span></code> equals <code class="docutils literal notranslate"><span class="pre">count</span></code>.</p>
+<p>Simulation element ranges answer a different question: which bodies or particles
+belong to one selected deformable object?</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">deformable_object_index</span> <span class="o">=</span> <span class="mi">2</span>  <span class="c1"># "cable_1"</span>
+<span class="n">body_start</span><span class="p">,</span> <span class="n">body_end</span> <span class="o">=</span> <span class="n">cables</span><span class="o">.</span><span class="n">ranges</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">BODY</span><span class="p">)[</span><span class="n">deformable_object_index</span><span class="p">]</span>
+<span class="n">joint_start</span><span class="p">,</span> <span class="n">joint_end</span> <span class="o">=</span> <span class="n">cables</span><span class="o">.</span><span class="n">ranges</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">JOINT</span><span class="p">)[</span><span class="n">deformable_object_index</span><span class="p">]</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ranges(kind)</span></code> returns each deformable object’s <code class="docutils literal notranslate"><span class="pre">[start,</span> <span class="pre">end)</span></code> range into the simulation
+arrays. For example, <code class="docutils literal notranslate"><span class="pre">body_start</span></code> and <code class="docutils literal notranslate"><span class="pre">body_end</span></code> above refer to the model’s
+body arrays, not selected deformable object indices. There can be gaps between different
+cables’ body ranges even though their selected deformable object indices are consecutive.
+<code class="docutils literal notranslate"><span class="pre">starts(kind)</span></code> returns device-side starts; treat this array as read-only.
+<code class="docutils literal notranslate"><span class="pre">element_count(kind)</span></code> is the general count query. It returns the common count
+per selected deformable object, or <code class="docutils literal notranslate"><span class="pre">None</span></code> when sizes differ. <code class="docutils literal notranslate"><span class="pre">particle_count</span></code>
+and <code class="docutils literal notranslate"><span class="pre">body_count</span></code> are convenience properties for the corresponding state
+elements. Raw ranges remain available when sizes differ.</p>
+<p>Use a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.AttributeFrequency" title="newton.Model.AttributeFrequency"><code class="xref py py-class docutils literal notranslate"><span class="pre">AttributeFrequency</span></code></a> member for <code class="docutils literal notranslate"><span class="pre">kind</span></code>. Its lowercase
+name is also accepted as a convenience:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">kind</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">PARTICLE</span>
+<span class="n">cloths</span><span class="o">.</span><span class="n">element_count</span><span class="p">(</span><span class="n">kind</span><span class="p">)</span>  <span class="c1"># Particles per selected cloth, or None.</span>
+<span class="n">cloths</span><span class="o">.</span><span class="n">particle_count</span>      <span class="c1"># The same count through the convenience property.</span>
+<span class="n">cloths</span><span class="o">.</span><span class="n">ranges</span><span class="p">(</span><span class="n">kind</span><span class="p">)</span>        <span class="c1"># Each cloth's [start, end) particle range.</span>
+<span class="n">cloths</span><span class="o">.</span><span class="n">ranges</span><span class="p">(</span><span class="s2">"particle"</span><span class="p">)</span>  <span class="c1"># Equivalent string form.</span>
+</pre></div>
+</div>
+<p>For cable root joints and later attachments, see <a class="reference internal" href="deformable_objects.html#deformable-objects-curve-joints"><span class="std std-ref">Curve joint ranges</span></a>.
+For changes to the ranges after collapse, see <a class="reference internal" href="deformable_objects.html#deformable-objects-collapse"><span class="std std-ref">Fixed-joint collapse</span></a>.</p>
+<section id="different-deformable-object-sizes">
+<h3>Different deformable object sizes<a class="headerlink" href="#different-deformable-object-sizes" title="Link to this heading">#</a></h3>
+<p>For differently sized deformable objects, use separate views for batched state access:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cables_short</span> <span class="o">=</span> <span class="n">DeformableCurveView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"cable_10_segments*"</span><span class="p">)</span>
+<span class="n">cables_long</span> <span class="o">=</span> <span class="n">DeformableCurveView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"cable_30_segments*"</span><span class="p">)</span>
+<span class="n">transforms_short</span> <span class="o">=</span> <span class="n">cables_short</span><span class="o">.</span><span class="n">get_body_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">transforms_long</span> <span class="o">=</span> <span class="n">cables_long</span><span class="o">.</span><span class="n">get_body_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>These labels are an application naming choice, not a size filter. The view
+checks the actual element counts, including any changes from fixed-joint collapse.
+A broader view can still expose raw ranges. Masking out a differently sized
+deformable object does not make batched access valid.</p>
+</section>
+</section>
+<section id="inspect-all-deformable-objects">
+<h2>Inspect all deformable objects<a class="headerlink" href="#inspect-all-deformable-objects" title="Link to this heading">#</a></h2>
+<p>Use the <a class="reference internal" href="deformable_objects.html#deformable-objects-model-arrays"><span class="std std-ref">public model arrays</span></a> to inspect
+all deformable objects without a selection pattern, including global objects.
+Read this metadata during setup, outside simulation steps or graph capture.
+A view contains only its matches; its row indices are not model-global indices.</p>
+</section>
+<section id="comparison-with-articulationview">
+<h2>Comparison with ArticulationView<a class="headerlink" href="#comparison-with-articulationview" title="Link to this heading">#</a></h2>
+<p>The workflow is similar: select an articulation or a deformable object by label,
+then access its parts. An articulation contains links and joints. A deformable
+object contains the elements used to simulate it. This comparison uses three
+identical worlds, each with one robot, two cables, and one cloth:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.selection</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">ArticulationView</span><span class="p">,</span>
+    <span class="n">DeformableCurveView</span><span class="p">,</span>
+    <span class="n">DeformableSurfaceView</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">robots</span> <span class="o">=</span> <span class="n">ArticulationView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"robot*"</span><span class="p">)</span>
+<span class="n">cables</span> <span class="o">=</span> <span class="n">DeformableCurveView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"cable*"</span><span class="p">)</span>
+<span class="n">cloths</span> <span class="o">=</span> <span class="n">DeformableSurfaceView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"cloth*"</span><span class="p">)</span>
+
+<span class="n">robot_link_transforms</span> <span class="o">=</span> <span class="n">robots</span><span class="o">.</span><span class="n">get_link_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">cable_segment_transforms</span> <span class="o">=</span> <span class="n">cables</span><span class="o">.</span><span class="n">get_body_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">cloth_particle_positions</span> <span class="o">=</span> <span class="n">cloths</span><span class="o">.</span><span class="n">get_particle_positions</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="selection.html#selection-array-shapes"><span class="std std-ref">Array and mask shapes</span></a> for the data and mask layouts. Both views use
+Boolean masks with full-sized input arrays. Deformable masks have one entry per
+selected deformable object, in the order shown by <code class="docutils literal notranslate"><span class="pre">view.labels</span></code>. Selecting a
+world with several selected deformable objects requires several mask entries.
+ArticulationView also provides <a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView.get_attribute" title="newton.selection.ArticulationView.get_attribute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">get_attribute()</span></code></a>;
+generic attribute access remains a follow-up for deformable views.</p>
+<p>These calls reset velocities in world 1.
+<code class="docutils literal notranslate"><span class="pre">robot_velocities</span></code> has the full shape returned by <code class="docutils literal notranslate"><span class="pre">get_dof_velocities()</span></code>.
+<code class="docutils literal notranslate"><span class="pre">cable_velocities</span></code> also has the full shape returned by its getter:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="n">world_id</span> <span class="o">=</span> <span class="mi">1</span>
+<span class="n">world_mask</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="kc">False</span><span class="p">,</span> <span class="kc">True</span><span class="p">,</span> <span class="kc">False</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">robot_velocities</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
+    <span class="n">robots</span><span class="o">.</span><span class="n">get_dof_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">)</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span>
+<span class="p">)</span>
+<span class="n">robots</span><span class="o">.</span><span class="n">set_dof_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">robot_velocities</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">world_mask</span><span class="p">)</span>
+<span class="n">robots</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">world_mask</span><span class="p">)</span>
+
+<span class="n">start</span><span class="p">,</span> <span class="n">end</span> <span class="o">=</span> <span class="n">cables</span><span class="o">.</span><span class="n">deformable_object_ranges</span><span class="p">()[</span><span class="n">world_id</span><span class="p">]</span>
+<span class="n">mask_cables</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">cables</span><span class="o">.</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">cables</span><span class="o">.</span><span class="n">set_mask_from_indices</span><span class="p">(</span><span class="n">mask_cables</span><span class="p">,</span> <span class="nb">range</span><span class="p">(</span><span class="n">start</span><span class="p">,</span> <span class="n">end</span><span class="p">))</span>
+<span class="n">cable_velocities</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
+    <span class="n">cables</span><span class="o">.</span><span class="n">get_body_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">)</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span>
+    <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">spatial_vector</span><span class="p">,</span>
+    <span class="n">device</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">cables</span><span class="o">.</span><span class="n">set_body_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">cable_velocities</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask_cables</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The robot call writes joint velocities; forward kinematics updates its links.
+The cable call writes segment velocities directly. These are different state
+fields, not interchangeable operations. Prepare buffers outside graph capture.</p>
+<p>The deformable conversion helper maps a list of selected-object indices to
+mask membership. It is not the same as ArticulationView’s
+<code class="docutils literal notranslate"><span class="pre">get_model_articulation_mask()</span></code>, which maps a view mask to model articulation
+IDs. Neither call changes the view’s fixed membership.</p>
+</section>
+<section id="getter-buffers">
+<h2>Getter buffers<a class="headerlink" href="#getter-buffers" title="Link to this heading">#</a></h2>
+<p>Here, <em>layout</em> means where each selected deformable object’s elements sit in the
+model arrays. Consider three cloths with four particles each:</p>
+<ul class="simple">
+<li><p>Particle starts <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">8,</span> <span class="pre">16]</span></code> are evenly spaced. The getter can return a view
+into the source array without copying values. The gaps between cloths are allowed.</p></li>
+<li><p>Particle starts <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">8,</span> <span class="pre">20]</span></code> are unevenly spaced. The getter copies the
+selected values into a reusable buffer. All three cloths still have four particles.</p></li>
+</ul>
+<p>A change to the source array or another read can change the returned values. Use
+<code class="docutils literal notranslate"><span class="pre">wp.clone()</span></code> when a result must stay unchanged, as in the reset buffers above.
+If a solver replaces a source array, call the getter again. Previously returned
+results still refer to the old storage.</p>
+<p>Each source Model or State has its own cached results. The cache does not keep
+discarded states alive. Getter results still held by your code remain valid.
+The view keeps its model alive, as <a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView" title="newton.selection.ArticulationView"><code class="xref py py-class docutils literal notranslate"><span class="pre">ArticulationView</span></code></a> does.</p>
+</section>
+<section id="state-write-requirements">
+<h2>State write requirements<a class="headerlink" href="#state-write-requirements" title="Link to this heading">#</a></h2>
+<p>Outside CUDA capture, setters also accept numeric host sequences and NumPy
+arrays. Like <a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView" title="newton.selection.ArticulationView"><code class="xref py py-class docutils literal notranslate"><span class="pre">ArticulationView</span></code></a>, they reshape host inputs
+in row-major order when the total number of components matches. The final NumPy
+axis has length 3 for particle positions and velocities, 7 for body transforms,
+and 6 for body velocities. Warp inputs must already have the required shape,
+dtype, and device. Values are validated even with an all-false mask.</p>
+<p>Use setters to change state; do not rely on editing a getter result. Setters
+reject input that shares storage with the target array. Copy such input with
+<code class="docutils literal notranslate"><span class="pre">wp.clone()</span></code> first to avoid overwriting values the setter still needs to read.</p>
+<p>Setters change only the supplied model or state. Applications with two alternating
+states must reset both when both should retain the reset. Model writes change
+initial arrays, not states that were already created.</p>
+<p>State arrays must have the expected rank, dtype, and device, and cover every
+selected range. Strided arrays and extra elements are allowed. These checks do
+not verify model ownership: the caller must ensure that the array uses the
+view’s element numbering. See the getter and setter API references for full
+validation rules, for example
+<a class="reference internal" href="../api/_generated/newton.selection.DeformableSurfaceView.html#newton.selection.DeformableSurfaceView.set_particle_positions" title="newton.selection.DeformableSurfaceView.set_particle_positions"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_particle_positions()</span></code></a>.</p>
+</section>
+<section id="cuda-graph-capture">
+<h2>CUDA graph capture<a class="headerlink" href="#cuda-graph-capture" title="Link to this heading">#</a></h2>
+<p>Construct views and warm up operations before CUDA graph capture. Preallocate
+independent values and masks. Setters allocate no temporary arrays with device
+inputs, including when those inputs require gradients. Host values and masks
+raise <code class="docutils literal notranslate"><span class="pre">RuntimeError</span></code> during capture. Getters that reuse buffers can also be
+captured after their first call. Mask and value contents can change between
+inference replays without rebuilding the graph.</p>
+<p>Getter buffers first allocated during capture belong to that graph. They are
+not reused by ordinary reads or other captures. Warm up before capturing to
+reuse buffers without allocating inside the graph.</p>
+<p><code class="docutils literal notranslate"><span class="pre">set_mask_from_indices()</span></code> also supports capture with preallocated device
+indices and a mask. Host indices raise <code class="docutils literal notranslate"><span class="pre">RuntimeError</span></code> during capture.</p>
+<p>A captured graph keeps using the data and gradient arrays from capture. Keep
+the source models or states and getter results alive while replaying it. If those
+arrays are replaced, warm up the getters and capture a new graph.</p>
+</section>
+<section id="gradients">
+<h2>Gradients<a class="headerlink" href="#gradients" title="Link to this heading">#</a></h2>
+<p>Getters and setters support <code class="docutils literal notranslate"><span class="pre">wp.Tape</span></code>. Create the state with
+<code class="docutils literal notranslate"><span class="pre">model.state(requires_grad=True)</span></code> when gradients are needed. Reads propagate
+gradients to the source state. Masked writes propagate gradients to the input values.
+Inverse-mass reads also propagate gradients when the source Model has gradients
+enabled. Integer flags do not have gradients.</p>
+<p>Keep values, masks, and source arrays unchanged until <code class="docutils literal notranslate"><span class="pre">tape.backward()</span></code> finishes.
+Use separate state buffers for successive steps and separate masks for different
+selections on the same tape. Setters do not save a copy of the mask for each call.</p>
+<p>For evenly spaced elements, getter results share the source’s gradient storage.
+For uneven spacing, the copy operation passes gradients back to the source.
+If the source’s gradient buffer or <code class="docutils literal notranslate"><span class="pre">requires_grad</span></code> setting changes, call the
+getter again to use the current gradient storage. Zeroing gradients does not
+replace the cached result.</p>
+<p>For a captured forward/backward graph, change inputs only between complete replays.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#read-and-reset-state">Read and reset state</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#read-particle-properties">Read particle properties</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#update-selected-deformable-objects">Update selected deformable objects</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deformable-objects-and-worlds">Deformable objects and worlds</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#different-deformable-object-sizes">Different deformable object sizes</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#inspect-all-deformable-objects">Inspect all deformable objects</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comparison-with-articulationview">Comparison with ArticulationView</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getter-buffers">Getter buffers</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#state-write-requirements">State write requirements</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda-graph-capture">CUDA graph capture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gradients">Gradients</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.22.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

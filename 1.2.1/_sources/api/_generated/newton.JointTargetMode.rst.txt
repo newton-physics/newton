@@ -1,0 +1,8 @@
+﻿newton.JointTargetMode
+======================
+
+.. autoclass:: newton.JointTargetMode
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
