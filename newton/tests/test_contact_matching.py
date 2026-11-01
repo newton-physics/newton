@@ -12,6 +12,17 @@ import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
 from newton._src.geometry.contact_sort import ContactSorter
+from newton._src.geometry.kernels import triangle_closest_point
+from newton._src.geometry.tri_mesh_collision import (
+    NO_ANCHOR,
+    drag_vertex_triangle_anchor,
+    edge_edge_anchor,
+    edge_edge_anchor_slip,
+    vertex_triangle_anchor,
+    vertex_triangle_anchor_holds,
+    vertex_triangle_anchor_slip,
+)
+from newton._src.solvers.vbd.particle_vbd_kernels import relax_self_contact_anchors
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -1217,6 +1228,453 @@ def test_sticky_disabled_no_sticky_buffers(test, device):
         test.assertIsNotNone(p_sticky._contact_matcher._prev_offset1)
 
 
+def _build_self_contact_scene(device, world_count=1):
+    """Build one particle hovering 3 mm over a pinned cloth square per world, the particle at ``x = 0.02``."""
+    world = newton.ModelBuilder()
+    world.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.0,
+        tri_ke=1.0e2,
+        tri_ka=1.0e2,
+        tri_kd=0.0,
+    )
+    world.add_particle(pos=wp.vec3(0.02, 0.03, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    builder = newton.ModelBuilder()
+    for w in range(world_count):
+        builder.add_world(world, xform=wp.transform(wp.vec3(0.0, 2.0 * w, 0.0)))
+    model = builder.finalize(device=device)
+    return model, model.state()
+
+
+def _self_contact_pipeline(model, **kwargs):
+    pipeline = newton.CollisionPipeline(model, contact_matching="sticky", **kwargs)
+    pipeline.init_soft_self_contact(margin=0.005, gap=0.005)
+    return pipeline
+
+
+def _vertex_anchor_x(model, contacts, vertices):
+    """World x of each vertex's anchored position, one per vertex-triangle pair of ``vertices``."""
+    info = contacts.soft_self_contact_data
+    q = model.particle_q.numpy()
+    tri_indices = model.tri_indices.numpy()
+    offsets = info.vertex_colliding_triangles_offsets.numpy()
+    counts = info.vertex_colliding_triangles_count.numpy()
+    pairs = info.vertex_colliding_triangles.numpy()
+    anchors = info.vertex_colliding_triangles_anchor.numpy()
+    xs = []
+    for v in vertices:
+        assert counts[v] > 0
+        for slot in range(offsets[v], offsets[v] + counts[v]):
+            a, b, c = q[tri_indices[pairs[2 * slot + 1]]]
+            n = np.cross(b - a, c - a)
+            u, w, h = anchors[slot]
+            xs.append((a + u * (b - a) + w * (c - a) + h * n / np.linalg.norm(n))[0])
+    return np.array(xs)
+
+
+def _check_sticky_self_contact_anchors(test, device, *, use_capture):
+    with wp.ScopedDevice(device):
+        model, state = _build_self_contact_scene(device)
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+        particle = model.particle_count - 1
+        if use_capture:
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts, soft_self_contact=True)
+
+        def anchor_x_at(x):
+            q = state.particle_q.numpy()
+            q[particle, 0] = x
+            state.particle_q.assign(q)
+            if use_capture:
+                wp.capture_launch(capture.graph)
+            else:
+                pipeline.collide(state, contacts, soft_self_contact=True)
+            return _vertex_anchor_x(model, contacts, [particle])
+
+        np.testing.assert_allclose(anchor_x_at(0.02), 0.02, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0202), 0.02, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0204), 0.02, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0206), 0.0201, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0207), 0.0202, atol=1.0e-7)
+        wp.launch(
+            relax_self_contact_anchors,
+            dim=model.particle_count,
+            inputs=[
+                0.0001,
+                1.0e-5,
+                state.particle_q,
+                model.tri_indices,
+                model.edge_indices,
+                contacts.soft_self_contact_data,
+            ],
+        )
+        np.testing.assert_allclose(anchor_x_at(0.0207), 0.0206, atol=1.0e-7)
+        pipeline.reset_contact_matching()
+        np.testing.assert_allclose(anchor_x_at(0.0208), 0.0208, atol=1.0e-7)
+
+
+def test_sticky_self_contact_anchors_replayed(test, device):
+    """STICKY mode keeps a self-contact pair's friction anchor at most the threshold behind the pair.
+
+    A particle hovers over a pinned cloth square and slides along it. Each pass would anchor the
+    particle where it is; sticky replay keeps the first anchor and drags it along once the particle
+    is farther than ``contact_matching_pos_threshold`` from it. Anchors a solver drags closer still
+    are what the next pass keeps, and a reset forgets them.
+    """
+    _check_sticky_self_contact_anchors(test, device, use_capture=False)
+
+
+def test_sticky_self_contact_anchors_cuda_graph(test, device):
+    """Replay and release self-contact anchors from a captured collision pass."""
+    _check_sticky_self_contact_anchors(test, device, use_capture=True)
+
+
+def test_sticky_self_contact_history_follows_world_and_buffer(test, device):
+    """A masked reset restarts only the selected world's anchors in every buffer, and each buffer replays its own."""
+    with wp.ScopedDevice(device):
+        model, state = _build_self_contact_scene(device, world_count=2)
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+        particles = [model.particle_count // 2 - 1, model.particle_count - 1]
+
+        def anchor_x_at(x, buffer=contacts):
+            q = state.particle_q.numpy()
+            q[particles, 0] = x
+            state.particle_q.assign(q)
+            pipeline.collide(state, buffer, soft_self_contact=True)
+            return [_vertex_anchor_x(model, buffer, [p]).max() for p in particles]
+
+        np.testing.assert_allclose(anchor_x_at(0.02), [0.02, 0.02], atol=1.0e-7)
+        pipeline.reset_contact_matching(wp.array((True, False, False), dtype=wp.bool, device=device))
+        np.testing.assert_allclose(anchor_x_at(0.0202), [0.0202, 0.02], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0203), [0.0202, 0.02], atol=1.0e-7)
+
+        other = pipeline.contacts()
+        np.testing.assert_allclose(anchor_x_at(0.0204, other), [0.0204, 0.0204], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0204), [0.0202, 0.02], atol=1.0e-7)
+        pipeline.reset_contact_matching(wp.array((False, True, False), dtype=wp.bool, device=device))
+        np.testing.assert_allclose(anchor_x_at(0.0205), [0.0202, 0.0205], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0205, other), [0.0204, 0.0205], atol=1.0e-7)
+        pipeline.reset_contact_matching(wp.array((False, False, True), dtype=wp.bool, device=device))
+        np.testing.assert_allclose(anchor_x_at(0.0205), [0.0202, 0.0205], atol=1.0e-7)
+
+        # Without persistent anchors, VBD measures self-contact slip as each step's motion.
+        for fresh in (
+            _self_contact_pipeline(model, requires_grad=True),
+            newton.CollisionPipeline(model, contact_matching="latest"),
+        ):
+            if fresh._soft_self_contact_detector is None:
+                fresh.init_soft_self_contact(margin=0.005, gap=0.005)
+            test.assertEqual(fresh.contacts().soft_self_contact_data.vertex_colliding_triangles_anchor.shape[0], 0)
+            with test.assertRaises(ValueError):
+                pipeline.collide(state, fresh.contacts(), soft_self_contact=True)
+
+
+def _add_pinned_square(builder, pos, rot=None):
+    builder.add_cloth_grid(
+        pos=wp.vec3(pos),
+        rot=rot or wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.0,
+        tri_ke=1.0e2,
+        tri_ka=1.0e2,
+        tri_kd=0.0,
+    )
+
+
+def _edge_anchor_slips(model, contacts, q):
+    """In-plane offset between the anchored points of each edge-edge pair, for pairs in a horizontal plane."""
+    info = contacts.soft_self_contact_data
+    edges = model.edge_indices.numpy()[:, 2:]
+    offsets = info.edge_colliding_edges_offsets.numpy()
+    counts = info.edge_colliding_edges_count.numpy()
+    pairs = info.edge_colliding_edges.numpy()
+    anchors = info.edge_colliding_edges_anchor.numpy()
+    slips = []
+    for e1 in range(model.edge_count):
+        for slot in range(offsets[e1], offsets[e1] + counts[e1]):
+            (p0, p1), (q0, q1) = q[edges[e1]], q[edges[pairs[2 * slot + 1]]]
+            s, t = anchors[slot]
+            slips.append(np.linalg.norm((p0 + s * (p1 - p0) - q0 - t * (q1 - q0))[:2]))
+    return np.array(slips)
+
+
+def test_sticky_self_contact_reset_reaches_both_worlds_of_a_pair(test, device):
+    """A masked reset restarts a pair between a world and the global entities when it selects either side.
+
+    One particle of world 0 hovers over a global cloth square and one global particle over a cloth
+    square of world 0, so each pair's vertex row belongs to one world and its triangle to the other.
+    """
+    world = newton.ModelBuilder()
+    world.add_particle(pos=wp.vec3(0.02, 0.03, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    _add_pinned_square(world, (0.0, 1.0, 0.0))
+    builder = newton.ModelBuilder()
+    _add_pinned_square(builder, (0.0, 0.0, 0.0))
+    global_particle = builder.add_particle(pos=wp.vec3(0.02, 1.07, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    world_particle = builder.particle_count
+    builder.add_world(world)
+    with wp.ScopedDevice(device):
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+        particles = [world_particle, global_particle]
+
+        def anchor_x_at(x):
+            q = state.particle_q.numpy()
+            q[particles, 0] = x
+            state.particle_q.assign(q)
+            pipeline.collide(state, contacts, soft_self_contact=True)
+            return [_vertex_anchor_x(model, contacts, [p]).max() for p in particles]
+
+        np.testing.assert_allclose(anchor_x_at(0.02), [0.02, 0.02], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0201), [0.02, 0.02], atol=1.0e-7)
+        for world_mask, x in (((False, True), 0.0202), ((True, False), 0.0203)):
+            pipeline.reset_contact_matching(wp.array(world_mask, dtype=wp.bool, device=device))
+            np.testing.assert_allclose(anchor_x_at(x), [x, x], atol=1.0e-7)
+
+
+def test_sticky_self_contact_edge_reset_reaches_both_worlds_of_a_pair(test, device):
+    """A masked reset restarts an edge-edge pair between a world and the global entities from either side.
+
+    A cloth square of world 0 hovers 3 mm over a global one, turned 45 degrees so their edges cross.
+    Every edge-edge pair joins the two worlds, and each is stored in both edges' rows.
+    """
+    world = newton.ModelBuilder()
+    _add_pinned_square(
+        world, (0.05, 0.05 - 0.05 * np.sqrt(2.0), 0.003), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
+    )
+    builder = newton.ModelBuilder()
+    _add_pinned_square(builder, (0.0, 0.0, 0.0))
+    world_particles = slice(builder.particle_count, None)
+    builder.add_world(world)
+    with wp.ScopedDevice(device):
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+
+        def slips_after_shift(dx):
+            q = state.particle_q.numpy()
+            q[world_particles, 0] += dx
+            state.particle_q.assign(q)
+            pipeline.collide(state, contacts, soft_self_contact=True)
+            return _edge_anchor_slips(model, contacts, q)
+
+        test.assertGreater(slips_after_shift(0.0).size, 0)
+        np.testing.assert_allclose(slips_after_shift(1.0e-4), 1.0e-4, atol=1.0e-7)
+        for world_mask in ((False, True), (True, False)):
+            pipeline.reset_contact_matching(wp.array(world_mask, dtype=wp.bool, device=device))
+            np.testing.assert_allclose(slips_after_shift(1.0e-4), 0.0, atol=1.0e-7)
+            np.testing.assert_allclose(slips_after_shift(1.0e-4), 1.0e-4, atol=1.0e-7)
+
+
+@wp.kernel
+def _edge_edge_twist_slip_kernel(
+    p: wp.array[wp.vec3], q: wp.array[wp.vec3], q_twisted: wp.array[wp.vec3], slip: wp.array[float]
+):
+    anchor = edge_edge_anchor(p[0], p[1], q[0], q[1], 1.0e-5)
+    offset = edge_edge_anchor_slip(anchor, p[0], p[1], q_twisted[0], q_twisted[1])
+    normal = wp.normalize(
+        edge_edge_anchor_slip(
+            edge_edge_anchor(p[0], p[1], q_twisted[0], q_twisted[1], 1.0e-5), p[0], p[1], q_twisted[0], q_twisted[1]
+        )
+    )
+    slip[0] = wp.length(offset - wp.dot(offset, normal) * normal)
+
+
+def test_edge_edge_anchor_slip_bounded_by_twist(test, device):
+    """Twisting one of two nearly parallel touching edges slips them by at most its length times the angle.
+
+    The closest points of the two lines lie half a meter outside the 1 cm edges, so an anchor there
+    would read the 1 mrad twist as half a millimeter of slip.
+    """
+    p = np.array([[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]])
+    q0 = np.array([0.0, 0.001, 0.001])
+    q = np.array([q0, q0 + 0.01 * np.array([np.cos(2.0e-3), np.sin(2.0e-3), 0.0])])
+    twist = 1.0e-3
+    rotation = np.array([[np.cos(twist), -np.sin(twist), 0.0], [np.sin(twist), np.cos(twist), 0.0], [0.0, 0.0, 1.0]])
+    middle = q.mean(axis=0)
+    q_twisted = (q - middle) @ rotation.T + middle
+    slip = wp.zeros(1, dtype=float, device=device)
+    wp.launch(
+        _edge_edge_twist_slip_kernel,
+        dim=1,
+        inputs=[
+            wp.array(p, dtype=wp.vec3, device=device),
+            wp.array(q, dtype=wp.vec3, device=device),
+            wp.array(q_twisted, dtype=wp.vec3, device=device),
+        ],
+        outputs=[slip],
+        device=device,
+    )
+    test.assertLessEqual(slip.numpy()[0], 0.01 * twist)
+
+
+@wp.kernel
+def _vertex_triangle_rest_slip_kernel(
+    p: wp.array[wp.vec3], a: wp.array[wp.vec3], b: wp.array[wp.vec3], c: wp.array[wp.vec3], slip: wp.array[float]
+):
+    i = wp.tid()
+    anchor = vertex_triangle_anchor(p[i], a[i], b[i], c[i])
+    slip[i] = -1.0
+    if anchor[0] != NO_ANCHOR:
+        slip[i] = wp.length(vertex_triangle_anchor_slip(anchor, p[i], a[i], b[i], c[i]))
+
+
+def test_vertex_triangle_anchor_slip_bounded_on_thin_triangle(test, device):
+    """A vertex at rest over an ever thinner 10 cm triangle reads at most 10 um of slip from its anchor.
+
+    The plane coordinates divide by the squared sine of the triangle's angle, so on the thinnest of these
+    float rounding reads as centimeters to meters of slip; such triangles get no anchor.
+    """
+    sines = np.geomspace(1.0e-1, 1.0e-6, 16)
+    a = np.tile([0.3, -0.2, 0.1], (sines.size, 1))
+    b = a + np.array([0.1, 0.0, 0.0])
+    c = a + np.stack([np.full_like(sines, 0.05), 0.1 * sines, np.zeros_like(sines)], axis=1)
+    p = a + np.array([0.03, 0.0, 0.004])
+    slip = wp.zeros(sines.size, dtype=float, device=device)
+    wp.launch(
+        _vertex_triangle_rest_slip_kernel,
+        dim=sines.size,
+        inputs=[wp.array(x, dtype=wp.vec3, device=device) for x in (p, a, b, c)],
+        outputs=[slip],
+        device=device,
+    )
+    test.assertGreaterEqual(slip.numpy()[0], 0.0, "a well-shaped triangle gets an anchor")
+    test.assertLessEqual(slip.numpy().max(), 1.0e-5)
+
+
+@wp.kernel
+def _drag_onto_collapsed_triangle_kernel(
+    p: wp.vec3,
+    a: wp.vec3,
+    b: wp.vec3,
+    c_rest: wp.vec3,
+    c: wp.array[wp.vec3],
+    dragged: wp.array[wp.vec3],
+    holds: wp.array[wp.int32],
+):
+    i = wp.tid()
+    anchor = vertex_triangle_anchor(p, a, b, c_rest)
+    dragged[i] = drag_vertex_triangle_anchor(anchor, p, a, b, c[i], 5.0e-4)
+    holds[i] = wp.where(vertex_triangle_anchor_holds(anchor, a, b, c[i]), 1, 0)
+
+
+def test_vertex_triangle_anchor_waits_while_triangle_collapses(test, device):
+    """A kept anchor neither moves nor places a point while its triangle is flattened past the cutoff.
+
+    The anchor's height is placed along the triangle normal, which float rounding turns as the triangle
+    flattens: a vertex 4 mm over a 10 cm triangle whose angle sine falls to 6e-6 reads 0.1 mm of slip
+    without moving. Once the triangle opens again the anchor still names the same material point.
+    """
+    rotation = wp.quat_rpy(0.7, -0.4, 1.1)
+    origin = wp.vec3(0.3, -0.2, 0.1)
+
+    def point(x, y, z):
+        return origin + wp.quat_rotate(rotation, wp.vec3(x, y, z))
+
+    sines = np.geomspace(1.0e-1, 1.0e-7, 13)
+    c = wp.array([point(0.05, 0.1 * s, 0.0) for s in sines], dtype=wp.vec3, device=device)
+    dragged = wp.zeros(sines.size, dtype=wp.vec3, device=device)
+    holds = wp.zeros(sines.size, dtype=wp.int32, device=device)
+    wp.launch(
+        _drag_onto_collapsed_triangle_kernel,
+        dim=sines.size,
+        inputs=[point(0.05, 0.0, 0.004), point(0.0, 0.0, 0.0), point(0.1, 0.0, 0.0), point(0.05, 0.1, 0.0), c],
+        outputs=[dragged, holds],
+        device=device,
+    )
+    sin_sq = (2.0 * sines) ** 2 / (1.0 + (2.0 * sines) ** 2)
+    np.testing.assert_array_equal(holds.numpy(), sin_sq > 1.0e-3)
+    dragged = dragged.numpy()
+    np.testing.assert_array_equal(dragged, np.broadcast_to(dragged[0], dragged.shape))
+
+
+@wp.kernel
+def _drag_across_gap_change_kernel(
+    p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, anchor: wp.vec3, max_slip: float, dragged: wp.array[wp.vec3]
+):
+    dragged[0] = drag_vertex_triangle_anchor(anchor, p, a, b, c, max_slip)
+
+
+def test_vertex_triangle_anchor_kept_across_gap_change(test, device):
+    """A change in contact gap alone leaves a sub-threshold tangential offset from the anchor in place.
+
+    Normal motion adds nothing to the friction force, so a vertex 0.1 mm from its anchor along the
+    triangle that rises 1 mm keeps the anchor under a 0.17 mm threshold.
+    """
+    rotation = wp.quat_rpy(0.7, -0.4, 1.1)
+    origin = wp.vec3(0.3, -0.2, 0.1)
+
+    def point(x, y, z):
+        return origin + wp.quat_rotate(rotation, wp.vec3(x, y, z))
+
+    anchor = wp.vec3(0.3, 0.3, 0.002)
+    dragged = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _drag_across_gap_change_kernel,
+        dim=1,
+        inputs=[
+            point(0.0301, 0.03, 0.003),
+            point(0.0, 0.0, 0.0),
+            point(0.1, 0.0, 0.0),
+            point(0.0, 0.1, 0.0),
+            anchor,
+            1.7e-4,
+        ],
+        outputs=[dragged],
+        device=device,
+    )
+    np.testing.assert_allclose(dragged.numpy()[0], anchor)
+
+
+@wp.kernel
+def _drag_over_triangle_edge_kernel(
+    p_rest: wp.vec3, p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, max_slip: float, slip: wp.array[float]
+):
+    anchor = drag_vertex_triangle_anchor(vertex_triangle_anchor(p_rest, a, b, c), p, a, b, c, max_slip)
+    closest_p, _bary, _feature = triangle_closest_point(a, b, c, p)
+    normal = wp.normalize(p - closest_p)
+    offset = vertex_triangle_anchor_slip(anchor, p, a, b, c)
+    slip[0] = wp.length(offset - wp.dot(offset, normal) * normal)
+
+
+def test_vertex_triangle_anchor_slip_bounded_over_triangle_edge(test, device):
+    """A vertex beside a triangle edge slips at most ``max_slip`` across its contact normal after a drag.
+
+    Off the face the contact normal points from the closest point on the edge, tilted from the triangle
+    normal: a vertex 3 mm beside and 3 mm above the edge that rises 1 mm moves 0.6 mm across it.
+    """
+    slip = wp.zeros(1, dtype=float, device=device)
+    wp.launch(
+        _drag_over_triangle_edge_kernel,
+        dim=1,
+        inputs=[
+            wp.vec3(0.05, -0.003, 0.003),
+            wp.vec3(0.05, -0.003, 0.004),
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(0.1, 0.0, 0.0),
+            wp.vec3(0.0, 0.1, 0.0),
+            1.0e-4,
+        ],
+        outputs=[slip],
+        device=device,
+    )
+    test.assertLessEqual(slip.numpy()[0], 1.0e-4 * (1.0 + 1.0e-4))
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1384,6 +1842,66 @@ add_function_test(
     "test_sticky_rotated_witness_cuda_graph",
     test_sticky_rotated_witness_cuda_graph,
     devices=cuda_devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_anchors_replayed",
+    test_sticky_self_contact_anchors_replayed,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_anchors_cuda_graph",
+    test_sticky_self_contact_anchors_cuda_graph,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_history_follows_world_and_buffer",
+    test_sticky_self_contact_history_follows_world_and_buffer,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_reset_reaches_both_worlds_of_a_pair",
+    test_sticky_self_contact_reset_reaches_both_worlds_of_a_pair,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_edge_reset_reaches_both_worlds_of_a_pair",
+    test_sticky_self_contact_edge_reset_reaches_both_worlds_of_a_pair,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_edge_edge_anchor_slip_bounded_by_twist",
+    test_edge_edge_anchor_slip_bounded_by_twist,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_waits_while_triangle_collapses",
+    test_vertex_triangle_anchor_waits_while_triangle_collapses,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_kept_across_gap_change",
+    test_vertex_triangle_anchor_kept_across_gap_change,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_slip_bounded_over_triangle_edge",
+    test_vertex_triangle_anchor_slip_bounded_over_triangle_edge,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_slip_bounded_on_thin_triangle",
+    test_vertex_triangle_anchor_slip_bounded_on_thin_triangle,
+    devices=devices,
 )
 
 if __name__ == "__main__":

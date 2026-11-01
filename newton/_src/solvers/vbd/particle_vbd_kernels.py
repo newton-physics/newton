@@ -35,8 +35,13 @@ from ...geometry.kernels import triangle_closest_point
 from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
+    drag_edge_edge_anchor,
+    drag_vertex_triangle_anchor,
+    edge_edge_anchor_slip,
     get_edge_colliding_edges_count,
     get_vertex_colliding_triangles_count,
+    vertex_triangle_anchor_holds,
+    vertex_triangle_anchor_slip,
 )
 from ...utils.mesh import (
     MeshAdjacencyData,
@@ -1034,6 +1039,8 @@ def evaluate_edge_edge_contact_2_vertices(
     friction_epsilon: float,
     dt: float,
     edge_edge_parallel_epsilon: float,
+    friction_anchors: wp.array[wp.vec2],
+    slot: int,
 ):
     r"""
     Returns the edge-edge contact force and hessian, including the friction force.
@@ -1087,6 +1094,9 @@ def evaluate_edge_edge_contact_2_vertices(
         c2_prev = pos_anchor[e2_v1] + (pos_anchor[e2_v2] - pos_anchor[e2_v1]) * t
 
         dx = (c1 - c1_prev) - (c2 - c2_prev)
+        slip = dx
+        if friction_anchors.shape[0] > 0:
+            slip = edge_edge_anchor_slip(friction_anchors[slot], e1_v1_pos, e1_v2_pos, e2_v1_pos, e2_v2_pos)
         axis_1, axis_2 = orthonormal_basis(collision_normal)
 
         T = mat32(
@@ -1098,7 +1108,7 @@ def evaluate_edge_edge_contact_2_vertices(
             axis_2[2],
         )
 
-        u = wp.transpose(T) * dx
+        u = wp.transpose(T) * slip
         eps_U = friction_epsilon * dt
 
         # fmt: off
@@ -1238,6 +1248,8 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
     friction_coefficient: float,
     friction_epsilon: float,
     dt: float,
+    friction_anchors: wp.array[wp.vec3],
+    slot: int,
 ):
     a = pos[tri_indices[tri, 0]]
     b = pos[tri_indices[tri, 1]]
@@ -1269,12 +1281,17 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
         )
 
         dx = dx_v - (closest_p - closest_p_prev)
+        slip = dx
+        if friction_anchors.shape[0] > 0:
+            anchor = friction_anchors[slot]
+            if vertex_triangle_anchor_holds(anchor, a, b, c):
+                slip = vertex_triangle_anchor_slip(anchor, p, a, b, c)
 
         e0, e1 = orthonormal_basis(collision_normal)
 
         T = mat32(e0[0], e1[0], e0[1], e1[1], e0[2], e1[2])
 
-        u = wp.transpose(T) * dx
+        u = wp.transpose(T) * slip
         eps_U = friction_epsilon * dt
 
         friction_force, friction_hessian = compute_friction(friction_coefficient, -dEdD, T, u, eps_U)
@@ -1558,6 +1575,56 @@ def convert_body_particle_contact_data_kernel(
         body_particle_contact_buffer[offset + contact_counter] = contact_index
 
 
+@wp.kernel(enable_backward=False)
+def relax_self_contact_anchors(
+    max_slip: float,
+    edge_edge_parallel_epsilon: float,
+    particle_q: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
+    collision_info: TriMeshCollisionInfo,
+):
+    """Drag each self-contact anchor along so its pair has slipped at most ``max_slip`` from it.
+
+    Drift beyond the friction regularization length within a step is sliding. Kept, it would pull a
+    body back once it stops; the collision pipeline replays the dragged anchors instead.
+    """
+    primitive = wp.tid()
+    if primitive < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
+        offset = collision_info.vertex_colliding_triangles_offsets[primitive]
+        p = particle_q[primitive]
+        for i in range(get_vertex_colliding_triangles_count(collision_info, primitive)):
+            slot = offset + i
+            tri = collision_info.vertex_colliding_triangles[2 * slot + 1]
+            anchor = collision_info.vertex_colliding_triangles_anchor[slot]
+            if tri >= 0:
+                collision_info.vertex_colliding_triangles_anchor[slot] = drag_vertex_triangle_anchor(
+                    anchor,
+                    p,
+                    particle_q[tri_indices[tri, 0]],
+                    particle_q[tri_indices[tri, 1]],
+                    particle_q[tri_indices[tri, 2]],
+                    max_slip,
+                )
+    if primitive < collision_info.edge_colliding_edges_buffer_sizes.shape[0]:
+        offset = collision_info.edge_colliding_edges_offsets[primitive]
+        p0 = particle_q[edge_indices[primitive, 2]]
+        p1 = particle_q[edge_indices[primitive, 3]]
+        for i in range(get_edge_colliding_edges_count(collision_info, primitive)):
+            slot = offset + i
+            e2 = collision_info.edge_colliding_edges[2 * slot + 1]
+            if e2 >= 0:
+                collision_info.edge_colliding_edges_anchor[slot] = drag_edge_edge_anchor(
+                    collision_info.edge_colliding_edges_anchor[slot],
+                    p0,
+                    p1,
+                    particle_q[edge_indices[e2, 2]],
+                    particle_q[edge_indices[e2, 3]],
+                    edge_edge_parallel_epsilon,
+                    max_slip,
+                )
+
+
 @wp.kernel
 def accumulate_self_contact_force_and_hessian(
     # inputs
@@ -1615,6 +1682,8 @@ def accumulate_self_contact_force_and_hessian(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            collision_info.edge_colliding_edges_anchor,
+                            collision_buffer_offset + collision_buffer_counter,
                         )
                     )
 
@@ -1677,6 +1746,8 @@ def accumulate_self_contact_force_and_hessian(
                         friction_mu,
                         friction_epsilon,
                         dt,
+                        collision_info.vertex_colliding_triangles_anchor,
+                        collision_buffer_offset + collision_buffer_counter,
                     )
 
                     if has_contact:
@@ -2932,6 +3003,8 @@ def accumulate_contact_force_and_hessian(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            collision_info.edge_colliding_edges_anchor,
+                            collision_buffer_offset + collision_buffer_counter,
                         )
                     )
 
@@ -2994,6 +3067,8 @@ def accumulate_contact_force_and_hessian(
                         friction_mu,
                         friction_epsilon,
                         dt,
+                        collision_info.vertex_colliding_triangles_anchor,
+                        collision_buffer_offset + collision_buffer_counter,
                     )
 
                     if has_contact:
