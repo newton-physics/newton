@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import itertools
 import logging
 import math
@@ -2817,10 +2818,14 @@ def parse_usd(
         builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
 
     # Parse Newton actuator prims from the USD stage.
-    from ..actuators.delay import Delay  # noqa: PLC0415
-    from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
+    from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
+    from ..actuators.motor_dc import MotorDC  # noqa: PLC0415
+    from ..actuators.usd_parser import BatteryParsed, parse_actuator_prim, parse_battery_prim  # noqa: PLC0415
 
+    batteries: dict[str, BatteryParsed] = {}
+    battery_actuators: dict[str, list[int]] = {}
     actuator_count = 0
+    add_actuator_params = set(inspect.signature(builder.add_actuator).parameters) - {"kwargs"}
     path_to_dof = {
         path: builder.joint_qd_start[idx] + merged_dof_offset.get(path, 0)
         for path, idx in path_joint_map.items()
@@ -2834,6 +2839,10 @@ def parse_usd(
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
         prim_path = str(prim.GetPath())
         if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+            continue
+        battery = parse_battery_prim(prim)
+        if battery is not None:
+            batteries[prim_path] = battery
             continue
         parsed = parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints)
         if parsed is None:
@@ -2859,25 +2868,59 @@ def parse_usd(
         coord_index = path_to_coord.get(target_path)
         pos_index = coord_index if coord_index is not None and coord_index != dof_index else None
 
-        delay_val = None
+        input_processor_specs = []
         clamping_specs = []
+        motor_spec = None
         for comp_class, comp_kwargs in parsed.component_specs:
-            if comp_class is Delay:
-                delay_val = comp_kwargs.get("delay_steps")
+            if issubclass(comp_class, InputProcessorBase):
+                proc_kwargs = dict(comp_kwargs)
+                for name in comp_class.JOINT_PARAMS:
+                    path = proc_kwargs.get(name)
+                    if isinstance(path, str):
+                        if path not in path_joint_map:
+                            raise ValueError(
+                                f"Actuator prim {prim.GetPath()}: '{name}' references '{path}', "
+                                "which is not a known joint"
+                            )
+                        proc_kwargs[name] = path_joint_map[path]
+                input_processor_specs.append((comp_class, proc_kwargs))
+            elif issubclass(comp_class, MotorDC):
+                motor_spec = (comp_class, dict(comp_kwargs))
             else:
                 clamping_specs.append((comp_class, comp_kwargs))
 
-        builder.add_actuator(
+        drive_kwargs = {name: value for name, value in parsed.drive_kwargs.items() if name not in add_actuator_params}
+        battery_path = parsed.battery_path
+        if battery_path is not None:
+            if motor_spec is None:
+                raise ValueError(
+                    f"Actuator prim {prim.GetPath()} draws from battery '{battery_path}' but has no motor; "
+                    "apply a motor schema such as NewtonDCMotorAPI"
+                )
+            motor_spec[1]["supply_from_battery"] = True
+        if motor_spec is not None:
+            motor_class, motor_kwargs = motor_spec
+            resolved_motor = motor_class.resolve_arguments(motor_kwargs)
+            motor_spec = (motor_class, {k: v for k, v in motor_kwargs.items() if k in resolved_motor})
+        actuator = builder.add_actuator(
             parsed.drive_class,
             index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
-            delay_steps=delay_val,
             pos_index=pos_index,
-            **parsed.drive_kwargs,
+            input_processors=input_processor_specs,
+            motor=motor_spec,
+            **drive_kwargs,
         )
+        if battery_path is not None:
+            battery_actuators.setdefault(battery_path, []).append(actuator)
         actuator_count += 1
     if verbose and actuator_count > 0:
         logger.info("Added %s actuator(s) from USD", actuator_count)
+    for battery_path in battery_actuators.keys() - batteries.keys():
+        raise ValueError(f"Actuators reference '{battery_path}' in 'newton:battery', which is not a battery prim")
+    for path, battery in batteries.items():
+        if path in battery_actuators:
+            builder.add_battery(battery.battery_class, battery_actuators[path], **battery.battery_kwargs)
 
     result = {
         "fps": stage.GetFramesPerSecond(),

@@ -44,6 +44,7 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+    from ..actuators.batteries import BatteryBase
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -249,6 +250,8 @@ class Model:
         """Experimental frequency for recorded deformable surfaces (see :attr:`~newton.Model.surface_count`)."""
         VOLUME = 25
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
+        ACTUATOR = 26
+        """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -675,6 +678,7 @@ class Model:
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
         AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
+        AttributeFrequency.ACTUATOR: "actuator_count",
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
@@ -1602,6 +1606,10 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+        self.actuator_count: int = 0
+        """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
+        self.batteries: list[BatteryBase] = []
+        """List of battery instances for this model."""
 
     @property
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
@@ -2261,6 +2269,11 @@ class Model:
         self._add_custom_attributes(
             c, Model.AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
+        c._attribute_frequency = {
+            name: spec.frequency
+            for name, spec in self._iter_attribute_specs()
+            if spec.assignment == Model.AttributeAssignment.CONTROL or name in vars(c)
+        }
         return c
 
     def set_gravity(

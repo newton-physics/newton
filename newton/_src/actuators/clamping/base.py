@@ -15,6 +15,9 @@ class ClampingBase:
     actuator output effort — symmetric limits, velocity-dependent
     saturation, position-dependent curves, etc.  They read from a
     source effort buffer and write bounded values to a destination buffer.
+    In an actuator with a motor, they bound the effort of the motor, after
+    the motor. The motor command is bounded by :class:`~newton.actuators.CommandClampingBase`
+    objects instead.
 
     **Validation contract:**  :meth:`resolve_arguments` validates scalar
     parameter values before they are batched into Warp arrays.

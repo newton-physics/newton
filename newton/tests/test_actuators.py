@@ -3,6 +3,7 @@
 
 """Tests for Newton actuators."""
 
+import dataclasses
 import importlib.util
 import json
 import math
@@ -11,6 +12,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import warnings
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -28,20 +30,28 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
+    BatteryConstantResistance,
     ClampingBase,
+    ClampingCurrentPWM,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
-    Delay,
     DriveBase,
     DriveNeuralGRU,
     DriveNeuralLSTM,
     DriveNeuralMLP,
     DrivePD,
     DrivePID,
+    DriveVoltageControlled,
+    InputProcessorBase,
+    InputProcessorDelay,
+    InputProcessorEncoder,
     JointSpaceResponse,
+    MotorDC,
     parse_actuator_prim,
+    parse_battery_prim,
 )
+from newton.exceptions import NewtonWarning
 from newton.selection import ArticulationView
 
 try:
@@ -315,6 +325,26 @@ def _build_gru_onnx(
 
 # Regularize the fixtures' idealized point masses without changing their
 # effective dynamics from the inertia that validation previously synthesized.
+
+
+def _delay_inputs(target_pos, target_vel, indices, feedforward=None):
+    """Minimal :class:`InputProcessorBase.Inputs` for driving a delay directly."""
+    zeros = wp.zeros(len(indices), dtype=wp.float32, device=target_pos.device)
+    return InputProcessorBase.Inputs(
+        positions=zeros,
+        velocities=zeros,
+        target_pos=target_pos,
+        target_vel=target_vel,
+        feedforward=feedforward,
+        pos_indices=indices,
+        vel_indices=indices,
+        target_pos_indices=indices,
+        target_vel_indices=indices,
+        sim_positions=zeros,
+        sim_velocities=zeros,
+    )
+
+
 _POINT_MASS_INERTIA = wp.mat33(1.0e-6, 0.0, 0.0, 0.0, 1.0e-6, 0.0, 0.0, 0.0, 1.0e-6)
 
 
@@ -605,7 +635,7 @@ class TestDrivePD(unittest.TestCase):
             vel_indices=indices,
             target_pos_indices=indices,
             target_vel_indices=indices,
-            forces=forces,
+            output=forces,
             state=None,
             dt=0.01,
         )
@@ -661,7 +691,7 @@ class TestDrivePID(unittest.TestCase):
                 vel_indices=indices,
                 target_pos_indices=indices,
                 target_vel_indices=indices,
-                forces=forces,
+                output=forces,
                 state=state_0,
                 dt=dt,
                 device=device,
@@ -670,6 +700,26 @@ class TestDrivePID(unittest.TestCase):
             state_0, state_1 = state_1, state_0
 
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
+
+
+def _actuator_dofs(model):
+    """Return the DOF of each actuator of *model*, indexed like per-actuator arrays."""
+    dofs = np.full(model.actuator_count, -1)
+    for actuator in model.actuators:
+        dofs[actuator.actuator_indices.numpy()] = actuator.indices.numpy()
+    return dofs
+
+
+def _delay_of(actuator):
+    """Return the actuator's InputProcessorDelay, or None."""
+    return next((p for p in actuator.input_processors if isinstance(p, InputProcessorDelay)), None)
+
+
+def _delay_state_of(actuator_state):
+    """Return the actuator state's InputProcessorDelay.State, or None."""
+    return next(
+        (s for s in actuator_state.input_processor_states or () if isinstance(s, InputProcessorDelay.State)), None
+    )
 
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
@@ -1019,10 +1069,12 @@ class TestDriveNeuralGRU(unittest.TestCase):
             pos_indices=case.actuator.pos_indices,
             target_pos_indices=case.actuator.target_pos_indices,
             drive=DriveNeuralGRU(path),
-            delay=Delay(
-                delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
-                max_delay=1,
-            ),
+            input_processors=[
+                InputProcessorDelay(
+                    delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
+                    max_delay=1,
+                )
+            ],
         )
         case.state_a = case.actuator.state()
         case.state_b = case.actuator.state()
@@ -2643,6 +2695,152 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
                 )
 
 
+class TestMotorDC(unittest.TestCase):
+    """DC motor, alone and with batteries."""
+
+    def test_compute(self):
+        """Construct the motor directly and call compute() from a voltage command.
+
+        Slots 0 to 2 are supplied with ``vin``, and slot 3 reads its supply
+        from the battery voltage and writes the current it draws. Slot 2
+        regenerates: its back-EMF exceeds the command.
+        """
+        kt, resistance, vin = 0.5, 2.0, 10.0
+        commanded = [5.0, -3.0, 0.5, 2.0]
+        supply_from_battery = [0.0, 0.0, 0.0, 1.0]
+        qd = [0.5, -1.0, 4.0, 0.3]
+        n = len(commanded)
+
+        def _f(vals: Sequence[float]) -> wp.array[float]:
+            return wp.array(vals, dtype=wp.float32)
+
+        indices = wp.array(list(range(n)), dtype=wp.uint32)
+        actuator_indices = wp.array([3, 2, 1, 0], dtype=wp.uint32)
+        motor = MotorDC(
+            kt=_f([kt] * n),
+            resistance=_f([resistance] * n),
+            vin=_f([vin] * n),
+            supply_from_battery=_f(supply_from_battery),
+        )
+        self.assertTrue(motor.uses_battery)
+        supply_voltage = wp.zeros(n, dtype=wp.float32)
+        supply_current = wp.zeros(n, dtype=wp.float32)
+        forces = wp.zeros(n, dtype=wp.float32)
+
+        motor.compute_supply_voltage(_f([8.0, 0.0, 0.0, 0.0]), actuator_indices, supply_voltage)
+        motor.compute(_f(commanded), forces, _f(qd), indices, supply_voltage, actuator_indices, supply_current)
+
+        supply = np.where(supply_from_battery, 8.0, vin)
+        np.testing.assert_allclose(supply_voltage.numpy(), supply)
+        current = (np.array(commanded) - kt * np.array(qd)) / resistance
+        np.testing.assert_allclose(forces.numpy(), kt * current, rtol=1e-5)
+        self.assertLess(forces.numpy()[2], 0.0)
+        np.testing.assert_allclose(supply_current.numpy(), (np.array(commanded) / supply * current)[::-1], rtol=1e-5)
+
+    def test_battery_supply(self):
+        """Each servo reads the voltage its battery dropped to under the previous step's current.
+
+        Per world, the knee servo, which has an encoder, and an
+        ankle servo share battery 0, and a second ankle servo draws from
+        battery 1. The knee is its own actuator group and the ankle servos
+        share one, so a battery spans groups and two servos of one group act
+        on one DOF. Each servo computes the duty cycle ``kp * error`` of a
+        BAM servo, and draws ``duty * current`` from its battery. In
+        world 0 the ankle regenerates: it offsets the knee's current on
+        battery 0 and leaves battery 1 at its nominal voltage. In world 1
+        battery 0 reaches its minimum voltage. ``replicate`` gives each world
+        its own batteries, and a masked reset restores the nominal voltage of
+        world 0 only.
+        """
+        kp, kt, resistance, vin, max_pwm, target, dt = 0.5, 0.6, 2.0, 6.0, 0.9, 1.0, 0.01
+        nominal_voltage, min_voltage, battery_resistance = np.array([6.0, 4.0]), np.array([5.4, 3.0]), 1.0
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
+        joints = [
+            template.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z),
+            template.add_joint_revolute(
+                parent=links[0],
+                child=links[1],
+                axis=newton.Axis.Z,
+                limit_lower=-0.02,
+                limit_upper=0.02,
+                label="backlash",
+            ),
+            template.add_joint_revolute(parent=links[1], child=links[2], axis=newton.Axis.Z),
+        ]
+        template.add_articulation(joints)
+        knee, ankle = template.joint_qd_start[joints[0]], template.joint_qd_start[joints[2]]
+        servo = {
+            "kp": kp,
+            "clamping": [(ClampingCurrentPWM, {"max_pwm": max_pwm})],
+            "motor": (MotorDC, {"kt": kt, "resistance": resistance, "vin": vin, "supply_from_battery": True}),
+        }
+        knee_servo = template.add_actuator(
+            DriveVoltageControlled,
+            index=knee,
+            input_processors=[(InputProcessorEncoder, {"output_joint": "backlash"})],
+            **servo,
+        )
+        ankle_servos = [template.add_actuator(DriveVoltageControlled, index=ankle, **servo) for _ in range(2)]
+        for servos, nominal, minimum in zip(
+            ([knee_servo, ankle_servos[0]], [ankle_servos[1]]), nominal_voltage, min_voltage, strict=True
+        ):
+            template.add_battery(
+                BatteryConstantResistance,
+                servos,
+                nominal_voltage=nominal,
+                resistance=battery_resistance,
+                min_voltage=minimum,
+            )
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        self.assertEqual(len(model.actuators), 2)
+        battery = np.array([0, 0, 1, 2, 2, 3])
+        (batteries,) = model.batteries
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 2, 3, 5, 6])
+        np.testing.assert_array_equal(batteries.actuators.numpy(), np.arange(6))
+
+        q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 0.4], dtype=np.float32)
+        qd = np.array([0.0, 0.0, 6.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        state = model.state()
+        control = model.control()
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        control.joint_target_q.fill_(target)
+        dof = _actuator_dofs(model)
+        knees = dof % template.joint_dof_count == knee
+        measured = q[dof]
+        measured[knees] += q[dof[knees] + 1]
+        duty = np.clip(kp * (target - measured), -max_pwm, max_pwm)
+        nominal, minimum = np.tile(nominal_voltage, 2), np.tile(min_voltage, 2)
+
+        drawn = np.zeros(4)
+        for step in range(2):
+            control.joint_f.zero_()
+            for actuator in model.actuators:
+                actuator.step(state, control, dt=dt)
+
+            voltage = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)[battery]
+            np.testing.assert_allclose(control.actuator_supply_voltage.numpy(), voltage, rtol=1e-5)
+            current = (voltage * duty - kt * qd[dof]) / resistance
+            np.testing.assert_allclose(control.actuator_supply_current.numpy(), duty * current, rtol=1e-4)
+            applied = np.zeros(model.joint_dof_count)
+            np.add.at(applied, dof, kt * current)
+            np.testing.assert_allclose(control.joint_f.numpy(), applied, rtol=1e-4)
+            batteries.step(control)
+            drawn = np.bincount(battery, duty * current, minlength=4)
+            if step == 0:
+                self.assertTrue(0.0 < drawn[0] < duty[0] * current[0] and drawn[1] < 0.0)
+        self.assertAlmostEqual(control.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
+
+        batteries.reset(control, world_mask=wp.array([True, False, False], dtype=wp.bool))
+        dropped = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)
+        np.testing.assert_allclose(
+            control.actuator_supply_voltage.numpy(), np.where(np.arange(4) < 2, nominal, dropped)[battery], rtol=1e-5
+        )
+
+
 # ---------------------------------------------------------------------------
 # 2. Delay
 # ---------------------------------------------------------------------------
@@ -2656,7 +2854,7 @@ class TestDelay(unittest.TestCase):
         n, max_delay = 2, 5
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=max_delay)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         ds = delay.state(n, device)
@@ -2671,7 +2869,7 @@ class TestDelay(unittest.TestCase):
         n, delay_val = 1, 2
         device = wp.get_device()
         delays = wp.array([delay_val], dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=delay_val)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=delay_val)
         delay.finalize(device, n)
 
         indices = wp.array([0], dtype=wp.uint32, device=device)
@@ -2686,7 +2884,7 @@ class TestDelay(unittest.TestCase):
 
             out_pos, _out_vel, _out_act = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
             read_history.append(out_pos.numpy()[0])
-            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
+            delay.update_state(_delay_inputs(tgt_pos, tgt_vel, indices), state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         self.assertAlmostEqual(read_history[0], 10.0, places=4, msg="step 0: empty buffer -> current target")
@@ -2700,7 +2898,7 @@ class TestDelay(unittest.TestCase):
         n = 2
         device = wp.get_device()
         delays = wp.array([0, 1], dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=1)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=1)
         delay.finalize(device, n)
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
@@ -2718,7 +2916,7 @@ class TestDelay(unittest.TestCase):
             result = out_pos.numpy()
             history_dof0.append(result[0])
             history_dof1.append(result[1])
-            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
+            delay.update_state(_delay_inputs(tgt_pos, tgt_vel, indices), state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         # DOF 0 (delay=0): always sees current target
@@ -2734,9 +2932,207 @@ class TestDelay(unittest.TestCase):
         self.assertAlmostEqual(history_dof1[3], 30.0, places=4, msg="dof1 step 3: reads step 2 (30)")
 
 
+@wp.kernel
+def _scale_positions_kernel(
+    positions: wp.array[float],
+    pos_indices: wp.array[wp.uint32],
+    scale: wp.array[float],
+    out: wp.array[float],
+):
+    i = wp.tid()
+    out[i] = positions[pos_indices[i]] * scale[i]
+
+
+class _ScalePositions(InputProcessorBase):
+    """Test processor that replaces ``positions`` with one scaled entry per slot."""
+
+    @classmethod
+    def resolve_arguments(cls, args):
+        return {"scale": float(args["scale"])}
+
+    def __init__(self, scale):
+        self.scale = scale
+
+    def finalize(self, device, num_actuators, requires_grad=False):
+        self._out = wp.zeros(num_actuators, dtype=float, device=device)
+        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
+
+    def process(self, inputs, state, dt):
+        wp.launch(
+            _scale_positions_kernel,
+            dim=len(self._out),
+            inputs=[inputs.positions, inputs.pos_indices, self.scale],
+            outputs=[self._out],
+            device=self._out.device,
+        )
+        return dataclasses.replace(inputs, positions=self._out, pos_indices=self._slots)
+
+
+class _RemapVelocityIndices(InputProcessorBase):
+    """Test processor that breaks the contract by replacing ``vel_indices``."""
+
+    def finalize(self, device, num_actuators, requires_grad=False):
+        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
+
+    def process(self, inputs, state, dt):
+        return dataclasses.replace(inputs, vel_indices=self._slots)
+
+
+class TestInputProcessors(unittest.TestCase):
+    """Input processors composed through ModelBuilder.add_actuator."""
+
+    def test_add_actuator_rejects_invalid_targets(self):
+        """The actuated DOF and a backlash joint must belong to the current world or be global.
+
+        The backlash joint must also have the type of the actuated joint.
+        """
+        template = newton.ModelBuilder()
+        link = template.add_link()
+        template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder = newton.ModelBuilder()
+        builder.add_world(template)
+        builder.begin_world()
+        builder.add_builder(template)
+        builder.add_actuator(DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 1})])
+
+        with self.assertRaisesRegex(ValueError, "DOF index 0 belongs to world 0"):
+            builder.add_actuator(DrivePD, index=0, kp=1.0)
+        with self.assertRaisesRegex(ValueError, "joint index 0 belongs to world 0"):
+            builder.add_actuator(
+                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 0})]
+            )
+        slider = builder.add_joint_prismatic(parent=-1, child=builder.add_link(), axis=newton.Axis.Z)
+        with self.assertRaisesRegex(ValueError, "must have the type of the actuated joint"):
+            builder.add_actuator(
+                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": slider})]
+            )
+
+    def test_processor_must_keep_vel_indices(self):
+        """Actuator.step rejects a processor that replaces ``vel_indices``."""
+        n = 2
+        actuator = Actuator(
+            indices=wp.array([1, 3], dtype=wp.uint32),
+            drive=DrivePD(kp=wp.ones(n, dtype=float), kd=wp.zeros(n, dtype=float)),
+            input_processors=[_RemapVelocityIndices()],
+        )
+        state = types.SimpleNamespace(joint_q=wp.zeros(4, dtype=float), joint_qd=wp.zeros(4, dtype=float))
+        control = types.SimpleNamespace(
+            joint_target_q=wp.zeros(4, dtype=float),
+            joint_target_qd=wp.zeros(4, dtype=float),
+            joint_act=None,
+            joint_f=wp.zeros(4, dtype=float),
+        )
+        with self.assertRaisesRegex(ValueError, "_RemapVelocityIndices.process"):
+            actuator.step(state, control, dt=0.01)
+
+    def test_backlash_drive_reads_link_side_joint(self):
+        """The drive sees actuated + backlash joint position and the actuated velocity, in every replicated world.
+
+        A processor that replaces ``positions`` runs first, so the backlash
+        joint must be read from the unprocessed simulation arrays.
+        """
+        kp, kd, target, scale = 10.0, 2.0, 1.0, 2.0
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        motor = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+        output = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+        j_motor = template.add_joint_revolute(parent=-1, child=motor, axis=newton.Axis.Z)
+        j_backlash = template.add_joint_revolute(
+            parent=motor, child=output, axis=newton.Axis.Z, limit_lower=-0.05, limit_upper=0.05, label="backlash"
+        )
+        template.add_articulation([j_motor, j_backlash])
+        template.add_actuator(
+            DrivePD,
+            index=template.joint_qd_start[j_motor],
+            kp=kp,
+            kd=kd,
+            input_processors=[
+                (_ScalePositions, {"scale": scale}),
+                (InputProcessorEncoder, {"output_joint": "backlash"}),
+            ],
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+        q = np.array([0.3, 0.04, -0.2, -0.05], dtype=np.float32)
+        qd = np.array([0.5, 0.1, -1.0, 0.2], dtype=np.float32)
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        control.joint_target_q.fill_(target)
+
+        actuator = model.actuators[0]
+        actuator.step(state, control, dt=0.01)
+
+        expected = [kp * (target - (scale * q[w] + q[w + 1])) - kd * qd[w] for w in (0, 2)]
+        np.testing.assert_allclose(control.joint_f.numpy()[[0, 2]], expected, rtol=1e-5)
+        np.testing.assert_array_equal(control.joint_f.numpy()[[1, 3]], [0.0, 0.0])
+
+
 # ---------------------------------------------------------------------------
 # 3. Clamping
 # ---------------------------------------------------------------------------
+
+
+class TestClampingCurrentPWM(unittest.TestCase):
+    """ClampingCurrentPWM: current limit, then PWM limit, with the motor's kt and resistance."""
+
+    def test_modify_forces(self):
+        """Construct the clamp directly and call modify_forces() with each limit.
+
+        Slot 0 is within both limits, slot 1 is narrowed by the current limit,
+        slot 2 is clamped by ``max_pwm``, and slot 3 overspeeds: its current
+        window lies above the PWM limit, so the PWM limit wins.
+        """
+        kt, resistance, max_current, max_pwm, voltage = 0.5, 2.0, 1.0, 0.9, 10.0
+        commanded = [1.0, 6.0, -20.0, 0.0]
+        qd = [0.5, -1.0, 2.0, 30.0]
+        n = len(commanded)
+
+        def _f(vals: Sequence[float]) -> wp.array[float]:
+            return wp.array(vals, dtype=wp.float32)
+
+        indices = wp.array(list(range(n)), dtype=wp.uint32)
+        clamp = ClampingCurrentPWM(
+            max_current=_f([max_current, max_current, 0.0, max_current]),
+            max_pwm=_f([max_pwm] * n),
+            kt=_f([kt] * n),
+            resistance=_f([resistance] * n),
+        )
+        dst = wp.zeros(n, dtype=wp.float32)
+
+        clamp.modify_forces(
+            _f(commanded),
+            dst,
+            wp.zeros(n, dtype=wp.float32),
+            _f(qd),
+            indices,
+            indices,
+            supply_voltage=_f([voltage] * n),
+        )
+
+        np.testing.assert_allclose(dst.numpy(), [1.0, 1.5, -9.0, 9.0], rtol=1e-5)
+
+    def test_motor_params(self):
+        """The builder passes the motor's kt and resistance arrays, and requires a motor that has them."""
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        clamping = [(ClampingCurrentPWM, {"max_current": 1.0})]
+        with self.assertRaisesRegex(ValueError, "bounds the motor command and requires a motor"):
+            builder.add_actuator(DriveVoltageControlled, index=builder.joint_qd_start[joint], kp=1.0, clamping=clamping)
+        builder.add_actuator(
+            DriveVoltageControlled,
+            index=builder.joint_qd_start[joint],
+            kp=1.0,
+            clamping=clamping,
+            motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0}),
+        )
+        (actuator,) = builder.finalize().actuators
+        (clamp,) = actuator.clamping
+        self.assertIs(clamp.kt, actuator.motor.kt)
+        self.assertIs(clamp.resistance, actuator.motor.resistance)
 
 
 class TestClampingMaxEffort(unittest.TestCase):
@@ -3581,7 +3977,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_a,
             kp=kp,
             kd=kd,
-            delay_steps=delay_a,
+            input_processors=[(InputProcessorDelay, {"delay_steps": delay_a})],
             clamping=[(ClampingDCMotor, dc_args)],
         )
         template.add_actuator(
@@ -3589,7 +3985,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_b,
             kp=kp,
             kd=kd,
-            delay_steps=delay_b,
+            input_processors=[(InputProcessorDelay, {"delay_steps": delay_b})],
             clamping=[(ClampingDCMotor, dc_args)],
         )
 
@@ -3602,7 +3998,7 @@ class TestActuatorStep(unittest.TestCase):
         n = actuator.num_actuators
         self.assertEqual(n, 2 * num_envs)
 
-        delays_np = actuator.delay.delay_steps.numpy()
+        delays_np = _delay_of(actuator).delay_steps.numpy()
         expected_delays = [delay_a, delay_b] * num_envs
         np.testing.assert_array_equal(delays_np, expected_delays)
 
@@ -3654,10 +4050,10 @@ class TestActuatorStep(unittest.TestCase):
                     f"delayed_tgt={delayed_tgt} raw={raw} expected={expected}",
                 )
 
-        ds = state_0.delay_state
+        ds = _delay_state_of(state_0)
         np.testing.assert_array_equal(
             ds.num_pushes.numpy(),
-            [min(5, actuator.delay.buf_depth)] * n,
+            [min(5, _delay_of(actuator).buf_depth)] * n,
             err_msg="num_pushes should be clamped to buf_depth",
         )
 
@@ -4607,7 +5003,7 @@ class TestActuatorBuilder(unittest.TestCase):
 
         self.assertEqual(len(model.actuators), 2)
         clamped = next(a for a in model.actuators if a.clamping)
-        delayed = next(a for a in model.actuators if a.delay is not None)
+        delayed = next(a for a in model.actuators if _delay_of(a) is not None)
 
         self.assertEqual(clamped.num_actuators, 1)
         self.assertAlmostEqual(clamped.drive.kp.numpy()[0], 100.0, places=3)
@@ -4618,8 +5014,8 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(delayed.num_actuators, 1)
         self.assertAlmostEqual(delayed.drive.kp.numpy()[0], 200.0, places=3)
         self.assertAlmostEqual(delayed.drive.kd.numpy()[0], 20.0, places=3)
-        np.testing.assert_array_equal(delayed.delay.delay_steps.numpy(), [5])
-        self.assertEqual(delayed.delay.buf_depth, 5)
+        np.testing.assert_array_equal(_delay_of(delayed).delay_steps.numpy(), [5])
+        self.assertEqual(_delay_of(delayed).buf_depth, 5)
 
         stage = Usd.Stage.Open(usd_path)
         parsed = parse_actuator_prim(stage.GetPrimAtPath("/World/Robot/Joint1Actuator"))
@@ -4693,14 +5089,16 @@ class TestActuatorBuilder(unittest.TestCase):
                 (ClampingDCMotor, {"saturation_effort": 80.0, "velocity_limit": 15.0, "max_motor_effort": 200.0})
             ],
         )
-        builder.add_actuator(DrivePD, index=dofs[2], kp=150.0, delay_steps=4)
+        builder.add_actuator(
+            DrivePD, index=dofs[2], kp=150.0, input_processors=[(InputProcessorDelay, {"delay_steps": 4})]
+        )
 
         model = builder.finalize()
         self.assertEqual(len(model.actuators), 3)
 
-        pd_plain = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and a.delay is None)
+        pd_plain = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and _delay_of(a) is None)
         pid_act = next(a for a in model.actuators if isinstance(a.drive, DrivePID))
-        pd_delay = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and a.delay is not None)
+        pd_delay = next(a for a in model.actuators if isinstance(a.drive, DrivePD) and _delay_of(a) is not None)
 
         self.assertEqual(pd_plain.num_actuators, 1)
         np.testing.assert_array_almost_equal(pd_plain.drive.kp.numpy(), [50.0])
@@ -4722,9 +5120,9 @@ class TestActuatorBuilder(unittest.TestCase):
 
         self.assertEqual(pd_delay.num_actuators, 1)
         np.testing.assert_array_almost_equal(pd_delay.drive.kp.numpy(), [150.0])
-        np.testing.assert_array_equal(pd_delay.delay.delay_steps.numpy(), [4])
-        self.assertEqual(pd_delay.delay.buf_depth, 4)
-        ds = pd_delay.state().delay_state
+        np.testing.assert_array_equal(_delay_of(pd_delay).delay_steps.numpy(), [4])
+        self.assertEqual(_delay_of(pd_delay).buf_depth, 4)
+        ds = _delay_state_of(pd_delay.state())
         self.assertEqual(ds.buffer_pos.shape, (4, 1))
         np.testing.assert_array_equal(ds.num_pushes.numpy(), [0])
 
@@ -4751,10 +5149,20 @@ class TestActuatorBuilder(unittest.TestCase):
         dof2 = template.joint_qd_start[j2]
 
         template.add_actuator(
-            DrivePD, index=dof1, kp=100.0, kd=10.0, pos_index=template.joint_q_start[j1], delay_steps=2
+            DrivePD,
+            index=dof1,
+            kp=100.0,
+            kd=10.0,
+            pos_index=template.joint_q_start[j1],
+            input_processors=[(InputProcessorDelay, {"delay_steps": 2})],
         )
         template.add_actuator(
-            DrivePD, index=dof2, kp=200.0, kd=20.0, pos_index=template.joint_q_start[j2], delay_steps=3
+            DrivePD,
+            index=dof2,
+            kp=200.0,
+            kd=20.0,
+            pos_index=template.joint_q_start[j2],
+            input_processors=[(InputProcessorDelay, {"delay_steps": 3})],
         )
 
         builder = newton.ModelBuilder()
@@ -4776,12 +5184,199 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_almost_equal(act.drive.kp.numpy(), [100.0, 200.0] * num_envs)
         np.testing.assert_array_almost_equal(act.drive.kd.numpy(), [10.0, 20.0] * num_envs)
 
-        np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [2, 3] * num_envs)
-        self.assertEqual(act.delay.buf_depth, 3)
+        np.testing.assert_array_equal(_delay_of(act).delay_steps.numpy(), [2, 3] * num_envs)
+        self.assertEqual(_delay_of(act).buf_depth, 3)
 
         act_state = act.state()
-        self.assertEqual(act_state.delay_state.buffer_pos.shape, (3, n))
-        np.testing.assert_array_equal(act_state.delay_state.num_pushes.numpy(), [0] * n)
+        self.assertEqual(_delay_state_of(act_state).buffer_pos.shape, (3, n))
+        np.testing.assert_array_equal(_delay_state_of(act_state).num_pushes.numpy(), [0] * n)
+
+    def test_battery_validation(self):
+        """add_battery rejects invalid input, and finalize warns about motors without their battery."""
+        template = newton.ModelBuilder()
+        link = template.add_link()
+        joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        template.add_actuator(
+            DriveVoltageControlled,
+            index=template.joint_qd_start[joint],
+            kp=1.0,
+            motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
+        )
+        builder = newton.ModelBuilder()
+        builder.add_world(template)
+        builder.begin_world()
+        builder.add_builder(template)
+        builder.add_actuator(DrivePD, index=builder.joint_qd_start[-1], kp=1.0)
+        builder.add_battery(BatteryConstantResistance, [1], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+
+        cases = {
+            "at least one": ([], 12.0, 0.5, 9.0),
+            "min_voltage": ([1], 12.0, 0.5, 13.0),
+            "resistance": ([1], 12.0, -0.5, 9.0),
+            "already draws": ([1], 12.0, 0.5, 9.0),
+            "does not draw from a battery": ([2], 12.0, 0.5, 9.0),
+            "does not exist": ([3], 12.0, 0.5, 9.0),
+            "belongs to world 0": ([0], 12.0, 0.5, 9.0),
+        }
+        for message, (actuators, nominal_voltage, resistance, min_voltage) in cases.items():
+            with self.subTest(message), self.assertRaisesRegex(ValueError, message):
+                builder.add_battery(
+                    BatteryConstantResistance,
+                    actuators,
+                    nominal_voltage=nominal_voltage,
+                    resistance=resistance,
+                    min_voltage=min_voltage,
+                )
+        builder.end_world()
+        with self.assertWarnsRegex(NewtonWarning, r"actuator\(s\) \[0\] have no battery"):
+            builder.finalize()
+
+    def test_attribute_frequencies(self):
+        """Control and the actuator containers report the frequencies of their arrays."""
+        template = newton.ModelBuilder()
+        links = [template.add_link() for _ in range(2)]
+        joints = [
+            template.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z),
+            template.add_joint_revolute(parent=links[0], child=links[1], axis=newton.Axis.Z),
+        ]
+        template.add_articulation(joints)
+        template.add_actuator(
+            DrivePD,
+            index=template.joint_qd_start[joints[0]],
+            kp=1.0,
+            clamping=[(ClampingMaxEffort, {"max_effort": 1.0})],
+        )
+        servo = template.add_actuator(
+            DriveVoltageControlled,
+            index=template.joint_qd_start[joints[1]],
+            kp=1.0,
+            motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
+        )
+        template.add_battery(BatteryConstantResistance, [servo], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 3)
+        model = builder.finalize()
+        control = model.control()
+        actuator = newton.Model.AttributeFrequency.ACTUATOR
+
+        self.assertEqual(model.actuator_count, 6)
+        (batteries,) = model.batteries
+        self.assertEqual(batteries.num_batteries, 3)
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2, 3])
+        np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 3, 5])
+        np.testing.assert_array_equal(batteries.world.numpy(), [0, 1, 2])
+        for name, frequency in {
+            "actuator_supply_current": actuator,
+            "actuator_supply_voltage": actuator,
+            "joint_target_q": newton.Model.AttributeFrequency.JOINT_COORD,
+        }.items():
+            self.assertEqual(control.get_attribute_frequency(name), frequency)
+        motor = next(a for a in model.actuators if a.motor is not None)
+        sim_state, sim_control = motor.sim_state(), motor.sim_control()
+        for source, name, frequency in (
+            (sim_state, "joint_q", newton.Model.AttributeFrequency.JOINT_COORD),
+            (sim_control, "joint_f", newton.Model.AttributeFrequency.JOINT_DOF),
+            (sim_control, "actuator_supply_voltage", actuator),
+            (sim_control, "actuator_supply_current", actuator),
+        ):
+            self.assertEqual(source.get_attribute_frequency(name), frequency)
+        for source, name in ((control, "kp"), (sim_control, "kp")):
+            with self.subTest(name=name), self.assertRaisesRegex(KeyError, f"'{name}' is not known"):
+                source.get_attribute_frequency(name)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_motor_from_usd(self):
+        """Servos with a DC motor, a delay, backlash and a battery, loaded from USD and replicated.
+
+        The asset has three servos with voltage control for a BAM duty cycle
+        of ``0.5 * error``, current and PWM limits, a DC motor and a 2-step
+        delay:
+          knee_actuator: backlash hinge in series, draws from Battery
+          ankle_actuator: draws from Battery
+          toe_actuator: fixed supply vin = 5 V
+        The motor, processor and battery tokens may have no registered USD
+        schema, so they must be found next to the registered schemas. The
+        knee is its own actuator group because of its encoder and
+        reads ``q_knee + q_backlash``. Battery has no ``newton:minVoltage``,
+        and SpareBattery has no actuators, so it is not imported.
+        """
+        usd_path = os.path.join(os.path.dirname(__file__), "assets", "actuator_bam_test.usda")
+        stage = Usd.Stage.Open(usd_path)
+        battery = parse_battery_prim(stage.GetPrimAtPath("/World/Robot/Battery"))
+        self.assertIs(battery.battery_class, BatteryConstantResistance)
+        self.assertEqual(battery.battery_kwargs, {"nominal_voltage": 6.0, "resistance": 0.5})
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        parse_usd(template, stage)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+
+        self.assertEqual(len(model.actuators), 2)
+        (batteries,) = model.batteries
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 2, 4])
+        np.testing.assert_array_equal(batteries.actuators.numpy(), [0, 1, 3, 4])
+        np.testing.assert_array_equal(batteries.world.numpy(), [0, 1])
+
+        knee, backlash, ankle, toe = (
+            template.joint_q_start[template.joint_label.index(f"/World/Robot/{name}")]
+            for name in ("knee", "knee_backlash", "ankle", "toe")
+        )
+        coords = template.joint_coord_count
+        q = np.zeros(model.joint_coord_count, dtype=np.float32)
+        q[[knee, backlash, ankle, toe]] = [0.3, 0.015, -0.1, 0.2]
+        q[[knee + coords, backlash + coords, ankle + coords, toe + coords]] = [-0.2, -0.017, 0.4, -0.3]
+        measured = np.array([[q[knee + c] + q[backlash + c], q[ankle + c], q[toe + c]] for c in (0, coords)]).ravel()
+        supply = np.tile([6.0, 6.0, 5.0], 2)
+        dof = _actuator_dofs(model)
+        state = model.state()
+        control = model.control()
+        state.joint_q.assign(q)
+
+        targets = [0.1, -0.3, 0.6, -0.5, 0.9, -0.1, 0.4, -0.6]
+        states = [(actuator, actuator.state(), actuator.state()) for actuator in model.actuators]
+        for step, target in enumerate(targets):
+            control.joint_target_q.fill_(target)
+            control.joint_f.zero_()
+            for actuator, current, nxt in states:
+                actuator.step(state, control, current, nxt, dt=0.01)
+            states = [(actuator, nxt, current) for actuator, current, nxt in states]
+
+            duty = np.clip(0.5 * (targets[max(step - 2, 0)] - measured), -2.0 / supply, 2.0 / supply)
+            duty = np.clip(duty, -0.9, 0.9)
+            expected = 0.6 * supply * duty / 2.0
+            np.testing.assert_allclose(control.joint_f.numpy()[dof], expected, rtol=1e-5, err_msg=f"step {step}")
+
+            batteries.step(control)
+            drawn = (duty * supply * duty / 2.0).reshape(2, 3)[:, :2].sum(axis=1)
+            supply = np.ravel([[6.0 - 0.5 * max(i, 0.0)] * 2 + [5.0] for i in drawn])
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_usd_unknown_actuator_schema_warns(self):
+        """An unknown Newton actuator API token warns; registered tokens and their bases do not."""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Xform "World"
+{
+    def PhysicsRevoluteJoint "Joint"
+    {
+    }
+    def NewtonActuator "Actuator" (
+        prepend apiSchemas = ["NewtonPDControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorDelayAPI", "NewtonFooAPI"]
+    )
+    {
+        rel newton:targets = </World/Joint>
+    }
+}
+"""
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            parsed = parse_actuator_prim(stage.GetPrimAtPath("/World/Actuator"))
+        self.assertEqual(parsed.drive_class, DrivePD)
+        messages = [str(w.message) for w in caught if "actuator schema" in str(w.message)]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("NewtonFooAPI", messages[0])
 
 
 # ---------------------------------------------------------------------------
@@ -5081,7 +5676,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 4, 2
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=max_delay)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state_0 = delay.state(n, device)
@@ -5091,7 +5686,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(3):
             tgt = wp.array([float(step + 1) * 10] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(tgt, vel, None, indices, indices, state_0, state_1)
+            delay.update_state(_delay_inputs(tgt, vel, indices), state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         pushes_before = state_0.num_pushes.numpy().copy()
@@ -5117,7 +5712,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 2, 3
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delay_steps=delays, max_delay=max_delay)
+        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state = delay.state(n, device)
@@ -5127,7 +5722,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(4):
             tgt = wp.array([float(step + 1)] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(tgt, vel, None, indices, indices, state, state_tmp)
+            delay.update_state(_delay_inputs(tgt, vel, indices), state, state_tmp)
             state, state_tmp = state_tmp, state
 
         self.assertTrue(any(p > 0 for p in state.num_pushes.numpy()))
@@ -5173,7 +5768,7 @@ class TestStateReset(unittest.TestCase):
                 vel_indices=indices,
                 target_pos_indices=indices,
                 target_vel_indices=indices,
-                forces=forces,
+                output=forces,
                 state=state_0,
                 dt=0.01,
                 device=device,
@@ -5224,7 +5819,9 @@ class TestStateReset(unittest.TestCase):
         joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         template.add_articulation([joint])
         dof = template.joint_qd_start[joint]
-        template.add_actuator(DrivePID, index=dof, kp=50.0, ki=10.0, kd=5.0, delay_steps=2)
+        template.add_actuator(
+            DrivePID, index=dof, kp=50.0, ki=10.0, kd=5.0, input_processors=[(InputProcessorDelay, {"delay_steps": 2})]
+        )
 
         builder = newton.ModelBuilder()
         builder.replicate(template, num_envs)
@@ -5246,14 +5843,14 @@ class TestStateReset(unittest.TestCase):
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
 
-        self.assertTrue(all(p > 0 for p in state_0.delay_state.num_pushes.numpy()))
+        self.assertTrue(all(p > 0 for p in _delay_state_of(state_0).num_pushes.numpy()))
         self.assertTrue(all(v > 0 for v in state_0.drive_state.integral.numpy()))
 
         mask = wp.array([True, False], dtype=wp.bool, device=device)
         state_0.reset(mask)
 
-        self.assertEqual(state_0.delay_state.num_pushes.numpy()[0], 0, "env 0 delay should be reset")
-        self.assertGreater(state_0.delay_state.num_pushes.numpy()[1], 0, "env 1 delay should be untouched")
+        self.assertEqual(_delay_state_of(state_0).num_pushes.numpy()[0], 0, "env 0 delay should be reset")
+        self.assertGreater(_delay_state_of(state_0).num_pushes.numpy()[1], 0, "env 1 delay should be untouched")
         self.assertAlmostEqual(
             state_0.drive_state.integral.numpy()[0], 0.0, places=6, msg="env 0 integral should be reset"
         )
@@ -5306,7 +5903,7 @@ class TestDelayGraphCapture(unittest.TestCase):
             index=dof,
             kp=200.0,
             kd=10.0,
-            delay_steps=max_delay,
+            input_processors=[(InputProcessorDelay, {"delay_steps": max_delay})],
             clamping=[(ClampingMaxEffort, {"max_effort": 500.0})],
         )
         model = builder.finalize()
@@ -5395,20 +5992,27 @@ class TestActuatorStateAssign(unittest.TestCase):
         link = builder.add_link()
         joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         builder.add_articulation([joint])
-        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=1.0, kd=0.0, delay_steps=2)
+        builder.add_actuator(
+            DrivePID,
+            index=builder.joint_qd_start[joint],
+            kp=0.0,
+            ki=1.0,
+            kd=0.0,
+            input_processors=[(InputProcessorDelay, {"delay_steps": 2})],
+        )
         actuator = builder.finalize(device=device).actuators[0]
         current, advanced = actuator.state(), actuator.state()
 
         delay_fields = ("buffer_pos", "buffer_vel", "buffer_act", "num_pushes", "write_idx")
         for value, name in enumerate(delay_fields, start=1):
-            getattr(advanced.delay_state, name).fill_(value)
+            getattr(_delay_state_of(advanced), name).fill_(value)
         advanced.drive_state.integral.fill_(6.0)
 
         current.assign(advanced)
 
         for value, name in enumerate(delay_fields, start=1):
             with self.subTest(name=name):
-                np.testing.assert_array_equal(getattr(current.delay_state, name).numpy(), value)
+                np.testing.assert_array_equal(getattr(_delay_state_of(current), name).numpy(), value)
         np.testing.assert_array_equal(current.drive_state.integral.numpy(), 6.0)
 
     def test_assign_delegates_to_custom_drive_state(self):
