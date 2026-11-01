@@ -485,10 +485,21 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self.fk is not None:
                 self.fk.validate()
             self.constraints.validate()
+            if self.dynamics_solver == "lox" and self.constraints._has_recovery_settings():
+                raise ValueError(
+                    "Shared constraint recovery/compliance settings require PADMM or DVI. "
+                    "LOX retains its existing constraint and contact_compliance settings."
+                )
             self.dynamics.validate()
             self.padmm.validate()
             self.dvi.validate()
             self.lox.validate()
+            if self.dynamics_solver in {"padmm", "dvi"} and self.lox.contact_compliance:
+                raise ValueError(
+                    "lox.contact_compliance requires the LOX backend. "
+                    "Use constraints.contact_compliance for PADMM or DVI; "
+                    "that option also falls back to shape material stiffness and damping."
+                )
             self.materials.validate()
 
             supported_dynamics_solvers = {"padmm", "dvi", "lox"}

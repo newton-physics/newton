@@ -224,14 +224,34 @@ class CollisionDetectorConfig(ConfigBase):
         self.validate()
 
 
+_CONSTRAINT_RECOVERY_FIELDS = (
+    "joint_recovery_time",
+    "joint_recovery_speed",
+    "limit_recovery_time",
+    "limit_recovery_speed",
+    "contact_recovery_time",
+    "contact_recovery_speed",
+    "contact_compliance",
+    "limit_compliance",
+)
+
+
 @dataclass
 class ConstraintStabilizationConfig(ConfigBase):
     """
     A container to hold configurations for global constraint stabilization parameters.
 
-    These parameters serve as global defaults/overrides, to be used
-    in combination with the per-constraint stabilization parameters
-    specified in the model, if the latter are provided.
+    PADMM and DVI share these settings. The recovery times are the spring-damper
+    time scales ``c / k`` [s], giving the Euler positional bias ``phi / (dt + time)``.
+    Compliant rows under Moreau use the midpoint violation and ``dt / 2 + time``.
+    Their speed caps apply only to positional recovery. Bilateral joints remain
+    hard; contacts and limits can opt into model stiffness/damping.
+
+    The dimensionless ``alpha``, ``beta``, and ``gamma`` fields retain their
+    legacy meaning. They apply to hard rows without an explicit recovery time.
+    A recovery time takes precedence over the corresponding legacy fraction.
+    Leaving all new settings at their defaults preserves the existing law.
+    The new settings currently support PADMM and DVI, not LOX.
     """
 
     alpha: float = 0.01
@@ -260,6 +280,66 @@ class ConstraintStabilizationConfig(ConfigBase):
     Contact penetration margin used for unilateral contact constraints.\n
     Must be non-negative.\n
     Defaults to `1.0e-6`.
+    """
+
+    joint_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global bilateral recovery time [s]; ``None`` retains legacy ``alpha / dt``."""
+
+    joint_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum bilateral recovery speed [m/s or rad/s], applied independently to each row.
+
+    The same numerical cap applies to linear and angular rows. Zero disables
+    positional recovery; infinity leaves recovery uncapped.
+    """
+
+    limit_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global limit recovery time [s], overriding model ``c / k`` when set.
+
+    ``None`` uses model damping for compliant limits and legacy ``beta / dt``
+    for hard limits. An override sets effective damping to ``k * time`` in
+    both the bias and the impulse-space compliance.
+    """
+
+    limit_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum limit recovery speed [m/s or rad/s], applied independently to each row.
+
+    The same numerical cap applies to linear and angular limits. Zero disables
+    positional recovery; infinity leaves recovery uncapped.
+    """
+
+    contact_recovery_time: float | None = field(default=None, kw_only=True)
+    """Global contact recovery time [s], overriding model ``c / k`` when set.
+
+    ``None`` uses model damping for compliant contacts and legacy ``gamma / dt``
+    for hard contacts. Speculative positive gaps retain their ``gap / dt``
+    closing allowance independently of this setting and the recovery-speed cap.
+    """
+
+    contact_recovery_speed: float = field(default=math.inf, kw_only=True)
+    """Maximum normal penetration recovery speed [m/s]; infinity leaves recovery uncapped."""
+
+    contact_compliance: bool = field(default=False, kw_only=True)
+    """Use positive normal contact stiffness and damping as an implicit spring-damper.
+
+    Positive per-contact stiffness takes precedence over the arithmetic mean of
+    the two shape materials. Compliance is added only to the normal row as
+    ``1 / (dt * (k * position_dt + c))``, where ``position_dt`` is ``dt`` for
+    Euler and ``dt / 2`` for Moreau's remaining pose update. Moreau evaluates the
+    violation at the midpoint and requires the internal collision detector.
+    Non-positive or infinite stiffness retains hard contact.
+    Compliant contacts obtain their bounce from the spring-damper and ignore
+    material restitution. Tangential rows retain the existing Coulomb law.
+    This option supports PADMM and DVI. LOX's separate option uses per-contact
+    stiffness only and does not fall back to shape materials.
+    """
+
+    limit_compliance: bool = field(default=False, kw_only=True)
+    """Use positive ``Model.joint_limit_ke`` and ``joint_limit_kd`` for implicit limits.
+
+    Non-positive or infinite stiffness retains hard limits. This setting does not change
+    limit detection, drive gains, or passive joint damping.
+    Compliance uses the remaining pose-update interval: ``dt`` for Euler and
+    ``dt / 2`` for Moreau, whose limit violations are evaluated at the midpoint.
     """
 
     @override
@@ -323,36 +403,53 @@ class ConstraintStabilizationConfig(ConfigBase):
         Args:
             model: The Newton model from which to parse configurations.
         """
-        cfg = ConstraintStabilizationConfig(**kwargs)
-
-        # Parse solver-specific attributes imported from USD
+        # Retain legacy model precedence; new recovery settings are Python-only.
+        values = dict(kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None:
-            if hasattr(kamino_attrs, "constraints_alpha"):
-                cfg.alpha = float(kamino_attrs.constraints_alpha.numpy()[0])
-            if hasattr(kamino_attrs, "constraints_beta"):
-                cfg.beta = float(kamino_attrs.constraints_beta.numpy()[0])
-            if hasattr(kamino_attrs, "constraints_gamma"):
-                cfg.gamma = float(kamino_attrs.constraints_gamma.numpy()[0])
-
-        # Return the fully constructed config with configurations
-        # parsed from the model's custom attributes if available,
-        # otherwise using defaults or provided kwargs.
-        return cfg
+            for name in ("alpha", "beta", "gamma"):
+                attribute = getattr(kamino_attrs, f"constraints_{name}", None)
+                if attribute is not None:
+                    values[name] = float(attribute.numpy()[0])
+        return ConstraintStabilizationConfig(**values)
 
     @override
     def validate(self) -> None:
         """
         Validates the current values held by the :class:`ConstraintStabilizationConfig` instance.
         """
-        if self.alpha < 0.0 or self.alpha > 1.0:
+        if not math.isfinite(self.alpha) or self.alpha < 0.0 or self.alpha > 1.0:
             raise ValueError(f"Invalid alpha: {self.alpha}. Must be in range [0, 1.0].")
-        if self.beta < 0.0 or self.beta > 1.0:
+        if not math.isfinite(self.beta) or self.beta < 0.0 or self.beta > 1.0:
             raise ValueError(f"Invalid beta: {self.beta}. Must be in range [0, 1.0].")
-        if self.gamma < 0.0 or self.gamma > 1.0:
+        if not math.isfinite(self.gamma) or self.gamma < 0.0 or self.gamma > 1.0:
             raise ValueError(f"Invalid gamma: {self.gamma}. Must be in range [0, 1.0].")
-        if self.delta < 0.0:
+        if not math.isfinite(self.delta) or self.delta < 0.0:
             raise ValueError(f"Invalid delta: {self.delta}. Must be non-negative.")
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            value = getattr(self, name)
+            if name.endswith("_compliance"):
+                if not isinstance(value, bool):
+                    raise TypeError(f"{name} must be a boolean.")
+            elif name.endswith("_time"):
+                if value is not None and (not math.isfinite(value) or value < 0.0):
+                    raise ValueError(f"{name} must be None or finite and non-negative [s].")
+            elif math.isnan(value) or value < 0.0:
+                raise ValueError(f"{name} must be non-negative; infinity means unlimited recovery.")
+
+    def _has_recovery_settings(self) -> bool:
+        """Identify opt-in shared recovery settings for backend validation."""
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            value = getattr(self, name)
+            if name.endswith("_time"):
+                if value is not None:
+                    return True
+            elif name.endswith("_compliance"):
+                if value:
+                    return True
+            elif value != math.inf:
+                return True
+        return False
 
     @override
     def __post_init__(self):
@@ -1294,6 +1391,8 @@ class LOXSolverConfig:
     their penetration per step, and ignore restitution. Other contacts, and contacts
     detected by Kamino's own collision pipelines, remain hard. :class:`~newton.CollisionPipeline`
     provides per-contact stiffness only for hydroelastic contacts.
+    This option requires the LOX backend. For PADMM and DVI, use
+    ``constraints.contact_compliance``, which also falls back to shape materials.
     """
 
     contact_implicit_restitution: bool = False
