@@ -32,6 +32,7 @@ from .rasterized_collisions import (
     build_rigidity_operator,
     interpolate_collider_normals,
     project_outside_collider,
+    project_swept_collider,
     rasterize_collider,
 )
 from .render_grains import sample_render_grains, update_render_grains
@@ -770,6 +771,12 @@ class LastStepData:
             self.impulse_keys = wp.full(2 * node_count, NODE_KEY_SENTINEL, dtype=wp.int64, device=device)
             self.impulse_nodes = wp.empty(2 * node_count, dtype=int, device=device)
             self.impulse_values = wp.zeros(node_count, dtype=wp.vec3, device=device)
+
+    def clear_keyed_impulses(self):
+        """Invalidate contact history after material or collider changes."""
+        if self.impulse_values is not None:
+            self.impulse_keys.fill_(NODE_KEY_SENTINEL)
+            self.impulse_values.zero_()
 
     def require_gimp_stress_fields(self, particle_count: int, device: wp.Device):
         """Allocate persistent stress history for each particle's cell overlaps."""
@@ -1707,22 +1714,24 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # Materialize graph-persistent topology and buffers before callers can capture step().
         self._last_step_data = LastStepData()
-        with wp.ScopedDevice(model.device):
+        self._initialize_mpm_grid(model.particle_q)
+
+    def _initialize_mpm_grid(self, particle_q: wp.array[wp.vec3]) -> None:
+        with wp.ScopedDevice(self.model.device):
             self._scratchpad = ImplicitMPMScratchpad()
-            pic = self._particles_to_cells(model.particle_q)
+            pic = self._particles_to_cells(particle_q)
             self._rebuild_scratchpad(pic)
             self._require_velocity_space_fields(self._scratchpad, self._mpm_model.has_compliant_particles)
             self._require_collision_space_fields(self._scratchpad, self._last_step_data)
             self._require_strain_space_fields(self._scratchpad, self._last_step_data)
             if self._sparse_rebuildable and self.collider_basis[:3] != "pic":
                 # Allocated before any capture, so graphs do not record the initialization.
-                self._last_step_data.require_keyed_impulses(self._scratchpad.collider_node_count, model.device)
-
-        self._velocity_nodes_per_strain_sample = (
-            self._scratchpad.velocity_nodes_per_element
-            if self.strain_basis != "Q1" and self.velocity_basis == "Q1"
-            else -1
-        )
+                self._last_step_data.require_keyed_impulses(self._scratchpad.collider_node_count, self.model.device)
+            self._velocity_nodes_per_strain_sample = (
+                self._scratchpad.velocity_nodes_per_element
+                if self.strain_basis != "Q1" and self.velocity_basis == "Q1"
+                else -1
+            )
 
     def setup_collider(
         self,
@@ -1799,6 +1808,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
 
         self._last_step_data.save_collider_current_position(self._mpm_model.collider_body_q)
+        self._last_step_data.clear_keyed_impulses()
 
     def collider_face_materials(self, collider_id: int) -> wp.array[int]:
         """Return a writable view of the per-face material ids of a collider.
@@ -1856,6 +1866,95 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def voxel_size(self) -> float:
         """Grid voxel size used by the solver."""
         return self._mpm_model.voxel_size
+
+    def set_particle_radius(self, radius: float) -> None:
+        """Set a uniform particle support radius while preserving particle mass.
+
+        Changing radius changes MPM's support volume ``8 * radius**3`` and
+        therefore density at fixed mass. Particle count and positions stay
+        fixed; this operation does not split or merge particles. Call between
+        steps and discard and recapture any graphs using this solver because
+        the material refresh can replace derived buffers.
+
+        .. experimental::
+
+            Runtime uniform particle-radius changes may change without prior notice.
+
+        Args:
+            radius: Finite positive particle support radius [m].
+        """
+        radius = float(radius)
+        if not math.isfinite(radius) or radius <= 0.0:
+            raise ValueError("Particle radius must be finite and positive.")
+        if self.model.device.is_capturing:
+            raise RuntimeError("Cannot change particle radius during graph capture.")
+        self.model.particle_radius.fill_(radius)
+        self.model.particle_max_radius = radius
+        self.notify_model_changed(ModelFlags.MODEL_PROPERTIES)
+
+    def set_voxel_size(self, voxel_size: float, *, state: newton.State) -> None:
+        """Change grid resolution while preserving particle and material state.
+
+        Rebuild the sparse or dense grid around ``state.particle_q`` and discard
+        grid-backed warm starts. Particle positions, velocities, elastic strain,
+        plastic volume, stress, and deformation frames retain their values.
+        Collider margins retain their values in meters. Particle count and
+        particle radii are independent of grid resolution.
+
+        Call between steps, outside graph capture. Any previously captured
+        graphs that use this solver must be discarded and captured again.
+        Finer grids may require a larger :attr:`Config.max_active_cell_count`.
+
+        .. experimental::
+
+            Runtime MPM resolution changes may change without prior notice.
+
+        Args:
+            voxel_size: New grid voxel edge length [m], finite and positive.
+            state: Current simulation state used to allocate the new grid.
+
+        Raises:
+            ValueError: If the size is invalid or the grid is fixed.
+            RuntimeError: If called during graph capture or grid capacity is exceeded.
+        """
+        voxel_size = float(voxel_size)
+        if not math.isfinite(voxel_size) or voxel_size <= 0.0:
+            raise ValueError("voxel_size must be finite and positive.")
+        if self.grid_type == "fixed":
+            raise ValueError("Cannot resize a fixed MPM grid; use a sparse or dense grid.")
+        if self.model.device.is_capturing:
+            raise RuntimeError("Cannot change MPM voxel size during graph capture.")
+        self._validate_reset_inputs(state)
+        if voxel_size == self.voxel_size:
+            return
+
+        old_size = self.voxel_size
+        old_resources = (
+            self._scratchpad,
+            self._last_step_data,
+            self._grid_status,
+            self._grid_accumulated_status,
+            self._grid_point_mask,
+        )
+        self._mpm_model.voxel_size = voxel_size
+        self._scratchpad = None
+        self._last_step_data = LastStepData()
+        self._last_step_data.body_q_prev = old_resources[1].body_q_prev
+        self._grid_status = None
+        self._grid_accumulated_status = None
+        try:
+            self._initialize_mpm_grid(state.particle_q)
+        except Exception:
+            self._mpm_model.voxel_size = old_size
+            (
+                self._scratchpad,
+                self._last_step_data,
+                self._grid_status,
+                self._grid_accumulated_status,
+                self._grid_point_mask,
+            ) = old_resources
+            raise
+        self._mpm_model.collider.query_max_dist = voxel_size * math.sqrt(3.0)
 
     def check_sparse_grid_rebuild_status(self) -> None:
         """Raise if a rebuildable sparse grid exceeded its reserved capacity.
@@ -2243,6 +2342,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
+            self._last_step_data.clear_keyed_impulses()
 
     @override
     def coupling_eval_gravity_acceleration(
@@ -2514,15 +2614,98 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
         return self._mpm_model.collider.collider_body_index
 
-    def project_outside(self, state_in: newton.State, state_out: newton.State, dt: float, gap: float | None = None):
+    def project_outside(
+        self,
+        state_in: newton.State,
+        state_out: newton.State,
+        dt: float,
+        gap: float | None = None,
+        *,
+        state_prev: newton.State | None = None,
+    ) -> None:
         """Project particles outside of colliders, and adjust their velocity and velocity gradients
 
         Args:
             state_in: The input state.
             state_out: The output state. Only particle_q, particle_qd, and particle_qd_grad are written.
-            dt: The time step, for extrapolating the collider end-of-step positions from its current position and velocity.
+            dt: Time step [s]. Endpoint projection extrapolates collider poses
+                from their current velocities. With ``state_prev``, supplied
+                poses define the motion and finite-difference contact velocity.
             gap: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
+            state_prev: Optional start-of-step state for swept collision projection.
+                When provided, ``state_in.body_q`` must contain end-of-step
+                collider poses and ``state_prev.body_q`` their start poses.
+                The previous particle positions must survive the integration
+                step; solvers that overwrite input buffers require a separate
+                saved state. The sweep tests particle centers against rigid
+                triangle meshes, independently of the rheology iteration count.
+                The centerline intersection test is exact for linear particle
+                motion and translating colliders. Up to four swept contacts and
+                an endpoint projection are applied per particle. Remaining
+                displacement is discarded if the contact budget is exhausted.
+                Rotations are approximated by a straight segment in collider
+                space and require substeps for large angular displacements.
+                Deforming mesh trajectories and finite particle radius sweeps
+                are not supported. Endpoint projection still applies collider
+                margins. Projection does not apply reaction impulses to bodies.
+
+                .. experimental::
+
+                    Swept particle projection may change without prior notice.
         """
+
+        if state_prev is not None:
+            if not math.isfinite(dt) or dt <= 0.0:
+                raise ValueError("Swept particle projection requires a finite positive dt.")
+            if self._mpm_model.deformable_collider_vertex_ranges:
+                raise ValueError("Swept particle projection requires rigid collider meshes.")
+            self._validate_reset_array(
+                state_prev.particle_q,
+                name="particle_q",
+                shape=(self.model.particle_count,),
+                dtype=wp.vec3,
+                device=self.model.device,
+            )
+            if self._mpm_model.collider_body_count:
+                if (
+                    not isinstance(state_in.body_q, wp.array)
+                    or state_in.body_q.shape[0] < self._mpm_model.collider_body_count
+                ):
+                    raise ValueError("state_in.body_q must contain end poses for every collider body.")
+                self._validate_reset_array(
+                    state_prev.body_q,
+                    name="body_q",
+                    shape=state_in.body_q.shape,
+                    dtype=wp.transform,
+                    device=self.model.device,
+                )
+            previous_gap = self._mpm_model.collider.query_max_dist
+            if gap is not None:
+                self._mpm_model.collider.query_max_dist = gap
+            try:
+                wp.launch(
+                    project_swept_collider,
+                    dim=state_in.particle_count,
+                    inputs=[
+                        state_prev.particle_q,
+                        state_in.particle_q,
+                        state_in.particle_qd,
+                        state_in.mpm.particle_qd_grad,
+                        self._mpm_model.particle_flags,
+                        self.model.particle_mass,
+                        self._particle_environment,
+                        self._mpm_model.collider,
+                        state_prev.body_q,
+                        state_in.body_q,
+                        None,
+                        dt,
+                    ],
+                    outputs=[state_out.particle_q, state_out.particle_qd, state_out.mpm.particle_qd_grad],
+                    device=self.model.device,
+                )
+            finally:
+                self._mpm_model.collider.query_max_dist = previous_gap
+            return
 
         if gap is not None:
             # Update max query dist if provided
