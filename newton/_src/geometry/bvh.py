@@ -185,14 +185,20 @@ def mark_inactive_bvh_shapes(
     shape_variant_row: wp.array[wp.bool],
     shape_flags: wp.array[wp.int32],
     shape_flags_mask: wp.int32,
+    shape_opacity: wp.array[wp.float32],
     out_shape_enabled: wp.array[wp.uint32],
 ):
-    """Copy the BVH leaf shapes, replacing variant rows whose flags the mask excludes, such as empty
-    rows, by :data:`BVH_SHAPE_INACTIVE`."""
+    """Copy the BVH leaf shapes, replacing variant rows that :func:`compute_enabled_shapes` would
+    exclude now, such as empty or fully transparent rows, by :data:`BVH_SHAPE_INACTIVE`."""
     tid = wp.tid()
     shape = bvh_shape_leaves[tid]
     s = wp.int32(shape)
-    active = not shape_variant_row[s] or (shape_flags[s] & shape_flags_mask) != 0
+    active = True
+    if shape_variant_row[s]:
+        flags = shape_flags[s]
+        if shape_opacity.shape[0] > 0 and shape_opacity[s] <= 0.0:
+            flags = flags & ~_SHAPE_FLAG_VISIBLE
+        active = (flags & shape_flags_mask) != 0
     out_shape_enabled[tid] = wp.where(active, shape, BVH_SHAPE_INACTIVE)
 
 

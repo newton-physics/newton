@@ -5936,7 +5936,9 @@ class ModelBuilder:
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
         body custom attributes and shape custom attributes that reference other entities. The
-        variants are copied at declaration, so later edits to the variant builders have no effect.
+        variants are copied at declaration, so later edits to the variant builders have no effect, and
+        :meth:`finalize` replaces edits to the rows in this builder, such as by
+        :meth:`approximate_meshes`, with the initial variant; edit the variant builders instead.
 
         Bodies copied with :meth:`add_builder` or :meth:`replicate` share the variants, which
         :meth:`finalize` stores once, and select independently per world. Variant ids are positions
@@ -6000,6 +6002,11 @@ class ModelBuilder:
                             f"Variant shape custom attribute '{key}' is declared differently than in this "
                             "builder or another variant."
                         )
+        # Declare every variant's attributes now, so later declarations are checked against them and
+        # finalize() declares nothing.
+        for key, declaration in declarations.items():
+            if key not in self.custom_attributes:
+                self.add_custom_attribute(declaration)
 
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.

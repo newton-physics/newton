@@ -55,13 +55,17 @@ if TYPE_CHECKING:
 
 
 def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndarray:
-    """Return a host mask for shapes participating in shape-shape collision."""
+    """Return a host mask for shapes participating in shape-shape collision.
+
+    A variant row counts when any variant shape it can hold collides, since a selection can
+    change its flags after construction.
+    """
     shape_flags = getattr(model, "shape_flags", None)
     if shape_flags is None:
         count = model.shape_count if shape_count is None else shape_count
         return np.ones(count, dtype=bool)
 
-    flags = shape_flags.numpy()
+    flags = model._shape_option_flags() if getattr(model, "_variant_row_max", 0) else shape_flags.numpy()
     if shape_count is not None and len(flags) != shape_count:
         raise ValueError("model.shape_flags and model.shape_type must have the same length")
     return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
@@ -131,14 +135,6 @@ def _variant_options(model: Model) -> _VariantOptions | None:
         variant_collides=(geometry["shape_flags"].numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0,
         row_mask=row_mask,
     )
-
-
-def _shape_may_collide_mask(
-    model: Model, variant_options: _VariantOptions | None, shape_count: int | None = None
-) -> np.ndarray:
-    """:func:`_shape_collide_mask`, also counting variant rows that can hold a colliding variant shape."""
-    mask = _shape_collide_mask(model, shape_count)
-    return mask if variant_options is None else mask | variant_options.any(variant_options.variant_collides)
 
 
 def _shape_may_be_mesh(model: Model, shape_types: np.ndarray, variant_options: _VariantOptions | None) -> np.ndarray:
@@ -757,7 +753,7 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
     shape_types = model.shape_type.numpy()
     # Slot rows count as meshes if they can hold one.
     variant_options = _variant_options(model)
-    colliding_mask = _shape_may_collide_mask(model, variant_options, len(shape_types))
+    colliding_mask = _shape_collide_mask(model, len(shape_types))
 
     mesh_mask = colliding_mask & _shape_may_be_mesh(model, shape_types, variant_options)
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
@@ -1183,13 +1179,7 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
         return max(0, (shape_count * (shape_count - 1)) // 2)
 
     sw = shape_world.numpy()
-    shape_flags = getattr(model, "shape_flags", None)
-    if shape_flags is not None:
-        # Variant rows that start empty can collide after a selection.
-        sf = model._shape_option_flags() if getattr(model, "_variant_row_max", 0) else shape_flags.numpy()
-        colliding = (sf & int(ShapeFlags.COLLIDE_SHAPES)) != 0
-    else:
-        colliding = np.ones(len(sw), dtype=bool)
+    colliding = _shape_collide_mask(model, len(sw))
 
     global_count = int(np.count_nonzero((sw == -1) & colliding))
     _, world_counts = np.unique(sw[(sw >= 0) & colliding], return_counts=True)
@@ -1317,7 +1307,7 @@ def _compute_generic_convex_pair_stats(
         generic_pair_count = int(np.count_nonzero(generic))
         return generic_pair_count > 0, min(candidate_pair_work_estimate, generic_pair_count)
 
-    colliding_mask = _shape_may_collide_mask(model, variant_options, len(shape_types))
+    colliding_mask = _shape_collide_mask(model, len(shape_types))
     has_generic_convex_pairs = False
     generic_pair_bound = 0
     unique_types = [t for t in range(len(GeoType)) if np.any(colliding_mask & ((type_bits >> t) & 1).astype(bool))]
@@ -2030,7 +2020,7 @@ class CollisionPipeline:
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 shape_count_routed = len(shape_types)
-                route_mask = _shape_may_collide_mask(model, variant_options, shape_count_routed)
+                route_mask = _shape_collide_mask(model, shape_count_routed)
                 # Shapes that can reach the narrow phase decide which stages it builds.
                 # NXN/SAP pair only shapes that collide with shapes. The explicit list is
                 # authoritative: every listed shape reaches the narrow phase, including

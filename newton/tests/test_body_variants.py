@@ -231,6 +231,53 @@ class TestBodyVariants(unittest.TestCase):
             {0, 1, 2},
         )
 
+    def test_rows_hidden_at_construction(self):
+        """Rows that start without a collider or transparent collide and occlude once they hold a shape that does."""
+
+        def variant(kind: str, opacity: float = 1.0, **config) -> newton.ModelBuilder:
+            builder = newton.ModelBuilder()
+            body = builder.add_body()
+            cfg = newton.ModelBuilder.ShapeConfig(**config)
+            if kind == "box":
+                builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=cfg)
+            else:
+                builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.25), cfg=cfg)
+            builder.shape_opacity[-1] = opacity
+            return builder
+
+        def scene(variants: list[newton.ModelBuilder], world_count: int) -> newton.Model:
+            env = newton.ModelBuilder()
+            env.add_body_variants(env.add_body(xform=wp.transform((0.0, 0.0, 0.24), wp.quat_identity())), variants)
+            builder = newton.ModelBuilder()
+            builder.replicate(env, world_count)
+            builder.add_ground_plane()
+            return builder.finalize(device="cpu")
+
+        # The world's only collider row is empty until the mesh is selected.
+        model = scene([variant("box", has_shape_collision=False), variant("mesh")], 1)
+        for mode in ("nxn", "sap"):
+            with self.subTest(broad_phase=mode):
+                _select(model, [0])
+                pipeline = newton.CollisionPipeline(model, broad_phase=mode)
+                contacts = pipeline.contacts()
+                _select(model, [1])
+                pipeline.collide(model.state(), contacts)
+                self.assertGreater(contacts.rigid_contact_count.numpy()[0], 0)
+
+        # A transparent box first holds the row of an opaque mesh; rays hit only the mesh.
+        model = scene([variant("box", opacity=0.0), variant("mesh")], 2)
+        _select(model, [1, 0])
+        model.bvh_refit_shapes(model.state())
+        shape_id = wp.zeros(2, dtype=wp.int32, device="cpu")
+        newton.intersect_ray(
+            model,
+            ray_origins=wp.array([(-2.0, 0.0, 0.24)] * 2, dtype=wp.vec3, device="cpu"),
+            ray_directions=wp.array([(1.0, 0.0, 0.0)] * 2, dtype=wp.vec3, device="cpu"),
+            ray_worlds=wp.array([0, 1], dtype=wp.int32, device="cpu"),
+            out_shape_id=shape_id,
+        )
+        np.testing.assert_array_equal(shape_id.numpy(), [0, -1])
+
     def test_pipeline_covers_variant_mesh_properties(self):
         """A row that starts as a box can take a surface-velocity mesh later."""
         conveyor = newton.ModelBuilder()
