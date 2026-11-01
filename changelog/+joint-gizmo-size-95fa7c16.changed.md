@@ -1,0 +1,1 @@
+Increase selected joint gizmo sizes and add shared scale and automatic link-size controls under Viewer settings > Joints. For smaller gizmos, reduce **Scale**; disable **Size with links** for a fixed projected size independent of link dimensions.

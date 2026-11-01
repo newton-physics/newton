@@ -13,6 +13,15 @@ import warp as wp
 import newton
 from newton._src.math import orthonormal_basis, velocity_at_point
 
+# Shared with the GL mode-disk shader, which renders open and unavailable
+# modes as rings. Other backends retain the same diagnostic color palette.
+_CONTACT_MODE_COLORS = {
+    "open": (0.55, 0.55, 0.55),
+    "stick": (0.20, 0.85, 0.50),
+    "slip": (0.25, 0.55, 1.00),
+    "unknown": (0.95, 0.70, 0.30),
+}
+
 
 @wp.struct
 class PickingState:
@@ -350,12 +359,15 @@ def compute_contact_lines(
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
     contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
     contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     line_scale: float,
     # outputs
     line_start: wp.array[wp.vec3],
     line_end: wp.array[wp.vec3],
+    opposing_point: wp.array[wp.vec3],
 ):
     """Create line segments along contact normals for visualization."""
     tid = wp.tid()
@@ -364,12 +376,14 @@ def compute_contact_lines(
     if tid >= count:
         line_start[tid] = nan_line
         line_end[tid] = nan_line
+        opposing_point[tid] = nan_line
         return
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
         line_start[tid] = nan_line
         line_end[tid] = nan_line
+        opposing_point[tid] = nan_line
         return
 
     # Filter by visible worlds
@@ -381,26 +395,19 @@ def compute_contact_lines(
             if visible_worlds_mask[w] == 0:
                 line_start[tid] = nan_line
                 line_end[tid] = nan_line
+                opposing_point[tid] = nan_line
                 return
 
-    # Get world transforms for both shapes
-    body_a = shape_body[shape_a]
-    X_wb_a = wp.transform_identity()
-    if body_a >= 0:
-        X_wb_a = body_q[body_a]
-
-    # Compute world space contact positions
-    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
-    # Anchor the debug normal at shape 0's contact point.
-    contact_center = world_pos0
-
-    # Apply world offset
-    if world_a >= 0 or world_b >= 0:
-        contact_center += world_offsets[world_a if world_a >= 0 else world_b]
-
-    # Apply layer transform (rotates + translates contact point and rotates the normal)
-    contact_center = wp.transform_point(layer_xform, contact_center)
-    normal = wp.quat_rotate(wp.transform_get_rotation(layer_xform), contact_normal[tid])
+    body_a, body_b = shape_body[shape_a], shape_body[shape_b]
+    xa = body_q[body_a] if body_a >= 0 else wp.transform_identity()
+    xb = body_q[body_b] if body_b >= 0 else wp.transform_identity()
+    point_a = wp.transform_point(xa, contact_point0[tid] + contact_offset0[tid])
+    point_b = wp.transform_point(xb, contact_point1[tid] + contact_offset1[tid])
+    world = world_a if world_a >= 0 else world_b
+    offset = world_offsets[world] if world >= 0 else wp.vec3(0.0)
+    contact_center = wp.transform_point(layer_xform, point_a + offset)
+    opposing_point[tid] = wp.transform_point(layer_xform, point_b + offset)
+    normal = wp.transform_vector(layer_xform, contact_normal[tid])
 
     # Create line along the normal, relative to the smaller shape in the pair.
     # Normal points from shape0 to shape1, draw from center in normal direction
@@ -452,6 +459,7 @@ def compute_contact_disk_transforms(
     color_stick: wp.vec3,
     color_slip: wp.vec3,
     color_unknown: wp.vec3,
+    both_sides: bool,
     # outputs
     transforms: wp.array[wp.transform],
     scales: wp.array[wp.vec3],
@@ -468,34 +476,39 @@ def compute_contact_disk_transforms(
     inferred contact mode computed from the linear contact force magnitude and
     the tangential relative velocity at the contact point:
 
-    * ``|F| <= eps_force``                               -> ``color_open``
-    * ``|F| > eps_force and |v_tan| < eps_velocity``      -> ``color_stick``
-    * ``|F| > eps_force and |v_tan| >= eps_velocity``     -> ``color_slip``
+    * ``|F| <= eps_force``                                -> ``color_open``
+    * ``|F| > eps_force and |v_tan| < eps_velocity``       -> ``color_stick``
+    * ``|F| > eps_force and |v_tan| >= eps_velocity``      -> ``color_slip``
 
-    When ``contact_force`` is null, every active contact uses ``color_unknown``;
-    unavailable force output is distinct from a measured zero force.
+    When ``contact_force`` is null, every candidate uses ``color_unknown``;
+    missing force output must not be mistaken for a measured zero force.
+
+    With ``both_sides``, consecutive pairs of disks mark each body's witness
+    point. Both disks use the same mode color and opposite orientations.
 
     Inactive slots (beyond ``contact_count[0]`` or hidden by the visible-worlds
     mask) receive a degenerate zero-scale transform and a black color.
     """
-    tid = wp.tid()
+    glyph = wp.tid()
+    tid = glyph // 2 if both_sides else glyph
+    opposing = both_sides and glyph % 2 == 1
 
     zero_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
     zero_vec = wp.vec3(0.0, 0.0, 0.0)
 
     count = contact_count[0]
     if tid >= count:
-        transforms[tid] = zero_xform
-        scales[tid] = zero_vec
-        colors[tid] = zero_vec
+        transforms[glyph] = zero_xform
+        scales[glyph] = zero_vec
+        colors[glyph] = zero_vec
         return
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
-        transforms[tid] = zero_xform
-        scales[tid] = zero_vec
-        colors[tid] = zero_vec
+        transforms[glyph] = zero_xform
+        scales[glyph] = zero_vec
+        colors[glyph] = zero_vec
         return
 
     world_a = shape_world[shape_a]
@@ -504,9 +517,9 @@ def compute_contact_disk_transforms(
         w = world_a if world_a >= 0 else world_b
         if w >= 0:
             if visible_worlds_mask[w] == 0:
-                transforms[tid] = zero_xform
-                scales[tid] = zero_vec
-                colors[tid] = zero_vec
+                transforms[glyph] = zero_xform
+                scales[glyph] = zero_vec
+                colors[glyph] = zero_vec
                 return
 
     body_a = shape_body[shape_a]
@@ -517,14 +530,19 @@ def compute_contact_disk_transforms(
         X_wb_a = body_q[body_a]
 
     world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
+    X_wb_b = wp.transform_identity()
+    if body_b >= 0:
+        X_wb_b = body_q[body_b]
+    world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid] + contact_offset1[tid])
 
-    contact_center = world_pos0
+    contact_center = world_pos1 if opposing else world_pos0
     if world_a >= 0 or world_b >= 0:
         contact_center += world_offsets[world_a if world_a >= 0 else world_b]
 
     n = contact_normal[tid]
-    q = _quat_from_normal_z(n)
+    q = _quat_from_normal_z(-n if opposing else n)
 
+    # Force availability is independent of whether this candidate is loaded.
     color = color_unknown
     thickness_scaling = 1.0  # Apply slightly different thickness based on color to avoid visible z-fighting
     if contact_force:
@@ -541,8 +559,6 @@ def compute_contact_disk_transforms(
                 v_a = velocity_at_point(body_qd[body_a], r_a)
             v_b = wp.vec3(0.0, 0.0, 0.0)
             if body_b >= 0:
-                X_wb_b = body_q[body_b]
-                world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid] + contact_offset1[tid])
                 world_com_b = wp.transform_point(X_wb_b, body_com[body_b])
                 r_b = world_pos1 - world_com_b
                 v_b = velocity_at_point(body_qd[body_b], r_b)
@@ -559,9 +575,9 @@ def compute_contact_disk_transforms(
     disk_radius = disk_radius_scale * pair_radius
     disk_thickness = disk_thickness_scale * pair_radius
 
-    transforms[tid] = wp.transform_multiply(layer_xform, wp.transform(contact_center, q))
-    scales[tid] = wp.vec3(disk_radius, disk_radius, disk_thickness * thickness_scaling)
-    colors[tid] = color
+    transforms[glyph] = wp.transform_multiply(layer_xform, wp.transform(contact_center, q))
+    scales[glyph] = wp.vec3(disk_radius, disk_radius, disk_thickness * thickness_scaling)
+    colors[glyph] = color
 
 
 @wp.kernel
@@ -1135,6 +1151,12 @@ def compact(
     i = wp.tid()
     if mask[i] == wp.int32(1):
         dst[offsets[i]] = src[i]
+
+
+# Register both viewer particle paths before preloading this module. Inferring
+# either overload on first use would invalidate all the already-loaded kernels.
+wp.overload(compact, [wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.vec3]])
+wp.overload(compact, [wp.array[float], wp.array[wp.int32], wp.array[wp.int32], wp.array[float]])
 
 
 @wp.kernel
