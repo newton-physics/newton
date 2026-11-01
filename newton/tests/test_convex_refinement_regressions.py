@@ -283,6 +283,54 @@ def test_refinement_triangle_box_depth(test, device):
             test.assertLessEqual(float(np.max(np.sum(local[:, :2], axis=1))), 0.01 + 1.0e-5)
 
 
+def test_refinement_triangle_box_seam(test, device):
+    """Keep seam contacts on the mesh front side with the expected normals and depth."""
+    half = np.array([0.085, 0.03, 0.005])
+    height, pitch = 0.002, 0.1
+    vertices = np.array([[-0.2, -0.2, 0.0], [0.2, -0.2, 0.0], [0.2, 0.2, 0.0], [-0.2, 0.2, 0.0]], dtype=np.float32)
+    box_pose = wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), pitch))
+    expected_depth = half[0] * np.sin(pitch) + half[2] * np.cos(pitch) - height
+    # Besides the mesh face, a triangle's seam can contact the tilted box edge.
+    # Its normal is perpendicular to the diagonal and the box's rotated X edge.
+    edge_normal = wp.normalize(wp.vec3(-np.sin(pitch), np.sin(pitch), -np.cos(pitch)))
+    frames = (
+        wp.transform_identity(),
+        wp.transform(wp.vec3(0.3, -0.2, 0.4), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.4, 0.2)), 0.35)),
+    )
+    # Reverse shape insertion while also rotating the scene, so the front side
+    # cannot accidentally be inferred from world Z or contact shape order.
+    for swap, frame in enumerate(frames):
+        with test.subTest(swap=bool(swap)):
+            pose = wp.transform_multiply(frame, box_pose)
+            pa, pb, normals = _contacts(
+                test,
+                device,
+                half,
+                vertices,
+                [0, 1, 2, 0, 2, 3],
+                frame,
+                np.ones(3),
+                swap=bool(swap),
+                triangle=True,
+                ground=pose,
+            )
+            rotation = wp.transform_get_rotation(frame)
+            expected_normals = np.array(
+                [
+                    wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, -1.0)),
+                    wp.quat_rotate(rotation, edge_normal),
+                ]
+            )
+            error = np.linalg.norm(normals[:, None, :] - expected_normals[None, :, :], axis=2)
+            np.testing.assert_allclose(np.min(error, axis=1), 0.0, atol=1.0e-5)
+            depths = np.sum((pa - pb) * normals, axis=1)
+            test.assertAlmostEqual(float(np.max(depths)), expected_depth, delta=1.0e-5)
+            local_mesh = np.array([wp.transform_point(wp.transform_inverse(frame), wp.vec3(point)) for point in pb])
+            np.testing.assert_allclose(local_mesh[:, 2], 0.0, atol=1.0e-5)
+            local_box = np.array([wp.transform_point(wp.transform_inverse(pose), wp.vec3(point)) for point in pa])
+            np.testing.assert_allclose(np.max(np.abs(local_box) - half, axis=1), 0.0, atol=1.0e-5)
+
+
 def test_refinement_triangle_above_wide_ground(test, device):
     """Report the true gap for a small triangle hovering above a wide ground.
 
@@ -495,6 +543,7 @@ for function in (
     test_refinement_failed_query_separation,
     test_refinement_unconverged_query_separation,
     test_refinement_triangle_box_depth,
+    test_refinement_triangle_box_seam,
     test_refinement_triangle_above_wide_ground,
     test_refinement_resting_box_stack,
     test_refinement_box_hull_depth,
