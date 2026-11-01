@@ -30,6 +30,17 @@ class RenderOrder(enum.IntEnum):
     """Render pixels in tiles, defined by tile_width x tile_height"""
 
 
+class RayGenerationMode(enum.IntEnum):
+    """Internal: how the render kernel obtains camera-space rays."""
+
+    BUNDLE = 0
+    """One ``(height, width, sample_count, 2)`` bundle shared by every view."""
+    BUNDLE_INDEXED = 1
+    """Bundles stacked along the first axis, selected per view by ``view_ray_bundle``."""
+    PINHOLE = 2
+    """Pinhole rays generated in the kernel from per-view ``view_pinhole`` parameters."""
+
+
 class WorldRenderFlag(enum.IntEnum):
     """Negative disable sentinels for the per-view ``world_indices`` array.
 
