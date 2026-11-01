@@ -8898,8 +8898,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "Make sure each body belongs to an articulation or has a standalone joint to world."
             )
 
-        # add contact exclusions between bodies to ensure parent <> child collisions are ignored
-        # even when one of the bodies is static
+        # Newton's filter pairs decide which bodies may touch: MuJoCo's own parent-child rule (a
+        # body's weld group against its parent's) stays off, and the body pairs Newton filters are
+        # exported as excludes, which also hold when one body is static. A per-world mesh layout
+        # exports no excludes; its per-slot masks carry the same pairs.
+        spec.option.disableflags = spec.option.disableflags | int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
         for b1, b2 in body_filters:
             mb1, mb2 = body_mapping[b1], body_mapping[b2]
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
