@@ -44,7 +44,11 @@ published citation when available and retain an accessible preprint link.
 
 ### 2026
 
+- **Gym-Anything for Robotics: Scaling physical simulations with digital agents**. *P. Aggarwal, S. Welleck*. October 2026. [arXiv:2610.40565](https://arxiv.org/abs/2610.40565)
+
 - **FlashNeRD: Performance-First Contact-Rich Neural Robot Dynamics**. *M. Ataei, M. A. Nabian, J. Xu, M. Macklin, Y. Narang, E. Heiden, O. Zhang, Y. Guo, R. D'Sa, O. Hennigh, G. State, S. Choudhry*. October 2026. [arXiv:2610.09130](https://arxiv.org/abs/2610.09130)
+
+- **GaP: A Graph-as-Policy Multi-Agent Self-Learning Harness For Variational Automation Tasks**. *K. Chen, S. Xie, L. Fu, J. Yu, W. Pacini, S. Bajamahal, H. Kim, J. Drake, D. Kim, H. Xue, J. Francis, C. Juette, P. Schaldenbrand, M. Y. Seker, R. Wickramarachchi, U. Yoo, G. Wang, A. Murali, B. Sundaralingam, S. S. Sastry, Y. Zhu, L. Fan, S. Huang, K. Goldberg*. July 2026. [arXiv:2607.05369](https://arxiv.org/abs/2607.05369)
 
 - **RoboSimStudio: An Interactive Toolkit for Rapid Real2Sim of Robot Manipulation Tasks**. *K. Chen, S. Xie, U. Yoo, X. Zhu, C. Magner, A. Zhu, D. Kim, E. Heiden, E. Coumans, M. Macklin, S. Huang, K. Goldberg*. October 2026. [arXiv:2610.18835](https://arxiv.org/abs/2610.18835)
 
@@ -70,6 +74,8 @@ published citation when available and retain an accessible preprint link.
 
 - **High-Fidelity 4D Cloth Capture Pipeline with a Two-Level Pattern**. *Z. Liu, A. Chen, S. Chen, Y. Yang, C. Yuksel, J. H. Lin*. ACM Transactions on Graphics 45(4), July 2026. [DOI:10.1145/3811305](https://doi.org/10.1145/3811305), [author version](https://graphics.cs.utah.edu/research/projects/two-level-cloth-capture-pattern/two-level-cloth-capture-pattern.pdf)
 
+- **ForwardDLO: Model-Based Bimanual Shape Matching of Unconstrained Deformable Linear Objects**. *T. Missal, B. Guler, L. Domingues, S. Manschitz, J. Peters, P. D. P. Costa*. September 2026. [arXiv:2609.18455](https://arxiv.org/abs/2609.18455)
+
 - **OrchardBench: A Physically-Grounded, GPU-Parallel Apple-Orchard Simulation Benchmark for Agricultural Robotics**. *H. Munn*. July 2026. [arXiv:2607.06337](https://arxiv.org/abs/2607.06337)
 
 - **DetAug: Obstacle-Blind Trajectory Augmentation for Zero-shot Obstacle Avoidance**. *R. O'Mahoney, M. Zoellner, I. Havoutis*. September 2026. [arXiv:2609.18395](https://arxiv.org/abs/2609.18395)
@@ -93,6 +99,8 @@ published citation when available and retain an accessible preprint link.
 - **Learning Expressive and Compositional Motion Representation via Spectral Skills**. *F. Wu, C. Gao, C. Yang, Y. Zhao, B. Dai, A. Wu*. September 2026. [arXiv:2609.37677](https://arxiv.org/abs/2609.37677)
 
 - **RopeFormer: Cross-Trial Adaptation from Interaction History for Dynamic Rope Manipulation**. *M. Wu, K. Yao, S. Luan, M. Tomizuka, Y. Chen*. September 2026. [arXiv:2609.23432](https://arxiv.org/abs/2609.23432)
+
+- **ContactBench 1.0: A Benchmark for Everyday Contact-Rich Robotic Manipulation**. *J. Xiang, Y. Wang, J. Bohg, W. Yuan*. October 2026. [arXiv:2610.24512](https://arxiv.org/abs/2610.24512)
 
 - **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
 
