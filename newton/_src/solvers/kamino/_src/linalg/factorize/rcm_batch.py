@@ -21,9 +21,8 @@ kernel per matrix block. Other devices use a staged fallback with a fixed
 Layout assumptions
 ------------------
 
-- ``A_flat``: a flat ``wp.array`` containing all block matrices concatenated
-  in row-major order. Block ``b``'s matrix starts at offset ``mio[b]`` with
-  size ``dims[b] * dims[b]``.
+- ``A_flat``: packed matrices in a flat array or one row per block.
+  Block ``b`` starts at ``mio[b]`` within its flat buffer or world row.
 - ``perm_flat``: flat wp.int32 permutation output. Block ``b``'s output starts
   at offset ``vio[b]`` with size ``dims[b]``.
 - ``dims``, ``mio``, ``vio``: ``wp.array[wp.int32]`` of length
@@ -115,11 +114,12 @@ def allocate_rcm_batch_scratch(total_vec: int, num_blocks: int, device) -> dict:
 
 
 @cache
-def _make_rcm_batch_kernels(dtype):
-    """Kernels are parameterized by `dtype` only. `max_dim` / `num_blocks`
+def _make_rcm_batch_kernels(dtype, array_ndim: int = 1):
+    """Kernels are parameterized by `dtype` and array rank. `max_dim` / `num_blocks`
     are passed as runtime ints so the same module can serve any shape.
     """
-    module_name = f"rcm_batch_kernels_{getattr(dtype, '__name__', str(dtype))}"
+    MatrixType = wp.array[dtype] if array_ndim == 1 else wp.array2d[dtype]
+    module_name = f"rcm_batch_kernels_{getattr(dtype, '__name__', str(dtype))}_{array_ndim}d"
     module = wp.get_module(module_name)
     module.options.update({"enable_backward": False, "default_grid_stride": False})
 
@@ -140,7 +140,7 @@ def _make_rcm_batch_kernels(dtype):
     def init_and_degree_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: wp.array[dtype],  # type: ignore[valid-type]
+        A: MatrixType,  # type: ignore[valid-type]
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
         mio: wp.array[wp.int32],  # type: ignore[valid-type]
         ld: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -169,6 +169,7 @@ def _make_rcm_batch_kernels(dtype):
 
         vb = vio[b]
         mb = mio[b]
+        A_world = A[b] if wp.static(MatrixType.ndim == 2) else A
 
         # Per-vertex init.
         level[vb + i] = int(-1)
@@ -179,7 +180,7 @@ def _make_rcm_batch_kernels(dtype):
         for j in range(n_b):
             if j == i:
                 continue
-            av = dtype(wp.abs(A[base + j]))
+            av = dtype(wp.abs(A_world[base + j]))
             if av > tol:
                 d += int(1)
         degree[vb + i] = d
@@ -227,7 +228,7 @@ def _make_rcm_batch_kernels(dtype):
     def bfs_step_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: wp.array[dtype],  # type: ignore[valid-type]
+        A: MatrixType,  # type: ignore[valid-type]
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
         mio: wp.array[wp.int32],  # type: ignore[valid-type]
         ld: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -255,6 +256,7 @@ def _make_rcm_batch_kernels(dtype):
 
         vb = vio[b]
         mb = mio[b]
+        A_world = A[b] if wp.static(MatrixType.ndim == 2) else A
         cur = current_level[b]
 
         if level[vb + i] != cur:
@@ -265,7 +267,7 @@ def _make_rcm_batch_kernels(dtype):
         for j in range(n_b):
             if j == i:
                 continue
-            av = dtype(wp.abs(A[base + j]))
+            av = dtype(wp.abs(A_world[base + j]))
             if av > tol:
                 if level[vb + j] == int(-1):
                     old = wp.atomic_cas(level, vb + j, int(-1), next_lvl)
@@ -321,7 +323,7 @@ def _make_rcm_batch_kernels(dtype):
     def complete_cuda_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: wp.array[dtype],  # type: ignore[valid-type]
+        A: MatrixType,  # type: ignore[valid-type]
         dims: wp.array[wp.int32],
         mio: wp.array[wp.int32],
         ld: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -343,6 +345,7 @@ def _make_rcm_batch_kernels(dtype):
         n_b = dims[b]
         vb = vio[b]
         mb = mio[b]
+        A_world = A[b] if wp.static(MatrixType.ndim == 2) else A
 
         if lane == int(0):
             best_deg = int(2147483647)
@@ -368,7 +371,7 @@ def _make_rcm_batch_kernels(dtype):
                 base = mb + source * ld[b]
                 j = lane
                 while j < n_b:
-                    if j != source and dtype(wp.abs(A[base + j])) > tol:
+                    if j != source and dtype(wp.abs(A_world[base + j])) > tol:
                         wp.atomic_cas(level, vb + j, int(-1), next_level)
                     j += block_dim
                 pos += int(1)
@@ -533,7 +536,7 @@ def create_rcm_batch_launch(
     if max_bfs_iters is not None:
         max_bfs_iters = min(max(0, max_bfs_iters), max_dim)
 
-    K = _make_rcm_batch_kernels(dtype)
+    K = _make_rcm_batch_kernels(dtype, A_flat.ndim)
     if ld is None:
         ld = dims
 

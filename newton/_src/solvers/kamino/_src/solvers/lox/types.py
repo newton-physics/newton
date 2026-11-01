@@ -928,6 +928,7 @@ class DenseBlockInfo(DenseSquareMultiLinearInfo):
         self.num_blocks = len(self.dimensions)
         self.max_dimension = max(self.dimensions)
         self.total_mat_size = int(mat_offsets[-1])
+        self.matrix_shape = (self.total_mat_size,)
         self.total_vec_size = int(vec_offsets[-1])
         with wp.ScopedDevice(self.device):
             self.maxdim = wp.array(self.dimensions, dtype=self.itype)

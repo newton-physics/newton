@@ -19,6 +19,7 @@ from newton._src.solvers.kamino._src.kinematics.constraints import get_max_const
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
+from newton._src.solvers.kamino._src.linalg.core import dense_matrix_layout
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
@@ -135,12 +136,12 @@ class TestDelassusSizing(unittest.TestCase):
         self.assertIsInstance(counts[0], int)
         self.assertEqual(counts[0] ** 2, 237169)
 
-    def test_reject_oversized_dense_delassus_before_allocation(self):
-        """Reject both negative and positive int32 wraparound before allocating a dense buffer."""
+    def test_oversized_dense_delassus_uses_world_rows(self):
+        """Check the allocation shape without reserving a large dense buffer."""
+        self.assertEqual(dense_matrix_layout([2**28] * 8), ((8, 2**28), [0] * 8))
         cases = (
             (16384, 487, 3885776896),
             (20000, 487, 4743380000),
-            (1, 46341, 2147488281),
         )
         for num_worlds, num_constraints, expected_size in cases:
             with self.subTest(num_worlds=num_worlds, num_constraints=num_constraints):
@@ -154,19 +155,32 @@ class TestDelassusSizing(unittest.TestCase):
                     ),
                 )
                 delassus = DelassusOperator()
-                with patch.multiple(wp, **_allocation_patches(AssertionError("Dense buffer allocation attempted"))):
-                    with self.assertRaisesRegex(ValueError, "Kamino.*dense Delassus") as error:
+                allocators = _allocation_patches(MemoryError("Reached dense buffer allocation"))
+                with patch.multiple(wp, **allocators):
+                    with self.assertRaisesRegex(MemoryError, "Reached dense buffer allocation"):
                         delassus.finalize(model=model, data=DataKamino())
                 self.assertEqual(delassus.num_maxsize, expected_size)
-                for guidance in (
-                    "2147483647",
-                    "worlds",
-                    "max_contacts_per_world",
-                    "sparse_dynamics=True",
-                    "sparse_jacobian=True",
-                    "iterative",
-                ):
-                    self.assertIn(guidance, str(error.exception))
+                self.assertEqual(allocators["zeros"].call_args.kwargs["shape"], (num_worlds, num_constraints**2))
+
+    def test_reject_unrepresentable_world_row_stride(self):
+        for dimensions in ([32767, 32767, 362, 6], [23171] * 4, [46341]):
+            with self.subTest(dimensions=dimensions):
+                count = len(dimensions)
+                model = ModelKamino(
+                    _device="cpu",
+                    size=SizeKamino(num_worlds=count),
+                    info=ModelKaminoInfo(
+                        num_worlds=count,
+                        num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device="cpu"),
+                        num_joint_bounded_cts=wp.array([0] * count, dtype=wp.int32, device="cpu"),
+                    ),
+                )
+                allocators = _allocation_patches(MemoryError("Reached dense buffer allocation"))
+                with patch.multiple(wp, **allocators):
+                    with self.assertRaisesRegex(ValueError, "row stride"):
+                        DelassusOperator().finalize(model=model, data=DataKamino())
+                for allocator in allocators.values():
+                    allocator.assert_not_called()
 
 
 class TestDelassusOperator(unittest.TestCase):

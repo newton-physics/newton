@@ -8,9 +8,11 @@ from .llt_blocked import (
     llt_blocked_factorize,
     llt_blocked_solve,
     llt_blocked_solve_inplace,
+    make_flag_failed_llt_factors_kernel,
     make_llt_blocked_factorize_kernel,
     make_llt_blocked_solve_inplace_kernel,
     make_llt_blocked_solve_kernel,
+    make_shift_failed_llt_factors_kernel,
     shift_failed_llt_factors,
 )
 from .llt_sequential import (
@@ -37,8 +39,10 @@ __all__ = [
     "llt_sequential_factorize",
     "llt_sequential_solve",
     "llt_sequential_solve_inplace",
+    "make_flag_failed_llt_factors_kernel",
     "make_llt_blocked_factorize_kernel",
     "make_llt_blocked_solve_inplace_kernel",
     "make_llt_blocked_solve_kernel",
+    "make_shift_failed_llt_factors_kernel",
     "shift_failed_llt_factors",
 ]

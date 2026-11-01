@@ -53,6 +53,75 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         self.assertEqual(llt.device, self.default_device)
         self.assertTrue(llt._reuse_permutation)
 
+    def test_world_rows_match_flat_storage(self):
+        capacities = [16, 24, 40]
+        active = [7, 17, 33]
+        rng = np.random.default_rng(self.seed)
+        matrices = []
+        vectors = []
+        for n in active:
+            matrix = rng.uniform(-0.2, 0.2, (n, n)).astype(np.float32)
+            matrix = matrix + matrix.T
+            matrix[np.diag_indices(n)] = np.sum(np.abs(matrix), axis=1) + 1.0
+            matrices.append(matrix)
+            vectors.append(rng.standard_normal(n).astype(np.float32))
+
+        for parallel in (False, True):
+            if parallel and not self.default_device.is_cuda:
+                continue
+            outputs = []
+            for rank in (1, 2):
+                with self.subTest(parallel=parallel, rank=rank):
+                    info = DenseSquareMultiLinearInfo()
+                    info.finalize(dimensions=capacities, dtype=wp.float32, device=self.default_device)
+                    info.dim.assign(np.asarray(active, dtype=np.int32))
+                    matrix_offsets = info.mio.numpy()
+                    vector_offsets = info.vio.numpy()
+                    if rank == 1:
+                        storage = np.zeros(info.total_mat_size, dtype=np.float32)
+                    else:
+                        storage = np.zeros((len(capacities), max(capacities) ** 2), dtype=np.float32)
+                        info.mio.zero_()
+                    rhs = np.zeros(info.total_vec_size, dtype=np.float32)
+                    expected = np.zeros_like(rhs)
+                    for world, (matrix, vector) in enumerate(zip(matrices, vectors, strict=True)):
+                        n = active[world]
+                        if rank == 1:
+                            start = matrix_offsets[world]
+                            storage[start : start + n * n] = matrix.reshape(-1)
+                        else:
+                            storage[world, : n * n] = matrix.reshape(-1)
+                        start = vector_offsets[world]
+                        rhs[start : start + n] = vector
+                        expected[start : start + n] = np.linalg.solve(matrix, vector)
+                    data = wp.array(storage, dtype=wp.float32, device=self.default_device)
+                    operator = DenseLinearOperatorData(info=info, mat=data)
+                    solver = LLTBlockedRCMSolver(
+                        operator=operator,
+                        block_size=8,
+                        parallel_factorization=parallel,
+                        device=self.default_device,
+                    )
+                    b = wp.array(rhs, dtype=wp.float32, device=self.default_device)
+                    x = wp.zeros_like(b)
+                    solver.compute(data)
+                    solver.solve(b, x)
+                    result = x.numpy()
+                    np.testing.assert_allclose(result, expected, rtol=1.0e-4, atol=1.0e-5)
+                    x.assign(rhs)
+                    solver.solve_inplace(x)
+                    np.testing.assert_allclose(x.numpy(), expected, rtol=1.0e-4, atol=1.0e-5)
+                    if self.default_device.is_cuda:
+                        with wp.ScopedCapture(device=self.default_device) as capture:
+                            solver.compute(data)
+                            solver.solve(b, x)
+                        for _ in range(2):
+                            wp.capture_launch(capture.graph)
+                        np.testing.assert_array_equal(x.numpy(), result)
+                    if rank == 2:
+                        np.testing.assert_array_equal(outputs[0], result)
+                    outputs.append(result)
+
     @staticmethod
     def _run_rcm(matrix: np.ndarray, device, use_cuda_graph: bool = False) -> np.ndarray:
         n = matrix.shape[0]

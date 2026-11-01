@@ -23,7 +23,7 @@ import warp as wp
 from .....core.types import override
 from . import conjugate, factorize
 from .conjugate_fused import MAX_BLOCKS_PER_ROW, build_row_index, build_transpose_index, make_fused_cr_kernel
-from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance
+from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance, validate_dense_matrix_shape
 from .sparse_matrix import (
     BlockSparseMatrices,
     allocate_block_sparse_from_dense,
@@ -523,8 +523,12 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
 
         # Allocate the Cholesky factorization matrix and the
         # intermediate result buffer on the specified device
+        matrix_shape = A.info.matrix_shape if A.info.matrix_shape != (0,) else (A.info.total_mat_size,)
+        matrix_shape = A.mat.shape if A.mat is not None else matrix_shape
+        matrix_dtype = A.mat.dtype if A.mat is not None else self._dtype
         with wp.ScopedDevice(self._device):
-            self._L = wp.zeros(shape=(self._operator.info.total_mat_size,), dtype=self._dtype)
+            validate_dense_matrix_shape(matrix_shape, matrix_dtype)
+            self._L = wp.zeros_like(A.mat) if A.mat is not None else wp.zeros(matrix_shape, dtype=matrix_dtype)
             self._y = wp.zeros(shape=(self._operator.info.total_vec_size,), dtype=self._dtype)
 
     @override
@@ -689,8 +693,18 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
 
         # Allocate the Cholesky factorization matrix and the
         # intermediate result buffer on the specified device
+        matrix_shape = A.info.matrix_shape if A.info.matrix_shape != (0,) else (A.info.total_mat_size,)
+        matrix_shape = A.mat.shape if A.mat is not None else matrix_shape
+        matrix_dtype = A.mat.dtype if A.mat is not None else self._dtype
+        array_ndim = len(matrix_shape)
+        self._factorize_kernel = factorize.make_llt_blocked_factorize_kernel(self._factorize_block_size, array_ndim)
+        self._solve_kernel = factorize.make_llt_blocked_solve_kernel(self._solve_block_size, array_ndim)
+        self._solve_inplace_kernel = factorize.make_llt_blocked_solve_inplace_kernel(self._solve_block_size, array_ndim)
+        self._flag_failed_kernel = factorize.make_flag_failed_llt_factors_kernel(array_ndim)
+        self._shift_failed_kernel = factorize.make_shift_failed_llt_factors_kernel(array_ndim)
         with wp.ScopedDevice(self._device):
-            self._L = wp.zeros(shape=(self._operator.info.total_mat_size,), dtype=self._dtype)
+            validate_dense_matrix_shape(matrix_shape, matrix_dtype)
+            self._L = wp.zeros_like(A.mat) if A.mat is not None else wp.zeros(matrix_shape, dtype=matrix_dtype)
             self._y = wp.zeros(shape=(self._operator.info.total_vec_size,), dtype=self._dtype)
             self._retry_dim = wp.zeros(shape=(self._operator.info.num_blocks,), dtype=wp.int32)
 
@@ -718,13 +732,13 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             self._retry_dim.zero_()
             retry_shape = (info.num_blocks, int(info.max_dimension))
             wp.launch(
-                factorize.flag_failed_llt_factors,
+                self._flag_failed_kernel,
                 dim=retry_shape,
                 inputs=[info.dim, info.dim, info.mio, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
-                factorize.shift_failed_llt_factors,
+                self._shift_failed_kernel,
                 dim=retry_shape,
                 inputs=[info.dim, info.mio, self._retry_dim, self._failed_pivot_shift, A],
                 device=self._device,
@@ -740,7 +754,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             )
             # Unlike the permuted copy that LLTBRCM factorizes, A belongs to the caller.
             wp.launch(
-                factorize.shift_failed_llt_factors,
+                self._shift_failed_kernel,
                 dim=retry_shape,
                 inputs=[info.dim, info.mio, self._retry_dim, -self._failed_pivot_shift, A],
                 device=self._device,
@@ -886,7 +900,7 @@ class ConjugateGradientSolver(IterativeSolver[ScalarType, IndexType]):
         if self._operator is None:
             raise ValueError("Jacobi preconditioner requires a DenseLinearOperatorData operator.")
         wp.launch(
-            conjugate.make_jacobi_preconditioner,
+            conjugate.make_jacobi_preconditioner_kernel(self._operator.mat.ndim, self._dtype),
             dim=(self._num_worlds, self._max_dim),
             inputs=[
                 self._operator.mat,
@@ -998,7 +1012,7 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
         if self._operator is None:
             raise ValueError("Jacobi preconditioner requires a DenseLinearOperatorData operator.")
         wp.launch(
-            conjugate.make_jacobi_preconditioner,
+            conjugate.make_jacobi_preconditioner_kernel(self._operator.mat.ndim, self._dtype),
             dim=(self._num_worlds, self._max_dim),
             inputs=[
                 self._operator.mat,

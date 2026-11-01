@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import math
 from collections.abc import Callable
+from functools import cache
 from typing import Any, Generic
 
 import warp as wp
@@ -500,26 +501,36 @@ def _initialize_tolerance_kernel(
     atol_sq[world] = wp.max(r * r * b_norm_sq[world], a * a)
 
 
-@wp.kernel
-def make_jacobi_preconditioner(
-    A: wp.array[Any],
-    world_dims: wp.array[wp.int32],
-    world_maxdims: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
-    vio: wp.array[wp.int32],
-    diag: wp.array[Any],
-):
-    world, row = wp.tid()
-    if row >= world_maxdims[world]:
-        return
-    world_dim = world_dims[world]
-    v_idx = vio[world] + row
-    if row >= world_dim:
-        diag[v_idx] = 0.0
-        return
-    el = A[mio[world] + row * world_dim + row]
-    el_inv = 1.0 / (el + 1e-9)
-    diag[v_idx] = el_inv
+@cache
+def make_jacobi_preconditioner_kernel(array_ndim: int = 1, dtype=wp.float32):
+    MatrixType0 = wp.array[dtype] if array_ndim == 1 else wp.array2d[dtype]
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def make_jacobi_preconditioner(
+        A_storage: MatrixType0,
+        world_dims: wp.array[wp.int32],
+        world_maxdims: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        vio: wp.array[wp.int32],
+        diag: wp.array[MatrixType0.dtype],
+    ):
+        world, row = wp.tid()
+        A = A_storage[world] if wp.static(MatrixType0.ndim == 2) else A_storage
+        if row >= world_maxdims[world]:
+            return
+        world_dim = world_dims[world]
+        v_idx = vio[world] + row
+        if row >= world_dim:
+            diag[v_idx] = 0.0
+            return
+        el = A[mio[world] + row * world_dim + row]
+        el_inv = 1.0 / (el + 1e-9)
+        diag[v_idx] = el_inv
+
+    return make_jacobi_preconditioner
+
+
+make_jacobi_preconditioner = make_jacobi_preconditioner_kernel(dtype=Any)
 
 
 # Overloads instantiated lazily on launch change the module hash, making the

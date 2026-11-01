@@ -207,7 +207,11 @@ class UnilateralAPGD:
             problem.delassus.matvec(x, self.sparse_product, mask)
             self._launch(kernels.copy_active, [data.dim, data.vio, mask, self.sparse_product, y], rows=True)
         else:
-            self._launch(kernels.dense_matvec, [data.dim, data.mio, data.vio, data.D, mask, x, y], rows=True)
+            self._launch(
+                kernels.make_dense_matvec_kernel(data.D.ndim),
+                [data.dim, data.mio, data.vio, data.D, mask, x, y],
+                rows=True,
+            )
 
     def matvec(self, x, y, mask):
         """Apply the unilateral operator, including the optional Schur response.

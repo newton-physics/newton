@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import functools
+from functools import cache
 from typing import Any
 
 import warp as wp
@@ -322,37 +323,47 @@ def make_update_proximal_regularization_kernel(method: PADMMPenaltyUpdate):
     return _update_proximal_regularization
 
 
-@wp.kernel
-def _update_delassus_proximal_regularization(
-    # Inputs:
-    problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
-    solver_status: wp.array[PADMMStatus],
-    solver_state_sigma: wp.array[wp.vec2f],
-    # Outputs:
-    D: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    wid, tid = wp.tid()
+@cache
+def make_update_delassus_proximal_regularization_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Retrieve the number of active constraints in the world
-    ncts = problem_dim[wid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _update_delassus_proximal_regularization(
+        # Inputs:
+        problem_dim: wp.array[wp.int32],
+        problem_mio: wp.array[wp.int32],
+        solver_status: wp.array[PADMMStatus],
+        solver_state_sigma: wp.array[wp.vec2f],
+        # Outputs:
+        D_storage: MatrixType0,
+    ):
+        # Retrieve the thread index
+        wid, tid = wp.tid()
+        D = D_storage[wid] if wp.static(MatrixType0.ndim == 2) else D_storage
 
-    # Retrieve the solver status
-    status = solver_status[wid]
+        # Retrieve the number of active constraints in the world
+        ncts = problem_dim[wid]
 
-    # Skip if row index exceed the problem size or if the solver has already converged
-    if tid >= ncts or status.converged > 0:
-        return
+        # Retrieve the solver status
+        status = solver_status[wid]
 
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
+        # Skip if row index exceed the problem size or if the solver has already converged
+        if tid >= ncts or status.converged > 0:
+            return
 
-    # Retrieve the (current, previous) proximal regularization pair
-    sigma = solver_state_sigma[wid]
+        # Retrieve the matrix index offset of the world
+        mio = problem_mio[wid]
 
-    # Add the proximal regularization to the diagonal of the Delassus matrix
-    D[mio + ncts * tid + tid] += sigma[0] - sigma[1]
+        # Retrieve the (current, previous) proximal regularization pair
+        sigma = solver_state_sigma[wid]
+
+        # Add the proximal regularization to the diagonal of the Delassus matrix
+        D[mio + ncts * tid + tid] += sigma[0] - sigma[1]
+
+    return _update_delassus_proximal_regularization
+
+
+_update_delassus_proximal_regularization = make_update_delassus_proximal_regularization_kernel()
 
 
 @wp.kernel
@@ -1370,7 +1381,8 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_com
     return _compute_infnorm_residuals
 
 
-def make_collect_solver_info_kernel(use_acceleration: bool):
+@cache
+def make_collect_solver_info_kernel(use_acceleration: bool, array_ndim: int = 1):
     """
     Creates a kernel to collect solver convergence information after each iteration.
 
@@ -1382,6 +1394,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
     Returns:
         The kernel function to collect solver convergence information.
     """
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _collect_solver_convergence_info(
@@ -1399,7 +1412,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         problem_mio: wp.array[wp.int32],
         problem_mu: wp.array[wp.float32],
         problem_v_f: wp.array[wp.float32],
-        problem_D: wp.array[wp.float32],
+        problem_D_storage: MatrixType0,
         problem_P: wp.array[wp.float32],
         problem_bound_lower: wp.array[wp.float32],
         problem_bound_upper: wp.array[wp.float32],
@@ -1446,6 +1459,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
     ):
         # Retrieve the thread index as the world index
         wid = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(MatrixType0.ndim == 2) else problem_D_storage
 
         # Retrieve the world-specific data
         nbc = problem_nbc[wid]
