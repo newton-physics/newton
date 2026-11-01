@@ -10,6 +10,7 @@ independent linear systems, including rectangular and square systems.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Generic
 
@@ -29,6 +30,7 @@ __all__ = [
     "DenseRectangularMultiLinearInfo",
     "DenseSquareMultiLinearInfo",
     "make_dtype_tolerance",
+    "prefix_offsets",
 ]
 
 
@@ -175,17 +177,18 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
             self.device = device
 
         # Compute the allocation sizes and offsets for the flat data arrays
+        np_itype = wp.dtype_to_numpy(self.itype)
         mat_sizes = [m * n for m, n in self.dimensions]
-        mat_offsets = [0] + [sum(mat_sizes[:i]) for i in range(1, len(mat_sizes) + 1)]
-        mat_flat_size = sum(mat_sizes)
+        mat_offsets = prefix_offsets(mat_sizes, validate_dtype=np_itype)
+        mat_flat_size = int(mat_offsets[-1])
         max_mat_rows = max(m for m, _ in self.dimensions)
         max_mat_cols = max(n for _, n in self.dimensions)
         rhs_sizes = [m for m, _ in self.dimensions]
-        rhs_offsets = [0] + [sum(rhs_sizes[:i]) for i in range(1, len(rhs_sizes) + 1)]
-        rhs_flat_size = sum(rhs_sizes)
+        rhs_offsets = prefix_offsets(rhs_sizes, validate_dtype=np_itype)
+        rhs_flat_size = int(rhs_offsets[-1])
         inp_sizes = [n for _, n in self.dimensions]
-        inp_offsets = [0] + [sum(inp_sizes[:i]) for i in range(1, len(inp_sizes) + 1)]
-        inp_flat_size = sum(inp_sizes)
+        inp_offsets = prefix_offsets(inp_sizes, validate_dtype=np_itype)
+        inp_flat_size = int(inp_offsets[-1])
 
         # Update the allocation meta-data the specified system dimensions
         self.num_blocks = len(self.dimensions)
@@ -420,12 +423,13 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
             self.device = device
 
         # Compute the allocation sizes and offsets for the flat data arrays
+        np_itype = wp.dtype_to_numpy(self.itype)
         mat_sizes = [n * n for n in self.dimensions]
-        mat_offsets = [0] + [sum(mat_sizes[:i]) for i in range(1, len(mat_sizes) + 1)]
-        mat_flat_size = sum(mat_sizes)
+        mat_offsets = prefix_offsets(mat_sizes, validate_dtype=np_itype)
+        mat_flat_size = int(mat_offsets[-1])
         vec_sizes = self.dimensions
-        vec_offsets = [0] + [sum(vec_sizes[:i]) for i in range(1, len(vec_sizes) + 1)]
-        vec_flat_size = sum(vec_sizes)
+        vec_offsets = prefix_offsets(vec_sizes, validate_dtype=np_itype)
+        vec_flat_size = int(vec_offsets[-1])
 
         # Update the allocation meta-data the specified system dimensions
         self.num_blocks = len(self.dimensions)
@@ -551,6 +555,34 @@ class DenseLinearOperatorData(Generic[ScalarType, IndexType]):
 ###
 # Utilities
 ###
+
+
+def prefix_offsets(sizes: Sequence[int] | np.ndarray, *, validate_dtype: np.dtype | None = None) -> np.ndarray:
+    """
+    Computes the start offsets of consecutive blocks in a flat array.
+
+    The sums are accumulated in 64-bit integers regardless of the dtype of ``sizes``.
+
+    Args:
+        sizes: Non-negative block sizes, in storage order.
+        validate_dtype: An optional NumPy integer dtype whose range must contain the total size.
+
+    Returns:
+        An ``int64`` array of ``len(sizes) + 1`` entries, where entry ``i``
+        is the offset of block ``i`` and the last entry is the total size.
+
+    Raises:
+        OverflowError: If the total size does not fit in ``validate_dtype``.
+    """
+    offsets = np.zeros(len(sizes) + 1, dtype=np.int64)
+    np.cumsum(sizes, dtype=np.int64, out=offsets[1:])
+    if validate_dtype is not None:
+        max_value = np.iinfo(validate_dtype).max
+        if offsets[-1] > max_value:
+            raise OverflowError(
+                f"Total block size {int(offsets[-1])} does not fit in {validate_dtype} (max {max_value})."
+            )
+    return offsets
 
 
 def make_dtype_tolerance(tol: FloatType | float | None = None, dtype: FloatType = wp.float32) -> FloatType:

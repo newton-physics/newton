@@ -7,6 +7,7 @@ KAMINO: UNIT TESTS: KINEMATICS: CONSTRAINTS
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 from newton import ModelBuilder
@@ -261,6 +262,53 @@ class TestKinematicsConstraints(unittest.TestCase):
         # Check if the data info entity counters point to the same arrays as the limits and contacts containers
         self.assertTrue(data.info.num_limits.ptr, limits.world_active_limits.ptr)
         self.assertTrue(data.info.num_contacts.ptr, contacts.world_active_contacts.ptr)
+
+    def test_04_heterogeneous_model_joint_constraint_rows(self):
+        """Check contiguous world blocks and dynamic, kinematic, friction, and effort row order."""
+        builder = make_basics_heterogeneous_builder(dynamic_joints=True, implicit_pd=True)
+        builder.joint_friction = [0.1] * builder.joint_dof_count
+        builder.joint_effort_limit = [2.0] * builder.joint_dof_count
+        model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        data = model.data(device=self.default_device)
+        limits = LimitsKamino(model=model)
+        contacts = ContactsKamino(capacity=[20] * builder.world_count, device=self.default_device)
+        make_unilateral_constraints_info(model=model, data=data, limits=limits, contacts=contacts)
+
+        world_num_dynamic_cts = model.info.num_joint_dynamic_cts.numpy()
+        world_num_friction_cts = model.info.num_joint_friction_cts.numpy()
+        world_num_effort_cts = model.info.num_joint_effort_cts.numpy()
+        self.assertTrue(np.any(world_num_dynamic_cts > 0))
+        self.assertTrue(np.any((world_num_friction_cts > 0) & (world_num_effort_cts > 0)))
+
+        groups = [
+            (
+                getattr(model.joints, f"num_{category}_cts").numpy(),
+                getattr(model.joints, f"{category}_cts_offset_total_cts").numpy(),
+                getattr(model.info, f"joint_{category}_cts_group_offset").numpy(),
+            )
+            for category in ("dynamic", "kinematic", "friction", "effort")
+        ]
+        joint_wid = model.joints.wid.numpy()
+        world_max_total_cts = model.info.max_total_cts.numpy()
+        world_cts_offset = model.info.total_cts_offset.numpy()
+        world_num_joint_cts = model.info.num_joint_bilateral_cts.numpy() + model.info.num_joint_bounded_cts.numpy()
+        np.testing.assert_array_equal(world_cts_offset, np.cumsum(world_max_total_cts) - world_max_total_cts)
+
+        # Enumerate rows independently of the vectorized layout calculation.
+        for w in range(model.size.num_worlds):
+            rows = []
+            for num_cts, cts_offset, group_offset in groups:
+                self.assertEqual(group_offset[w], len(rows))
+                for j in np.flatnonzero(joint_wid == w):
+                    rows.extend(range(cts_offset[j], cts_offset[j] + num_cts[j]))
+            np.testing.assert_array_equal(np.asarray(rows, dtype=np.int64) - world_cts_offset[w], np.arange(len(rows)))
+            self.assertEqual(len(rows), world_num_joint_cts[w])
+
+        np.testing.assert_array_equal(
+            model.info.joint_bounded_cts_group_offset.numpy(), model.info.joint_friction_cts_group_offset.numpy()
+        )
+        np.testing.assert_array_equal(data.info.limit_cts_group_offset.numpy(), world_num_joint_cts)
+        np.testing.assert_array_equal(data.info.contact_cts_group_offset.numpy(), world_num_joint_cts)
 
 
 ###

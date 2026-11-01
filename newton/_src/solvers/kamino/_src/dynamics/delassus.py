@@ -77,7 +77,7 @@ from ..geometry.contacts import ContactsKamino
 from ..kinematics.constraints import get_max_constraints_per_world
 from ..kinematics.jacobians import ColMajorSparseConstraintJacobians, DenseSystemJacobians, SparseSystemJacobians
 from ..kinematics.limits import LimitsKamino
-from ..linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LinearSolverType
+from ..linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LinearSolverType, prefix_offsets
 from ..linalg.blas import _make_masked_zero_kernel_1d
 from ..linalg.linear import IterativeSolver
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
@@ -1006,7 +1006,7 @@ class DelassusOperator:
         self._operator.info = DenseSquareMultiLinearInfo[wp.float32, wp.int32]()
         self._operator.mat = wp.zeros(shape=(self._model_maxsize,), dtype=wp.float32, device=self._device)
         if (model.info is not None) and (data.info is not None):
-            mat_offsets = [0] + [sum(self._world_maxsize[:i]) for i in range(1, self._num_worlds + 1)]
+            mat_offsets = prefix_offsets(self._world_maxsize)
             self._operator.info.assign(
                 maxdim=model.info.max_total_cts,
                 dim=data.info.num_total_cts,
