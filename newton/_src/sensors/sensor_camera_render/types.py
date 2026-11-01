@@ -30,6 +30,46 @@ class RenderOrder(enum.IntEnum):
     """Render pixels in tiles, defined by tile_width x tile_height"""
 
 
+class RayGenerationMode(enum.IntEnum):
+    """Internal: how the render kernel obtains camera-space rays."""
+
+    BUNDLE = 0
+    """One ``(height, width, sample_count, 2)`` bundle shared by every view."""
+    BUNDLE_INDEXED = 1
+    """Bundles stacked along the first axis, selected per view by ``view_ray_bundle``."""
+    PINHOLE = 2
+    """Pinhole rays generated in the kernel from per-view ``view_pinhole`` parameters."""
+    FUNCTION = 3
+    """Rays generated in the kernel by a user ray function."""
+
+
+@wp.struct
+class RayQuery:
+    """Pixel and view being rendered, passed to a user ray function.
+
+    .. experimental::
+    """
+
+    view: wp.int32
+    """View index in the sensor's output images."""
+    camera: wp.int32
+    """Model camera index, or site (shape) index for site-bound sensors."""
+    world: wp.int32
+    """World rendered by the view."""
+    x: wp.int32
+    """Pixel column [px]."""
+    y: wp.int32
+    """Pixel row [px]."""
+    sample: wp.int32
+    """Sample index within the pixel."""
+    width: wp.int32
+    """Image width [px]."""
+    height: wp.int32
+    """Image height [px]."""
+    sample_count: wp.int32
+    """Samples per pixel."""
+
+
 class WorldRenderFlag(enum.IntEnum):
     """Negative disable sentinels for the per-view ``world_indices`` array.
 
