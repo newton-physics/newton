@@ -102,6 +102,9 @@ stores the child-COM twist in the joint parent frame, while
 :attr:`newton.Control.joint_f` stores the world-frame COM wrench
 ``(f_world, tau_com_world)``.
 
+Rod APIs and data conventions are now experimental; see :ref:`Rod joints`
+for the scope. The migration steps below still apply.
+
 Rod joints now use seven ``joint_q`` coordinates for relative position and
 orientation and six ``joint_qd`` entries for relative linear and angular
 velocity. Their material-axis order is ``[shear_x, shear_y, stretch_z,
