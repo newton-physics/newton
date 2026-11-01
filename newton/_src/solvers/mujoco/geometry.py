@@ -119,6 +119,11 @@ def build_shape_layout(
         shape = representatives[column]
         if types[shape] not in mesh_types or sites[shape]:
             missing_world = int(np.flatnonzero(mapping[:, column] < 0)[0])
+            if model._variant_row_max and model._shape_variant_row.numpy()[shape]:
+                raise ValueError(
+                    f"SolverMuJoCo found different body variants in world 0 and world {missing_world} for "
+                    f"{model.shape_label[shape]!r}; construct it before selecting different variants per world."
+                )
             raise ValueError(
                 f"SolverMuJoCo shape types mismatch at position {column}: "
                 f"world {missing_world} has no matching shape for {model.shape_label[shape]!r}. "

@@ -748,7 +748,10 @@ class ViewerViser(ViewerBase):
         offset = 0
         for batch in batches:
             count = len(batch.xforms)
-            batch.world_xforms = packed[offset : offset + count]
+            # A variant batch can lose all its instances; Warp rejects empty slices.
+            batch.world_xforms = (
+                packed[offset : offset + count] if count else wp.empty(0, dtype=wp.transform, device=self.device)
+            )
             self._packed_shape_groups.append((batch, offset, count))
             offset += count
         self._packed_shape_world_xforms = packed

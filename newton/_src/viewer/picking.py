@@ -464,6 +464,13 @@ class Picking:
         else:
             world_offsets = wp.array([], dtype=wp.vec3, device=self.model.device)
 
+        # Empty body variant rows keep their last geometry but must not be picked.
+        if self.model._variant_row_max:
+            variant_row, variant_shape = self.model._shape_variant_row, self.model._shape_variant_shape
+        else:
+            variant_row = wp.empty(0, dtype=wp.bool, device=self.model.device)
+            variant_shape = wp.empty(0, dtype=wp.int32, device=self.model.device)
+
         wp.launch(
             kernel=raycast.raycast_kernel,
             dim=num_geoms,
@@ -485,6 +492,8 @@ class Picking:
                 shape_world,
                 world_offsets,
                 self.visible_worlds_mask,
+                variant_row,
+                variant_shape,
             ],
             device=self.model.device,
         )

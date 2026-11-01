@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import unittest
 from dataclasses import replace
 
@@ -308,6 +309,44 @@ class TestBodyVariants(unittest.TestCase):
         self.assertEqual(rendered_shapes(), [0, 2, 4])
         viewer.notify_model_changed(_select(model, [1], bodies=[1]))
         self.assertEqual(rendered_shapes(), [0, 2, 3, 4])
+
+    @unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+    def test_viser_follows_selection(self):
+        """Batches that lose all their rows stay valid in ViewerViser."""
+        model = _scene(2).finalize(device="cpu")
+        viewer = newton.viewer.ViewerViser(port=0, verbose=False)
+        self.addCleanup(viewer.close)
+        viewer.set_model(model)
+        # The sphere batch is created last and then emptied again.
+        for variants, shapes in (([1, 1], [0, 1, 2, 3, 4]), ([0, 0], [0, 2, 4])):
+            viewer.notify_model_changed(_select(model, variants))
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            rendered = sorted(int(s) for batch in viewer._shape_instances.values() for s in batch.model_shapes)
+            self.assertEqual(rendered, shapes)
+
+    def test_picking_skips_empty_rows(self):
+        """An empty row keeps its last geometry, but viewer picking does not hit it."""
+        from newton._src.viewer.picking import Picking  # noqa: PLC0415
+
+        two = newton.ModelBuilder()
+        body = two.add_body(label="two")
+        two.add_shape_sphere(body, radius=0.1)
+        two.add_shape_sphere(body, xform=wp.transform((2.0, 0.0, 0.0), wp.quat_identity()), radius=0.3)
+        builder = newton.ModelBuilder()
+        builder.add_body_variants(builder.add_body(), [two, _variant("cube")])
+        model = builder.finalize(device="cpu")
+        state = model.state()
+
+        def picks_offset_sphere() -> bool:
+            picking = Picking(model)
+            picking.pick(state, wp.vec3f(2.0, 0.0, 5.0), wp.vec3f(0.0, 0.0, -1.0))
+            return bool(picking.is_picking())
+
+        self.assertTrue(picks_offset_sphere())
+        _select(model, [1])
+        self.assertFalse(picks_offset_sphere())
 
 
 def test_contacts_follow_selection(test, device):
