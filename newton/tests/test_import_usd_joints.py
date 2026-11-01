@@ -6,6 +6,7 @@ import os
 import unittest
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton._src.geometry.flags import ShapeFlags
@@ -14,8 +15,12 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
+from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
+
+devices = get_test_devices("basic")
 
 
 class TestImportUsdJoints(unittest.TestCase):
@@ -1197,6 +1202,294 @@ def Xform "Articulation" (
         root_idx = builder.body_label.index("/World/Articulation/Root")
         self.assertEqual(builder.joint_parent[fixed_idx], -1)
         self.assertEqual(builder.joint_child[fixed_idx], root_idx)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_world_joint_matches_world_parent_joint(self):
+        """Simulate a joint whose body1 is the world like the equivalent world-parent joint.
+
+        UsdPhysics measures a joint coordinate from the body0 frame to the body1 frame. The
+        importer makes the world the parent of a joint with body0 = Roller and body1 = world,
+        which reverses that direction, so it negates the joint axis to keep the meaning of the
+        authored limits, drive targets, and initial state. The world-parent joint authors the
+        same motion with opposite signs.
+        """
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        roller_frame = (Gf.Vec3f(0.1, 0.05, -0.02), Gf.Quatf(Gf.Rotation(Gf.Vec3d(0, 0, 1), 35).GetQuat()))
+        world_frame = (Gf.Vec3f(0.3, -0.2, 1.0), Gf.Quatf(Gf.Rotation(Gf.Vec3d(0, 1, 1), 25).GetQuat()))
+        # Values authored with body0 = Roller: limits, drive target position and velocity,
+        # drive stiffness and damping, and initial position and velocity.
+        cases = {
+            # The velocity drive overcomes the weak position drive and pushes into the one-sided limit.
+            "revolute": ((-30.0, math.inf), 10.0, -100.0, math.radians(1.0), math.radians(1.0), -20.0, -30.0),
+            # The initial velocity reaches the upper limit before the position drive settles.
+            "prismatic": ((-0.1, 0.05), 0.02, -0.1, 200.0, 40.0, -0.05, 2.0),
+        }
+
+        def create_stage(kind, reverse):
+            (lower, upper), target_pos, target_vel, stiffness, damping, position, velocity = cases[kind]
+            if not reverse:
+                lower, upper = -upper, -lower
+                target_pos, target_vel, position, velocity = -target_pos, -target_vel, -position, -velocity
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene").CreateGravityMagnitudeAttr(0.0)
+            UsdPhysics.ArticulationRootAPI.Apply(UsdGeom.Xform.Define(stage, "/World").GetPrim())
+            # A single body on a world joint is not imported as an articulation, so add a fixed link.
+            for name, mass, inertia in (("Roller", 2.0, (0.05, 0.08, 0.1)), ("Link", 0.5, (0.02, 0.02, 0.03))):
+                body = UsdGeom.Xform.Define(stage, f"/World/{name}").GetPrim()
+                UsdPhysics.RigidBodyAPI.Apply(body)
+                mass_api = UsdPhysics.MassAPI.Apply(body)
+                mass_api.CreateMassAttr(mass)
+                mass_api.CreateDiagonalInertiaAttr(Gf.Vec3f(*inertia))
+            link_joint = UsdPhysics.FixedJoint.Define(stage, "/World/LinkJoint")
+            link_joint.CreateBody0Rel().SetTargets(["/World/Roller"])
+            link_joint.CreateBody1Rel().SetTargets(["/World/Link"])
+            link_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.3, 0.0))
+
+            joint_type = UsdPhysics.RevoluteJoint if kind == "revolute" else UsdPhysics.PrismaticJoint
+            joint = joint_type.Define(stage, "/World/RollerJoint")
+            if reverse:
+                joint.CreateBody0Rel().SetTargets(["/World/Roller"])
+                frame0, frame1 = roller_frame, world_frame
+            else:
+                joint.CreateBody1Rel().SetTargets(["/World/Roller"])
+                frame0, frame1 = world_frame, roller_frame
+            joint.CreateLocalPos0Attr().Set(frame0[0])
+            joint.CreateLocalRot0Attr().Set(frame0[1])
+            joint.CreateLocalPos1Attr().Set(frame1[0])
+            joint.CreateLocalRot1Attr().Set(frame1[1])
+            joint.CreateAxisAttr().Set("X")
+            joint.CreateLowerLimitAttr().Set(lower)
+            joint.CreateUpperLimitAttr().Set(upper)
+            drive_type = "angular" if kind == "revolute" else "linear"
+            drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), drive_type)
+            drive.CreateTargetPositionAttr().Set(target_pos)
+            drive.CreateTargetVelocityAttr().Set(target_vel)
+            drive.CreateStiffnessAttr().Set(stiffness)
+            drive.CreateDampingAttr().Set(damping)
+            for name, value in (("position", position), ("velocity", velocity)):
+                attr = joint.GetPrim().CreateAttribute(f"state:{drive_type}:physics:{name}", Sdf.ValueTypeNames.Float)
+                attr.Set(value)
+            return stage
+
+        for kind, ((lower, upper), target_pos, target_vel, _, _, position, velocity) in cases.items():
+            builders = {}
+            for reverse in (True, False):
+                builders[reverse] = newton.ModelBuilder()
+                builders[reverse].add_usd(
+                    create_stage(kind, reverse), schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()]
+                )
+            joint = builders[True].joint_label.index("/World/RollerJoint")
+            q_index = builders[True].joint_q_start[joint]
+            dof = builders[True].joint_qd_start[joint]
+
+            with self.subTest(kind=kind):
+                builder = builders[True]
+                scale = math.radians(1.0) if kind == "revolute" else 1.0
+                self.assertEqual(builder.joint_parent[joint], -1)
+                self.assertEqual(builder.joint_child[joint], builder.body_label.index("/World/Roller"))
+                np.testing.assert_allclose(builder.joint_axis[dof], (-1.0, 0.0, 0.0))
+                self.assertAlmostEqual(builder.joint_limit_lower[dof], lower * scale, places=6)
+                expected_upper = newton.MAXVAL if math.isinf(upper) else upper * scale
+                self.assertAlmostEqual(builder.joint_limit_upper[dof], expected_upper, places=6)
+                self.assertAlmostEqual(builder.joint_target_q[q_index], target_pos * scale, places=6)
+                self.assertAlmostEqual(builder.joint_target_qd[dof], target_vel * scale, places=6)
+                self.assertAlmostEqual(builder.joint_q[q_index], position * scale, places=6)
+                self.assertAlmostEqual(builder.joint_qd[dof], velocity * scale, places=6)
+
+            for device in devices:
+                with self.subTest(kind=kind, device=device):
+                    body_q, joint_q = {}, {}
+                    for reverse, builder in builders.items():
+                        model = builder.finalize(device=device)
+                        solver = newton.solvers.SolverFeatherstone(model)
+                        state_0, state_1, control = model.state(), model.state(), model.control()
+                        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+                        body_q[reverse] = [state_0.body_q.numpy().copy()]
+                        joint_q[reverse] = [state_0.joint_q.numpy()[q_index]]
+                        for _ in range(150):
+                            solver.step(state_0, state_1, control, None, 2.0e-3)
+                            state_0, state_1 = state_1, state_0
+                            body_q[reverse].append(state_0.body_q.numpy().copy())
+                            joint_q[reverse].append(state_0.joint_q.numpy()[q_index])
+
+                    np.testing.assert_allclose(body_q[True], body_q[False], atol=1.0e-5)
+                    np.testing.assert_allclose(joint_q[True], np.negative(joint_q[False]), atol=1.0e-5)
+                    # The reversed joint stops at its authored limit: the lower one for the
+                    # revolute joint and the upper one for the prismatic joint.
+                    if kind == "revolute":
+                        self.assertAlmostEqual(min(joint_q[True]), lower * scale, delta=0.01)
+                    else:
+                        self.assertAlmostEqual(max(joint_q[True]), upper, delta=0.01)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_world_multi_axis_joints(self):
+        """Negate the axes of a reversible multi-axis world joint and warn for the others.
+
+        Negating every axis reverses the joint motion only when the DOF motions commute:
+        translations alone, or one rotation with translations along its axis. Other swapped
+        joints keep their authored axes and warn.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        def create_stage(axes, merged, body1, limits=(-1.0, 2.0)):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+            body = UsdGeom.Cube.Define(stage, "/World/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            if body1:
+                # A static collider as body1 swaps the joint like an empty body1.
+                UsdPhysics.CollisionAPI.Apply(UsdGeom.Cube.Define(stage, body1).GetPrim())
+            if merged:
+                # Single-axis joints between the same bodies merge into one D6 joint.
+                joints = []
+                for axis in axes:
+                    joint_type = UsdPhysics.RevoluteJoint if axis.startswith("rot") else UsdPhysics.PrismaticJoint
+                    joint = joint_type.Define(stage, f"/World/{axis}")
+                    joint.CreateAxisAttr().Set(axis[-1])
+                    joint.CreateLowerLimitAttr().Set(limits[0])
+                    joint.CreateUpperLimitAttr().Set(limits[1])
+                    joints.append(joint)
+            else:
+                joint = UsdPhysics.Joint.Define(stage, "/World/D6")
+                for axis in axes:
+                    limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+                    limit.CreateLowAttr().Set(limits[0])
+                    limit.CreateHighAttr().Set(limits[1])
+                joints = [joint]
+            for joint in joints:
+                joint.CreateBody0Rel().SetTargets([body.GetPath()])
+                if body1:
+                    joint.CreateBody1Rel().SetTargets([body1])
+            return stage
+
+        unit_axes = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
+        # Axes are listed translations first, in the D6 DOF order.
+        reversible = (
+            (False, ("rotX",)),
+            (False, ("transX", "transY")),
+            (False, ("transX", "transY", "transZ")),
+            (False, ("transX", "rotX")),
+            (True, ("transX", "transY")),
+            (True, ("transX", "transY", "transZ")),
+            (True, ("transX", "rotX")),
+        )
+        for body1 in (None, "/World/Ground"):
+            for merged, axes in reversible:
+                with self.subTest(merged=merged, axes=axes, body1=body1):
+                    builder = newton.ModelBuilder()
+                    builder.add_usd(create_stage(axes, merged, body1))
+                    self.assertEqual(builder.joint_type, [newton.JointType.D6])
+                    self.assertEqual(builder.joint_parent, [-1])
+                    for dof, axis in enumerate(axes):
+                        scale = math.radians(1.0) if axis.startswith("rot") else 1.0
+                        np.testing.assert_allclose(builder.joint_axis[dof], np.negative(unit_axes[axis[-1]]))
+                        self.assertAlmostEqual(builder.joint_limit_lower[dof], -1.0 * scale, places=6)
+                        self.assertAlmostEqual(builder.joint_limit_upper[dof], 2.0 * scale, places=6)
+
+            # Newton cannot reverse other joints. They keep their authored axes and warn.
+            free = (-math.inf, math.inf)
+            for merged in (False, True):
+                for axes, limits in (
+                    (("rotX", "rotY"), (-1.0, 2.0)),
+                    (("transY", "rotX"), (-1.0, 2.0)),
+                    (("rotX", "rotY", "rotZ"), free),
+                ):
+                    with self.subTest(merged=merged, axes=axes, body1=body1, limits=limits):
+                        builder = newton.ModelBuilder()
+                        with self.assertWarnsRegex(NewtonWarning, "physics:body1 is not an imported rigid body"):
+                            builder.add_usd(create_stage(axes, merged, body1, limits))
+                        self.assertEqual(builder.joint_type, [newton.JointType.D6])
+                        self.assertEqual(builder.joint_parent, [-1])
+                        for dof, axis in enumerate(axes):
+                            np.testing.assert_allclose(builder.joint_axis[dof], unit_axes[axis[-1]])
+
+        # In an articulation, joints merge by their resolved parent and child. So a swapped
+        # joint can merge with a joint that is not swapped, and only its own axis is negated.
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        UsdPhysics.ArticulationRootAPI.Apply(UsdGeom.Xform.Define(stage, "/World").GetPrim())
+        # A single body on a world joint is not imported as an articulation, so add a fixed link.
+        for name in ("Body", "Link"):
+            body = UsdGeom.Cube.Define(stage, f"/World/{name}").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(body)
+            UsdPhysics.CollisionAPI.Apply(body)
+        link_joint = UsdPhysics.FixedJoint.Define(stage, "/World/LinkJoint")
+        link_joint.CreateBody0Rel().SetTargets(["/World/Body"])
+        link_joint.CreateBody1Rel().SetTargets(["/World/Link"])
+        revolute = UsdPhysics.RevoluteJoint.Define(stage, "/World/rotX")
+        revolute.CreateBody1Rel().SetTargets(["/World/Body"])
+        revolute.CreateAxisAttr().Set("X")
+        prismatic = UsdPhysics.PrismaticJoint.Define(stage, "/World/transX")
+        prismatic.CreateBody0Rel().SetTargets(["/World/Body"])
+        prismatic.CreateAxisAttr().Set("X")
+        with self.subTest(merged="mixed"):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            joint = builder.joint_type.index(newton.JointType.D6)
+            self.assertEqual(builder.joint_parent[joint], -1)
+            dof = builder.joint_qd_start[joint]
+            # The swapped prismatic joint gives the translational DOF, which comes first.
+            np.testing.assert_allclose(builder.joint_axis[dof], (-1.0, 0.0, 0.0))
+            np.testing.assert_allclose(builder.joint_axis[dof + 1], (1.0, 0.0, 0.0))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_world_spherical_joint_inverts_rotation(self):
+        """Import a spherical joint whose body1 is the world with the inverse joint rotation.
+
+        A spherical joint has no axis to negate, so the importer only swaps its ends. Its joint_q
+        then holds the inverse of the UsdPhysics joint rotation, which measures the body1 joint
+        frame relative to the body0 joint frame.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        frame0 = wp.transform((0.1, 0.05, -0.02), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.6))
+        frame1 = wp.transform((0.3, -0.2, 1.0), wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.0, 1.0, 1.0)), 0.4))
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        UsdPhysics.ArticulationRootAPI.Apply(UsdGeom.Xform.Define(stage, "/World").GetPrim())
+        # A single body on a world joint is not imported as an articulation, so add a fixed link.
+        for name in ("Body", "Link"):
+            body = UsdGeom.Cube.Define(stage, f"/World/{name}").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(body)
+            UsdPhysics.CollisionAPI.Apply(body)
+        link_joint = UsdPhysics.FixedJoint.Define(stage, "/World/LinkJoint")
+        link_joint.CreateBody0Rel().SetTargets(["/World/Body"])
+        link_joint.CreateBody1Rel().SetTargets(["/World/Link"])
+        ball = UsdPhysics.SphericalJoint.Define(stage, "/World/Ball")
+        ball.CreateBody0Rel().SetTargets(["/World/Body"])
+        for index, frame in enumerate((frame0, frame1)):
+            p, q = wp.transform_get_translation(frame), wp.transform_get_rotation(frame)
+            ball.GetPrim().GetAttribute(f"physics:localPos{index}").Set(Gf.Vec3f(*p))
+            ball.GetPrim().GetAttribute(f"physics:localRot{index}").Set(Gf.Quatf(q[3], q[0], q[1], q[2]))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        joint = builder.joint_label.index("/World/Ball")
+        self.assertEqual(builder.joint_type[joint], newton.JointType.BALL)
+        self.assertEqual(builder.joint_parent[joint], -1)
+        rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        q_start = builder.joint_q_start[joint]
+        builder.joint_q[q_start : q_start + 4] = list(rotation)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_pose = wp.transform(*state.body_q.numpy()[builder.body_label.index("/World/Body")])
+        # The body1 (world) joint frame relative to the body0 joint frame.
+        relative = wp.transform_multiply(wp.transform_inverse(wp.transform_multiply(body_pose, frame0)), frame1)
+        np.testing.assert_allclose(wp.transform_get_translation(relative), (0.0, 0.0, 0.0), atol=1.0e-5)
+        # A quaternion and its negation are the same rotation.
+        alignment = abs(np.dot(wp.transform_get_rotation(relative), wp.quat_inverse(rotation)))
+        self.assertAlmostEqual(alignment, 1.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_override_replaces_authored_root_joint(self):
