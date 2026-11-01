@@ -10,6 +10,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
+from ...geometry.inertia import _eig_inertia
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
@@ -1831,7 +1832,7 @@ def update_body_inertia_kernel(
         return
 
     # Eigendecomposition of inertia tensor
-    eigenvectors, eigenvalues = wp.eig3(body_inertia[newton_body])
+    eigenvectors, eigenvalues = _eig_inertia(body_inertia[newton_body])
 
     # Sort descending (MuJoCo convention)
     eigenvalues, V = _sort_eigenpairs_descending(eigenvalues, eigenvectors)

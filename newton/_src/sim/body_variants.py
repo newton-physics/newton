@@ -301,8 +301,15 @@ class _VariantShapeRows:
             m.shape_source = list(builder.shape_source[:start])
         return start
 
-    def finalize(self, builder: ModelBuilder, m: Model) -> None:
-        """Build the variant tables of ``m`` and select the initial variants."""
+    def finalize(self, builder: ModelBuilder, m: Model, *, validate_inertia: bool = True) -> None:
+        """Build the variant tables of ``m`` and select the initial variants.
+
+        Args:
+            builder: The builder being finalized.
+            m: The model it builds.
+            validate_inertia: Whether to validate and correct the mass properties of the body as built
+                plus each variant, as :meth:`ModelBuilder.finalize` does for every body.
+        """
         device = m.device
         shape_count = m.shape_count
         rows = self._rows
@@ -392,14 +399,18 @@ class _VariantShapeRows:
                             np.asarray(variant.inertia, dtype=np.float64).reshape(3, 3),
                         ),
                     )
-                    mass, inertia, _ = verify_and_correct_inertia(
-                        mass,
-                        wp.mat33(*inertia.flatten()),
-                        builder.balance_inertia,
-                        builder.bound_mass,
-                        builder.bound_inertia,
-                        f"{builder.body_label[body]}/{variant.label}",
-                    )
+                    if validate_inertia:
+                        mass, inertia, _ = verify_and_correct_inertia(
+                            mass,
+                            wp.mat33(*inertia.flatten()),
+                            builder.balance_inertia,
+                            builder.bound_mass,
+                            builder.bound_inertia,
+                            f"{builder.body_label[body]}/{variant.label}",
+                            relative_tolerance=builder.inertia_relative_tolerance,
+                            absolute_tolerance=builder.inertia_absolute_tolerance,
+                            correction=builder.inertia_correction,
+                        )
                     masses.append(mass)
                     coms.append(com)
                     inertias.append(np.asarray(inertia, dtype=np.float32).reshape(3, 3))

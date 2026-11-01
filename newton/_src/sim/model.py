@@ -21,6 +21,7 @@ from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
+from ..geometry.inertia import _inverse_inertia_wp
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -156,12 +157,14 @@ def _select_body_variants_kernel(
         mass = variant_mass[k]
         inertia = variant_inertia[k]
         body_mass[body] = mass
-        body_inv_mass[body] = wp.where(mass > 0.0, 1.0 / mass, 0.0)
         body_com[body] = variant_com[k]
         body_inertia[body] = inertia
-        if wp.determinant(inertia) != 0.0:
-            body_inv_inertia[body] = wp.inverse(inertia)
+        # Inverses as ModelBuilder.finalize() derives them.
+        if mass > 0.0:
+            body_inv_mass[body] = 1.0 / mass
+            body_inv_inertia[body] = _inverse_inertia_wp(inertia)
         else:
+            body_inv_mass[body] = 0.0
             body_inv_inertia[body] = wp.mat33(0.0)
 
 

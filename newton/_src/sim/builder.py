@@ -68,7 +68,15 @@ from ..geometry import (
 )
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import MeshProperties
-from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.inertia import (
+    _INERTIA_ABS_ADJUSTMENT,
+    _INERTIA_ABS_FLOOR,
+    _INERTIA_REL_TOL,
+    _inverse_inertia,
+    compute_body_inverses_kernel,
+    validate_and_correct_inertia_kernel,
+    verify_and_correct_inertia,
+)
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
@@ -1020,9 +1028,11 @@ class ModelBuilder:
         :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
         on the solver constructor for this field to take effect.
         :class:`~newton.solvers.SolverSteel` uses the arithmetic mean of the
-        two shapes' coefficients, each clamped to ``[0, 1]`` (non-finite values
-        count as zero), for contacts whose closing speed at the start of the step
+        two shapes' coefficients, each clamped to ``[0, 1]``, for contacts whose
+        closing speed at the start of the step
         exceeds its ``restitution_velocity_threshold``.
+        Non-finite contact material values on colliding shapes are rejected by
+        :meth:`ModelBuilder.finalize` unless shape validation is disabled.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -1859,6 +1869,22 @@ class ModelBuilder:
         """Minimum allowed eigenvalue for rigid body inertia tensors [kg*m^2]. If set, ensures
         all principal moments of inertia are at least this value. Set to None to disable inertia
         eigenvalue clamping. Default: None."""
+
+        self.inertia_relative_tolerance: float = _INERTIA_REL_TOL
+        """Non-negative relative eigenvalue tolerance (dimensionless).
+        A principal moment below ``max(inertia_relative_tolerance * largest_moment,
+        inertia_absolute_tolerance)`` triggers correction. Must be finite. Default: 1.0e-6."""
+
+        self.inertia_absolute_tolerance: float = _INERTIA_ABS_FLOOR
+        """Positive absolute floor for eigenvalue and triangle-inequality tolerances [kg*m^2].
+        Lower this to preserve physically valid small tensors. Must be finite and positive
+        in float32. Default: 1.0e-10."""
+
+        self.inertia_correction: float = _INERTIA_ABS_ADJUSTMENT
+        """Non-negative extra diagonal shift when repairing inertia [kg*m^2].
+        Added to the shift needed to meet the eigenvalue threshold or triangle inequality;
+        does not affect tensors that pass validation. Zero disables the extra shift, not
+        validation. Must be finite. Default: 1.0e-6."""
 
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
@@ -5824,7 +5850,7 @@ class ModelBuilder:
             self.body_inv_mass.append(0.0)
 
         if any(x for x in inertia):
-            self.body_inv_inertia.append(wp.inverse(inertia))
+            self.body_inv_inertia.append(_inverse_inertia(inertia))
         else:
             self.body_inv_inertia.append(inertia)
 
@@ -8057,7 +8083,7 @@ class ModelBuilder:
                 # recompute inverse mass and inertia
                 if m > 0.0:
                     self.body_inv_mass.append(1.0 / m)
-                    self.body_inv_inertia.append(wp.inverse(inertia))
+                    self.body_inv_inertia.append(_inverse_inertia(inertia))
                 else:
                     self.body_inv_mass.append(0.0)
                     self.body_inv_inertia.append(wp.mat33(0.0))
@@ -12521,7 +12547,7 @@ class ModelBuilder:
             self.body_inv_mass[i] = 0.0
 
         if any(x for x in new_inertia):
-            self.body_inv_inertia[i] = wp.inverse(new_inertia)
+            self.body_inv_inertia[i] = _inverse_inertia(new_inertia)
         else:
             self.body_inv_inertia[i] = new_inertia
 
@@ -13289,7 +13315,7 @@ class ModelBuilder:
             )
 
     def _validate_shapes(self) -> bool:
-        """Validate shape gaps for stable broad phase detection.
+        """Validate finite contact materials and shape gaps for stable collision handling.
 
         Margin is an outward offset from a shape's surface [m], while broad phase uses
         ``margin + gap`` [m] for expansion/filtering. For reliable detection, ``gap`` [m]
@@ -13299,8 +13325,12 @@ class ModelBuilder:
         This check only considers shapes that participate in collisions (with the
         `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
 
+        Raises:
+            ValueError: If a colliding shape has a non-finite contact material value
+                or insufficient hydroelastic SDF padding.
+
         Warns:
-            UserWarning: If any colliding shape has ``gap < 0``.
+            NewtonWarning: If any colliding shape has ``gap < 0``.
 
         Returns:
             Whether all colliding shapes have non-negative gaps.
@@ -13308,6 +13338,28 @@ class ModelBuilder:
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_gap = []
         with self._raw_array_access():
+            colliding = (np.asarray(self.shape_flags, dtype=np.int32) & int(collision_flags_mask)) != 0
+            if np.any(colliding):
+                # Validate resolved builder arrays so imported and directly authored materials share the same checks.
+                for name in (
+                    "shape_material_ke",
+                    "shape_material_kd",
+                    "shape_material_kf",
+                    "shape_material_ka",
+                    "shape_material_mu",
+                    "shape_material_restitution",
+                    "shape_material_mu_torsional",
+                    "shape_material_mu_rolling",
+                    "shape_material_kh",
+                ):
+                    values = np.asarray(getattr(self, name))
+                    invalid = colliding & ~np.isfinite(values)
+                    if np.any(invalid):
+                        idx = int(np.flatnonzero(invalid)[0])
+                        label = self.shape_label[idx] or f"shape_{idx}"
+                        raise ValueError(
+                            f"Invalid {name} for shape {idx} ('{label}'): expected a finite value, got {values[idx]}."
+                        )
             shape_flags = _list_for_iteration(self.shape_flags)
             shape_margin = _list_for_iteration(self.shape_margin)
             shape_gap = _list_for_iteration(self.shape_gap)
@@ -14553,6 +14605,7 @@ class ModelBuilder:
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
         skip_validation_shapes: bool = False,
+        skip_validation_inertia: bool = False,
         skip_validation_structure: bool = False,
         skip_validation_joint_ordering: bool = True,
     ) -> Model:
@@ -14567,12 +14620,19 @@ class ModelBuilder:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
-                you are confident the model is valid. Default is False.
+                you are confident the model is valid. Also skips mass/inertia correction, including bounds
+                and balancing. Use individual skip flags to retain these corrections. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
                 joints cannot connect separate articulations, and non-root joints must belong to an articulation or
                 close a loop; standalone world-root joints are allowed.
-            skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_shapes: If True, skips validation of finite contact materials, contact gaps, and
+                hydroelastic SDF padding on colliding shapes. Default is False.
+            skip_validation_inertia: If True, skips all rigid body mass/inertia validation and correction,
+                preserving the builder's mass and inertia. Derived inverses are always recomputed.
+                Skipped checks include finiteness, symmetry,
+                positive-definiteness, bounds, and triangle-inequality checks. Does not undo earlier importer
+                processing, shape mass computation, or fixed-joint merging. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 particle topology, array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
@@ -14581,8 +14641,12 @@ class ModelBuilder:
         Returns:
             A fully constructed Model object containing all simulation data on the specified device.
 
+        Raises:
+            ValueError: If an enabled validation fails, including non-finite contact material values on colliding shapes.
+
         Notes:
-            - Performs validation and correction of rigid body inertia and mass properties.
+            - Validates and corrects rigid body inertia and mass unless ``skip_validation_inertia``
+              or ``skip_all_validations`` is True.
             - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
@@ -14590,36 +14654,50 @@ class ModelBuilder:
               is restored before returning or propagating an exception.
         """
 
+        validate_inertia = not skip_validation_inertia and not skip_all_validations
+        if validate_inertia:
+            # Both validation paths consume float32-representable settings.
+            for name in ("inertia_relative_tolerance", "inertia_absolute_tolerance", "inertia_correction"):
+                value = getattr(self, name)
+                if not math.isfinite(value) or value < 0.0 or value > float(np.finfo(np.float32).max):
+                    raise ValueError(f"{name} must be finite, non-negative, and representable in float32")
+                if name == "inertia_absolute_tolerance" and np.float32(value) <= 0.0:
+                    raise ValueError("inertia_absolute_tolerance must be positive in float32")
+
         gc_was_enabled = gc.isenabled()
         gc.disable()
         try:
             # ensure the world count is set correctly
             self.world_count = max(1, self.world_count)
 
-            # validate world ordering and contiguity
-            if not skip_all_validations and not skip_validation_worlds:
-                self._validate_world_ordering()
-
-            # validate joints belong to an articulation
-            if not skip_all_validations and not skip_validation_joints:
-                self._validate_joints()
-
-            # validate shapes have valid contact margins
-            if not skip_all_validations and not skip_validation_shapes:
-                self._validate_shapes()
-
-            # validate structural invariants (body/joint references, array lengths)
-            if not skip_all_validations and not skip_validation_structure:
-                self._validate_structure()
-
-            # validate DFS topological joint ordering (opt-in, skipped by default)
-            if not skip_all_validations and not skip_validation_joint_ordering:
-                self.validate_joint_ordering()
-
+            # Variant shapes are appended as detached rows for the duration of finalize(), so that they
+            # are validated and get their collision data like shapes.
             self._variant_shape_rows = _VariantShapeRows(self)
             try:
+                # validate world ordering and contiguity
+                if not skip_all_validations and not skip_validation_worlds:
+                    self._validate_world_ordering()
+
+                # validate joints belong to an articulation
+                if not skip_all_validations and not skip_validation_joints:
+                    self._validate_joints()
+
+                # validate contact materials, gaps, and hydroelastic SDF padding
+                if not skip_all_validations and not skip_validation_shapes:
+                    self._validate_shapes()
+
+                # validate structural invariants (body/joint references, array lengths)
+                if not skip_all_validations and not skip_validation_structure:
+                    self._validate_structure()
+
+                # validate DFS topological joint ordering (opt-in, skipped by default)
+                if not skip_all_validations and not skip_validation_joint_ordering:
+                    self.validate_joint_ordering()
+
                 with self._raw_array_access():
-                    return self._finalize_impl(device=device, requires_grad=requires_grad)
+                    return self._finalize_impl(
+                        device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
+                    )
             finally:
                 self._variant_shape_rows.remove(self)
                 del self._variant_shape_rows
@@ -14632,6 +14710,7 @@ class ModelBuilder:
         device: Devicelike | None = None,
         *,
         requires_grad: bool = False,
+        validate_inertia: bool = True,
     ) -> Model:
         # construct world starts by ensuring they are cumulative and appending
         # tail-end global counts and sum total counts over the entire model.
@@ -15781,14 +15860,10 @@ class ModelBuilder:
             # on the returned Model so that finalize() is side-effect-free.
             body_mass = self.body_mass
             body_inertia = self.body_inertia
-            body_inv_mass = self.body_inv_mass
-            body_inv_inertia = self.body_inv_inertia
-            if len(self.body_mass) > 0 and self.validate_inertia_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and self.validate_inertia_detailed:
                 # Use detailed Python validation with per-body warnings on copies of the builder lists.
                 body_mass = list(body_mass)
                 body_inertia = list(body_inertia)
-                body_inv_mass = list(body_inv_mass)
-                body_inv_inertia = list(body_inv_inertia)
                 for i in range(len(body_mass)):
                     body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
                     new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
@@ -15798,19 +15873,20 @@ class ModelBuilder:
                         self.bound_mass,
                         self.bound_inertia,
                         body_label,
+                        relative_tolerance=self.inertia_relative_tolerance,
+                        absolute_tolerance=self.inertia_absolute_tolerance,
+                        correction=self.inertia_correction,
                     )
                     if was_corrected:
                         body_mass[i] = new_mass
                         body_inertia[i] = new_inertia
-                        body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
-                        body_inv_inertia[i] = wp.inverse(new_inertia) if any(x for x in new_inertia) else new_inertia
 
             m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inv_mass = wp.empty(len(body_mass), dtype=wp.float32, requires_grad=requires_grad)
             m.body_inertia = warp_array_from_values(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_inv_inertia = warp_array_from_values(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = wp.empty(len(body_mass), dtype=wp.mat33, requires_grad=requires_grad)
 
-            if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and not self.validate_inertia_detailed:
                 # Use fast Warp kernel validation, correcting the Model arrays in place on device.
                 correction_count = wp.zeros(1, dtype=wp.int32)
                 wp.launch(
@@ -15819,11 +15895,12 @@ class ModelBuilder:
                     inputs=[
                         m.body_mass,
                         m.body_inertia,
-                        m.body_inv_mass,
-                        m.body_inv_inertia,
                         self.balance_inertia,
                         self.bound_mass if self.bound_mass is not None else 0.0,
                         self.bound_inertia if self.bound_inertia is not None else 0.0,
+                        self.inertia_relative_tolerance,
+                        self.inertia_absolute_tolerance,
+                        self.inertia_correction,
                         correction_count,
                     ],
                 )
@@ -15837,6 +15914,16 @@ class ModelBuilder:
                         NewtonWarning,
                         stacklevel=3,
                     )
+
+            if len(body_mass) > 0:
+                # Stored builder inverses can be stale after edits or importer overrides.
+                # Compute from the final properties even when validation is skipped.
+                wp.launch(
+                    compute_body_inverses_kernel,
+                    dim=len(body_mass),
+                    inputs=[m.body_mass, m.body_inertia],
+                    outputs=[m.body_inv_mass, m.body_inv_inertia],
+                )
 
             m.body_q = warp_array_from_values(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = warp_array_from_values(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
@@ -16174,7 +16261,7 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
-            self._variant_shape_rows.finalize(self, m)
+            self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
 
             m.bvh_build_shapes(
                 m,
