@@ -1219,6 +1219,30 @@ class ModelBuilder:
                     "Hydroelastic shapes require an SDF. Set either sdf_max_resolution or sdf_target_voxel_size."
                 )
 
+        def _validate_site(self, shape_label: str) -> None:
+            """Validate collision, density, and group settings for a site."""
+            if self.has_shape_collision or self.has_particle_collision:
+                raise ValueError(
+                    f"Site shape '{shape_label}' cannot have collision enabled. "
+                    f"Sites must be non-colliding reference points. "
+                    f"has_shape_collision={self.has_shape_collision}, "
+                    f"has_particle_collision={self.has_particle_collision}"
+                )
+
+            if self.density != 0.0:
+                raise ValueError(
+                    f"Site shape '{shape_label}' must have zero density. "
+                    f"Sites do not contribute to body mass. "
+                    f"Got density={self.density}"
+                )
+
+            if self.collision_group != 0:
+                raise ValueError(
+                    f"Site shape '{shape_label}' must have collision_group=0. "
+                    f"Sites do not participate in collision detection. "
+                    f"Got collision_group={self.collision_group}"
+                )
+
         def mark_as_site(self) -> None:
             """Marks this shape as a site and enforces all site invariants.
 
@@ -8617,34 +8641,8 @@ class ModelBuilder:
                     "Mirroring of heightfields is not yet supported."
                 )
 
-        # Validate site invariants
         if cfg.is_site:
-            shape_label = label or f"shape_{self.shape_count}"
-
-            # Sites must not have collision enabled
-            if cfg.has_shape_collision or cfg.has_particle_collision:
-                raise ValueError(
-                    f"Site shape '{shape_label}' cannot have collision enabled. "
-                    f"Sites must be non-colliding reference points. "
-                    f"has_shape_collision={cfg.has_shape_collision}, "
-                    f"has_particle_collision={cfg.has_particle_collision}"
-                )
-
-            # Sites must have zero density (no mass contribution)
-            if cfg.density != 0.0:
-                raise ValueError(
-                    f"Site shape '{shape_label}' must have zero density. "
-                    f"Sites do not contribute to body mass. "
-                    f"Got density={cfg.density}"
-                )
-
-            # Sites must have collision group 0 (no collision filtering)
-            if cfg.collision_group != 0:
-                raise ValueError(
-                    f"Site shape '{shape_label}' must have collision_group=0. "
-                    f"Sites do not participate in collision detection. "
-                    f"Got collision_group={cfg.collision_group}"
-                )
+            cfg._validate_site(label or f"shape_{self.shape_count}")
 
         resolved_opacity = opacity
         if resolved_opacity is None and src is not None:
@@ -10263,8 +10261,12 @@ class ModelBuilder:
                 offset by half its rest length. The world-space origin equals the initial
                 segment start only when initial and rest lengths match. ``"com"`` places
                 the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
+                body origin and COM coincide. Defaults to ``"com"``.
+
+                .. deprecated:: 1.8
+                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                    Use ``"com"`` instead. For manually authored body-local anchors,
+                    subtract the old ``body_com`` offset.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10525,6 +10527,21 @@ class ModelBuilder:
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
+
+        cfg.validate(shape_type=GeoType.CAPSULE)
+        if cfg.is_site:
+            shape_label = f"{label}_edge_capsule_0" if label else f"shape_{self.shape_count}"
+            cfg._validate_site(shape_label)
+
+        # Warn after validation but before mutating the builder.
+        if body_frame_origin == "start":
+            warnings.warn(
+                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
+                'Use the default "com" origin. For manually authored body-local anchors, '
+                "subtract the old body_com offset.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         # Create all edge bodies first.
         for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
