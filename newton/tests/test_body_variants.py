@@ -200,6 +200,12 @@ class TestBodyVariants(unittest.TestCase):
         worlds.end_world()
         with self.assertRaisesRegex(ValueError, "later worlds"):
             worlds.add_body_variants(first, [_variant("cube")])
+        # Finalize validates every variant's shapes, not only the initial one.
+        invalid = newton.ModelBuilder()
+        invalid.add_body_variants(invalid.add_body(), [_variant("cube"), _variant("cube", mu=float("nan"))])
+        with self.assertRaisesRegex(ValueError, "expected a finite value"):
+            invalid.finalize(device="cpu")
+        self.assertEqual(invalid.shape_count, 1)
         # The rows were checked before any was appended.
         self.assertEqual(builder.shape_count, 1)
         with self.assertRaises(NotImplementedError):
