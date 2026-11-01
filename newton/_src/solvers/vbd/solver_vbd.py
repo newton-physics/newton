@@ -209,6 +209,23 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     .. experimental::
         SolverVBD's public API and behavior may change without prior notice.
 
+    Tuning guide: :ref:`Tuning VBD`
+    (https://newton-physics.github.io/newton/latest/concepts/simulation_tuning_vbd.html)
+    covers cloth and soft bodies, their self-contact and their contact with shapes:
+
+    - Parameter effects: the constructor arguments that matter for particle systems,
+      the model parameters, and the time step, substeps and iterations.
+    - Contact handling: interaction distance, detection slack, query radius and motion
+      budget; what DAT does to motion; how to set margin and gap.
+    - A debug protocol: the jitter pipeline and the explosion checklist, each in order.
+    - Special topics with symptom, cause and fix: the stiffness ratio (contact against
+      elasticity, membrane against bending), a fine mesh converging slowly, DAT damping,
+      bad assets, a smaller time step making things worse, self-contact tunneling.
+    - Parameter combinations from the shipped examples, and rules of thumb.
+
+    The math behind the advice (step objective, block solve, rigid bodies and joints, the
+    energy terms, DAT) is on the solver page :doc:`/solvers/vbd`.
+
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
@@ -321,6 +338,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           https://doi.org/10.1145/3658179
         - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages.
           https://doi.org/10.1145/3731195
+        - Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide and Truncate: A Penetration and Inversion Free Framework for Coupled Multi-physics System. In ACM SIGGRAPH 2026 Conference Papers.
+          https://doi.org/10.1145/3799902.3811143
+        - Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem Yuksel. 2025. Offset Geometric Contact. ACM Trans. Graph. 44, 4.
+          https://doi.org/10.1145/3731205
 
     Note:
         `SolverVBD` requires coloring for each system it solves:

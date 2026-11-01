@@ -93,3 +93,11 @@ dl.py.attribute {
 .bd-sidebar-primary .sidebar-header-items .sidebar-header-items__center {
     display: none;
 }
+
+/* Parameter tables: let long identifiers wrap instead of forcing a horizontal
+   scroll. Sphinx sets white-space: nowrap on span.pre. Opt in per table with
+   ":class: wrap-literals". */
+table.wrap-literals code.literal span.pre {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
