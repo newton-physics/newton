@@ -9383,6 +9383,125 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertIn("parent_xform", str(ctx.exception))
 
 
+class TestMjcfPartialVectorDefaults(unittest.TestCase):
+    """Partial vector attributes keep their remaining components from the default class, as in MuJoCo."""
+
+    MJCF = """<mujoco>
+    <default>
+        <default class="parent">
+            <geom friction="0.7 0.02 0.003" solref="0.03 2" solimp="0.8 0.85 0.002 0.4 3" size="0.1 0.2 0.3"/>
+            <site size="0.01 0.02 0.03"/>
+            <joint solreflimit="0.05 2" solimplimit="0.8 0.9 0.003 0.4 3"/>
+            <tendon solreflimit="0.06 3"/>
+            <pair friction="0.9 0.8 0.01 0.002 0.003"/>
+            <equality solref="0.04 3" solimp="0.85 0.9 0.004 0.3 4"/>
+            <general dyntype="muscle" gaintype="muscle" biastype="muscle" dynprm="0.01 0.04" gear="2 0 0 0 0 0.5"
+                     gainprm="0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2" biasprm="0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2"/>
+            <default class="child">
+                <geom friction="0.6" solimp="0.75"/>
+                <general dynprm="0.02"/>
+            </default>
+        </default>
+        <default class="shortcut">
+            <motor gear="4 0 0 0 0 0.25"/>
+        </default>
+    </default>
+    <worldbody>
+        <site name="s0" pos="0.1 0 0.6"/>
+        <body name="b">
+            <joint name="j" class="parent" type="hinge" axis="0 1 0" range="-1 1"
+                   solreflimit="0.04" solimplimit="0.7"/>
+            <geom name="box" class="child" type="box" size="0.05" solref="0.02" pos="0 0 0.2"/>
+            <site name="s1" class="parent" pos="0 0 0.5" size="0.005"/>
+        </body>
+        <body name="c" pos="0.5 0 0"><freejoint/><geom name="ball" type="sphere" size="0.05"/></body>
+    </worldbody>
+    <contact><pair class="parent" geom1="box" geom2="ball" friction="0.4"/></contact>
+    <equality><connect class="parent" body1="c" body2="b" anchor="0 0 0" solref="0.01" solimp="0.7"/></equality>
+    <tendon>
+        <spatial name="t" class="parent" limited="true" range="0 1" solreflimit="0.05">
+            <site site="s0"/><site site="s1"/>
+        </spatial>
+    </tendon>
+    <actuator>
+        <general name="m" class="child" tendon="t" lengthrange="0.3 0.6" gear="3"
+                 gainprm="0.75 1.05 300" biasprm="0.75 1.05 300"/>
+        <motor name="mo" class="shortcut" joint="j" gear="1.5"/>
+    </actuator>
+</mujoco>"""
+
+    def test_partial_vectors_match_native(self):
+        """Match native MuJoCo for every attribute given with fewer components than its length."""
+        import mujoco
+
+        native = mujoco.MjModel.from_xml_string(self.MJCF)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(self.MJCF)
+        # A truncated muscle gainprm would fail MuJoCo's lmin<1<lmax check here.
+        # Kinematic-root welds would add equality rows absent from the native model.
+        converted = SolverMuJoCo(
+            builder.finalize(device="cpu"), use_mujoco_cpu=True, kinematic_switchable_roots=False
+        ).mj_model
+        self.assertEqual(converted.neq, native.neq)
+
+        def box(model):
+            return int(np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_BOX)[0])
+
+        # Conversion drops actuator names, so find each actuator by its transmission.
+        def actuator(model, trntype):
+            return int(np.flatnonzero(model.actuator_trntype == trntype)[0])
+
+        muscle = {model: actuator(model, mujoco.mjtTrn.mjTRN_TENDON) for model in (native, converted)}
+        motor = {model: actuator(model, mujoco.mjtTrn.mjTRN_JOINT) for model in (native, converted)}
+
+        def site_positions(model):
+            data = mujoco.MjData(model)
+            mujoco.mj_kinematics(model, data)
+            return data.site_xpos.copy()
+
+        # Conversion renames and reorders sites, so pair them by their world position.
+        native_pos, converted_pos = site_positions(native), site_positions(converted)
+        site_pairs = [
+            (site, int(np.argmin(np.linalg.norm(converted_pos - native_pos[site], axis=1))))
+            for site in range(native.nsite)
+        ]
+        for site, match in site_pairs:
+            np.testing.assert_allclose(converted_pos[match], native_pos[site], atol=1e-6)
+
+        fields = {
+            "geom_friction": (native.geom_friction[box(native)], converted.geom_friction[box(converted)]),
+            "geom_solref": (native.geom_solref[box(native)], converted.geom_solref[box(converted)]),
+            "geom_solimp": (native.geom_solimp[box(native)], converted.geom_solimp[box(converted)]),
+            "geom_size": (native.geom_size[box(native)], converted.geom_size[box(converted)]),
+            "site_size": (
+                native.site_size[[site for site, _ in site_pairs]],
+                converted.site_size[[match for _, match in site_pairs]],
+            ),
+            "jnt_solref": (native.jnt_solref[0], converted.jnt_solref[0]),
+            "jnt_solimp": (native.jnt_solimp[0], converted.jnt_solimp[0]),
+            "tendon_solref_lim": (native.tendon_solref_lim[0], converted.tendon_solref_lim[0]),
+            "pair_friction": (native.pair_friction[0], converted.pair_friction[0]),
+            "eq_solref": (native.eq_solref[0], converted.eq_solref[0]),
+            "eq_solimp": (native.eq_solimp[0], converted.eq_solimp[0]),
+            "actuator_dynprm": (native.actuator_dynprm[muscle[native]], converted.actuator_dynprm[muscle[converted]]),
+            "actuator_gainprm": (
+                native.actuator_gainprm[muscle[native]],
+                converted.actuator_gainprm[muscle[converted]],
+            ),
+            "actuator_biasprm": (
+                native.actuator_biasprm[muscle[native]],
+                converted.actuator_biasprm[muscle[converted]],
+            ),
+            "actuator_gear": (native.actuator_gear[muscle[native]], converted.actuator_gear[muscle[converted]]),
+            # Shortcut actuators inherit the tail too.
+            "motor_gear": (native.actuator_gear[motor[native]], converted.actuator_gear[motor[converted]]),
+        }
+        for name, (expected, actual) in fields.items():
+            with self.subTest(field=name):
+                np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-7)
+
+
 class TestActuatorShortcutTypeDefaults(unittest.TestCase):
     """Verify actuator shortcut types set implicit biastype/gaintype correctly.
 
