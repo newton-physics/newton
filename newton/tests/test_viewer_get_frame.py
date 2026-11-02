@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
-import os
 import sys
 import unittest
 from types import SimpleNamespace
@@ -57,11 +56,6 @@ def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> 
 
 
 def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
-    # Their OpenGL 1.1 software fallback can't run ViewerGL, and creating windows on it
-    # after a failed viewer intermittently raises GLException instead of a skippable error.
-    if sys.platform == "win32" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted":
-        test.skipTest("GitHub-hosted Windows runners only provide OpenGL 1.1")
-
     _viewer_gl_unavailable_error_types(test)
 
     try:
@@ -738,6 +732,48 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertLess(np.abs(actual.astype(np.int16) - expected.astype(np.int16))[visible].mean(), 2.0)
         finally:
             viewer.close()
+
+
+class TestViewerGLMinimumVersion(unittest.TestCase):
+    def setUp(self):
+        try:
+            import pyglet.window
+        except Exception as exc:
+            if not _is_viewer_gl_unavailable_error(self, exc):
+                raise
+            self.skipTest(f"pyglet window backend not available: {exc}")
+        self.pyglet = pyglet
+
+    @staticmethod
+    def _gl_1_1_context():
+        info = mock.Mock()
+        info.have_version.return_value = False
+        info.get_version_string.return_value = "1.1.0"
+        info.get_renderer.return_value = "GDI Generic"
+        return mock.Mock(**{"get_info.return_value": info})
+
+    def test_old_driver_is_rejected_before_opening_a_window(self):
+        """Verify a driver below the minimum OpenGL version is rejected without opening a window."""
+        pyglet = self.pyglet
+        with (
+            mock.patch.object(pyglet.gl, "current_context", self._gl_1_1_context()),
+            mock.patch.object(pyglet.window, "Window") as window,
+            self.assertRaisesRegex(pyglet.gl.ContextException, r"OpenGL 3\.3 .*OpenGL 1\.1\.0 \(GDI Generic\)"),
+        ):
+            RendererGL(headless=True)
+        window.assert_not_called()
+
+    def test_old_window_context_is_rejected_and_closed(self):
+        """Verify a window whose context is below the minimum OpenGL version is closed."""
+        pyglet = self.pyglet
+        window = mock.Mock(context=self._gl_1_1_context())
+        with (
+            mock.patch.object(pyglet.gl, "current_context", None),
+            mock.patch.object(pyglet.window, "Window", return_value=window),
+            self.assertRaises(pyglet.gl.ContextException),
+        ):
+            RendererGL(headless=True)
+        window.close.assert_called_once()
 
 
 class TestViewerGLMultisampling(unittest.TestCase):
