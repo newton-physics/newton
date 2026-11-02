@@ -15,70 +15,6 @@ from .actuator import Actuator
 
 
 @wp.kernel
-def _init_actuator_dof_pairs_kernel(
-    actuator_dofs: wp.array[wp.uint32], sorted_dofs: wp.array[wp.uint32], sorted_entries: wp.array[int]
-):
-    entry = wp.tid()
-    sorted_dofs[entry] = actuator_dofs[entry]
-    sorted_entries[entry] = entry
-
-
-@wp.kernel
-def _actuator_dof_mapping_kernel(
-    sorted_dofs: wp.array[wp.uint32],
-    sorted_entries: wp.array[int],
-    entry_count: int,
-    selected_dofs: wp.array[int],
-    entry_mapping: wp.array[int],
-):
-    selection_index = wp.tid()
-    dof = selected_dofs[selection_index]
-    entry = int(-1)
-    if dof >= 0:
-        query_dof = wp.uint32(dof)
-        candidate = entry_count - 1
-        # Warp clamps past-end searches; handle last-key matches directly.
-        if query_dof < sorted_dofs[candidate]:
-            candidate = wp.lower_bound(sorted_dofs, 0, entry_count, query_dof + wp.uint32(1)) - 1
-        if candidate >= 0 and sorted_dofs[candidate] == query_dof:
-            entry = sorted_entries[candidate]
-    entry_mapping[selection_index] = entry
-
-
-def _build_actuator_dof_mapping(actuator_dofs: wp.array[wp.uint32], selected_dofs: wp.array) -> wp.array:
-    """Map selected global DOFs to actuator entries, using -1 for unowned DOFs."""
-    device = selected_dofs.device
-    entry_mapping = wp.empty(selected_dofs.shape, dtype=int, device=device)
-    if not entry_mapping.size:
-        return entry_mapping
-    entry_count = actuator_dofs.size
-    if not entry_count:
-        entry_mapping.fill_(-1)
-        return entry_mapping
-
-    # Warp's pair sort requires twice the input length for its scratch buffers.
-    sorted_dofs = wp.empty(2 * entry_count, dtype=wp.uint32, device=device)
-    sorted_entries = wp.empty(2 * entry_count, dtype=int, device=device)
-    wp.launch(
-        _init_actuator_dof_pairs_kernel,
-        dim=entry_count,
-        inputs=[actuator_dofs],
-        outputs=[sorted_dofs, sorted_entries],
-        device=device,
-    )
-    # Stable sorting keeps equal DOFs in entry order, so the last match wins.
-    wp.utils.radix_sort_pairs(sorted_dofs, sorted_entries, entry_count)
-    wp.launch(
-        _actuator_dof_mapping_kernel,
-        dim=entry_mapping.size,
-        inputs=[sorted_dofs, sorted_entries, entry_count, selected_dofs.flatten()],
-        outputs=[entry_mapping.flatten()],
-        device=device,
-    )
-    return entry_mapping
-
-
-@wp.kernel
 def _gather_kernel(src: wp.array[Any], mapping: wp.array[int], dst: wp.array[Any]):
     selection_index = wp.tid()
     index = mapping[selection_index]
@@ -259,14 +195,22 @@ class ActuatorView:
         """The caller's selection shape, without parameter element dimensions."""
         self.device = dof_indices.device
         self._attribute_bounds = {}
-        selection = wp.array(selected.reshape(self.shape), dtype=int, device=self.device)
         mappings = {}
         for actuator in actuators:
             if actuator.indices.device != dof_indices.device:
                 raise ValueError(
                     f"Expected actuator indices on device {dof_indices.device}, got {actuator.indices.device}"
                 )
-            mappings[actuator] = _build_actuator_dof_mapping(actuator.indices, selection)
+            indices = actuator.indices.numpy()
+            # Avoid allocating a lookup proportional to the largest global DOF.
+            order = np.argsort(indices, kind="stable")
+            sorted_indices = indices[order]
+            positions = np.searchsorted(sorted_indices, selected, side="right") - 1
+            mapping = np.full(selected.shape, -1, dtype=np.int32)
+            candidates = np.flatnonzero((selected >= 0) & (positions >= 0))
+            matched = candidates[sorted_indices[positions[candidates]] == selected[candidates]]
+            mapping[matched] = order[positions[matched]]
+            mappings[actuator] = wp.array(mapping.reshape(self.shape), dtype=int, device=self.device)
         self._mappings = mappings
         # Attribute access treats selected DOFs that no included actuator drives like -1 padding.
         driven = np.any([entries.numpy() >= 0 for entries in mappings.values()], axis=0)

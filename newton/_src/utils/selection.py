@@ -17,7 +17,6 @@ import warp as wp
 from warp.types import is_array, type_size, type_size_in_bytes
 
 from ..actuators.view import (
-    _build_actuator_dof_mapping,
     _component_owner,
     _gather_values,
     _get_actuator_parameter,
@@ -234,7 +233,49 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 # ========================================================================================
-# Selected DOF indices
+# Selected DOF indices and actuator mappings
+
+
+@wp.kernel
+def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup: wp.array[int]):
+    """Scatter ``lookup[actuator_dofs[i]] = i``, skipping DOFs beyond the lookup range.
+
+    ``lookup`` must be filled with -1. If an actuator lists a DOF more than once, the last entry wins.
+    """
+    i = wp.tid()
+    dof = actuator_dofs[i]
+    if dof < wp.uint32(lookup.shape[0]):
+        wp.atomic_max(lookup, int(dof), i)
+
+
+@wp.kernel
+def _map_regular_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    offset: int,
+    stride_between_worlds: int,
+    stride_within_worlds: int,
+    slice_start: int,
+    local_indices: wp.array[int],
+    use_local_indices: int,
+    mapping: wp.array3d[int],
+):
+    """Gather ``mapping[world, arti, value] = lookup[dof]`` for the view's regular-layout DOF rows."""
+    world, arti, value = wp.tid()
+    local = slice_start + value
+    if use_local_indices != 0:
+        local = local_indices[value]
+    mapping[world, arti, value] = lookup[offset + world * stride_between_worlds + arti * stride_within_worlds + local]
+
+
+@wp.kernel
+def _map_explicit_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    model_indices: wp.array3d[int],
+    mapping: wp.array3d[int],
+):
+    """Gather ``mapping[world, arti, value] = lookup[model_indices[world, arti, value]]``."""
+    world, arti, value = wp.tid()
+    mapping[world, arti, value] = lookup[model_indices[world, arti, value]]
 
 
 @wp.kernel
@@ -512,6 +553,24 @@ class FrequencyLayout:
         world_offsets = np.arange(world_count, dtype=np.int64) * self.stride_between_worlds
         articulation_offsets = np.arange(count_per_world, dtype=np.int64) * self.stride_within_worlds
         return self.offset + world_offsets[:, None, None] + articulation_offsets[None, :, None] + selected
+
+    def max_model_index(self, world_count: int, count_per_world: int) -> int:
+        """Return the largest absolute model row the layout selects, or -1 if it selects none.
+
+        Computed from host layout metadata only, without reading device memory.
+        """
+        if not self._selected_indices or world_count == 0 or count_per_world == 0:
+            return -1
+        if self._model_value_indices is not None:
+            return int(self._model_value_indices.max(initial=-1))
+        if self._model_starts is not None:
+            return int(self._model_starts.max()) + max(self._selected_indices)
+        return (
+            self.offset
+            + (world_count - 1) * self.stride_between_worlds
+            + (count_per_world - 1) * self.stride_within_worlds
+            + max(self._selected_indices)
+        )
 
     @property
     def selected_value_count(self):
@@ -2455,8 +2514,46 @@ class ArticulationView:
                 "get_actuator_parameter() allocates its result on every call and always requires the pool."
             )
 
-        dof_indices = self.get_dof_indices()
-        return _build_actuator_dof_mapping(actuator.indices, dof_indices)
+        lookup = wp.full(
+            dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
+        )
+        if actuator.indices.shape[0] > 0:
+            wp.launch(
+                _build_actuator_dof_lookup_kernel,
+                dim=actuator.indices.shape[0],
+                inputs=[actuator.indices],
+                outputs=[lookup],
+                device=device,
+            )
+
+        mapping = wp.empty(mapping_shape, dtype=int, device=device)
+        if dof_layout.uses_explicit_model_indices:
+            # prepared at view construction
+            wp.launch(
+                _map_explicit_dofs_to_actuator_kernel,
+                dim=mapping_shape,
+                inputs=[lookup, dof_layout.get_model_indices()],
+                outputs=[mapping],
+                device=device,
+            )
+        else:
+            use_local_indices = dof_layout.indices is not None
+            wp.launch(
+                _map_regular_dofs_to_actuator_kernel,
+                dim=mapping_shape,
+                inputs=[
+                    lookup,
+                    dof_layout.offset,
+                    dof_layout.stride_between_worlds,
+                    dof_layout.stride_within_worlds,
+                    0 if use_local_indices else dof_layout.slice.start,
+                    dof_layout.indices,
+                    int(use_local_indices),
+                ],
+                outputs=[mapping],
+                device=device,
+            )
+        return mapping
 
     @overload
     def get_actuator_parameter(self, name: str, component: Any) -> wp.array: ...

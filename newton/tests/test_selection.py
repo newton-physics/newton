@@ -2340,17 +2340,18 @@ def _set_legacy_actuator_parameter(test, view, *args, **kwargs):
 
 
 def _reversed_row_actuator(model, device):
-    """One actuator row per model DOF, listed in reverse global DOF order, with distinct gains.
+    """Reverse model DOFs and include an out-of-range unsigned entry with distinct gains.
 
     Returns ``(actuator, kp, row_of_dof)``. The actuator row differs from the DOF index, so a DOF/row
     mix-up is visible, and the rows of the last world come first, so the actuator does not own an
     equal consecutive block of rows per world in world order.
     """
     dof_count = model.joint_dof_count
-    kp = np.arange(dof_count, dtype=np.float32) * 10.0 + 1.0
+    kp = np.arange(dof_count + 1, dtype=np.float32) * 10.0 + 1.0
+    dofs = np.append(np.arange(dof_count)[::-1], np.iinfo(np.uint32).max)
     actuator = Actuator(
-        indices=wp.array(np.arange(dof_count)[::-1].copy(), dtype=wp.uint32, device=device),
-        drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(dof_count, device=device)),
+        indices=wp.array(dofs, dtype=wp.uint32, device=device),
+        drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(dof_count + 1, device=device)),
     )
     row_of_dof = np.empty(dof_count, dtype=np.int64)
     row_of_dof[np.arange(dof_count)[::-1]] = np.arange(dof_count)
