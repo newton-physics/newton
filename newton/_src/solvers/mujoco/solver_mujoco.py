@@ -542,7 +542,8 @@ _MJW_BATCHED_MODEL_FIELDS = (
 
 _CONDIM_DEPRECATION_MSG = (
     "The mujoco:condim custom attribute is deprecated in Newton 1.8; set ModelBuilder.ShapeConfig.friction_mode "
-    "and read Model.shape_material_friction_mode instead."
+    "and read Model.shape_material_friction_mode instead. Model.mujoco.condim returns a copy derived from the "
+    "friction mode, so changes to it have no effect."
 )
 
 

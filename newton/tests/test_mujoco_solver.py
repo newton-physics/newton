@@ -7641,8 +7641,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
             </joint>
         </robot>
         """
+        # condim needs no registered MuJoCo attributes
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_urdf(urdf)
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)

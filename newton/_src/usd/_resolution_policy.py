@@ -421,6 +421,10 @@ def _resolve_shape_friction_mode(
     if mode is None and condim is not None:
         mode = friction_mode_from_condim(int(condim))
     mode = int(defaults.friction_mode) if mode is None else int(mode)
+    # MuJoCo colliders select friction components by mjc:condim alone; converters
+    # author MuJoCo's friction coefficients on their materials regardless.
+    if usd.has_applied_api_schema(prim, "MjcCollisionAPI"):
+        return ShapeFrictionMode(mode)
 
     # Registered Steel attributes read the PhysX radius without the PhysX resolver.
     radius = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="torsional_patch_radius", verbose=verbose)
@@ -431,9 +435,7 @@ def _resolve_shape_friction_mode(
         if material.friction_mode is None:
             shape_contact["mu_torsional"] = shape_contact["mu"] * float(radius)
 
-    # MuJoCo colliders select friction components by mjc:condim alone; converters
-    # author MuJoCo's friction coefficients on their materials regardless.
-    if material.friction_mode is not None and not usd.has_applied_api_schema(prim, "MjcCollisionAPI"):
+    if material.friction_mode is not None:
         mode = max(mode, material.friction_mode)
     return ShapeFrictionMode(mode)
 

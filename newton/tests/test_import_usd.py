@@ -5632,6 +5632,11 @@ def Xform "Articulation" (
             "NewtonTorsional": ({}, "torsional", mode.TORSIONAL),
             "NewtonRolling": ({}, "rolling", mode.ROLLING),
             "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.TORSIONAL),
+            "MjcColliderIgnoresPhysxRadius": (
+                {"mjc:condim": 3, "physxCollision:minTorsionalPatchRadius": 0.01},
+                None,
+                mode.SLIDING,
+            ),
             "MaterialRaisesMode": ({"mjc:condim": 1}, "torsional", mode.TORSIONAL),
         }
         for i, (name, (attributes, material, _expected)) in enumerate(cases.items()):

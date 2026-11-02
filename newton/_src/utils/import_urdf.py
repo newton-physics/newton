@@ -496,7 +496,9 @@ def parse_urdf(
                 continue
             custom_attributes = parse_custom_attributes(geo.attrib, builder_custom_attr_shape, parsing_mode="urdf")
             shape_kwargs["custom_attributes"] = custom_attributes
-            condim = custom_attributes.pop("mujoco:condim", None)
+            # condim is a MuJoCo extension of URDF; it sets the friction mode, not the deprecated attribute.
+            custom_attributes.pop("mujoco:condim", None)
+            condim = geo.get("condim")
             shape_cfg.friction_mode = (
                 builder.default_shape_cfg.friction_mode if condim is None else friction_mode_from_condim(int(condim))
             )

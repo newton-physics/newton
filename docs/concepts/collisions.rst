@@ -2310,9 +2310,10 @@ contact applies: ``NONE`` (frictionless), ``SLIDING`` (``mu`` only),
 A contact uses the higher mode of its two shapes, so torsional and rolling
 coefficients take effect only on shapes whose mode enables them. To skip a
 lower component, set its coefficient to zero on both shapes, for example
-``ROLLING`` with ``mu_torsional=0``. Particle contacts follow the shape's
-mode: ``NONE`` makes them frictionless, and the other modes apply sliding
-friction because particles do not rotate. Solvers cache the modes when they
+``ROLLING`` with ``mu_torsional=0``. A rigid contact is only frictionless
+when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
+so particle contacts follow the shape's mode, and the modes above ``SLIDING``
+act as sliding friction because particles do not rotate. Solvers cache the modes when they
 are constructed. See :ref:`Contact material support` for the modes each solver
 supports.
 

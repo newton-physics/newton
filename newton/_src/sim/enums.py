@@ -184,9 +184,10 @@ class ShapeFrictionMode(IntEnum):
     :attr:`~newton.Model.shape_material_mu_rolling` set their strength and may
     change at runtime.
 
-    Particles have no friction mode and do not rotate, so a contact between a
-    particle and a shape follows the shape's mode: ``NONE`` makes it
-    frictionless and the other modes apply sliding friction.
+    Particles have no friction mode, so they count as ``NONE`` and a contact
+    between a particle and a shape follows the shape's mode. Because particles
+    do not rotate, the modes above ``SLIDING`` act as sliding friction for them.
+    A rigid contact is only frictionless when both shapes are ``NONE``.
     """
 
     NONE = 0
