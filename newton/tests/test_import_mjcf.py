@@ -9194,6 +9194,19 @@ class TestMjcfJointLimited(unittest.TestCase):
                         f'angle="{angle}"',
                     )
 
+    def test_inheritrange_disabled_range_follows_resolved_dof(self):
+        """Read the inert range of the DOF the actuator resolved to, not a sanitized-name alias."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        xml = """<mujoco><worldbody>
+            <body name="b1"><joint name="a-b" limited="false" range="0 1"/><geom size="0.1" mass="1"/></body>
+            <body name="b2"><joint name="a_b" range="-1 1"/><geom size="0.1" mass="1"/></body>
+        </worldbody><actuator><position joint="a_b" inheritrange="1"/></actuator></mujoco>"""
+        native = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
+
     def test_autolimits_false_ignores_range_without_limited(self):
         """Ignore a joint range without ``limited`` under ``autolimits="false"``."""
         builder = newton.ModelBuilder()
