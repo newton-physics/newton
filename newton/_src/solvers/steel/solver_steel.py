@@ -2063,19 +2063,21 @@ class SolverSteel(SolverBase, CouplingInterface):
                 comes from the contacts (per-shape hydroelastic stiffness, the contact damping
                 [N s/m], zero staying zero, and the friction weight, applied once to the pair
                 friction); contacts with zero stiffness stay rigid. A compliant row's force is
-                ``max(0, -k phi_next - c u_next)``, solved by updating its residual
-                ``u + k phi / (dt k + c) + lambda / (dt (dt k + c))`` after every sweep; the
+                ``max(0, -k phi_next - c u_next)``, solved with the residual
+                ``u + k phi / (dt k + c) + lambda / (dt (dt k + c))`` in every sweep; the
                 damping term is dropped while the gap is open. Requires point friction
                 (``None`` or ``0`` for ``friction_anchor_beta``; ``None`` warns), positive
                 ``iterations``, no warm start, no velocity-only iterations, no contact
                 regularization, no shared anchors and zero shape restitution. The contacts must carry the
-                hydroelastic material arrays. Each step synchronizes the row metadata with the
-                host, so the option rejects CUDA graph capture and is not a performance path.
-                Contacts the allocator excludes on purpose are counted in
-                ``compliance_skipped_contact_count`` and compliant contacts in
-                ``compliance_contact_count``; a compliant contact lost to a row capacity
-                raises, even with ``warn_constraint_overflow`` off. This option may change
-                without the normal deprecation period.
+                hydroelastic material arrays. The rows are prepared on the device, so :meth:`step`
+                can be captured in a CUDA graph. Invalid input (for example a compliant contact
+                lost to a row capacity, even with ``warn_constraint_overflow`` off, or a positive
+                shape restitution) makes an eager step raise. In a captured step the error is
+                deferred: :meth:`check_constraint_capacity` raises after the replays, until
+                :meth:`reset`, and their results are invalid; eager steps do not report it. Contacts the allocator excludes on
+                purpose are counted in ``compliance_skipped_contact_count`` and compliant contacts
+                in ``compliance_contact_count``. This option may change without the normal
+                deprecation period.
             enable_sleeping: Experimental passive-island sleeping. Articulations in contact
                 are joined into islands every step. Static geometry and articulations with no
                 responding degrees of freedom (such as a body welded to the world) support an
@@ -2238,12 +2240,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 "set friction_anchor_beta=0 for point friction"
             )
         self._contact_compliance = bool(contact_compliance)
-        self.compliance_contact_count = 0
-        """Compliant contacts consumed by the last step (``contact_compliance`` only)."""
-        self.compliance_skipped_contact_count = 0
-        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
-        self._compliant_contacts = None
-        self._compliant_prepared = False
+        self._compliance = None
         super().__init__(model)
         if solve_mode not in ("matrix_free", "split"):
             raise ValueError(f"solve_mode must be 'matrix_free' or 'split', got {solve_mode!r}")
@@ -2692,6 +2689,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._propagation_torsion_next = wp.full(propagation_torsion_shape, -1, dtype=wp.int32, device=model.device)
         self._no_torsion_radius = wp.zeros(1, dtype=wp.float32, device=model.device)
         self._allocate_propagation_buffers(model)
+        # Fixed-signature stand-in for the compliant residual coefficients of solve kernels without compliance.
+        self._compliance_off_gamma = wp.zeros((1, 1), dtype=float, device=model.device)
+        if self._contact_compliance:
+            self._compliance = _contact_compliance.ComplianceBuffers(self)
         self._mf_target_velocity = (
             wp.zeros_like(self._mf_rhs)
             if self._has_prescribed_response
@@ -3232,8 +3233,10 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._ws_history_dt.zero_()
             self._ws_history_generation.fill_(CONTACT_GENERATION_NONE)
             self._ws_history_stream.zero_()
-        if self._contact_compliance:
-            _contact_compliance.clear(self)
+        if self._compliance is not None:
+            # The compliance status is solver-wide; a cause that persists latches again on the next step.
+            self._compliance.counts.zero_()
+            _contact_compliance.clear_status(self._compliance)
         if self._device_torsion is not None:
             # The torsion status is solver-wide; a cause that persists latches again on the next step.
             self._device_torsion.clear_status()
@@ -4828,6 +4831,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             and self._local_solve_max_rows > 0
             # The local owners do not solve torsion rows.
             and not self._contact_torsion_enabled
+            # Nor do they add the compliant residual term, and they rebuild the diagonal that compliance replaces.
+            and not self._contact_compliance
             and self._sparse_mass_matrix_size is None
         )
         plan = self._model_plan
@@ -5896,6 +5901,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device_arch,
                 contact_triples=triples,
                 speculative_contact_batches=self._sparse_diagonal_speculative_contact_batches,
+                contact_compliance=self._contact_compliance,
             )
             if self._sparse_diagonal_contact_solve
             else None
@@ -5932,6 +5938,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 factor_coordinates=self._paired_factor_coordinates,
                 skip_local_internal_worlds=self._local_internal_fast_path,
                 joint_friction=bool(self._joint_friction_warp_kernels),
+                contact_compliance=self._contact_compliance,
             )
             if row_phases:
                 # One kernel per row phase the schedule launches, each with its phase compiled in.
@@ -6128,6 +6135,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._mf_row_w,
             self._contact_torsion_group,
             self._torsion_row_radius,
+            self._compliance.dense_gamma if self._compliance is not None else self._compliance_off_gamma,
+            self._compliance.mf_gamma if self._compliance is not None else self._compliance_off_gamma,
         ]
 
     def _launch_pgs_solve(
@@ -6224,6 +6233,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._paired_factor_secondary_groups_by_world,
                 self._paired_factor_primary_offsets_by_world,
                 self._paired_factor_secondary_offsets_by_world,
+                self._compliance.dense_gamma if self._compliance is not None else self._compliance_off_gamma,
                 int(iterations),
                 self._relaxation,
                 int(friction_start_iteration),
@@ -6480,6 +6490,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._fused_diagonal_limit_upper_rhs,
                 self._diagonal_inverse_mass,
                 self._cfm,
+                self._compliance.dense_gamma if self._compliance is not None else self._compliance_off_gamma,
                 int(iterations),
                 self._relaxation,
                 int(friction_start_iteration),
@@ -7699,29 +7710,28 @@ class SolverSteel(SolverBase, CouplingInterface):
             # After the warm-start installs, so a carried contact impulse cannot reopen the projection.
             self._stage5_project_bilateral_velocity()
         if self._contact_compliance:
-            _contact_compliance.solve(self, iterations=self._iterations)
+            _contact_compliance.prepare_rows(self, contacts, dt)
+        self._pack_mf_meta(self._mf_rhs)
+        friction_start = self._friction_start_iteration(self._iterations)
+        if self._propagation_active:
+            self._propagation_setup(state_in, state_aug, dt)
+            if self._contact_warmstart:
+                self._apply_propagation_warmstart_velocity()
+            solve = functools.partial(
+                self._launch_propagation_solve,
+                self._rhs,
+                self._propagation_rhs,
+                regularize=self._regularization_enabled,
+                friction_start_iteration=friction_start,
+            )
         else:
-            self._pack_mf_meta(self._mf_rhs)
-            friction_start = self._friction_start_iteration(self._iterations)
-            if self._propagation_active:
-                self._propagation_setup(state_in, state_aug, dt)
-                if self._contact_warmstart:
-                    self._apply_propagation_warmstart_velocity()
-                solve = functools.partial(
-                    self._launch_propagation_solve,
-                    self._rhs,
-                    self._propagation_rhs,
-                    regularize=self._regularization_enabled,
-                    friction_start_iteration=friction_start,
-                )
-            else:
-                solve = functools.partial(
-                    self._launch_pgs_solve,
-                    self._rhs,
-                    regularize=self._regularization_enabled,
-                    friction_start_iteration=friction_start,
-                )
-            solve(self._iterations)
+            solve = functools.partial(
+                self._launch_pgs_solve,
+                self._rhs,
+                regularize=self._regularization_enabled,
+                friction_start_iteration=friction_start,
+            )
+        solve(self._iterations)
 
     def _solve_split(self, state_aug: State, dt: float) -> None:
         """Assemble and solve the dense Delassus systems, then the free-body rows, into ``v_out``.
@@ -8099,8 +8109,18 @@ class SolverSteel(SolverBase, CouplingInterface):
         result["contact_high_water"] = int(values[ROW_WATERMARK_CONTACT_SLOT])
         return result
 
+    @property
+    def compliance_contact_count(self) -> int:
+        """Compliant contacts prepared by the last step (``contact_compliance`` only; synchronous readback)."""
+        return 0 if self._compliance is None else _contact_compliance.counts(self)[0]
+
+    @property
+    def compliance_skipped_contact_count(self) -> int:
+        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
+        return 0 if self._compliance is None else _contact_compliance.counts(self)[1]
+
     def check_constraint_capacity(self) -> None:
-        """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.
+        """Raise if any world or the global entry lost contacts or rows, or rejected input, since its last reset.
 
         Also raises if a step saw a joint of an articulation tree disabled in
         :attr:`~newton.Model.joint_enabled`; only loop-closing joints can be disabled. That
@@ -8113,7 +8133,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         and :meth:`reset`. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
         the last :meth:`reset`; a failing captured step restored its output motion arrays to the
-        input, while a failing eager step raised from :meth:`step`.
+        input, while a failing eager step raised from :meth:`step`. With ``contact_compliance``,
+        also raises if a captured step rejected its compliant contacts since the last :meth:`reset`;
+        discard the output of the replays since the last check.
 
         Reads the status on the host, so call it outside CUDA graph capture, for example at
         an observation boundary. Kernels can read :attr:`constraint_overflow` directly without
@@ -8132,6 +8154,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._device_torsion.validate()
             except (RuntimeError, ValueError) as error:
                 raise RuntimeError(f"Steel contact torsion rejected its input: {error}") from error
+        if self._compliance is not None:
+            try:
+                _contact_compliance.validate(self._compliance.status, clear=False)
+            except (RuntimeError, ValueError) as error:
+                raise RuntimeError(f"Steel contact compliance rejected its input: {error}") from error
         disabled = np.flatnonzero(self._disabled_tree_joint.numpy())
         if disabled.size:
             worlds = np.where(disabled == self.model.world_count, -1, disabled)
@@ -8621,6 +8648,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 secondary_size,
                 device_arch,
                 contact_triples=self._factor_coordinate_contact_triples,
+                contact_compliance=self._contact_compliance,
             )
 
     def _populate_sparse_diagonal_contact_rows(
@@ -9345,6 +9373,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         if self._contact_compliance:
             _contact_compliance.start_step(self, contacts, dt)
+            _contact_compliance.begin_rows(self)
         model = self.model
         max_constraints = self._articulation_constraint_max
         mf_active = self._has_free_rigid_bodies
@@ -12954,6 +12983,13 @@ def _get_paired_hinv_jt_kernel(
     )
 
 
+def _replace_once(source: str, old: str, new: str) -> str:
+    """Replace one required generated-source fragment."""
+    if source.count(old) != 1:
+        raise RuntimeError(f"Expected one generated-source fragment: {old.strip()!r}")
+    return source.replace(old, new)
+
+
 @cache
 def _get_pgs_solve_paired_factor_kernel(
     max_constraints: int,
@@ -12962,6 +12998,7 @@ def _get_pgs_solve_paired_factor_kernel(
     secondary_dofs: int,
     device_arch: str,
     contact_triples: bool = False,
+    contact_compliance: bool = False,
 ) -> "wp.Kernel":
     """Build the dense PGS solve for a fixed articulation/free-body pair.
 
@@ -13305,6 +13342,22 @@ def _get_pgs_solve_paired_factor_kernel(
 """
     snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
 
+    if contact_compliance:
+        # Compliant contact normals add gamma * lambda to their residual in each sweep.
+        snippet = _replace_once(
+            snippet,
+            "+ omega * (-( __shfl_sync(MASK, normal_sum, 0) + s_rhs[normal]) / normal_denom);",
+            "+ omega * (-( __shfl_sync(MASK, normal_sum, 0)\n"
+            "                            + (s_rhs[normal] + compliance_dense_gamma.data[off + normal] * old_normal))\n"
+            "                            / normal_denom);",
+        )
+        snippet = _replace_once(
+            snippet,
+            "            const float residual = jv + s_rhs[i];",
+            f"            const float residual = jv + (row_type == {contact_type}\n"
+            "                ? s_rhs[i] + compliance_dense_gamma.data[off + i] * s_lam[i] : s_rhs[i]);",
+        )
+
     @wp.func_native(snippet)
     def pgs_solve_paired_factor_native(
         world: int,
@@ -13327,6 +13380,7 @@ def _get_pgs_solve_paired_factor_kernel(
         secondary_group_by_world: wp.array[int],
         primary_offset_by_world: wp.array[int],
         secondary_offset_by_world: wp.array[int],
+        compliance_dense_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         friction_start_iteration: int,
@@ -13355,6 +13409,7 @@ def _get_pgs_solve_paired_factor_kernel(
         secondary_group_by_world: wp.array[int],
         primary_offset_by_world: wp.array[int],
         secondary_offset_by_world: wp.array[int],
+        compliance_dense_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         friction_start_iteration: int,
@@ -13385,6 +13440,7 @@ def _get_pgs_solve_paired_factor_kernel(
                 secondary_group_by_world,
                 primary_offset_by_world,
                 secondary_offset_by_world,
+                compliance_dense_gamma,
                 iterations,
                 omega,
                 friction_start_iteration,
@@ -13395,6 +13451,8 @@ def _get_pgs_solve_paired_factor_kernel(
     name = f"pgs_solve_paired_factor_{M}_{D}_{P}_{S}_w{W}"
     if contact_triples:
         name += "_contact3"
+    if contact_compliance:
+        name += "_compliance"
     pgs_solve_paired_factor_template.__name__ = name
     pgs_solve_paired_factor_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
@@ -14674,6 +14732,7 @@ def _get_pgs_solve_mf_gs_kernel(
     factor_coordinates: bool = False,
     skip_local_internal_worlds: bool = False,
     joint_friction: bool = False,
+    contact_compliance: bool = False,
     row_phase: int | None = None,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
@@ -14740,6 +14799,8 @@ def _get_pgs_solve_mf_gs_kernel(
             ``"fixed_normal"`` update under ``"coulomb_newton"``).
         joint_friction: Emit the box projection of the joint-friction rows
             (``enable_joint_friction``).
+        contact_compliance: Add ``gamma * lambda`` to every contact-normal residual in each
+            sweep (``contact_compliance``); ``gamma`` is zero on rigid rows.
     """
     if fuse_vel_limits and not has_drive_rows:
         raise ValueError("fuse_vel_limits requires has_drive_rows")
@@ -15259,6 +15320,23 @@ def _get_pgs_solve_mf_gs_kernel(
 #endif
 """
 
+    if contact_compliance:
+        snippet = _replace_once(
+            snippet,
+            "            float old_impulse = s_lam_dense[i];\n            float residual = jv + s_rhs_dense[i];",
+            "            float old_impulse = s_lam_dense[i];\n"
+            f"            float residual = jv + (row_type == {int(PGS_CONSTRAINT_TYPE_CONTACT)}\n"
+            "                ? s_rhs_dense[i] + compliance_dense_gamma.data[off_dense + i] * old_impulse\n"
+            "                : s_rhs_dense[i]);",
+        )
+        snippet = _replace_once(
+            snippet,
+            "            float residual = jv + __int_as_float(meta.z);",
+            f"            float residual = jv + (mf_rt == {int(PGS_CONSTRAINT_TYPE_CONTACT)}\n"
+            "                ? __int_as_float(meta.z) + compliance_mf_gamma.data[off_mf + i] * s_lam_mf[i]\n"
+            "                : __int_as_float(meta.z));",
+        )
+
     if not shared_metadata:
         # Larger shapes stream the read-only row metadata from global memory instead of
         # holding it in shared memory, which would otherwise limit occupancy. Values are
@@ -15332,6 +15410,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 friction_mode,
                 factor_coordinates,
                 joint_friction,
+                contact_compliance,
                 row_phase,
             )
             + "_local",
@@ -15368,6 +15447,8 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_row_w: wp.array2d[float],
         world_torsion_group: wp.array2d[int],
         torsion_row_radius: wp.array2d[float],
+        compliance_dense_gamma: wp.array2d[float],
+        compliance_mf_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -15407,6 +15488,8 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_row_w: wp.array2d[float],
         world_torsion_group: wp.array2d[int],
         torsion_row_radius: wp.array2d[float],
+        compliance_dense_gamma: wp.array2d[float],
+        compliance_mf_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -15447,6 +15530,8 @@ def _get_pgs_solve_mf_gs_kernel(
             mf_row_w,
             world_torsion_group,
             torsion_row_radius,
+            compliance_dense_gamma,
+            compliance_mf_gamma,
             iterations,
             omega,
             regularize,
@@ -15470,6 +15555,7 @@ def _get_pgs_solve_mf_gs_kernel(
         friction_mode,
         factor_coordinates,
         joint_friction,
+        contact_compliance,
         row_phase,
     )
     pgs_solve_mf_gs.__name__ = name
@@ -15490,6 +15576,7 @@ def _mf_gs_kernel_name(
     friction_mode: str,
     factor_coordinates: bool,
     joint_friction: bool,
+    contact_compliance: bool,
     row_phase: int | None = None,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
@@ -15502,6 +15589,7 @@ def _mf_gs_kernel_name(
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"
         f"{'_jfric' if joint_friction else ''}"
+        f"{'_compliance' if contact_compliance else ''}"
     )
 
 
@@ -15545,6 +15633,8 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
         mf_row_w: wp.array2d[float],
         world_torsion_group: wp.array2d[int],
         torsion_row_radius: wp.array2d[float],
+        compliance_dense_gamma: wp.array2d[float],
+        compliance_mf_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -15589,6 +15679,8 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
         mf_row_w: wp.array2d[float],
         world_torsion_group: wp.array2d[int],
         torsion_row_radius: wp.array2d[float],
+        compliance_dense_gamma: wp.array2d[float],
+        compliance_mf_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -15638,6 +15730,8 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
                 mf_row_w,
                 world_torsion_group,
                 torsion_row_radius,
+                compliance_dense_gamma,
+                compliance_mf_gamma,
                 iterations,
                 omega,
                 regularize,
@@ -21605,6 +21699,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
     *,
     contact_triples: bool = False,
     speculative_contact_batches: bool = False,
+    contact_compliance: bool = False,
 ) -> "wp.Kernel":
     """Build the Gauss-Seidel kernel of sparse-diagonal worlds, one warp per world.
 
@@ -22077,6 +22172,28 @@ def _get_pgs_solve_sparse_diagonal_kernel(
 """
     snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
 
+    if contact_compliance:
+        # Compliant contact normals add gamma * lambda to their residual in each sweep.
+        snippet = _replace_once(
+            snippet,
+            "const float residual = __fadd_rn(normal_jv, s_rhs[normal]);",
+            "const float residual = __fadd_rn(normal_jv,\n"
+            "                        s_rhs[normal] + compliance_gamma.data[row_base + normal] * s_lambda[normal]);",
+        )
+        snippet = _replace_once(
+            snippet,
+            "* (candidate_velocity + s_rhs[candidate_normal]) / denominator;",
+            "* (candidate_velocity + s_rhs[candidate_normal]\n"
+            "                                + compliance_gamma.data[row_base + candidate_normal] * old_impulse)\n"
+            "                                / denominator;",
+        )
+        snippet = _replace_once(
+            snippet,
+            "            const float residual = velocity + s_rhs[row];\n",
+            f"            const float residual = velocity + (row_type == {int(PGS_CONSTRAINT_TYPE_CONTACT)}\n"
+            "                ? s_rhs[row] + compliance_gamma.data[row_base + row] * s_lambda[row] : s_rhs[row]);\n",
+        )
+
     @wp.func_native(snippet)
     def pgs_solve_sparse_diagonal_native(
         world: int,
@@ -22104,6 +22221,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
         fused_limit_upper_rhs: wp.array2d[float],
         diagonal_inverse_mass: wp.array[float],
         fused_limit_cfm: float,
+        compliance_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         friction_start_iteration: int,
@@ -22138,6 +22256,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
         fused_limit_upper_rhs: wp.array2d[float],
         diagonal_inverse_mass: wp.array[float],
         fused_limit_cfm: float,
+        compliance_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         friction_start_iteration: int,
@@ -22173,6 +22292,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
             fused_limit_upper_rhs,
             diagonal_inverse_mass,
             fused_limit_cfm,
+            compliance_gamma,
             iterations,
             omega,
             friction_start_iteration,
@@ -22187,6 +22307,8 @@ def _get_pgs_solve_sparse_diagonal_kernel(
         name += "_contact_groups"
     if speculative_contact_batches:
         name += "_speculative_batches"
+    if contact_compliance:
+        name += "_compliance"
     pgs_solve_sparse_diagonal_template.__name__ = name
     pgs_solve_sparse_diagonal_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
