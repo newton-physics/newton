@@ -1,0 +1,1 @@
+Fix `SolverSteel` loop closures adding angular momentum to a free-floating mechanism while the closure is open: CONNECT rows between two bodies of one articulation that both have response DOFs now apply their impulses at the midpoint of the two anchors instead of at each body's own anchor, and `BODY_PARENT_F` reports these forces at the same point.
