@@ -1,22 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
-#
-# A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
-# grid (a single quad split by one diagonal edge -> two triangles) at its
-# centre, then lifts and holds it in the air.
-#
-# The grid's four corner vertices sit far out in x (outside the jaws), so the
-# only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
-# The legacy per-particle path finds no vertex between the jaws, so the grid is
-# gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
-# via the water-tight soft-EDGE pass. With the flag off the grid slips out and
-# falls.
-#
-# Command: python -m newton.examples vbd_gripper_soft_grid
-###########################################################################
+"""Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
+
+A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
+grid (a single quad split by one diagonal edge -> two triangles) at its
+centre, then lifts and holds it in the air.
+
+The grid's four corner vertices sit far out in x (outside the jaws), so the
+only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
+The legacy per-particle path finds no vertex between the jaws, so the grid is
+gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
+via the water-tight soft-EDGE pass. With the flag off the grid slips out and
+falls.
+
+Success criteria:
+- Cube finger pads close across the interior diagonal edge of a two-triangle grid whose corner
+  vertices lie outside the jaws.
+- The grid lifts with the gripper and remains held in the air during the hold phase, without
+  slipping through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_grid`
+"""
 
 from __future__ import annotations
 
