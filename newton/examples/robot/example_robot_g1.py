@@ -1,15 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot G1
-#
-# Shows how to set up a simulation of a G1 robot articulation
-# from a USD stage using newton.ModelBuilder.add_usd().
-#
-# Command: python -m newton.examples robot_g1 --world-count 16
-#
-###########################################################################
+"""Example Robot G1
+
+Shows how to set up a simulation of a G1 robot articulation
+from a USD stage using newton.ModelBuilder.add_usd().
+
+Success criteria:
+- G1 humanoids begin upright slightly above the ground, then drop onto their feet and remain
+  supported; the displayed world count matches --world-count.
+- Right-drag individual robots: robots in separate worlds do not collide with one another but
+  interact with their ground plane.
+- Without perturbations, robots remain supported and settle without persistent visible jitter.
+
+Runs:
+- `python -m newton.examples robot_g1 --world-count 3`
+  - Three G1 robots appear.
+- `python -m newton.examples robot_g1 --world-count 2`
+  - Two G1 robots appear; use this scene for the shared viewer checklist.
+- `python -m newton.examples robot_g1 --world-count 16`
+"""
 
 import warp as wp
 
@@ -52,6 +62,8 @@ class Example:
             enable_self_collisions=False,
             hide_collision_shapes=True,
             skip_mesh_approximation=True,
+            # Use the same Newton joint drives for both solvers.
+            ignore_paths=[".*/Physics/.*_joint$"],
         )
 
         for i in range(6, g1.joint_dof_count):
@@ -165,6 +177,14 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Verify one actuator per joint and a settled robot pose."""
+        if self.solver_type == "mujoco":
+            assert self.solver.mj_model.nu == self.model.joint_dof_count // self.world_count - 6, (
+                "Each G1 joint should have exactly one MuJoCo actuator"
+            )
+            assert (self.solver.mjc_actuator_ctrl_source.numpy() == self.solver.CtrlSource.JOINT_TARGET).all(), (
+                "G1 actuators should use Newton joint targets"
+            )
         newton.examples.test_body_state(
             self.model,
             self.state_0,

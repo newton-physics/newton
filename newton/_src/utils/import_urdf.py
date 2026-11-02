@@ -7,16 +7,17 @@ import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Literal
 from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 import numpy as np
 import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
-from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Transform
+from ..exceptions import NewtonWarning
 from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
@@ -40,6 +41,33 @@ try:
     from resolve_robotics_uri_py import resolve_robotics_uri
 except ImportError:
     resolve_robotics_uri = None
+
+
+def _resolve_urdf_uri(uri: str, package_dirs: list[str]) -> str:
+    local_path = None
+    if uri.lower().startswith("file:"):
+        parsed = urlsplit(uri)
+        # The resolver ignores authorities, so reject remote hosts and network shares first.
+        if (
+            parsed.netloc.lower() not in ("", "localhost")
+            or not parsed.path.startswith("/")
+            or unquote(parsed.path).replace("\\", "/").startswith("//")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(f'Invalid local file URI: "{uri}"')
+        local_path = url2pathname(parsed.path)
+        if not PurePath(local_path).is_absolute():
+            raise ValueError(f'Invalid local file URI "{uri}"; expected an absolute filesystem path.')
+        uri = "file:" + uri[5:]
+    if resolve_robotics_uri is None:
+        raise ImportError(
+            f'Cannot resolve URI "{uri}" without resolve-robotics-uri-py. '
+            "Install it with: pip install 'newton[importers]'"
+        )
+    resolved = resolve_robotics_uri(uri, package_dirs=package_dirs)
+    # Preserve symlinks so relative assets use the same directory as a plain file path.
+    return local_path if local_path is not None else os.fspath(resolved)
 
 
 def _download_file(dst, url: str) -> None:
@@ -84,15 +112,22 @@ def parse_urdf(
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
-    joint_damping_mode: Literal["passive", "drive"] | None = None,
+    joint_damping_mode: Literal["passive", "drive"] = "passive",
+    package_dirs: list[str] | None = None,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
-        source: The filename of the URDF file to parse, or the URDF XML string content.
+        source: URDF filename, local ``file:`` URI, ``package://`` or ``model://`` URI, or XML content.
+        package_dirs: Extra package roots for source and asset URIs; for ``package://robot/...``,
+            supply the directory containing ``robot``. Requires ``newton[importers]``.
+            Roots supplement environment paths without guaranteed precedence or restricting access.
+            Plain relative paths use the URDF directory; file URIs require an absolute local path.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
+            If ``parent_body`` is set, ``xform`` is expressed in that body's frame
+            instead of the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -185,22 +220,16 @@ def parse_urdf(
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
         joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
-            ``"passive"`` imports it into ``joint_damping`` and keeps drive
+            ``"passive"`` (default) imports it into ``joint_damping`` and keeps drive
             damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
             into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
             In drive mode, passive damping uses ``default_joint_cfg.damping``
             for revolute, prismatic, and planar joints.
             XPBD/VBD do not consume passive joint damping.
-
-            .. deprecated:: 1.7
-                The implicit None default retains the drive mapping and warns
-                when the URDF authors damping. The default will become
-                ``"passive"`` in Newton 1.8. Pass either mode explicitly to
-                silence the warning; both explicit modes remain supported.
     """
-    if joint_damping_mode not in (None, "passive", "drive"):
-        raise ValueError("joint_damping_mode must be 'passive', 'drive', or None")
-    use_drive_damping = joint_damping_mode != "passive"
+    if joint_damping_mode not in ("passive", "drive"):
+        raise ValueError("joint_damping_mode must be 'passive' or 'drive'")
+    use_drive_damping = joint_damping_mode == "drive"
 
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -218,23 +247,14 @@ def parse_urdf(
         xform = wp.transform(*xform) * axis_xform
 
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
+    package_dirs = [os.fspath(path) for path in package_dirs] if package_dirs is not None else []
+    if package_dirs and resolve_robotics_uri is None:
+        raise ImportError(
+            "package_dirs requires resolve-robotics-uri-py. Install it with: pip install 'newton[importers]'"
+        )
 
-    if source.startswith(("package://", "model://")):
-        if resolve_robotics_uri is not None:
-            try:
-                source = resolve_robotics_uri(source)
-            except FileNotFoundError:
-                raise FileNotFoundError(
-                    f'Could not resolve URDF source URI "{source}". '
-                    f"Check that the package is installed and that relevant environment variables "
-                    f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
-                    f"See https://github.com/ami-iit/resolve-robotics-uri-py for details."
-                ) from None
-        else:
-            raise ImportError(
-                f'Cannot resolve URDF source URI "{source}" without resolve-robotics-uri-py. '
-                f"Install it with: pip install resolve-robotics-uri-py"
-            )
+    if source.startswith(("package://", "model://")) or source.lower().startswith("file:"):
+        source = _resolve_urdf_uri(source, package_dirs)
 
     if os.path.isfile(source):
         file = ET.parse(source)
@@ -242,16 +262,6 @@ def parse_urdf(
     else:
         xml_content = sanitize_xml_content(source)
         urdf_root = ET.fromstring(xml_content)
-
-    if joint_damping_mode is None and urdf_root.find("joint/dynamics[@damping]") is not None:
-        warnings.warn(
-            "The default joint_damping_mode currently maps URDF damping to drive damping. "
-            "The default will switch to 'passive' in Newton 1.8. "
-            "Pass joint_damping_mode='drive' to retain the current mapping or "
-            "joint_damping_mode='passive' to use passive damping explicitly.",
-            DeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
 
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
@@ -280,33 +290,36 @@ def parse_urdf(
             return None, None
 
         file_tmp = None
-        if filename.startswith(("package://", "model://")):
-            if resolve_robotics_uri is not None:
+        if filename.startswith(("package://", "model://")) or filename.lower().startswith("file:"):
+            if resolve_robotics_uri is not None or filename.lower().startswith("file:"):
                 try:
-                    if filename.startswith("package://"):
-                        fn = filename.replace("package://", "")
+                    asset_package_dirs = list(package_dirs)
+                    if filename.startswith("package://") and os.path.isfile(source):
                         parent_urdf_folder = os.path.abspath(
                             os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
                         )
-                        package_dirs = [parent_urdf_folder]
-                    else:
-                        package_dirs = []
-                    filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
+                        asset_package_dirs.append(parent_urdf_folder)
+                    filename = _resolve_urdf_uri(filename, asset_package_dirs)
+                except ImportError as exc:
+                    warnings.warn(str(exc), NewtonWarning, stacklevel=2)
+                    return None, None
                 except FileNotFoundError:
                     warnings.warn(
-                        f'Warning: could not resolve URI "{filename}". '
+                        f'Could not resolve URI "{filename}". '
                         f"Check that the package is installed and that relevant environment variables "
                         f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
                         f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
             else:
                 if not os.path.isfile(source):
                     warnings.warn(
-                        f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
+                        f'Cannot resolve URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path, or install resolve-robotics-uri-py: "
                         f"pip install resolve-robotics-uri-py",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
@@ -324,16 +337,18 @@ def parse_urdf(
                         filename = os.path.join(os.fspath(package_root), fn)
                     else:
                         warnings.warn(
-                            f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
+                            f'Could not resolve package "{package_name}" in URI "{filename}". '
                             f"For robust URI resolution, install resolve-robotics-uri-py: "
                             f"pip install resolve-robotics-uri-py",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         return None, None
                 else:
                     warnings.warn(
-                        f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
+                        f'Cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
                         f"Install it with: pip install resolve-robotics-uri-py",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
@@ -344,15 +359,16 @@ def parse_urdf(
             if not os.path.isabs(filename):
                 if not os.path.isfile(source):
                     warnings.warn(
-                        f'Warning: cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
+                        f'Cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
                 filename = os.path.join(os.path.dirname(source), filename)
 
         if not os.path.exists(filename):
-            warnings.warn(f"Warning: asset file {filename} does not exist", stacklevel=2)
+            warnings.warn(f"Asset file {filename} does not exist", NewtonWarning, stacklevel=2)
             return None, None
 
         return filename, file_tmp
@@ -560,7 +576,8 @@ def parse_urdf(
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         warnings.warn(
-                            f"Warning: mesh {resolved} has a texture but no UVs; texture will be ignored.",
+                            f"Mesh {resolved} has a texture but no UVs; texture will be ignored.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         m_mesh.texture = None
@@ -920,6 +937,7 @@ def parse_urdf(
             if follower_idx is None:
                 warnings.warn(
                     f"Mimic joint '{joint['name']}' was not created, skipping mimic constraint",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue
@@ -941,6 +959,7 @@ def parse_urdf(
             else:
                 warnings.warn(
                     f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue

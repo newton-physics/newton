@@ -459,11 +459,13 @@ def _replace_validated_predictive_claims(
 @wp.kernel
 def _reclaim_and_allocate_contact_ids(
     reducer_data: GlobalContactReducerData,
+    stride: int,
     allocated_ids: wp.array[wp.int32],
 ):
-    """Reclaim one ID per thread and immediately contend for the available IDs."""
+    """Reclaim one ID per ``stride`` threads while every thread contends for one."""
     tid = wp.tid()
-    reclaim_contact_id(tid + 1, reducer_data)
+    if tid % stride == 0:
+        reclaim_contact_id(tid / stride + 1, reducer_data)
     allocated_ids[tid] = export_contact_to_buffer(
         0,
         1,
@@ -1644,27 +1646,40 @@ def test_predictive_reducer_reclamation_storage_is_opt_in(test, device):
     """Avoid allocating predictive reservation storage in the default reducer."""
     reducer = GlobalContactReducer(capacity=32, device=device)
     test.assertEqual(reducer.reclaimed_contact_bits.shape[0], 0)
-    test.assertEqual(reducer.reclaimed_contact_cursor.shape[0], 0)
+    test.assertEqual(reducer.reclaimed_contact_count.shape[0], 0)
 
 
 def test_predictive_reducer_reclaims_ids_without_duplicates(test, device):
-    """Allocate each concurrently reclaimed contact ID exactly once."""
-    capacity = 1024
-    reducer = _make_predictive_reducer(capacity, device, deterministic=False)
-    reducer.contact_count.fill_(capacity)
-    allocated_ids = wp.full(capacity, -1, dtype=wp.int32, device=device)
+    """Reuse every concurrently reclaimed contact ID exactly once."""
+    # Enough threads to outlast one resident wave, so pops race later reclaims.
+    is_cuda = wp.get_device(device).is_cuda
+    num_threads = 1 << 17 if is_cuda else 1024
+    allocated_ids = wp.empty(num_threads, dtype=wp.int32, device=device)
 
-    wp.launch(
-        _reclaim_and_allocate_contact_ids,
-        dim=capacity,
-        inputs=[reducer.get_data_struct(), allocated_ids],
-        device=device,
-    )
+    # Stride 1 races pops against reclaims behind their scan; stride 8 keeps
+    # the pool near empty so failed pops race the few reclaims.
+    for stride in (1, 8):
+        capacity = num_threads // stride
+        reducer = _make_predictive_reducer(capacity, device, deterministic=False)
+        for trial in range(4 if is_cuda else 1):
+            with test.subTest(stride=stride, trial=trial):
+                reducer.clear()
+                reducer.contact_count.fill_(capacity)
+                allocated_ids.fill_(-2)
+                wp.launch(
+                    _reclaim_and_allocate_contact_ids,
+                    dim=num_threads,
+                    inputs=[reducer.get_data_struct(), stride, allocated_ids],
+                    device=device,
+                )
 
-    ids = np.sort(allocated_ids.numpy())
-    np.testing.assert_array_equal(ids, np.arange(1, capacity + 1, dtype=np.int32))
-    test.assertEqual(int(reducer.contact_count.numpy()[0]), capacity)
-    test.assertEqual(int(np.count_nonzero(reducer.reclaimed_contact_bits.numpy())), 0)
+                # Each reclaim precedes a pop on the same thread, so none may remain.
+                ids = allocated_ids.numpy()
+                np.testing.assert_array_equal(np.sort(ids[ids > 0]), np.arange(1, capacity + 1, dtype=np.int32))
+                test.assertEqual(int(np.count_nonzero(ids == -1)), num_threads - capacity)
+                test.assertEqual(int(reducer.contact_count.numpy()[0]), capacity)
+                test.assertEqual(int(np.count_nonzero(reducer.reclaimed_contact_bits.numpy())), 0)
+                test.assertEqual(int(reducer.reclaimed_contact_count.numpy()[0]), 0)
 
 
 class TestSpeculativeContacts(unittest.TestCase):

@@ -68,15 +68,15 @@ def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True
-    ),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True
-    ),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "steel": lambda model: newton.solvers.SolverSteel(
+        model, solve_mode="matrix_free" if model.device.is_cuda else "split"
+    ),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

@@ -18,6 +18,7 @@ Newton Physics
    guide/installation
    guide/compatibility
    guide/visualization
+   guide/diagnostics
    guide/tutorials
    Development <guide/development>
    Source Code Guidelines <guide/source_code_guidelines>
@@ -31,6 +32,8 @@ Newton Physics
    Worlds <concepts/worlds>
    Articulations <concepts/articulations>
    Deformable Objects <concepts/deformable_objects>
+   Selection API <concepts/selection>
+   Deformable Selection <concepts/deformable_selection>
    Mass and Inertia <concepts/mass_inertia>
    Sites <concepts/sites>
    Sensors <concepts/sensors>

@@ -566,7 +566,7 @@ def test_clear_active_coalesced(test, device):
             reducer.ht_values.fill_(wp.uint64(1))
             reducer.contact_count.fill_(7)
             reducer.reclaimed_contact_bits.fill_(wp.uint32(0xFFFFFFFF))
-            reducer.reclaimed_contact_cursor.fill_(5)
+            reducer.reclaimed_contact_count.fill_(5)
             reducer.ht_insert_failures.fill_(3)
             for values in vector_entry_arrays:
                 values.fill_(wp.vec3(1.0))
@@ -579,7 +579,7 @@ def test_clear_active_coalesced(test, device):
             test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
             test.assertEqual(get_active_slot_count(reducer), 0)
             np.testing.assert_array_equal(reducer.reclaimed_contact_bits.numpy(), 0)
-            test.assertEqual(int(reducer.reclaimed_contact_cursor.numpy()[0]), 0)
+            test.assertEqual(int(reducer.reclaimed_contact_count.numpy()[0]), 0)
             np.testing.assert_array_equal(
                 reducer.hashtable.keys.numpy()[active_entries],
                 np.full(active_count, np.iinfo(np.uint64).max, dtype=np.uint64),

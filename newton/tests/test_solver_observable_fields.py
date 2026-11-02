@@ -202,7 +202,7 @@ class TestSolverObservableFields(unittest.TestCase):
     def test_custom_contact_field_binds_storage(self):
         """Apply contact rules using the declaration rather than the kind value."""
         solver = self.make_solver(self.model)
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+        with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.observables(kinds={CustomKind.PRESSURE})
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
         contacts = pipeline.contacts()
@@ -211,8 +211,9 @@ class TestSolverObservableFields(unittest.TestCase):
         self.assertEqual(selected.pressure.shape, (0,))
         self.assertTrue(selected.is_requested(CustomKind.PRESSURE))
         solver.validate_observables(selected, contacts)
-        self.assertIs(observables.contacts, contacts)
-        self.assertIsNone(observables.select(set()).contacts)
+        self.assertIs(observables.contacts_for_kind(CustomKind.PRESSURE), contacts)
+        self.assertIsNone(observables.contacts)
+        self.assertIsNone(observables.select(set()).contacts_for_kind(CustomKind.PRESSURE))
 
     def test_redeclarations_and_namespaces_are_independent(self):
         """Keep cached base declarations intact when a child overrides a field."""

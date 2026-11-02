@@ -81,6 +81,27 @@ class TestObservableFieldDocs(unittest.TestCase):
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiPublicSymbols(unittest.TestCase):
+    def test_annotated_settings_omit_runtime_values(self):
+        """Document mutable configuration without embedding machine-specific paths."""
+        module = ModuleType("newton_fake_config")
+        module.__all__ = ["cache_dir_assets", "cache_dir_meshes"]
+        module.__annotations__ = dict.fromkeys(module.__all__, str | None)
+        module.cache_dir_assets = "/machine/specific/cache"
+        module.cache_dir_meshes = None
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            with (
+                patch_sys_module(module.__name__, module),
+                mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
+                mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
+            ):
+                generate_api.write_module_page(module.__name__, api_toctree_modules=set())
+            page = (output_dir / f"{module.__name__}.rst").read_text(encoding="utf-8")
+        self.assertNotIn(module.cache_dir_assets, page)
+        self.assertNotIn(".. rubric:: Functions", page)
+        for name in module.__all__:
+            self.assertIn(f".. autodata:: {name}\n   :no-value:", page)
+
     def test_public_symbols_rejects_module_without_all(self):
         """Reject a module that does not declare its public API."""
         module = ModuleType("newton.missing_all")
@@ -165,6 +186,31 @@ class TestGenerateApiCopyright(unittest.TestCase):
                     generate_api.copyright_line(api_page),
                     ".. SPDX-FileCopyrightText: Copyright (c) 2042 The Newton Developers",
                 )
+
+
+@unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
+class TestGenerateApiClassTemplates(unittest.TestCase):
+    def test_deformable_views_use_inherited_member_template(self):
+        """Select the inherited-member template without changing articulation docs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            with (
+                mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
+                mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
+            ):
+                generate_api.write_module_page("newton.selection", api_toctree_modules=set())
+
+            page = (output_dir / "newton_selection.rst").read_text(encoding="utf-8")
+
+        summaries = page.split(".. autosummary::")[1:]
+        self.assertEqual(len(summaries), 2)
+        self.assertIn("   ArticulationView\n", summaries[0])
+        self.assertNotIn(":template:", summaries[0])
+        self.assertIn("   :template: class.rst\n", summaries[1])
+        for name in ("DeformableCurveView", "DeformableSurfaceView", "DeformableVolumeView"):
+            with self.subTest(view=name):
+                self.assertIn(f"   {name}\n", summaries[1])
+                self.assertEqual(page.count(f"   {name}\n"), 1)
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")

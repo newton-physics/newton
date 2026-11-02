@@ -838,8 +838,8 @@ def test_vbd_contact_force_validation(test, device):
 
     for owner, buffer, message in (
         (other_solver, contacts, "solver instance that allocated"),
-        (solver, None, "Contacts instance"),
-        (solver, other_contacts, "Contacts instance"),
+        (solver, None, "Contacts"),
+        (solver, other_contacts, "capacit"),
     ):
         with test.subTest(message=message), test.assertRaisesRegex(ValueError, message):
             owner.step(state_in, state_out, None, buffer, 1.0 / 60.0, observables=observables)

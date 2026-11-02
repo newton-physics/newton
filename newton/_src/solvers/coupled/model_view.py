@@ -14,7 +14,7 @@ from ...geometry import ParticleFlags
 from ...sim import BodyFlags, JointType, Model
 
 if TYPE_CHECKING:
-    from ...sim import State
+    from ...sim import Control, State
 
 
 def _types_compatible(current, value) -> bool:
@@ -63,6 +63,10 @@ class ModelView:
     "model" (e.g. with zeroed masses for non-owned bodies) without duplicating
     the full Model.
 
+    Default shape contact pairs and their summaries use the parent Model's
+    finalized collision topology. To change the view's pairs, assign
+    ``shape_contact_pairs`` on the view; its read-only count follows the array length.
+
     A ``ModelView`` is intended to duck-type as a :class:`~newton.Model` for the
     purpose of constructing solvers (``SolverFoo(model=view)``).
 
@@ -97,6 +101,8 @@ class ModelView:
         return self._count_limited_attribute(name, getattr(parent, name))
 
     def __setattr__(self, name: str, value) -> None:
+        if name == "shape_contact_pair_count":
+            raise AttributeError("shape_contact_pair_count is read-only; replace shape_contact_pairs instead")
         parent = object.__getattribute__(self, "_parent")
         if parent.tendon_count and name in {"body_count", "tendon_count", "tendon_guide_count", "tendon_segment_count"}:
             if value != getattr(parent, name):
@@ -107,17 +113,29 @@ class ModelView:
             setattr(self, spec.alias_of, value)
             return
 
-        if not hasattr(parent, name):
-            raise AttributeError(
-                f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
-            )
-        current = getattr(parent, name)
-        if current is not None and value is not None and not _types_compatible(current, value):
-            raise TypeError(
-                f"ModelView {self.name!r} override for {name!r}: expected "
-                f"{_type_summary(current)}, got {_type_summary(value)}"
-            )
-        if name.endswith("_count"):
+        if name == "shape_contact_pairs":
+            if value is not None and not (
+                isinstance(value, wp.array)
+                and value.dtype == wp.vec2i
+                and value.ndim == 1
+                and value.device == parent.device
+            ):
+                raise TypeError(
+                    f"ModelView {self.name!r} override for {name!r}: expected "
+                    f"wp.array[dtype={wp.vec2i}, ndim=1, device={parent.device}], got {_type_summary(value)}"
+                )
+        else:
+            if not hasattr(parent, name):
+                raise AttributeError(
+                    f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
+                )
+            current = getattr(parent, name)
+            if current is not None and value is not None and not _types_compatible(current, value):
+                raise TypeError(
+                    f"ModelView {self.name!r} override for {name!r}: expected "
+                    f"{_type_summary(current)}, got {_type_summary(value)}"
+                )
+        if name.endswith("_count") or name == "shape_contact_pairs":
             object.__getattribute__(self, "_cache").clear()
         object.__getattribute__(self, "_overrides")[name] = value
 
@@ -143,9 +161,18 @@ class ModelView:
         return object.__getattribute__(self, "_parent")
 
     @property
+    def shape_contact_pair_count(self) -> int:
+        """Read-only pair count inherited from the parent or derived from the replacement array."""
+        overrides = object.__getattribute__(self, "_overrides")
+        if "shape_contact_pairs" in overrides:
+            pairs = overrides["shape_contact_pairs"]
+            return len(pairs) if pairs is not None else 0
+        return object.__getattribute__(self, "_parent").shape_contact_pair_count
+
+    @property
     def joint_target_q_start(self) -> wp.array | None:
         """View-local start indices for :attr:`~newton.Model.joint_target_q`."""
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     @property
     def overrides(self) -> dict[str, object]:
@@ -203,7 +230,7 @@ class ModelView:
         """Return the view-local count associated with a model attribute."""
         parent = object.__getattribute__(self, "_parent")
         spec = parent._attribute_spec(name)
-        if spec is None or spec.compaction_policy not in {"generic", "end"}:
+        if spec is None or spec.compaction_policy not in {"generic", "end", "range_start"}:
             return None
         try:
             count = self._attribute_frequency_count(spec.frequency)
@@ -285,6 +312,17 @@ class ModelView:
 
         with self._temporary_state_array_overrides():
             return Model.state(self, requires_grad=requires_grad)
+
+    def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
+        """Create a :class:`~newton.Control` from view-local control defaults.
+
+        This calls the normal :meth:`~newton.Model.control` implementation with
+        this view as the model object, so the control arrays follow the joint
+        rows and counts visible through the view.
+        """
+        from ...sim import Model  # noqa: PLC0415
+
+        return Model.control(self, requires_grad=requires_grad, clone_variables=clone_variables)
 
     def get_requested_state_attributes(self) -> list[str]:
         """Return requested state attributes using view-local counts."""

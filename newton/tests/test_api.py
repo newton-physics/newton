@@ -90,6 +90,22 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_joint_target_layout_flag_removed(self):
+        """Expose coordinate-shaped position targets without a layout switch."""
+        import newton  # noqa: PLC0415
+
+        self.assertNotIn("use_coord_layout_targets", newton.__all__)
+        self.assertFalse(hasattr(newton, "use_coord_layout_targets"))
+        builder = newton.ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        self.assertFalse(hasattr(model, "use_coord_layout_targets"))
+        self.assertEqual(model.joint_target_q.shape, (7,))
+        self.assertEqual(model.control().joint_target_q.shape, (7,))
+        self.assertIs(model.joint_target_q_start, model.joint_q_start)
+
     def test_collision_pipeline_flattens_speculative_contact_config(self):
         """Configure speculative contacts without a single-field wrapper."""
         import newton  # noqa: PLC0415

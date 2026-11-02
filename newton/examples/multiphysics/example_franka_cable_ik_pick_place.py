@@ -1,22 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Franka Cable IK Pick-and-Place (proxy coupling)
-#
-# A fixed-base Franka FR3 arm uses Newton's GPU IK solver to pick up a
-# deformable cable and move it to a target location. The arm is simulated
-# by MuJoCo (PD position targets driven from the IK result), the cable is
-# a VBD rod, and SolverCoupledProxy couples the two: the gripper bodies are
-# exposed to VBD as virtual proxies so the cable detects them as contacts.
-#
-# Cable geometry/material, Franka joint gains, contact parameters and the
-# proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
-#
-# Standalone: depends only on newton + warp (no IsaacLab).
-#
-# Command: python -m newton.examples franka_cable_ik_pick_place
-###########################################################################
+"""Example Franka Cable IK Pick-and-Place (proxy coupling)
+
+A fixed-base Franka FR3 arm uses Newton's GPU IK solver to pick up a
+deformable cable and move it to a target location. The arm is simulated
+by MuJoCo (PD position targets driven from the IK result), the cable is
+a VBD rod, and SolverCoupledProxy couples the two: the gripper bodies are
+exposed to VBD as virtual proxies so the cable detects them as contacts.
+
+Cable geometry/material, Franka joint gains, contact parameters and the
+proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
+
+Standalone: depends only on newton + warp (no IsaacLab).
+
+Success criteria:
+- A fixed-base Franka FR3 arm and a deformable cable appear on a working surface.
+- The Franka arm approaches the cable, descends to the cable, and closes the gripper around it.
+- The arm lifts the cable, moves it to a target location, lowers it, releases it, and retracts.
+- The cable behaves as a deformable VBD rod and interacts with the gripper through proxy contacts.
+- The grasped cable segment should be placed close to the target location.
+
+Runs:
+- `python -m newton.examples franka_cable_ik_pick_place`
+"""
 
 from __future__ import annotations
 
@@ -167,7 +174,7 @@ class Example:
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.rigid_gap = template.rigid_gap
-        builder.replicate(template, world_count=self.world_count)
+        builder.replicate(template, copy_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
 
         # Match the gripper side to the cable material without overwriting

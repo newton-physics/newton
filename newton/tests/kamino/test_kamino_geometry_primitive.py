@@ -33,7 +33,8 @@ from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
     primitive_narrowphase,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 from newton.tests.utils import basics, testing
 
 ###
@@ -1012,11 +1013,12 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
         )
 
 
-class TestPipelinePrimitive(unittest.TestCase):
+class TestPipelinePrimitive(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
         self.verbose = test_context.verbose  # Set to True for detailed output
 
         # Set debug-level logging to print verbose test output to console
@@ -1095,6 +1097,7 @@ class TestPipelinePrimitive(unittest.TestCase):
 
     def test_03_reports_contact_capacity_overflow(self):
         """Reset the primitive overflow warning flag between collision runs."""
+        expect_contact_capacity_warning(self)
         builder = testing.build_shape_pairs_test(shape_pairs=[("box", "box")])
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data()

@@ -19,7 +19,7 @@ from newton._src.geometry.contact_reduction_global import (
 from newton._src.geometry.contact_reduction_hydroelastic import HydroelasticContactReduction
 from newton.solvers import SolverSemiImplicit
 from newton.solvers.experimental.coupled import SolverCoupled
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 @wp.kernel
@@ -191,6 +191,39 @@ def test_coupled_entry_contacts_keep_reduction_loss(test, device):
     test.assertEqual(int(coupled.entry_contacts("all", other)._reduction_overflow.numpy()[0]), 0)
 
 
+def test_reducer_failures_reach_solver_status(test, device, solve_mode="matrix_free"):
+    """Latch Steel capacity status for every world when the reducer dropped contact candidates."""
+    model = _boxes_on_mesh_model(device)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    reference = newton.CollisionPipeline(model)
+    reference_contacts = reference.contacts()
+    reference.collide(state_0, reference_contacts)
+    candidate_count = int(reference.narrow_phase.global_contact_reducer.contact_count.numpy()[0])
+
+    pipeline = newton.CollisionPipeline(model, max_triangle_pairs=candidate_count - 2, verify_buffers=False)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverSteel(model, solve_mode=solve_mode, warn_constraint_overflow=False)
+
+    # A lossless pass leaves the status clear.
+    solver.step(state_0, state_1, control, reference_contacts, 1.0 / 60.0)
+    test.assertFalse(solver.constraint_overflow.numpy().any())
+    solver.check_constraint_capacity()
+
+    pipeline.collide(state_0, contacts)
+    test.assertEqual(int(contacts._reduction_overflow.numpy()[0]), 1)
+    solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+    test.assertTrue(solver.constraint_overflow.numpy().all())
+    with test.assertRaisesRegex(RuntimeError, "capacity exceeded"):
+        solver.check_constraint_capacity()
+
+    # The status latches until the world is reset, even after a lossless pass.
+    solver.step(state_0, state_1, control, reference_contacts, 1.0 / 60.0)
+    test.assertTrue(solver.constraint_overflow.numpy().all())
+    solver.reset(state_0)
+    test.assertFalse(solver.constraint_overflow.numpy().any())
+
+
 def test_default_capacity_scales_with_world_count(test, device):
     """Size the default reducer for every world, where a fixed capacity fits only a few."""
     world_count = 8
@@ -252,7 +285,7 @@ def test_default_capacity_holds_large_batches(test, device):
         with test.subTest(broad_phase=broad_phase, stored_pairs=pairs is not None):
             model.shape_contact_pairs = pairs
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
+                warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
                 pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, verify_buffers=False)
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
@@ -275,14 +308,16 @@ def test_deterministic_limit_applies_only_with_reducer(test, device):
     packing_limit = (1 << 20) - 1
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
+        warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
         unreduced = newton.CollisionPipeline(model, reduce_contacts=False, deterministic=True)
     test.assertIsNone(unreduced.narrow_phase.global_contact_reducer)
     test.assertGreater(unreduced.narrow_phase.max_triangle_pairs, packing_limit)
 
     for kwargs in ({"deterministic": True}, {"contact_matching": "latest"}):
         with test.subTest(**kwargs):
-            with test.assertWarnsRegex(RuntimeWarning, r"deterministic contact reduction.*at most 1,048,575"):
+            with test.assertWarnsRegex(
+                newton.exceptions.NewtonWarning, r"deterministic contact reduction.*at most 1,048,575"
+            ):
                 pipeline = newton.CollisionPipeline(model, **kwargs)
             test.assertEqual(pipeline.narrow_phase.max_triangle_pairs, packing_limit)
 
@@ -321,6 +356,19 @@ add_function_test(
     "test_coupled_entry_contacts_keep_reduction_loss",
     test_coupled_entry_contacts_keep_reduction_loss,
     devices=devices,
+)
+add_function_test(
+    TestContactReductionOverflow,
+    "test_reducer_failures_reach_solver_status",
+    test_reducer_failures_reach_solver_status,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestContactReductionOverflow,
+    "test_reducer_failures_reach_solver_status_split",
+    test_reducer_failures_reach_solver_status,
+    devices=devices,
+    solve_mode="split",
 )
 
 add_function_test(

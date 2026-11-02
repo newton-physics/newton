@@ -1,0 +1,1 @@
+Support different mesh assets and convex-hull counts across compatible worlds in `SolverMuJoCo`. With native MuJoCo contacts, corresponding shapes must now also agree on `has_shape_collision`; previously the first world's flag silently applied to all worlds.

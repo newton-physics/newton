@@ -44,7 +44,13 @@ published citation when available and retain an accessible preprint link.
 
 ### 2026
 
+- **Gym-Anything for Robotics: Scaling physical simulations with digital agents**. *P. Aggarwal, S. Welleck*. October 2026. [arXiv:2610.40565](https://arxiv.org/abs/2610.40565)
+
 - **FlashNeRD: Performance-First Contact-Rich Neural Robot Dynamics**. *M. Ataei, M. A. Nabian, J. Xu, M. Macklin, Y. Narang, E. Heiden, O. Zhang, Y. Guo, R. D'Sa, O. Hennigh, G. State, S. Choudhry*. October 2026. [arXiv:2610.09130](https://arxiv.org/abs/2610.09130)
+
+- **GaP: A Graph-as-Policy Multi-Agent Self-Learning Harness For Variational Automation Tasks**. *K. Chen, S. Xie, L. Fu, J. Yu, W. Pacini, S. Bajamahal, H. Kim, J. Drake, D. Kim, H. Xue, J. Francis, C. Juette, P. Schaldenbrand, M. Y. Seker, R. Wickramarachchi, U. Yoo, G. Wang, A. Murali, B. Sundaralingam, S. S. Sastry, Y. Zhu, L. Fan, S. Huang, K. Goldberg*. July 2026. [arXiv:2607.05369](https://arxiv.org/abs/2607.05369)
+
+- **RoboSimStudio: An Interactive Toolkit for Rapid Real2Sim of Robot Manipulation Tasks**. *K. Chen, S. Xie, U. Yoo, X. Zhu, C. Magner, A. Zhu, D. Kim, E. Heiden, E. Coumans, M. Macklin, S. Huang, K. Goldberg*. October 2026. [arXiv:2610.18835](https://arxiv.org/abs/2610.18835)
 
 - **Same Action, Different Outcome: Variability in Dynamic Cloth Manipulation**. *M. Dadgostar, G. Alenyà, J. Borràs*. October 2026. [arXiv:2610.10801](https://arxiv.org/abs/2610.10801)
 
@@ -53,6 +59,10 @@ published citation when available and retain an accessible preprint link.
 - **Backpropagating Through Simulation: Analytic Policy Gradients for Sample and Learning Efficient Differentiable Continuous Control**. *Y. Deng*. June 2026. [arXiv:2606.21525](https://arxiv.org/abs/2606.21525)
 
 - **RigPI: Dynamic Parameter Identification of Rigid Body via VLM-Seeded Differentiable Simulation**. *X. He, R. Zhang, W. Jiang, W. Xu*. June 2026. [arXiv:2606.25212](https://arxiv.org/abs/2606.25212)
+
+- **RoboMMT: Learning Stable Tracking of Modulated Expressive and Interactive Robot Motion**. *T. Hielscher, K. O. Arras*. October 2026. [arXiv:2610.26414](https://arxiv.org/abs/2610.26414)
+
+- **Probabilistic Physics Digital Twin for Human-Robot Interaction**. *Y. Hu, H. Chandirasekar, A. Kushwaha, J. King, Z.-T. Chen*. October 2026. [arXiv:2610.19336](https://arxiv.org/abs/2610.19336)
 
 - **GM-Loco: Terrain-Adaptive Humanoid Locomotion on Granular Media**. *J. Kamohara, F. Wu, A. N. Zong, D. I. Goldman, Y. Nakka, S. Hutchinson, Y. Zhao*. September 2026. [arXiv:2609.10286](https://arxiv.org/abs/2609.10286)
 
@@ -64,6 +74,8 @@ published citation when available and retain an accessible preprint link.
 
 - **High-Fidelity 4D Cloth Capture Pipeline with a Two-Level Pattern**. *Z. Liu, A. Chen, S. Chen, Y. Yang, C. Yuksel, J. H. Lin*. ACM Transactions on Graphics 45(4), July 2026. [DOI:10.1145/3811305](https://doi.org/10.1145/3811305), [author version](https://graphics.cs.utah.edu/research/projects/two-level-cloth-capture-pattern/two-level-cloth-capture-pattern.pdf)
 
+- **ForwardDLO: Model-Based Bimanual Shape Matching of Unconstrained Deformable Linear Objects**. *T. Missal, B. Guler, L. Domingues, S. Manschitz, J. Peters, P. D. P. Costa*. September 2026. [arXiv:2609.18455](https://arxiv.org/abs/2609.18455)
+
 - **OrchardBench: A Physically-Grounded, GPU-Parallel Apple-Orchard Simulation Benchmark for Agricultural Robotics**. *H. Munn*. July 2026. [arXiv:2607.06337](https://arxiv.org/abs/2607.06337)
 
 - **DetAug: Obstacle-Blind Trajectory Augmentation for Zero-shot Obstacle Avoidance**. *R. O'Mahoney, M. Zoellner, I. Havoutis*. September 2026. [arXiv:2609.18395](https://arxiv.org/abs/2609.18395)
@@ -71,6 +83,8 @@ published citation when available and retain an accessible preprint link.
 - **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
 
 - **Informationally Decoupled Trajectory Design for Sim-to-Real System Identification**. *S. Shin, A. Anilkumar, R. Gao, J. P. Hanna*. October 2026. [arXiv:2610.10905](https://arxiv.org/abs/2610.10905)
+
+- **DefFlow: Goal-Conditioned Deformable Object Manipulation using 3D Point Flows**. *G. Singh, S. Orozco, R. Duong, M. T. Akbulut, G. Konidaris, S. Sridhar*. October 2026. [arXiv:2610.22827](https://arxiv.org/abs/2610.22827)
 
 - **A Splitting Architecture for Exact Reduced Coulomb Friction**. *H. Song, Y. Fan, U. M. Ascher, D. K. Pai*. Computer Graphics Forum 45(8), 2026. [DOI:10.1111/cgf.70576](https://doi.org/10.1111/cgf.70576), [arXiv:2607.19599](https://arxiv.org/abs/2607.19599)
 
@@ -85,6 +99,8 @@ published citation when available and retain an accessible preprint link.
 - **Learning Expressive and Compositional Motion Representation via Spectral Skills**. *F. Wu, C. Gao, C. Yang, Y. Zhao, B. Dai, A. Wu*. September 2026. [arXiv:2609.37677](https://arxiv.org/abs/2609.37677)
 
 - **RopeFormer: Cross-Trial Adaptation from Interaction History for Dynamic Rope Manipulation**. *M. Wu, K. Yao, S. Luan, M. Tomizuka, Y. Chen*. September 2026. [arXiv:2609.23432](https://arxiv.org/abs/2609.23432)
+
+- **ContactBench 1.0: A Benchmark for Everyday Contact-Rich Robotic Manipulation**. *J. Xiang, Y. Wang, J. Bohg, W. Yuan*. October 2026. [arXiv:2610.24512](https://arxiv.org/abs/2610.24512)
 
 - **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
 

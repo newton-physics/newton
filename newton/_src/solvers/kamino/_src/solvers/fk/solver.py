@@ -231,17 +231,21 @@ class ForwardKinematicsSolver:
         joint_act_type_prev = resolved_act_type.numpy()
         joint_dof_start = self.model.joints.dofs_offset.numpy()
         joint_dof_act_types = self.model.joints.dof_act_types.numpy()
-        base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
-        base_joint_id_set = {joint_id for joint_id in base_joint_ids_input if joint_id >= 0}
-        for joint in range(self.model.size.sum_of_num_joints):
-            if joint in base_joint_id_set:
-                continue
-            dof_actuation = joint_dof_act_types[joint_dof_start[joint] : joint_dof_start[joint + 1]]
-            passive = dof_actuation == JointActuationType.PASSIVE
-            if np.any(passive) and not np.all(passive):
-                raise ValueError(
-                    f"Invalid FK actuation for joint {joint}: all DoFs must be passive or all must be actuated."
-                )
+        base_joint_index_np = self.model.info.base_joint_index.numpy()
+        base_joint_ids_input = base_joint_index_np.tolist()
+        passive_dofs = joint_dof_act_types == JointActuationType.PASSIVE
+        passive_prefix = np.concatenate(([0], np.cumsum(passive_dofs, dtype=np.intp)))
+        # Prefix differences count passive DoFs within each joint's range.
+        passive_count = passive_prefix[joint_dof_start[1:]] - passive_prefix[joint_dof_start[:-1]]
+        dof_count = np.diff(joint_dof_start)
+        mixed_actuation = (passive_count > 0) & (passive_count < dof_count)
+        mixed_actuation[base_joint_index_np[base_joint_index_np >= 0]] = False
+        invalid = np.flatnonzero(mixed_actuation)
+        if invalid.size > 0:
+            joint = int(invalid[0])
+            raise ValueError(
+                f"Invalid FK actuation for joint {joint}: all DoFs must be passive or all must be actuated."
+            )
         # Indexed by model joint: 0 is passive, 1 is actuated, and -1 skips
         # validation for an explicit base joint that FK replaces.
         built_fk_actuated = (joint_act_type_prev != JointActuationType.PASSIVE).astype(np.int32)

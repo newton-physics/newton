@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 import unittest
 from itertools import product
 from types import SimpleNamespace
@@ -27,6 +26,7 @@ from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlock
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+    BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
     _initialize_dvi_status,
     _solve_bilateral_unilateral_response,
@@ -68,10 +68,11 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
 from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIState, convert_config_to_struct
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 from newton.tests.utils import basics, testing
 
 
@@ -330,7 +331,7 @@ def _status_iteration_budget(solver: DVISolver, wid: int) -> int:
     config = solver.config[wid]
     if config.unilateral_solver == "apgd":
         phases = (
-            1 if config.use_schur_complement or solver._bilateral_solver is None else config.max_alternating_iterations
+            1 if solver._use_schur_complement or solver._bilateral_solver is None else config.max_alternating_iterations
         )
         return phases * config.apgd.max_nonlinear_corrections * config.apgd.max_iterations
     return config.max_alternating_iterations * config.inequality_sweeps_per_iteration
@@ -384,11 +385,12 @@ def _evaluate_solution_metrics(test: TestSetup, solver: DVISolver) -> dict[str, 
     }
 
 
-class TestDVISolver(unittest.TestCase):
+class TestDVISolver(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
@@ -439,7 +441,7 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(default_config.dvi.omega, 1.0)
         self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
         self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertFalse(default_config.dvi.use_schur_complement)
+        self.assertIsNone(default_config.dvi.use_schur_complement)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
         self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
@@ -566,6 +568,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_00a2_dvi_contact_capacity_reports_per_world_overflow(self):
         """Report contacts dropped when one world exhausts its capacity."""
+        expect_contact_capacity_warning(self)
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         for world_index in range(50):
@@ -625,6 +628,17 @@ class TestDVISolver(unittest.TestCase):
         self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
         self.assertEqual(solver._bilateral_solver._block_size, 16)
         self.assertTrue(solver._bilateral_solver._reuse_permutation)
+        self.assertEqual(solver._bilateral_solver._failed_pivot_shift, BILATERAL_FAILED_PIVOT_SHIFT)
+
+        # Both bilateral solvers retry failed pivots by default, and an explicit shift still wins.
+        for kwargs, expected_shift in (({}, BILATERAL_FAILED_PIVOT_SHIFT), ({"failed_pivot_shift": 0.0}, 0.0)):
+            with self.subTest(kwargs=kwargs):
+                solver._config = [
+                    kamino_config.DVISolverConfig(bilateral_solver_type="LLTB", bilateral_solver_kwargs=kwargs)
+                ]
+                solver._allocate_bilateral_solver(make_model([3]))
+                self.assertIsInstance(solver._bilateral_solver, LLTBlockedSolver)
+                self.assertEqual(solver._bilateral_solver._failed_pivot_shift, expected_shift)
 
         solver._config = [
             kamino_config.DVISolverConfig(bilateral_solver_type="LLTB"),
@@ -1267,7 +1281,7 @@ class TestDVISolver(unittest.TestCase):
     def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
         """Honor each world's projected and bilateral iteration schedule."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=3)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -1369,7 +1383,7 @@ class TestDVISolver(unittest.TestCase):
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=2)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -2170,7 +2184,7 @@ class TestDVISolver(unittest.TestCase):
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
-            max_world_contacts=4,
+            max_world_contacts=8,
             sparse=True,
         )
         update_containers(
@@ -2219,7 +2233,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_05_dvi_solve_multi_world_contacts(self):
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=4)
+        builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=4)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -2250,7 +2264,7 @@ class TestDVISolver(unittest.TestCase):
         """Verify dense and sparse DVI map packed contacts to raw topology."""
         for sparse in (False, True):
             builder = newton.ModelBuilder()
-            builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=8)
+            builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=8)
             model = ModelKamino.from_newton(builder.finalize(device=self.device))
             model, data, state, limits, detector, jacobians = make_containers(
                 model=model,
@@ -2305,7 +2319,7 @@ class TestDVISolver(unittest.TestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 builder = newton.ModelBuilder()
-                builder.replicate(builder=_build_five_box_stack(), world_count=4)
+                builder.replicate(builder=_build_five_box_stack(), copy_count=4)
                 model = ModelKamino.from_newton(builder.finalize(device=self.device))
                 model, data, state, limits, detector, jacobians = make_containers(
                     model=model,
@@ -2655,7 +2669,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_06a_dvi_masked_reset_preserves_unselected_worlds(self):
         builder = newton.ModelBuilder()
-        builder.replicate(basics.build_box_on_plane(ground=True), world_count=3)
+        builder.replicate(basics.build_box_on_plane(ground=True), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -3307,11 +3321,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact creep; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3363,11 +3372,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact support; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 

@@ -15,6 +15,10 @@ import warp as wp
 
 import newton
 from newton.selection import ArticulationView
+from newton.sensors import SensorContact
+from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM
+from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.viewer import ViewerNull
 
 
 class ContactSolver(newton.solvers.SolverBase):
@@ -62,14 +66,18 @@ class TestSolverObservables(unittest.TestCase):
         self.solver = ContactSolver(self.model)
         self.kinds = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
 
-    def test_uninitialized_capacities(self):
-        """Distinguish uninitialized capacities from valid zero capacities."""
-        self.assertIsNone(self.model.rigid_contact_max)
-        self.assertIsNone(self.model.soft_contact_max)
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+    def test_contact_observables_size_from_contacts(self):
+        """Size contact arrays from the supplied Contacts, not the model capacities."""
+        with self.assertRaisesRegex(ValueError, "Contacts"):
             self.solver.observables(kinds=self.kinds)
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+        self.model.rigid_contact_max = 5
+        self.model.soft_contact_max = 3
+        with self.assertRaisesRegex(ValueError, "Contacts"):
             self.solver.observables(kinds=self.solver.supported_observables)
+        contacts = newton.Contacts(2, 1, device="cpu")
+        observables = self.solver.observables(kinds=self.kinds, contacts=contacts)
+        self.assertEqual(observables.contact_f.shape, (3,))
+        self.assertIs(observables.contacts, contacts)
 
     def test_body_only_observables_need_no_pipeline(self):
         """Allocate body observables without constructing a collision pipeline."""
@@ -148,11 +156,36 @@ class TestSolverObservables(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.validate_observables(pressure)
         solver.validate_observables(pressure, contacts)
-        for selection in (observables, pressure, force, force.select(force.kinds)):
+        for selection in (observables, force, force.select(force.kinds)):
             self.assertIs(selection.contacts, contacts)
-            with self.assertRaisesRegex(ValueError, "Contacts instance"):
-                solver.validate_observables(selection, pipeline.contacts())
+        for selection in (observables, pressure):
+            self.assertIs(selection.contacts_for_kind(CustomContactKind.PRESSURE), contacts)
+        self.assertIsNone(pressure.contacts)
         self.assertIsNone(body.contacts)
+        self.assertIsNone(body.contacts_for_kind(CustomContactKind.PRESSURE))
+        self.assertIsNone(observables.contacts_for_kind(kinds.BODY_QDD))
+        with self.assertRaisesRegex(KeyError, "No observable declared"):
+            observables.contacts_for_kind("pressur")
+
+    def test_selection_rebinds_only_written_arrays(self):
+        """Track the contacts of each array so a subset step cannot relabel skipped arrays."""
+        kinds = newton.solvers.SolverBase.ObservableKind
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0)
+        contacts_a, contacts_b = pipeline.contacts(), pipeline.contacts()
+        solver = CustomContactSolver(self.model)
+        observables = solver.observables(contacts=contacts_a, kinds={kinds.CONTACT_F, CustomContactKind.PRESSURE})
+        force = observables.select({kinds.CONTACT_F})
+        pressure = observables.select({CustomContactKind.PRESSURE})
+        solver.validate_observables(force, contacts_b)
+        for selection in (observables, force):
+            self.assertIs(selection.contacts, contacts_b)
+        for selection in (observables, pressure):
+            self.assertIs(selection.contacts_for_kind(CustomContactKind.PRESSURE), contacts_a)
+        solver.validate_observables(observables, contacts_b)
+        for selection in (observables, force):
+            self.assertIs(selection.contacts, contacts_b)
+        for selection in (observables, pressure):
+            self.assertIs(selection.contacts_for_kind(CustomContactKind.PRESSURE), contacts_b)
 
     def test_select_zero_capacity_remains_requested(self):
         """Treat selected zero-length contact buffers as requested."""
@@ -308,7 +341,7 @@ class TestSolverObservables(unittest.TestCase):
             Observables = SoftObservables
 
         solver = SoftSolver(self.model)
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+        with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.observables(kinds={CustomContactKind.PRESSURE})
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
         contacts = pipeline.contacts()
@@ -386,42 +419,63 @@ class TestSolverObservables(unittest.TestCase):
         self.assertEqual(observables.contact_f.shape, (0,))
         self.assertIsNone(self.solver.observables(kinds=set()).contact_f)
 
-    def test_validate_contact_layout_and_identity(self):
-        """Validate layouts at allocation and retain storage identity during use."""
-        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
+    def test_validate_contact_type_device_and_capacity(self):
+        """Reject unusable contacts and accept any buffer that fits the allocated rows."""
         with self.assertRaisesRegex(ValueError, "Contacts"):
             self.solver.observables(kinds=self.kinds)
         with self.assertRaisesRegex(TypeError, "Contacts"):
             self.solver.observables(kinds=self.kinds, contacts=object())
-        for rigid_max, soft_max in ((4, 4), (5, 4), (4, 3)):
-            with self.subTest(rigid_max=rigid_max, soft_max=soft_max), self.assertRaisesRegex(ValueError, "capacit"):
-                self.solver.observables(kinds=self.kinds, contacts=newton.Contacts(rigid_max, soft_max, device="cpu"))
         if wp.is_cuda_available():
             with self.assertRaisesRegex(ValueError, "device"):
                 self.solver.observables(kinds=self.kinds, contacts=newton.Contacts(5, 3, device="cuda:0"))
-        self.assertIsNone(self.model._solver_observable_contact_capacity)
-        contacts = pipeline.contacts()
+        contacts = newton.Contacts(5, 3, device="cpu")
         observables = self.solver.observables(kinds=self.kinds, contacts=contacts)
-        self.assertIs(observables.contacts, contacts)
+        pointer = observables.contact_f.ptr
         with self.assertRaisesRegex(ValueError, "Contacts"):
             self.solver.validate_observables(observables)
-        self.solver.validate_observables(observables, contacts)
-        self.solver.validate_observables(observables, contacts)
-        with self.assertRaisesRegex(ValueError, "Contacts instance"):
-            self.solver.validate_observables(observables, pipeline.contacts())
+        with self.assertRaisesRegex(TypeError, "Contacts"):
+            self.solver.validate_observables(observables, object())
+        if wp.is_cuda_available():
+            with self.assertRaisesRegex(ValueError, "device"):
+                self.solver.validate_observables(observables, newton.Contacts(5, 3, device="cuda:0"))
+        for rigid_max, soft_max in ((9, 0), (5, 4), (0, 9)):
+            with self.subTest(rigid_max=rigid_max, soft_max=soft_max), self.assertRaisesRegex(ValueError, "capacit"):
+                self.solver.validate_observables(observables, newton.Contacts(rigid_max, soft_max, device="cpu"))
+            self.assertIs(observables.contacts, contacts)
+        # Larger arrays are accepted; rows follow the layout of the validated contacts.
+        for rigid_max, soft_max in ((5, 3), (8, 0), (2, 1), (0, 0)):
+            with self.subTest(rigid_max=rigid_max, soft_max=soft_max):
+                smaller = newton.Contacts(rigid_max, soft_max, device="cpu")
+                self.solver.validate_observables(observables, smaller)
+                self.assertIs(observables.contacts, smaller)
+                self.assertEqual(observables.contact_f.ptr, pointer)
 
-    def test_freeze_capacity_after_output_allocation(self):
-        """Reject capacity changes that would invalidate allocated observables."""
+    def test_validate_capacity_per_row_domain(self):
+        """Check each requested array against the row domain it indexes."""
+        solver = CustomContactSolver(self.model)
+        kinds = {newton.solvers.SolverBase.ObservableKind.CONTACT_F, CustomContactKind.PRESSURE}
+        observables = solver.observables(kinds=kinds, contacts=newton.Contacts(5, 3, device="cpu"))
+        self.assertEqual(observables.pressure.shape, (5,))
+        # The packed force array has room for 6 rigid rows, but the rigid pressure array does not.
+        with self.assertRaisesRegex(ValueError, "pressure"):
+            solver.validate_observables(observables, newton.Contacts(6, 0, device="cpu"))
+        force = observables.select({newton.solvers.SolverBase.ObservableKind.CONTACT_F})
+        solver.validate_observables(force, newton.Contacts(6, 0, device="cpu"))
+
+    def test_pipeline_capacity_changes_keep_observables(self):
+        """Let other pipelines publish different capacities without touching allocated arrays."""
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
         contacts = pipeline.contacts()
-        self.solver.observables(contacts=contacts, kinds=self.kinds)
-        with self.assertRaisesRegex(ValueError, "capacit"):
-            newton.CollisionPipeline(self.model, rigid_contact_max=6, soft_contact_max=3)
-        with self.assertRaisesRegex(ValueError, "capacit"):
-            self.model.rigid_contact_max = 6
-        with self.assertRaisesRegex(ValueError, "capacit"):
-            self.model.soft_contact_max = 4
-        self.assertEqual((self.model.rigid_contact_max, self.model.soft_contact_max), (5, 3))
+        observables = self.solver.observables(contacts=contacts, kinds=self.kinds)
+        pointer = observables.contact_f.ptr
+        newton.CollisionPipeline(self.model, rigid_contact_max=6, soft_contact_max=3)
+        self.assertEqual((self.model.rigid_contact_max, self.model.soft_contact_max), (6, 3))
+        self.model.rigid_contact_max = 1
+        self.model.soft_contact_max = 0
+        self.solver.validate_observables(observables, contacts)
+        self.assertEqual(observables.contact_f.shape, (8,))
+        self.assertEqual(observables.contact_f.ptr, pointer)
+        self.assertIs(observables.contacts, contacts)
 
     def test_failed_pipeline_does_not_publish_capacity(self):
         """Leave capacities uninitialized when pipeline construction fails."""
@@ -440,16 +494,16 @@ class TestSolverObservables(unittest.TestCase):
         self.assertEqual((self.model.rigid_contact_max, self.model.soft_contact_max), (5, 3))
         self.assertEqual(self.solver.observables(contacts=contacts, kinds=self.kinds).contact_f.shape, (8,))
 
-    def test_matching_pipeline_preserves_frozen_capacity(self):
-        """Allow another pipeline only if its capacities preserve live observables."""
-        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        contacts = pipeline.contacts()
-        observables = self.solver.observables(contacts=contacts, kinds=self.kinds)
-        matching = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        self.solver.validate_observables(observables, contacts)
-        with self.assertRaisesRegex(ValueError, "Contacts instance"):
-            self.solver.validate_observables(observables, matching.contacts())
-        self.assertEqual(observables.contact_f.shape, (8,))
+    def test_private_pipeline_does_not_publish_capacity(self):
+        """Keep the model defaults unchanged when a pipeline opts out of publishing."""
+        private = newton.CollisionPipeline(self.model, rigid_contact_max=4, soft_contact_max=2, publish_capacity=False)
+        self.assertIsNone(self.model.rigid_contact_max)
+        self.assertIsNone(self.model.soft_contact_max)
+        newton.CollisionPipeline(self.model, rigid_contact_max=7, soft_contact_max=1)
+        newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0, publish_capacity=False)
+        self.assertEqual((self.model.rigid_contact_max, self.model.soft_contact_max), (7, 1))
+        observables = self.solver.observables(kinds=self.kinds, contacts=private.contacts())
+        self.assertEqual(observables.contact_f.shape, (6,))
 
     def test_contact_count_does_not_resize_output(self):
         """Keep allocation stable as collision changes the active contact count."""
@@ -470,18 +524,29 @@ class TestSolverObservables(unittest.TestCase):
         self.assertEqual(observables.contact_f.shape, (pipeline.soft_contact_max,))
         self.assertEqual(observables.contact_f.ptr, pointer)
 
-    def test_manual_counts_do_not_replace_pipeline_setup(self):
-        """Require pipeline initialization even when capacities are assigned."""
-        self.model.rigid_contact_max = 5
-        self.model.soft_contact_max = 3
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            self.solver.observables(kinds=self.kinds)
+    def test_owned_pipeline_contacts_size_observables(self):
+        """Default to the solver-owned contacts when no buffer is supplied."""
+
+        class OwningSolver(ContactSolver):
+            supports_collision_pipeline = True
+
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=4, soft_contact_max=2)
+        solver = OwningSolver(self.model, collision_pipeline=pipeline)
+        observables = solver.observables(kinds=self.kinds)
+        self.assertIs(observables.contacts, solver.contacts)
+        self.assertEqual(observables.contact_f.shape, (6,))
+        solver.validate_observables(observables)
+        external = newton.Contacts(1, 1, device="cpu")
+        solver.validate_observables(observables, external)
+        self.assertIs(observables.contacts, external)
+        solver.validate_observables(observables)
+        self.assertIs(observables.contacts, solver.contacts)
 
     def test_custom_contact_output_without_contact_force(self):
-        """Resolve and freeze capacities for custom contact kinds independently."""
+        """Size and bind custom contact kinds independently of the standard force array."""
         solver = CustomContactSolver(self.model)
         kinds = {CustomContactKind.PRESSURE}
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+        with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.observables(kinds=kinds)
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=4, soft_contact_max=0)
         contacts = pipeline.contacts()
@@ -489,11 +554,11 @@ class TestSolverObservables(unittest.TestCase):
         self.assertEqual(observables.pressure.shape, (4,))
         self.assertIsNone(observables.contact_f)
         solver.validate_observables(observables, contacts)
-        with self.assertRaisesRegex(ValueError, "capacit"):
-            self.model.rigid_contact_max = 5
+        # Soft capacity is irrelevant to a rigid-only array.
+        solver.validate_observables(observables, newton.Contacts(4, 100, device="cpu"))
 
     def test_native_backend_rejects_insufficient_capacity(self):
-        """Reject incompatible native budgets without freezing the model's capacity."""
+        """Reject native budgets that exceed the supplied contacts' rigid capacity."""
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
         contacts = pipeline.contacts()
         mujoco = object.__new__(newton.solvers.SolverMuJoCo)
@@ -508,13 +573,20 @@ class TestSolverObservables(unittest.TestCase):
         kamino._contacts_kamino = SimpleNamespace(model_max_contacts_host=3)
         for solver in (mujoco, kamino):
             with self.subTest(solver=type(solver).__name__):
-                with self.assertRaisesRegex(ValueError, "exceeds CollisionPipeline capacity"):
+                with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
                     solver.observables(contacts=contacts, kinds=self.kinds)
-        # A failed request must not freeze setup; users can correct the budget.
+        # A larger buffer from another pipeline satisfies the budget.
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0)
-        contacts = pipeline.contacts()
+        large = pipeline.contacts()
         for solver in (mujoco, kamino):
-            self.assertEqual(solver.observables(contacts=contacts, kinds=self.kinds).contact_f.shape, (3,))
+            with self.subTest(solver=type(solver).__name__):
+                observables = solver.observables(contacts=large, kinds=self.kinds)
+                self.assertEqual(observables.contact_f.shape, (3,))
+                # Steps reject a smaller buffer before launching work or recording it.
+                with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
+                    solver.validate_observables(observables, contacts)
+                self.assertIs(observables.contacts, large)
+                solver.validate_observables(observables.select(set()), contacts)
 
     def test_graph_reuses_preallocated_output(self):
         """Reuse a preallocated output across CUDA graph replays."""
@@ -557,6 +629,228 @@ class TestSolverObservables(unittest.TestCase):
             wp.capture_launch(capture.graph)
             self.assertEqual(observables.contact_f.numpy().sum(), 0.0)
         self.assertEqual(observables.contact_f.ptr, pointer)
+
+
+def _make_admm_scene(device):
+    """Build two touching bodies for an ADMM private contact pipeline."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    a = builder.add_body()
+    builder.add_shape_box(a, hx=0.1, hy=0.1, hz=0.1)
+    b = builder.add_body(xform=wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(b, radius=0.1)
+    return builder.finalize(device=device), a, b
+
+
+def _make_admm(model, a, b):
+    """Couple two XPBD entries through ADMM rigid-rigid contacts."""
+    return SolverCoupledADMM(
+        model,
+        [
+            SolverCoupled.Entry(name="a", solver=newton.solvers.SolverXPBD, bodies=[a]),
+            SolverCoupled.Entry(name="b", solver=newton.solvers.SolverXPBD, bodies=[b]),
+        ],
+        SolverCoupledADMM.Config(contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")]),
+    )
+
+
+def test_external_and_private_admm_pipelines(test, device):
+    """Keep an external pipeline's observables valid around ADMM's private pipeline in either order."""
+    kinds = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+    for observables_first in (True, False):
+        with test.subTest(observables_first=observables_first):
+            model, a, b = _make_admm_scene(device)
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=1000, soft_contact_max=0)
+            contacts = pipeline.contacts()
+            solver = newton.solvers.SolverXPBD(model)
+            if observables_first:
+                observables = solver.observables(kinds, contacts=contacts)
+            admm = _make_admm(model, a, b)
+            if not observables_first:
+                observables = solver.observables(kinds, contacts=contacts)
+            test.assertEqual(admm._admm_collision_pipeline.rigid_contact_max, 8)
+            test.assertEqual((model.rigid_contact_max, model.soft_contact_max), (1000, 0))
+            test.assertEqual(observables.contact_f.shape, (1000,))
+            state_0, state_1 = model.state(), model.state()
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, model.control(), contacts, 0.001, observables=observables)
+            test.assertIs(observables.contacts, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            test.assertTrue(np.any(observables.contact_f.numpy()[:count] != 0.0))
+            admm.step(state_0, state_1, model.control(), None, 0.001)
+
+    model, a, b = _make_admm_scene(device)
+    _make_admm(model, a, b)
+    test.assertIsNone(model.rigid_contact_max)
+    test.assertGreater(newton.CollisionPipeline(model).rigid_contact_max, 8)
+
+
+def _make_resting_box(device):
+    """Build a box resting on the ground so XPBD produces rigid contact forces."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, label="box")
+    return builder.finalize(device=device)
+
+
+def test_alternating_contacts_production_and_consumption(test, device):
+    """Produce and consume forces through selections while alternating compatible buffers."""
+    kinds = newton.solvers.SolverBase.ObservableKind
+    model = _make_resting_box(device)
+    large_pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, soft_contact_max=0)
+    small_pipeline = newton.CollisionPipeline(model, rigid_contact_max=16, soft_contact_max=0)
+    contacts_large = large_pipeline.contacts()
+    contacts_small = small_pipeline.contacts()
+    solver = newton.solvers.SolverXPBD(model)
+    observables = solver.observables({kinds.CONTACT_F, kinds.BODY_PARENT_F}, contacts=contacts_large)
+    force = observables.select({kinds.CONTACT_F})
+    body = observables.select({kinds.BODY_PARENT_F})
+    sensor = SensorContact(model, sensing_shapes="box", request_contact_attributes=False)
+    viewer = ViewerNull()
+    viewer.set_model(model)
+    viewer.show_contacts = True
+    state_0, state_1 = model.state(), model.state()
+    schedule = (
+        (large_pipeline, contacts_large, contacts_small),
+        (small_pipeline, contacts_small, contacts_large),
+        (large_pipeline, contacts_large, contacts_small),
+    )
+    for pipeline, contacts, other in schedule:
+        with test.subTest(rigid_contact_max=contacts.rigid_contact_max):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, None, contacts, 1.0 / 240.0, observables=force)
+            for selection in (observables, force):
+                test.assertIs(selection.contacts, contacts)
+            test.assertIsNone(body.contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            rows = observables.contact_f.numpy()
+            np.testing.assert_array_equal(rows[count:], 0.0)
+            sensor.update(state_0, contacts, observables=force)
+            np.testing.assert_allclose(
+                sensor.total_force.numpy()[0], -rows[:count, :3].sum(axis=0), rtol=1.0e-5, atol=1.0e-5
+            )
+            test.assertGreater(abs(sensor.total_force.numpy()[0, 2]), 0.0)
+            viewer.log_contacts(contacts, state_0, observables=observables)
+            with test.assertRaisesRegex(ValueError, "different Contacts"):
+                sensor.update(state_0, other, observables=observables)
+            with test.assertRaisesRegex(ValueError, "different Contacts"):
+                viewer.log_contacts(other, state_0, observables=force)
+            state_0, state_1 = state_1, state_0
+
+
+def test_oversized_observables_fill_legacy_force(test, device):
+    """Copy only the step contacts' rows into the deprecated force array."""
+    kinds = newton.solvers.SolverBase.ObservableKind
+    model = _make_resting_box(device)
+    contacts_large = newton.CollisionPipeline(model, rigid_contact_max=64, soft_contact_max=0).contacts()
+    with test.assertWarns(DeprecationWarning):
+        model.request_contact_attributes("force")
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=16, soft_contact_max=0)
+    contacts = pipeline.contacts()
+    test.assertEqual(contacts.force.shape, (16,))
+    solver = newton.solvers.SolverXPBD(model)
+    observables = solver.observables({kinds.CONTACT_F}, contacts=contacts_large)
+    state_0, state_1 = model.state(), model.state()
+    pipeline.collide(state_0, contacts)
+    solver.step(state_0, state_1, None, contacts, 1.0 / 240.0, observables=observables)
+    rows = observables.contact_f.numpy()
+    test.assertGreater(np.abs(rows).sum(), 0.0)
+    np.testing.assert_array_equal(contacts.force.numpy(), rows[:16])
+    np.testing.assert_array_equal(rows[16:], 0.0)
+
+
+def test_owned_and_external_pipelines(test, device):
+    """Size each container from its own buffer when a solver-owned pipeline shares the model."""
+    kinds = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+    for owned_first in (True, False):
+        with test.subTest(owned_first=owned_first):
+            builder = newton.ModelBuilder()
+            builder.add_ground_plane()
+            builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.046), vel=wp.vec3(0.0), mass=1.0, radius=0.05)
+            builder.color()
+            model = builder.finalize(device=device)
+
+            def make_owned(model=model):
+                owned = newton.solvers.SolverVBD(
+                    model,
+                    iterations=2,
+                    collision_pipeline=newton.CollisionPipeline(model, rigid_contact_max=8, soft_contact_max=8),
+                )
+                return owned, owned.observables(kinds)
+
+            if owned_first:
+                owned, owned_observables = make_owned()
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=1000, soft_contact_max=64)
+            contacts = pipeline.contacts()
+            external = newton.solvers.SolverVBD(model, iterations=2)
+            external_observables = external.observables(kinds, contacts=contacts)
+            if not owned_first:
+                owned, owned_observables = make_owned()
+
+            test.assertEqual(owned_observables.contact_f.shape, (16,))
+            test.assertEqual(external_observables.contact_f.shape, (1064,))
+            owned.step(model.state(), model.state(), None, None, 1.0 / 60.0, observables=owned_observables)
+            state_in = model.state()
+            pipeline.collide(state_in, contacts)
+            external.step(state_in, model.state(), None, contacts, 1.0 / 60.0, observables=external_observables)
+            test.assertIs(owned_observables.contacts, owned.contacts)
+            test.assertIs(external_observables.contacts, contacts)
+            for observables, soft_start in ((owned_observables, 8), (external_observables, 1000)):
+                rows = observables.contact_f.numpy()
+                test.assertLess(rows[soft_start, 2], 0.0)
+                np.testing.assert_array_equal(rows[:soft_start], 0.0)
+                np.testing.assert_array_equal(rows[soft_start + 1 :], 0.0)
+
+
+def test_native_solvers_follow_step_contacts(test, device):
+    """Export MuJoCo and Kamino geometry and forces to the buffer each step uses."""
+    builder = newton.ModelBuilder()
+    builder.begin_world()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.1, label="ball")
+    builder.add_ground_plane()
+    builder.end_world()
+    model = builder.finalize(device=device)
+    sensor = SensorContact(model, sensing_shapes="ball", request_contact_attributes=False)
+    kamino_native = newton.solvers.SolverKamino.Config(use_collision_detector=True)
+    for native, make_solver in (
+        (False, lambda: newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)),
+        (True, lambda: newton.solvers.SolverMuJoCo(model)),
+        (False, lambda: newton.solvers.SolverKamino(model)),
+        (True, lambda: newton.solvers.SolverKamino(model, config=kamino_native)),
+    ):
+        solver = make_solver()
+        with test.subTest(solver=type(solver).__name__, native=native):
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, soft_contact_max=0)
+            contacts_a, contacts_b = pipeline.contacts(), pipeline.contacts()
+            observables = solver.observables({newton.solvers.SolverBase.ObservableKind.CONTACT_F}, contacts=contacts_a)
+            for contacts in (contacts_a, contacts_b):
+                state = model.state()
+                if not native:
+                    pipeline.collide(state, contacts)
+                solver.step(state, model.state(), model.control(), contacts, 1.0e-3, observables=observables)
+                test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+                sensor.update(state, contacts, observables=observables)
+                force = observables.contact_f.numpy()[0, :3]
+                test.assertGreater(abs(force[2]), 0.0)
+                np.testing.assert_allclose(np.abs(sensor.total_force.numpy()[0]), np.abs(force), rtol=1.0e-5)
+
+
+class TestContactObservableOwnership(unittest.TestCase):
+    """Verify contact observables are owned by their Contacts, not by model-wide capacity."""
+
+
+devices = get_test_devices()
+for _name, _func in (
+    ("test_external_and_private_admm_pipelines", test_external_and_private_admm_pipelines),
+    ("test_alternating_contacts_production_and_consumption", test_alternating_contacts_production_and_consumption),
+    ("test_oversized_observables_fill_legacy_force", test_oversized_observables_fill_legacy_force),
+    ("test_owned_and_external_pipelines", test_owned_and_external_pipelines),
+    ("test_native_solvers_follow_step_contacts", test_native_solvers_follow_step_contacts),
+):
+    add_function_test(TestContactObservableOwnership, _name, _func, devices=devices)
 
 
 if __name__ == "__main__":

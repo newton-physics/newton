@@ -3,20 +3,25 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import json
+import re
 import tempfile
 import threading
 import time
 import unittest
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.types import SH_C0
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
 from newton.viewer import ViewerViser
@@ -99,6 +104,23 @@ class TestViewerViserInteraction(unittest.TestCase):
         model.shape_color.assign(np.tile((0.8, 0.2, 0.1), (model.shape_count, 1)))
         self.viewer.set_model(model)
         return model
+
+    def test_gaussian_colors_follow_sh_color_space(self):
+        """Display linear Gaussian radiance sRGB-encoded and sRGB radiance as is, clamped to [0, 1], from the DC term."""
+        # Radiance of (0.2, 10.0, -10.0) per channel: in range, above range and below range.
+        dc = (np.array([[0.2, 10.0, -10.0]], dtype=np.float32) - 0.5) / SH_C0
+        # Higher-order coefficients must not affect the displayed color.
+        sh = np.concatenate([dc, np.full((1, 6), 5.0, dtype=np.float32)], axis=1)
+        for color_space, expected in (
+            (newton.utils.ColorSpace.SRGB, [0.2, 1.0, 0.0]),
+            (newton.utils.ColorSpace.LINEAR, [newton.utils.color_linear_to_srgb([0.2] * 3)[0], 1.0, 0.0]),
+        ):
+            gaussian = newton.Gaussian(
+                positions=np.zeros((1, 3), dtype=np.float32), sh_coeffs=sh, sh_color_space=color_space
+            )
+            with mock.patch.object(self.viewer._server.scene, "add_gaussian_splats") as add_splats:
+                self.viewer.log_gaussian(f"/gaussian_{int(color_space)}", gaussian)
+            np.testing.assert_allclose(add_splats.call_args.kwargs["rgbs"], [expected], atol=1e-5)
 
     def test_hidden_shapes_preserve_colors(self):
         """Restore colored rigid geometry after toggling visual and collision layers."""
@@ -248,14 +270,103 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertTrue(self.viewer.picking_enabled)
             example.render()
             self.assertTrue(self.viewer._picking_click_callbacks)
+            self.update_gui(self.viewer._viewer_option_handles["show_particles"], True)
+            self.wait_for(lambda: self.viewer.show_particles)
+            self.update_gui(self.viewer._viewer_option_handles["show_contacts"], True)
+            self.wait_for(lambda: self.viewer.show_contacts)
+            self.update_gui(self.viewer._viewer_option_handles["wireframe"], True)
+            self.wait_for(lambda: self.viewer._wireframe)
             self.viewer.picking_enabled = False
             self.assertFalse(self.viewer._picking_click_callbacks)
+            self.viewer.set_camera(wp.vec3(8.0, 9.0, 4.0), pitch=-10.0, yaw=30.0)
+            camera_request = tuple(value.copy() for value in self.viewer._camera_request)
+            self.viewer._set_camera_request(*camera_request, fov=65.0)
+            # Browser navigation is client-local and does not update the cached
+            # programmatic request. Preserve both across reset.
+            client = next(iter(self.server.get_clients().values()))
+            self.send(
+                "ViewerCameraMessage",
+                wxyz=(1.0, 0.0, 0.0, 0.0),
+                position=(2.0, 3.0, 8.0),
+                look_at=(2.0, 3.0, 0.0),
+                up_direction=(0.0, 1.0, 0.0),
+                fov=1.1,
+                near=0.12,
+                far=77.0,
+                image_height=800,
+                image_width=1000,
+            )
+            self.wait_for(lambda: np.allclose(client.camera.position, (2.0, 3.0, 8.0)))
             del example
             example = browser.reset(example_class)
             self.assertIsNotNone(example)
             self.assertTrue(self.viewer.picking_enabled)
             example.render()
             self.assertTrue(self.viewer._picking_click_callbacks)
+            self.assertTrue(self.viewer.show_contacts)
+            self.assertTrue(self.viewer.show_particles)
+            self.assertIn("show_particles", self.viewer._display_options_user)
+            with self.subTest(camera="programmatic"):
+                for actual, expected in zip(self.viewer._camera_request, camera_request, strict=True):
+                    np.testing.assert_allclose(actual, expected)
+                self.assertAlmostEqual(self.viewer._camera_fov_radians, np.deg2rad(65.0))
+                self.assertEqual((self.viewer._camera_pitch, self.viewer._camera_yaw), (-10.0, 30.0))
+            with self.subTest(camera="client"):
+                np.testing.assert_allclose(client.camera.position, (2.0, 3.0, 8.0))
+                np.testing.assert_allclose(client.camera.look_at, (2.0, 3.0, 0.0))
+                np.testing.assert_allclose(client.camera.up_direction, (0.0, 1.0, 0.0))
+                self.assertAlmostEqual(client.camera.fov, 1.1)
+                self.assertAlmostEqual(client.camera.near, 0.12)
+                self.assertAlmostEqual(client.camera.far, 77.0)
+
+            # A failed native browser selection must show the error and retry
+            # that selection, rather than resetting the previously loaded class.
+            model = example.model
+            del example
+
+            class SelectedExample:
+                fail = True
+
+                def __init__(self, viewer: ViewerViser, args: object) -> None:
+                    viewer.set_model(model)
+                    viewer.show_contacts = False
+                    viewer._set_wireframe(False)
+                    viewer.set_camera(wp.vec3(-2.0, 1.0, 3.0), pitch=-20.0, yaw=-60.0)
+                    if self.fail:
+                        raise SystemExit("bad *setting*\n[details]")
+
+            browser.switch_target = "test.selected"
+            with mock.patch(
+                "newton.examples.importlib.import_module", return_value=SimpleNamespace(Example=SelectedExample)
+            ):
+                with self.assertLogs("newton", level="ERROR"):
+                    example, _ = browser.switch(example_class)
+                self.assertIsNone(example)
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                error_widgets = list(self.viewer._example_gui_handles.values())
+                error_text = next(handle.content for _, handle in error_widgets if hasattr(handle, "content"))
+                self.assertIn("SystemExit: bad \\*setting\\*  \n\\[details\\]", error_text)
+                retry = next(handle for _, handle in error_widgets if getattr(handle, "label", "").startswith("Retry"))
+                self.update_gui(retry, True)
+                self.wait_for(lambda: bool(self.viewer._example_gui_pending))
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                self.assertEqual(browser.switch_target, "test.selected")
+                SelectedExample.fail = False
+                example, _ = browser.switch(example_class)
+                self.assertIsInstance(example, SelectedExample)
+                self.assertIsNone(browser.load_error)
+                self.assertTrue(self.viewer.show_contacts)
+                self.assertTrue(self.viewer._wireframe)
+                np.testing.assert_allclose(client.camera.position, (-2.0, 1.0, 3.0))
+                self.assertAlmostEqual(client.camera.fov, np.deg2rad(45.0))
+                example = None
+                self.assertIsNotNone(browser.reset(SelectedExample))
+                self.assertTrue(self.viewer._wireframe)
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                self.assertFalse(self.viewer._example_gui_handles)
 
     def test_gizmo_roundtrip_and_disconnect(self):
         """Mutate a caller-owned transform through real drag messages and release on disconnect."""
@@ -368,6 +479,52 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.assertEqual(material["alphaMode"], "BLEND")
                 self.assertAlmostEqual(material["pbrMetallicRoughness"]["baseColorFactor"][3], opacity)
 
+    def test_deformable_visual_meshes_are_unsupported(self):
+        """Reject visible skins, but let Viser display their simulation geometry."""
+        for texture in (None, np.full((2, 2, 3), 255, dtype=np.uint8)):
+            builder = newton.ModelBuilder()
+            builder.begin_world()
+            vertices = ((0, 0, 0), (1, 0, 0), (0, 1, 0))
+            for point in vertices:
+                builder.add_particle(point, (0, 0, 0), mass=1.0)
+            builder.add_deformable_visual_mesh(
+                vertices,
+                (0, 1, 2),
+                kind="particle",
+                parent=(0, 1, 2),
+                uvs=((0, 0), (1, 0), (0, 1)),
+                texture=texture,
+            )
+            builder.end_world()
+            model = builder.finalize(device="cpu")
+            state = model.state()
+            self.viewer.activate("skin")
+            self.viewer.set_model(model)
+            name = "/layers/skin/model/deformable_visual_meshes/mesh_0"
+            self.viewer.show_deformable_visual_meshes = True
+            with self.assertRaisesRegex(NotImplementedError, "ViewerViser does not draw"):
+                self.viewer.log_state(state)
+            self.assertIsNone(self.viewer._deformable_visuals)
+
+            # Supplying evaluated output must not bypass the backend limitation.
+            self.viewer.set_deformable_visuals(newton.geometry.DeformableVisuals(model))
+            with self.assertRaisesRegex(NotImplementedError, "ViewerViser does not draw"):
+                self.viewer.log_state(state)
+            self.viewer.set_deformable_visuals(None)
+
+            self.viewer.show_deformable_visual_meshes = False
+            self.viewer.log_state(state)
+            self.viewer.show_deformable_visual_meshes = True
+            self.viewer.set_visible_worlds([])
+            self.viewer.log_state(state)
+            self.viewer.set_visible_worlds(None)
+            self.viewer.set_layer_visible("skin", False)
+            self.viewer.log_state(state)
+            self.viewer.set_layer_visible("skin", True)
+            self.assertIsNone(self.server.scene.get_handle_by_name(name))
+            self.assertIsNone(self.viewer._deformable_visuals)
+        self.assertNotIn("show_deformable_visual_meshes", self.viewer._viewer_option_handles)
+
     def test_textured_batches_update_uniform_opacity(self):
         """Keep opaque textured models quiet and update their real GLB material on opacity changes."""
         builder = newton.ModelBuilder()
@@ -450,7 +607,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     modifier=None,
                 )
                 self.wait_for(self.viewer.picking.is_picking)
-                self.assertEqual(int(self.viewer.picking.pick_body.numpy()[0]), 0)
+                self.assertEqual(self.viewer.picking.pick_body, 0)
                 handle = self.viewer._picking_controls[self.viewer.layer.layer_id]
                 self.send(
                     "TransformControlsUpdateMessage",
@@ -458,9 +615,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     position=(0.0, -1.0, 1.0),
                     wxyz=(1.0, 0.0, 0.0, 0.0),
                 )
-                self.wait_for(
-                    lambda: np.isclose(self.viewer.picking.pick_state.numpy()[0]["picking_target_world"][1], -1.0)
-                )
+                self.wait_for(lambda: np.isclose(self.viewer.picking.pick_target[1], -1.0))
                 state.clear_forces()
                 if graph is None:
                     self.viewer.apply_forces(state)
@@ -659,6 +814,70 @@ class TestViewerViserTextures(unittest.TestCase):
         """Keep textured meshes nonmetallic after glTF applies material defaults."""
         material = self._roundtrip_textured_mesh(3)
         self.assertEqual(material.metallicFactor, 0.0)
+
+
+@unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+class TestViewerViserBindHost(unittest.TestCase):
+    """``host`` controls the bind address and has to be reflected in the browser URL."""
+
+    # Newton prints its own URL after viser has spoken, so anything asserted
+    # against the whole buffer can match Newton's line instead of viser's.
+    _NEWTON_URL_LINE = re.compile(r"^Viser server running at:.*$", re.MULTILINE)
+
+    def _viewer(self, **kwargs):
+        kwargs.setdefault("verbose", False)
+        viewer = ViewerViser(port=0, **kwargs)
+        self.addCleanup(viewer.close)
+        return viewer
+
+    def _viser_startup_output(self, host):
+        """Return the viewer and the startup output viser itself produced."""
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            viewer = self._viewer(host=host, verbose=True)
+        return viewer, self._NEWTON_URL_LINE.split(buffer.getvalue(), maxsplit=1)[0]
+
+    def test_default_host_url_uses_localhost(self):
+        """Report localhost for the default wildcard bind."""
+        viewer = self._viewer()
+        self.assertEqual(viewer.url, f"http://localhost:{viewer._server.get_port()}")
+
+    def test_loopback_host_url_uses_loopback(self):
+        """Report a specific bind address verbatim in the URL."""
+        viewer = self._viewer(host="127.0.0.1")
+        self.assertEqual(viewer.url, f"http://127.0.0.1:{viewer._server.get_port()}")
+
+    def test_loopback_host_is_reachable_at_the_reported_url(self):
+        """Accept connections at the URL reported for a loopback bind."""
+        from urllib.parse import urlparse  # noqa: PLC0415
+        from urllib.request import urlopen  # noqa: PLC0415
+
+        viewer = self._viewer(host="127.0.0.1")
+        parsed = urlparse(viewer.url)
+        with urlopen(f"http://{parsed.hostname}:{parsed.port}/", timeout=10) as response:
+            self.assertLess(response.status, 400)
+
+    def test_verbose_line_uses_the_bound_host(self):
+        """Print the bound host in the verbose startup line."""
+        viewer, viser_output = self._viser_startup_output("127.0.0.1")
+        self.assertIn(f"http://127.0.0.1:{viewer._server.get_port()}", viser_output)
+
+    def test_url_matches_the_url_viser_prints(self):
+        """Report the same host viser's own startup message does, for both bind styles."""
+        for host, expected_host in (("0.0.0.0", "localhost"), ("127.0.0.1", "127.0.0.1")):
+            with self.subTest(host=host):
+                viewer, viser_output = self._viser_startup_output(host)
+                url = f"http://{expected_host}:{viewer._server.get_port()}"
+                self.assertEqual(viewer.url, url)
+                self.assertIn(url, viser_output)
+
+    def test_notebook_fallback_uses_the_bound_host(self):
+        """Use the bound host when a notebook has no Jupyter proxy route to offer."""
+        viewer = self._viewer(host="127.0.0.1")
+        viewer.is_jupyter_notebook = True
+        with mock.patch.object(ViewerViser, "_get_jupyter_proxy_base_url", return_value=None):
+            url = viewer.url
+        self.assertTrue(url.startswith(f"http://127.0.0.1:{viewer._server.get_port()}"), url)
 
 
 if __name__ == "__main__":

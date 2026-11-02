@@ -53,6 +53,19 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 :meth:`newton.ModelBuilder.add_usd` accepts both file paths and URLs directly, so a separate
 ``resolve_usd_from_url()`` helper is usually unnecessary when migrating from ``warp.sim``.
 
+USD cables now use ``physics:restShapePoints`` and ``physics:restNormals`` as their simulated
+rest shape. Previously, rest points affected only material gains and rest normals were ignored.
+With both rest fields absent, the cable uses its initial geometry as its rest shape.
+Review assets that relied on rest fields being ignored: remove unwanted rest fields, or set
+them to the initial points and normals, to start relaxed. Separately, welded cable graphs now
+honor authored initial normals even without rest fields; earlier versions ignored those normals.
+Rest lengths now determine capsule size and mass volume weights. Explicit segment masses keep
+their authored values. Attachments follow native rod material endpoints, which can differ from
+the initial USD points when initial and rest segment lengths differ; see :ref:`usd_parsing`
+for the supported subset.
+These changes affect the experimental deformable importer, so they do not require a deprecation
+period under Newton's :doc:`compatibility policy <guide/compatibility>`.
+
 The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJCF for sphere and box shapes but ignores these definitions for other shape types (which will receive the default density specified by the ``density`` argument to ``wp.sim.parse_mjcf``). The Newton MJCF importer now considers the ``geom_density`` for all shape types. This change may yield to different simulation results and may require tuning contact and other simulation parameters to achieve similar results in Newton compared to Warp sim.
 
 
@@ -82,8 +95,8 @@ particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton
 and :attr:`newton.Control.joint_target_qd` use
 ``(linear, angular)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
 :attr:`newton.Control.joint_target_q` keeps that ordering but follows :attr:`newton.State.joint_q`:
-a free joint occupies 7 coordinates ``(position, quaternion)``, not 6 DOFs. It is DOF-shaped like
-the others only under the deprecated layout; see :ref:`joint-target-layout`.
+a free joint occupies 7 coordinates ``(position, quaternion)``. See
+:ref:`joint-target-layout` for migration guidance.
 For public ``FREE``, ``DISTANCE``, and ``ROD`` joints, :attr:`newton.State.joint_qd`
 stores the child-COM twist in the joint parent frame, while
 :attr:`newton.Control.joint_f` stores the world-frame COM wrench
@@ -170,16 +183,16 @@ corresponds to :attr:`newton.JointTargetMode.EFFORT` together with
 
 .. _joint-target-layout:
 
-Joint-target layout (``newton.use_coord_layout_targets``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Joint-target layout
+~~~~~~~~~~~~~~~~~~~
 
-In ``warp.sim`` the target array was DOF-shaped like ``joint_qd``. Newton is moving position
-targets to the coordinate layout of :attr:`~newton.State.joint_q` instead, since that is what a
+In ``warp.sim`` the target array was DOF-shaped like ``joint_qd``. Newton stores position
+targets in the coordinate layout of :attr:`~newton.State.joint_q` instead, since that is what a
 position semantically is: the two layouts diverge whenever an articulation contains a free,
 distance, or rod joint (7 coords vs. 6 DOFs) or ball joint (4 coords vs. 3 DOFs), and under the
 DOF layout every actuated DOF downstream of such a joint is indexed with the wrong stride.
 
-The coordinate layout is the default and will become the only layout in a future release:
+Position targets always use the coordinate layout:
 
 .. code-block:: python
 
@@ -200,16 +213,17 @@ translation for free joints), matching ``joint_q``. Migration notes coming from 
   :attr:`~ModelBuilder.JointDofConfig.target_vel` before calling ``add_joint*()``, or write to
   :attr:`ModelBuilder.joint_target_q` / :attr:`~ModelBuilder.joint_target_qd` directly.
 - When indexing ``joint_target_q`` from user code, use :attr:`Model.joint_target_q_start` (which
-  aliases :attr:`Model.joint_q_start` when the flag is ``True`` and
-  :attr:`Model.joint_qd_start` otherwise). Solvers and the actuator library already do this.
-- When constructing an :class:`Actuator` with a custom ``pos_indices``, drop the
-  ``target_pos_indices`` argument: with the coord layout it defaults to ``pos_indices``.
+  aliases :attr:`Model.joint_q_start`). Velocity targets continue to use
+  :attr:`Model.joint_qd_start`.
+- When constructing an :class:`Actuator` for the standard ``joint_target_q`` array,
+  ``target_pos_indices`` defaults to ``pos_indices`` and can be omitted. Keep an explicit
+  ``target_pos_indices`` mapping for custom target buffers that use different indices.
 
-Code that is not migrated yet can restore the legacy DOF-shaped layout with
-``newton.use_coord_layout_targets = False``, set once before building any model. That layout is
-deprecated: building a model whose joint coordinate and DOF counts differ (free/ball/distance/rod
-joints) under it emits a :class:`DeprecationWarning` from ``finalize()``. For models without such
-joints the two layouts are identical, so no warning is emitted and the switch is invisible.
+Newton 1.8 removes ``newton.use_coord_layout_targets`` and the legacy DOF-shaped position-target
+layout, deprecated in 1.5. Remove assignments to the flag and reads of
+``Model.use_coord_layout_targets``. Replace DOF-based position-target indices with coordinate
+indices, and replace raw Euler-angle targets for ball/free/distance/rod joints with unit
+quaternions. ``Model.joint_target_q_start`` remains an alias for ``Model.joint_q_start``.
 
 
 ``ModelBuilder``
@@ -246,8 +260,8 @@ The ``ModelBuilder.add_joint_*()`` functions now use ``None`` defaults that are 
 the fields of :attr:`newton.ModelBuilder.default_joint_cfg`.
 
 Newton uses ``world_count`` throughout the public API (for example in
-:meth:`newton.ModelBuilder.replicate` and :attr:`newton.Model.world_count`); older ``num_envs``
-terminology is obsolete.
+:attr:`newton.Model.world_count`); older ``num_envs`` terminology is obsolete. The number of
+copies passed to :meth:`newton.ModelBuilder.replicate` is ``copy_count``.
 
 The ``ModelBuilder.add_joint*()`` methods no longer accept ``linear_compliance`` and ``angular_compliance`` arguments
 and the ``Model`` no longer stores them as attributes.

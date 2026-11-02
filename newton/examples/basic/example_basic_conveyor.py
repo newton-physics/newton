@@ -1,17 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Conveyor
-#
-# Baggage-claim style conveyor built from one rotating belt mesh attached
-# to a kinematic root link with a prescribed revolute joint motion. Two
-# static annular boundary meshes keep dynamic "bags" on the belt.
-#
-# Command: uv run -m newton.examples basic_conveyor
-#          uv run -m newton.examples basic_conveyor --solver kamino
-#
-###########################################################################
+"""Example Basic Conveyor
+
+Baggage-claim style conveyor built from one rotating belt mesh attached
+to a kinematic root link with a prescribed revolute joint motion. Two
+static annular boundary meshes keep dynamic "bags" on the belt.
+
+Success criteria:
+- A circular belt carries boxes, capsules, and spheres around the conveyor.
+- Changing --belt-speed changes the transport speed.
+- Picked bags interact with the belt and other bags after release without falling through the belt.
+
+Runs:
+- `python -m newton.examples basic_conveyor --solver xpbd`
+- `python -m newton.examples basic_conveyor --solver vbd --belt-speed 2.0`
+- `python -m newton.examples basic_conveyor`
+- `python -m newton.examples basic_conveyor --solver kamino`
+"""
 
 import math
 
@@ -156,7 +162,6 @@ class Example:
     def __init__(self, viewer, args=None):
         solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
         self.solver_type = solver_type
-        newton.use_coord_layout_targets = True
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0

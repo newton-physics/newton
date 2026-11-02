@@ -5,8 +5,37 @@ import ctypes
 
 import numpy as np
 
-shadow_vertex_shader = """
+capsule_vertex_transform = """
+// Constant per draw. Capsule instances encode (radius, radius, radius + half-height)
+// in their transform scale; ordinary meshes retain the usual affine transform.
+// The capsule prototype has unit radius and unit half-height along Z.
+layout (location = 10) in float aCapsule;
+
+vec3 mesh_position(vec3 position, mat4 transform)
+{
+    if (aCapsule > 0.5) {
+        float ratio = length(transform[0].xyz) / max(length(transform[2].xyz), 1e-20);
+        float end = sign(position.z);
+        position.z = ratio * (position.z - end) + (1.0 - ratio) * end;
+    }
+    return position;
+}
+
+vec3 mesh_normal(vec3 normal, mat4 transform)
+{
+    if (aCapsule > 0.5)
+        // Cancel axial inverse scaling: the caps scale uniformly with the radius.
+        normal.z *= length(transform[2].xyz) / max(length(transform[0].xyz), 1e-20);
+    return normal;
+}
+"""
+
+shadow_vertex_shader = (
+    """
 #version 330 core
+"""
+    + capsule_vertex_transform
+    + """
 layout (location = 0) in vec3 aPos;
 
 // column vectors of the instance transform matrix
@@ -21,10 +50,11 @@ uniform vec3 render_origin;
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
-    vec3 render_position = mat3(transform) * aPos + transform[3].xyz - render_origin;
+    vec3 render_position = mat3(transform) * mesh_position(aPos, transform) + transform[3].xyz - render_origin;
     gl_Position = light_space_matrix * vec4(render_position, 1.0);
 }
 """
+)
 
 shadow_fragment_shader = """
 #version 330 core
@@ -33,8 +63,12 @@ void main() { }
 """
 
 
-shape_vertex_shader = """
+shape_vertex_shader = (
+    """
 #version 330 core
+"""
+    + capsule_vertex_transform
+    + """
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
@@ -74,7 +108,7 @@ void main()
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
 
     // Subtract before rotating to avoid cancellation in a translated view matrix for large coordinates.
-    vec3 camera_relative_position = mat3(transform) * aPos + transform[3].xyz - view_pos;
+    vec3 camera_relative_position = mat3(transform) * mesh_position(aPos, transform) + transform[3].xyz - view_pos;
     vec3 view_position = mat3(view) * camera_relative_position;
     gl_Position = projection * vec4(view_position, 1.0);
     LocalPos = aPos;
@@ -87,7 +121,7 @@ void main()
     // negating here restores the outward-pointing normal in world space.
     mat3 normalMatrix = transpose(inverse(rotation));
     if (determinant(rotation) < 0.0) normalMatrix = -normalMatrix;
-    Normal = normalMatrix * aNormal;
+    Normal = normalMatrix * mesh_normal(aNormal, transform);
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     Material = aMaterial;
@@ -97,6 +131,7 @@ void main()
 #endif
 }
 """
+)
 
 shape_fragment_shader = """
 #version 330 core
@@ -148,7 +183,6 @@ uniform bool enable_shadows;
 uniform float diffuse_scale;
 uniform float specular_scale;
 uniform bool spotlight_enabled;
-uniform float shadow_extents;
 uniform float exposure;
 
 const float PI = 3.14159265359;
@@ -226,27 +260,26 @@ vec3 ReconstructCameraRelativePosition()
 
 float ShadowCalculation(vec3 camera_to_fragment)
 {
-    vec3 normal = normalize(Normal);
-
-    if (!gl_FrontFacing)
-        normal = -normal;
-
-    vec3 lightDir = normalize(sun_direction);
-
-    // bias in normal dir - adjust for backfacing triangles
-    float worldTexel = (shadow_extents * 2.0) / float(4096); // world extent / shadow map resolution
-    float normalBias = 2.0 * worldTexel;   // tune ~1-3
-
-    // For backfacing triangles, we might need different bias handling
-    vec4 light_space_pos;
-    light_space_pos = light_space_matrix * vec4(camera_to_fragment + normal * normalBias, 1.0);
+    vec4 light_space_pos = light_space_matrix * vec4(camera_to_fragment, 1.0);
     vec3 projCoords = light_space_pos.xyz/light_space_pos.w;
 
     // map to [0,1]
     projCoords = projCoords * 0.5 + 0.5;
+
+    // Fit the receiver plane before divergent control flow. Each PCF tap needs
+    // the receiver depth at its own texel center, especially on sloping ramps.
+    // Differentiate before the orthographic depth translation to retain the
+    // tiny depth differences of small triangles across a large depth range.
+    vec3 dx = 0.5 * mat3(light_space_matrix) * dFdx(camera_to_fragment);
+    vec3 dy = 0.5 * mat3(light_space_matrix) * dFdy(camera_to_fragment);
+    float determinant = dx.x * dy.y - dx.y * dy.x;
+    vec2 depthGradient = vec2(0.0);
+    if (abs(determinant) > 1.0e-5 * length(dx.xy) * length(dy.xy))
+        depthGradient = vec2(dy.y * dx.z - dx.y * dy.z,
+                             dx.x * dy.z - dy.x * dx.z) / determinant;
+
     if (projCoords.z > 1.0)
         return 0.0;
-    float frag_depth = projCoords.z;
 
     // Fade shadow to zero near edges of the shadow map to avoid hard rectangle
     float fade = 1.0;
@@ -256,11 +289,9 @@ float ShadowCalculation(vec3 camera_to_fragment)
     fade *= smoothstep(0.0, margin, projCoords.y);
     fade *= smoothstep(0.0, margin, 1.0 - projCoords.y);
 
-    // Slope-scaled depth bias: more bias when surface is nearly parallel to light
-    // (where self-shadowing from float precision is worst), minimal when facing light.
-    float NdotL_bias = max(dot(normal, lightDir), 0.0);
-    float depthBias = mix(0.0003, 0.00002, NdotL_bias);
-    float biased_depth = frag_depth - depthBias;
+    // Leave only a small precision allowance. A large normalized-depth bias
+    // or normal offset detaches shadows by centimeters on small objects.
+    float depthBias = 2.0e-7;
 
     float shadow = 0.0;
     float radius = shadow_radius;
@@ -272,9 +303,26 @@ float ShadowCalculation(vec3 camera_to_fragment)
     for(int i = 0; i < 16; i++)
     {
         vec2 offset = rotationMatrix * poissonDisk[i];
-        float pcf_depth = texture(shadow_map, projCoords.xy + offset * radius * texelSize).r;
-        if(pcf_depth < biased_depth)
-            shadow += 1.0;
+        vec2 sampleUV = projCoords.xy + offset * radius * texelSize;
+        vec2 texelCenter = (floor(sampleUV / texelSize) + 0.5) * texelSize;
+        float receiverDepth = projCoords.z + dot(depthGradient, texelCenter - projCoords.xy);
+        // Keep sampling independent of implicit derivatives across divergent taps.
+        float pcf_depth = textureLod(shadow_map, texelCenter, 0.0).r;
+        if(pcf_depth < receiverDepth - depthBias)
+        {
+            // A concave receiver can rise above its tangent plane without
+            // blocking the light. Check the sampled surface at the receiver too.
+            // Use the smaller one-sided differences to avoid silhouette jumps.
+            float left = pcf_depth - textureLod(shadow_map, texelCenter - vec2(texelSize.x, 0.0), 0.0).r;
+            float right = textureLod(shadow_map, texelCenter + vec2(texelSize.x, 0.0), 0.0).r - pcf_depth;
+            float down = pcf_depth - textureLod(shadow_map, texelCenter - vec2(0.0, texelSize.y), 0.0).r;
+            float up = textureLod(shadow_map, texelCenter + vec2(0.0, texelSize.y), 0.0).r - pcf_depth;
+            vec2 sampleSlope = vec2(abs(left) < abs(right) ? left : right,
+                                    abs(down) < abs(up) ? down : up);
+            float blockerDepth = pcf_depth + dot(sampleSlope, (projCoords.xy - texelCenter) / texelSize);
+            if(blockerDepth < projCoords.z - depthBias)
+                shadow += 1.0;
+        }
     }
     shadow /= 16.0;
     return shadow * fade;
@@ -657,7 +705,6 @@ class ShaderShape(ShaderGL):
             self.loc_diffuse_scale = self._get_uniform_location("diffuse_scale")
             self.loc_specular_scale = self._get_uniform_location("specular_scale")
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
-            self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
             self.loc_oit_inv_depth_reference = None
             self.loc_oit_enabled = None
@@ -698,7 +745,6 @@ class ShaderShape(ShaderGL):
         diffuse_scale: float = 1.0,
         specular_scale: float = 1.0,
         spotlight_enabled: bool = True,
-        shadow_extents: float = 10.0,
         exposure: float = 1.6,
         oit_depth_reference: float = 1.0,
     ):
@@ -733,7 +779,6 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1f(self.loc_diffuse_scale, diffuse_scale)
             self._gl.glUniform1f(self.loc_specular_scale, specular_scale)
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
-            self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
             if self.loc_oit_inv_depth_reference is not None:
                 self._gl.glUniform1f(self.loc_oit_inv_depth_reference, 1.0 / max(float(oit_depth_reference), 1e-6))

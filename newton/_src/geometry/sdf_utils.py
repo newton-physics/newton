@@ -933,7 +933,7 @@ def _compute_sdf_from_shape_impl(
         target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_resolution.
         max_resolution: Maximum dimension for sparse SDF grid when target_voxel_size is None. Must be divisible by 8.
         bake_scale: If True, bake shape_scale into the SDF. If False, use (1,1,1) scale.
-        verbose: Print debug info.
+        verbose: Log debug info.
         device: CUDA device for all GPU allocations. When ``None``, uses the
             current :class:`wp.ScopedDevice` or the Warp default device.
 
@@ -979,7 +979,7 @@ def _compute_sdf_from_shape_impl(
             signed_volume = compute_mesh_signed_volume(pos, indices)
             winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
             if verbose and signed_volume < 0:
-                print("Mesh has inverted winding (negative volume), using threshold -0.5")
+                logger.info("Mesh has inverted winding (negative volume), using threshold -0.5")
             m_id = mesh.id
 
             min_ext = np.min(verts, axis=0).tolist()
@@ -1012,8 +1012,12 @@ def _compute_sdf_from_shape_impl(
         actual_voxel_size = ext / (grid_dims - 1)
 
         if verbose:
-            print(
-                f"Extent: {ext}, Grid dims: {grid_dims}, voxel size: {actual_voxel_size} target_voxel_size: {target_voxel_size}"
+            logger.info(
+                "Extent: %s, Grid dims: %s, voxel size: %s target_voxel_size: %s",
+                ext,
+                grid_dims,
+                actual_voxel_size,
+                target_voxel_size,
             )
 
         tile_max = np.around((max_ext - min_ext) / actual_voxel_size).astype(np.int32) // 8
@@ -1048,7 +1052,7 @@ def _compute_sdf_from_shape_impl(
             )
 
         if verbose:
-            print("Occupancy: ", tile_occupied.numpy().sum() / len(tile_points))
+            logger.info("Occupancy: %s", tile_occupied.numpy().sum() / len(tile_points))
 
         tile_points = tile_points[tile_occupied.numpy()]
         tile_points_wp = wp.array(tile_points, dtype=wp.vec3i)
@@ -1112,7 +1116,9 @@ def _compute_sdf_from_shape_impl(
             wp.synchronize()
 
         if verbose:
-            print(f"Coarse SDF: dims={coarse_dims}x{coarse_dims}x{coarse_dims}, voxel size: {coarse_voxel_size}")
+            logger.info(
+                "Coarse SDF: dims=%sx%sx%s, voxel size: %s", coarse_dims, coarse_dims, coarse_dims, coarse_voxel_size
+            )
 
         # Create and populate SDFData struct
         sdf_data = SDFData()
@@ -1158,7 +1164,7 @@ def compute_sdf_from_shape(
         max_resolution: Maximum sparse-grid dimension [voxel] when
             ``target_voxel_size`` is not provided.
         bake_scale: If ``True``, bake ``shape_scale`` into generated SDF data.
-        verbose: If ``True``, print debug information during SDF construction.
+        verbose: If ``True``, log debug information during SDF construction.
         device: CUDA device for SDF allocation. When ``None``, uses the
             current :class:`wp.ScopedDevice` or the Warp default device.
 

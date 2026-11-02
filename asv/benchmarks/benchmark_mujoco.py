@@ -30,7 +30,6 @@ if __package__:
 else:
     from benchmark_metrics import validate_simulation_state
 
-_NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
 _MAX_BODY_LINEAR_SPEED = 100.0
 _MAX_BODY_ANGULAR_SPEED = 500.0
 
@@ -340,7 +339,7 @@ def _setup_allegro(articulation_builder):
     for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 20
-    if _NEW_LAYOUT_AVAILABLE:
+    if hasattr(articulation_builder, "joint_target_q"):
         articulation_builder.joint_target_q[:] = articulation_builder.joint_q
     else:
         for i in range(articulation_builder.joint_dof_count):
@@ -395,8 +394,6 @@ class Example:
         *,
         startup_phase_times: dict[str, float] | None = None,
     ):
-        if _NEW_LAYOUT_AVAILABLE:
-            newton.use_coord_layout_targets = True
         if fps <= 0 or sim_substeps <= 0:
             raise ValueError("fps and sim_substeps must be positive")
         self.sim_time = 0.0

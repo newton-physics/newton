@@ -33,6 +33,7 @@ def _create_heightfield_midphase(*, upstream_default):
         shape_collision_radius: wp.array[float],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_interior_point: wp.array[wp.vec3],
         shape_heightfield_index: wp.array[wp.int32],
         heightfield_data: wp.array[HeightfieldData],
         heightfield_elevations: wp.array[wp.float32],
@@ -511,8 +512,9 @@ def test_speculative_search_gap(test, device):
 
 
 def test_sphere_contacts_at_gap_boundary(test, device):
-    """Keep sphere contacts the narrow phase admits just above the cell's highest corner."""
-    for delta in (1.0e-5, 5.0e-5, 9.0e-5):
+    """Keep the sphere contacts the narrow phase admits just inside the flat cells' margin + gap search bound, and
+    admit none just outside it, with and without cell rejection."""
+    for delta in (-9.0e-5, -5.0e-5, -1.0e-5, 1.0e-5, 5.0e-5, 9.0e-5):
         with test.subTest(delta=delta):
             builder = newton.ModelBuilder()
             cfg = builder.ShapeConfig(margin=0.01, gap=0.01)
@@ -524,7 +526,7 @@ def test_sphere_contacts_at_gap_boundary(test, device):
                 xform=terrain_pose,
                 cfg=cfg,
             )
-            # Sphere bottom sits delta above the margin + gap search bound of the flat cells.
+            # Sphere bottom sits delta above (delta > 0) or below the margin + gap search bound of the flat cells.
             body = builder.add_body(
                 xform=terrain_pose * wp.transform((0.1, 0.1, 0.035 + 0.04 + delta), wp.quat_identity())
             )
@@ -532,6 +534,10 @@ def test_sphere_contacts_at_gap_boundary(test, device):
             model = builder.finalize(device=device)
             _, a = _collide(model, legacy=True)
             _, b = _collide(model)
+            if delta > 0.0:
+                test.assertEqual(len(a[0]), 0)
+                test.assertEqual(len(b[0]), 0)
+                continue
             test.assertGreater(len(a[0]), 0)
             _assert_geometry_equal(test, a, b)
 
