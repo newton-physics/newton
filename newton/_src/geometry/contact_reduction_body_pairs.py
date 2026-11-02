@@ -108,7 +108,6 @@ from .contact_reduction_global import (
     GROUP_STAT_CELL_CLAMP_EVENTS,
     GROUP_STAT_FALLBACK_FRAMES,
     GROUP_STAT_INPUT_OVERFLOW_FRAMES,
-    GROUP_STAT_INVARIANT_VIOLATIONS,
     GROUP_STAT_MAX_CONTACTS_IN,
     GROUP_STAT_MAX_CONTACTS_KEPT,
     GROUP_STAT_MAX_ENTRIES,
@@ -379,8 +378,8 @@ class BodyPairReduction:
         Returns:
             ``probe_failures``: group-table insertions that ran out of probes; each one
             makes its whole frame keep every contact (counted in ``fallback_frames``).
-            ``invariant_violations`` / ``outranked_discards``: discarded contacts that
-            out-rank a recorded winner, counted only with :attr:`verify` on.
+            ``invariant_violations``: discarded contacts that out-rank a recorded
+            winner, counted only with :attr:`verify` on.
             ``cell_clamp_events``: contacts whose spatial cell hit the packed +/-31 range.
             ``max_contacts_in`` / ``max_contacts_kept``: peak admitted and kept contacts per
             frame; ``max_contacts_in`` is the staging capacity the scene needs.
@@ -395,9 +394,8 @@ class BodyPairReduction:
         entries = int(v[GROUP_STAT_MAX_ENTRIES])
         capacity = self.reducer.hashtable.capacity
         return {
-            "invariant_violations": int(v[GROUP_STAT_INVARIANT_VIOLATIONS]) + int(v[GROUP_STAT_OUTRANKED_DISCARDS]),
+            "invariant_violations": int(v[GROUP_STAT_OUTRANKED_DISCARDS]),
             "probe_failures": int(v[GROUP_STAT_PROBE_FAILURES]),
-            "outranked_discards": int(v[GROUP_STAT_OUTRANKED_DISCARDS]),
             "cell_clamp_events": int(v[GROUP_STAT_CELL_CLAMP_EVENTS]),
             "max_contacts_in": int(v[GROUP_STAT_MAX_CONTACTS_IN]),
             "max_contacts_kept": int(v[GROUP_STAT_MAX_CONTACTS_KEPT]),

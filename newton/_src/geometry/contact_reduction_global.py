@@ -926,7 +926,8 @@ class GlobalContactReducer:
 
     **Hashtable Structure:**
 
-    - Key: ``(shape_a, shape_b, bin_id)`` packed into 64 bits
+    - Key: ``(shape_a, shape_b, bin_id)`` packed into 64 bits, or with
+      ``group_reduction`` ``(group_a, group_b, bin_id, cell)`` (see :func:`make_group_contact_key`)
     - bin_id ``0..NUM_NORMAL_BINS-1``: Normal bins (polyhedron faces)
     - Higher bin_ids: Voxel groups
 
@@ -1047,7 +1048,9 @@ class GlobalContactReducer:
 
         # Generic reduction deduplicates cross-entry winners during export.
         # Hydroelastic reduction intentionally preserves and source-tags them.
-        self.exported_flags = wp.zeros(0 if store_hydroelastic_data else buffer_size, dtype=wp.int32, device=device)
+        self.exported_flags = wp.zeros(
+            0 if store_hydroelastic_data or group_reduction is not None else buffer_size, dtype=wp.int32, device=device
+        )
 
         # Atomic counter for contact allocation
         self.contact_count = wp.zeros(1, dtype=wp.int32, device=device)
@@ -2310,9 +2313,8 @@ GROUP_FRAME_CONTACTS_IN = 1
 GROUP_FRAME_CONTACTS_KEPT = 2
 GROUP_FRAME_PROBE_FAILURES = 3
 GROUP_FRAME_CELL_CLAMPS = 4
-GROUP_FRAME_VIOLATIONS = 5
-GROUP_FRAME_OUTRANKED = 6
-GROUP_FRAME_STATE_COUNT = 7
+GROUP_FRAME_OUTRANKED = 5
+GROUP_FRAME_STATE_COUNT = 6
 
 # ``GroupReductionData.stats`` (int64, whole-run) fields.
 GROUP_STAT_TOTAL_FRAMES = 0
@@ -2324,10 +2326,9 @@ GROUP_STAT_MAX_ENTRIES = 5
 GROUP_STAT_PROBE_FAILURES = 6
 GROUP_STAT_FALLBACK_FRAMES = 7
 GROUP_STAT_CELL_CLAMP_EVENTS = 8
-GROUP_STAT_INVARIANT_VIOLATIONS = 9
-GROUP_STAT_OUTRANKED_DISCARDS = 10
-GROUP_STAT_INPUT_OVERFLOW_FRAMES = 11
-GROUP_STAT_COUNT = 12
+GROUP_STAT_OUTRANKED_DISCARDS = 9
+GROUP_STAT_INPUT_OVERFLOW_FRAMES = 10
+GROUP_STAT_COUNT = 11
 
 
 @wp.struct
@@ -2696,9 +2697,6 @@ def finish_group_frame_kernel(
     )
     stats[wp.static(GROUP_STAT_CELL_CLAMP_EVENTS)] = stats[wp.static(GROUP_STAT_CELL_CLAMP_EVENTS)] + wp.int64(
         frame[wp.static(GROUP_FRAME_CELL_CLAMPS)]
-    )
-    stats[wp.static(GROUP_STAT_INVARIANT_VIOLATIONS)] = stats[wp.static(GROUP_STAT_INVARIANT_VIOLATIONS)] + wp.int64(
-        frame[wp.static(GROUP_FRAME_VIOLATIONS)]
     )
     stats[wp.static(GROUP_STAT_OUTRANKED_DISCARDS)] = stats[wp.static(GROUP_STAT_OUTRANKED_DISCARDS)] + wp.int64(
         frame[wp.static(GROUP_FRAME_OUTRANKED)]

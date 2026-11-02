@@ -69,7 +69,7 @@ Contact geometry
 Contact reduction
    ``CollisionPipeline(reduce_contacts=...)`` controls the mesh/heightfield
    reduction every solver consumes. The opt-in
-   ``CollisionPipeline(body_pair_reduction=...)`` pass changes which contacts
+   ``CollisionPipeline(body_pair_reduction=...)`` reduction changes which contacts
    the solver sees and is supported by :class:`newton.solvers.SolverSteel`
    only. Keep it off unless it lowers the
    measured step time, and check tipping and yaw behavior when it is on.

@@ -1438,7 +1438,6 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             "probe_failures",
             "cell_clamp_events",
             "invariant_violations",
-            "outranked_discards",
             "input_overflow_frames",
             "fallback_frames",
         ):
@@ -1867,7 +1866,6 @@ class TestBodyPairReductionVerifier(unittest.TestCase):
         for pipe in (with_history, fresh):
             stats = pipe._body_pair_reducer.stats()
             self.assertEqual(stats["invariant_violations"], 0)
-            self.assertEqual(stats["outranked_discards"], 0)
 
 
 class TestBodyPairReductionTouchingFootprint(unittest.TestCase):
