@@ -11,7 +11,8 @@ deformable simulation.
 
 For solver-selection guidance and the feature, contact-material, joint-support,
 and differentiability comparisons, see the :doc:`Solvers guide </solvers/index>`.
-Installed-wheel users can use the stable hosted guide at
+Use :func:`newton.info` or ``python -m newton.docs`` to locate the matching local
+guide. The stable hosted guide is also available at
 https://newton-physics.github.io/newton/stable/solvers/index.html.
 
 .. py:module:: newton.solvers

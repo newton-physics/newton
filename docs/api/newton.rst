@@ -4,6 +4,11 @@
 newton
 ======
 
+GPU-accelerated physics simulation.
+
+Use ``newton.info()`` or ``python -m newton.docs`` to locate local guides and
+the API reference matching the installed release.
+
 .. py:module:: newton
 .. currentmodule:: newton
 
@@ -70,6 +75,7 @@ newton
    eval_mass_matrix
    eval_mimic
    eval_rigid_contact_kinematics
+   info
    intersect_ray
 
 .. rubric:: Constants

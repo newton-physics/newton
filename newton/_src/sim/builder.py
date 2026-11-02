@@ -665,6 +665,9 @@ class ModelBuilder:
     which are convenient but unsuitable for efficient simulation.
     Call :meth:`finalize <ModelBuilder.finalize>` to construct a simulation-ready Model.
 
+    Use :func:`newton.info` or ``python -m newton.docs`` to locate local modeling
+    guides and the full API reference for the installed release.
+
     Example
     -------
 

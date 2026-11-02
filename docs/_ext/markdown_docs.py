@@ -9,8 +9,10 @@ instead of dropping documentation. This extension does not convert HTML.
 """
 
 import json
+import pkgutil
 import shutil
 from pathlib import Path
+from types import ModuleType
 
 from docutils import nodes
 from sphinx import addnodes
@@ -95,6 +97,20 @@ def write_api_index(app, exception):
         if not (Path(app.outdir) / path).is_file():
             raise ValueError(f"API page is missing: {path}")
         objects[name] = {"path": f"{path}#{anchor}", "kind": kind}
+        try:
+            value = pkgutil.resolve_name(name)
+        except (AttributeError, ImportError, ValueError):
+            continue
+        value = getattr(value, "__func__", value)
+        if isinstance(value, ModuleType):
+            objects[name]["identity"] = value.__name__
+            continue
+        if type(value).__module__.startswith("warp."):
+            value = getattr(value, "func", value)
+        module = getattr(value, "__module__", None)
+        qualname = getattr(value, "__qualname__", None)
+        if module and qualname:
+            objects[name]["identity"] = f"{module}:{qualname}"
     lines = ["# API index", "", f"Newton {app.config.release}", ""]
     lines.extend(f"- [`{name}`]({entry['path']})" for name, entry in sorted(objects.items()))
     (Path(app.outdir) / "genindex.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -1,6 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""GPU-accelerated physics simulation.
+
+Use ``newton.info()`` or ``python -m newton.docs`` to locate local guides and
+the API reference matching the installed release.
+"""
+
 import sys as _sys
 import warnings as _warnings
 
@@ -12,6 +18,7 @@ from ._src.core import (
     Axis,
     AxisType,
 )
+from ._src.documentation import info
 from ._version import __version__
 
 __all__ = [
@@ -19,6 +26,7 @@ __all__ = [
     "Axis",
     "AxisType",
     "__version__",
+    "info",
 ]
 
 # ==================================================================================

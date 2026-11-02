@@ -6,6 +6,25 @@
 Installation
 ============
 
+Local documentation
+-------------------
+
+Installed wheels include a searchable documentation snapshot for that release.
+Locate its directory and ``llms.txt`` index with:
+
+.. code-block:: console
+
+    python -m newton.docs
+    python -m newton.docs --path
+
+Read the index, then search and open the relevant Markdown pages with your
+usual file tools. In Python, use ``newton.info()`` to locate documentation,
+``newton.info(newton.ModelBuilder)`` for its signature and docstring, or
+``newton.info("ModelBuilder")`` to locate its API page. Editable installs
+report their unrendered source documentation instead of a bundled snapshot.
+For older wheels without this interface, use the matching version of the
+`online documentation <https://newton-physics.github.io/newton/>`_.
+
 This guide covers the recommended way to install Newton from PyPI. For
 installing from source or using ``uv``, see the :doc:`development` guide.
 
