@@ -148,6 +148,10 @@ the adjacent span tensions into the capstan bounds. Each guide reprojects
 its net transfer, allowing later sweeps to undo excessive slip caused by
 earlier neighbor updates. A taut cable can stick inside the bounds; an
 unloaded cable does not gain grip solely from a high friction coefficient.
+Driven rollers therefore need cable loading or pre-tension to transmit
+torque. For pre-tension, set incoming-span `rest_length` values shorter than
+their initial free-span lengths; automatic rest lengths (`-1`) do not add
+pre-tension.
 
 XPBD applies `joint_linear_relaxation` to tendon stretch corrections.
 Rolling slip bounds the accumulated spin reaction and applies its change,

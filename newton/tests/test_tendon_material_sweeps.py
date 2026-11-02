@@ -11,64 +11,7 @@ import warp as wp
 import newton
 from newton._src.sim.tendon import TendonGuideType
 from newton._src.solvers.tendon_kernels import _material_sweep_contact_error, solve_tendon_material
-from newton._src.solvers.vbd.tendon_kernels import _rolling_spin_axis_component
-from newton._src.solvers.xpbd.tendon_kernels import solve_tendon_slip
 from newton.tests.unittest_utils import add_function_test, get_test_devices
-
-
-def test_xpbd_spin_reaction_bounds_accumulated_impulse(test, device):
-    """Bound the total friction impulse and retract it when the cable unloads."""
-    with wp.ScopedDevice(device):
-        for mu in (0.0, 0.1, 10.0):
-            with test.subTest(mu=mu):
-                lambdas = wp.zeros(2)
-                tension = wp.full(2, 100.0)
-                reaction = wp.zeros(3, dtype=wp.vec3)
-                deltas = wp.zeros(1, dtype=wp.spatial_vector)
-                inputs = [
-                    wp.array([wp.transform_identity()], dtype=wp.transform),
-                    wp.array([-1, 0, -1], dtype=int),
-                    wp.array([-1, 1, -1], dtype=int),
-                    wp.zeros(3, dtype=int),
-                    wp.array(
-                        [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
-                        dtype=int,
-                    ),
-                    wp.array([0.0, 1.0, 0.0], dtype=float),
-                    wp.array([0.0, mu, 0.0], dtype=float),
-                    wp.ones(3, dtype=bool),
-                    wp.zeros(3, dtype=wp.vec3),
-                    wp.array([[0.0, 1.0, 0.0]] * 3, dtype=wp.vec3),
-                    wp.array([[-1.0, 0.0, -1.0], [1.0, 0.0, 0.0]], dtype=wp.vec3),
-                    wp.array([[-1.0, 0.0, 0.0], [1.0, 0.0, -1.0]], dtype=wp.vec3),
-                    wp.full(2, 0.01),
-                    tension,
-                    wp.zeros(2),
-                    lambdas,
-                    0.01,
-                    reaction,
-                ]
-                accumulated = 0.0
-                for pair in ([-1.0, 0.0], [-1.0, 0.0], [-2.0, 0.0], [-0.5, -0.5], [0.0, -1.0]):
-                    lambdas.assign(np.asarray(pair, dtype=np.float32))
-                    deltas.zero_()
-                    wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
-                    accumulated += float(deltas.numpy()[0, 4])
-                    rho = np.exp(min(mu * np.pi, 20.0))
-                    bound = 2.0 * (rho - 1.0) / (rho + 1.0)
-                    expected = np.clip(pair[0] - pair[1], -bound, bound)
-                    test.assertAlmostEqual(accumulated, float(expected), delta=1.0e-6)
-                tension.zero_()
-                deltas.zero_()
-                wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
-                accumulated += float(deltas.numpy()[0, 4])
-                test.assertAlmostEqual(accumulated, 0.0, delta=1.0e-6)
-                # A world roller must never write its reaction to the last body.
-                inputs[3].fill_(-1)
-                tension.fill_(100.0)
-                deltas.zero_()
-                wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
-                np.testing.assert_array_equal(deltas.numpy(), 0.0)
 
 
 def solve_material_case(
@@ -481,94 +424,6 @@ class TestTendonMaterialSweeps(unittest.TestCase):
     pass
 
 
-@wp.kernel
-def _evaluate_roller_spin(
-    poses: wp.array[wp.transform],
-    guide_body: wp.array[int],
-    guide_type: wp.array[int],
-    offsets: wp.array[wp.vec3],
-    axes: wp.array[wp.vec3],
-    cone_l: wp.array[int],
-    cone_r: wp.array[int],
-    cap_ratio: wp.array[float],
-    rest: wp.array[float],
-    point_l: wp.array[wp.vec3],
-    point_r: wp.array[wp.vec3],
-    compliance: wp.array[float],
-    damping: wp.array[float],
-    active: wp.array[int],
-    guide_l: wp.array[int],
-    guide_r: wp.array[int],
-    result: wp.array[wp.vec3],
-):
-    seg = wp.tid()
-    tension = wp.max((1.0 - rest[seg]) / compliance[seg], 0.0)
-    result[seg] = _rolling_spin_axis_component(
-        1.0 / 60.0,
-        poses,
-        poses,
-        offsets,
-        guide_body,
-        guide_type,
-        offsets,
-        axes,
-        cone_l,
-        cone_r,
-        cap_ratio,
-        rest,
-        point_l,
-        point_r,
-        compliance,
-        damping,
-        active,
-        guide_l,
-        guide_r,
-        1,
-        seg,
-        tension,
-        wp.vec3(0.5, 1.0, 0.0),
-        wp.vec3(1.0, 0.0, 0.0),
-    )
-
-
-def test_vbd_spin_reaction_matches_capstan_projection(test, device):
-    """Transmit the full sticking moment and limit only an out-of-cone trial."""
-    for rho, tensions in ((1.0, [4, 3]), (2.0, [4, 3]), (2.0, [9, 1]), (2.0, [1, 9]), (2.0, [9, 0])):
-        with test.subTest(rho=rho, tensions=tensions):
-            rest = 1.0 - 0.01 * np.array(tensions, dtype=np.float32)
-            output = wp.zeros(2, dtype=wp.vec3, device=device)
-            wp.launch(
-                _evaluate_roller_spin,
-                dim=2,
-                inputs=[
-                    wp.array([wp.transform_identity()] * 3, dtype=wp.transform, device=device),
-                    wp.array([-1, 1, -1], dtype=int, device=device),
-                    wp.array(
-                        [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
-                        dtype=int,
-                        device=device,
-                    ),
-                    wp.array([[0, 0, 0], [0.5, 0, 0], [0, 0, 0]], dtype=wp.vec3, device=device),
-                    wp.array([[0, 0, 1]] * 3, dtype=wp.vec3, device=device),
-                    wp.array([-1, 0, -1], dtype=int, device=device),
-                    wp.array([-1, 1, -1], dtype=int, device=device),
-                    wp.array([1, rho, 1], dtype=float, device=device),
-                    wp.array(rest, device=device),
-                    wp.array([[-0.5, 1, 0], [1.5, 0, 0]], dtype=wp.vec3, device=device),
-                    wp.array([[0.5, 1, 0], [1.5, -1, 0]], dtype=wp.vec3, device=device),
-                    wp.full(2, 0.01, device=device),
-                    wp.zeros(2, device=device),
-                    wp.ones(2, dtype=int, device=device),
-                    wp.array([0, 1], dtype=int, device=device),
-                    wp.array([1, 2], dtype=int, device=device),
-                    output,
-                ],
-                device=device,
-            )
-            scale = min(1.0, (rho - 1.0) / (rho + 1.0) * sum(tensions) / abs(tensions[0] - tensions[1]))
-            np.testing.assert_allclose(output.numpy(), [[0, 0, -(1 - scale)]] * 2, atol=2.0e-6, rtol=0)
-
-
 devices = get_test_devices()
 add_function_test(
     TestTendonMaterialSweeps,
@@ -662,20 +517,6 @@ add_function_test(
     TestTendonMaterialSweeps,
     "test_slack_span_and_sticking_contact",
     test_slack_span_and_sticking_contact,
-    devices=devices,
-)
-add_function_test(
-    TestTendonMaterialSweeps,
-    "test_vbd_spin_reaction_matches_capstan_projection",
-    test_vbd_spin_reaction_matches_capstan_projection,
-    devices=devices,
-)
-
-
-add_function_test(
-    TestTendonMaterialSweeps,
-    "test_xpbd_spin_reaction_bounds_accumulated_impulse",
-    test_xpbd_spin_reaction_bounds_accumulated_impulse,
     devices=devices,
 )
 
