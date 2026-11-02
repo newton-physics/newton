@@ -1,0 +1,1 @@
+Orient the icosahedron normal bins used by mesh, heightfield and hydroelastic contact reduction so that a bin is centered on +Z and on -Z and the X and Y axes fall inside bins. Contacts whose normals lie near a world axis no longer split between two bins on rounding noise. The reduced contact set changes for scenes that use contact reduction.

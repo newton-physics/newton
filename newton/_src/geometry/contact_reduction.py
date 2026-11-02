@@ -158,34 +158,38 @@ _DODECAHEDRON_NORMALS = (
    -0.52573111, -0.85065081,  0.0,
 )
 
-# Icosahedron face normals (20 faces).
-# Ordered: top cap (0-4, Y ~ +0.79), equatorial belt (5-14, |Y| ~ 0.19),
-# bottom cap (15-19, Y ~ -0.79).  This layout enables contiguous range
-# searches (top-only, top+equat, equat+bottom, bottom-only).
+# Icosahedron face normals (20 faces), oriented so a face center points at +Z
+# and another at -Z.  A world axis on a bin boundary makes flat contacts change
+# bins on rounding noise, so the yaw maximizes the bin margin at +/-X and +/-Y
+# (0.066 in dot product, about 4 degrees); the margin at +/-Z is 0.255 (about
+# 20 degrees).  Ordered by Z so get_slot() can search contiguous ranges.
 _ICOSAHEDRON_NORMALS = (
-    # Top cap (faces 0-4, Y ~ +0.795)
-    0.49112338,  0.79465455,  0.35682216,
-   -0.18759243,  0.79465450,  0.57735026,
-   -0.60706190,  0.79465450,  0.0,
-   -0.18759237,  0.79465450, -0.57735026,
-    0.49112340,  0.79465455, -0.35682210,
-    # Equatorial belt (faces 5-14, |Y| ~ 0.188)
-    0.98224690, -0.18759257,  0.0,
-    0.79465440,  0.18759239, -0.57735030,
-    0.30353096, -0.18759252,  0.93417233,
-    0.79465440,  0.18759243,  0.57735030,
-   -0.79465450, -0.18759249,  0.57735030,
-   -0.30353105,  0.18759243,  0.93417240,
-   -0.79465440, -0.18759240, -0.57735030,
-   -0.98224690,  0.18759254,  0.0,
-    0.30353096, -0.18759250, -0.93417233,
-   -0.30353084,  0.18759246, -0.93417240,
-    # Bottom cap (faces 15-19, Y ~ -0.795)
-    0.18759249, -0.79465440,  0.57735026,
-   -0.49112338, -0.79465450,  0.35682213,
-   -0.49112338, -0.79465455, -0.35682213,
-    0.18759243, -0.79465440, -0.57735026,
-    0.60706200, -0.79465440,  0.0,
+    # +Z face (face 0)
+    0.0,         0.0,         1.0,
+    # Upper ring (faces 1-3, Z ~ +0.745)
+    0.17291155, -0.64385245,  0.74535603,
+    0.47113684,  0.47167205,  0.74535599,
+   -0.64404845,  0.17218052,  0.74535593,
+    # Upper belt (faces 4-9, Z ~ +0.333)
+   -0.86918069, -0.36525859,  0.33333330,
+   -0.36427169, -0.86959473,  0.33333337,
+    0.75091367, -0.57010306,  0.33333340,
+    0.93522695,  0.11932898,  0.33333339,
+    0.11826704,  0.93536185,  0.33333335,
+   -0.57095543,  0.75026579,  0.33333337,
+    # Lower belt (faces 10-15, Z ~ -0.333)
+   -0.93522697, -0.11932883, -0.33333339,
+   -0.11826707, -0.93536184, -0.33333335,
+    0.57095545, -0.75026579, -0.33333334,
+    0.86918063,  0.36525872, -0.33333332,
+    0.36427171,  0.86959472, -0.33333337,
+   -0.75091368,  0.57010308, -0.33333336,
+    # Lower ring (faces 16-18, Z ~ -0.745)
+   -0.47113677, -0.47167196, -0.74535609,
+    0.64404840, -0.17218051, -0.74535597,
+   -0.17291149,  0.64385240, -0.74535609,
+    # -Z face (face 19)
+    0.0,         0.0,        -1.0,
 )
 # fmt: on
 
@@ -213,44 +217,44 @@ def get_face_normal(face_idx: int) -> wp.vec3:
     if wp.static(NORMAL_BINNING_POLYHEDRON != "icosahedron"):
         return FACE_NORMALS[face_idx]
     if face_idx == 0:
-        return wp.vec3(0.49112338, 0.79465455, 0.35682216)
+        return wp.vec3(0.0, 0.0, 1.0)
     if face_idx == 1:
-        return wp.vec3(-0.18759243, 0.79465450, 0.57735026)
+        return wp.vec3(0.17291155, -0.64385245, 0.74535603)
     if face_idx == 2:
-        return wp.vec3(-0.60706190, 0.79465450, 0.0)
+        return wp.vec3(0.47113684, 0.47167205, 0.74535599)
     if face_idx == 3:
-        return wp.vec3(-0.18759237, 0.79465450, -0.57735026)
+        return wp.vec3(-0.64404845, 0.17218052, 0.74535593)
     if face_idx == 4:
-        return wp.vec3(0.49112340, 0.79465455, -0.35682210)
+        return wp.vec3(-0.86918069, -0.36525859, 0.33333330)
     if face_idx == 5:
-        return wp.vec3(0.98224690, -0.18759257, 0.0)
+        return wp.vec3(-0.36427169, -0.86959473, 0.33333337)
     if face_idx == 6:
-        return wp.vec3(0.79465440, 0.18759239, -0.57735030)
+        return wp.vec3(0.75091367, -0.57010306, 0.33333340)
     if face_idx == 7:
-        return wp.vec3(0.30353096, -0.18759252, 0.93417233)
+        return wp.vec3(0.93522695, 0.11932898, 0.33333339)
     if face_idx == 8:
-        return wp.vec3(0.79465440, 0.18759243, 0.57735030)
+        return wp.vec3(0.11826704, 0.93536185, 0.33333335)
     if face_idx == 9:
-        return wp.vec3(-0.79465450, -0.18759249, 0.57735030)
+        return wp.vec3(-0.57095543, 0.75026579, 0.33333337)
     if face_idx == 10:
-        return wp.vec3(-0.30353105, 0.18759243, 0.93417240)
+        return wp.vec3(-0.93522697, -0.11932883, -0.33333339)
     if face_idx == 11:
-        return wp.vec3(-0.79465440, -0.18759240, -0.57735030)
+        return wp.vec3(-0.11826707, -0.93536184, -0.33333335)
     if face_idx == 12:
-        return wp.vec3(-0.98224690, 0.18759254, 0.0)
+        return wp.vec3(0.57095545, -0.75026579, -0.33333334)
     if face_idx == 13:
-        return wp.vec3(0.30353096, -0.18759250, -0.93417233)
+        return wp.vec3(0.86918063, 0.36525872, -0.33333332)
     if face_idx == 14:
-        return wp.vec3(-0.30353084, 0.18759246, -0.93417240)
+        return wp.vec3(0.36427171, 0.86959472, -0.33333337)
     if face_idx == 15:
-        return wp.vec3(0.18759249, -0.79465440, 0.57735026)
+        return wp.vec3(-0.75091368, 0.57010308, -0.33333336)
     if face_idx == 16:
-        return wp.vec3(-0.49112338, -0.79465450, 0.35682213)
+        return wp.vec3(-0.47113677, -0.47167196, -0.74535609)
     if face_idx == 17:
-        return wp.vec3(-0.49112338, -0.79465455, -0.35682213)
+        return wp.vec3(0.64404840, -0.17218051, -0.74535597)
     if face_idx == 18:
-        return wp.vec3(0.18759243, -0.79465440, -0.57735026)
-    return wp.vec3(0.60706200, -0.79465440, 0.0)
+        return wp.vec3(-0.17291149, 0.64385240, -0.74535609)
+    return wp.vec3(0.0, 0.0, -1.0)
 
 
 @wp.func
@@ -263,8 +267,8 @@ def get_slot(normal: wp.vec3) -> int:
     * **hexahedron** (6 faces) — O(1) axis-aligned comparison, no dot products.
     * **dodecahedron** (12 faces) — Y-based range pruning over
       top / equatorial / bottom groups (4-8 dot products).
-    * **icosahedron** (20 faces) — Y-based range pruning over
-      top cap / equatorial belt / bottom cap (5-15 dot products).
+    * **icosahedron** (20 faces) — Z-based range pruning over
+      the polar faces, rings and belts (4-15 dot products).
     * **octahedron** and any other polyhedron — full linear scan.
 
     Args:
@@ -324,40 +328,60 @@ def get_slot(normal: wp.vec3) -> int:
         return best_slot
 
     elif wp.static(NORMAL_BINNING_POLYHEDRON == "icosahedron"):
-        up_dot = normal[1]
+        up_dot = normal[2]
 
-        # Keep each candidate range compile-time constant so Warp embeds only the selected normals.
-        if up_dot > 0.65:
+        # Each range holds every face whose bin reaches that band of Z: the belts
+        # reach |Z| < 0.795 and the rings |Z| > 0.187 on their own side. Keep each
+        # range compile-time constant so Warp embeds only the selected normals.
+        if up_dot > 0.85:
             best_slot = 0
             max_dot = wp.dot(normal, FACE_NORMALS[0])
-            for i in range(1, 5):
+            for i in range(1, 4):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d
                     best_slot = i
             return best_slot
-        elif up_dot < -0.65:
-            best_slot = 15
-            max_dot = wp.dot(normal, FACE_NORMALS[15])
-            for i in range(16, 20):
+        elif up_dot < -0.85:
+            best_slot = 16
+            max_dot = wp.dot(normal, FACE_NORMALS[16])
+            for i in range(17, 20):
+                d = wp.dot(normal, FACE_NORMALS[i])
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
+        elif up_dot > 0.25:
+            best_slot = 0
+            max_dot = wp.dot(normal, FACE_NORMALS[0])
+            for i in range(1, 10):
+                d = wp.dot(normal, FACE_NORMALS[i])
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
+        elif up_dot < -0.25:
+            best_slot = 10
+            max_dot = wp.dot(normal, FACE_NORMALS[10])
+            for i in range(11, 20):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d
                     best_slot = i
             return best_slot
         elif up_dot >= 0.0:
-            best_slot = 0
-            max_dot = wp.dot(normal, FACE_NORMALS[0])
-            for i in range(1, 15):
+            best_slot = 1
+            max_dot = wp.dot(normal, FACE_NORMALS[1])
+            for i in range(2, 16):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d
                     best_slot = i
             return best_slot
         else:
-            best_slot = 5
-            max_dot = wp.dot(normal, FACE_NORMALS[5])
-            for i in range(6, 20):
+            best_slot = 4
+            max_dot = wp.dot(normal, FACE_NORMALS[4])
+            for i in range(5, 19):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d

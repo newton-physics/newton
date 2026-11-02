@@ -1941,8 +1941,9 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
     with wp.ScopedDevice(device):
         half = (0.05, 0.01, 0.05)
         hull = newton.Mesh.create_box(*half, duplicate_vertices=False, compute_inertia=False)
+        # one 0.2 m cell, split along its diagonal into two triangles
         flat = newton.Heightfield(
-            data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.1, hy=0.1, min_z=0.0, max_z=0.0
+            data=np.zeros((2, 2), dtype=np.float32), nrow=2, ncol=2, hx=0.1, hy=0.1, min_z=0.0, max_z=0.0
         )
         lying = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * math.pi)  # capsule axis along y
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1959,10 +1960,10 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
             else:
                 builder.add_shape_capsule(body, radius=radius, half_height=0.02)
             if on_heightfield:
-                # shift the heightfield (0.05 m cells, split along a diagonal) so the sphere's lowest point is at the
-                # incenter of a triangle, 14.6 mm from its edges: no neighbouring triangle is within the summed gap
-                inset = 0.05 * (1.0 - math.sqrt(0.5))
-                offset = wp.vec3(inset, 0.05 - inset, -(radius + gap))
+                # put the probe's center 0.05 m inside the cell's +x edge and 0.06 m above its -y edge, so the whole
+                # lying capsule stays over one triangle and over 40 mm from the other: no neighbouring triangle is
+                # within the summed gap
+                offset = wp.vec3(-0.05, 0.04, -(radius + gap))
             elif placement == "face":
                 offset = wp.vec3(0.0, -(radius + gap + half[1]), 0.0)
             else:
