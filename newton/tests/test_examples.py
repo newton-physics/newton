@@ -39,12 +39,13 @@ import newton.tests.unittest_utils
 from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
     MUJOCO_MODULES,
-    USD_AVAILABLE,
     NewtonTestCase,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
+    has_module,
     missing_modules,
+    requires,
     sanitize_identifier,
 )
 from newton.viewer import ViewerNull
@@ -232,7 +233,7 @@ def add_example_test(
                                 os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"
                             ),
                         )
-                        if USD_AVAILABLE
+                        if has_module("pxr.Usd")
                         else "None"
                     )
                     if stage_path:
@@ -903,10 +904,8 @@ class TestRobotExamples(unittest.TestCase):
     pass
 
 
+@requires("pxr.Usd")
 def _test_robot_cartpole_capture_matches_eager(test, device):
-    if not USD_AVAILABLE:
-        test.skipTest("Requires USD")
-
     args = SimpleNamespace(world_count=1, solver="kamino")
     with wp.ScopedDevice(device):
         with patch.object(RobotCartpoleExample, "capture", lambda example: setattr(example, "graph", None)):

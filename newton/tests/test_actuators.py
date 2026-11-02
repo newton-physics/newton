@@ -44,8 +44,7 @@ from newton.actuators import (
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import MUJOCO_MODULES, has_module, requires
 
-HAS_USD = has_module("pxr.Usd")
-if HAS_USD:
+if has_module("pxr.Usd"):
     from pxr import Usd
 
 

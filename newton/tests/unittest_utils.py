@@ -61,9 +61,6 @@ def has_module(name: str) -> bool:
 MUJOCO_MODULES = ("mujoco", "mujoco_warp")
 
 
-USD_AVAILABLE = has_module("pxr.Usd")
-
-
 def missing_modules(modules) -> list[str]:
     """Return the ``modules`` that are not installed; raise if one is installed but fails to import."""
     for module in modules:
