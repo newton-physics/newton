@@ -332,10 +332,12 @@ def build_reduction_group_pair_upper_bound(shape_body, shape_world, shape_active
     groups = np.asarray(shape_group, dtype=np.int64)[active]
     if groups.size == 0:
         return 0
-    _, first = np.unique(groups, return_index=True)
-    group_world = np.asarray(shape_world, dtype=np.int64)[active][first] + 1
+    worlds = np.asarray(shape_world, dtype=np.int64)[active] + 1
+    slots = int(worlds.max()) + 1
+    # Count a group once per world it has shapes in.
+    _, first = np.unique(groups * slots + worlds, return_index=True)
+    group_world = worlds[first]
     group_dynamic = np.asarray(shape_body, dtype=np.int64)[active][first] >= 0
-    slots = int(group_world.max()) + 1
     # Slot 0 holds global groups, slot w + 1 the groups of world w.
     dynamic = np.bincount(group_world[group_dynamic], minlength=slots).astype(np.int64)
     static = np.bincount(group_world[~group_dynamic], minlength=slots).astype(np.int64)
