@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
+from ...exceptions import NewtonDeprecationWarning
 from . import camera_utils
 from .types import RenderConfig, RenderLightType, TextureData
 
@@ -291,7 +292,7 @@ class Utils:
             f"SensorTiledCamera.utils.{method_name}() changed SensorTiledCamera.default_render_config.{config_field}. "
             "This side effect is deprecated as of Newton 1.4 and will be removed in a future release. "
             f"Set sensor.default_render_config.{config_field} = {value!r} explicitly.",
-            category=DeprecationWarning,
+            category=NewtonDeprecationWarning,
             stacklevel=3,
         )
 
@@ -610,7 +611,7 @@ class Utils:
         warnings.warn(
             "``SensorTiledCamera.utils.compute_pinhole_camera_rays`` is deprecated. "
             "Use ``SensorTiledCamera.utils.compute_camera_rays_pinhole`` instead.",
-            category=DeprecationWarning,
+            category=NewtonDeprecationWarning,
             stacklevel=2,
         )
         return self.compute_camera_rays_pinhole(
@@ -1565,7 +1566,7 @@ class Utils:
         warnings.warn(
             "``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes`` is deprecated as of Newton 1.4. "
             "Use ``SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)`` instead.",
-            category=DeprecationWarning,
+            category=NewtonDeprecationWarning,
             stacklevel=2,
         )
         self.assign_checkerboard_material(

@@ -7,12 +7,22 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.particle_surface_sparse_kernels import _floor_tile_coordinate
 from newton.geometry import ParticleSurface, extract_particle_surface
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 _TEST_MAX_GRID_CELLS = 32_768
 _TEST_MULTI_WORLD_MAX_GRID_CELLS = 49_152
+
+
+@wp.kernel
+def _floor_tile_coordinates_kernel(
+    coordinates: wp.array[wp.int32],
+    tile_origins: wp.array[wp.int32],
+):
+    index = wp.tid()
+    tile_origins[index] = _floor_tile_coordinate(coordinates[index])
 
 
 @wp.kernel
@@ -88,6 +98,27 @@ def _sorted_vertices(vertices):
     """Return mesh vertices in deterministic lexicographic order."""
     values = vertices.numpy()
     return values[np.lexsort(values.T[::-1])]
+
+
+def test_floor_tile_coordinates(test, device):
+    """Round negative and positive coordinates down to 8-voxel tile boundaries."""
+    coordinates = wp.array(
+        [-17, -16, -15, -9, -8, -7, -2, -1, 0, 1, 7, 8, 9, 15, 16],
+        dtype=wp.int32,
+        device=device,
+    )
+    expected = np.array([-24, -16, -16, -16, -8, -8, -8, -8, 0, 0, 0, 8, 8, 8, 16], dtype=np.int32)
+    tile_origins = wp.empty_like(coordinates)
+
+    wp.launch(
+        _floor_tile_coordinates_kernel,
+        dim=coordinates.shape[0],
+        inputs=[coordinates],
+        outputs=[tile_origins],
+        device=device,
+    )
+
+    np.testing.assert_array_equal(tile_origins.numpy(), expected)
 
 
 def test_one_shot(test, device):
@@ -733,6 +764,7 @@ class TestParticleSurface(unittest.TestCase):
 
 devices = get_test_devices(mode="basic")
 
+add_function_test(TestParticleSurface, "test_floor_tile_coordinates", test_floor_tile_coordinates, devices=devices)
 add_function_test(TestParticleSurface, "test_one_shot", test_one_shot, devices=devices)
 add_function_test(TestParticleSurface, "test_reusable_context", test_reusable_context, devices=devices)
 add_function_test(TestParticleSurface, "test_multi_world_mesh", test_multi_world_mesh, devices=devices)

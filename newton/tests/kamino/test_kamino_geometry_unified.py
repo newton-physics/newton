@@ -8,20 +8,23 @@ Tests the unified collision detection pipeline.
 """
 
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 from newton import ModelBuilder
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
-from newton._src.solvers.kamino._src.models.builders import basics, testing
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton.exceptions import NewtonWarning
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
+from newton.tests.utils import basics, testing
 
 ###
 # Constants
@@ -90,7 +93,7 @@ single edge or corner, generating only 1 contact point.
 
 
 def test_unified_pipeline(
-    builder: ModelBuilderKamino,
+    builder: ModelBuilder,
     expected: dict,
     max_contacts_per_pair: int = 12,
     margin: float = 0.0,
@@ -102,11 +105,11 @@ def test_unified_pipeline(
 ):
     """
     Runs the unified collision detection pipeline using all broad-phase backends
-    on a system specified via a ModelBuilderKamino and checks the results.
+    on a system specified via a ModelBuilder and checks the results.
     """
 
     # Create a test model and data
-    model: ModelKamino = builder.finalize(device)
+    model: ModelKamino = ModelKamino.from_newton(builder.finalize(device))
     data: DataKamino = model.data()
     contacts = ContactsKamino(model=model, device=device)
 
@@ -194,6 +197,33 @@ def test_unified_pipeline_on_shape_pair(
 
 
 class TestCollisionPipelineUnified(unittest.TestCase):
+    def test_primitive_local_bounds(self):
+        """Retain local bounds for primitive-only penetration refinement."""
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+        for device in devices:
+            with self.subTest(device=device):
+                builder = ModelBuilder()
+                builder.add_shape_box(-1, hx=0.6, hy=0.15, hz=0.005)
+                body = builder.add_body(xform=wp.transform(wp.vec3(0.56, 0.0, 0.008), wp.quat_identity()))
+                rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 2)
+                builder.add_shape_cylinder(
+                    body, xform=wp.transform(wp.vec3(0.0), rotation), radius=0.005, half_height=0.025
+                )
+                model = ModelKamino.from_newton(builder.finalize(device))
+                pipeline = CollisionPipelineUnifiedKamino(model)
+                self.assertEqual(pipeline.collision_aabb_lower.size, model.geoms.num_geoms)
+                self.assertEqual(pipeline.collision_aabb_upper.size, model.geoms.num_geoms)
+                contacts = ContactsKamino(model=model, device=device)
+                pipeline.collide(model.data(), contacts)
+                count = int(contacts.model_active_contacts.numpy()[0])
+                self.assertGreater(count, 0)
+                normals = np.array(
+                    [wp.quat_rotate(wp.quat(frame), wp.vec3(0.0, 0.0, 1.0)) for frame in contacts.frame.numpy()[:count]]
+                )
+                np.testing.assert_allclose(np.abs(normals[:, 2]), 1.0, atol=1.0e-3)
+
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -256,7 +286,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         msg.info("Testing unified pipeline tests with exact boundaries")
 
         # Global builder and expected contacts dictionary
-        builder = ModelBuilderKamino()
+        builder = ModelBuilder()
         expected_contacts = {
             "model_active_contacts": 0,
             "world_active_contacts": [],
@@ -278,7 +308,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 distance=0.0,  # Exactly touching
                 **kwargs,
             )
-            builder.add_builder(builder_shape)
+            builder.add_world(builder_shape)
 
             # Retrieve the nominal expected contacts for the shape pair
             expected_contacts_shape = nominal_expected_contacts_per_shape_pair.get(shape_pair, 0)
@@ -302,7 +332,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         msg.info("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
-        builder = ModelBuilderKamino()
+        builder = ModelBuilder()
         expected_contacts = {
             "model_active_contacts": 0,
             "world_active_contacts": [0 for _ in range(len(self.supported_shape_pairs))],
@@ -315,7 +345,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 shapes=shape_pair,
                 distance=1e-6,  # Shapes apart with epsilon distance
             )
-            builder.add_builder(builder_shape)
+            builder.add_world(builder_shape)
 
         # Run the narrow-phase test
         test_unified_pipeline(
@@ -334,7 +364,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         msg.info("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
-        builder = ModelBuilderKamino()
+        builder = ModelBuilder()
         expected_contacts = {
             "model_active_contacts": 0,
             "world_active_contacts": [],
@@ -356,7 +386,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 distance=0.0,  # Shapes apart
                 **kwargs,
             )
-            builder.add_builder(builder_shape)
+            builder.add_world(builder_shape)
 
             # Retrieve the nominal expected contacts for the shape pair
             expected_contacts_shape = nominal_expected_contacts_per_shape_pair.get(shape_pair, 0)
@@ -539,6 +569,31 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             device=self.default_device,
         )
 
+    def test_09_large_pair_warning_only_on_explicit_setup(self):
+        """Warn about large pair workloads only for explicit collision setup."""
+        builder = ModelBuilder()
+        builder.replicate(basics.build_sphere_on_plane(z_offset=0.5), copy_count=2)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        pairs = wp.array([[0, 1], [1, 0], [0, 1], [2, 3]], dtype=wp.vec2i, device=self.default_device)
+        model.geoms.collidable_pairs = pairs
+        model.geoms.num_collidable_pairs = len(pairs)
+        for broadphase in ("sap", "nxn", "explicit"):
+            with (
+                self.subTest(broadphase=broadphase),
+                mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_TOTAL", 3),
+                mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD", 3),
+                mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
+                mock.patch.object(model.geoms.wid, "numpy", wraps=model.geoms.wid.numpy) as read_worlds,
+                warnings.catch_warnings(record=True) as caught,
+            ):
+                warnings.filterwarnings("always", message="Explicit broad phase tests", category=NewtonWarning)
+                CollisionPipelineUnifiedKamino(model, broadphase=broadphase)
+            self.assertEqual(len(caught), int(broadphase == "explicit"))
+            self.assertEqual(read_pairs.call_count, int(broadphase == "explicit"))
+            if broadphase == "explicit":
+                self.assertEqual(read_worlds.call_count, 1)
+                self.assertIn("3 in the busiest world", str(caught[0].message))
+
 
 class TestUnifiedWriterContactDataRegression(unittest.TestCase):
     """
@@ -559,15 +614,15 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
 
-    def _run_pipeline(self, builder: ModelBuilderKamino, default_gap=0.0):
-        model = builder.finalize(self.default_device)
+    def _run_pipeline(self, builder: ModelBuilder, default_gap=0.0):
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
         pipeline = CollisionPipelineUnifiedKamino(
             model=model,
             broadphase="explicit",
             default_gap=default_gap,
         )
-        n_geoms = builder.num_geoms
+        n_geoms = builder.shape_count
         capacity = 8 * ((n_geoms * (n_geoms - 1)) // 2)
         contacts = ContactsKamino(capacity=max(capacity, 8), device=self.default_device)
         contacts.clear()
@@ -607,9 +662,8 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
         builder = testing.make_single_shape_pair_builder(
             shapes=("sphere", "sphere"),
             distance=separation,
+            gap=0.01,
         )
-        for geom in builder.all_geoms:
-            geom.gap = 0.01
         contacts = self._run_pipeline(builder)
         active = contacts.model_active_contacts.numpy()[0]
         self.assertEqual(active, 1, "Contact within gap must be retained")
@@ -620,9 +674,8 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
         builder = testing.make_single_shape_pair_builder(
             shapes=("sphere", "sphere"),
             distance=separation,
+            gap=0.001,
         )
-        for geom in builder.all_geoms:
-            geom.gap = 0.001
         contacts = self._run_pipeline(builder)
         active = contacts.model_active_contacts.numpy()[0]
         self.assertEqual(active, 0, "Contact beyond gap must be rejected")

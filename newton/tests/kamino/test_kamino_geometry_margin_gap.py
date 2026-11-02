@@ -15,10 +15,8 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointDoFType
-from newton._src.solvers.kamino._src.core.math import I_3
-from newton._src.solvers.kamino._src.core.shapes import BoxShape, SphereShape
+from newton import ModelBuilder
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.primitive import CollisionPipelinePrimitive
@@ -38,32 +36,37 @@ def _make_sphere_pair_builder(
     gap_top: float = 0.0,
     gap_bottom: float = 0.0,
     radius: float = 0.5,
-) -> ModelBuilderKamino:
+) -> ModelBuilder:
     """Build a model with two spheres stacked along z, separated by *distance*."""
-    builder = ModelBuilderKamino(default_world=True)
-    bid0 = builder.add_rigid_body(
-        name="bottom_sphere",
-        m_i=1.0,
-        i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
-        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, -radius - 0.5 * distance), wp.quat_identity()),
+    builder = ModelBuilder()
+    builder.begin_world(label="sphere_pair")
+    bid0 = builder.add_body(
+        label="bottom_sphere",
+        mass=1.0,
+        inertia=wp.mat33f(np.eye(3, dtype=np.float32)),
+        xform=wp.transform(wp.vec3(0.0, 0.0, -radius - 0.5 * distance), wp.quat_identity()),
     )
-    bid1 = builder.add_rigid_body(
-        name="top_sphere",
-        m_i=1.0,
-        i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
-        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, radius + 0.5 * distance), wp.quat_identity()),
+    bid1 = builder.add_body(
+        label="top_sphere",
+        mass=1.0,
+        inertia=wp.mat33f(np.eye(3, dtype=np.float32)),
+        xform=wp.transform(wp.vec3(0.0, 0.0, radius + 0.5 * distance), wp.quat_identity()),
     )
-    builder.add_geometry(body=bid0, name="bottom", shape=SphereShape(radius), margin=margin_bottom, gap=gap_bottom)
-    builder.add_geometry(body=bid1, name="top", shape=SphereShape(radius), margin=margin_top, gap=gap_top)
+    builder.add_shape_sphere(
+        body=bid0, label="bottom", radius=radius, cfg=ModelBuilder.ShapeConfig(margin=margin_bottom, gap=gap_bottom)
+    )
+    builder.add_shape_sphere(
+        body=bid1, label="top", radius=radius, cfg=ModelBuilder.ShapeConfig(margin=margin_top, gap=gap_top)
+    )
+    builder.end_world()
     return builder
 
 
-def _run_primitive_pipeline(builder: ModelBuilderKamino, device, max_contacts_per_pair: int = 4):
+def _run_primitive_pipeline(builder: ModelBuilder, device):
     """Run broadphase + narrowphase and return the contacts container."""
-    model = builder.finalize(device)
+    model = ModelKamino.from_newton(builder.finalize(device))
     data = model.data()
-    _, world_req = builder.compute_required_contact_capacity(max_contacts_per_pair=max_contacts_per_pair)
-    contacts = ContactsKamino(capacity=world_req, device=device)
+    contacts = ContactsKamino(capacity=model.geoms.world_minimum_contacts, device=device)
     contacts.clear()
     pipeline = CollisionPipelinePrimitive(model=model, bvtype="aabb", default_gap=0.0)
     pipeline.collide(data, contacts)
@@ -284,42 +287,35 @@ def _build_sphere_on_ground(
     sphere_z: float,
     margin: float = 0.0,
     gap: float = 0.0,
-) -> ModelBuilderKamino:
+) -> ModelBuilder:
     """Build a free sphere above a static ground box, following ``build_free_joint_test`` pattern."""
-    builder = ModelBuilderKamino(default_world=True)
+    builder = ModelBuilder()
+    builder.begin_world(label="sphere_on_ground")
 
-    bid = builder.add_rigid_body(
-        name="sphere",
-        m_i=1.0,
-        i_I_i=I_3,
-        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, sphere_z), wp.quat_identity()),
-        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    cfg = ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+
+    bid = builder.add_body(
+        label="sphere",
+        mass=1.0,
+        inertia=wp.mat33f(np.eye(3, dtype=np.float32)),
+        xform=wp.transform(wp.vec3(0.0, 0.0, sphere_z), wp.quat_identity()),
     )
-    builder.add_joint(
-        name="world_to_sphere",
-        dof_type=JointDoFType.FREE,
-        act_type=JointActuationType.FORCE,
-        bid_B=-1,
-        bid_F=bid,
-        B_r_Bj=wp.vec3f(0.0, 0.0, sphere_z),
-        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
-        X_Bj=I_3,
-    )
-    builder.add_geometry(
-        name="sphere",
+    builder.add_shape_sphere(
         body=bid,
-        shape=SphereShape(SPHERE_R),
-        margin=margin,
-        gap=gap,
+        label="sphere",
+        radius=SPHERE_R,
+        cfg=cfg,
     )
-    builder.add_geometry(
+    builder.add_shape_box(
         body=-1,
-        name="ground",
-        shape=BoxShape(2.0, 2.0, GROUND_HALF_H),
-        offset=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity()),
-        margin=margin,
-        gap=gap,
+        label="ground",
+        hx=2.0,
+        hy=2.0,
+        hz=GROUND_HALF_H,
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        cfg=cfg,
     )
+    builder.end_world()
     return builder
 
 
@@ -340,9 +336,9 @@ def _fast_solver_config() -> SolverKaminoImpl.Config:
     return config
 
 
-def _step_solver(builder: ModelBuilderKamino, device, num_steps: int = 5, dt: float = 0.01):
+def _step_solver(builder: ModelBuilder, device, num_steps: int = 5, dt: float = 0.01):
     """Finalize model, create solver + detector, step, return final z-position of the sphere."""
-    model = builder.finalize(device)
+    model = ModelKamino.from_newton(builder.finalize(device))
     state_p = model.state()
     state_n = model.state()
     control = model.control()

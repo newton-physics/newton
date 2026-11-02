@@ -12,7 +12,6 @@
 #
 ###########################################################################
 
-import argparse
 
 import numpy as np
 import warp as wp
@@ -20,7 +19,11 @@ from scipy.spatial.transform import Rotation  # noqa: TID253
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import (
+    add_recording_args,
+    enable_recording_from_args,
+)
+from newton._src.solvers.kamino.examples import get_examples_output_path
 
 ###
 # Kernels
@@ -96,14 +99,8 @@ class Example:
         self.sim_steps = 0
         self.sim_reset_mode = 0
 
-        video_output_filename = getattr(args, "video_path", None)
-        self.record_video = enable_recording(
-            viewer=self.viewer,
-            record_video=args.record_video if args else False,
-            start_clip=True,
-            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
-            max_frames=getattr(args, "max_video_frames", 1000),
-            fps=self.fps,
+        self.record_video = enable_recording_from_args(
+            self.viewer, args, name="dr_legs", output_root=get_examples_output_path(), fps=self.fps
         )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
@@ -190,11 +187,6 @@ class Example:
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
-
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
-        self.solver.reset(self.state_1)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
@@ -357,24 +349,7 @@ class Example:
             default=400,
             help="Number of simulation steps between each reset-mode demo.",
         )
-        parser.add_argument(
-            "--record-video",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Record a video of the viewer, up to 1000 frames.",
-        )
-        parser.add_argument(
-            "--video-path",
-            type=str,
-            default=None,
-            help="Output video path (defaults to 'recording.mp4').",
-        )
-        parser.add_argument(
-            "--max-video-frames",
-            type=int,
-            default=1000,
-            help="Maximum number of frames recorded for the video (defaults to 1000).",
-        )
+        add_recording_args(parser, example_name="dr_legs")
         parser.set_defaults(world_count=1)
         return parser
 
@@ -384,5 +359,3 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
-    if hasattr(viewer, "finish_clip"):
-        viewer.finish_clip()

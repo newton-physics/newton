@@ -1,13 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cloth Rollers
-#
-# A rolled cloth mesh that unrolls as the inner seam rotates.
-# Command: uv run -m newton.examples cloth_rollers
-#
-###########################################################################
+"""Cloth Rollers
+
+A rolled cloth mesh that unrolls as the inner seam rotates.
+
+Success criteria:
+- One roller initially carries the cloth while the other is empty.
+- Rotation transfers cloth from the full roller to the empty one without visible tearing, explosive
+  stretching, or persistent interpenetration.
+
+Runs:
+- `python -m newton.examples cloth_rollers`
+"""
 
 import math
 
@@ -378,11 +383,16 @@ class Example:
             model=self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.3,
-            particle_self_contact_margin=0.6,
+            particle_self_contact_margin=0.3,
+            particle_self_contact_gap=0.3,
+            # The 0.6 query radius packs many edge pairs (measured peak demand:
+            # 24 vertex / 146 edge pairs); overflow drops pairs.
             particle_vertex_contact_buffer_size=48,
-            particle_edge_contact_buffer_size=64,
-            particle_collision_detection_interval=5,
+            particle_edge_contact_buffer_size=160,
+            collision_frequency={newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: 5},
+            collision_frequency_type={
+                newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.ITERATIONS,
+            },
             particle_topological_contact_filter_threshold=2,
         )
 
@@ -410,7 +420,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         # Set up camera
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.set_camera(pos=wp.vec3(-0.02, -2.33, 0.69), pitch=-15.9, yaw=-264.8)
             self.viewer.camera.fov = 67.0
 

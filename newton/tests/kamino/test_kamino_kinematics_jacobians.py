@@ -10,6 +10,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton import Axis, JointTargetMode, ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.constraints import make_unilateral_constraints_info
@@ -19,15 +20,12 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
     SparseSystemJacobians,
 )
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.models.builders.basics import (
-    build_boxes_fourbar,
-    make_basics_heterogeneous_builder,
-)
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
 from newton.tests.kamino.utils.make import make_test_problem_fourbar, make_test_problem_heterogeneous
+from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 ###
 # Module configs
@@ -62,11 +60,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             msg.reset_log_level()
 
     def test_01_allocate_single_dense_system_jacobians_only_joints(self):
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -94,11 +92,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         self.assertEqual(jacobians.data.J_cts_data.shape, (model_num_cts * model.size.sum_of_num_body_dofs,))
 
     def test_02_allocate_single_dense_system_jacobians_with_limits(self):
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -139,11 +137,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Problem constants
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -152,7 +150,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -190,11 +188,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Problem constants
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -209,7 +207,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -249,11 +247,12 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         num_worlds = 3
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_fourbar)
+        # Construct the model description
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(), copy_count=num_worlds)
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -268,7 +267,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -326,12 +325,12 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Problem constants
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = make_basics_heterogeneous_builder()
-        num_worlds = builder.num_worlds
+        num_worlds = builder.world_count
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -346,7 +345,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -502,6 +501,73 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         for w in range(model.size.num_worlds):
             msg.info("[world='%d']: J_cts:\n%s", w, J_cts[w])
             msg.info("[world='%d']: J_dofs:\n%s", w, J_dofs[w])
+
+
+class TestSparseBoundedRowTopology(unittest.TestCase):
+    def test_mixed_friction_effort_row_offsets(self):
+        """Map mixed bounded rows to the correct sparse blocks across worlds."""
+        builder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        for world in range(2):
+            builder.begin_world()
+            parent = -1
+            joints = []
+            for joint in range(2):
+                body = builder.add_link(
+                    mass=1.0 + world + joint,
+                    inertia=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    lock_inertia=True,
+                )
+                joints.append(
+                    builder.add_joint_revolute(
+                        parent,
+                        body,
+                        axis=Axis.Y,
+                        friction=0.2 + 0.1 * joint,
+                        target_ke=50.0,
+                        target_kd=3.0,
+                        effort_limit=20.0,
+                        actuator_mode=JointTargetMode.POSITION,
+                    )
+                )
+                parent = body
+            builder.add_articulation(joints)
+            builder.end_world()
+        model = ModelKamino.from_newton(builder.finalize(device="cpu"))
+        make_unilateral_constraints_info(model=model, data=model.data())
+        jacobians = SparseSystemJacobians(model=model)
+        np.testing.assert_array_equal(model.info.num_joint_friction_cts.numpy(), [2, 2])
+        np.testing.assert_array_equal(model.info.num_joint_effort_cts.numpy(), [2, 2])
+        offsets = jacobians.bounded_constraint_nzb_offsets.numpy()
+        coords = jacobians._J_cts.bsm.nzb_coords.numpy()
+        nzb_starts = jacobians._J_cts.bsm.nzb_start.numpy()
+        nzb_counts = jacobians.joint_constraint_nzb_count.numpy()
+        world_cts = model.info.total_cts_offset.numpy()
+        world_bounded = model.info.joint_bounded_cts_offset.numpy()
+        world_bilateral = model.info.num_joint_bilateral_cts.numpy()
+        world_bodies = model.info.bodies_offset.numpy()
+        joint_worlds = model.joints.wid.numpy()
+        body_f = model.joints.bid_F.numpy()
+        body_b = model.joints.bid_B.numpy()
+        checked = set()
+        for kind in ("friction", "effort"):
+            counts = getattr(model.joints, f"num_{kind}_cts").numpy()
+            starts = getattr(model.joints, f"{kind}_cts_offset_total_cts").numpy()
+            for joint, world in enumerate(joint_worlds):
+                for component in range(int(counts[joint])):
+                    row = int(starts[joint] - world_cts[world]) + component
+                    bounded = int(world_bounded[world] + row - world_bilateral[world])
+                    checked.add(bounded)
+                    with self.subTest(world=int(world), joint=joint, kind=kind, row=row):
+                        for side, body in enumerate((body_f[joint], body_b[joint])):
+                            block = int(offsets[bounded, side])
+                            if body < 0:
+                                self.assertEqual(block, -1)
+                            else:
+                                self.assertGreaterEqual(block, nzb_starts[world])
+                                self.assertLess(block, nzb_starts[world] + nzb_counts[world])
+                                np.testing.assert_array_equal(coords[block], [row, 6 * (body - world_bodies[world])])
+        self.assertEqual(checked, set(range(model.size.sum_of_num_bounded_joint_cts)))
 
 
 class TestKinematicsSparseSystemJacobians(unittest.TestCase):

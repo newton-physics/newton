@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import StateFlags
+from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers import SolverMuJoCo
 
 
@@ -39,7 +40,7 @@ def _build_two_world_model(world_count: int = 2, device=None) -> newton.Model:
 
 
 class TestMuJoCoReset(unittest.TestCase):
-    def setUp(self):
+    def _setup_stepped_solver(self):
         self.model = _build_two_world_model(world_count=2)
         self.solver = SolverMuJoCo(self.model, iterations=2, ls_iterations=2)
         self.state_in = self.model.state()
@@ -73,8 +74,25 @@ class TestMuJoCoReset(unittest.TestCase):
         for buf in self._cleared_buffers().values():
             buf.fill_(7.0)
 
+    def test_masked_reset_supports_cuda_graph_capture(self):
+        """Capture a masked GPU reset without copying its mask to the host."""
+        if not wp.is_cuda_available():
+            self.skipTest("CUDA is required for graph capture")
+        self._setup_stepped_solver()
+        mask = wp.array([False, True, False], dtype=wp.bool, device=self.model.device)
+        self.solver.reset(self.state_out, world_mask=mask)
+        self._poison()
+        with wp.ScopedCapture(device=self.model.device) as capture:
+            self.solver.reset(self.state_out, world_mask=mask)
+        wp.capture_launch(capture.graph)
+        for name, buffer in self._cleared_buffers().items():
+            values = buffer.numpy()
+            np.testing.assert_array_equal(values[0], 7.0, err_msg=name)
+            np.testing.assert_array_equal(values[1], 0.0, err_msg=name)
+
     def test_reset_masked_world_only(self):
         """A per-world mask clears the selected world and leaves the others intact."""
+        self._setup_stepped_solver()
         self._poison()
         self.solver.reset(
             self.state_out,
@@ -91,20 +109,20 @@ class TestMuJoCoReset(unittest.TestCase):
             self.assertTrue(np.all(values[0] == 0.0), f"{name} not cleared in masked world 0")
             self.assertTrue(np.all(values[1] == 7.0), f"{name} wrongly cleared in unmasked world 1")
 
-    def test_reset_deprecates_local_only_mask(self):
-        """Preserve local-only mask behavior through the deprecation period."""
+    def test_reset_rejects_local_only_mask(self):
+        """Reject masks without the final global slot."""
+        self._setup_stepped_solver()
         self._poison()
         mask = wp.array([True, False], dtype=wp.bool, device=self.model.device)
-        with self.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
             self.solver.reset(self.state_out, world_mask=mask)
 
         for name, buf in self._cleared_buffers().items():
-            values = buf.numpy()
-            self.assertTrue(np.all(values[0] == 0.0), f"{name} not cleared in masked world 0")
-            self.assertTrue(np.all(values[1] == 7.0), f"{name} wrongly cleared in unmasked world 1")
+            self.assertTrue(np.all(buf.numpy() == 7.0), f"{name} changed by a rejected mask")
 
     def test_native_cpu_reset_honors_each_world_mask(self):
         """Reset only the selected native MuJoCo world's persistent buffers."""
+        self.model = _build_two_world_model(world_count=2)
         solver = SolverMuJoCo(self.model, separate_worlds=True, use_mujoco_cpu=True)
         self.assertEqual(len(solver.mj_data_by_world), 2)
 
@@ -122,6 +140,9 @@ class TestMuJoCoReset(unittest.TestCase):
             )
 
         for mask_values, expected_by_world in (
+            (None, (0.0, 0.0)),
+            ((False, False, False), (7.0, 7.0)),
+            ((True, True, False), (0.0, 0.0)),
             ((False, False, True), (7.0, 7.0)),
             ((False, True, False), (7.0, 0.0)),
             ((True, False, False), (0.0, 7.0)),
@@ -132,7 +153,9 @@ class TestMuJoCoReset(unittest.TestCase):
                         buffer[:] = 7.0
                 solver.reset(
                     self.model.state(),
-                    world_mask=wp.array(mask_values, dtype=wp.bool, device=self.model.device),
+                    world_mask=(
+                        None if mask_values is None else wp.array(mask_values, dtype=wp.bool, device=self.model.device)
+                    ),
                     flags=0,
                 )
                 for data, expected in zip(solver.mj_data_by_world, expected_by_world, strict=True):
@@ -140,13 +163,16 @@ class TestMuJoCoReset(unittest.TestCase):
                         np.testing.assert_array_equal(buffer, expected)
 
     def test_native_cpu_masked_joint_reset_updates_only_selected_world(self):
-        """Synchronize reset coordinates to one native world without changing the other."""
-        solver = SolverMuJoCo(
-            self.model,
-            separate_worlds=True,
-            use_mujoco_cpu=True,
-            update_data_interval=0,
-        )
+        """Synchronize selected native world coordinates while preserving the other."""
+        self.model = _build_two_world_model(world_count=2)
+        # TODO: remove with update_data_interval.
+        with self.assertWarns(NewtonDeprecationWarning):
+            solver = SolverMuJoCo(
+                self.model,
+                separate_worlds=True,
+                use_mujoco_cpu=True,
+                update_data_interval=0,
+            )
         state = self.model.state()
         flags = StateFlags.JOINT_Q | StateFlags.JOINT_QD
         coords_per_world = self.model.joint_coord_count // self.model.world_count
@@ -208,7 +234,7 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_native_cpu_steps_all_worlds_with_row_local_forces(self):
         """Advance every native world once and apply each CUDA row's force independently."""
-        self._assert_native_cpu_steps_all_worlds_with_row_local_forces(self.model)
+        self._assert_native_cpu_steps_all_worlds_with_row_local_forces(_build_two_world_model())
 
     def test_native_cpu_steps_all_worlds_with_cpu_state(self):
         """Advance the complete batch when Newton state also resides on CPU."""
@@ -216,6 +242,7 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_reset_all_worlds(self):
         """A ``None`` mask clears every world."""
+        self._setup_stepped_solver()
         self._poison()
         self.solver.reset(self.state_out, world_mask=None)
 
@@ -225,12 +252,14 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_reset_rejects_wrong_length_mask(self):
         """Reject masks without local-world entries plus the global slot."""
+        self._setup_stepped_solver()
         mask = wp.array([True, False, True, False], dtype=wp.bool, device=self.model.device)
         with self.assertRaises(ValueError):
             self.solver.reset(self.state_out, world_mask=mask)
 
     def test_reset_recovers_from_nan_warmstart(self):
         """A NaN warm-start in one world is cleared so the next step stays finite."""
+        self._setup_stepped_solver()
         warmstart = self.solver.mjw_data.qacc_warmstart
         if warmstart.shape[1] == 0:
             self.skipTest("model has no DOFs to warm-start")
@@ -244,6 +273,7 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_joint_q_reset_to_model_default_masked(self):
         """JOINT_Q resets joint_q to model defaults for masked worlds only."""
+        self._setup_stepped_solver()
         defaults = self.model.joint_q.numpy()
         coords_per_world = self.model.joint_coord_count // self.model.world_count
         # Corrupt the live joint coordinates in both worlds.
@@ -258,6 +288,7 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_joint_qd_reset_to_model_default(self):
         """JOINT_QD resets joint_qd to model defaults across all worlds."""
+        self._setup_stepped_solver()
         defaults = self.model.joint_qd.numpy()
         self.state_out.joint_qd.assign(np.full_like(defaults, 5.0))
 
@@ -267,6 +298,7 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_flags_zero_preserves_joint_state_but_clears_buffers(self):
         """flags=0 keeps the Newton state untouched while still clearing buffers."""
+        self._setup_stepped_solver()
         self._poison()
         corrupted = np.full_like(self.model.joint_q.numpy(), 9.0)
         self.state_out.joint_q.assign(corrupted)
@@ -281,6 +313,7 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_body_flags_are_ignored(self):
         """BODY_Q/BODY_QD do not touch joint state (body poses are FK-derived)."""
+        self._setup_stepped_solver()
         corrupted = np.full_like(self.model.joint_q.numpy(), 9.0)
         self.state_out.joint_q.assign(corrupted)
 
@@ -290,6 +323,7 @@ class TestMuJoCoReset(unittest.TestCase):
 
     def test_reset_defers_qpos_sync_at_default_interval(self):
         """At the default interval (1), reset leaves qpos for the next step to sync."""
+        self._setup_stepped_solver()
         qpos = self.solver.mjw_data.qpos
         qpos.assign(np.full(qpos.shape, 3.0, dtype=np.float32))
 
@@ -301,7 +335,9 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_reset_syncs_qpos_when_interval_not_default(self):
         """With update_data_interval != 1, reset pushes joint state into qpos now."""
         model = _build_two_world_model(world_count=2)
-        solver = SolverMuJoCo(model, iterations=2, ls_iterations=2, update_data_interval=0)
+        # TODO: remove with update_data_interval.
+        with self.assertWarns(NewtonDeprecationWarning):
+            solver = SolverMuJoCo(model, iterations=2, ls_iterations=2, update_data_interval=0)
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
@@ -325,6 +361,72 @@ class TestMuJoCoReset(unittest.TestCase):
 
 
 class TestMuJoCoCPUModelChanged(unittest.TestCase):
+    def test_native_world_observables_match_independent_simulations(self):
+        """Map body, DOF, and contact observables to each CPU world's rows."""
+        model = _build_two_world_model(device="cpu")
+        single_model = _build_two_world_model(world_count=1, device="cpu")
+        nq = single_model.joint_coord_count
+        nv = single_model.joint_dof_count
+        nb = single_model.body_count
+        for integrator in ("euler", "rk4"):
+            with self.subTest(integrator=integrator):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, integrator=integrator)
+                state_in, state_out = model.state(), model.state()
+                q = state_in.joint_q.numpy()
+                q[2] = q[nq + 2] = 0.05
+                state_in.joint_q.assign(q)
+                newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                control = model.control()
+                force = np.zeros(model.joint_dof_count, dtype=np.float32)
+                force[nv - 1], force[2 * nv - 1] = 1.0, -2.0
+                control.joint_f.assign(force)
+                contacts = newton.Contacts(solver.get_max_contact_count(), 0, device=model.device)
+                obs = solver.observables(solver.supported_observables, contacts=contacts)
+                solver.step(state_in, state_out, control, contacts, 0.001, observables=obs)
+
+                total_contacts = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertEqual(total_contacts, sum(d.ncon for d in solver.mj_data_by_world))
+                shapes = np.concatenate(
+                    (
+                        contacts.rigid_contact_shape0.numpy()[:total_contacts],
+                        contacts.rigid_contact_shape1.numpy()[:total_contacts],
+                    )
+                )
+                self.assertEqual(set(model.shape_world.numpy()[shapes]), {-1, 0, 1})
+                self.assertTrue(np.isfinite(obs.contact_f.numpy()[:total_contacts]).all())
+                self.assertGreater(np.linalg.norm(obs.contact_f.numpy()[:total_contacts]), 0.0)
+
+                for world in range(2):
+                    reference = SolverMuJoCo(single_model, use_mujoco_cpu=True, integrator=integrator)
+                    ref_in, ref_out = single_model.state(), single_model.state()
+                    ref_in.joint_q.assign(q[world * nq : (world + 1) * nq])
+                    newton.eval_fk(single_model, ref_in.joint_q, ref_in.joint_qd, ref_in)
+                    ref_control = single_model.control()
+                    ref_control.joint_f.assign(force[world * nv : (world + 1) * nv])
+                    ref_contacts = newton.Contacts(reference.get_max_contact_count(), 0, device="cpu")
+                    ref_obs = reference.observables(reference.supported_observables, contacts=ref_contacts)
+                    reference.step(ref_in, ref_out, ref_control, ref_contacts, 0.001, observables=ref_obs)
+                    for name, width in (
+                        ("body_qdd", nb),
+                        ("body_parent_f", nb),
+                        ("qfrc_actuator", nv),
+                        ("qfrc_bias", nv),
+                        ("qfrc_constraint", nv),
+                        ("qfrc_frictionloss", nv),
+                    ):
+                        np.testing.assert_allclose(
+                            getattr(obs, name).numpy()[world * width : (world + 1) * width],
+                            getattr(ref_obs, name).numpy(),
+                            rtol=1e-5,
+                            atol=1e-5,
+                            err_msg=f"{name} in world {world}",
+                        )
+                    np.testing.assert_allclose(
+                        state_out.joint_q.numpy()[world * nq : (world + 1) * nq],
+                        ref_out.joint_q.numpy(),
+                        atol=1e-6,
+                    )
+
     def test_notify_preserves_native_world_state(self):
         """Preserve each CPU world's live state and refresh derived dynamics."""
         import mujoco
@@ -332,7 +434,8 @@ class TestMuJoCoCPUModelChanged(unittest.TestCase):
         for world_count in (1, 2):
             with self.subTest(world_count=world_count):
                 model = _build_two_world_model(world_count=world_count, device="cpu")
-                solver = SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0)
+                with self.assertWarns(NewtonDeprecationWarning):
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0)
                 saved = []
                 for world, data in enumerate(solver.mj_data_by_world):
                     data.qpos[0] += 0.3 + world

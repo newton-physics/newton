@@ -1,0 +1,1 @@
+Keep both incident triangles of coincident faces in `newton.utils.MeshAdjacency` when it is built from pre-numbered edges, so `Model.soft_mesh_adjacency` reports both faces of a doubled triangle instead of only the last one.

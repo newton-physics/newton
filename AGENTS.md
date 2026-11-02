@@ -1,6 +1,7 @@
 # Newton Development Guidelines
 
 Read and follow the canonical [source code and public API guidelines](CODING_GUIDELINES.rst) before changing or reviewing Newton code. This file contains agent-specific workflow instructions; the linked guide is authoritative for coding and API design.
+For reviews, also read and apply the [review guidelines](REVIEW_GUIDELINES.rst) and follow `.agents/skills/code-review-newton/SKILL.md`.
 
 - Create a feature branch on your fork before committing—never commit directly to `main`. Give the pull request a concise, descriptive title.
 - Use imperative mood in commit messages ("Fix X", not "Fixed X"), with a roughly 50-character subject and a body wrapped at 72 characters that explains what and why.
@@ -15,6 +16,8 @@ uv run -m newton.examples basic_pendulum
 ```
 
 ## Tests
+
+Follow the canonical [test organization and runtime guidelines](CODING_GUIDELINES.rst#test-organization-and-runtime) when changing or reviewing tests.
 
 ```bash
 uv run --extra dev -m newton.tests
@@ -40,3 +43,4 @@ uvx --with virtualenv asv run --launch-method spawn main^!
   - Implement `test_final()` or `test_post_step()`; an example may implement both.
   - In test mode, `test_post_step()` runs after each simulation step and `test_final()` runs after the example completes.
 - Register the example in `README.md` with its `python -m newton.examples <name>` command and a 320x320 JPEG screenshot.
+- Include a module docstring with a general description, success criteria, and run commands, as described in `docs/guide/development.rst` (Embedded success criteria). CI checks every registered example.

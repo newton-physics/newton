@@ -67,9 +67,9 @@ def _is_finite(position: wp.vec3) -> bool:
 
 @wp.func
 def _floor_tile_coordinate(coordinate: int) -> int:
-    if coordinate < 0:
-        return ((coordinate - (_TILE_SIZE - 1)) // _TILE_SIZE) * _TILE_SIZE
-    return (coordinate // _TILE_SIZE) * _TILE_SIZE
+    # Sparse leaves are fixed at 8^3 voxels. Masking with -_TILE_SIZE clears
+    # the local-coordinate bits, rounding down to the enclosing leaf origin.
+    return coordinate & -_TILE_SIZE
 
 
 @wp.func

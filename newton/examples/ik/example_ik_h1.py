@@ -1,18 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example IK H1 (positions + rotations)
-#
-# Inverse kinematics on H1 with four interactive end-effector
-# targets (left/right hands + left/right feet) controlled via ViewerGL.log_gizmo().
-#
-# - Uses both IKObjectivePosition and IKObjectiveRotation per end-effector
-# - Re-solves IK every frame from the latest gizmo transforms
-# - On gizmo release, snaps each target back to the solved link pose
-#
-# Command: python -m newton.examples ik_h1
-###########################################################################
+"""Example IK H1 (positions + rotations)
+
+Inverse kinematics on H1 with four interactive end-effector
+targets (left/right hands + left/right feet) controlled via viewer.log_gizmo().
+
+- Uses both IKObjectivePosition and IKObjectiveRotation per end-effector
+- Re-solves IK every frame from the latest gizmo transforms
+- On gizmo release, snaps each target back to the solved link pose
+
+Success criteria:
+- The H1 pelvis/base stays anchored while four gizmos mark the hands and feet.
+- Left-drag each gizmo: its corresponding limb tracks reachable position and orientation targets.
+- On release, each gizmo snaps to the solved limb pose.
+
+Runs:
+- `python -m newton.examples ik_h1`
+"""
 
 import warp as wp
 
@@ -30,6 +35,7 @@ class Example:
         self.sim_time = 0.0
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         # ------------------------------------------------------------------
         # Build a single H1 (fixed base for stability) + ground
