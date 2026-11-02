@@ -34,10 +34,10 @@ from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
 from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
-from newton._src.sim import JointType
+from newton._src.sim import JointType, ShapeFrictionMode
 from newton._src.sim.articulation import eval_angular_coordinates
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
-from newton._src.solvers.solver import integrate_rigid_body
+from newton._src.solvers.solver import contact_friction_mode, integrate_rigid_body
 from newton._src.solvers.vbd.interval_arithmetic import (
     rigid_point_plane_signed_distance_derivative_interval,
     rigid_point_plane_signed_distance_interval,
@@ -4677,6 +4677,7 @@ def init_body_body_contact_materials(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     k_start: float,
     # Outputs
     contact_penalty_k: wp.array[float],
@@ -4709,6 +4710,8 @@ def init_body_body_contact_materials(
         shape_material_kd[shape_id_1],
         shape_material_mu[shape_id_1],
     )
+    if contact_friction_mode(shape_material_friction_mode, shape_id_0, shape_id_1) == int(ShapeFrictionMode.NONE):
+        avg_mu = 0.0
 
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
@@ -4729,6 +4732,7 @@ def init_body_body_contacts_alm(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     legacy_hard_contacts: int,
     contact_compliant_alm: int,
     restore_compliant_tangent_warmstart: int,
@@ -4785,6 +4789,8 @@ def init_body_body_contacts_alm(
         shape_material_kd[s1],
         shape_material_mu[s1],
     )
+    if contact_friction_mode(shape_material_friction_mode, s0, s1) == int(ShapeFrictionMode.NONE):
+        avg_mu = 0.0
     contact_material_ke[i] = avg_ke
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
@@ -4998,6 +5004,7 @@ def init_body_particle_contacts(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     k_start: float,
     # Outputs
     body_particle_contact_penalty_k: wp.array[float],
@@ -5030,6 +5037,8 @@ def init_body_particle_contacts(
 
     body_particle_contact_material_ke[i] = avg_ke
     body_particle_contact_material_kd[i] = avg_kd
+    if contact_friction_mode(shape_material_friction_mode, shape_idx, -1) == int(ShapeFrictionMode.NONE):
+        avg_mu = 0.0
     body_particle_contact_material_mu[i] = avg_mu
 
     body_particle_contact_penalty_k[i] = _contact_penalty_floor(avg_ke, k_start)

@@ -1491,6 +1491,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 shape_ke,
                 shape_kd,
                 shape_mu,
+                None,
                 1,
                 0,
                 0,
@@ -1562,6 +1563,7 @@ def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
                     wp.array([100.0, 200.0], dtype=float, device=device),
                     wp.array([1.0, 3.0], dtype=float, device=device),
                     wp.array(shape_mu, dtype=float, device=device),
+                    None,
                     0,
                     1,
                     latest,
@@ -1620,6 +1622,7 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
                 wp.array([100.0, 200.0], dtype=float, device=device),
                 wp.array([1.0, 3.0], dtype=float, device=device),
                 wp.array([0.25, 1.0], dtype=float, device=device),
+                None,
                 0,
                 0,
                 0,
@@ -1890,6 +1893,7 @@ def _rigid_contact_reset_ownership(test, device):
                 # Friction must admit the saved tangential dual (|lam_t| = 6.4 at
                 # lam_n = 6), otherwise the ALM restore is masked by cone projection.
                 wp.array([2.0] * 4, dtype=float, device=device),
+                None,
                 0,
                 1,
                 1,
@@ -5660,6 +5664,7 @@ def _rigid_contact_history_restore_checks_provenance(test, device):
                     wp.array([100.0, 100.0], dtype=float, device=device),
                     wp.array([1.0, 1.0], dtype=float, device=device),
                     wp.array([0.5, 0.5], dtype=float, device=device),
+                    None,
                     0,
                     1,
                     1,
@@ -6770,6 +6775,7 @@ def _run_face_section2(device, shape_margin):
             model.shape_material_ke,
             model.shape_material_kd,
             model.shape_material_mu,
+            model.shape_material_friction_mode,
             -1.0,  # k_start < 0 -> fixed-k: penalty seeded at the mixed ke (no ramp)
         ],
         outputs=[penalty_k, material_kd, material_mu, material_ke],

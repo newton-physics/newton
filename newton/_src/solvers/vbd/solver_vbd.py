@@ -28,6 +28,7 @@ from ...sim import (
     Model,
     ModelBuilder,
     ModelFlags,
+    ShapeFrictionMode,
     State,
     StateFlags,
     TendonGuideFlags,
@@ -37,7 +38,7 @@ from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
 from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
@@ -913,6 +914,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             collision_frequency=collision_frequency,
             collision_frequency_type=collision_frequency_type,
         )
+        warn_unsupported_friction_modes(model, ShapeFrictionMode.SLIDING, "SolverVBD")
         # The solver's warm-start setting is authoritative for an owned pipeline:
         # lambda/penalty restores ride the pipeline's matched contact indices, so
         # history without matching silently cold-starts every refresh (k times per
@@ -3584,6 +3586,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             model.shape_material_ke,
                             model.shape_material_kd,
                             model.shape_material_mu,
+                            model.shape_material_friction_mode,
                             self.rigid_contact_hard,
                             self.rigid_compliant_alm,
                             restore_compliant_tangent_warmstart,
@@ -3619,6 +3622,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             model.shape_material_ke,
                             model.shape_material_kd,
                             model.shape_material_mu,
+                            model.shape_material_friction_mode,
                             self.rigid_contact_k_start_value,
                         ],
                         outputs=[
@@ -3702,6 +3706,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.shape_material_ke,
                 model.shape_material_kd,
                 model.shape_material_mu,
+                model.shape_material_friction_mode,
                 self.rigid_contact_k_start_value,
             ],
             outputs=[
