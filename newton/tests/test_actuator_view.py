@@ -368,6 +368,9 @@ class TestActuatorView(unittest.TestCase):
         np.testing.assert_array_equal(view.get_actuator_parameter("kp", actuator.drive).numpy(), [[20, 30, 0]])
         view.set_actuator_parameter("kp", actuator.drive, [[25, 35, 99]])
         np.testing.assert_array_equal(actuator.drive.kp.numpy(), [10, 25, 35, 40, 50])
+        repeated = self.make_actuator([10, 20, 30], indices=[5, 0, 5])
+        default_view = ActuatorView([repeated])
+        np.testing.assert_array_equal(default_view.get_actuator_parameter("kp", repeated.drive).numpy(), [20, 30])
 
     def test_mapping_handles_singleton_search_boundaries(self):
         """Find the sole actuator key in a strided selection and reject neighbors on both sides."""

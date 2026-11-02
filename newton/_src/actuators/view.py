@@ -160,8 +160,8 @@ class ActuatorView:
         actuators: Actuators included in the selection.
         dof_indices: Unique global velocity-DOF indices, with one to three axes.
             Accepts ``int32`` and ``uint32`` arrays; non-negative values must fit ``int32``.
-            Defaults to the sole actuator's indices. Use ``-1`` in an ``int32`` array for explicit padding.
-            Indices must remain unchanged.
+            Defaults to the sole actuator's indices, keeping the last occurrence of each DOF.
+            Use ``-1`` in an ``int32`` array for explicit padding. Indices must remain unchanged.
 
     Construct the view outside graph capture. Nonempty reads allocate arrays,
     requiring the CUDA memory pool during capture. Prepare joint-frequency
@@ -173,7 +173,8 @@ class ActuatorView:
     ) -> None:
         if not actuators:
             raise ValueError("Expected at least one actuator")
-        if dof_indices is None:
+        default = dof_indices is None
+        if default:
             if len(actuators) != 1:
                 raise ValueError("Specify dof_indices for multiple actuators")
             dof_indices = actuators[0].indices
@@ -186,6 +187,12 @@ class ActuatorView:
         if dof_indices.device.is_capturing:
             raise RuntimeError("Construct actuator views outside CUDA graph capture")
         selected = dof_indices.numpy().reshape(-1)
+        if default:
+            # Keep the last occurrence of each repeated DOF, the entry its slot uses.
+            _, last = np.unique(selected[::-1], return_index=True)
+            if last.size != selected.size:
+                selected = selected[np.sort(selected.size - 1 - last)]
+                dof_indices = wp.array(selected, dtype=dof_indices.dtype, device=dof_indices.device)
         valid = selected[selected >= 0]
         if np.any(selected < -1) or np.any(valid > np.iinfo(np.int32).max) or len(np.unique(valid)) != len(valid):
             raise ValueError(

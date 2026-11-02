@@ -597,7 +597,7 @@ object to each attribute operation:
    q = view.get_attribute("joint_q", sim_state)
 
 ``dof_indices`` defines the selection's DOFs, order, and shape. It defaults to
-the sole actuator's indices.
+the sole actuator's indices, keeping the last occurrence of each DOF.
 
 Parameter access follows ``get_actuator_parameter(name, component)`` and
 ``set_actuator_parameter(name, component, values, *, mask=None)``. Pass the component
@@ -616,7 +616,8 @@ supplied ``dof_indices`` array, including its shape and order. The supplied
 actuators' ``indices`` define membership: ``-1`` and selected DOFs outside
 their union are padding. Padded slots read as zero and are ignored on writes.
 Parameter access also returns zero and skips writes for DOFs not driven by the
-component's actuator.
+component's actuator. When an actuator lists a DOF more than once, that DOF's
+slot uses the last entry.
 :meth:`newton.selection.ActuatorView.get_actuator_dof_mapping` exposes the corresponding compact
 actuator-entry indices. :meth:`newton.selection.ArticulationView.get_dof_indices`
 returns the DOF indices of an articulation selection in this layout.
