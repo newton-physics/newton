@@ -160,7 +160,7 @@ class RenderContext:
         # cost). The remapped type array is what the render kernel dispatches on;
         # model.shape_type is left untouched for collision and BVH bounds.
         # Variant rows render the variant shape they hold; their per-shape data is gathered before each render.
-        self._variant_rows = model._variant_row_shapes if getattr(model, "_variant_row_max", 0) > 0 else None
+        self._variant_rows = model._variant_row_shapes if model._has_variant_rows else None
         self._shape_texture_override: wp.array[wp.int32] | None = None
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()

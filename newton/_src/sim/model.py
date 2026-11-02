@@ -2213,7 +2213,7 @@ class Model:
         # one they hold now; ray queries skip rows that are empty or transparent at the last refit.
         enabled_flags = self.shape_flags
         enabled_opacity = self.shape_opacity
-        if self._variant_row_max > 0:
+        if self._has_variant_rows:
             enabled_flags = wp.array(self._shape_option_flags(), dtype=wp.int32, device=device)
             if enabled_opacity is not None:
                 opacity = enabled_opacity.numpy().copy()
@@ -2239,7 +2239,7 @@ class Model:
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
         # Leaves of empty shapes stay in the BVH; ray queries read a copy masked per refit.
         self._bvh_shape_active_leaves = wp.empty_like(self.bvh_shape_enabled)
-        if self._variant_shape_count > 0:
+        if self._has_variant_rows:
             self._bvh_variant_bounds = wp.empty((self._variant_shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
             wp.launch_tiled(
                 kernel=compute_shape_local_bounds,
@@ -2314,7 +2314,7 @@ class Model:
 
         if self.bvh_shape_count_enabled == 0:
             return
-        if self._shape_variant_row is None or self._variant_row_max == 0:
+        if not self._has_variant_rows:
             wp.copy(self._bvh_shape_active_leaves, self.bvh_shape_enabled)
             return
         wp.launch(
@@ -2363,14 +2363,14 @@ class Model:
         filters were built from.
         """
         flags = self.shape_flags.numpy().copy()
-        if self._variant_row_max:
+        if self._has_variant_rows:
             flags[self._variant_row_shapes.numpy()] = self._variant_row_flags.numpy()
         return flags
 
     def _shape_current_sources(self) -> list[Any]:
         """:attr:`shape_source` with each variant row's replaced by the source of the variant shape it holds; syncs."""
         sources = list(self.shape_source)
-        if self._variant_row_max:
+        if self._has_variant_rows:
             held = self._shape_variant_shape.numpy()
             for shape in self._variant_row_shapes.numpy().tolist():
                 if held[shape] >= 0:
@@ -2731,7 +2731,7 @@ class Model:
             ],
             device=self.device,
         )
-        if self._variant_row_max == 0:
+        if not self._has_variant_rows:
             return flags
         # One copy per attribute keeps the copied set in one list. The launches are recorded once and
         # replayed, since resolving the generic kernel costs more than the copy itself.
@@ -2752,8 +2752,13 @@ class Model:
 
     @property
     def _has_body_variants(self) -> bool:
-        """Whether any body has shape variants."""
+        """Whether any body has variants, including variants without shapes."""
         return self._body_variant_set is not None and bool(np.any(self._body_variant_set >= 0))
+
+    @property
+    def _has_variant_rows(self) -> bool:
+        """Whether any body has variant rows, that is, some variant has a shape."""
+        return self._variant_row_max > 0
 
     def _variant_copy_launches(self) -> list[wp.Launch]:
         """Recorded copies of every variant shape attribute into the variant rows, rebuilt when an

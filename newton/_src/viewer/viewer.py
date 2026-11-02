@@ -980,8 +980,8 @@ class ViewerBase(ABC):
         self.model_changed = True
 
     def _shape_geometry_changed(self) -> bool:
-        """Whether the model's shapes may differ from their finalized geometry, i.e. it has body variants."""
-        return self.model is not None and self.model._has_body_variants
+        """Whether the model's shapes may differ from their finalized geometry, i.e. it has variant rows."""
+        return self.model is not None and self.model._has_variant_rows
 
     def _rebuild_shapes(self) -> None:
         """Regroup the model shapes into instance batches, preserving the geometry cache."""
@@ -2856,7 +2856,7 @@ class ViewerBase(ABC):
         shape_transparent_mask = np.zeros(shape_count, dtype=bool)
         # Variant rows are instanced per notify from the variant shape they hold, see _variant_instances().
         variant_row = (
-            self.model._shape_variant_row.numpy() if self.model._variant_row_max else np.zeros(shape_count, bool)
+            self.model._shape_variant_row.numpy() if self.model._has_variant_rows else np.zeros(shape_count, bool)
         )
 
         # loop over shapes
@@ -2966,7 +2966,7 @@ class ViewerBase(ABC):
         depend on the number of variants.
         """
         model = self.model
-        if model._variant_row_max == 0:
+        if not model._has_variant_rows:
             return None
         if self._variant_shape_render is None:
             geometry = model._variant_shape_geometry
@@ -3155,7 +3155,7 @@ class ViewerBase(ABC):
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
         variant_row = (
-            self.model._shape_variant_row.numpy() if self.model._variant_row_max else np.zeros(shape_count, bool)
+            self.model._shape_variant_row.numpy() if self.model._has_variant_rows else np.zeros(shape_count, bool)
         )
 
         for s in range(shape_count):
@@ -3192,7 +3192,7 @@ class ViewerBase(ABC):
         hold a colliding variant shape with a texture SDF."""
         row_instances: dict[int, list[int]] = {}
         uses_scale: dict[int, bool] = {}
-        if self.model._variant_row_max:
+        if self.model._has_variant_rows:
             rows = self.model._variant_row_shapes.numpy()
             held = self.model._shape_variant_shape.numpy()
             flags = self.model.shape_flags.numpy()
@@ -3404,7 +3404,7 @@ class ViewerBase(ABC):
         scale_np = self.model.shape_scale.numpy()
         shape_count = len(shape_body)
 
-        variant_rows = self.model._shape_variant_row.numpy() if self.model._variant_row_max else None
+        variant_rows = self.model._shape_variant_row.numpy() if self.model._has_variant_rows else None
         held = self.model._shape_variant_shape.numpy() if variant_rows is not None else None
         sources = self.model._shape_current_sources() if variant_rows is not None else None
         for s in range(shape_count):

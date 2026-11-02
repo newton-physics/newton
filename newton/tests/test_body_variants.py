@@ -462,6 +462,40 @@ def test_selection_replays_from_cuda_graph(test, device):
         test.assertEqual([r < cube_radius for r in radius], [bool(c) for c in choice])
 
 
+def test_steel_torsion_covers_variants(test, device):
+    """SolverSteel checks the torsion radius of every variant shape and follows the selected shape types."""
+    steel = newton.solvers.SolverSteel
+
+    def variant(kind, radius):
+        builder = newton.ModelBuilder()
+        steel.register_custom_attributes(builder)
+        body = builder.add_body(label=kind)
+        attributes = {"steel:min_torsional_patch_radius": radius}
+        if kind == "mesh":
+            builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.25), custom_attributes=attributes)
+        else:
+            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, custom_attributes=attributes)
+        return builder
+
+    def model(mesh_radius, cube_radius, initial):
+        env = newton.ModelBuilder()
+        steel.register_custom_attributes(env)
+        body = env.add_body(label="object")
+        env.add_body_variants(body, [variant("mesh", mesh_radius), variant("cube", cube_radius)], initial=initial)
+        return env.finalize(device=device)
+
+    options = {"contact_warmstart": False, "contact_torsion_device": True}
+    # Torsion does not support meshes, even ones that are not selected at construction.
+    with test.assertRaisesRegex(ValueError, r"geometry of shapes \[0\]"):
+        steel(model(0.01, 0.0, initial=1), **options)
+    # A cube with a torsion radius enables torsion while the mesh is selected.
+    variants = model(0.0, 0.01, initial=0)
+    solver = steel(variants, **options)
+    test.assertEqual(solver._device_torsion.supported.numpy().tolist(), [0])
+    solver.notify_model_changed(_select(variants, [1]))
+    test.assertEqual(solver._device_torsion.supported.numpy().tolist(), [1])
+
+
 devices = get_test_devices()
 add_function_test(TestBodyVariants, "test_contacts_follow_selection", test_contacts_follow_selection, devices=devices)
 add_function_test(TestBodyVariants, "test_rows_keep_their_role", test_rows_keep_their_role, devices=devices)
@@ -481,3 +515,9 @@ add_function_test(
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+add_function_test(
+    TestBodyVariants,
+    "test_steel_torsion_covers_variants",
+    test_steel_torsion_covers_variants,
+    devices=get_cuda_test_devices(),
+)

@@ -4733,7 +4733,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
 
-        if (use_mujoco_contacts or use_mujoco_cpu) and getattr(model, "_has_body_variants", False):
+        if (use_mujoco_contacts or use_mujoco_cpu) and model._has_body_variants:
             # MuJoCo compiles one geom per shape; it cannot follow a variant row's shape.
             raise NotImplementedError(
                 "SolverMuJoCo supports body variants only with Newton contacts; "
@@ -7224,7 +7224,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # CPU-backed Warp array, for which ``numpy()`` may return a writable view.
         shape_size = model.shape_scale.numpy().copy()
         # A variant row is a geom or site by its role, even when it is empty at construction.
-        shape_flags = model._shape_option_flags() if model._variant_row_max else model.shape_flags.numpy()
+        shape_flags = model._shape_option_flags() if model._has_variant_rows else model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
@@ -7565,7 +7565,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                                 if ss >= 0:
                                     tendon_required_shapes.add(ss)
 
-        if model._variant_row_max and tendon_required_shapes:
+        if model._has_variant_rows and tendon_required_shapes:
             # MuJoCo compiles a wrapping geom's type once, which a variant selection can change.
             variant_row = model._shape_variant_row.numpy()
             if any(variant_row[s] and not shape_flags[s] & ShapeFlags.SITE for s in tendon_required_shapes):
@@ -9219,7 +9219,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if heterogeneous_geoms and self._use_mujoco_contacts and not disable_contacts
                 else (GeoType.CONE,)
             )
-            if getattr(model, "_variant_row_max", 0) > 0:
+            if model._has_variant_rows:
                 # Variant rows take the scale of their variant shape; with Newton contacts their geoms are unused.
                 converted_shapes = converted_shapes[~model._shape_variant_row.numpy()[converted_shapes]]
             self._compiled_mesh_shape_indices = converted_shapes[np.isin(shape_type[converted_shapes], compiled_types)]

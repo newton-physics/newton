@@ -2283,7 +2283,7 @@ class SolverCoupledADMM(SolverCoupled):
     def _discover_rigid_particle_contact_specs(self) -> list[_AdmmRigidParticleContactSpec]:
         shape_body = self.model.shape_body.numpy() if self.model.shape_body is not None else []
         shape_flags = self.model.shape_flags.numpy() if getattr(self.model, "shape_flags", None) is not None else None
-        if shape_flags is not None and getattr(self.model, "_variant_row_max", 0):
+        if shape_flags is not None and self.model._has_variant_rows:
             # A body variant row can hold a particle-colliding shape after construction.
             shape_flags = self.model._shape_option_flags()
         shapes_by_owner: dict[str, list[int]] = {}

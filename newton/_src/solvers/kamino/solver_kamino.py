@@ -810,7 +810,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         self._config = config
-        if config.use_collision_detector and getattr(model, "_has_body_variants", False):
+        if config.use_collision_detector and model._has_body_variants:
             raise NotImplementedError(
                 "SolverKamino supports body variants only with Newton contacts; set use_collision_detector=False."
             )

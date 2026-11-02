@@ -3275,7 +3275,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # enabled for rigid-soft queries. Variant rows are covered per variant below.
         shape_body = model.shape_body.numpy()
         variant_row = (
-            model._shape_variant_row.numpy() if model._variant_row_max else np.zeros(model.shape_count, dtype=bool)
+            model._shape_variant_row.numpy() if model._has_variant_rows else np.zeros(model.shape_count, dtype=bool)
         )
         body_shapes: list[list[tuple]] = [[] for _ in range(model.body_count)]
         shapes = list(

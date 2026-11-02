@@ -465,7 +465,7 @@ class Picking:
             world_offsets = wp.array([], dtype=wp.vec3, device=self.model.device)
 
         # Empty body variant rows keep their last geometry but must not be picked.
-        if self.model._variant_row_max:
+        if self.model._has_variant_rows:
             variant_row, variant_shape = self.model._shape_variant_row, self.model._shape_variant_shape
         else:
             variant_row = wp.empty(0, dtype=wp.bool, device=self.model.device)

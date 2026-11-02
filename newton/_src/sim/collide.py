@@ -65,7 +65,7 @@ def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndar
         count = model.shape_count if shape_count is None else shape_count
         return np.ones(count, dtype=bool)
 
-    flags = model._shape_option_flags() if getattr(model, "_variant_row_max", 0) else shape_flags.numpy()
+    flags = model._shape_option_flags() if model._has_variant_rows else shape_flags.numpy()
     if shape_count is not None and len(flags) != shape_count:
         raise ValueError("model.shape_flags and model.shape_type must have the same length")
     return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
@@ -121,7 +121,7 @@ class _VariantOptions:
 
 def _variant_options(model: Model) -> _VariantOptions | None:
     """The variant shapes the model's variant rows can hold, or ``None`` without variant rows."""
-    if getattr(model, "_variant_row_max", 0) == 0:
+    if not model._has_variant_rows:
         return None
     row_shapes, variant_shapes = model._variant_row_options()
     row_mask = np.zeros(model.shape_count, dtype=bool)
@@ -2289,7 +2289,7 @@ class CollisionPipeline:
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
             # Updated in place by Model.select_body_variants(); skipped for models without variants.
-            has_variant_rows = getattr(model, "_variant_row_max", 0) > 0
+            has_variant_rows = model._has_variant_rows
             self._shape_variant_row = (
                 model._shape_variant_row if has_variant_rows else wp.empty(0, dtype=wp.bool, device=device)
             )
