@@ -64,7 +64,7 @@ def _resolve_scalar_spring(
             angle_scale = joint_properties.degrees_to_radian
     # Registered custom values have already passed through their unit transformers.
     if springref is not None:
-        springref = float(springref) * (1.0 if joint_properties.legacy_springref_units else angle_scale)
+        springref = float(springref) * angle_scale
     else:
         springref = legacy_springref
     ref = custom_attrs.get("mujoco:dof_ref", None if ref is None else float(ref) * angle_scale)
@@ -164,7 +164,6 @@ def parse_joint(
         context={
             "builder": builder,
             "physics_scene_prim": physics_scene_prim,
-            "legacy_springref_units": joint_properties.legacy_springref_units,
         },
     )
     joint_params = {
@@ -556,9 +555,7 @@ def parse_joint(
                     )
 
             if vel is not None and qd_start + dof_idx < qd_end:
-                vel_val = (
-                    vel * DegreesToRadian if is_rot and not joint_properties.legacy_angular_velocity_units else vel
-                )
+                vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
                     logger.info(
@@ -687,7 +684,6 @@ def parse_merged_joints(
         context={
             "builder": builder,
             "physics_scene_prim": physics_scene_prim,
-            "legacy_springref_units": joint_properties.legacy_springref_units,
         },
     )
     # Per-DOF custom attributes accumulated separately for linear / angular
@@ -733,7 +729,6 @@ def parse_merged_joints(
             context={
                 "builder": builder,
                 "physics_scene_prim": physics_scene_prim,
-                "legacy_springref_units": joint_properties.legacy_springref_units,
             },
         )
         stiffness, rest_q, ref = _resolve_scalar_spring(

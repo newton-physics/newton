@@ -233,7 +233,7 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
    world_count: 2
 
-**replicate**: creates ``N`` copies of a builder, each as its own world, with optional spatial offsets.
+**replicate**: creates ``N`` copies of a builder, each as its own world by default, with optional spatial offsets.
 
 .. tip::
    Using physical ``spacing`` to separate replicated worlds moves bodies away from the origin,
@@ -254,7 +254,7 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
    scene = newton.ModelBuilder()
    scene.add_ground_plane()
-   scene.replicate(arm, world_count=4, spacing=(2.0, 0.0, 0.0))
+   scene.replicate(arm, copy_count=4, spacing=(2.0, 0.0, 0.0))
 
    replicated_model = scene.finalize()
    print("world_count:", replicated_model.world_count)
@@ -283,7 +283,7 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    arm.approximate_meshes(method="convex_hull")
 
    scene = newton.ModelBuilder()
-   scene.replicate(arm, world_count=4)
+   scene.replicate(arm, copy_count=4)
 
    replicated_model = scene.finalize()
    print("world_count:", replicated_model.world_count)
@@ -291,6 +291,41 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 .. testoutput::
 
    world_count: 4
+
+To place many copies of a builder in one shared world, for example to build a pile of bodies
+that collide with each other, pass ``separate_worlds=False``. The copies are added to the
+current world context in a single batched pass, which is much faster than calling
+:meth:`~newton.ModelBuilder.add_builder` once per copy. Open a world first, as below: outside a world
+context the copies join the global world ``-1``, and not every solver supports dynamic bodies there.
+
+.. testcode::
+
+   import newton
+   import warp as wp
+
+   box = newton.ModelBuilder()
+   body = box.add_body()
+   box.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+
+   scene = newton.ModelBuilder()
+   scene.add_ground_plane()
+   scene.begin_world()
+   scene.replicate(
+       box,
+       copy_count=3,
+       separate_worlds=False,
+       xforms=[wp.transform((0.0, 0.0, 0.5 + 1.1 * i), wp.quat_identity()) for i in range(3)],
+   )
+   scene.end_world()
+
+   pile_model = scene.finalize()
+   print("world_count:", pile_model.world_count)
+   print("body_world:", pile_model.body_world.numpy().tolist())
+
+.. testoutput::
+
+   world_count: 1
+   body_world: [0, 0, 0]
 
 
 .. _implicit-mpm-worlds:

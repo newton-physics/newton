@@ -1,20 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example ADMM Contact Coupled Solver
-#
-# An XPBD particle pad falls under gravity into a ball-jointed rigid drawer.
-# SolverCoupledADMM runs particle-shape collision detection internally and
-# supplies the drawer response through frictionless ADMM contacts.
-#
-# Pass ``--solver free`` to disable the ADMM contacts and compare against the
-# uncoupled baseline.
-#
-# Command: python -m newton.examples admm_contact_solver
-#          python -m newton.examples admm_contact_solver --solver free
-#
-###########################################################################
+"""Example ADMM Contact Coupled Solver
+
+An XPBD particle pad falls under gravity into a ball-jointed rigid drawer.
+SolverCoupledADMM runs particle-shape collision detection internally and
+supplies the drawer response through frictionless ADMM contacts.
+
+Pass ``--solver free`` to disable the ADMM contacts and compare against the
+uncoupled baseline.
+
+Success criteria:
+- A ball-jointed rigid tray/drawer appears below a grid-like XPBD particle pad.
+- The XPBD particles fall under gravity.
+
+Runs:
+- `python -m newton.examples admm_contact_solver`
+  - The tray responds to particle contact through ADMM contact coupling.
+  - The particles should contact the tray and each other instead of passing through the tray.
+- `python -m newton.examples admm_contact_solver --solver free`
+  - Without ADMM contact coupling, the particles pass through the tray instead of transferring
+    contact forces to it.
+"""
 
 from __future__ import annotations
 

@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -54,6 +57,11 @@ from .kernels import (
     reduce_mimic_inertia,
     zero_kinematic_body_forces,
     zero_kinematic_joint_qdd,
+)
+
+_FRICTION_SMOOTHING_DEPRECATION_MSG = (
+    "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
+    "Remove its use; configure shape material kf for the low-speed friction slope and mu for the Coulomb limit."
 )
 
 
@@ -155,7 +163,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
-        friction_smoothing: float = 1.0,
+        friction_smoothing: float | None = None,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -164,8 +172,12 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             angular_damping: Angular damping factor. Defaults to 0.05.
-            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
+            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). The update is also forced on the next step after :meth:`notify_model_changed` reports body, joint DOF or inertial changes. Both decisions are made on the host when :meth:`step` runs, so a captured CUDA graph replays the choice made at capture time; use an interval of 1 or recapture after such a notification. Defaults to 1.
+            friction_smoothing: Deprecated, ignored compatibility argument.
+
+                .. deprecated:: 1.8
+                    Remove this argument. Shape material ``kf`` controls the low-speed
+                    friction slope and ``mu`` controls the Coulomb limit.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled per distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -224,7 +236,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
-        self.friction_smoothing = friction_smoothing
+        if friction_smoothing is not None:
+            warnings.warn(
+                _FRICTION_SMOOTHING_DEPRECATION_MSG,
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
+        self._friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
 
@@ -242,6 +260,23 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             else:
                 create_kernel = create_inertia_matrix_kernel
             self._tile_kernels_by_size = {size: create_kernel(*size) for size in self._group_to_art}
+
+    @property
+    def friction_smoothing(self) -> float:
+        """Legacy value retained for attribute access; it has no effect on friction.
+
+        .. deprecated:: 1.8
+            Reading or assigning this attribute warns. Use shape material ``kf``
+            for the low-speed friction slope and ``mu`` for the Coulomb limit.
+        """
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._friction_smoothing
+
+    @friction_smoothing.setter
+    def friction_smoothing(self, value: float) -> None:
+        """Store the legacy value without changing the friction force."""
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._friction_smoothing = value
 
     def _update_kinematic_state(self):
         """Recompute cached solver flags and effective joint armature."""
@@ -321,6 +356,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
         ):
             self._update_kinematic_state()
+            self._mass_matrix_dirty = True
+        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
+            # Re-derive the buffers baked from body_mass/body_inertia/body_com so runtime mass
+            # randomization reaches the mass matrix and the COM velocity transforms.
+            self._update_body_inertial_buffers()
             self._mass_matrix_dirty = True
 
     def _compute_articulation_indices(self, model):
@@ -402,23 +442,28 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             self.body_I_m = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_spatial_inertia,
-                model.body_count,
-                inputs=[model.body_inertia, model.body_mass],
-                outputs=[self.body_I_m],
-                device=model.device,
-            )
             self.body_X_com = wp.empty(
                 (model.body_count,), dtype=wp.transform, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_com_transforms,
-                model.body_count,
-                inputs=[model.body_com],
-                outputs=[self.body_X_com],
-                device=model.device,
-            )
+            self._update_body_inertial_buffers()
+
+    def _update_body_inertial_buffers(self):
+        # derive the spatial inertia and COM transform buffers from body_mass/body_inertia/body_com in place
+        model = self.model
+        wp.launch(
+            compute_spatial_inertia,
+            model.body_count,
+            inputs=[model.body_inertia, model.body_mass],
+            outputs=[self.body_I_m],
+            device=model.device,
+        )
+        wp.launch(
+            compute_com_transforms,
+            model.body_count,
+            inputs=[model.body_com],
+            outputs=[self.body_X_com],
+            device=model.device,
+        )
 
     def _allocate_state_aux_vars(self, model, target, requires_grad):
         # allocate auxiliary variables that vary with state
@@ -730,7 +775,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             contacts.rigid_contact_damping,
                             contacts.rigid_contact_friction,
                             False,
-                            self.friction_smoothing,
                         ],
                         outputs=[body_f],
                         device=model.device,

@@ -405,7 +405,7 @@ def make_test_problem_fourbar(
     builder = ModelBuilder()
     builder.replicate(
         build_boxes_fourbar(dynamic_joints=with_implicit_joints, implicit_pd=with_implicit_joints),
-        world_count=num_worlds,
+        copy_count=num_worlds,
     )
     model = ModelKamino.from_newton(builder.finalize(device=device))
 

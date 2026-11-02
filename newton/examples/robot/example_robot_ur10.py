@@ -1,17 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot UR10
-#
-# Shows how to set up a simulation of a UR10 robot arm
-# from a USD file using newton.ModelBuilder.add_usd() and
-# applies a sinusoidal trajectory to the joint targets.
-#
-# Command: python -m newton.examples robot_ur10 --world-count 16
-#          python -m newton.examples robot_ur10 --solver kamino
-#
-###########################################################################
+"""Example Robot UR10
+
+Shows how to set up a simulation of a UR10 robot arm
+from a USD file using newton.ModelBuilder.add_usd() and
+applies a sinusoidal trajectory to the joint targets.
+
+Success criteria:
+- UR10 robotic arms appear standing on cylinders.
+- They are all moving, performing different motions.
+
+Runs:
+- `python -m newton.examples robot_ur10 --world-count 32`
+  - 32 UR10 robotic arms appear.
+- `python -m newton.examples robot_ur10 --world-count 16`
+  - 16 UR10 robotic arms appear.
+- `python -m newton.examples robot_ur10 --solver kamino`
+"""
 
 import numpy as np
 import warp as wp

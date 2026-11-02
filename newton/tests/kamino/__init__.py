@@ -61,9 +61,6 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
         linewidth=999999, edgeitems=999999, threshold=999999, precision=10, suppress=True
     )  # Suppress scientific notation
 
-    # Warp init
-    wp.init()
-
     # Clear cache
     if clear_cache:
         wp.clear_kernel_cache()

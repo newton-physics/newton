@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+import numpy.typing as npt
 import warp as wp
 
 from ..core.joints import JOINT_QMAX, JOINT_QMIN, JointDoFType
@@ -583,6 +585,31 @@ def _detect_active_joint_configuration_limits(
 ###
 
 
+def _count_joint_limit_capacity(
+    joint_wid: npt.NDArray[np.int32],
+    joint_num_dofs: npt.NDArray[np.int32],
+    joint_q_j_min: npt.NDArray[np.float32],
+    joint_q_j_max: npt.NDArray[np.float32],
+    joint_bid_B: npt.NDArray[np.int32],
+    joint_bid_F: npt.NDArray[np.int32],
+    body_is_immovable: npt.NDArray[np.int32],
+    num_worlds: int,
+) -> tuple[int, list[int]]:
+    """Count finite joint-limit slots across the model and per world."""
+    parent_immovable = np.ones(joint_bid_B.shape, dtype=bool)
+    parent_has_body = joint_bid_B >= 0
+    parent_immovable[parent_has_body] = body_is_immovable[joint_bid_B[parent_has_body]]
+    child_immovable = body_is_immovable[joint_bid_F].astype(bool, copy=False)
+    both_endpoints_immovable = parent_immovable & child_immovable
+
+    dof_worlds = np.repeat(joint_wid, joint_num_dofs)
+    dof_is_movable = np.repeat(~both_endpoints_immovable, joint_num_dofs)
+    dof_has_limit = (joint_q_j_min > JOINT_QMIN) | (joint_q_j_max < JOINT_QMAX)
+    limit_worlds = dof_worlds[dof_is_movable & dof_has_limit]
+    world_counts = np.bincount(limit_worlds, minlength=num_worlds)
+    return int(limit_worlds.size), world_counts.tolist()
+
+
 class LimitsKamino:
     """
     A container to hold and manage time-varying joint-limits.
@@ -787,8 +814,6 @@ class LimitsKamino:
         # joint bilateral/dynamic/friction/effort rows and contacts). ``bid_B < 0``
         # (joint against world) is treated as immovable, per the joint-conversion
         # culling predicate.
-        model_max_limits = 0
-        world_max_limits = [0] * model.size.num_worlds
         joint_wid = model.joints.wid.numpy()
         joint_num_dofs = model.joints.num_dofs.numpy()
         joint_q_j_min = model.joints.q_j_min.numpy()
@@ -796,19 +821,16 @@ class LimitsKamino:
         joint_bid_B = model.joints.bid_B.numpy()
         joint_bid_F = model.joints.bid_F.numpy()
         body_is_immovable = model.bodies.is_immovable.numpy()
-        num_joints = len(joint_wid)
-        dofs_start = 0
-        for j in range(num_joints):
-            bid_B = int(joint_bid_B[j])
-            bid_F = int(joint_bid_F[j])
-            parent_immovable = bid_B < 0 or bool(body_is_immovable[bid_B])
-            child_immovable = bool(body_is_immovable[bid_F])
-            if not (parent_immovable and child_immovable):
-                for dof in range(joint_num_dofs[j]):
-                    if joint_q_j_min[dofs_start + dof] > JOINT_QMIN or joint_q_j_max[dofs_start + dof] < JOINT_QMAX:
-                        model_max_limits += 1
-                        world_max_limits[joint_wid[j]] += 1
-            dofs_start += joint_num_dofs[j]
+        model_max_limits, world_max_limits = _count_joint_limit_capacity(
+            joint_wid,
+            joint_num_dofs,
+            joint_q_j_min,
+            joint_q_j_max,
+            joint_bid_B,
+            joint_bid_F,
+            body_is_immovable,
+            model.size.num_worlds,
+        )
 
         # Skip allocation if there are no limits to allocate
         if model_max_limits == 0:

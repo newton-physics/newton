@@ -206,7 +206,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
-        """Keep large cases nightly and guard coarse cloth in the PR gate."""
+        """Keep nightly collision cases out of the gate and preserve fast sampling."""
         benchmark_names = (
             "simulation.bench_cloth.DeformableRigidCollision.time_collide",
             "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
@@ -221,6 +221,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
         coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
         self.assertIn(coarse_name, inventory)
+        self.assertEqual(inventory[coarse_name]["rounds"], 2)
         self.assertTrue(any(pattern.search(coarse_name) for pattern in patterns))
         self.assertEqual(
             {case[1] for case in bench_cloth.FastDeformableRigidCoarseCloth.params[0]},
@@ -228,6 +229,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         )
         vbd_name = "simulation.bench_cloth.FastDeformableRigidCoarseClothVBD.time_simulate"
         self.assertIn(vbd_name, inventory)
+        self.assertEqual(inventory[vbd_name]["rounds"], 2)
         self.assertTrue(any(pattern.search(vbd_name) for pattern in patterns))
         self.assertIn(
             ("box_coarse_cloth_256", "box", 8, 256, 1, False),
@@ -661,6 +663,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
+            "simulation.bench_actuators.ActuatorG1.time_step",
         )
 
         for benchmark in blocking_benchmarks + dashboard_benchmarks:

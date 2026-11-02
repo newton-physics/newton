@@ -260,8 +260,8 @@ The ``ModelBuilder.add_joint_*()`` functions now use ``None`` defaults that are 
 the fields of :attr:`newton.ModelBuilder.default_joint_cfg`.
 
 Newton uses ``world_count`` throughout the public API (for example in
-:meth:`newton.ModelBuilder.replicate` and :attr:`newton.Model.world_count`); older ``num_envs``
-terminology is obsolete.
+:attr:`newton.Model.world_count`); older ``num_envs`` terminology is obsolete. The number of
+copies passed to :meth:`newton.ModelBuilder.replicate` is ``copy_count``.
 
 The ``ModelBuilder.add_joint*()`` methods no longer accept ``linear_compliance`` and ``angular_compliance`` arguments
 and the ``Model`` no longer stores them as attributes.

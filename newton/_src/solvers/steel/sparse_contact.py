@@ -8,7 +8,14 @@ from functools import cache
 import warp as wp
 
 from .friction import contact_tangent_basis
-from .kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT
+from .kernels import (
+    PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
+    ROW_SLOTS_ATOMIC,
+    ROW_SLOTS_COUNT,
+    WARP_DETERMINISM_OFF,
+)
+
+wp.set_module_options(WARP_DETERMINISM_OFF)
 
 
 @cache
@@ -420,7 +427,7 @@ def _get_sparse_contact_response_kernel(
 
     contact_kernel.__name__ = f"populate_sparse_contact_response_{n}_{lanes}_{warps}"
     contact_kernel.__qualname__ = contact_kernel.__name__
-    return wp.kernel(enable_backward=False, module="unique")(contact_kernel)
+    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(contact_kernel)
 
 
 @wp.func_native(
@@ -471,16 +478,30 @@ def _get_sparse_contact_response_kernel(
         const unsigned active_mask = __ballot_sync(MASK, active != 0);
         const int active_count = __popc(active_mask);
         int first_slot = 0;
-        if (lane == 0 && active_count != 0)
-            first_slot = atomicAdd(&slot_counter.data[world], active_count);
+        if (lane == 0 && active_count != 0) {
+            if (row_slot_mode == $ROW_SLOTS_ATOMIC) {
+                first_slot = atomicAdd(&slot_counter.data[world], active_count);
+            } else {
+                // One warp owns the articulation; see assign_world_row_slots.
+                first_slot = element_row_cursor.data[art];
+                element_row_cursor.data[art] = first_slot + active_count;
+            }
+        }
         first_slot = __shfl_sync(MASK, first_slot, 0);
 #else
         const unsigned active_mask = active != 0 ? 1u : 0u;
-        const int first_slot = slot_counter.data[world];
-        slot_counter.data[world] += active;
+        int first_slot = 0;
+        if (row_slot_mode == $ROW_SLOTS_ATOMIC) {
+            first_slot = slot_counter.data[world];
+            slot_counter.data[world] += active;
+        } else {
+            first_slot = element_row_cursor.data[art];
+            element_row_cursor.data[art] = first_slot + active;
+        }
 #endif
         // Visit the ballot in lane order, matching the existing lower/upper DOF order.
-        unsigned pending = active_mask;
+        // A COUNT pass only advances the cursor.
+        unsigned pending = row_slot_mode == $ROW_SLOTS_COUNT ? 0u : active_mask;
         int rank = 0;
         while (pending != 0) {
             const int row = first_slot + rank;
@@ -534,6 +555,8 @@ def _get_sparse_contact_response_kernel(
         }
     }
 """.replace("$LIMIT_TYPE", str(PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
+    .replace("$ROW_SLOTS_ATOMIC", str(ROW_SLOTS_ATOMIC))
+    .replace("$ROW_SLOTS_COUNT", str(ROW_SLOTS_COUNT))
 )
 def _build_sparse_joint_limit_rows(
     tid: int,
@@ -561,6 +584,8 @@ def _build_sparse_joint_limit_rows(
     row_factor: wp.array3d[float],
     row_incident: wp.array2d[float],
     diagonal: wp.array2d[float],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ): ...
 
 
@@ -590,6 +615,8 @@ def build_sparse_joint_limit_rows(
     row_factor: wp.array3d[float],
     row_incident: wp.array2d[float],
     diagonal: wp.array2d[float],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Build ordered limit rows and sparse responses with one warp per articulation.
 
@@ -623,6 +650,8 @@ def build_sparse_joint_limit_rows(
         row_factor,
         row_incident,
         diagonal,
+        row_slot_mode,
+        element_row_cursor,
     )
 
 

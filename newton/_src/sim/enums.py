@@ -1,10 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
-from enum import EnumMeta, IntEnum
-
-from ..exceptions import NewtonDeprecationWarning
+from enum import IntEnum
 
 
 class ModelFlags(IntEnum):
@@ -164,36 +161,8 @@ class BodyFlags(IntEnum):
     """Filter bitmask selecting all body types."""
 
 
-def _warn_joint_type_cable_deprecated() -> None:
-    warnings.warn(
-        "newton.JointType.CABLE is deprecated in Newton 1.6; use newton.JointType.ROD instead.",
-        NewtonDeprecationWarning,
-        stacklevel=3,
-    )
-
-
-class _DeprecatedJointTypeMeta(EnumMeta):
-    def __getattribute__(cls, name: str):
-        # Defined members resolve before EnumMeta.__getattr__, so intercept deprecated access here.
-        value = super().__getattribute__(name)
-        if name == "CABLE":
-            _warn_joint_type_cable_deprecated()
-        return value
-
-    def __getitem__(cls, name: str):
-        value = super().__getitem__(name)
-        if name == "CABLE":
-            _warn_joint_type_cable_deprecated()
-        return value
-
-    def __dir__(cls):
-        # EnumMeta.__dir__ omits aliases; keep the preferred ROD name discoverable.
-        names = super().__dir__()
-        return names if "ROD" in names else [*names, "ROD"]
-
-
 # Types of joints linking rigid bodies
-class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
+class JointType(IntEnum):
     """
     Enumeration of joint types supported in Newton.
     """
@@ -219,15 +188,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     D6 = 6
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
-    # Keep CABLE as the canonical enum name throughout its 1.6 deprecation.
-    CABLE = 7
-    """Deprecated name for :attr:`ROD`.
-
-    .. deprecated:: 1.6
-        Use :attr:`ROD` instead.
-    """
-
-    ROD = CABLE
+    ROD = 7
     """Rod joint: 7-coordinate relative pose and 6-DoF relative
     twist with stretch, shear, bend, and twist response."""
 

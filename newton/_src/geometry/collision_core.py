@@ -25,8 +25,9 @@ from .types import GeoType
 # Configuration flag for multi-contact generation
 ENABLE_MULTI_CONTACT = True
 
-# Configuration flag for tiled BVH queries (experimental)
-ENABLE_TILE_BVH_QUERY = True
+# GJK/MPR see a sphere or capsule as its core (point or segment) inflated by this radius; the rest of the radius
+# is restored by the post-processors below, so a reported distance is the true surface distance.
+MINKOWSKI_CORE_RADIUS = wp.constant(1.0e-4)
 
 # Type definitions for multi-contact manifolds
 _mat53f = wp.types.matrix((5, 3), wp.float32)
@@ -159,12 +160,14 @@ def post_process_minkowski_only(
     radius_eff_b = contact_data.radius_eff_b
 
     if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center + normal * (radius_eff_a * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_a
+        restored_a = radius_eff_a - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center + normal * (restored_a * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_a
 
     if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center - normal * (radius_eff_b * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_b
+        restored_b = radius_eff_b - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center - normal * (restored_b * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_b
 
     return contact_data
 
@@ -207,13 +210,15 @@ def post_process_axial_on_discrete_contact(
     # 1. Minkowski object processing for spheres and capsules
     # Adjust contact point and distance for sphere/capsule A
     if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center + normal * (radius_eff_a * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_a
+        restored_a = radius_eff_a - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center + normal * (restored_a * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_a
 
     # Adjust contact point and distance for sphere/capsule B
     if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center - normal * (radius_eff_b * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_b
+        restored_b = radius_eff_b - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center - normal * (restored_b * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_b
 
     # 2. Axial shape rolling stabilization (cylinders and cones on discrete surfaces)
     is_discrete_a = is_discrete_shape(type_a)
@@ -339,8 +344,6 @@ def create_compute_gjk_mpr_contacts(
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
 
-        small_radius = 0.0001
-
         # Get shape types from shape data
         type_a = shape_a_data.shape_type
         type_b = shape_b_data.shape_type
@@ -348,11 +351,11 @@ def create_compute_gjk_mpr_contacts(
         # Special treatment for minkowski objects
         if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
             radius_eff_a = shape_a_data.scale[0]
-            shape_a_data.scale[0] = small_radius
+            shape_a_data.scale[0] = MINKOWSKI_CORE_RADIUS
 
         if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
             radius_eff_b = shape_b_data.scale[0]
-            shape_b_data.scale[0] = small_radius
+            shape_b_data.scale[0] = MINKOWSKI_CORE_RADIUS
 
         # Pre-pack ContactData template with static information
         contact_template = ContactData()
@@ -1161,7 +1164,7 @@ def mesh_vs_convex_midphase(
     aabb_lower = wp.vec3(0.0)
     aabb_upper = wp.vec3(0.0)
     center_in_bvh = wp.vec3(0.0)
-    if wp.static(ENABLE_TILE_BVH_QUERY) and shape_type[non_mesh_shape] == GeoType.CONVEX_MESH:
+    if shape_type[non_mesh_shape] == GeoType.CONVEX_MESH:
         # A hull's bounds scan every vertex; split that scan across the block.
         aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_hull_query_aabb_tiled(
             mesh_shape,
@@ -1174,7 +1177,7 @@ def mesh_vs_convex_midphase(
             non_mesh_center,
             idx_in_thread_block,
         )
-    elif wp.static(ENABLE_TILE_BVH_QUERY):
+    else:
         # All lanes query the same pair, so compute the bounds once per block.
         if idx_in_thread_block == 0:
             aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_convex_query_aabb(
@@ -1205,56 +1208,33 @@ def mesh_vs_convex_midphase(
         aabb_lower = wp.vec3(bounds[0, 0], bounds[0, 1], bounds[0, 2])
         aabb_upper = wp.vec3(bounds[1, 0], bounds[1, 1], bounds[1, 2])
         center_in_bvh = wp.vec3(bounds[2, 0], bounds[2, 1], bounds[2, 2])
-    else:
-        aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_convex_query_aabb(
-            mesh_shape,
-            non_mesh_shape,
-            X_mesh_ws,
-            X_ws,
-            shape_type,
-            shape_data,
-            shape_source_ptr,
-            contact_threshold,
-            non_mesh_center,
-        )
 
-    if wp.static(ENABLE_TILE_BVH_QUERY):
-        # Query mesh BVH for overlapping triangles in mesh local space using tiled version
-        query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
+    # Query mesh BVH for overlapping triangles in mesh local space using tiled version
+    query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
 
-        while wp.tile_query_valid(query):
-            result_tile = wp.tile_mesh_query_aabb_next(query)
-            tri_index = wp.untile(result_tile)
-            if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
-                tri_index = -1
+    while wp.tile_query_valid(query):
+        result_tile = wp.tile_mesh_query_aabb_next(query)
+        tri_index = wp.untile(result_tile)
+        if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
+            tri_index = -1
 
-            # Add this triangle pair to the output buffer if valid
-            # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-            has_tri = 0
-            if tri_index >= 0:
-                has_tri = 1
-            count_tile = wp.tile(has_tri)
-            inclusive_scan = wp.tile_scan_inclusive(count_tile)
-            offset = 0
-            if idx_in_thread_block == wp.block_dim() - 1:
-                offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
-            offset_broadcast_tile = wp.tile(offset)
-            offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
+        # Add this triangle pair to the output buffer if valid
+        # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
+        has_tri = 0
+        if tri_index >= 0:
+            has_tri = 1
+        count_tile = wp.tile(has_tri)
+        inclusive_scan = wp.tile_scan_inclusive(count_tile)
+        offset = 0
+        if idx_in_thread_block == wp.block_dim() - 1:
+            offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
+        offset_broadcast_tile = wp.tile(offset)
+        offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
 
-            if tri_index >= 0:
-                out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
-                if out_idx < triangle_pairs.shape[0]:
-                    triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
-    else:
-        query = wp.mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
-        tri_index = wp.int32(0)
-        while wp.mesh_query_aabb_next(query, tri_index):
-            # Add this triangle pair to the output buffer if valid
-            # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-            if tri_index >= 0 and _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
-                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
-                if out_idx < triangle_pairs.shape[0]:
-                    triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
+        if tri_index >= 0:
+            out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
+            if out_idx < triangle_pairs.shape[0]:
+                triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
 
 
 @wp.func

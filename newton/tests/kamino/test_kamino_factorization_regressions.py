@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regressions for Kamino RCM factors and tiled pointer offsets."""
+"""Regressions for Kamino blocked factors and tiled pointer offsets."""
 
 import unittest
 
@@ -15,6 +15,7 @@ from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import (
     make_llt_blocked_rcm_symbolic_fill_in_kernel,
 )
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
+from newton._src.solvers.kamino._src.linalg.linear import LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
@@ -152,7 +153,7 @@ class TestKaminoFactorTileReuse(unittest.TestCase):
 
 
 class TestKaminoFailedPivotRetry(unittest.TestCase):
-    def test_only_failed_blocks_are_shifted(self):
+    def test_blocked_llt_rcm_only_failed_blocks_are_shifted(self):
         """Refactor an indefinite block with a diagonal shift and leave healthy blocks untouched."""
         if not wp.is_cuda_available():
             self.skipTest("Blocked factorization requires CUDA")
@@ -193,6 +194,61 @@ class TestKaminoFailedPivotRetry(unittest.TestCase):
                         permuted = source[np.ix_(order, order)].astype(np.float64) + expected_shift * np.eye(n)
                         expected = np.linalg.cholesky(permuted)
                         np.testing.assert_allclose(np.tril(factors[block]), expected, rtol=0.0, atol=2.0e-3)
+
+    def test_blocked_llt_only_failed_blocks_are_shifted(self):
+        """Refactor an indefinite LLTB block with a diagonal shift, leave healthy blocks untouched, and restore A."""
+        shift = 1.0e-5
+        rng = np.random.default_rng(97)
+        blocks = []
+        for n in (40, 192):  # A ragged tile and the DR Legs bilateral block size.
+            basis = rng.normal(size=(n, n))
+            blocks.append((basis @ basis.T / n + np.eye(n)).astype(np.float32))
+            # One slightly negative eigenvalue mimics round-off on a singular block.
+            eigenvectors = np.linalg.qr(rng.normal(size=(n, n)))[0]
+            eigenvalues = np.linspace(1.0, 2.0, n)
+            eigenvalues[0] = -0.2 * shift
+            blocks.append((eigenvectors * eigenvalues @ eigenvectors.T).astype(np.float32))
+        failing = (False, True, False, True)
+        dims = [b.shape[0] for b in blocks]
+        source = np.concatenate([b.ravel() for b in blocks])
+        device = wp.get_device()
+        for block_size in (32, 64):
+            for captured in (False, True) if device.is_cuda else (False,):
+                with self.subTest(block_size=block_size, captured=captured):
+                    info = DenseSquareMultiLinearInfo()
+                    info.finalize(dimensions=dims, dtype=wp.float32, device=device)
+                    matrix = wp.array(source, dtype=wp.float32, device=device)
+                    operator = DenseLinearOperatorData(info=info, mat=matrix)
+                    plain = LLTBlockedSolver(operator=operator, factorize_block_size=block_size, device=device)
+                    plain.compute(matrix)
+                    solver = LLTBlockedSolver(
+                        operator=operator,
+                        factorize_block_size=block_size,
+                        failed_pivot_shift=shift,
+                        device=device,
+                    )
+                    if captured:
+                        solver.compute(matrix)
+                        with wp.ScopedCapture(device=device) as capture:
+                            solver.compute(matrix)
+                        wp.capture_launch(capture.graph)
+                    else:
+                        solver.compute(matrix)
+
+                    # The shift is removed from the caller's matrix again.
+                    np.testing.assert_allclose(matrix.numpy(), source, rtol=0.0, atol=1.0e-6)
+                    mio = info.mio.numpy()
+                    for index, (A, fails) in enumerate(zip(blocks, failing, strict=True)):
+                        n = A.shape[0]
+                        entries = slice(mio[index], mio[index] + n * n)
+                        L_plain = plain.L.numpy()[entries].reshape(n, n)
+                        L = solver.L.numpy()[entries].reshape(n, n)
+                        self.assertEqual(np.isfinite(np.diag(L_plain)).all(), not fails)
+                        if not fails:
+                            np.testing.assert_array_equal(L, L_plain)
+                            continue
+                        expected = np.linalg.cholesky(A.astype(np.float64) + shift * np.eye(n))
+                        np.testing.assert_allclose(np.tril(L), expected, rtol=0.0, atol=2.0e-3)
 
 
 @wp.kernel

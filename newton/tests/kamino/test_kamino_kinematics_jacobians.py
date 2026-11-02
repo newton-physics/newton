@@ -249,7 +249,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
 
         # Construct the model description
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_fourbar(), copy_count=num_worlds)
 
         # Create the model from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))

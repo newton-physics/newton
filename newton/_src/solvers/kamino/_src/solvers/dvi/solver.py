@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ......sim import ModelFlags
 from ....config import DVISolverConfig
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
@@ -339,6 +340,7 @@ class DVISolver:
 
         solver_type = first_config.bilateral_solver_type
         kwargs = dict(first_config.bilateral_solver_kwargs)
+        kwargs.setdefault("failed_pivot_shift", BILATERAL_FAILED_PIVOT_SHIFT)
         if solver_type == "LLTB":
             # A larger factorization tile reduces panel count, while the
             # single-RHS solve benefits from more threads on its smaller tile.
@@ -346,7 +348,6 @@ class DVISolver:
             kwargs.setdefault("solve_block_dim", 256)
             solver_class = LLTBlockedSolver
         else:
-            kwargs.setdefault("failed_pivot_shift", BILATERAL_FAILED_PIVOT_SHIFT)
             kwargs.setdefault("capacity_stride", True)
             if self._device.is_cuda and model.size.num_worlds >= 2048:
                 kwargs.setdefault("solve_block_dim", 128)
@@ -397,6 +398,14 @@ class DVISolver:
         self._contacts = contacts
         if self._sparse_path is not None:
             self._sparse_path.contacts = contacts
+
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Accept model changes, which need no backend-specific handling."""
+        del flags
+
+    def validate_model_changed(self, flags: ModelFlags | int) -> None:
+        """Accept model changes, which need no backend-specific validation."""
+        del flags
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """
