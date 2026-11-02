@@ -2689,7 +2689,7 @@ class NarrowPhase:
             group_reduction: Reduce every contact by per-shape reduction group (see
                 :class:`GroupReductionConfig`). All contacts are staged in the global reducer,
                 whose capacity is ``contact_max``, and only the winners reach the writer.
-                :meth:`launch` then needs ``body_q`` and ``shape_body``.
+                Only :meth:`launch_custom_write` supports it, with ``body_q`` and ``shape_body``.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -4174,6 +4174,8 @@ class NarrowPhase:
             max_speculative_extension: Maximum speculative clearance [m].
             device: Device to launch on
         """
+        if self.group_reduction is not None:
+            raise ValueError("NarrowPhase with group_reduction requires launch_custom_write()")
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
 

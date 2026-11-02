@@ -677,6 +677,28 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertEqual(stats["fallback_frames"], 0)
         self.assertLess(stats["max_contacts_kept"], stats["max_contacts_in"])
 
+    def test_group_mode_narrow_phase_rejects_simple_launch(self):
+        """Group reduction runs only through launch_custom_write, which takes the body poses."""
+        narrow_phase = _make_pipeline(self._foot_model(), True).narrow_phase
+        with self.assertRaisesRegex(ValueError, "launch_custom_write"):
+            narrow_phase.launch(
+                candidate_pair=None,
+                candidate_pair_count=None,
+                shape_types=None,
+                shape_data=None,
+                shape_transform=None,
+                shape_source=None,
+                shape_gap=None,
+                shape_collision_radius=None,
+                shape_flags=None,
+                shape_voxel_resolution=None,
+                contact_pair=None,
+                contact_position=None,
+                contact_normal=None,
+                contact_penetration=None,
+                contact_count=None,
+            )
+
     def test_body_pair_reduction_rejects_other_types(self):
         """Reject values that are not a BodyPairReductionConfig."""
         model = self._foot_model()

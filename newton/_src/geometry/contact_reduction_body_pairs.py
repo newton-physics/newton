@@ -392,7 +392,8 @@ class BodyPairReduction:
             winner, counted only with :attr:`verify` on.
             ``cell_clamp_events``: contacts whose spatial cell hit the packed +/-31 range.
             ``max_contacts_in`` / ``max_contacts_kept``: peak admitted and kept contacts per
-            frame; ``max_contacts_in`` is the staging capacity the scene needs.
+            frame. ``max_contacts_in`` is bounded by the staging capacity, so it does not
+            estimate the capacity a scene needs after an overflow.
             ``total_frames``, ``sum_contacts_in``, ``sum_contacts_kept``: whole-run totals;
             ``sum_contacts_kept / sum_contacts_in`` is the achieved reduction ratio.
             ``max_hashtable_entries`` / ``hashtable_capacity`` / ``hashtable_load``: peak
