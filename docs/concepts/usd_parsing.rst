@@ -563,7 +563,7 @@ The table below shows PhysX attribute remapping examples:
      - Direct mapping
    * - ``physxRigidBody:disableGravity``
      - ``gravity_enabled`` (per body)
-     - Negate; the importer translates this to registered ``mujoco:gravcomp``.
+     - Negate; registered ``mujoco:gravcomp`` is 1.0 when ``disableGravity`` is true, 0.0 when false.
 
 When :class:`newton.usd.SchemaResolverPhysx` is enabled and
 :meth:`newton.solvers.SolverMuJoCo.register_custom_attributes` has registered

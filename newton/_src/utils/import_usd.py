@@ -1141,8 +1141,9 @@ def parse_usd(
                 elif not gravity_enabled and not reported_unsupported_body_gravity:
                     logger.warning(
                         "Skipping per-body gravity exclusions (first body: %s): "
-                        "MuJoCo's 'mujoco:gravcomp' attribute is not registered. "
-                        "Other solvers do not support this setting.",
+                        "MuJoCo's 'mujoco:gravcomp' attribute is not registered. Call "
+                        "SolverMuJoCo.register_custom_attributes(builder) before add_usd() to import them; "
+                        "other solvers do not support this setting.",
                         label,
                     )
                     reported_unsupported_body_gravity = True

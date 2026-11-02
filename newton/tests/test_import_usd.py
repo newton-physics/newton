@@ -3986,6 +3986,8 @@ def Xform "NotPSD" (
                     self.assertEqual(len(logs.records), 1)
                     self.assertEqual(logs.records[0].levelno, logging.WARNING)
                     self.assertIn("mujoco:gravcomp", logs.records[0].getMessage())
+                    self.assertIn("SolverMuJoCo.register_custom_attributes(builder)", logs.records[0].getMessage())
+                    self.assertIn("before add_usd()", logs.records[0].getMessage())
                     self.assertRegex(logs.records[0].getMessage(), r"/Body[034]")
                 self.assertEqual(builder.body_count, 5)
                 if not registered:
