@@ -216,6 +216,7 @@ class TestViewerRTXOvstage(unittest.TestCase):
         self.viewer._rendering_paused = False
         self.viewer._render_result = None
         self.viewer._deferred_prims = set()
+        self.viewer._runtime_material_bindings = {}
         self.ovstage.population.open_usd_from_string(
             self.viewer._ovstage,
             """#usda 1.0
@@ -541,6 +542,7 @@ class TestViewerRTXRendering(unittest.TestCase):
     def test_runtime_mesh_textures(self):
         """Replace one mesh's texture without changing another mesh sharing its material."""
         from PIL import Image
+        from pxr import UsdShade
 
         model = newton.ModelBuilder().finalize()
         points = wp.array([[0, -0.4, -0.4], [0, 0.4, -0.4], [0, 0.4, 0.4], [0, -0.4, 0.4]], dtype=wp.vec3)
@@ -663,6 +665,35 @@ class TestViewerRTXRendering(unittest.TestCase):
                                 wrong_channel = 2 if channel == 0 else 0
                                 others = np.delete(rgb, wrong_channel, axis=-1).max(axis=-1)
                                 self.assertLess(np.count_nonzero(rgb[:, :, wrong_channel] > others + 40), 10)
+                        # Share a runtime material, then replace only its first user.
+                        viewer.begin_frame(10 / 60.0)
+                        viewer.log_mesh(
+                            "/right",
+                            right,
+                            indices,
+                            uvs=wp.array([[0.25, 0.5]] * 4, dtype=wp.vec2),
+                            texture=striped.copy(),
+                            roughness=0.1,
+                        )
+                        viewer.end_frame()
+                        for frame, channel in enumerate((1, 2, 0), start=11):
+                            viewer.begin_frame(frame / 60.0)
+                            image = np.zeros((2, 2, 3), dtype=np.uint8)
+                            image[:, :, channel] = 255
+                            viewer.log_mesh("/left", left, indices, uvs=uvs, texture=image, hidden=asynchronous)
+                            viewer.end_frame()
+                            rgb = viewer.get_frame().numpy().astype(np.int32)
+                            for pixels, expected in ((rgb[:, :48], channel), (rgb[:, 48:], 0)):
+                                others = np.delete(pixels, expected, axis=-1).max(axis=-1)
+                                self.assertGreater(np.count_nonzero(pixels[:, :, expected] > others + 40), 30)
+                        runtime_materials = [
+                            path
+                            for path in viewer._runtime_prim_handles
+                            if viewer.stage.GetPrimAtPath(path).IsA(UsdShade.Material)
+                        ]
+                        self.assertLessEqual(len(runtime_materials), 2)
+                        viewer.clear_model()
+                        self.assertFalse(viewer._runtime_prim_handles)
                     finally:
                         viewer.close()
 

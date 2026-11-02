@@ -1276,7 +1276,14 @@ void main() {
 
         import ovstage
 
-        self._evict_ovstage_queries(self._runtime_prim_paths.get(path, path))
+        previous_path = self._runtime_prim_paths.get(path, path)
+        self._evict_ovstage_queries(previous_path)
+        if path in self._runtime_prim_paths:
+            self._runtime_material_bindings = {
+                prim: material
+                for prim, material in self._runtime_material_bindings.items()
+                if prim != previous_path and not prim.startswith(previous_path + "/")
+            }
         handle = self._runtime_prim_handles.pop(path, None)
         if handle is not None:
             ovstage.population.remove_usd(self._ovstage, handle)
@@ -1809,6 +1816,8 @@ void main() {
         self._update_ovrtx_point_batches()
         self._update_ovrtx_mesh_materials()
         self._update_ovrtx_mesh_points()
+        if self._runtime_scene_changed:
+            self._retire_runtime_materials()
         self._apply_ovstage_population_changes()
         self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
         if self._runtime_scene_changed:
@@ -2613,6 +2622,7 @@ void main() {
         for _, material_path, _ in updates:
             if material_path not in self._runtime_prim_paths:
                 self._replace_runtime_prim(material_path)
+                self._runtime_material_paths.add(material_path)
         self._apply_ovstage_population_changes()
         for mesh_path, material_path, uvs in updates:
             target = self._runtime_prim_paths[material_path]
@@ -2624,9 +2634,21 @@ void main() {
                 is_array=True,
                 semantic=ovstage.AttributeSemantic.RELATIONSHIP_PATH_ID,
             ).wait()
+            self._runtime_material_bindings[mesh_path] = material_path
             if uvs is not None:
                 self._write_runtime_array_attribute(mesh_path, "primvars:st", np.asarray(uvs, dtype=np.float32))
         self._runtime_scene_changed = True
+
+    def _retire_runtime_materials(self) -> None:
+        """Remove runtime materials once their last mesh or instance rebinds."""
+        import ovstage
+
+        unused = self._runtime_material_paths - set(self._runtime_material_bindings.values())
+        for path in unused:
+            self._evict_ovstage_queries(self._runtime_prim_paths.pop(path))
+            ovstage.population.remove_usd(self._ovstage, self._runtime_prim_handles.pop(path))
+            self._ovstage_population_dirty = True
+        self._runtime_material_paths.difference_update(unused)
 
     def _update_ovrtx_mesh_points(self):
         if self._rtx is None or (
@@ -3100,6 +3122,8 @@ void main() {
         self._instance_specs = {}
         self._runtime_prim_handles = {}
         self._runtime_prim_paths = {}
+        self._runtime_material_bindings = {}
+        self._runtime_material_paths = set()
         self._runtime_prim_serial = 0
         self._runtime_scene_changed = False
         self._segment_meshes = {}
