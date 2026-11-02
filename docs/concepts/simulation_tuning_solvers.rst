@@ -272,7 +272,8 @@ repository examples spend tuning effort, not a shared solver API.
        always uses. A small
        ``contact_regularization`` (for example ``0.02``) makes the
        normal-force split of redundant contacts unique and helps stacks hold at
-       low iteration counts, at the cost of a small resting sag.
+       low iteration counts, at the cost of a small resting sag; it requires
+       the default ``friction_mode``.
        ``velocity_iterations`` remove the velocity that position correction
        adds, and ``contact_warmstart`` (with contact matching in the
        :class:`~newton.CollisionPipeline`) reuses the previous step's
@@ -351,6 +352,9 @@ repository examples spend tuning effort, not a shared solver API.
        ``"propagation_colored"`` rejects it. The propagation responses reject contact compliance,
        sleeping and loop-closing joints, and fall back from bilateral pre-elimination to iterative
        mimic rows with a warning.
+       ``"propagation_colored"`` supports the ``friction_mode`` values other than
+       ``"fixed_normal"`` and applies them to the articulated contacts on its propagation rows
+       as well. ``"propagation"`` requires ``"fixed_normal"``.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
