@@ -9171,17 +9171,20 @@ class TestMjcfJointLimited(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
 
     def test_disabled_joint_limits_are_not_enforced(self):
+        """Import ``limited="false"`` ranges as unlimited joints."""
         for joint_type in ("hinge", "slide"):
             with self.subTest(joint_type=joint_type):
                 self._compare(f'type="{joint_type}" limited="false" range="-1 2"')
 
     def test_auto_zero_ranges_are_unlimited(self):
+        """Treat all-zero auto ranges as unlimited, for joint and actuator force ranges."""
         self._compare('type="hinge" range="0 0"')
         builder = newton.ModelBuilder()
         builder.add_mjcf(self._xml('type="hinge" actuatorfrcrange="0 0"'))
         self.assertEqual(builder.joint_effort_limit[0], builder.default_joint_cfg.effort_limit)
 
     def test_inheritrange_uses_disabled_joint_range(self):
+        """Inherit actuator ranges from disabled joint ranges like native MuJoCo."""
         for joint_type in ("hinge", "slide"):
             for angle in ("degree", "radian"):
                 with self.subTest(joint_type=joint_type, angle=angle):
@@ -9192,9 +9195,11 @@ class TestMjcfJointLimited(unittest.TestCase):
                     )
 
     def test_autolimits_false_ignores_range_without_limited(self):
+        """Ignore a joint range without ``limited`` under ``autolimits="false"``."""
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "autolimits"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_mjcf(self._xml('type="hinge" range="-1 2"', compiler='autolimits="false"'))
+        self.assertIn("autolimits", "\n".join(logs.output))
         solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
         np.testing.assert_array_equal(solver.mj_model.jnt_limited, [0])
 

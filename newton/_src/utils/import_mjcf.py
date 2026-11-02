@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import MAXVAL, Axis, AxisType, Sequence, Transform, vec10
+from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
@@ -1099,11 +1099,11 @@ def parse_mjcf(
         has_range = range_key in attrib and any(parse_vec(attrib, range_key, None))
         if has_range and not autolimits:
             # MuJoCo rejects this; follow autolimits and leave the range inactive.
-            warnings.warn(
-                f"MJCF element {attrib.get('name', 'unnamed')!r} has {range_key!r} but no {limited_key!r} while "
-                f"compiler autolimits is false; ignoring the range.",
-                NewtonWarning,
-                stacklevel=3,
+            logger.warning(
+                "MJCF element '%s' has '%s' but no '%s' while compiler autolimits is false; ignoring the range.",
+                attrib.get("name", "unnamed"),
+                range_key,
+                limited_key,
             )
             return False
         return has_range
@@ -2345,7 +2345,7 @@ def parse_mjcf(
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
                 if has_range and not is_limited(joint_attrib, "limited", "range"):
-                    limit_lower, limit_upper = -MAXVAL, MAXVAL
+                    limit_lower, limit_upper = default_joint_limit_lower, default_joint_limit_upper
                     # Native inheritrange still reads the inert range, without degree conversion.
                     disabled_joint_ranges[joint_name[-1]] = (
                         joint_range[0] * scale if is_linear else joint_range[0],
