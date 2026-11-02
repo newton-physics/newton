@@ -4433,6 +4433,84 @@ class TestModelWorld(unittest.TestCase):
 
 
 class TestModelValidation(unittest.TestCase):
+    def test_finalize_rejects_nonfinite_contact_materials(self):
+        """Reject non-finite material values on shape-only and particle-only colliders."""
+        builder = ModelBuilder()
+        builder.add_shape_sphere(body=-1, label="valid")
+        for has_shape_collision in (True, False):
+            cfg = ModelBuilder.ShapeConfig(
+                has_shape_collision=has_shape_collision,
+                has_particle_collision=not has_shape_collision,
+            )
+            builder.add_shape_sphere(body=-1, cfg=cfg, label=f"collider_{builder.shape_count}")
+
+        material_names = ("ke", "kd", "kf", "ka", "mu", "restitution", "mu_torsional", "mu_rolling", "kh")
+        for name in material_names:
+            attribute = f"shape_material_{name}"
+            values = getattr(builder, attribute)
+            for shape in (1, 2):
+                original = values[shape]
+                for value in (float("nan"), float("inf"), float("-inf")):
+                    with self.subTest(attribute=attribute, shape=shape, value=value):
+                        values[shape] = value
+                        with self.assertRaisesRegex(
+                            ValueError, rf"{attribute}.*shape {shape}.*collider_{shape}.*finite"
+                        ):
+                            builder.finalize(device="cpu")
+                values[shape] = original
+
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.shape_material_mu.numpy(), builder.shape_material_mu)
+
+        # Finiteness validation must not introduce positivity or unit-interval checks.
+        for value in (0.0, -0.2):
+            for name in material_names:
+                getattr(builder, f"shape_material_{name}")[1:] = [value, value]
+            model = builder.finalize(device="cpu")
+            for name in material_names:
+                with self.subTest(attribute=name, value=value):
+                    np.testing.assert_array_equal(
+                        getattr(model, f"shape_material_{name}").numpy()[1:], np.full(2, value, dtype=np.float32)
+                    )
+
+    def test_finalize_contact_material_validation_opt_out(self):
+        """Preserve validation opt-outs and ignore unused visual-only contact materials."""
+        self.assertEqual(ModelBuilder().finalize(device="cpu").shape_count, 0)
+        for kwargs in ({}, {"skip_validation_shapes": True}, {"skip_all_validations": True}):
+            with self.subTest(kwargs=kwargs):
+                builder = ModelBuilder()
+                cfg = ModelBuilder.ShapeConfig(
+                    mu=float("nan"),
+                    kh=float("nan"),
+                    has_shape_collision=bool(kwargs),
+                    has_particle_collision=False,
+                )
+                builder.add_shape_sphere(body=-1, cfg=cfg)
+                model = builder.finalize(device="cpu", **kwargs)
+                self.assertTrue(np.isnan(model.shape_material_mu.numpy()[0]))
+                self.assertTrue(np.isnan(model.shape_material_kh.numpy()[0]))
+
+    def test_finalize_contact_material_validation_replicated(self):
+        """Validate replicated material arrays without materializing them as lists."""
+        source = ModelBuilder()
+        source.add_shape_sphere(body=-1, label="sphere")
+        builder = ModelBuilder()
+        builder.replicate(source, 3)
+        for attribute, restored in (("shape_material_mu", 0.4), ("shape_material_kh", 1.0e5)):
+            with self.subTest(attribute=attribute):
+                with builder._raw_array_access():
+                    values = getattr(builder, attribute)
+                self.assertIsInstance(values, np.ndarray)
+                values[2] = float("nan")
+                with self.assertRaisesRegex(ValueError, rf"{attribute}.*shape 2.*sphere.*finite"):
+                    builder.finalize(device="cpu")
+                with builder._raw_array_access():
+                    self.assertIs(getattr(builder, attribute), values)
+            values[2] = restored
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [1.0, 1.0, 0.4])
+        np.testing.assert_allclose(model.shape_material_kh.numpy(), [1.0e10, 1.0e10, 1.0e5])
+
     def test_add_particles_rejects_mismatched_lengths(self):
         valid = {
             "pos": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],

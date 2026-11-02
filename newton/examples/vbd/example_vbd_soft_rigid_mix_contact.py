@@ -1,17 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Bag Lift
-#
-# A box-shaped cloth bag (open top) is suspended by its top-edge vertices.
-# Rigid bodies of all supported shape types (sphere, box, capsule,
-# cylinder, cone, mesh bear) are placed inside.  After settling, the
-# pinned vertices are raised upward, lifting the contents with the bag.
-#
-# Command: python -m newton.examples vbd_soft_rigid_mix_contact
-#
-###########################################################################
+"""Example VBD Bag Lift
+
+A box-shaped cloth bag (open top) is suspended by its top-edge vertices.
+Five rigid bodies (sphere, box, cylinder, cone, and mesh bear) are
+placed inside. After settling, the
+pinned vertices are raised upward, lifting the contents with the bag.
+
+Success criteria:
+- An open-top cloth bag hangs from pinned vertices along its top edge, with several rigid shapes
+  inside.
+- The rigid bodies settle in the bag before the lift; capture late consecutive frames to
+  characterize contact jitter.
+- After settling, the pinned edge rises and the bag carries all its contents upward without bodies
+  passing through the fabric.
+
+Runs:
+- `python -m newton.examples vbd_soft_rigid_mix_contact`
+"""
 
 import os
 
