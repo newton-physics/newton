@@ -393,6 +393,13 @@ and does not execute notebooks or fetch external documentation inventories.
 The Markdown builder is ``sphinx-markdown-builder`` (MIT licensed), with a
 small Newton extension for unsupported node types.
 
+Distributable wheels automatically include a documentation snapshot generated
+from their own sources. ``uv build`` includes the canonical docs and build
+support in the sdist, then builds the wheel from that sdist. Rendering requires
+the declared build dependencies and Pandoc, supplied by ``pypandoc_binary``
+where available. Notebook cells are never executed for packaging. Editable
+installs skip snapshot generation; their canonical sources remain in ``docs/``.
+
 .. note::
 
     The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.

@@ -86,3 +86,11 @@ jobs:
           uv run --extra docs --extra sim docs/build_markdown.py docs/_build/markdown
       - name: Run Sphinx doctests
         run: uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest
+      - name: Check installed-wheel documentation offline
+        run: |
+          uv build
+          uv venv /tmp/newton-wheel-check
+          uv pip install --python /tmp/newton-wheel-check/bin/python dist/*.whl
+          cp scripts/ci/check_wheel_docs.py /tmp/check_wheel_docs.py
+          cd /tmp
+          uv run --no-project --python /tmp/newton-wheel-check/bin/python python -I /tmp/check_wheel_docs.py

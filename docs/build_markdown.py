@@ -27,8 +27,10 @@ def build(source: Path, output: Path) -> None:
         # A child interpreter ensures autodoc imports the staged package rather
         # than a different Newton already imported by the build frontend.
         script = """
+import os
 import sys
 from sphinx.application import Sphinx
+os.environ['NEWTON_REQUIRE_PANDOC'] = '1'
 app = Sphinx('docs', 'docs', sys.argv[1], 'doctrees', 'markdown',
              confoverrides={'nbsphinx_execute': 'never', 'intersphinx_mapping': {}},
              warningiserror=True)
