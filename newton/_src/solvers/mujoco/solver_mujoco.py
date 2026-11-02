@@ -4451,8 +4451,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         to change damping. Other consumers of the same model see the initialized values.
         Direct actuators keep their ``dampratio`` (a positive ``biasprm[2]``), which is resolved
         from each world's current physical inertia and position gain whenever model changes
-        refresh MuJoCo's constants. Only actuators holding a ``dampratio`` at construction are
-        resolved; on other actuators, set ``biasprm[2]`` to the negative damping.
+        refresh MuJoCo's constants.
         With ``use_mujoco_cpu=True``, only the template world is simulated when ``separate_worlds=True``.
 
         Args:
@@ -9799,27 +9798,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self._kinematic_weld_eq is not None:
             shape = (self.mjc_dof_to_newton_dof.shape[0], self.mj_model.nv)
             self._physical_dof_M0 = wp.zeros(shape, dtype=float, device=self.model.device)
-        attrs = getattr(self.model, "mujoco", None)
-        gainprm = getattr(attrs, "actuator_gainprm", None)
-        biasprm = getattr(attrs, "actuator_biasprm", None)
-        if (
-            self.mjc_actuator_ctrl_source is not None
-            and self.mj_model.nv
-            and gainprm is not None
-            and biasprm is not None
-        ):
-            source_rows = self.mjc_actuator_to_newton_actuator_idx.numpy()
+        if self.mjc_actuator_ctrl_source is not None and self.mj_model.nv:
+            # Any of these can gain a dampratio at runtime.
             direct = np.flatnonzero(
                 (self.mjc_actuator_ctrl_source.numpy() == SolverMuJoCo.CtrlSource.CTRL_DIRECT)
-                & (source_rows >= 0)
+                & (self.mjc_actuator_to_newton_actuator_idx.numpy() >= 0)
                 & (self.mj_model.actuator_biastype == self._mujoco.mjtBias.mjBIAS_AFFINE)
             )
-            # Only actuators authored with a dampratio pay for resolving it on every constants refresh.
-            nworld = self.mjw_model.actuator_biasprm.shape[0]
-            rows = np.arange(nworld)[:, None] * (biasprm.shape[0] // nworld) + source_rows[direct]
-            gain, bias = gainprm.numpy()[rows], biasprm.numpy()[rows]
-            placeholder = (bias[..., 2] > 0.0) & (np.abs(gain[..., 0] + bias[..., 1]) <= MJ_MINVAL)
-            direct = direct[placeholder.any(axis=0)]
             if direct.size:
                 self._dampratio_actuators = direct.tolist()
                 self._dampratio_actuator_ids = wp.array(direct, dtype=wp.int32, device=self.model.device)

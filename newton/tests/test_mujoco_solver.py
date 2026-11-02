@@ -11598,14 +11598,27 @@ class TestActuatorDampratio(unittest.TestCase):
             self.model.mujoco.actuator_biasprm.assign(original)
             self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
-    def test_dampratio_refresh_limited_to_authored_actuators(self):
-        """Constants refreshes resolve only actuators that hold a dampratio at construction."""
-        self.assertEqual(self.solver._dampratio_actuators, [0])
+    def test_dampratio_added_at_runtime(self):
+        """Resolve a dampratio written at runtime on an actuator constructed with kv."""
         xml = self.MJCF.replace(' dampratio="1"', ' kv="2"')
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(xml, ctrl_direct=True)
-        solver = SolverMuJoCo(builder.finalize())
-        self.assertIsNone(solver._dampratio_actuators)
+        expected = self.solver._mujoco.MjModel.from_xml_string(
+            self.MJCF.replace('dampratio="1"', 'dampratio="0.5"')
+        ).actuator_biasprm[0, 2]
+        for cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=cpu):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml, ctrl_direct=True)
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu)
+                biasprm = model.mujoco.actuator_biasprm.numpy()
+                biasprm[0, 2] = 0.5
+                model.mujoco.actuator_biasprm.assign(biasprm)
+                solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                if cpu:
+                    actual = solver.mj_model.actuator_biasprm[0, 2]
+                else:
+                    actual = solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
+                self.assertAlmostEqual(float(actual), expected, delta=1.0e-5 * abs(expected))
 
     def test_dampratio_transmissions_match_native_compile(self):
         """Resolve dampratio like MuJoCo's compiler for joint, tendon, and site transmissions."""
