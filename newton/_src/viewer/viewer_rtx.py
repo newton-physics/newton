@@ -34,9 +34,9 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
-    from pxr import Gf, UsdGeom
+    from pxr import Gf, Sdf, UsdGeom
 except ImportError:
-    Gf = UsdGeom = None
+    Gf = Sdf = UsdGeom = None
 
 if TYPE_CHECKING:
     import ovstage
@@ -1877,7 +1877,8 @@ void main() {
         edits are not detected. A call that omits ``texture`` or ``uvs`` removes
         a texture bound by an earlier call, as in ViewerGL. Texture changes
         update the material at the next render; paused rendering keeps them
-        until rendering resumes.
+        until rendering resumes. UV-only changes with the same texture object
+        or file path are not applied; supply a replacement image to update UVs.
 
         Args:
             name: Unique name for the mesh.
@@ -1956,9 +1957,14 @@ void main() {
                 if material_path != appearance.get("material_path"):
                     self._bind_material(self._meshes[name].GetPrim(), material)
                     appearance["material_path"] = material_path
-                    self._refresh_mesh_instance_materials(name)
                 uv_values = uvs.numpy() if isinstance(uvs, wp.array) else uvs
+                if uv_values is not None:
+                    # Rebuilt instances read their UVs from the source stage.
+                    UsdGeom.PrimvarsAPI(self._meshes[name]).CreatePrimvar(
+                        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+                    ).Set(uv_values)
                 self._pending_mesh_materials[name] = (material_path, uv_values)
+                self._refresh_mesh_instance_materials(name)
             pts = (
                 points.numpy().astype(np.float32)
                 if isinstance(points, wp.array)
@@ -2597,7 +2603,11 @@ void main() {
             for name, (material_path, uvs) in self._pending_mesh_materials.items()
         ]
         updates.extend(
-            (self._instance_prim_paths[name][index], material_path, None)
+            (
+                self._instance_prim_paths[name][index],
+                material_path,
+                self._pending_mesh_materials.get(self._instance_specs[name][0], (None, None))[1],
+            )
             for (name, index), material_path in self._pending_instance_materials.items()
         )
         for _, material_path, _ in updates:

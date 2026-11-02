@@ -627,6 +627,42 @@ class TestViewerRTXRendering(unittest.TestCase):
                                     else:
                                         others = np.delete(pixels, expected, axis=-1).max(axis=-1)
                                         self.assertGreater(np.count_nonzero(pixels[:, :, expected] > others + 40), 30)
+                        # New images with identical pixels still carry replacement UVs.
+                        striped = np.zeros((2, 4, 3), dtype=np.uint8)
+                        striped[:, :2, 0] = 255
+                        striped[:, 2:, 2] = 255
+                        for frame, (u, channel) in enumerate(((0.25, 0), (0.75, 2), (0.25, 0)), start=7):
+                            with self.subTest(uv_frame=frame):
+                                viewer.begin_frame(frame / 60.0)
+                                viewer.log_mesh(
+                                    "/left",
+                                    left,
+                                    indices,
+                                    uvs=wp.array([[u, 0.5]] * 4, dtype=wp.vec2),
+                                    texture=striped.copy(),
+                                    hidden=asynchronous,
+                                )
+                                if asynchronous:
+                                    # Keep existing instances, then rebuild to check source USD UVs too.
+                                    count = 2 if frame == 9 else 1
+                                    viewer.log_instances(
+                                        "/left_uv_copy",
+                                        "/left",
+                                        wp.array([wp.transform_identity()] * count, dtype=wp.transform),
+                                        None,
+                                        None,
+                                        None,
+                                    )
+                                    viewer.log_instances(
+                                        "/left_copy", "/left_alternate", None, None, None, None, hidden=True
+                                    )
+                                viewer.end_frame()
+                                rgb = viewer.get_frame().numpy().astype(np.int32)[:, :48]
+                                others = np.delete(rgb, channel, axis=-1).max(axis=-1)
+                                self.assertGreater(np.count_nonzero(rgb[:, :, channel] > others + 40), 30)
+                                wrong_channel = 2 if channel == 0 else 0
+                                others = np.delete(rgb, wrong_channel, axis=-1).max(axis=-1)
+                                self.assertLess(np.count_nonzero(rgb[:, :, wrong_channel] > others + 40), 10)
                     finally:
                         viewer.close()
 

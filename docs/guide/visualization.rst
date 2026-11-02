@@ -159,6 +159,9 @@ USD exports replacement image arrays to separate files. Unchanged arrays reuse
 their existing file. Material bindings are not time-sampled: the export uses
 the last assigned texture, not a texture animation. RTX updates the material
 binding after any in-flight render finishes, without replacing mesh geometry.
+RTX applies UVs supplied with a replacement image, including to its instances.
+Changing only UVs while reusing the same image object or file path is not
+supported.
 These updates are intended for occasional appearance changes, not video textures.
 
 :class:`~newton.viewer.ViewerFile` records deformable visual meshes and
