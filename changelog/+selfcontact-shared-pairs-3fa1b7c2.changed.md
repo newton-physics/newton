@@ -3,7 +3,9 @@ interleaved (element, counterpart) layout as before but are exact-length now,
 backed by an internal append log; storage is pooled across elements and
 sized by a per-element average that grows on demand with peak contact
 demand, rather than a fixed cap per element. `TriMeshCollisionInfo` drops the
-`*_buffer_sizes` fields and gains `global_pair_counts`; `SolverVBD`'s contact-buffer
+`*_buffer_sizes` fields and gains `global_pair_counts`; its `*_count` fields now hold
+the stored (clamped) counts, so read overflow from `global_pair_counts` instead of
+comparing a count against its capacity. `SolverVBD`'s contact-buffer
 knobs and the pipeline/`Contacts` `*_pre_alloc` parameters now size one
 global buffer per family (capacity = value x element count, shared by all
 primitives); the defaults keep their previous values. On overflow

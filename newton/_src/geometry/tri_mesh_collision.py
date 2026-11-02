@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
-import warp.utils
 
 from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonWarning
@@ -927,7 +926,7 @@ class TriMeshCollisionDetector:
         element_count = row_counts.shape[0]
         if element_count == 0:
             return
-        warp.utils.array_scan(row_counts, row_offsets[:element_count], inclusive=False)
+        wp.utils.array_scan(row_counts, row_offsets[:element_count], inclusive=False)
         wp.launch(
             kernel=finalize_row_offsets,
             dim=1,
