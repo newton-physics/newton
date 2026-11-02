@@ -724,11 +724,13 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         with self.assertWarns(NewtonWarning):
             solver = SolverSteel(model, solve_mode="matrix_free")
         self.assertFalse(solver._free_rigid_angular_rows)
-        # A rolling ground reaches the free sphere's contacts.
+        # A rolling ground reaches the free sphere's contacts; the link's contacts still have no torsion radius.
         modes = model.shape_material_friction_mode.numpy()
         modes[0] = int(_ROLLING_MODE)
         model.shape_material_friction_mode.assign(modes)
-        self.assertTrue(SolverSteel(model, solve_mode="matrix_free")._free_rigid_angular_rows)
+        with self.assertWarnsRegex(NewtonWarning, "articulated contacts"):
+            solver = SolverSteel(model, solve_mode="matrix_free")
+        self.assertTrue(solver._free_rigid_angular_rows)
 
     def test_invalid_values_raise_and_unsupported_options_warn(self):
         """Reject invalid modes and coefficients; leave the rows off, warning for ROLLING, for unsupported options."""
