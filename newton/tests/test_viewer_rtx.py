@@ -274,6 +274,7 @@ def Xform "World"
 
         np.testing.assert_allclose(values, points)
 
+    @requires("pxr.Usd")
     def test_runtime_prim_population_uses_ovstage(self):
         """Add and replace runtime USD through OVStage."""
         from pxr import Usd, UsdGeom
@@ -301,6 +302,7 @@ def Xform "World"
         self.viewer._apply_ovstage_population_changes()
         self.assertFalse(self.viewer._ovstage_population_dirty)
 
+    @requires("pxr.Usd")
     def test_replacing_runtime_prim_releases_its_queries(self):
         """Drop cached queries of a replaced runtime prim so repeated replacements do not accumulate them."""
         from pxr import Usd, UsdGeom
