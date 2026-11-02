@@ -13,7 +13,7 @@ import warp as wp
 import newton
 from newton._src.sensors.warp_raytrace.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID
 from newton.sensors import SensorTiledCamera
-from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation, requires
+from newton.tests.unittest_utils import has_module, ignore_sensor_tiled_camera_deprecation, requires
 
 
 def setUpModule():
@@ -21,11 +21,10 @@ def setUpModule():
     ignore_sensor_tiled_camera_deprecation()
 
 
-@requires("pxr.Usd")
 class TestSensorTiledCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not wp.is_cuda_available():
+        if not wp.is_cuda_available() or not has_module("pxr.Usd"):
             return
         cls._shared_model = cls._build_scene()
 
@@ -597,6 +596,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             sensor.utils.assign_checkerboard_material([0])
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    @requires("pxr.Usd")
     def test_golden_image(self):
         model = self._shared_model
 
@@ -638,6 +638,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         self.__compare_images(depth_image.numpy(), golden_depth_data, allowed_difference=0.1)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    @requires("pxr.Usd")
     def test_deprecated_checkerboard_material_to_all_shapes_warns(self):
         model = self._shared_model
         tiled_camera_sensor = SensorTiledCamera(model=model)
@@ -762,6 +763,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             print(f"Updated texture projection goldens and wrote previews to {preview_dir}")
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    @requires("pxr.Usd")
     def test_output_image_parameters(self):
         model = self._shared_model
 
