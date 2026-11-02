@@ -11,6 +11,7 @@ import warp as wp
 import warp.examples
 
 import newton
+import newton._src.geometry.kernels as collision_kernels
 from newton import Mesh
 from newton._src.geometry.kernels import (
     triangle_closest_point,
@@ -2206,6 +2207,61 @@ def test_self_contact_scatter_matches_sequential_reference(test, device):
     np.testing.assert_allclose(production, reference, rtol=1e-4, atol=1e-6)
 
 
+def _canonical_rows(info, prefix):
+    """Per-element sorted counterpart tuples, independent of the stored row order."""
+    counts = getattr(info, f"{prefix}_count").numpy()
+    offsets = getattr(info, f"{prefix}_offsets").numpy()
+    rows = getattr(info, prefix).numpy()
+    result = []
+    for element in range(counts.shape[0]):
+        start = int(offsets[element])
+        row = rows[2 * start : 2 * (start + int(counts[element]))].reshape(-1, 2)[:, 1]
+        result.append(tuple(sorted(row.tolist())))
+    return result
+
+
+def test_detection_under_global_deterministic_mode(test, device):
+    """Detection must run, and store the same rows, with Warp's deterministic mode
+    switched on globally. The detection kernels opt out of the lowering because
+    their slot-reserving atomics run inside the BVH traversal loop; the rows are
+    rebuilt from each element's own list, so the slot order never reaches them."""
+    model = _build_two_layer_cloth_model(device)
+    radius = 0.02
+
+    def detect_rows(detector):
+        detector.vertex_triangle_collision_detection(radius)
+        detector.edge_edge_collision_detection(radius)
+        wp.synchronize_device(wp.get_device(device))
+        info = detector.collision_info
+        return (
+            _canonical_rows(info, "vertex_colliding_triangles"),
+            _canonical_rows(info, "edge_colliding_edges"),
+        )
+
+    def build_detector():
+        return TriMeshCollisionDetector(
+            model=model,
+            vertex_collision_buffer_pre_alloc=16,
+            edge_collision_buffer_pre_alloc=32,
+            init_collision_info=True,
+        )
+
+    saved_config = wp.config.deterministic
+    saved_option = wp.get_module_options(module=collision_kernels)["deterministic"]
+    wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN
+    # the geometry kernel module was created before this test; apply the mode to it as well
+    wp.set_module_options({"deterministic": wp.DeterministicMode.RUN_TO_RUN}, module=collision_kernels)
+    try:
+        deterministic_rows = detect_rows(build_detector())
+    finally:
+        wp.config.deterministic = saved_config
+        wp.set_module_options({"deterministic": saved_option}, module=collision_kernels)
+
+    reference_rows = detect_rows(build_detector())
+    test.assertGreater(sum(len(row) for row in reference_rows[0]) + sum(len(row) for row in reference_rows[1]), 200)
+    test.assertEqual(deterministic_rows, reference_rows)
+
+
 devices = get_test_devices()
 
 
@@ -2291,6 +2347,12 @@ add_function_test(
 )
 add_function_test(TestCollision, "test_detector_check_and_grow", test_detector_check_and_grow, devices=devices)
 add_function_test(TestCollision, "test_sorted_contact_rows", test_sorted_contact_rows, devices=devices)
+add_function_test(
+    TestCollision,
+    "test_detection_under_global_deterministic_mode",
+    test_detection_under_global_deterministic_mode,
+    devices=devices,
+)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 add_function_test(
     TestCollision,
