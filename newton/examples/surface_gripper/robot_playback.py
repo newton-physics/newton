@@ -15,9 +15,10 @@
 
 """Playback of a recorded palletizer cycle (``palletizer_trajectory.csv``).
 
-Simulator-agnostic: this module only loads the recording and steps through it. It has no Newton (or
-any other framework) dependency -- callers read each :class:`Frame` and apply it to their own robot
-(joint targets, gripper) via callbacks. Used by ``example_surface_gripper``.
+Simulator-agnostic: this module only loads the recording and steps through it. It depends on Warp
+but not on Newton -- it loads the recording as a list of :class:`Frame` and
+:class:`RobotPlayback` writes the joint targets and gripper commands into caller-supplied Warp
+arrays. Used by ``example_surface_gripper``.
 
 Recording format -- a CSV table with a header row and one row per frame (~24 Hz)::
 
