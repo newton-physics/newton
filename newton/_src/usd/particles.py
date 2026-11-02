@@ -15,12 +15,10 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonDeprecationWarning
 from ..sim.builder import ModelBuilder
 from . import utils as usd
-
-_PARTICLE_MASSES_ATTR = "newton:masses"
-_DEPRECATED_PARTICLE_MASSES_ATTR = "physics:masses"
 
 _MATERIAL_ATTRIBUTES = {
     "newton:mpm:youngsModulus": ("mpm:young_modulus", "pressure"),
@@ -308,36 +306,19 @@ def _read_material_prim(
 
 
 def _read_particle_masses(prim, count: int, path: str, mass_unit: float) -> np.ndarray | None:
-    """Read authored per-point masses and convert them to kilograms.
-
-    ``newton:masses`` is read first. The deprecated ``physics:masses`` name is
-    read only when ``newton:masses`` is unauthored, and warns whenever authored.
-    """
-    attr = prim.GetAttribute(_PARTICLE_MASSES_ATTR)
-    deprecated_attr = prim.GetAttribute(_DEPRECATED_PARTICLE_MASSES_ATTR)
-    has_deprecated = bool(deprecated_attr) and deprecated_attr.HasAuthoredValue()
-    if attr and attr.HasAuthoredValue():
-        name = _PARTICLE_MASSES_ATTR
-        if has_deprecated:
-            warnings.warn(
-                f"{path}: '{_DEPRECATED_PARTICLE_MASSES_ATTR}' on NewtonPointsDeformableSimAPI Points is "
-                f"deprecated and ignored because '{_PARTICLE_MASSES_ATTR}' is authored; "
-                f"remove '{_DEPRECATED_PARTICLE_MASSES_ATTR}'.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-    elif has_deprecated:
-        attr = deprecated_attr
-        name = _DEPRECATED_PARTICLE_MASSES_ATTR
+    """Read authored per-point masses and convert them to kilograms."""
+    name, value = "newton:masses", usd.get_attribute(prim, "newton:masses")
+    legacy = usd.get_attribute(prim, "physics:masses")
+    if legacy is not None:
         warnings.warn(
-            f"{path}: '{_DEPRECATED_PARTICLE_MASSES_ATTR}' on NewtonPointsDeformableSimAPI Points is "
-            f"deprecated; rename it to '{_PARTICLE_MASSES_ATTR}'.",
+            f"{path}: 'physics:masses' on points is deprecated; use 'newton:masses' instead.",
             NewtonDeprecationWarning,
-            stacklevel=2,
+            stacklevel=_external_warning_stacklevel(),
         )
-    else:
+        if value is None:
+            name, value = "physics:masses", legacy
+    if value is None:
         return None
-    value = attr.Get()
     try:
         masses = np.asarray(value, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError) as error:

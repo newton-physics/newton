@@ -73,14 +73,6 @@ The importer uses standard point and material representations:
   ``PhysicsDeformableBodyAPI`` mass or density and material density. Its length
   must match ``points``. A body-total ``physics:mass`` is otherwise distributed
   using the density-derived particle weights.
-* The earlier ``physics:masses`` name for per-point particle masses is
-  deprecated. When ``newton:masses`` is unauthored, an authored
-  ``physics:masses`` is still used with a ``NewtonDeprecationWarning``; when
-  both are authored, ``newton:masses`` wins and ``physics:masses`` is ignored
-  with a warning. The fallback remains functional through Newton 1.8 and is
-  eligible for removal in 1.9; rename the attribute to ``newton:masses``. This
-  applies only to particle Points; AOUSD deformable simulation geometry
-  continues to use typed ``physics:masses``.
 * A physics-purpose material binding supplies ``physics:density`` and
   ``NewtonMPMMaterialAPI`` properties, including
   ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. Point-element
@@ -89,7 +81,7 @@ The importer uses standard point and material representations:
   Until the solver stores absolute damping directly, the importer divides it by
   the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
   the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
-* When per-point masses are unauthored, mass uses a cubical MPM support volume:
+* When ``newton:masses`` is unauthored, mass uses a cubical MPM support volume:
   ``mass = density * transformed_width**3``. If widths are absent, Newton uses
   :attr:`newton.ModelBuilder.default_particle_radius` and a support width of
   twice that radius.
