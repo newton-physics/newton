@@ -4,6 +4,8 @@
 """Exercise documentation rendering without running a simulation or notebook."""
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from io import StringIO
@@ -67,6 +69,37 @@ class TestMarkdownDocumentation(unittest.TestCase):
         if cls.app.statuscode:
             raise AssertionError(warning.getvalue())
         cls.output = (cls.root / "output/index.md").read_text(encoding="utf-8")
+
+    def test_navigation_regeneration(self):
+        guide = self.source / "guide.rst"
+        guide.write_text("Modeling guide\n==============\n\nModeling instructions.\n", encoding="utf-8")
+        index = self.source / "index.rst"
+        original = index.read_text(encoding="utf-8")
+        index.write_text(original + "\n.. toctree::\n   :hidden:\n   :caption: Guides\n\n   guide\n", encoding="utf-8")
+        command = [
+            sys.executable,
+            "-m",
+            "sphinx",
+            "-E",
+            "-W",
+            "-b",
+            "markdown",
+            str(self.source),
+            str(self.root / "output"),
+        ]
+        subprocess.run(command, check=True, capture_output=True)
+        entrypoint = self.root / "output/llms.txt"
+        self.assertIn("[Modeling guide](guide.md)", entrypoint.read_text(encoding="utf-8"))
+        guide.rename(self.source / "modeling.rst")
+        index.write_text(index.read_text(encoding="utf-8").replace("   guide\n", "   modeling\n"), encoding="utf-8")
+        subprocess.run(command, check=True, capture_output=True)
+        self.assertIn("[Modeling guide](modeling.md)", entrypoint.read_text(encoding="utf-8"))
+        self.assertNotIn("](guide.md)", entrypoint.read_text(encoding="utf-8"))
+        (self.source / "modeling.rst").unlink()
+        index.write_text(original, encoding="utf-8")
+        subprocess.run(command, check=True, capture_output=True)
+        self.assertNotIn("guide.md", entrypoint.read_text(encoding="utf-8"))
+        self.assertNotIn("modeling.md", entrypoint.read_text(encoding="utf-8"))
 
     def test_rendered_content(self):
         for content in (

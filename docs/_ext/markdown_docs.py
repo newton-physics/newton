@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 
 from docutils import nodes
+from sphinx import addnodes
 from sphinx.util.osutil import relative_uri
 from sphinx_markdown_builder.contexts import TitleContext
 from sphinx_markdown_builder.translator import MarkdownTranslator, pushing_context
@@ -110,8 +111,31 @@ def write_api_index(app, exception):
     )
 
 
+def write_navigation_index(app, exception):
+    """Derive the agent entrypoint from the site's actual navigation."""
+    if exception is not None or app.builder.name != "markdown":
+        return
+    lines = [f"# Newton {app.config.release}", "", "> Guides and API reference. Documentation: CC-BY-4.0.", ""]
+    for toc in app.env.get_doctree(app.config.root_doc).findall(addnodes.toctree):
+        lines.extend([f"## {toc.get('caption') or 'API Reference'}", ""])
+        for label, target in toc["entries"]:
+            if target == "self":
+                continue
+            if "://" in target:
+                title, link = label or target, target
+            else:
+                title = label or app.env.titles[target].astext()
+                link = app.builder.get_target_uri(target)
+                if not (Path(app.outdir) / link).is_file():
+                    raise ValueError(f"Indexed documentation page is missing: {link}")
+            lines.append(f"- [{title}]({link})")
+        lines.append("")
+    (Path(app.outdir) / "llms.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
 def setup(app):
     app.setup_extension("sphinx_markdown_builder")
     app.set_translator("markdown", NewtonMarkdownTranslator, override=True)
     app.connect("build-finished", write_api_index)
+    app.connect("build-finished", write_navigation_index)
     return {"parallel_read_safe": True, "parallel_write_safe": True}
