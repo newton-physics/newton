@@ -976,12 +976,8 @@ class Example:
         self.state_0.joint_qd.zero_()
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        # Capture one frame of physics into a CUDA graph, then restore the clean start pose (capturing
-        # runs the frame for real, advancing the state).
+        # Capture one frame of physics into a CUDA graph.
         self.capture()
-        self.state_0.joint_q.assign(joint_q)
-        self.state_0.joint_qd.zero_()
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.viewer.set_model(self.model)
         # The worlds all simulate overlapped at the origin (the broad phase never collides across
@@ -990,15 +986,11 @@ class Example:
             self.viewer.set_world_offsets(WORLD_RENDER_SPACING)
 
     def capture(self):
-        # capturing runs one frame for real, which advances the device sub-step counter and search
-        # index, so reset both to 0 afterwards.
         self.graph = None
         if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-            self.sim_step_count_wp.zero_()
-            self.last_lo_wp.zero_()
 
     def simulate(self):
         for _ in range(self.sim_substeps):
