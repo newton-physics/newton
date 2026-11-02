@@ -11,6 +11,8 @@ import numpy as np
 import warp as wp
 import warp.utils
 
+from ..core._warnings import _external_warning_stacklevel
+from ..exceptions import NewtonWarning
 from ..utils.mesh import MeshAdjacency
 from .bvh import compute_bvh_group_roots
 from .kernels import (
@@ -694,7 +696,7 @@ class TriMeshCollisionDetector:
 
         A struct whose capacity-sized row arrays predate a budget growth is
         upgraded in place: the undersized rows are replaced with zeroed
-        arrays at the current capacity and a ``UserWarning`` reports the
+        arrays at the current capacity and a ``NewtonWarning`` reports the
         resize. Its previous results are discarded, the same contract as
         ``check_and_grow_collision_buffers`` applies to the struct grown
         there. During graph capture no reallocation is possible, so a stale
@@ -716,7 +718,8 @@ class TriMeshCollisionDetector:
                     "with zeroed arrays at the current capacity (previous "
                     "contents discarded). Re-create any captured graph that "
                     "references this struct.",
-                    stacklevel=2,
+                    NewtonWarning,
+                    stacklevel=_external_warning_stacklevel(),
                 )
                 self._replace_row_arrays(collision_info, stale_vt, stale_ee)
         self._validate_collision_info(collision_info)
@@ -979,7 +982,8 @@ class TriMeshCollisionDetector:
                 "vertex/edge *_pre_alloc parameters), or call "
                 "check_and_grow_collision_buffers() between detections "
                 "(SolverVBD users: check_and_grow_self_contact_buffers()).",
-                stacklevel=2,
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
             )
         return vt_demand, ee_demand, vt_overflow, ee_overflow
 
@@ -1030,7 +1034,7 @@ class TriMeshCollisionDetector:
         result struct (for the pipeline: every other ``Contacts`` buffer),
         whose row arrays are still sized for the old budgets. They are not
         touched here; each is resized automatically the next time it is
-        bound, with a ``UserWarning`` and its previous contents discarded
+        bound, with a ``NewtonWarning`` and its previous contents discarded
         (see ``_bind_external_buffers``). During graph capture that
         automatic resize is impossible, so binding a stale struct raises.
 
@@ -1045,7 +1049,7 @@ class TriMeshCollisionDetector:
         ``check_and_grow_self_contact_buffers`` wrapper refreshes it).
 
         Args:
-            warn: Emit a ``UserWarning`` describing the overflow (per-family
+            warn: Emit a ``NewtonWarning`` describing the overflow (per-family
                 demand versus capacity and how to raise the budgets) before
                 growing. Pass ``False`` to grow silently and rely on the
                 return value instead.
