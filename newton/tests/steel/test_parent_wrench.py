@@ -639,6 +639,7 @@ def test_open_closure_force_acts_where_the_rows_do(test, device):
     ):
         with test.subTest(case=case):
             n_dofs = qd_start[-1]
+            J = wp.zeros((1, 3, n_dofs), dtype=float, device=device)
             row_type = wp.zeros((1, 3), dtype=wp.int32, device=device)
             at_midpoint = wp.zeros(1, dtype=wp.int32, device=device)
             wp.launch(
@@ -670,7 +671,7 @@ def test_open_closure_force_acts_where_the_rows_do(test, device):
                     wp.zeros(1, dtype=wp.vec3, device=device),
                 ],
                 outputs=[
-                    wp.zeros((1, 3, n_dofs), dtype=float, device=device),
+                    J,
                     row_type,
                     wp.zeros((1, 3), dtype=wp.int32, device=device),  # world_row_parent
                     *[wp.zeros((1, 3), dtype=float, device=device) for _ in range(4)],
@@ -707,6 +708,13 @@ def test_open_closure_force_acts_where_the_rows_do(test, device):
                 outputs=[wrench],
                 device=device,
             )
+            # The parent walks the root hinge unless prescribed, the child walks both hinges; rows are normalized.
+            rows = np.zeros((3, n_dofs))
+            for body_joints, point, sign in (([0], parent_point, 1.0 - prescribed), ([1, 0], child_point, -1.0)):
+                for joint in body_joints:
+                    rows[:, qd_start[joint] : qd_start[joint + 1]] += sign * np.cross([0.0, 0.0, 1.0], point)[:, None]
+            norms = np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1.0e-4)
+            np.testing.assert_allclose(J.numpy()[0], rows / norms, atol=1.0e-6)
             expected = [[*force, *np.cross(parent_point, force)], [*-force, *np.cross(child_point, -force)]]
             np.testing.assert_allclose(wrench.numpy(), expected, atol=1.0e-6)
 
