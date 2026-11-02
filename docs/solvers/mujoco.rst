@@ -215,6 +215,13 @@ servos and additional servos that cannot share target gains, use
 ``control.mujoco.ctrl``.
 Use ``ctrl_direct=True`` for native actuator control throughout.
 
+Native import preserves actuator damping, armature, and single-input DC motors
+(``voltage``, ``pos``, or ``vel``) through the shared solver attributes. DC motors
+use ``control.mujoco.ctrl`` and the solver's existing construction-time parameter
+and replicated-world restrictions. Linear position/velocity control ranges
+scale with the import; voltage ranges do not. Actuator armature retains the
+solver's CPU-only support and warning on the Warp backend.
+
 Ball position/velocity servos without activation dynamics or deferred native
 parameters also use Newton joint targets by default. Their gains and authored
 control/force ranges apply to all three angular axes, replacing the authored
@@ -268,8 +275,8 @@ unsupported SDF geom type.
 
 The importer is not a complete replacement for every MuJoCo feature.
 It rejects a ball joint combined with other joints on the same body;
-flexes, plugins, SDF geometry, actuator callbacks, PID dynamics, actuator
-armature/damping, and actuators requiring multiple control values. These need
+flexes, plugins, SDF geometry, actuator callbacks, PID dynamics,
+and actuators requiring multiple control values. These need
 additional Newton representations or solver support. Sensors, cameras, lights,
 keyframes, skins, custom elements, and MuJoCo user data are omitted with a
 warning. Custom extraction from parsed elements is available through
@@ -294,6 +301,8 @@ native defaults, also populate Newton contact stiffness/damping using the
 existing importer's approximation; the raw values are retained for
 ``SolverMuJoCo``. Built-in textures supply a tinted mean-color approximation
 for shapes without texture images; mesh texture images remain available.
+Meshes retain non-negative material roughness and metallic values; negative
+sentinels leave them unspecified. RGB texture layers take precedence over RGBA.
 Opacity follows Newton's importer clamping convention, and non-finite mesh
 reference poses are rejected before modifying the builder. Nonlinear joint
 equalities warn when converted to generic linear mimic constraints, while

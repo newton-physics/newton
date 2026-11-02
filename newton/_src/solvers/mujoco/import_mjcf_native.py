@@ -30,6 +30,7 @@ from ...utils.import_utils import (
     sanitize_name,
     sanitize_xml_content,
 )
+from . import dcmotor
 from .collision_masks import (
     add_mjcf_body_collision_filters,
     compile_collision_masks,
@@ -148,6 +149,8 @@ def _scale_spec(spec: mujoco.MjSpec, scale: float) -> None:
             ):
                 actuator.ctrlrange[:] *= scale
                 actuator.actrange[:] *= scale
+            elif actuator.gaintype == mujoco.mjtGain.mjGAIN_DCMOTOR and actuator.ctrlspec in (1, 2):
+                actuator.ctrlrange[:] *= scale
     for pair in spec.pairs:
         pair.margin *= scale
         pair.gap *= scale
@@ -244,7 +247,7 @@ def _color_texture(model, material_id):
     import mujoco
 
     if material_id >= 0:
-        for role in (mujoco.mjtTextureRole.mjTEXROLE_RGBA, mujoco.mjtTextureRole.mjTEXROLE_RGB):
+        for role in (mujoco.mjtTextureRole.mjTEXROLE_RGB, mujoco.mjtTextureRole.mjTEXROLE_RGBA):
             texture = int(model.mat_texid[material_id, role])
             if texture >= 0:
                 return texture
@@ -262,7 +265,12 @@ def _mesh(model, mesh_id, material_id, maxhullvert):
         uv_indices = model.mesh_facetexcoord[face_start : face_start + len(faces)].reshape(-1)
         uvs = model.mesh_texcoord[model.mesh_texcoordadr[mesh_id] + uv_indices].copy()
     texture = None
+    material = {}
     if material_id >= 0:
+        for name in ("roughness", "metallic"):
+            value = float(getattr(model, f"mat_{name}")[material_id])
+            if value >= 0:
+                material[name] = value
         t = _color_texture(model, material_id)
         if t >= 0:
             h, w, c = int(model.tex_height[t]), int(model.tex_width[t]), int(model.tex_nchannel[t])
@@ -278,6 +286,7 @@ def _mesh(model, mesh_id, material_id, maxhullvert):
         texture=texture,
         compute_inertia=False,
         maxhullvert=maxhullvert,
+        **material,
     )
 
 
@@ -687,8 +696,8 @@ def _validate(spec: mujoco.MjSpec) -> None:
             reject("actuator callbacks")
         if int(actuator.dyntype) > int(mujoco.mjtDyn.mjDYN_DCMOTOR):
             reject("actuator dynamics type")
-        if actuator.armature or np.any(actuator.damping):
-            reject("actuator armature/damping")
+        if actuator.gaintype == mujoco.mjtGain.mjGAIN_DCMOTOR:
+            dcmotor.parse_input(int(actuator.ctrlspec) or 8)
 
 
 def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoco.MjSpec, list[bool]]:
@@ -1212,7 +1221,11 @@ def parse_mjcf(
         values = attributes(
             actuator_label=f"{prefix}/{model.actuator(i).name or f'actuator_{i}'}",
             ctrl_source=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
-            ctrl_type=int(SolverMuJoCo.CtrlType.GENERAL),
+            ctrl_type=int(
+                SolverMuJoCo.CtrlType.DCMOTOR
+                if model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_DCMOTOR
+                else SolverMuJoCo.CtrlType.GENERAL
+            ),
             actuator_world=builder.current_world,
             actuator_trntype=transmission,
             actuator_trnid=(target, alternate),
@@ -1227,6 +1240,10 @@ def parse_mjcf(
             actuator_actearly=bool(model.actuator_actearly[i]),
             actuator_lengthrange=spec.actuators[i].lengthrange,
             actuator_cranklength=model.actuator_cranklength[i],
+            actuator_ctrlspec=int(model.actuator_ctrlspec[i]),
+            actuator_damping=model.actuator_damping[i],
+            actuator_dampingpoly=model.actuator_dampingpoly[i],
+            actuator_armature=model.actuator_armature[i],
             **native_parameters,
         )
         for name in ("ctrl", "force", "act"):

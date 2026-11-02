@@ -12,6 +12,7 @@ import unittest
 import warnings
 import xml.etree.ElementTree as ET
 import zlib
+from contextlib import nullcontext
 from itertools import product
 from pathlib import Path
 from unittest.mock import patch
@@ -103,7 +104,13 @@ class TestImportMjcfNative(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(xml)
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml, ctrl_direct=True, **kwargs)
-        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
+        expected_warning = (
+            self.assertWarnsRegex(newton.exceptions.NewtonWarning, "does not support actuator armature")
+            if np.any(reference.actuator_armature)
+            else nullcontext()
+        )
+        with expected_warning:
+            solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
         for field in fields:
             with self.subTest(field=field):
                 np.testing.assert_allclose(
@@ -192,6 +199,49 @@ class TestImportMjcfNative(unittest.TestCase):
                 self.assertEqual(texture, texture_path)
             else:
                 np.testing.assert_array_equal(texture, [[[255, 0, 0]]])
+
+    def test_native_mesh_materials(self):
+        """Preserve material defaults, unset values, and RGB precedence over RGBA."""
+        xml = """<mujoco><default><default class="surface">
+            <material roughness=".2" metallic=".8"><layer role="rgb" texture="red"/></material>
+            </default></default><asset>
+            <mesh name="tetra" vertex="0 0 0 1 0 0 0 1 0 0 0 1"
+                face="0 1 2 0 3 1 0 2 3 1 3 2" texcoord="0 0 1 0 0 1 1 1"/>
+            <texture name="red" type="2d" builtin="flat" width="1" height="1" rgb1="1 0 0"/>
+            <texture name="blue" type="2d" builtin="flat" width="1" height="1" rgb1="0 0 1"/>
+            <material name="legacy" texture="red"/>
+            <material name="rgba" roughness="0" metallic="0"><layer role="rgba" texture="blue"/></material>
+            <material name="mixed" roughness=".2" metallic=".8">
+                <layer role="rgb" texture="red"/><layer role="rgba" texture="blue"/></material>
+            <material name="inherited" class="surface"><layer role="rgba" texture="blue"/></material>
+            <material name="unset" roughness="-1" metallic="-1"/>
+            </asset><worldbody>
+            <geom type="mesh" mesh="tetra" material="legacy"/>
+            <geom type="mesh" mesh="tetra" material="rgba"/>
+            <geom type="mesh" mesh="tetra" material="mixed"/>
+            <geom type="mesh" mesh="tetra" material="inherited"/>
+            <geom type="mesh" mesh="tetra" material="unset"/>
+            </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml)
+        for mesh, roughness, metallic, color in zip(
+            builder.shape_source,
+            (None, 0, 0.2, 0.2, None),
+            (None, 0, 0.8, 0.8, None),
+            ((255, 0, 0), (0, 0, 255), (255, 0, 0), (255, 0, 0), None),
+            strict=True,
+        ):
+            with self.subTest(roughness=roughness, metallic=metallic, color=color):
+                if roughness is None:
+                    self.assertIsNone(mesh.roughness)
+                    self.assertIsNone(mesh.metallic)
+                else:
+                    self.assertAlmostEqual(mesh.roughness, roughness)
+                    self.assertAlmostEqual(mesh.metallic, metallic)
+                if color is None:
+                    self.assertIsNone(mesh.texture)
+                else:
+                    np.testing.assert_array_equal(mesh.texture, [[color]])
 
     def test_inline_mesh_applies_reference_pose_to_vertices_and_normals(self):
         """Apply the MJCF reference pose and scale to inline mesh data."""
@@ -1004,10 +1054,13 @@ class TestImportMjcfNative(unittest.TestCase):
                 )
 
     def test_native_actuator_history_and_dcmotor(self):
-        """Preserve actuator history and DC motor parameters."""
+        """Preserve actuator history, passive properties, and DC-motor inputs."""
         for actuator in (
             '<general joint="j" delay=".02" nsample="3" interp="linear" group="2"/>',
             '<dcmotor joint="j" motorconst=".2" resistance="2"/>',
+            '<general joint="j" damping=".7 .2 .1" armature=".02"/>',
+            '<dcmotor joint="j" motorconst=".2" resistance="2" input="pos" controller="5 1 .2 10 2 3" damping=".007 .002 .001"/>',
+            '<dcmotor joint="j" motorconst=".2" resistance="2" input="vel" controller="0 0 .2 10 0 3"/>',
         ):
             with self.subTest(actuator=actuator):
                 xml = f'<mujoco><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody><actuator>{actuator}</actuator></mujoco>'
@@ -1022,8 +1075,37 @@ class TestImportMjcfNative(unittest.TestCase):
                         "actuator_biasprm",
                         "actuator_dynprm",
                         "actuator_dyntype",
+                        "actuator_ctrlspec",
+                        "actuator_damping",
+                        "actuator_dampingpoly",
+                        "actuator_armature",
                     ),
                 )
+
+    def test_native_dcmotor_control_ranges(self):
+        """Scale linear position and velocity controls while retaining voltage units."""
+        for signature, code, factor in (("pos", 1, 2), ("vel", 2, 2), ("voltage", 8, 1)):
+            with self.subTest(signature=signature):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf_native(
+                    f'''<mujoco><worldbody><body><joint name="j" type="slide"/><geom size=".1"/></body></worldbody>
+                    <actuator><dcmotor joint="j" motorconst=".2" resistance="2" input="{signature}"
+                    ctrlrange="-1 3"/></actuator></mujoco>''',
+                    scale=2,
+                )
+                self.assertEqual(builder.custom_attributes["mujoco:actuator_ctrlspec"].values[0], code)
+                np.testing.assert_allclose(
+                    builder.custom_attributes["mujoco:actuator_ctrlrange"].values[0], np.array([-1, 3]) * factor
+                )
+        for signature in ("ff", "none", "pos vel"):
+            with self.subTest(signature=signature):
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(NotImplementedError, "one DC-motor control input"):
+                    builder.add_mjcf_native(
+                        f'''<mujoco><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody>
+                        <actuator><dcmotor joint="j" motorconst=".2" resistance="2" input="{signature}"/></actuator></mujoco>'''
+                    )
+                self.assertEqual((builder.body_count, builder.joint_count, builder.shape_count), (0, 0, 0))
 
     def test_tendon_equalities(self):
         """Retain tendon coupling through builder copies and property updates."""
