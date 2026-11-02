@@ -1120,6 +1120,16 @@ When importing MuJoCo-authored USD, opt into that mapping explicitly::
 Registering MuJoCo custom attributes alone enables the ``model.mujoco``
 namespace but does not map ``mjc:damping`` to the built-in property.
 
+Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
+``condim`` 1, 3, 4, and 6 import as :class:`~newton.ShapeFrictionMode`
+``NONE``, ``SLIDING``, ``TORSIONAL``, and ``ROLLING``, and the solver
+converts the modes back. USD ``mjc:condim`` maps through
+:class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
+custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
+values set in code are folded into the friction mode at
+:meth:`~newton.ModelBuilder.finalize` with a deprecation warning, and
+``model.mujoco.condim`` is a read-only copy derived from the friction mode.
+
 
 Unsupported MuJoCo features
 ---------------------------

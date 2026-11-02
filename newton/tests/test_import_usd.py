@@ -5551,6 +5551,79 @@ def Xform "Articulation" (
         self.assertAlmostEqual(rolling, 0.08, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_shape_friction_mode_parsing(self):
+        """Select the shape friction mode from authored MuJoCo, PhysX, and Newton attributes."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        from newton._src.usd.schemas import (  # noqa: PLC0415
+            SchemaResolverMjc,
+            SchemaResolverNewton,
+            SchemaResolverPhysx,
+        )
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_material(name, attributes):
+            material = UsdShade.Material.Define(stage, f"/Materials/{name}")
+            UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+            material.GetPrim().ApplyAPI("NewtonMaterialAPI")
+            for attribute, value in attributes.items():
+                material.GetPrim().CreateAttribute(attribute, Sdf.ValueTypeNames.Float).Set(value)
+            return material
+
+        materials = {
+            "torsional": define_material("Torsional", {"newton:torsionalFriction": 0.02}),
+            "rolling": define_material("Rolling", {"newton:rollingFriction": 0.01}),
+        }
+        mode = newton.ShapeFrictionMode
+        cases = {
+            "Default": ({}, None, mode.SLIDING),
+            "MjcFrictionless": ({"mjc:condim": 1}, None, mode.NONE),
+            "MjcRolling": ({"mjc:condim": 6}, None, mode.ROLLING),
+            "PhysxPatchRadius": ({"physxCollision:minTorsionalPatchRadius": 0.01}, None, mode.TORSIONAL),
+            "NewtonTorsional": ({}, "torsional", mode.TORSIONAL),
+            "NewtonRolling": ({}, "rolling", mode.ROLLING),
+            "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.TORSIONAL),
+            "MaterialRaisesMode": ({"mjc:condim": 1}, "torsional", mode.TORSIONAL),
+        }
+        for i, (name, (attributes, material, _expected)) in enumerate(cases.items()):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            body.AddTranslateOp().Set((float(i), 0.0, 0.0))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            for attribute, value in attributes.items():
+                value_type = Sdf.ValueTypeNames.Int if isinstance(value, int) else Sdf.ValueTypeNames.Float
+                collider.GetPrim().CreateAttribute(attribute, value_type).Set(value)
+            if name.startswith("MjcCollider"):
+                collider.GetPrim().AddAppliedSchema("MjcCollisionAPI")
+            if material is not None:
+                UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(materials[material], "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(
+            stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc(), SchemaResolverPhysx()]
+        )
+        model = builder.finalize()
+
+        friction_mode = model.shape_material_friction_mode.numpy()
+        for name, (_attributes, _material, expected) in cases.items():
+            with self.subTest(name):
+                shape = result["path_shape_map"][f"/World/{name}/Collider"]
+                self.assertEqual(friction_mode[shape], expected)
+
+        # The PhysX patch radius r sets the torsional coefficient to mu * r
+        shape = result["path_shape_map"]["/World/PhysxPatchRadius/Collider"]
+        self.assertAlmostEqual(
+            float(model.shape_material_mu_torsional.numpy()[shape]),
+            0.01 * float(model.shape_material_mu.numpy()[shape]),
+            places=6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_mesh_material_subsets_create_separate_visual_shapes(self):
         """Test that visual mesh material subsets import as separate colored shapes."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt

@@ -21,6 +21,7 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
+from ..sim.enums import friction_mode_from_condim
 from ..sim.model import Model
 from ..solvers.mujoco import dcmotor
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
@@ -1281,6 +1282,9 @@ def parse_mjcf(
 
                 if len(friction_values) >= 3:
                     shape_cfg.mu_rolling = float(friction_values[2])
+
+            if "condim" in geom_attrib:
+                shape_cfg.friction_mode = friction_mode_from_condim(int(geom_attrib["condim"]))
 
             # MJCF solref also fills shape_material_ke/kd via the lossy
             # conversion for back-compat with the legacy

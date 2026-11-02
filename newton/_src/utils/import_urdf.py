@@ -20,7 +20,7 @@ from ..core.types import Transform
 from ..exceptions import NewtonWarning
 from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointTargetMode, friction_mode_from_condim
 from ..sim.model import Model
 from .import_utils import (
     clamp_imported_opacity,
@@ -496,6 +496,10 @@ def parse_urdf(
                 continue
             custom_attributes = parse_custom_attributes(geo.attrib, builder_custom_attr_shape, parsing_mode="urdf")
             shape_kwargs["custom_attributes"] = custom_attributes
+            condim = custom_attributes.pop("mujoco:condim", None)
+            shape_cfg.friction_mode = (
+                builder.default_shape_cfg.friction_mode if condim is None else friction_mode_from_condim(int(condim))
+            )
 
             tf = parse_transform(geom_group)
             if incoming_xform is not None:

@@ -5792,13 +5792,8 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
 
-        # Verify condim is 6 (inherited from parent)
-        # If inheritance is broken, this will be the default value (usually 3)
-        if hasattr(model, "mujoco") and hasattr(model.mujoco, "condim"):
-            condim = model.mujoco.condim.numpy()[0]
-            self.assertEqual(condim, 6, "condim should be 6 (inherited from parent class 'collision')")
-        else:
-            self.fail("Model should have mujoco.condim attribute")
+        # condim 6 inherited from the parent class 'collision' selects rolling friction
+        self.assertEqual(model.shape_material_friction_mode.numpy()[0], newton.ShapeFrictionMode.ROLLING)
 
     def test_explicit_class_replaces_childclass(self):
         """Use an explicit class without retaining sibling childclass defaults."""
@@ -9191,30 +9186,32 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         cls.model = cls.builder.finalize()
 
     def test_shape_defaults(self):
-        """SHAPE: condim, priority, solmix, solimp (custom attrs), gap (shape_gap)."""
+        """SHAPE: condim (friction mode), priority, solmix, solimp (custom attrs), gap (shape_gap)."""
         m = self.model.mujoco
+        friction_mode = self.model.shape_material_friction_mode.numpy()
+        mode = newton.ShapeFrictionMode
         wb = "worldbody/b_default"
         idx = self.builder.shape_label.index
 
         g_def = idx(f"{wb}/g_default")
-        self.assertEqual(m.condim.numpy()[g_def], 4)
+        self.assertEqual(friction_mode[g_def], mode.TORSIONAL)
         self.assertEqual(m.geom_priority.numpy()[g_def], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_def]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
         g_cls = idx(f"{wb}/b_class/g_class")
-        self.assertEqual(m.condim.numpy()[g_cls], 6)
+        self.assertEqual(friction_mode[g_cls], mode.ROLLING)
         self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_cls]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
 
         g_ovr = idx(f"{wb}/b_class/b_override/g_override")
-        self.assertEqual(m.condim.numpy()[g_ovr], 1)
+        self.assertEqual(friction_mode[g_ovr], mode.NONE)
 
         g_child = idx(f"{wb}/b_class/b_override/b_child/g_child")
-        self.assertEqual(m.condim.numpy()[g_child], 6)
+        self.assertEqual(friction_mode[g_child], mode.ROLLING)
         self.assertEqual(m.geom_priority.numpy()[g_child], 99)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)
