@@ -393,6 +393,8 @@ class TestViewerGizmos(unittest.TestCase):
         # Import input constants without creating Pyglet's shadow GL window.
         import pyglet
 
+        # Match RendererGL: pyglet reads this only on its first GL import.
+        pyglet.options["debug_gl"] = False
         shadow_window = pyglet.options["shadow_window"]
         pyglet.options["shadow_window"] = False
         try:

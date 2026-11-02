@@ -758,6 +758,10 @@ class TestViewerGLMultisampling(unittest.TestCase):
     def test_scene_keeps_msaa_without_a_multisampled_window_config(self):
         """Verify the scene stays anti-aliased when the window config has no MSAA."""
         try:
+            import pyglet
+
+            # Match RendererGL: pyglet reads this only on its first GL import.
+            pyglet.options["debug_gl"] = False
             import pyglet.window
         except Exception as exc:
             if not _is_viewer_gl_unavailable_error(self, exc):

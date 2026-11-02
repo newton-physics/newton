@@ -1238,8 +1238,7 @@ class RendererGL:
         try:
             self._setup_renderer(gl, headless, device)
         except BaseException:
-            # pyglet keeps every open window, so a window left open here would make the
-            # next renderer in this process probe GL through its stale context.
+            # pyglet would otherwise keep the window open for the rest of the process.
             self.window.close()
             raise
 
