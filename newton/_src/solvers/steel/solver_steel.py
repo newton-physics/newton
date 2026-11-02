@@ -3843,6 +3843,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._connect_count = 0
         self._connect_slot = None
         self._connect_row_inv_norm = None
+        self._connect_at_midpoint = None
         loop_joint_articulation = self._model_plan.loop_joint_articulation
         loop_joints = np.flatnonzero(loop_joint_articulation >= 0)
         if loop_joints.size == 0:
@@ -3909,6 +3910,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._connect_sizes = frozenset(int(response_dof_count[a]) for a in np.unique(art_np))
         self._connect_slot = wp.full((n,), -1, dtype=wp.int32, device=device)
         self._connect_row_inv_norm = wp.zeros((n, 3), dtype=float, device=device)
+        self._connect_at_midpoint = wp.zeros(n, dtype=wp.int32, device=device)
         self._connect_count = n
 
     def _validate_connect_parent_membership(self) -> None:
@@ -4108,6 +4110,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.joint_X_p,
                         model.joint_X_c,
                         self._connect_parent_prescribed,
+                        self._kinematic_dof_mask,
                         state_in.body_q,
                         state_in.body_qd,
                         model.body_com,
@@ -4125,6 +4128,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._phi,
                         self._target_velocity,
                         self._connect_row_inv_norm,
+                        self._connect_at_midpoint,
                     ],
                     device=model.device,
                 )
@@ -7260,6 +7264,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._connect_joint,
                     model.joint_X_p,
                     model.joint_X_c,
+                    self._connect_at_midpoint,
                     self._connect_row_inv_norm,
                     self._art_to_world,
                     state_in.body_q,
