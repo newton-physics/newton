@@ -26,10 +26,7 @@ from newton._src.geometry.remesh import (
     compute_camera_basis,
     compute_voxel_key,
 )
-from newton.tests.unittest_utils import has_module
-
-# Check if Open3D is available for reconstruction tests
-OPEN3D_AVAILABLE = has_module("open3d")
+from newton.tests.unittest_utils import requires
 
 # Check if CUDA is available (required for Warp mesh raycasting)
 _cuda_available = wp.is_cuda_available()
@@ -311,7 +308,8 @@ class TestPointCloudExtractor(unittest.TestCase):
             extractor.extract(vertices, bad_indices)
 
 
-@unittest.skipUnless(_cuda_available and OPEN3D_AVAILABLE, "Requires CUDA and Open3D")
+@requires("open3d")
+@unittest.skipUnless(_cuda_available, "Requires CUDA")
 class TestSurfaceReconstructor(unittest.TestCase):
     """Test the SurfaceReconstructor class."""
 
@@ -1034,7 +1032,7 @@ class TestRemeshHelperFunctions(unittest.TestCase):
 
 
 @unittest.skipUnless(_cuda_available, "Remeshing requires CUDA")
-@unittest.skipUnless(OPEN3D_AVAILABLE, "SurfaceReconstructor requires Open3D")
+@requires("open3d")
 class TestRemeshUnifiedAPI(unittest.TestCase):
     """Test the unified remeshing API in utils.py with method='poisson'."""
 

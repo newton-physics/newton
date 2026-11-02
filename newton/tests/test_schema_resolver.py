@@ -45,7 +45,7 @@ from newton import Model, ModelBuilder
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
 from newton._src.usd.schema_resolver import SchemaResolverManager
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, requires
+from newton.tests.unittest_utils import has_module, requires
 from newton.usd import (
     PrimType,
     SchemaResolver,
@@ -56,7 +56,7 @@ from newton.usd import (
 
 AttributeFrequency = Model.AttributeFrequency
 
-if USD_AVAILABLE:
+if has_module("pxr.Usd"):
     try:
         from pxr import Sdf, UsdGeom, UsdPhysics, UsdShade
         from pxr import Usd as _Usd

@@ -489,7 +489,7 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
 
     @unittest.skipIf(sys.platform == "win32", "trimesh's meshio loader reopens an open NamedTemporaryFile")
-    @requires("meshio")
+    @requires("meshio", "trimesh")
     def test_gmsh_mesh_urdf(self):
         """Keep Gmsh .msh files on the shared mesh loader's existing path."""
         import meshio
@@ -527,7 +527,7 @@ class TestImportUrdfBasic(unittest.TestCase):
                             load_meshes_from_file(str(path), maxhullvert=0, override_color=color)
                         self.assertIn(str(path), str(error.exception))
 
-    @requires("trimesh")
+    @requires("trimesh", "collada", "PIL")
     def test_dae_visual_texture_urdf(self):
         """Verify URDF visual meshes preserve Collada texture bindings."""
         urdf = """

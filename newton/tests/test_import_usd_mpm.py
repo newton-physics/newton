@@ -11,7 +11,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverImplicitMPM
-from newton.tests.unittest_utils import USD_AVAILABLE, requires
+from newton.tests.unittest_utils import has_module, requires
 
 try:
     import newton_usd_schemas
@@ -21,7 +21,7 @@ except ImportError:
 
 def _has_mpm_schemas() -> bool:
     """Return whether the installed schema package contains the MPM APIs."""
-    if not USD_AVAILABLE or newton_usd_schemas is None:
+    if not has_module("pxr.Usd") or newton_usd_schemas is None:
         return False
     from pxr import Usd, UsdGeom
 

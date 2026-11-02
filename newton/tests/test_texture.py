@@ -10,9 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from newton._src.utils.texture import linear_texture_to_srgb, load_texture
-from newton.tests.unittest_utils import has_module, requires
-
-_PIL_AVAILABLE = has_module("PIL")
+from newton.tests.unittest_utils import requires
 
 
 class TestLinearTextureToSrgb(unittest.TestCase):
@@ -69,8 +67,7 @@ def _build_usdz_with_texture(tmpdir: str, color: tuple[int, int, int]) -> Path:
     return usdz_path
 
 
-@requires("pxr.Usd")
-@unittest.skipUnless(_PIL_AVAILABLE, "Requires Pillow")
+@requires("pxr.Usd", "PIL")
 class TestPackagedTextureLoading(unittest.TestCase):
     def test_load_texture_from_usdz_package(self):
         """Load a texture addressed with USD package-relative syntax (``scene.usdz[tex.png]``).

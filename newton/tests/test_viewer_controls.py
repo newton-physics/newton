@@ -343,7 +343,7 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
             ViewerGL(enable_cuda_interop=ViewerGL.CudaInterop(1 << 10))
 
 
-@requires("imgui_bundle")
+@requires("imgui_bundle", "pyglet")
 class TestViewerGizmos(unittest.TestCase):
     def setUp(self) -> None:
         from imgui_bundle import imgui, imguizmo

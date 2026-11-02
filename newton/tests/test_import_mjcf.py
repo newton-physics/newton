@@ -275,7 +275,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
-    @requires(*MUJOCO_MODULES)
+    @requires("PIL", *MUJOCO_MODULES)
     def test_mujoco_binary_msh_mesh(self):
         """Preserve MSH geometry, normals, and UVs with authored or convex-hull faces."""
         import mujoco
@@ -4602,7 +4602,7 @@ f 4 5 8
             # Ellipsoid uses AABB half-extents directly: (1.0, 0.5, 2.0)
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
 
-    @requires(*MUJOCO_MODULES)
+    @requires("trimesh", *MUJOCO_MODULES)
     def test_mesh_geom_type_defaults(self):
         """Fit MuJoCo's default sphere to a mesh geom unless a mesh type is set or inherited."""
         mujoco = SolverMuJoCo.import_mujoco()[0]

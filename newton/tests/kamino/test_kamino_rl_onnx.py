@@ -15,12 +15,9 @@ import warp as wp
 from newton._src.solvers.kamino.examples.rl.example_rl_drlegs import _build_observation_kernel
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
-from newton.tests.unittest_utils import has_module
+from newton.tests.unittest_utils import has_module, requires
 
-_HAS_ONNX = has_module("onnx")
-_HAS_WARP_NN = has_module("warp_nn")
-
-if _HAS_ONNX and _HAS_WARP_NN:
+if has_module("onnx") and has_module("warp_nn"):
     import onnx
     from onnx import TensorProto, helper, numpy_helper
 
@@ -151,7 +148,7 @@ import newton._src.solvers.kamino.examples.rl.example_rl_drlegs  # noqa: F401, E
         self.assertIs(wrapper.body_pair_contact_flag, flag)
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestKaminoRlOnnx(unittest.TestCase):
     """Test Warp-NN policy inference used by the Kamino RL example."""
 

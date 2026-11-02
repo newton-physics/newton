@@ -7,7 +7,6 @@ import ctypes.util
 import dataclasses
 import functools
 import importlib
-import importlib.metadata
 import io
 import linecache
 import os
@@ -31,11 +30,6 @@ class BrokenTestDependencyError(RuntimeError):
 
 
 @functools.cache
-def _installed_top_level_modules() -> frozenset[str]:
-    return frozenset(importlib.metadata.packages_distributions())
-
-
-@functools.cache
 def _import_error(name: str) -> ImportError | OSError | None:
     try:
         importlib.import_module(name)
@@ -46,7 +40,10 @@ def _import_error(name: str) -> ImportError | OSError | None:
 
 def _broken_error(name: str) -> BrokenTestDependencyError | None:
     exc = _import_error(name)
-    if exc is None or name.partition(".")[0] not in _installed_top_level_modules():
+    if exc is None:
+        return None
+    # Only the module itself or a parent package not being found means missing; anything else is a broken install.
+    if isinstance(exc, ModuleNotFoundError) and exc.name and (name == exc.name or name.startswith(exc.name + ".")):
         return None
     error = BrokenTestDependencyError(f"{name!r} is installed but fails to import: {exc}")
     error.__cause__ = exc
@@ -59,9 +56,6 @@ def has_module(name: str) -> bool:
 
 
 MUJOCO_MODULES = ("mujoco", "mujoco_warp")
-
-
-USD_AVAILABLE = has_module("pxr.Usd")
 
 
 def missing_modules(modules) -> list[str]:
