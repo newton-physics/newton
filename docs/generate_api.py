@@ -4,10 +4,11 @@
 """Generate concise API .rst files for public modules.
 
 This helper discovers Newton's top-level public modules from ``newton.__all__``,
-reads each module's ``__all__`` list (and falls back to public attributes if
-``__all__`` is missing), and writes one reStructuredText file per module with an
-``autosummary`` directive.  Modules may use ``__deprecated_symbols__`` to keep
-warning-only compatibility names documented without resolving their values.
+reads each module's ``__all__`` list, and writes one reStructuredText file per
+module with an ``autosummary`` directive. Modules without a valid ``__all__``
+are rejected so undeclared attributes cannot become documented public API.
+Modules may use ``__deprecated_symbols__`` to keep warning-only compatibility
+names documented without resolving their values.
 When Sphinx later builds the documentation (with
 ``autosummary_generate = True``), individual stub pages will be created
 automatically for every listed symbol.
@@ -33,6 +34,7 @@ import re
 import shutil
 import sys
 from datetime import datetime
+from itertools import groupby
 from pathlib import Path
 from types import ModuleType
 
@@ -57,6 +59,13 @@ TOCTREE_RST = OUTPUT_DIR / "_toctree.rst"
 # file).  Keeping them alongside the .rst files avoids clutter elsewhere.
 TOCTREE_DIR = "_generated"  # sub-folder inside OUTPUT_DIR
 
+# These public views inherit their API from private, undocumented base classes.
+CLASS_TEMPLATES = {
+    "newton.selection.DeformableCurveView": "class.rst",
+    "newton.selection.DeformableSurfaceView": "class.rst",
+    "newton.selection.DeformableVolumeView": "class.rst",
+}
+
 COPYRIGHT_RE = re.compile(r"^\.\. SPDX-FileCopyrightText: Copyright \(c\) \d{4} The Newton Developers$")
 _COPYRIGHT_LINES: dict[Path, str] = {}
 
@@ -66,17 +75,16 @@ _COPYRIGHT_LINES: dict[Path, str] = {}
 
 
 def public_symbols(mod: ModuleType) -> list[str]:
-    """Return the list of public names for *mod* (honours ``__all__``)."""
+    """Return the public names explicitly declared by *mod*."""
 
-    if hasattr(mod, "__all__") and isinstance(mod.__all__, list | tuple):
-        return list(mod.__all__)
+    names = getattr(mod, "__all__", None)
+    if not isinstance(names, list | tuple):
+        raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple")
+    for name in names:
+        if not isinstance(name, str):
+            raise ValueError(f"{mod.__name__}.__all__ must contain only strings; got {name!r}")
 
-    def is_public(name: str) -> bool:
-        if name.startswith("_"):
-            return False
-        return not inspect.ismodule(getattr(mod, name))
-
-    return sorted(filter(is_public, dir(mod)))
+    return list(names)
 
 
 def _read_copyright_line(path: Path) -> str | None:
@@ -134,8 +142,7 @@ def api_modules() -> list[str]:
 
 def _is_solver_only_module(mod: ModuleType) -> bool:
     """Return True when the module only exposes its solver class."""
-    names = getattr(mod, "__all__", None)
-    public = list(names) if isinstance(names, (list, tuple)) else public_symbols(mod)
+    public = public_symbols(mod)
     return len(public) == 1 and public[0].startswith("Solver")
 
 
@@ -213,6 +220,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     classes: list[str] = []
     functions: list[str] = []
     constants: list[str] = []
+    attributes: list[str] = []
     modules: list[str] = []
     deprecated: list[str] = []
 
@@ -228,6 +236,13 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
         # ------------------------------------------------------------------
         if inspect.isclass(attr) or wp.types.type_is_struct(attr):
             classes.append(name)
+            continue
+
+        # ------------------------------------------------------------------
+        # Annotated mutable settings: document without capturing runtime values.
+        # ------------------------------------------------------------------
+        if name in getattr(module, "__annotations__", {}) and not name.isupper():
+            attributes.append(name)
             continue
 
         # ------------------------------------------------------------------
@@ -277,12 +292,9 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 "   Because ``newton.solvers`` is a module rather than a package, use",
                 f"   ``from newton.solvers import {sub_name}`` instead of ``import {mod_name}``.",
                 "",
-                f".. currentmodule:: newton._src.solvers.{sub_name}",
-                "",
             ]
         )
-    else:
-        lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
+    lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
     # Render submodules as direct document links instead of autosummary stubs.
     # Child module pages still need hidden toctree edges to satisfy Sphinx.
@@ -317,15 +329,22 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
             for cls in classes:
                 lines.extend([f".. autoclass:: {cls}", ""])
         else:
-            lines.extend(
-                [
-                    ".. autosummary::",
-                    f"   :toctree: {TOCTREE_DIR}",
-                    "   :nosignatures:",
-                    "",
-                ]
-            )
-            lines.extend([f"   {cls}" for cls in classes])
+            for template, template_classes in groupby(
+                classes, key=lambda cls: CLASS_TEMPLATES.get(f"{mod_name}.{cls}")
+            ):
+                if lines[-1]:
+                    lines.append("")
+                lines.extend(
+                    [
+                        ".. autosummary::",
+                        f"   :toctree: {TOCTREE_DIR}",
+                        "   :nosignatures:",
+                    ]
+                )
+                if template:
+                    lines.append(f"   :template: {template}")
+                lines.append("")
+                lines.extend([f"   {cls}" for cls in template_classes])
         lines.append("")
 
     if functions:
@@ -367,6 +386,11 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 ]
             )
         lines.append("")
+
+    if attributes:
+        lines.extend([".. rubric:: Attributes", ""])
+        for name in sorted(attributes):
+            lines.extend([f".. autodata:: {name}", "   :no-value:", ""])
 
     if constants:
         constants.sort()

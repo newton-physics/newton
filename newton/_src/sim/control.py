@@ -20,9 +20,8 @@ class Control:
     activation forces. Create via :func:`newton.Model.control()`.
 
     Position and velocity targets live on :attr:`joint_target_q` and
-    :attr:`joint_target_qd`. The shape of :attr:`joint_target_q` depends on
-    :data:`newton.use_coord_layout_targets` — coord-shaped when ``True``,
-    DOF-shaped otherwise.
+    :attr:`joint_target_qd`, matching the coordinate layout of
+    :attr:`State.joint_q` and DOF layout of :attr:`State.joint_qd`, respectively.
     """
 
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
@@ -34,17 +33,17 @@ class Control:
         Array of generalized joint forces [N or N·m, depending on joint type] with shape ``(joint_dof_count,)``
         and type ``float``.
 
-        The degrees of freedom for FREE and DISTANCE joints are included in this array and have the same
+        The degrees of freedom for FREE, DISTANCE, and ROD joints are included in this array and have the same
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
         ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
         of the force vector (linear) [N] and ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular) [N·m]. For FREE and DISTANCE joints, the wrench is applied in world
+        components of the torque vector (angular) [N·m]. For FREE, DISTANCE, and ROD joints, the wrench is applied in world
         frame with the child body's center of mass (COM) as reference point.
         """
         self.joint_target_q: wp.array | None = None
-        """Joint position targets [m or rad]. Shape is ``(joint_coord_count,)``
-        when :data:`newton.use_coord_layout_targets` is ``True``, otherwise
-        ``(joint_dof_count,)`` (legacy layout).
+        """Joint position targets [m or rad, with unit quaternions for rotations
+        of ball and free joints], shape ``(joint_coord_count,)``.
+        Matches :attr:`State.joint_q`; index via :attr:`Model.joint_target_q_start`.
         """
 
         self.joint_target_qd: wp.array | None = None
@@ -76,7 +75,7 @@ class Control:
     def clear(self, model: Model | None = None) -> None:
         """Reset all control inputs to zero.
 
-        ``joint_target_q`` is special: zeroing it under coord layout corrupts
+        ``joint_target_q`` is special: zeroing it corrupts
         FREE/BALL/DISTANCE quaternion slots (``(0,0,0,0)`` is not a valid
         rotation). Pass ``model`` to restore it from ``model.joint_target_q``
         instead. Without ``model`` it falls back to the legacy zero-fill.
@@ -84,7 +83,7 @@ class Control:
         Args:
             model: Optional source :class:`Model` whose ``joint_target_q``
                 seeds this Control. Required for models with FREE/BALL/DISTANCE
-                joints under coord layout.
+                joints.
         """
 
         if self.joint_f is not None:

@@ -121,254 +121,103 @@ def compute_com_world_position(body_q, body_com, body_world, world_offsets=None,
     return com_world.numpy()[body_index]
 
 
-def test_angular_velocity_com_stationary(
-    test: TestBodyVelocity,
-    device,
-    solver_fn,
-    uses_generalized_coords: bool,
-    com_offset: tuple[float, float, float],
-    angular_velocity: tuple[float, float, float],
-    tolerance: float,
-):
-    """Test that angular velocity causes rotation about CoM, not body origin.
-
-    When a body has a non-zero CoM offset and we apply angular velocity with zero
-    linear velocity (at the CoM), the CoM should stay stationary while the body
-    rotates around it.
-
-    Args:
-        test: Test case instance
-        device: Compute device
-        solver_fn: Function that creates a solver given a model
-        uses_generalized_coords: If True, set velocity via joint_qd; else via body_qd
-        com_offset: Center of mass offset in body frame (x, y, z)
-        angular_velocity: Angular velocity in world frame (wx, wy, wz)
-        tolerance: Maximum allowed CoM drift
-    """
+def _simulate_com_velocities(device, solver_fn, uses_generalized_coords, cases, initial_pos):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-
-    # Create a body with the specified CoM offset
-    initial_pos = wp.vec3(1.0, 2.0, 3.0)
-    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[b] = wp.vec3(*com_offset)
+    # Independent cases share one world and must not collide.
+    shape_cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+    for com_offset, _velocity in cases:
+        body = builder.add_body(xform=wp.transform(wp.vec3(*initial_pos), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        builder.body_com[body] = wp.vec3(*com_offset)
 
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-
-    state_0 = model.state()
-    state_1 = model.state()
-
-    # Compute initial FK
+    state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    # Set angular velocity (linear velocity = 0 at CoM)
-    # joint_qd for FREE joint: [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
-    # body_qd: [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
-    velocity = np.array([0.0, 0.0, 0.0, *angular_velocity], dtype=np.float32)
-
+    velocities = np.array([velocity for _com_offset, velocity in cases], dtype=np.float32)
     if uses_generalized_coords:
-        # MuJoCo, Featherstone: set joint_qd
-        state_0.joint_qd.assign(velocity)
-        # Also need to update body_qd via FK for the solver
+        state_0.joint_qd.assign(velocities.reshape(-1))
         newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     else:
-        # XPBD, SemiImplicit: set body_qd directly
-        state_0.body_qd.assign(velocity.reshape(1, 6))
+        state_0.body_qd.assign(velocities)
 
-    # Get initial CoM position in world frame
-    body_q_initial = state_0.body_q.numpy()[0].copy()
-    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
+    com_positions = wp.empty(model.body_count, dtype=wp.vec3, device=device)
 
-    # Step simulation
-    sim_dt = 0.01
-    num_steps = 10
+    def record_com(state):
+        wp.launch(
+            compute_com_positions,
+            dim=model.body_count,
+            inputs=[state.body_q, model.body_com, model.body_world, None, wp.transform_identity(), None],
+            outputs=[com_positions],
+            device=device,
+        )
+        return com_positions.numpy().copy()
 
-    for _ in range(num_steps):
-        solver.step(state_0, state_1, None, None, sim_dt)
+    body_q_initial = state_0.body_q.numpy().copy()
+    com_initial = record_com(state_0)
+    for _ in range(10):
+        solver.step(state_0, state_1, None, None, 0.01)
         state_0, state_1 = state_1, state_0
+    return body_q_initial, state_0.body_q.numpy(), com_initial, record_com(state_0)
 
-    # Get final CoM position
-    body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
-    # CoM should stay stationary (within numerical tolerance)
-    com_drift = np.linalg.norm(com_final - com_initial)
-    test.assertLess(
-        com_drift,
-        tolerance,
-        f"CoM drifted by {com_drift:.6f} (expected < {tolerance}). Initial CoM: {com_initial}, Final CoM: {com_final}",
+def test_angular_velocity_com_stationary(test, device, solver_fn, uses_generalized_coords, tolerance):
+    """Check rotation about each offset CoM for every angular-velocity direction."""
+    cases = [(offset, (0.0, 0.0, 0.0, *velocity)) for offset in com_offsets for velocity in angular_velocities]
+    body_q_initial, body_q_final, com_initial, com_final = _simulate_com_velocities(
+        device, solver_fn, uses_generalized_coords, cases, initial_pos=(1.0, 2.0, 3.0)
     )
+    for body, (offset, velocity) in enumerate(cases):
+        with test.subTest(com_offset=offset, angular_velocity=velocity[3:]):
+            com_drift = np.linalg.norm(com_final[body] - com_initial[body])
+            test.assertLess(
+                com_drift,
+                tolerance,
+                f"CoM drifted by {com_drift:.6f} (expected < {tolerance}). "
+                f"Initial CoM: {com_initial[body]}, Final CoM: {com_final[body]}",
+            )
+            quat_diff = np.abs(np.dot(body_q_initial[body, 3:7], body_q_final[body, 3:7]))
+            test.assertLess(quat_diff, 0.9999, "Body should have rotated but quaternion barely changed")
 
-    # Verify that the body actually rotated (quaternion changed)
-    quat_initial = body_q_initial[3:7]
-    quat_final = body_q_final[3:7]
-    quat_diff = np.abs(np.dot(quat_initial, quat_final))
-    test.assertLess(
-        quat_diff,
-        0.9999,
-        "Body should have rotated but quaternion barely changed",
+
+def test_linear_velocity_com_moves(test, device, solver_fn, uses_generalized_coords, tolerance):
+    """Check translation of each offset CoM for every linear-velocity direction."""
+    cases = [(offset, (*velocity, 0.0, 0.0, 0.0)) for offset in com_offsets for velocity in linear_velocities]
+    _body_q_initial, _body_q_final, com_initial, com_final = _simulate_com_velocities(
+        device, solver_fn, uses_generalized_coords, cases, initial_pos=(0.0, 0.0, 1.0)
     )
+    for body, (offset, velocity) in enumerate(cases):
+        with test.subTest(com_offset=offset, linear_velocity=velocity[:3]):
+            expected_displacement = np.array(velocity[:3]) * 0.1
+            actual_displacement = com_final[body] - com_initial[body]
+            displacement_error = np.linalg.norm(actual_displacement - expected_displacement)
+            test.assertLess(
+                displacement_error,
+                tolerance,
+                f"CoM displacement error: {displacement_error:.6f} (expected < {tolerance}). "
+                f"Expected: {expected_displacement}, Actual: {actual_displacement}",
+            )
 
 
-def test_linear_velocity_com_moves(
-    test: TestBodyVelocity,
-    device,
-    solver_fn,
-    uses_generalized_coords: bool,
-    com_offset: tuple[float, float, float],
-    linear_velocity: tuple[float, float, float],
-    tolerance: float,
-):
-    """Test that linear velocity causes CoM to move as expected.
-
-    When a body has a non-zero CoM offset and we apply linear velocity at the CoM
-    with zero angular velocity, the CoM should translate at the specified velocity.
-
-    Args:
-        test: Test case instance
-        device: Compute device
-        solver_fn: Function that creates a solver given a model
-        uses_generalized_coords: If True, set velocity via joint_qd; else via body_qd
-        com_offset: Center of mass offset in body frame (x, y, z)
-        linear_velocity: Linear velocity in world frame (vx, vy, vz)
-        tolerance: Maximum allowed displacement error
-    """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-
-    initial_pos = wp.vec3(0.0, 0.0, 1.0)
-    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[b] = wp.vec3(*com_offset)
-
-    model = builder.finalize(device=device)
-    solver = solver_fn(model)
-
-    state_0 = model.state()
-    state_1 = model.state()
-
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    # Set linear velocity (angular velocity = 0)
-    velocity = np.array([*linear_velocity, 0.0, 0.0, 0.0], dtype=np.float32)
-
-    if uses_generalized_coords:
-        state_0.joint_qd.assign(velocity)
-        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    else:
-        state_0.body_qd.assign(velocity.reshape(1, 6))
-
-    # Get initial CoM position
-    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    # Step simulation
-    sim_dt = 0.01
-    num_steps = 10
-    total_time = sim_dt * num_steps
-
-    for _ in range(num_steps):
-        solver.step(state_0, state_1, None, None, sim_dt)
-        state_0, state_1 = state_1, state_0
-
-    # Get final CoM position
-    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    # Expected displacement = velocity * time
-    expected_displacement = np.array(linear_velocity) * total_time
-    actual_displacement = com_final - com_initial
-
-    # Check that displacement matches expected
-    displacement_error = np.linalg.norm(actual_displacement - expected_displacement)
-    test.assertLess(
-        displacement_error,
-        tolerance,
-        f"CoM displacement error: {displacement_error:.6f} (expected < {tolerance}). "
-        f"Expected: {expected_displacement}, Actual: {actual_displacement}",
+def test_combined_velocity(test, device, solver_fn, uses_generalized_coords, tolerance):
+    """Check translation and rotation together for every CoM offset."""
+    cases = [(offset, (0.1, 0.0, 0.0, 0.0, 0.0, 1.0)) for offset in com_offsets]
+    body_q_initial, body_q_final, com_initial, com_final = _simulate_com_velocities(
+        device, solver_fn, uses_generalized_coords, cases, initial_pos=(0.0, 0.0, 1.0)
     )
-
-
-def test_combined_velocity(
-    test: TestBodyVelocity,
-    device,
-    solver_fn,
-    uses_generalized_coords: bool,
-    com_offset: tuple[float, float, float],
-    tolerance: float,
-):
-    """Test combined linear and angular velocity with non-zero CoM offset.
-
-    When both linear and angular velocities are applied, the CoM should translate
-    at the linear velocity rate while the body rotates.
-
-    Args:
-        test: Test case instance
-        device: Compute device
-        solver_fn: Function that creates a solver given a model
-        uses_generalized_coords: If True, set velocity via joint_qd; else via body_qd
-        com_offset: Center of mass offset in body frame (x, y, z)
-        tolerance: Maximum allowed displacement error
-    """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-
-    initial_pos = wp.vec3(0.0, 0.0, 1.0)
-    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[b] = wp.vec3(*com_offset)
-
-    model = builder.finalize(device=device)
-    solver = solver_fn(model)
-
-    state_0 = model.state()
-    state_1 = model.state()
-
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    # Set both linear and angular velocity
-    linear_velocity = (0.1, 0.0, 0.0)
-    angular_velocity = (0.0, 0.0, 1.0)
-    velocity = np.array([*linear_velocity, *angular_velocity], dtype=np.float32)
-
-    if uses_generalized_coords:
-        state_0.joint_qd.assign(velocity)
-        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    else:
-        state_0.body_qd.assign(velocity.reshape(1, 6))
-
-    # Get initial CoM position
-    body_q_initial = state_0.body_q.numpy()[0].copy()
-    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    # Step simulation
-    sim_dt = 0.01
-    num_steps = 10
-    total_time = sim_dt * num_steps
-
-    for _ in range(num_steps):
-        solver.step(state_0, state_1, None, None, sim_dt)
-        state_0, state_1 = state_1, state_0
-
-    # Get final CoM position
-    body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    # Expected displacement = linear_velocity * time (rotation shouldn't affect CoM position)
-    expected_displacement = np.array(linear_velocity) * total_time
-    actual_displacement = com_final - com_initial
-
-    # The CoM should have moved only due to linear velocity, not angular
-    displacement_error = np.linalg.norm(actual_displacement - expected_displacement)
-    test.assertLess(
-        displacement_error,
-        tolerance,
-        f"CoM displacement error: {displacement_error:.6f} (expected < {tolerance}). "
-        f"Expected: {expected_displacement}, Actual: {actual_displacement}",
-    )
-
-    # Verify body rotated
-    quat_initial = body_q_initial[3:7]
-    quat_final = body_q_final[3:7]
-    quat_diff = np.abs(np.dot(quat_initial, quat_final))
-    test.assertLess(quat_diff, 0.9999, "Body should have rotated")
+    for body, (offset, velocity) in enumerate(cases):
+        with test.subTest(com_offset=offset):
+            expected_displacement = np.array(velocity[:3]) * 0.1
+            actual_displacement = com_final[body] - com_initial[body]
+            displacement_error = np.linalg.norm(actual_displacement - expected_displacement)
+            test.assertLess(
+                displacement_error,
+                tolerance,
+                f"CoM displacement error: {displacement_error:.6f} (expected < {tolerance}). "
+                f"Expected: {expected_displacement}, Actual: {actual_displacement}",
+            )
+            quat_diff = np.abs(np.dot(body_q_initial[body, 3:7], body_q_final[body, 3:7]))
+            test.assertLess(quat_diff, 0.9999, "Body should have rotated")
 
 
 def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
@@ -405,55 +254,34 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     np.testing.assert_allclose(state_1.body_qd.numpy()[body, 3:6], (0.0, 0.0, 0.0), atol=1e-5)
 
 
-def test_featherstone_d6_three_angular_body_qd_matches_fk(
-    test: TestBodyVelocity,
-    device,
-):
-    """SolverFeatherstone's reported body_qd should match eval_fk for a D6 joint
-    with three angular DOFs at a non-identity configuration.
-
-    The Featherstone state update and the public eval_fk must agree on the
-    world-frame angular velocity, which is the transported-axis sum rather than
-    the raw joint_qd.
-    """
+def test_d6_angular_state_matches_fk(test: TestBodyVelocity, device, solver_fn):
+    """Solvers must report the eval_fk body state of multi-angular D6 coordinates and recover them with eval_ik."""
+    q = np.array([0.5, -0.4, 0.7], dtype=np.float32)
+    qd = np.array([0.9, -0.6, 0.3], dtype=np.float32)
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
-    builder.add_shape_sphere(child, radius=0.1)
-    j = builder.add_joint_d6(
-        parent=-1,
-        child=child,
-        angular_axes=[
-            cfg(axis=newton.Axis.X),
-            cfg(axis=newton.Axis.Y),
-            cfg(axis=newton.Axis.Z),
-        ],
-    )
-    builder.add_articulation([j])
+    # non-XYZ axis orders, as in the nv_humanoid.xml hips
+    for axes in ((newton.Axis.X, newton.Axis.Z, newton.Axis.Y), (newton.Axis.X, newton.Axis.Z)):
+        with test.subTest(axis_count=len(axes)):
+            n = len(axes)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            child = builder.add_link(mass=1.0, inertia=wp.mat33(np.diag([0.1, 0.2, 0.15])))
+            j = builder.add_joint_d6(-1, child, angular_axes=[cfg(axis=axis) for axis in axes])
+            builder.add_articulation([j])
+            model = builder.finalize(device=device)
 
-    model = builder.finalize(device=device)
-    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
-    state_0 = model.state()
-    state_1 = model.state()
+            state_0, state_1 = model.state(), model.state()
+            state_0.joint_q.assign(q[:n])
+            state_0.joint_qd.assign(qd[:n])
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            # not smaller: constraint stabilization turns float32 pose round-off into velocity errors ~ 1/dt
+            dt = 1.0e-4
+            solver_fn(model).step(state_0, state_1, None, None, dt)
 
-    q = state_0.joint_q.numpy()
-    qd = state_0.joint_qd.numpy()
-    q[:3] = [0.5, -0.4, 0.7]
-    qd[:3] = [0.9, -0.6, 0.3]
-    state_0.joint_q.assign(q)
-    state_0.joint_qd.assign(qd)
-
-    # Reference angular velocity from the (corrected) public FK.
-    reference = model.state()
-    reference.joint_q.assign(q)
-    reference.joint_qd.assign(qd)
-    newton.eval_fk(model, reference.joint_q, reference.joint_qd, reference)
-    expected = reference.body_qd.numpy()[child]
-
-    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    solver.step(state_0, state_1, model.control(), None, 1.0e-7)
-
-    np.testing.assert_allclose(state_1.body_qd.numpy()[child], expected, atol=1.0e-5, rtol=1.0e-6)
+            np.testing.assert_allclose(state_1.body_q.numpy(), state_0.body_q.numpy(), atol=1.0e-4)
+            np.testing.assert_allclose(state_1.body_qd.numpy(), state_0.body_qd.numpy(), atol=1.0e-3)
+            newton.eval_ik(model, state_1, state_1.joint_q, state_1.joint_qd)
+            np.testing.assert_allclose(state_1.joint_q.numpy(), q[:n] + dt * qd[:n], atol=1.0e-5)
+            np.testing.assert_allclose(state_1.joint_qd.numpy(), qd[:n], atol=1.0e-3)
 
 
 def test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent(
@@ -905,55 +733,29 @@ for device in devices:
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
 
-        # Test angular velocity with various CoM offsets
-        for i, com_offset in enumerate(com_offsets):
-            for j, angular_vel in enumerate(angular_velocities):
-                add_function_test(
-                    TestBodyVelocity,
-                    f"test_angular_com_stationary_{solver_name}_com{i}_ang{j}",
-                    test_angular_velocity_com_stationary,
-                    devices=[device],
-                    solver_fn=solver_fn,
-                    uses_generalized_coords=uses_gen_coords,
-                    com_offset=com_offset,
-                    angular_velocity=angular_vel,
-                    tolerance=tolerance,
-                )
+        add_function_test(
+            TestBodyVelocity,
+            f"test_d6_angular_state_matches_fk_{solver_name}",
+            test_d6_angular_state_matches_fk,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
 
-        # Test linear velocity with various CoM offsets
-        for i, com_offset in enumerate(com_offsets):
-            for j, linear_vel in enumerate(linear_velocities):
-                add_function_test(
-                    TestBodyVelocity,
-                    f"test_linear_com_moves_{solver_name}_com{i}_lin{j}",
-                    test_linear_velocity_com_moves,
-                    devices=[device],
-                    solver_fn=solver_fn,
-                    uses_generalized_coords=uses_gen_coords,
-                    com_offset=com_offset,
-                    linear_velocity=linear_vel,
-                    tolerance=tolerance,
-                )
-
-        # Test combined velocity with various CoM offsets
-        for i, com_offset in enumerate(com_offsets):
+        for name, fn in (
+            ("test_angular_com_stationary", test_angular_velocity_com_stationary),
+            ("test_linear_com_moves", test_linear_velocity_com_moves),
+            ("test_combined_velocity", test_combined_velocity),
+        ):
             add_function_test(
                 TestBodyVelocity,
-                f"test_combined_velocity_{solver_name}_com{i}",
-                test_combined_velocity,
+                f"{name}_{solver_name}",
+                fn,
                 devices=[device],
                 solver_fn=solver_fn,
                 uses_generalized_coords=uses_gen_coords,
-                com_offset=com_offset,
                 tolerance=tolerance,
             )
 
-    add_function_test(
-        TestBodyVelocity,
-        "test_featherstone_d6_three_angular_body_qd_matches_fk",
-        test_featherstone_d6_three_angular_body_qd_matches_fk,
-        devices=[device],
-    )
     add_function_test(
         TestBodyVelocity,
         "test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent",

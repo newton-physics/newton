@@ -6,12 +6,18 @@ import errno
 import hashlib
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import newton
+from newton import config
 
 try:
     import git
@@ -28,6 +34,7 @@ from newton._src.utils.download_assets import (
     _safe_rename,
     _safe_rmtree,
     _temp_cache_path,
+    clear_git_cache,
     download_git_folder,
 )
 
@@ -111,6 +118,98 @@ class TestDownloadAssets(unittest.TestCase):
         self.assertEqual(cache_dir_2, cache_dir_3)
         self.assertEqual((p3 / "foo.txt").read_text(encoding="utf-8"), "v2\n")
 
+    def test_global_asset_cache_directory(self):
+        """Use the configured asset directory and preserve explicit overrides."""
+        configured = Path(self.cache_dir) / "configured"
+        with (
+            mock.patch.object(config, "cache_dir_assets", configured),
+            mock.patch.dict(os.environ, {"NEWTON_CACHE_PATH": self.cache_dir}),
+            mock.patch("newton._src.utils.download_assets.NEWTON_ASSETS_URL", self.remote_dir),
+        ):
+            first = newton.utils.download_asset(self.asset_rel, ref="main")
+            second = newton.utils.download_asset(self.asset_rel, cache_dir=None, ref="main")
+            self.assertTrue(first.is_relative_to(configured))
+            self.assertEqual(first, second)
+            config.cache_dir_assets = None
+            explicit = newton.utils.download_asset(self.asset_rel, cache_dir=configured, ref="main")
+            self.assertEqual(explicit, first)
+            config.cache_dir_assets = Path(self.cache_dir) / "relocated"
+            relocated = newton.utils.download_asset(self.asset_rel, ref="main")
+            self.assertTrue(relocated.is_relative_to(config.cache_dir_assets))
+
+    def test_disabled_asset_cache_downloads_fresh(self):
+        """Return independent usable downloads when persistent asset caching is disabled."""
+        with (
+            mock.patch.object(config, "cache_dir_assets", None),
+            mock.patch.dict(os.environ, {"NEWTON_CACHE_PATH": self.cache_dir}),
+            mock.patch("newton._src.utils.download_assets.NEWTON_ASSETS_URL", self.remote_dir),
+        ):
+            first = newton.utils.download_asset(self.asset_rel, ref="main")
+            second = newton.utils.download_asset(self.asset_rel, ref="main")
+            self.assertNotEqual(first, second)
+            self.assertEqual((first / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+            self.assertEqual((second / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+            self.assertEqual(list(Path(self.cache_dir).iterdir()), [])
+
+    def test_uncached_download_cleanup(self):
+        """Ignore cleanup by foreign processes and remove assets when their owner exits."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                textwrap.dedent("""\
+                    import sys
+                    import newton
+                    from newton._src.utils.download_assets import (
+                        _cleanup_temporary_cache, clear_git_cache, download_git_folder,
+                    )
+
+                    newton.config.cache_dir_assets = None
+                    path = download_git_folder(sys.argv[1], sys.argv[2])
+                    clear_git_cache()
+                    assert (path / "foo.txt").read_text() == "v1\\n"
+                    # PID 0 cannot own this download. Avoid forking Warp's native threads.
+                    _cleanup_temporary_cache(str(path), owner_pid=0)
+                    assert (path / "foo.txt").read_text() == "v1\\n"
+                    print(path)
+                """),
+                self.remote_dir,
+                self.asset_rel,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = Path(result.stdout.strip().splitlines()[-1])
+        self.assertFalse(path.exists())
+
+    def test_failed_uncached_download_cleanup(self):
+        """Remove temporary asset files immediately when an uncached download fails."""
+        temporary = Path(self.cache_dir) / "temporary"
+        temporary.mkdir()
+        with (
+            mock.patch.object(config, "cache_dir_assets", None),
+            mock.patch("newton._src.utils.download_assets.tempfile.mkdtemp", return_value=str(temporary)),
+            mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None),
+            self.assertRaises(RuntimeError),
+        ):
+            download_git_folder(self.remote_dir, self.asset_rel)
+        self.assertFalse(temporary.exists())
+
+    def test_clear_configured_asset_cache(self):
+        """Clear the configured asset directory while respecting the disabled setting."""
+        configured = Path(self.cache_dir) / "configured"
+        configured.mkdir()
+        with mock.patch.object(config, "cache_dir_assets", configured):
+            clear_git_cache()
+            self.assertFalse(configured.exists())
+            configured.mkdir()
+            config.cache_dir_assets = None
+            clear_git_cache()
+            self.assertTrue(configured.exists())
+
     def test_concurrent_download(self):
         """Multiple threads downloading the same asset do not corrupt the cache."""
 
@@ -180,6 +279,121 @@ class TestDownloadAssets(unittest.TestCase):
         p = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="v1.0")
         self.assertTrue(p.exists())
         self.assertEqual((p / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+
+    def test_transient_fetch_error_retries_from_clean_temp_dir(self):
+        """Retry a transient fetch from a clean temporary directory."""
+        ref = self.work.head.commit.hexsha
+        real_init = git.Repo.init
+        for stderr in (
+            b"error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Could not resolve host: github.com",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Failed to connect to github.com port 443",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Connection timed out",
+        ):
+            with self.subTest(stderr=stderr):
+                clear_git_cache(self.cache_dir)
+                attempts = 0
+                incomplete_repo = mock.Mock()
+                incomplete_repo.git.fetch.side_effect = git.exc.GitCommandError("git fetch", 128, stderr=stderr)
+
+                def flaky_init(path, *args, incomplete_repo=incomplete_repo, **kwargs):
+                    nonlocal attempts
+                    attempts += 1
+                    path = Path(path)
+                    if attempts == 1:
+                        path.mkdir(parents=True)
+                        (path / "partial").write_text("incomplete", encoding="utf-8")
+                        return incomplete_repo
+                    self.assertFalse(path.exists())
+                    return real_init(path, *args, **kwargs)
+
+                with (
+                    mock.patch("git.Repo.init", side_effect=flaky_init),
+                    mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+                ):
+                    path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref=ref)
+
+                self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                self.assertEqual(attempts, 2)
+                incomplete_repo.git.fetch.assert_called_once_with("origin", ref, "--depth=1", "--filter=blob:none")
+                incomplete_repo.close.assert_called_once()
+                mock_sleep.assert_called_once_with(1.0)
+
+    def test_transient_clone_error_retries_from_clean_temp_dir(self):
+        """Retry a transient clone from a clean temporary directory."""
+        real_clone = git.Repo.clone_from
+        attempts = 0
+
+        def flaky_clone(url, path, *args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            path = Path(path)
+            if attempts == 1:
+                path.mkdir(parents=True)
+                (path / "partial").write_text("incomplete", encoding="utf-8")
+                raise git.exc.GitCommandError(
+                    "git clone",
+                    128,
+                    stderr="error: RPC failed; HTTP 502\nfatal: early EOF",
+                )
+            self.assertFalse(path.exists())
+            return real_clone(url, path, *args, **kwargs)
+
+        with (
+            mock.patch("git.Repo.clone_from", side_effect=flaky_clone),
+            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+        ):
+            path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
+
+        self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+        self.assertEqual(attempts, 2)
+        mock_sleep.assert_called_once_with(1.0)
+
+    def test_transient_fetch_error_stops_after_three_attempts(self):
+        """Stop retrying a transient fetch after three attempts."""
+        error = git.exc.GitCommandError(
+            "git fetch",
+            128,
+            stderr="error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
+        )
+
+        with (
+            mock.patch("git.Repo.init", side_effect=error) as mock_init,
+            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+            self.assertRaises(RuntimeError),
+        ):
+            download_git_folder(
+                self.remote_dir,
+                self.asset_rel,
+                cache_dir=self.cache_dir,
+                ref=self.work.head.commit.hexsha,
+            )
+
+        self.assertEqual(mock_init.call_count, 3)
+        self.assertEqual(mock_sleep.call_args_list, [mock.call(1.0), mock.call(2.0)])
+
+    def test_permanent_fetch_error_does_not_retry(self):
+        """Do not retry a permanent fetch error."""
+        error = git.exc.GitCommandError(
+            "git fetch",
+            128,
+            stderr="error: RPC failed; HTTP 403\nfatal: Authentication failed",
+        )
+
+        with (
+            mock.patch("git.Repo.init", side_effect=error) as mock_init,
+            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+            self.assertRaises(RuntimeError),
+        ):
+            download_git_folder(
+                self.remote_dir,
+                self.asset_rel,
+                cache_dir=self.cache_dir,
+                ref=self.work.head.commit.hexsha,
+            )
+
+        mock_init.assert_called_once()
+        mock_sleep.assert_not_called()
 
 
 class TestSafeRename(unittest.TestCase):

@@ -2,14 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from math import sqrt
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
+from newton._src.geometry import broad_phase_nxn
 from newton._src.geometry.broad_phase_sap import _advance_sap_chunk_base
 from newton._src.geometry.flags import ShapeFlags
+from newton.exceptions import NewtonWarning
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
+from newton.tests.unittest_utils import get_test_devices
 
 # NOTE: The test_group_pair and test_world_and_group_pair functions below are copied
 # from newton._src.geometry.broad_phase_common because they need to be available as
@@ -159,6 +164,123 @@ def _test_advance_sap_chunk_base(
 
 
 class TestBroadPhase(unittest.TestCase):
+    def test_explicit_large_pair_warning_thresholds(self):
+        """Warn only when total and busiest-world pair thresholds are met."""
+        cases = (
+            ("total boundary", [0, 3, 1], 3, False, 0),
+            ("below world threshold", [0, 2, 2], 4, False, 1),
+            ("multiworld prefix", [0, 2, 3], 4, False, 1),
+            ("world boundary", [0, 3, 1], 4, True, 1),
+            ("shared globals", [1, 2, 1], 4, True, 1),
+            ("many small worlds", [0, *([1] * 8)], 8, False, 1),
+            ("global-only worlds", [4, 0, 0, 0], 4, True, 1),
+            ("no regular worlds", [4], 4, True, 0),
+            ("single world", [0, 4], 4, True, 0),
+        )
+        with (
+            mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_TOTAL", 3),
+            mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD", 3),
+            mock.patch.object(wp, "launch", side_effect=AssertionError("Launched warning kernel")),
+        ):
+            for device in get_test_devices():
+                for label, counts, count, expected_warning, expected_reads in cases:
+                    worlds = wp.array(np.repeat(np.arange(len(counts)) - 1, 2), dtype=wp.int32, device=device)
+                    pairs = np.repeat(np.arange(0, 2 * len(counts), 2)[:, None] + [0, 1], counts, axis=0)
+                    pairs = wp.array(pairs, dtype=wp.vec2i, device=device)[:count]
+                    with (
+                        self.subTest(device=device, case=label),
+                        mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
+                        mock.patch.object(worlds, "numpy", wraps=worlds.numpy) as read_worlds,
+                        warnings.catch_warnings(record=True) as caught,
+                    ):
+                        warnings.filterwarnings("always", message="Explicit broad phase tests", category=NewtonWarning)
+                        BroadPhaseExplicit()._warn_large_pair_count(pairs, worlds, len(counts) - 1)
+                    self.assertEqual(len(caught), int(expected_warning))
+                    self.assertEqual(read_pairs.call_count, expected_reads)
+                    self.assertEqual(read_worlds.call_count, expected_reads)
+                    if caught:
+                        self.assertIn("broad_phase='sap'", str(caught[0].message))
+
+    def test_sap_auto_sort_selection(self):
+        """Select bounded tile sizes only for medium-sized SAP worlds."""
+        cases = (
+            (63, "segmented", 63),
+            (64, "tile", 128),
+            (129, "tile", 256),
+            (257, "tile", 512),
+            (513, "segmented", 513),
+        )
+        for shape_count, expected_sort, expected_stride in cases:
+            with self.subTest(shape_count=shape_count):
+                shape_world = np.zeros(shape_count, dtype=np.int32)
+                broad_phase = BroadPhaseSAP(shape_world, sort_type="auto", device="cpu")
+                self.assertEqual(broad_phase.sort_type, expected_sort)
+                self.assertEqual(broad_phase.max_shapes_per_world, expected_stride)
+
+    def test_sap_single_segment_uses_radix_sort(self):
+        """Use ordinary radix sorting when SAP has exactly one segment."""
+        shape_count = 4
+        device = wp.get_device()
+        shape_lower = wp.full(shape_count, wp.vec3(-1.0), dtype=wp.vec3, device=device)
+        shape_upper = wp.full(shape_count, wp.vec3(1.0), dtype=wp.vec3, device=device)
+        # Exercise the all-global fast path's group filtering as well as sorting.
+        shape_group = wp.array([0, 1, 1, -1], dtype=wp.int32, device=device)
+        shape_world = wp.full(shape_count, -1, dtype=wp.int32, device=device)
+        candidate_pair = wp.zeros(6, dtype=wp.vec2i, device=device)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+        broad_phase = BroadPhaseSAP(shape_world, sort_type="segmented", device=device)
+        self.assertEqual(broad_phase.world_count, 1)
+        self.assertTrue(broad_phase._single_segment_identity_map)
+
+        filtered_flags = np.full(shape_count, ShapeFlags.COLLIDE_SHAPES, dtype=np.int32)
+        filtered_flags[1] = 0
+        filtered_broad_phase = BroadPhaseSAP(
+            shape_world,
+            shape_flags=filtered_flags,
+            sort_type="segmented",
+            device=device,
+        )
+        self.assertFalse(filtered_broad_phase._single_segment_identity_map)
+
+        with mock.patch.object(wp.utils, "radix_sort_pairs", wraps=wp.utils.radix_sort_pairs) as radix_sort:
+            broad_phase.launch(
+                shape_lower,
+                shape_upper,
+                None,
+                shape_group,
+                shape_world,
+                shape_count,
+                candidate_pair,
+                candidate_pair_count,
+                device=device,
+            )
+
+        radix_sort.assert_called_once_with(
+            keys=broad_phase.sap_projection_lower,
+            values=broad_phase.sap_sort_index,
+            count=broad_phase.max_shapes_per_world,
+        )
+        self.assertEqual(int(candidate_pair_count.numpy()[0]), 3)
+
+    def test_sap_broadphase_auto(self):
+        """Generate correct SAP pairs with automatic sort selection."""
+        for shape_count in (70, 150, 300):
+            with self.subTest(shape_count=shape_count):
+                self._test_sap_broadphase_impl("auto", shape_count)
+
+    def test_sap_broadphase_multiple_worlds_auto(self):
+        """Generate correct automatic-SAP pairs across multiple worlds."""
+        self._test_sap_broadphase_multiple_worlds_impl("auto")
+
+    def test_sap_broadphase_with_shape_flags_auto(self):
+        """Respect shape flags when automatic SAP sorting is enabled."""
+        self._test_sap_broadphase_with_shape_flags_impl("auto")
+
+    def test_sap_edge_cases_auto(self):
+        """Handle SAP edge cases with automatic sort selection."""
+        self._test_sap_edge_cases_impl("auto")
+
     def test_sap_chunk_advance_avoids_int32_overflow(self):
         """Stop dense SAP scheduling before the next chunk would overflow."""
         result = wp.empty(1, dtype=wp.int32)
@@ -1028,11 +1150,10 @@ class TestBroadPhase(unittest.TestCase):
         if verbose:
             print(len(pairs_np))
 
-    def _test_sap_broadphase_impl(self, sort_type):
+    def _test_sap_broadphase_impl(self, sort_type, ngeom=30):
         verbose = False
 
         # Create random bounding boxes in min-max format
-        ngeom = 30
 
         # Generate random centers and sizes using the new Generator API
         rng = np.random.Generator(np.random.PCG64(42))

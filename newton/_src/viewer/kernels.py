@@ -71,6 +71,7 @@ def apply_picking_force_kernel(
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
     pick_effective_mass: wp.array[float],
+    pick_os_inertia: wp.array[wp.mat33],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -92,18 +93,22 @@ def apply_picking_force_kernel(
     offset = pick_pos_world - com_world
     pick_vel = velocity_at_point(body_qd[pick_body], offset)
 
-    # Adjust force to mass for more adaptive manipulation of picked bodies.
-    force_multiplier = 10.0 + body_mass[pick_body]
-
-    pick_force = force_multiplier * (
-        pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (pick_state[0].pick_damping * pick_vel)
+    # Command an acceleration of the pick point so gains are mass-independent,
+    # then map it to a force through the operational-space inertia at that point.
+    pick_accel = pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (
+        pick_state[0].pick_damping * pick_vel
     )
 
-    # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
-    # Uses the effective mass (total articulation mass for linked bodies,
-    # own mass for free bodies) so picking a light robot link still allows
-    # enough force to move the whole chain.
     max_acceleration = pick_state[0].pick_max_acceleration * 9.81
+
+    # F = Lambda a, so each eigen-direction of the anisotropic inertia gets its own mass and
+    # an oblique pull does not over-command the reachable direction.
+    body_rotation = wp.transform_get_rotation(X_wb)
+    pick_force = wp.quat_rotate(body_rotation, pick_os_inertia[0] * wp.quat_rotate_inv(body_rotation, pick_accel))
+
+    # Clamp force magnitude to prevent runaway divergence on light objects.
+    # The articulation total bounds the force so picking a light link can still
+    # move the whole chain.
     max_force = max_acceleration * pick_effective_mass[pick_body]
     force_mag = wp.length(pick_force)
     if force_mag > max_force:
@@ -115,7 +120,6 @@ def apply_picking_force_kernel(
     # links, so bound it using the picked body's own mass and inertia.
     mass = body_mass[pick_body]
     if mass > 0.0:
-        body_rotation = wp.transform_get_rotation(X_wb)
         torque_body = wp.quat_rotate_inv(body_rotation, pick_torque)
         angular_acceleration_body = body_inv_inertia[pick_body] * torque_body
         rotational_acceleration_sq = wp.dot(torque_body, angular_acceleration_body) / mass
@@ -184,6 +188,51 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def update_model_shape_xforms(
+    shape_xforms: wp.array[wp.transform],
+    shape_parents: wp.array[int],
+    body_q: wp.array[wp.transform],
+    shape_worlds: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
+    slot_to_shape: wp.array[wp.int32],
+    world_xforms: wp.array[wp.transform],
+):
+    """Compute model shape transforms in viewer batch order."""
+    slot = wp.tid()
+    shape = slot_to_shape[slot]
+    shape_xform = shape_xforms[shape]
+    shape_parent = shape_parents[shape]
+
+    if shape_parent >= 0:
+        world_xform = wp.transform_multiply(body_q[shape_parent], shape_xform)
+    else:
+        world_xform = shape_xform
+
+    if world_offsets:
+        shape_world = shape_worlds[shape]
+        if shape_world >= 0 and shape_world < world_offsets.shape[0]:
+            offset = world_offsets[shape_world]
+            world_xform = wp.transform(world_xform.p + offset, world_xform.q)
+
+    world_xforms[slot] = wp.transform_multiply(layer_xform, world_xform)
+
+
+@wp.kernel
+def detect_shape_color_changes(
+    shape_colors: wp.array[wp.vec3],
+    previous_shape_colors: wp.array[wp.vec3],
+    changed: wp.array[wp.int32],
+):
+    """Set a device flag when any packed shape color changed."""
+    tid = wp.tid()
+    color = shape_colors[tid]
+    previous = previous_shape_colors[tid]
+    if color[0] != previous[0] or color[1] != previous[1] or color[2] != previous[2]:
+        wp.atomic_add(changed, 0, 1)
+
+
+@wp.kernel
 def repack_shape_colors(
     shape_colors: wp.array[wp.vec3],
     slot_to_shape: wp.array[wp.int32],
@@ -192,6 +241,42 @@ def repack_shape_colors(
     """Repack model-order shape colors into viewer batch order."""
     tid = wp.tid()
     packed_shape_colors[tid] = shape_colors[slot_to_shape[tid]]
+
+
+@wp.kernel
+def repack_shape_opacities(
+    shape_opacities: wp.array[wp.float32],
+    slot_to_shape: wp.array[wp.int32],
+    packed_shape_opacities: wp.array[wp.float32],
+):
+    """Repack model-order shape opacities into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_opacities[tid] = wp.clamp(shape_opacities[slot_to_shape[tid]], 0.0, 1.0)
+
+
+@wp.kernel
+def flag_changed_floats(
+    current: wp.array[wp.float32],
+    cached: wp.array[wp.float32],
+    changed: wp.array[wp.int32],
+):
+    """Set changed[0] when any element differs between the two arrays."""
+    tid = wp.tid()
+    if current[tid] != cached[tid]:
+        changed[0] = 1
+
+
+@wp.kernel
+def flag_changed_vec3s(
+    current: wp.array[wp.vec3],
+    cached: wp.array[wp.vec3],
+    changed: wp.array[wp.int32],
+):
+    """Set changed[0] when any vector differs between the two arrays."""
+    tid = wp.tid()
+    delta = current[tid] - cached[tid]
+    if wp.dot(delta, delta) != 0.0:
+        changed[0] = 1
 
 
 @wp.kernel
@@ -257,6 +342,7 @@ def compute_contact_lines(
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
@@ -316,9 +402,10 @@ def compute_contact_lines(
     contact_center = wp.transform_point(layer_xform, contact_center)
     normal = wp.quat_rotate(wp.transform_get_rotation(layer_xform), contact_normal[tid])
 
-    # Create line along normal direction
+    # Create line along the normal, relative to the smaller shape in the pair.
     # Normal points from shape0 to shape1, draw from center in normal direction
-    line_vector = normal * line_scale
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    line_vector = normal * (line_scale * pair_radius)
 
     line_start[tid] = contact_center
     line_end[tid] = contact_center + line_vector
@@ -344,7 +431,9 @@ def compute_contact_disk_transforms(
     body_com: wp.array[wp.vec3],
     shape_body: wp.array[int],
     shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
@@ -352,15 +441,17 @@ def compute_contact_disk_transforms(
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
     contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     contact_force: wp.array[wp.spatial_vector],
-    disk_radius: float,
-    disk_thickness: float,
+    disk_radius_scale: float,
+    disk_thickness_scale: float,
     eps_force: float,
     eps_velocity: float,
     color_open: wp.vec3,
     color_stick: wp.vec3,
     color_slip: wp.vec3,
+    color_unknown: wp.vec3,
     # outputs
     transforms: wp.array[wp.transform],
     scales: wp.array[wp.vec3],
@@ -370,17 +461,19 @@ def compute_contact_disk_transforms(
 
     A thin oriented disk (rendered via a unit cylinder mesh whose local +Z
     axis is the cylinder axis) is placed at each active contact, oriented so
-    that its axis matches ``contact_normal``.
+    that its axis matches ``contact_normal``. Its dimensions are scaled from
+    the smaller shape's collision radius.
 
     When ``contact_force`` is provided (non-null), the disk is colored by an
     inferred contact mode computed from the linear contact force magnitude and
     the tangential relative velocity at the contact point:
 
-    * ``|F| < eps_force``                                  -> ``color_open``
-    * ``|F| >= eps_force and |v_tan| < eps_velocity``      -> ``color_stick``
-    * ``|F| >= eps_force and |v_tan| >= eps_velocity``     -> ``color_slip``
+    * ``|F| <= eps_force``                               -> ``color_open``
+    * ``|F| > eps_force and |v_tan| < eps_velocity``      -> ``color_stick``
+    * ``|F| > eps_force and |v_tan| >= eps_velocity``     -> ``color_slip``
 
-    When ``contact_force`` is null, every active contact uses ``color_open``.
+    When ``contact_force`` is null, every active contact uses ``color_unknown``;
+    unavailable force output is distinct from a measured zero force.
 
     Inactive slots (beyond ``contact_count[0]`` or hidden by the visible-worlds
     mask) receive a degenerate zero-scale transform and a black color.
@@ -432,13 +525,12 @@ def compute_contact_disk_transforms(
     n = contact_normal[tid]
     q = _quat_from_normal_z(n)
 
-    # Mode coloring (default to "color_open" when force is unavailable).
-    color = color_open
+    color = color_unknown
     thickness_scaling = 1.0  # Apply slightly different thickness based on color to avoid visible z-fighting
     if contact_force:
         f_lin = wp.spatial_top(contact_force[tid])
         f_mag = wp.length(f_lin)
-        if f_mag < eps_force:
+        if f_mag <= eps_force:
             color = color_open
         else:
             # Relative tangential velocity at the contact point.
@@ -450,7 +542,7 @@ def compute_contact_disk_transforms(
             v_b = wp.vec3(0.0, 0.0, 0.0)
             if body_b >= 0:
                 X_wb_b = body_q[body_b]
-                world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
+                world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid] + contact_offset1[tid])
                 world_com_b = wp.transform_point(X_wb_b, body_com[body_b])
                 r_b = world_pos1 - world_com_b
                 v_b = velocity_at_point(body_qd[body_b], r_b)
@@ -463,7 +555,11 @@ def compute_contact_disk_transforms(
                 color = color_slip
                 thickness_scaling = 1.01
 
-    transforms[tid] = wp.transform(contact_center, q)
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    disk_radius = disk_radius_scale * pair_radius
+    disk_thickness = disk_thickness_scale * pair_radius
+
+    transforms[tid] = wp.transform_multiply(layer_xform, wp.transform(contact_center, q))
     scales[tid] = wp.vec3(disk_radius, disk_radius, disk_thickness * thickness_scaling)
     colors[tid] = color
 
@@ -473,7 +569,9 @@ def compute_contact_force_arrows(
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     shape_world: wp.array[int],
+    shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
@@ -490,8 +588,9 @@ def compute_contact_force_arrows(
 
     The arrow starts at the world contact point on shape 0 and points along
     ``F = wp.spatial_top(contact_force[i])`` (the world-frame linear force on
-    body 0), with length ``force_scale * |F|``.  Inactive slots produce
-    degenerate (NaN) line segments that the renderer culls.
+    body 0). Its length is relative to the smaller shape's collision radius.
+    Inactive slots produce degenerate (NaN) line segments that the renderer
+    culls.
     """
     tid = wp.tid()
     nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
@@ -530,8 +629,9 @@ def compute_contact_force_arrows(
         contact_center += world_offsets[world_a if world_a >= 0 else world_b]
 
     f_lin = -wp.spatial_top(contact_force[tid])  # Flip sign so positive force is along normal
-    line_start[tid] = contact_center
-    line_end[tid] = contact_center + force_scale * f_lin
+    line_start[tid] = wp.transform_point(layer_xform, contact_center)
+    pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
+    line_end[tid] = wp.transform_point(layer_xform, contact_center + (force_scale * pair_radius) * f_lin)
 
 
 @wp.kernel
@@ -1045,3 +1145,22 @@ def transform_points(
 ):
     i = wp.tid()
     transformed_points[i] = wp.transform_point(xform, points[i])
+
+
+@wp.kernel
+def apply_world_offset_and_layer_transform_normals(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    world_offsets: wp.array[wp.vec3],
+    world_index: int,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+):
+    """Transform visual points and normals into a viewer layer."""
+    i = wp.tid()
+    p = points[i]
+    if world_offsets and world_index >= 0 and world_index < world_offsets.shape[0]:
+        p = p + world_offsets[world_index]
+    out_points[i] = wp.transform_point(layer_xform, p)
+    out_normals[i] = wp.quat_rotate(wp.transform_get_rotation(layer_xform), normals[i])

@@ -8,10 +8,15 @@
     upAxis = "Z"
 )
 
-def PhysicsScene "World"
+def PhysicsScene "World" (
+    prepend apiSchemas = ["NewtonKaminoSceneAPI"]
+)
 {
-    float physics:gravityMagnitude = 9.8067
+    float physics:gravityMagnitude = 9.81
     vector3f physics:gravityDirection = (0, 0, -1)
+    uniform float newton:kamino:padmm:complementarityTolerance = 0.0001
+    uniform float newton:kamino:padmm:dualTolerance = 0.0001
+    uniform float newton:kamino:padmm:primalTolerance = 0.0001
 }
 
 def Xform "boxes_hinged"

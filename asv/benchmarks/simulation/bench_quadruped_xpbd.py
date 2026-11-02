@@ -13,6 +13,7 @@ wp.config.log_level = wp.LOG_WARNING
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
+from benchmark_config import pr_gate_repeat
 from benchmark_metric_tracks import _SimulationMetricTracksUnparameterized
 from benchmark_metrics import (
     collect_simulation_metrics,
@@ -33,7 +34,7 @@ def _create_example(num_frames, world_count):
 
 
 class FastExampleQuadrupedXPBD:
-    repeat = 10
+    repeat = pr_gate_repeat(10)
     number = 1
 
     def setup(self):

@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected
-from ...sim import JointType, ModelFlags, StateFlags
+from ...sim import JointType, StateFlags
 from .interface import (
     CouplingEndpointKind,
 )
@@ -210,6 +210,32 @@ def _blend_aitken_forces_kernel(
     residual = force[proxy_id] - force_previous[i]
     force[proxy_id] = force_previous[i] + relaxation[0] * residual
     residual_previous[i] = residual
+
+
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare body and particle forces up front.
+for _dtype in (wp.vec3, wp.spatial_vector):
+    wp.overload(
+        _reset_proxy_values_masked_kernel,
+        {
+            "coupling_forces": wp.array[_dtype],
+            "coupling_forces_previous": wp.array[_dtype],
+            "aitken_residual_previous": wp.array[_dtype],
+            "proxy_qd_before": wp.array[_dtype],
+        },
+    )
+    wp.overload(
+        _accumulate_aitken_stats_kernel,
+        {
+            "force_previous": wp.array[_dtype],
+            "force_raw": wp.array[_dtype],
+            "residual_previous": wp.array[_dtype],
+        },
+    )
+    wp.overload(
+        _blend_aitken_forces_kernel,
+        {"force_previous": wp.array[_dtype], "residual_previous": wp.array[_dtype], "force": wp.array[_dtype]},
+    )
 
 
 class SolverCoupledProxy(SolverCoupled):
@@ -747,6 +773,9 @@ class SolverCoupledProxy(SolverCoupled):
                 proxy_keep.update(int(i) for i in mapping.proxy_joint_ids_global.numpy())
         return proxy_keep
 
+    def _iteration_restarts_possible(self) -> bool:
+        return int(self._coupling.iterations) > 1
+
     def _after_entries_constructed(self) -> None:
         self._refresh_proxy_view_maps()
         self._validate_in_place_proxy_entries()
@@ -901,11 +930,7 @@ class SolverCoupledProxy(SolverCoupled):
         joint_type = model.joint_type.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
         joint_target_q_start = model.joint_target_q_start.numpy()
-        target_q_global_to_local = (
-            dst.joint_coord_global_to_local.numpy()
-            if bool(model.use_coord_layout_targets)
-            else dst.joint_dof_global_to_local.numpy()
-        )
+        target_q_global_to_local = dst.joint_coord_global_to_local.numpy()
         dst_qd_global_to_local = dst.joint_dof_global_to_local.numpy()
 
         source_target_q_indices_global: list[int] = []
@@ -1310,7 +1335,7 @@ class SolverCoupledProxy(SolverCoupled):
     def notify_model_changed(self, flags: int) -> None:
         """Refresh proxy inertia after source solvers consume model updates."""
         super().notify_model_changed(flags)
-        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
+        if int(flags) & self._effective_mass_refresh_flags():
             self._apply_proxy_body_effective_masses()
 
     def _step_coupled(

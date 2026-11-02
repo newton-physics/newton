@@ -1,0 +1,1 @@
+Fix `SolverMuJoCo` compiling zero-mass bodies with mass that MuJoCo inferred from their shapes at its own default density, which let movable massless bodies pass MuJoCo's mass check and then simulate with NaNs.

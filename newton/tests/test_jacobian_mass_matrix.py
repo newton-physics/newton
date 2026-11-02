@@ -275,6 +275,95 @@ def test_jacobian_simple_pendulum(test, device):
     test.assertNotEqual(J_np[0, 11, 1], 0.0)  # Second link, angular z, second dof
 
 
+def test_jacobian_loop_joint_ancestry(test, device):
+    """Keep loop closures out of tree ancestry regardless of joint creation order."""
+    for loop_first in (False, True):
+        for loop_child in (0, 1):
+            with test.subTest(loop_first=loop_first, loop_child=loop_child):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link(mass=1.0) for _ in range(4)]
+                for body in bodies:
+                    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+                if loop_first:
+                    loop_joint = builder.add_joint_ball(parent=bodies[-1], child=bodies[loop_child])
+
+                axes = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z, newton.Axis.X)
+                tree_joints = [
+                    builder.add_joint_prismatic(parent=-1 if i == 0 else bodies[i - 1], child=body, axis=axes[i])
+                    for i, body in enumerate(bodies)
+                ]
+                builder.add_articulation(tree_joints)
+
+                if not loop_first:
+                    loop_joint = builder.add_joint_ball(parent=bodies[-1], child=bodies[loop_child])
+
+                model = builder.finalize(device=device)
+                ancestors = np.full(model.joint_count, -1, dtype=np.int32)
+                ancestors[tree_joints[1:]] = tree_joints[:-1]
+                ancestors[loop_joint] = tree_joints[-1]
+                # Check topology before launching a kernel that would hang on an ancestor cycle.
+                np.testing.assert_array_equal(model.joint_ancestor.numpy(), ancestors)
+
+                state = model.state()
+                dofs = model.joint_qd_start.numpy()[tree_joints]
+                qd = state.joint_qd.numpy()
+                qd[:] = 9.0
+                qd[dofs] = [0.3, -0.4, 0.5, -0.6]
+                state.joint_qd.assign(qd)
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+                expected = np.zeros((24, 4), dtype=np.float32)
+                for link in range(4):
+                    for joint in range(link + 1):
+                        expected[6 * link + joint % 3, joint] = 1.0
+
+                jacobian = newton.eval_jacobian(model, state).numpy()
+                np.testing.assert_allclose(jacobian, expected[None], atol=1.0e-6)
+                np.testing.assert_allclose(expected @ qd[dofs], state.body_qd.numpy().reshape(-1), atol=1.0e-6)
+
+
+def test_jacobian_loop_joint_external_root(test, device):
+    """Terminate articulated ancestry at an external root despite an incoming closure."""
+    for loop_first in (False, True):
+        with test.subTest(loop_first=loop_first):
+            builder = newton.ModelBuilder()
+            bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(3)]
+            if loop_first:
+                loop_joint = builder.add_joint_ball(parent=bodies[2], child=bodies[0])
+            tree_joints = [
+                builder.add_joint_prismatic(parent=bodies[0], child=bodies[1], axis=newton.Axis.X),
+                builder.add_joint_prismatic(parent=bodies[1], child=bodies[2], axis=newton.Axis.Y),
+            ]
+            builder.add_articulation(tree_joints)
+            if not loop_first:
+                loop_joint = builder.add_joint_ball(parent=bodies[2], child=bodies[0])
+
+            model = builder.finalize(device=device)
+            ancestors = np.full(model.joint_count, -1, dtype=np.int32)
+            ancestors[tree_joints[1]] = tree_joints[0]
+            ancestors[loop_joint] = tree_joints[1]
+            # Reject cycles before launching the ancestry traversal kernel.
+            np.testing.assert_array_equal(model.joint_ancestor.numpy(), ancestors)
+
+            state = model.state()
+            dofs = model.joint_qd_start.numpy()[tree_joints]
+            qd = state.joint_qd.numpy()
+            qd[:] = 9.0
+            qd[dofs] = [0.3, -0.4]
+            state.joint_qd.assign(qd)
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+            expected = np.zeros((12, 2), dtype=np.float32)
+            expected[[0, 6], 0] = 1.0
+            expected[7, 1] = 1.0
+            jacobian = newton.eval_jacobian(model, state).numpy()
+            np.testing.assert_allclose(jacobian, expected[None], atol=1.0e-6)
+            np.testing.assert_allclose(
+                jacobian[0] @ qd[dofs], state.body_qd.numpy()[bodies[1:]].reshape(-1), atol=1.0e-6
+            )
+
+
 def test_jacobian_numerical_verification(test, device):
     """Verify Jacobian shape and basic properties."""
     builder = newton.ModelBuilder()
@@ -856,6 +945,33 @@ def test_d6_three_angular_jacobian_matches_body_qd(test, device):
     np.testing.assert_allclose(J @ qd, body_qd, atol=1.0e-5, rtol=1.0e-6)
 
 
+def test_d6_translated_angular_jacobian_matches_body_qd(test, device):
+    """`J @ joint_qd` should match `state.body_qd` for a D6 joint whose angular axes ride on its linear DOFs."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    child = builder.add_link(mass=1.0)
+    builder.add_shape_box(child, hx=0.2, hy=0.1, hz=0.15)
+    builder.body_com[child] = wp.vec3(0.3, -0.1, 0.2)
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=child,
+        linear_axes=[cfg(axis=a) for a in newton.Axis],
+        angular_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
+        parent_xform=wp.transform((0.2, -0.4, 0.5), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.6)),
+    )
+    builder.add_articulation([j])
+    model = builder.finalize(device=device)
+    state = model.state()
+    q = np.array([0.8, -0.5, 0.3, 0.5, -0.4], dtype=np.float32)
+    qd = np.array([0.2, -0.3, 0.4, 0.9, -0.6], dtype=np.float32)
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    J = newton.eval_jacobian(model, state).numpy()[0, :6, : model.joint_dof_count]
+    np.testing.assert_allclose(J @ qd, state.body_qd.numpy()[child], atol=1.0e-5, rtol=1.0e-6)
+
+
 def test_mass_matrix_matches_com_kinetic_energy(test, device):
     """`0.5 * qd^T H qd` should equal kinetic energy from COM twists."""
     model, base, slider = _build_translated_prismatic_chain(device)
@@ -949,6 +1065,56 @@ def test_descendant_free_mass_matrix_matches_com_kinetic_energy(test, device):
     np.testing.assert_allclose(kinetic_from_h, kinetic_from_body, atol=1.0e-5, rtol=1.0e-6)
 
 
+def test_composite_mass_matrix_matches_jacobian_mass_matrix(test, device):
+    """The composite rigid body path (no J passed) should match ``J^T M J`` on a branched tree of every joint type.
+
+    Two calls must agree bit for bit.
+    """
+    builder = newton.ModelBuilder()
+    inertia = wp.mat33(0.03, 0.002, -0.001, 0.002, 0.02, 0.003, -0.001, 0.003, 0.04)
+
+    def link(i):
+        return builder.add_link(mass=0.5 + 0.3 * i, com=wp.vec3(0.05 * i, -0.03, 0.02), inertia=inertia)
+
+    def frame(i):
+        return wp.transform(wp.vec3(0.1, 0.05 * i, -0.2), wp.quat_rpy(0.3 * i, -0.2, 0.1 * i))
+
+    cfg = newton.ModelBuilder.JointDofConfig
+    base = link(0)
+    joints = [builder.add_joint_free(base, parent_xform=frame(1))]
+    bodies = [link(i) for i in range(1, 8)]
+    joints.append(builder.add_joint_revolute(base, bodies[0], axis=(0.0, 0.6, 0.8), parent_xform=frame(2)))
+    joints.append(builder.add_joint_prismatic(bodies[0], bodies[1], axis=(1.0, 0.0, 0.0), parent_xform=frame(3)))
+    joints.append(builder.add_joint_ball(base, bodies[2], parent_xform=frame(4), child_xform=frame(5)))
+    joints.append(
+        builder.add_joint_d6(
+            bodies[2],
+            bodies[3],
+            angular_axes=[cfg(axis=(1.0, 0.0, 0.0)), cfg(axis=(0.0, 0.0, 1.0))],
+            parent_xform=frame(6),
+        )
+    )
+    joints.append(builder.add_joint_fixed(bodies[3], bodies[4], parent_xform=frame(7)))
+    joints.append(builder.add_joint_free(bodies[5], parent=bodies[4], parent_xform=frame(8)))
+    joints.append(builder.add_joint_revolute(bodies[2], bodies[6], axis=(0.0, 0.0, 1.0), parent_xform=frame(9)))
+    builder.add_articulation(joints)
+    builder.joint_armature = [0.01 * (i + 1) for i in range(builder.joint_dof_count)]
+    model = builder.finalize(device=device)
+
+    state = model.state()
+    q = state.joint_q.numpy()
+    q += np.linspace(-0.4, 0.5, len(q)).astype(np.float32)
+    state.joint_q.assign(q)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    H_composite = newton.eval_mass_matrix(model, state).numpy()
+    H_again = newton.eval_mass_matrix(model, state).numpy()
+    H_jacobian = newton.eval_mass_matrix(model, state, J=newton.eval_jacobian(model, state)).numpy()
+
+    np.testing.assert_array_equal(H_composite, H_again)
+    np.testing.assert_allclose(H_composite, H_jacobian, atol=1.0e-5, rtol=1.0e-5)
+
+
 class TestJacobianMassMatrix(unittest.TestCase):
     pass
 
@@ -957,6 +1123,15 @@ devices = get_test_devices()
 
 add_function_test(
     TestJacobianMassMatrix, "test_jacobian_simple_pendulum", test_jacobian_simple_pendulum, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix, "test_jacobian_loop_joint_ancestry", test_jacobian_loop_joint_ancestry, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_jacobian_loop_joint_external_root",
+    test_jacobian_loop_joint_external_root,
+    devices=devices,
 )
 add_function_test(
     TestJacobianMassMatrix,
@@ -1005,6 +1180,12 @@ add_function_test(
 )
 add_function_test(
     TestJacobianMassMatrix,
+    "test_d6_translated_angular_jacobian_matches_body_qd",
+    test_d6_translated_angular_jacobian_matches_body_qd,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
     "test_mass_matrix_matches_com_kinetic_energy",
     test_mass_matrix_matches_com_kinetic_energy,
     devices=devices,
@@ -1031,6 +1212,12 @@ add_function_test(
     TestJacobianMassMatrix,
     "test_descendant_free_mass_matrix_matches_com_kinetic_energy",
     test_descendant_free_mass_matrix_matches_com_kinetic_energy,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_composite_mass_matrix_matches_jacobian_mass_matrix",
+    test_composite_mass_matrix_matches_jacobian_mass_matrix,
     devices=devices,
 )
 

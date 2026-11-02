@@ -47,7 +47,7 @@ Custom attributes must be declared before use via the :meth:`newton.ModelBuilder
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
 * **default** (optional): Default value for unspecified entities. When omitted, a sensible zero-value is derived from the dtype (``0`` for scalars, identity for quaternions, ``False`` for booleans, ``""`` for strings)
 * **namespace** (optional): Hierarchical organization for grouping related attributes
-* **references** (optional): For multi-world merging, specifies how values are transformed (e.g., ``"body"``, ``"shape"``, ``"world"``, or a custom frequency key)
+* **references** (optional): Identifies what stored integer values refer to: a :class:`~newton.Model.AttributeFrequency` for built-in entities, or a custom frequency key. Built-in string names such as ``"body"`` and ``"world"`` are also supported.
 * **values** (optional): Pre-populated values — ``dict[int, Any]`` for enum frequencies or ``list[Any]`` for custom string frequencies
 
 When **no namespace** is specified, attributes are added directly to their assignment object (e.g., ``model.temperature``). When a **namespace** is provided, Newton creates a namespace container (e.g., ``model.mujoco.damping``).
@@ -456,6 +456,64 @@ After importing the USD file, attributes are accessible following the same patte
 
 For more information about USD integration and the schema resolver system, see :doc:`usd_parsing`.
 
+.. _usd_deformable_custom_values:
+
+Values per deformable object
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+USD imports record curves, surfaces, and volumes, but do not yet read custom
+values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency. Unassigned rows keep
+the registered attribute's default. This limitation does not affect ordinary
+deformable material parsing or the supported per-particle, per-tetrahedron,
+and per-triangle custom arrays on a ``TetMesh``.
+
+Assign per-object values through the builder after :meth:`ModelBuilder.add_usd`
+and before :meth:`ModelBuilder.finalize`. For example, suppose ``stage`` contains
+a volume at ``/World/Soft/sim`` with an authored ``newton:volume_temperature``
+value of 310 K:
+
+.. testsetup:: custom-deformable-usd
+
+   from pxr import Sdf, Usd, UsdGeom
+
+   stage = Usd.Stage.CreateInMemory()
+   UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+   UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+   body = UsdGeom.Xform.Define(stage, "/World/Soft")
+   body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+   volume = UsdGeom.TetMesh.Define(stage, "/World/Soft/sim")
+   volume.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+   volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+   volume.CreatePointsAttr([(0, 0, 1), (0.2, 0, 1), (0, 0.2, 1), (0, 0, 1.2)])
+   volume.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+   volume.GetPrim().CreateAttribute("newton:volume_temperature", Sdf.ValueTypeNames.Float).Set(310.0)
+
+.. testcode:: custom-deformable-usd
+
+   import newton
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   builder.add_custom_attribute(newton.ModelBuilder.CustomAttribute(
+       name="volume_temperature",
+       dtype=wp.float32,
+       frequency=newton.Model.AttributeFrequency.VOLUME,
+       default=293.0,
+   ))
+   builder.add_usd(stage)
+
+   volume_path = "/World/Soft/sim"
+   volume_index = builder.volume_label.index(volume_path)
+   temperature = stage.GetPrimAtPath(volume_path).GetAttribute("newton:volume_temperature").Get()
+   builder.custom_attributes["volume_temperature"].values[volume_index] = float(temperature)
+
+   model = builder.finalize(device="cpu")
+   assert model.volume_temperature.numpy().tolist() == [310.0]
+
+This is an explicit assignment, not automatic USD import. Automatic import
+remains follow-up work. For welded graphs, it also needs a rule for combining
+values from several source curve prims.
+
 MJCF and URDF Integration
 --------------------------
 
@@ -502,7 +560,7 @@ While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cas
 Registering Custom Frequencies
 ------------------------------
 
-Custom frequencies must be **registered before use** via :meth:`~newton.ModelBuilder.add_custom_frequency` using a :class:`~newton.ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
+Register a custom frequency with :meth:`~newton.ModelBuilder.add_custom_frequency` before assigning it to an attribute's ``frequency`` field. Use a :class:`~newton.ModelBuilder.CustomFrequency` object to name the frequency and optionally configure USD parsing. An attribute's ``references`` field may name a custom frequency registered later.
 
 .. testsetup:: custom-freqs
 
@@ -594,7 +652,117 @@ For convenience, :meth:`~newton.ModelBuilder.add_custom_values_batch` appends mu
        {"myns:item_id": 101, "myns:item_value": 3.0},
    ])
 
+Here, a *row* is one indexed element of a custom frequency: the values at that
+index across every attribute using the frequency describe the same entity.
+
+Attributes declared with ``references="world"`` define the world owner of their
+custom-frequency row. When such an attribute is omitted or set to ``None``,
+:meth:`~newton.ModelBuilder.add_custom_values` initializes it from the active
+:attr:`~newton.ModelBuilder.current_world` context. This also applies to every
+row passed to :meth:`~newton.ModelBuilder.add_custom_values_batch` and to rows
+generated by importers. Pass an explicit integer, including the global-world
+sentinel ``-1``, to override inference for a directly authored row.
+
 **Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
+
+Articulation-Scoped Custom Frequencies
+--------------------------------------
+
+A custom frequency can declare that each of its rows belongs to one articulation.
+This lets :class:`~newton.selection.ArticulationView` expose every model, state,
+or control attribute using that frequency without adding frequency-specific logic
+to the view.
+
+Set :attr:`~newton.ModelBuilder.CustomFrequency.articulation_owner_attribute` to
+the full key ``<frequency>_articulation`` of an integer owner attribute. The owner
+attribute must use the same custom frequency, be assigned to
+:class:`~newton.Model`, and declare ``references="articulation"``. An optional
+:attr:`~newton.ModelBuilder.CustomFrequency.label_attribute` identifies a string
+attribute named ``<frequency>_label`` containing row labels. Builder merging and
+replication apply their label prefixes to this declared label attribute.
+
+When owners can be derived from other model data, set
+:attr:`~newton.ModelBuilder.CustomFrequency.articulation_owner_resolver` instead
+of populating the owner attribute at every import or construction site. The
+resolver receives the completed builder and returns one articulation index per
+frequency row. It runs before merge and finalization; its results are stored in
+the declared owner attribute and remapped like ordinary articulation references.
+
+.. code-block:: python
+
+   import newton
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   body = builder.add_link(mass=1.0)
+   joint = builder.add_joint_revolute(parent=-1, child=body)
+   builder.add_articulation([joint], label="robot")
+
+   def resolve_sensor_owners(builder):
+       sensor_joints = builder.custom_attributes["demo:sensor_joint"].values
+       return [builder.joint_articulation[joint] for joint in sensor_joints]
+
+   builder.add_custom_frequency(
+       newton.ModelBuilder.CustomFrequency(
+           name="sensor",
+           namespace="demo",
+           articulation_owner_attribute="demo:sensor_articulation",
+           articulation_owner_resolver=resolve_sensor_owners,
+           label_attribute="demo:sensor_label",
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_articulation",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.int32,
+           references="articulation",
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_joint",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.int32,
+           references="joint",
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_label",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=str,
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_value",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.float32,
+       )
+   )
+   builder.add_custom_values(**{
+       "demo:sensor_joint": joint,
+       "demo:sensor_label": "force_sensor",
+       "demo:sensor_value": 0.0,
+   })
+
+   model = builder.finalize()
+   view = newton.selection.ArticulationView(model, "robot")
+   sensor_values = view.get_attribute("demo.sensor_value", model)
+
+In this example, ``sensor_values`` has shape
+``(world_count, articulation_count_per_world, sensor_count_per_articulation)``.
+Owner indices are remapped automatically by :meth:`~newton.ModelBuilder.add_builder`,
+:meth:`~newton.ModelBuilder.add_world`, and :meth:`~newton.ModelBuilder.replicate`.
+
+Frequencies that do not declare articulation ownership remain unavailable through
+``ArticulationView``. This is appropriate for global rows or relationships that can
+span multiple articulations, such as contact pairs.
 
 USD Parsing Support
 -------------------
@@ -757,6 +925,71 @@ Multi-World Merging
 
 When using ``add_builder()``, ``add_world()``, or ``replicate()`` in multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
 
+``frequency`` determines which entities have a row. ``references`` identifies
+what each stored integer refers to. For example, a cable may be held by a
+gripper and a hose by a support. An attribute with frequency ``CURVE`` and
+references ``BODY`` can record the attachment body for each curve:
+
+.. testcode:: custom-curve-reference
+
+   import newton
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   gripper_body_id = builder.add_body(label="gripper", is_kinematic=True)
+   support_body_id = builder.add_body(label="support", is_kinematic=True)
+   for label, y in (("cable", 0.0), ("hose", 1.0)):
+       builder.add_rod(
+           rod=newton.Rod([(0.0, y, 1.0), (0.1, y, 1.0), (0.2, y, 1.0)], radius=0.02),
+           label=label,
+       )
+   hose_id = builder.curve_label.index("hose")
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="attachment_body",
+           dtype=wp.int32,
+           frequency=newton.Model.AttributeFrequency.CURVE,
+           references=newton.Model.AttributeFrequency.BODY,
+           default=gripper_body_id,
+           values={hose_id: support_body_id},
+       )
+   )
+   scene = newton.ModelBuilder()
+   scene.replicate(builder, 2)
+   model = scene.finalize(device="cpu")
+   assert model.attachment_body.numpy().tolist() == [0, 1, 6, 7]
+
+This attribute only records the association. It does not create the joints or
+constraints needed to hold the cable or hose. Each copy has six bodies: the
+gripper, the support, and four rod segments. The first world's curves reference
+bodies 0 and 1; the second world's curves reference bodies 6 and 7.
+The cable uses the default gripper association; the hose overrides it with the
+support body. During copying, row indices follow the curve count and stored body
+IDs follow the body count. Default references for existing rows are copied just
+like explicit values. The source builder and its declared default stay unchanged.
+
+``ONCE`` attributes have one value for the whole model. A source default does
+not replace an existing destination value; an explicit source value does.
+``WORLD`` reference defaults are copied into the destination world. Adding
+global entities with ``add_builder()`` does not create a world row.
+
+For scalar and integer-vector references, copying offsets each nonnegative
+index and preserves negative ones. Vector values may be lists, tuples, NumPy
+integer arrays, or Warp integer vectors. When fixed-joint collapse changes curve
+or articulation IDs, default references for existing rows follow the same remap
+as explicit values. References to removed objects become ``-1``. These operations
+do not change the declared default for rows added later.
+
+Use ``Model.AttributeFrequency.CURVE``, ``SURFACE``, or ``VOLUME`` to reference
+built-in deformable objects. The strings ``"curve"``, ``"surface"``, and
+``"volume"`` refer to custom frequencies, regardless of registration order.
+Existing built-in strings such as ``"body"`` and ``"world"`` remain supported.
+Registering an attribute does not rewrite its ``references`` field. Finalized
+model metadata uses enum values for built-in references and strings for custom
+frequencies.
+
+The following example uses string names for shape and world references:
+
 .. testcode:: custom-merge
 
    from newton import Model, ModelBuilder
@@ -787,7 +1020,8 @@ When using ``add_builder()``, ``add_world()``, or ``replicate()`` in multi-world
 Supported reference types:
 
 * Any built-in entity type (e.g., ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``) — offset by entity count
-* ``"world"`` — replaced with the builder-managed ``current_world`` for the active merge context
+* ``"world"`` — inferred from ``current_world`` during direct row authoring and
+  replaced with the destination builder's ``current_world`` during merging
 * Custom frequency keys (e.g., ``"mujoco:pair"``) — offset by that frequency's count
 
 Querying Counts
@@ -814,4 +1048,8 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
 ArticulationView Limitations
 ----------------------------
 
-Custom frequency attributes are generally not accessible via :class:`~newton.selection.ArticulationView` because they represent entity types that aren't tied to articulation structure. The one exception is the ``mujoco:tendon`` frequency, which is supported. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.
+Custom frequency attributes are accessible through :class:`~newton.selection.ArticulationView`
+only when their frequency declares articulation ownership. MuJoCo declares ownership for
+its actuator, tendon, tendon-joint, and tendon-wrap frequencies. Unscoped custom frequencies
+remain unavailable because their rows are not tied to the articulation structure. For other
+per-articulation data, use enum frequencies such as ``ARTICULATION``, ``JOINT``, or ``BODY``.

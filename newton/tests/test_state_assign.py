@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -26,7 +27,9 @@ def _build_model(*, custom_attrs: tuple[str, ...] = ()):
         actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
     )
     builder.add_articulation([joint])
-    builder.request_state_attributes("mujoco:qfrc_actuator")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        builder.request_state_attributes("mujoco:qfrc_actuator")
     for name in custom_attrs:
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
@@ -129,25 +132,6 @@ class TestStateAssignNamespacedAttributes(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             state_0.assign(state_1)
-
-
-class TestStateDeprecatedAttributes(unittest.TestCase):
-    def test_body_q_prev_warns_and_remains_assignable(self):
-        state_0 = newton.State()
-        state_1 = newton.State()
-        previous_q = wp.array([wp.transform_identity()], dtype=wp.transform)
-
-        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
-            state_0.body_q_prev = wp.empty_like(previous_q)
-        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
-            state_1.body_q_prev = previous_q
-
-        state_0.assign(state_1)
-
-        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
-            copied_q = state_0.body_q_prev
-        self.assertIsNot(copied_q, previous_q)
-        np.testing.assert_array_equal(copied_q.numpy(), previous_q.numpy())
 
 
 if __name__ == "__main__":

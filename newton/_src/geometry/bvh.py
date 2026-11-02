@@ -8,10 +8,15 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core import MAXVAL
+from .flags import ShapeFlags
 from .types import Gaussian, GeoType
 
 if TYPE_CHECKING:
     from ..sim import Model, State
+
+
+SHAPE_BOUNDS_BLOCK_DIM = 256
+_SHAPE_FLAG_VISIBLE = wp.constant(wp.int32(int(ShapeFlags.VISIBLE)))
 
 
 @wp.func
@@ -175,12 +180,20 @@ def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
     shape_flags_mask: wp.int32,
+    shape_opacity: wp.array[wp.float32],
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
-    if not bool(shape_flags[tid] & shape_flags_mask):
+    flags = shape_flags[tid]
+
+    # A fully transparent shape (e.g. an MJCF helper geom with rgba alpha 0) is not visible, so it must not occlude
+    # other shapes. Clear VISIBLE before applying the mask so shapes selected through other flags are kept.
+    if shape_opacity.shape[0] > 0 and shape_opacity[tid] <= 0.0:
+        flags = flags & ~_SHAPE_FLAG_VISIBLE
+
+    if not bool(flags & shape_flags_mask):
         return
 
     if not is_supported_shape_type(shape_type[tid]):
@@ -210,31 +223,35 @@ def compute_shape_local_bounds(
     in_gaussians: wp.array[Gaussian.Data],
     out_bounds: wp.array2d[wp.vec3f],
 ):
-    tid = wp.tid()
+    shape_index, lane = wp.tid()
 
     min_point = wp.vec3(MAXVAL)
     max_point = wp.vec3(-MAXVAL)
 
     if (
-        in_shape_type[tid] == GeoType.MESH
-        or in_shape_type[tid] == GeoType.CONVEX_MESH
-        or in_shape_type[tid] == GeoType.HFIELD
+        in_shape_type[shape_index] == GeoType.MESH
+        or in_shape_type[shape_index] == GeoType.CONVEX_MESH
+        or in_shape_type[shape_index] == GeoType.HFIELD
     ):
         # Heightfields and convex meshes store mesh-backed geometry in shape_source_ptr.
-        mesh = wp.mesh_get(in_shape_ptr[tid])
-        for i in range(mesh.points.shape[0]):
+        mesh = wp.mesh_get(in_shape_ptr[shape_index])
+        for i in range(lane, mesh.points.shape[0], wp.block_dim()):
             min_point = wp.min(min_point, mesh.points[i])
             max_point = wp.max(max_point, mesh.points[i])
 
-    elif in_shape_type[tid] == GeoType.GAUSSIAN:
-        gaussian_id = in_shape_ptr[tid]
-        for i in range(in_gaussians[gaussian_id].num_points):
+    elif in_shape_type[shape_index] == GeoType.GAUSSIAN:
+        gaussian_id = in_shape_ptr[shape_index]
+        for i in range(lane, in_gaussians[gaussian_id].num_points, wp.block_dim()):
             lower, upper = compute_gaussian_bounds(in_gaussians[gaussian_id], i)
             min_point = wp.min(min_point, lower)
             max_point = wp.max(max_point, upper)
 
-    out_bounds[tid, 0] = min_point
-    out_bounds[tid, 1] = max_point
+    min_point = wp.tile_reduce(wp.min, wp.tile(min_point, preserve_type=True))[0]
+    max_point = wp.tile_reduce(wp.max, wp.tile(max_point, preserve_type=True))[0]
+
+    if lane == 0:
+        out_bounds[shape_index, 0] = min_point
+        out_bounds[shape_index, 1] = max_point
 
 
 @wp.kernel(enable_backward=False)

@@ -31,7 +31,7 @@ Does Newton support coupling of solvers for multiphysics or co-simulation?
 Yes. Newton provides an experimental coupled-solver framework for partitioning a
 shared :class:`Model` across multiple solver backends. It supports two-way proxy
 coupling through virtual bodies or particles, and symmetric ADMM coupling for
-joints, body-particle attachments, and frictional contacts. See
+joints, particle-body attachments, and frictional contacts. See
 :doc:`Coupled Solvers <concepts/coupling>` for the architecture, examples,
 solver-specific behavior, and current limitations.
 
@@ -63,6 +63,15 @@ visual playback. See :doc:`Viewers and Debugging <guide/visualization>` for
 available workflows and their current capture limitations.
 
 For rich real-time graphics, users commonly pair Newton with Isaac Lab, which provides advanced rendering. Users can also export simulation outputs to a time-sampled USD that can be visualized, for example, in `NVIDIA Omniverse <https://www.nvidia.com/en-us/omniverse/>`_ or `Isaac Sim <https://developer.nvidia.com/isaac/sim>`_.
+
+How can I control Newton's console output?
+------------------------------------------
+
+Newton logs diagnostics through the standard :mod:`logging` module under the
+``newton`` logger and emits warnings with the categories in
+:mod:`newton.exceptions`. Without logging configuration, Newton prints
+``INFO`` records to stdout and warnings and errors to stderr. To hide, route,
+or filter this output, see :doc:`Logging and Warnings <guide/diagnostics>`.
 
 How can I contribute to Newton?
 -------------------------------

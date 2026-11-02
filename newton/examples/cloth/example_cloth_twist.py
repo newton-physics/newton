@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cloth Twist
-#
-# This simulation demonstrates twisting an FEM cloth model using the VBD
-# solver, showcasing its ability to handle complex self-contacts while
-# ensuring it remains intersection-free.
-#
-# Command: python -m newton.examples cloth_twist
-#
-###########################################################################
+"""Example Cloth Twist
+
+This simulation demonstrates twisting an FEM cloth model using the VBD
+solver, showcasing its ability to handle complex self-contacts while
+ensuring it remains intersection-free.
+
+Success criteria:
+- A suspended sheet twists as its two ends rotate.
+- The sheet stays connected and resolves folds without visible self-intersections or explosive
+  stretching.
+
+Runs:
+- `python -m newton.examples cloth_twist`
+"""
 
 import math
 import os
@@ -181,8 +185,12 @@ class Example:
             self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.002,
-            particle_self_contact_margin=0.0035,
+            particle_self_contact_margin=0.002,
+            particle_self_contact_gap=0.0015,
+            # Tight twisting exceeds the default buffer capacities (measured
+            # peak demand: 49 vertex / 104 edge pairs); overflow drops pairs.
+            particle_vertex_contact_buffer_size=64,
+            particle_edge_contact_buffer_size=128,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

@@ -1,20 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example ADMM Contact Coupled Solver
-#
-# An XPBD particle pad falls under gravity into a ball-jointed rigid drawer.
-# SolverCoupledADMM runs particle-shape collision detection internally and
-# supplies the drawer response through frictionless ADMM contacts.
-#
-# Pass ``--solver free`` to disable the ADMM contacts and compare against the
-# uncoupled baseline.
-#
-# Command: python -m newton.examples admm_contact_solver
-#          python -m newton.examples admm_contact_solver --solver free
-#
-###########################################################################
+"""Example ADMM Contact Coupled Solver
+
+An XPBD particle pad falls under gravity into a ball-jointed rigid drawer.
+SolverCoupledADMM runs particle-shape collision detection internally and
+supplies the drawer response through frictionless ADMM contacts.
+
+Pass ``--solver free`` to disable the ADMM contacts and compare against the
+uncoupled baseline.
+
+Success criteria:
+- A ball-jointed rigid tray/drawer appears below a grid-like XPBD particle pad.
+- The XPBD particles fall under gravity.
+
+Runs:
+- `python -m newton.examples admm_contact_solver`
+  - The tray responds to particle contact through ADMM contact coupling.
+  - The particles should contact the tray and each other instead of passing through the tray.
+- `python -m newton.examples admm_contact_solver --solver free`
+  - Without ADMM contact coupling, the particles pass through the tray instead of transferring
+    contact forces to it.
+"""
 
 from __future__ import annotations
 
@@ -39,7 +46,6 @@ def _gather_particles(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -148,8 +154,7 @@ class Example:
         self.max_tray_origin_error = 0.0
 
         newton.examples.configure_coupled_view(self, args)
-        if hasattr(self.viewer, "show_particles"):
-            self.viewer.show_particles = False
+        self.viewer.show_particles = False
         camera_target = np.array([0.0, 0.0, 0.06], dtype=np.float32)
         camera_offset = np.array([0.72, -0.9, 0.56], dtype=np.float32)
         camera_offset /= np.linalg.norm(camera_offset)
@@ -160,7 +165,7 @@ class Example:
         camera_pos = wp.vec3(float(camera_pos_np[0]), float(camera_pos_np[1]), float(camera_pos_np[2]))
         camera_target_wp = wp.vec3(float(camera_target[0]), float(camera_target[1]), float(camera_target[2]))
         self.viewer.set_camera(pos=camera_pos, pitch=pitch, yaw=yaw)
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.look_at(camera_target_wp)
 
         self.capture()

@@ -3,15 +3,16 @@
 
 """USD deformable importer shared leaf helpers and import context.
 
-This module owns the builder-independent leaf helpers (e.g. :func:`_validate_mass_array`) and the
-shared mass / density / anchor utilities used by the cable / cloth / volume / attachment /
-collision-filter import passes, plus the :class:`_DeformableImportContext` that carries the
-:func:`parse_usd` inputs, helper closures, and result maps the passes mutate. The passes
-themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attachments}`` modules.
+This module owns builder-independent leaf helpers and the shared mass / density / anchor utilities
+used by the cable / cloth / volume / attachment /
+collision-filter / visual import passes, plus the :class:`_DeformableImportContext` that carries the
+``parse_usd()`` inputs, helper closures, and result maps the passes mutate. The passes
+themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attachments,visual}`` modules.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import warnings
@@ -22,17 +23,183 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from pxr import Usd
 
     from ..sim.builder import ModelBuilder
+    from ..usd._resolution_policy import _PhysicsMaterial
 
-# Physical-size fallbacks [m]. Cloth uses the assumed thickness below; the cable
-# radius preserves no-material and legacy-only behavior. Each fallback path warns.
+# AOUSD SI fallbacks: density [kg/m^3], thickness [m], Young's modulus [Pa],
+# and dimensionless Poisson's ratio.
 # TODO: evaluate moving these to configurable ModelBuilder defaults (like
 # default_particle_radius) when deformable import leaves its experimental phase.
-_DEFAULT_CLOTH_THICKNESS = 0.002
-_CABLE_RADIUS_COMPATIBILITY_FALLBACK = 0.0025
+_AOUSD_DEFAULT_DENSITY = 1000.0
+_AOUSD_DEFAULT_THICKNESS = 1.0e-3
+_AOUSD_DEFAULT_YOUNGS_MODULUS = 1.0e6
+_AOUSD_DEFAULT_POISSONS_RATIO = 0.3
+_USD_FLOAT_MAX = float(np.finfo(np.float32).max)
+
+
+def _is_usd_float_representable(value: float) -> bool:
+    """Return whether a scalar can be represented by the USD ``float`` type."""
+    return math.isfinite(value) and abs(value) <= _USD_FLOAT_MAX
+
+
+@dataclass(frozen=True, slots=True)
+class _DeformableElementArray:
+    """Validated values authored on deformable simulation-geometry elements."""
+
+    values: tuple[float, ...]
+    """Authored scalar values in validated element order."""
+
+    element_type: str
+    """AOUSD element-domain token used to interpret the values."""
+
+    legacy_implicit_type: bool = False
+    """Whether the element type was inferred from deprecated authoring."""
+
+
+@dataclass(frozen=True, slots=True)
+class _CableMassRun:
+    """Imported segment elements belonging to one authored curve."""
+
+    curve_index: int
+    """Index of the owning curve in the authored curve array."""
+
+    point_offset: int
+    """Offset of the curve's points in the flattened authored point array."""
+
+    point_count: int
+    """Number of authored points belonging to the curve."""
+
+    segment_offset: int
+    """Offset of the curve's segments in the flattened authored segment array."""
+
+    body_ids: tuple[int, ...]
+    """Newton body indices corresponding to the imported segments."""
+
+    element_volumes: tuple[float, ...]
+    """Simulation volume of each imported segment in cubic stage length units."""
+
+    closed: bool
+    """Whether the authored curve closes its final point onto its first point."""
+
+
+def _read_deformable_element_array(
+    prim: Usd.Prim,
+    name: str,
+    element_counts: Mapping[str, int],
+    read_attr: Callable,
+    *,
+    legacy_element_type: str | None = None,
+) -> _DeformableElementArray | None:
+    """Read and validate a simulation-geometry array and its namespaced element type."""
+    raw_values = read_attr(prim, name)
+    raw_element_type = read_attr(prim, f"{name}:elementType")
+    element_type = "" if raw_element_type is None else str(raw_element_type)
+    path = prim.GetPath()
+    if raw_values is None:
+        if element_type:
+            warnings.warn(
+                f"{path}: physics:{name}:elementType is '{element_type}' but physics:{name} is not authored; "
+                "treating the pair as unauthored.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+        return None
+    try:
+        values = tuple(float(value) for value in raw_values)
+    except (TypeError, ValueError):
+        warnings.warn(
+            f"{prim.GetPath()}: physics:{name} must be an array of numeric values; ignoring it.",
+            NewtonWarning,
+            stacklevel=2,
+        )
+        return None
+    if not values:
+        if element_type:
+            warnings.warn(
+                f"{path}: physics:{name} is empty but physics:{name}:elementType is "
+                f"'{element_type}'; treating the array as unauthored.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+        return None
+
+    legacy_implicit_type = False
+    if not element_type:
+        if legacy_element_type is None:
+            warnings.warn(
+                f"{path}: non-empty physics:{name} requires physics:{name}:elementType; ignoring the array.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+            return None
+        element_type = legacy_element_type
+        legacy_implicit_type = True
+        warnings.warn(
+            f"{path}: physics:{name} without physics:{name}:elementType follows an earlier AOUSD "
+            f"proposal revision and is deprecated; it retains Newton's direct point interpretation. "
+            f"Ensure every value is strictly positive, then author physics:{name}:elementType = "
+            f"'{legacy_element_type}' to use the proposal's volume-weighted conversion; for valid "
+            "values, total mass is preserved, but its distribution may change.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+
+    expected_count = element_counts.get(element_type)
+    if expected_count is None:
+        supported = ", ".join(f"'{token}'" for token in element_counts)
+        warnings.warn(
+            f"{path}: invalid physics:{name}:elementType '{element_type}' "
+            f"(expected one of {supported}); ignoring physics:{name}.",
+            NewtonWarning,
+            stacklevel=2,
+        )
+        return None
+    if len(values) != expected_count:
+        warnings.warn(
+            f"{path}: physics:{name} length {len(values)} does not match element type "
+            f"'{element_type}' count {expected_count}; ignoring the array.",
+            NewtonWarning,
+            stacklevel=2,
+        )
+        return None
+
+    allow_zero = legacy_implicit_type
+    if any(not math.isfinite(value) or value < 0.0 or (value == 0.0 and not allow_zero) for value in values):
+        expected = ">= 0" if allow_zero else "> 0"
+        consequence = (
+            "ignoring the entire array and continuing with lower-precedence mass sources"
+            if name == "masses"
+            else "ignoring the entire array"
+        )
+        warnings.warn(
+            f"{path}: physics:{name} contains invalid values (expected finite values {expected}); {consequence}.",
+            NewtonWarning,
+            stacklevel=2,
+        )
+        return None
+    if any(not _is_usd_float_representable(value) for value in values):
+        warnings.warn(
+            f"{path}: physics:{name} contains a value outside the finite USD float range; ignoring the array.",
+            NewtonWarning,
+            stacklevel=2,
+        )
+        return None
+    return _DeformableElementArray(values, element_type, legacy_implicit_type)
+
+
+def _world_points(points, world_mat, *, translate: bool) -> np.ndarray:
+    """Apply the world affine, or only its linear part, to points in float64."""
+    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    transformed = pts @ m[:3, :3].T
+    return transformed + m[:3, 3] if translate else transformed
 
 
 def _bake_world_points(points, world_mat) -> list[wp.vec3]:
@@ -41,10 +208,69 @@ def _bake_world_points(points, world_mat) -> list[wp.vec3]:
     Applies non-uniform scale, shear, and reflection exactly -- a rotation/scale
     decomposition cannot represent either. Shared by the cable / cloth / volume passes.
     """
-    m = np.array(world_mat, dtype=np.float64).reshape(4, 4)
+    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in _world_points(points, world_mat, translate=True)]
+
+
+def _rest_index_array(values, element_width: int, name: str) -> np.ndarray:
+    """Read integer rest indices without truncating malformed floating-point values."""
+    indices = np.asarray(values)
+    if indices.size == 0:
+        return np.empty((0, element_width), dtype=np.int64)
+    if not np.issubdtype(indices.dtype, np.integer):
+        raise ValueError(f"{name} must contain integer indices")
+    return indices.reshape(-1, element_width)
+
+
+def _rest_shape_indices(
+    authored_indices,
+    simulation_indices: np.ndarray,
+    simulation_point_count: int,
+    rest_point_count: int,
+    name: str,
+) -> np.ndarray:
+    """Default or validate rest topology, preserving simulation element order.
+
+    The simulation indices already have the caller's orientation correction. Explicit rest
+    indices retain their authored orientation for the caller to correct after validation.
+    """
+    if authored_indices is None or np.size(authored_indices) == 0:
+        if rest_point_count != simulation_point_count:
+            raise ValueError(f"restShapePoints must match points when {name} is omitted")
+        return simulation_indices
+    indices = _rest_index_array(authored_indices, simulation_indices.shape[1], name)
+    if len(indices) != len(simulation_indices):
+        raise ValueError(f"{name} must contain {len(simulation_indices)} elements to match the simulation topology")
+    if np.any(indices < 0) or np.any(indices >= rest_point_count):
+        raise ValueError(f"{name} contains an out-of-range point index")
+    return indices
+
+
+def _rest_topology_matches(rest_indices, simulation_indices, element_width: int) -> bool:
+    """Whether a rest topology authored without rest points equals the simulation topology.
+
+    The proposal derives ``restShapePoints`` from ``points`` only in that case; any other
+    authored rest topology is unusable without rest points.
+    """
+    try:
+        return np.array_equal(
+            _rest_index_array(rest_indices, element_width, "rest topology"),
+            np.asarray(simulation_indices, dtype=np.int64).reshape(-1, element_width),
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _transform_rest_points(points, world_mat) -> np.ndarray:
+    """Apply the world's linear transform to rest points in float64.
+
+    Rest geometry depends only on point differences, so the translation is omitted: it would
+    swamp small rest edges at large world offsets, and the live float32 bake already carries
+    the placement.
+    """
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    baked = pts @ m[:3, :3].T + m[:3, 3]
-    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in baked]
+    if not np.all(np.isfinite(pts)):
+        raise ValueError("restShapePoints contains non-finite coordinates")
+    return _world_points(pts, world_mat, translate=False)
 
 
 class _UnionFind:
@@ -68,26 +294,6 @@ class _UnionFind:
             self.parent[root_b] = root_a
 
 
-def _validate_mass_array(values: Iterable[float], path: str) -> list[float] | None:
-    """Validate an authored per-point ``physics:masses`` array.
-
-    Per-point masses have the highest precedence in the deformable mass resolution, so a poisoned
-    value would dominate. Returns the masses as floats when all are finite and non-negative; warns
-    and returns ``None`` (so the caller falls back to body / material mass) if any value is
-    non-finite or negative, or the array is empty.
-    """
-    masses = [float(x) for x in values]
-    if not masses:
-        return None
-    if any((not math.isfinite(m)) or m < 0.0 for m in masses):
-        warnings.warn(
-            f"{path}: physics:masses contains non-finite or negative values; ignoring per-point masses.",
-            stacklevel=2,
-        )
-        return None
-    return masses
-
-
 def _skip_for_deformable_body_owner(ctx, prim, path: str, warn: bool = True) -> bool:
     """True when another simulation geometry already owns this prim's deformable body.
 
@@ -107,6 +313,7 @@ def _skip_for_deformable_body_owner(ctx, prim, path: str, warn: bool = True) -> 
         warnings.warn(
             f"{path}: deformable body {body_root.GetPath()} already has simulation geometry "
             f"{owner}; skipping additional simulation geometry.",
+            NewtonWarning,
             stacklevel=2,
         )
     return True
@@ -136,6 +343,7 @@ def _deformable_rigid_body_conflict(prim) -> bool:
         f"{prim.GetPath()}: PhysicsDeformableBodyAPI on {body_root.GetPath()} conflicts with "
         f"its RigidBodyAPI (the proposal forbids the combination); skipping the deformable "
         f"interpretation and importing the prim as rigid.",
+        NewtonWarning,
         stacklevel=2,
     )
     return True
@@ -174,6 +382,7 @@ def _scout_claims_candidate(buckets, prim, family: str) -> bool:
             f"{path}: physics:bodyEnabled is false; skipping the deformable import. Dedicated "
             f"colliders and Mesh simulation geometry persist as static colliders; TetMesh / "
             f"BasisCurves simulation geometry has no static representation.",
+            NewtonWarning,
             stacklevel=2,
         )
         return False
@@ -214,6 +423,7 @@ def _warn_subset_material_bindings(prim, path: str) -> None:
             f"{path}: GeomSubset {child.GetPath()} binds a physics material; per-element "
             f"materials are not supported yet, so the whole simulation geometry uses the "
             f"one resolved material.",
+            NewtonWarning,
             stacklevel=2,
         )
 
@@ -283,6 +493,21 @@ def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ())
             yield prim
 
 
+# Applied API schemas of the AOUSD proposal's deformable simulation families.
+_AOUSD_DEFORMABLE_SIM_APIS = frozenset(
+    {
+        "PhysicsCurvesDeformableSimAPI",
+        "PhysicsSurfaceDeformableSimAPI",
+        "PhysicsVolumeDeformableSimAPI",
+    }
+)
+
+
+def _is_aousd_deformable_sim_prim(prim) -> bool:
+    """Whether a prim applies one of the AOUSD deformable simulation APIs."""
+    return not _AOUSD_DEFORMABLE_SIM_APIS.isdisjoint(prim.GetPrimTypeInfo().GetAppliedAPISchemas())
+
+
 def _deformable_collision_enabled(prim, ignore_paths: Sequence[str] = ()) -> tuple[bool, list[str]]:
     """Resolve a deformable simulation geometry's collision participation.
 
@@ -314,6 +539,7 @@ def _warn_collision_approximated(path: str, approximated_from: Sequence[str]) ->
         warnings.warn(
             f"{collider_path}: dedicated deformable collider is approximated by the "
             f"simulation geometry {path} (deformable collider embedding is not supported).",
+            NewtonWarning,
             stacklevel=2,
         )
 
@@ -323,6 +549,7 @@ def _warn_collision_not_disableable(path: str) -> None:
     warnings.warn(
         f"{path}: no enabled collider is authored, but Newton cannot disable deformable "
         f"particle collision; importing with collision enabled.",
+        NewtonWarning,
         stacklevel=2,
     )
 
@@ -352,6 +579,7 @@ def _validate_attachment_index_pairs(
     if not indices0 or not indices1:
         warnings.warn(
             f"{path}: curve-to-curve PhysicsAttachment has empty indices0/indices1; skipping junction.",
+            NewtonWarning,
             stacklevel=2,
         )
         return False
@@ -359,6 +587,7 @@ def _validate_attachment_index_pairs(
         warnings.warn(
             f"{path}: curve-to-curve PhysicsAttachment indices0 (len {len(indices0)}) and indices1 "
             f"(len {len(indices1)}) differ in length; skipping junction.",
+            NewtonWarning,
             stacklevel=2,
         )
         return False
@@ -368,6 +597,7 @@ def _validate_attachment_index_pairs(
                 warnings.warn(
                     f"{path}: curve-to-curve PhysicsAttachment {which} index {idx} is out of range for its "
                     f"curve ({count} points); skipping junction.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 return False
@@ -380,16 +610,23 @@ class _CurveDeformableRecord:
 
     Positions are already in world space (import transform applied). ``material`` holds
     the authored curve-deformable material values, or ``None`` when no curve material API
-    applies (see :func:`.usd.utils._get_curve_deformable_material`); ``radius`` and
-    ``density`` are the resolved per-curve values.
+    applies (see :func:`.usd.utils._get_curve_deformable_material`); ``segment_radii`` and
+    ``point_radii`` preserve the resolved local geometry, while ``density`` is per curve.
     """
 
     prim: Usd.Prim
     positions: list[wp.vec3]
     closed: bool
-    radius: float
+    segment_radii: list[float]
+    """Resolved collision radius for each curve segment in stage length units."""
+
+    point_radii: list[float]
+    """Thickness-derived radius for each curve point in stage length units."""
+
     density: float
     material: dict[str, float] | None = None
+    thicknesses: _DeformableElementArray | None = None
+    """Validated simulation-geometry thickness authoring, if present."""
 
 
 def _cable_segment_quaternions(seg_positions: Sequence[wp.vec3], seg_normals: Sequence[wp.vec3]) -> list[wp.quat]:
@@ -436,22 +673,7 @@ def _attachment_vec3_tuples(values: Sequence[wp.vec3]) -> list[tuple[float, floa
 def _mark_attachment_unsupported(attrs: dict, path: str, reason: str) -> None:
     """Record why a ``PhysicsAttachment`` was not imported and warn, preserving its attrs."""
     attrs["unsupported_reason"] = reason
-    warnings.warn(f"{path}: {reason}", stacklevel=2)
-
-
-def _warn_unsupported_rest_fields(prim: Usd.Prim, path: str, names: Sequence[str], read_attr: Callable) -> None:
-    """Warn (once) if any authored rest-state field in ``names`` is present but not yet imported.
-
-    Rest-state import (rest shape, rest dihedral angles) is not implemented yet; warn rather than
-    silently drop an authored rest configuration.
-    """
-    for name in names:
-        if read_attr(prim, name) is not None:
-            warnings.warn(
-                f"{path}: 'physics:{name}' is authored but its import is not yet supported; it is ignored.",
-                stacklevel=2,
-            )
-            return
+    warnings.warn(f"{path}: {reason}", NewtonWarning, stacklevel=2)
 
 
 def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
@@ -463,6 +685,7 @@ def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
     if vel and vel.HasAuthoredValue():
         warnings.warn(
             f"{path}: authored velocities are not imported; the deformable starts at rest.",
+            NewtonWarning,
             stacklevel=2,
         )
 
@@ -474,24 +697,35 @@ def _warn_geometry_authored_material_attrs(prim: Usd.Prim, path: str, material_a
     geometry has no effect; warn rather than drop them silently. ``density`` is excluded since it
     may legitimately sit on the body (``PhysicsDeformableBodyAPI``).
     """
+    for name in ("surfaceThickness", "curvesThickness", "thickness"):
+        if read_attr(prim, name) is not None:
+            warnings.warn(
+                f"{path}: deprecated geometry attribute 'physics:{name}' is ignored; author "
+                "physics:thicknesses on the simulation geometry with "
+                "physics:thicknesses:elementType instead.",
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
     for name in (
         "youngsModulus",
         "poissonsRatio",
+        "surfaceStretchStiffness",
+        "surfaceShearStiffness",
+        "surfaceBendStiffness",
         "curvesStretchStiffness",
         "curvesShearStiffness",
         "curvesBendStiffness",
         "curvesTwistStiffness",
-        "curvesThickness",
         "stretchStiffness",
         "shearStiffness",
         "bendStiffness",
         "twistStiffness",
-        "thickness",
     ):
         if read_attr(prim, name) is not None:
             warnings.warn(
                 f"{path}: deformable material attribute 'physics:{name}' is authored on the geometry; "
                 f"it belongs on the bound material ({material_api}) and is ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
 
@@ -528,13 +762,48 @@ def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
     )
 
 
-def _resolve_deformable_density(prim: Usd.Prim, material_density: float | None, read_attr: Callable) -> float | None:
+def _resolve_attachment_target(
+    ctx: _DeformableImportContext, target_path: str, local_point: wp.vec3
+) -> tuple[int, wp.vec3] | None:
+    """Resolve an attachment target to a body index and a point in that body's frame."""
+    if target_path in ("", "/"):
+        world_point = wp.transform_point(ctx.incoming_world_xform, local_point)
+        return -1, world_point
+
+    target_prim = ctx.stage.GetPrimAtPath(target_path)
+    if not target_prim or not target_prim.IsValid():
+        return None
+
+    target_mat = ctx.get_prim_world_mat(target_prim, None, ctx.incoming_world_xform)
+    world_point = wp.transform_point(target_mat, local_point)
+    body_path = ctx.get_rigid_body_ancestor_path(target_prim)
+    if body_path is None:
+        return -1, world_point
+
+    body = ctx.path_body_map.get(body_path)
+    if body is None:
+        return None
+    body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(ctx.builder, body)), world_point)
+    return body, body_point
+
+
+def _resolve_deformable_density(
+    prim: Usd.Prim,
+    material_density: float | None,
+    read_attr: Callable,
+    linear_unit: float,
+    *,
+    read_base_material: bool = True,
+) -> float:
     """Resolve the density used for a deformable.
 
     Mass precedence (proposal): a ``PhysicsDeformableBodyAPI`` body-density override,
     then the bound material's family density, then the material's base
     ``UsdPhysicsMaterialAPI`` density (the family material APIs extend the base API,
-    so a plain rigid-style physics material is a valid density source).
+    so a plain rigid-style physics material is a valid density source), and finally
+    1000 kg/m^3 expressed in the stage's distance units. Non-unit mass metadata is
+    rejected by :meth:`ModelBuilder.add_usd`'s existing warning contract. ``read_base_material``
+    is false when a family reader has already checked the same inherited density.
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
@@ -543,25 +812,11 @@ def _resolve_deformable_density(prim: Usd.Prim, material_density: float | None, 
         return body_density
     if material_density is not None:
         return material_density
-    return usd._get_physics_material_density(usd._find_physics_material_prim(prim))
-
-
-def _mass_weight_density(prim, density: float, read_attr: Callable) -> float:
-    """Density used to build a deformable's mass weights.
-
-    When the resolved density is zero (nothing authored and a zero builder default) but
-    the body authors a total ``physics:mass``, the geometric weights (segment length,
-    triangle area, tet volume) must still exist for the body-total rescale to distribute
-    the authored mass per the proposal's precedence. A neutral density of 1.0 provides
-    them; the rescale replaces its magnitude, and the reported ``resolved_density``
-    values are taken from the unmodified resolution.
-    """
-    from ..usd import utils as usd  # noqa: PLC0415
-
-    if density > 0.0:
-        return density
-    body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
-    return 1.0 if body_mass is not None else density
+    if read_base_material:
+        base_density = usd._get_physics_material_density(usd._find_physics_material_prim(prim))
+        if base_density is not None:
+            return base_density
+    return _AOUSD_DEFAULT_DENSITY * linear_unit**3
 
 
 def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
@@ -570,7 +825,7 @@ def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
     if orig > 0.0:
         builder.body_inertia[b] = builder.body_inertia[b] * (m / orig)
     elif m > 0.0:
-        # No original mass to scale from (e.g. a zero default density): rebuild the inertia
+        # No original mass to scale from (e.g. a zero preexisting mass): rebuild the inertia
         # from the segment's capsule geometry at the new mass. Scaling by m/orig would zero
         # the tensor and poison its inverse below.
         from ..geometry.inertia import compute_inertia_capsule  # noqa: PLC0415
@@ -592,29 +847,215 @@ def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
     builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if invertible else wp.mat33(0.0)
 
 
-def _apply_particle_masses(builder: ModelBuilder, prim: Usd.Prim, p0: int, p1: int, read_attr: Callable) -> None:
-    """Apply the deformable mass override to particles ``[p0, p1)``.
+def _set_cable_body_radius(builder: ModelBuilder, body: int, radius: float) -> None:
+    """Set one cable segment's collision radius and rebuild its capsule inertia."""
+    from ..geometry.inertia import compute_inertia_capsule  # noqa: PLC0415
+    from ..geometry.utils import compute_shape_radius  # noqa: PLC0415
 
-    Per-point ``physics:masses`` (highest precedence) are written directly; otherwise a
-    ``PhysicsDeformableBodyAPI`` body-mass total rescales the (density-derived) particle masses.
-    """
+    shapes = builder.body_shapes[body]
+    if not shapes:
+        return
+    shape = shapes[0]
+    half_height = float(builder.shape_scale[shape][1])
+    builder.shape_scale[shape] = wp.vec3(radius, half_height, 0.0)
+    builder.shape_collision_radius[shape] = compute_shape_radius(
+        builder.shape_type[shape], builder.shape_scale[shape], builder.shape_source[shape]
+    )
+    mass = float(builder.body_mass[body])
+    unit_mass, _, unit_inertia = compute_inertia_capsule(1.0, radius, half_height)
+    if mass > 0.0 and unit_mass > 0.0:
+        builder.body_inertia[body] = unit_inertia * (mass / unit_mass)
+        builder.body_inv_inertia[body] = wp.inverse(builder.body_inertia[body])
+    else:
+        builder.body_inertia[body] = wp.mat33(0.0)
+        builder.body_inv_inertia[body] = wp.mat33(0.0)
+
+
+def _element_masses_from_points_ragged(
+    point_masses: Sequence[float], element_indices: Sequence[Sequence[int]], element_volumes: Sequence[float]
+) -> list[float] | None:
+    """Convert point masses for an internal element array with varying arity."""
+    point_volumes = [0.0] * len(point_masses)
+    referenced_points: set[int] = set()
+    for indices, volume in zip(element_indices, element_volumes, strict=True):
+        share = float(volume) / len(indices)
+        for point in indices:
+            point_index = int(point)
+            referenced_points.add(point_index)
+            point_volumes[point_index] += share
+    if any(point_volumes[point] <= 0.0 or not math.isfinite(point_volumes[point]) for point in referenced_points):
+        return None
+    return [
+        float(volume)
+        / len(indices)
+        * sum(float(point_masses[int(point)]) / point_volumes[int(point)] for point in indices)
+        for indices, volume in zip(element_indices, element_volumes, strict=True)
+    ]
+
+
+def _element_masses_from_points(
+    point_masses: Sequence[float], element_indices: Sequence[Sequence[int]], element_volumes: Sequence[float]
+) -> list[float] | None:
+    """Convert point masses to element masses using the proposal's volume-weighted relation."""
+    if len(element_indices) == 0:
+        return []
+    try:
+        indices = np.asarray(element_indices, dtype=np.int64)
+    except ValueError:
+        return _element_masses_from_points_ragged(point_masses, element_indices, element_volumes)
+    if indices.ndim != 2:
+        return _element_masses_from_points_ragged(point_masses, element_indices, element_volumes)
+    volumes = np.asarray(element_volumes, dtype=np.float64)
+    points_per_element = indices.shape[1]
+    point_volumes = np.bincount(
+        indices.reshape(-1),
+        weights=np.repeat(volumes / points_per_element, points_per_element),
+        minlength=len(point_masses),
+    )
+    referenced_points = np.unique(indices)
+    if np.any((point_volumes[referenced_points] <= 0.0) | ~np.isfinite(point_volumes[referenced_points])):
+        return None
+    mass_per_volume = np.zeros(len(point_masses), dtype=np.float64)
+    mass_per_volume[referenced_points] = (
+        np.asarray(point_masses, dtype=np.float64)[referenced_points] / point_volumes[referenced_points]
+    )
+    return (volumes / points_per_element * np.sum(mass_per_volume[indices], axis=1)).tolist()
+
+
+def _lump_element_masses_to_points_ragged(
+    element_masses: Sequence[float], element_indices: Sequence[Sequence[int]], point_count: int
+) -> list[float]:
+    """Split element mass for an internal element array with varying arity."""
+    point_masses = [0.0] * point_count
+    for mass, indices in zip(element_masses, element_indices, strict=True):
+        share = float(mass) / len(indices)
+        for point in indices:
+            point_masses[int(point)] += share
+    return point_masses
+
+
+def _lump_element_masses_to_points(
+    element_masses: Sequence[float], element_indices: Sequence[Sequence[int]], point_count: int
+) -> list[float]:
+    """Split each element mass equally over its points."""
+    if len(element_indices) == 0:
+        return [0.0] * point_count
+    try:
+        indices = np.asarray(element_indices, dtype=np.int64)
+    except ValueError:
+        return _lump_element_masses_to_points_ragged(element_masses, element_indices, point_count)
+    if indices.ndim != 2:
+        return _lump_element_masses_to_points_ragged(element_masses, element_indices, point_count)
+    points_per_element = indices.shape[1]
+    return np.bincount(
+        indices.reshape(-1),
+        weights=np.repeat(np.asarray(element_masses, dtype=np.float64) / points_per_element, points_per_element),
+        minlength=point_count,
+    ).tolist()
+
+
+def _resolve_simplex_point_masses(
+    prim: Usd.Prim,
+    point_count: int,
+    element_name: str,
+    element_indices: Sequence[Sequence[int]],
+    element_volumes: Sequence[float],
+    read_attr: Callable,
+    element_count: int | None = None,
+    element_sources: Sequence[int] | None = None,
+) -> tuple[list[float] | None, _DeformableElementArray | None]:
+    """Resolve authored simplex masses to the point masses Newton integrates."""
+    authored = _read_deformable_element_array(
+        prim,
+        "masses",
+        {
+            "constant": 1,
+            element_name: len(element_indices) if element_count is None else element_count,
+            "point": point_count,
+        },
+        read_attr,
+        legacy_element_type="point",
+    )
+    if authored is None:
+        return None, None
+    if authored.legacy_implicit_type:
+        return list(authored.values), authored
+    if authored.element_type == "constant":
+        total_volume = float(sum(element_volumes))
+        if total_volume <= 0.0 or not math.isfinite(total_volume):
+            warnings.warn(
+                f"{prim.GetPath()}: simulation geometry has no positive finite volume; ignoring physics:masses.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+            return None, None
+        element_masses = [authored.values[0] * float(volume) / total_volume for volume in element_volumes]
+    elif authored.element_type == element_name:
+        if element_sources is None:
+            element_masses = list(authored.values)
+        else:
+            source_volumes = [0.0] * len(authored.values)
+            for source, volume in zip(element_sources, element_volumes, strict=True):
+                source_volumes[int(source)] += float(volume)
+            element_masses = [
+                authored.values[int(source)] * float(volume) / source_volumes[int(source)]
+                for source, volume in zip(element_sources, element_volumes, strict=True)
+            ]
+    else:
+        referenced_point_count = len(np.unique(np.asarray(element_indices, dtype=np.int64)))
+        unreferenced_count = point_count - referenced_point_count
+        if unreferenced_count:
+            warnings.warn(
+                f"{prim.GetPath()}: physics:masses has {unreferenced_count} unreferenced point value(s); "
+                "ignoring those values because the points belong to no simulation element.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+        element_masses = _element_masses_from_points(authored.values, element_indices, element_volumes)
+        if element_masses is None:
+            warnings.warn(
+                f"{prim.GetPath()}: simulation geometry has a point with no positive finite adjacent volume; "
+                "ignoring physics:masses.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+            return None, None
+    return _lump_element_masses_to_points(element_masses, element_indices, point_count), authored
+
+
+def _apply_particle_masses(
+    builder: ModelBuilder,
+    prim: Usd.Prim,
+    p0: int,
+    p1: int,
+    read_attr: Callable,
+    *,
+    element_name: str,
+    element_indices: Sequence[Sequence[int]],
+    element_volumes: Sequence[float],
+    element_count: int | None = None,
+    element_sources: Sequence[int] | None = None,
+) -> _DeformableElementArray | None:
+    """Apply typed element masses or a body-mass override to particles ``[p0, p1)``."""
     from ..usd import utils as usd  # noqa: PLC0415
 
     n = p1 - p0
     if n <= 0:
-        return
-    point_masses = usd._get_deformable_point_masses(prim, read_attr)
+        return None
+    point_masses, authored = _resolve_simplex_point_masses(
+        prim,
+        n,
+        element_name,
+        element_indices,
+        element_volumes,
+        read_attr,
+        element_count,
+        element_sources,
+    )
     if point_masses is not None:
-        if len(point_masses) != n:
-            warnings.warn(
-                f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {n} simulation points; "
-                f"ignoring per-point masses.",
-                stacklevel=2,
-            )
-        else:
-            for i in range(n):
-                builder.particle_mass[p0 + i] = point_masses[i]
-            return
+        for i in range(n):
+            builder.particle_mass[p0 + i] = point_masses[i]
+        return authored
     body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
     if body_mass is not None:
         current = float(sum(builder.particle_mass[p0:p1]))
@@ -622,108 +1063,114 @@ def _apply_particle_masses(builder: ModelBuilder, prim: Usd.Prim, p0: int, p1: i
             scale = body_mass / current
             for i in range(p0, p1):
                 builder.particle_mass[i] *= scale
+    return authored
 
 
 def _apply_cable_masses(
     builder: ModelBuilder,
     prim: Usd.Prim,
-    body_ids: Sequence[int],
-    point_runs: Sequence[tuple[int, int, Sequence[int]]],
-    closed: bool,
+    runs: Sequence[_CableMassRun],
     read_attr: Callable,
     authored_point_count: int,
-) -> None:
-    """Distribute the deformable mass override over a rigid cable's segment bodies.
-
-    Mass precedence for the rigid cable: per-point ``physics:masses`` (highest), else a
-    ``PhysicsDeformableBodyAPI`` body-mass total.
-
-    ``physics:masses`` is a per-POINT (vertex) quantity, but add_rod builds one capsule body
-    per SEGMENT between consecutive points -- a point is the junction of its neighboring
-    segments, not a body. So N points map to N-1 segments (open) or N (closed)::
-
-        points     P0------P1------P2------P3      mass m0 m1 m2 m3
-        segments       C0      C1      C2          (open: 3 capsule bodies)
-
-    There is no body at a vertex, so each point's mass is lumped onto the segment(s) it
-    borders: an interior point splits its mass between its two segments, an endpoint gives
-    its full mass to its single segment (so the total is conserved)::
-
-        C0 = m0 + m1/2,   C1 = m1/2 + m2/2,   C2 = m2/2 + m3
-
-    This preserves the authored distribution (a front-heavy cable stays front-heavy) and its
-    total. The mass lands at the segment midpoints rather than the vertices -- the inherent
-    approximation of a rigid chain that has no per-vertex DOF. A body-mass total has no
-    per-point profile, so it just rescales the (density-derived) segment masses to that total.
-    """
+    authored_curve_count: int,
+    authored_segment_count: int,
+    density: float,
+) -> _DeformableElementArray | None:
+    """Resolve curve mass elements onto Newton's rigid segment bodies."""
     from ..usd import utils as usd  # noqa: PLC0415
 
-    point_masses = usd._get_deformable_point_masses(prim, read_attr)
+    authored = _read_deformable_element_array(
+        prim,
+        "masses",
+        {
+            "constant": 1,
+            "curve": authored_curve_count,
+            "segment": authored_segment_count,
+            "point": authored_point_count,
+        },
+        read_attr,
+        legacy_element_type="point",
+    )
     body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
-    # physics:masses is authored per point of the prim's full points array, so validate against
-    # the authored count, not the imported one: each run indexes it by its absolute point offset,
-    # and a skipped curve leaves its entries unused (a shorter array would be indexed out of range).
-    if point_masses is not None and len(point_masses) != authored_point_count:
-        warnings.warn(
-            f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {authored_point_count} "
-            f"authored curve points; ignoring per-point masses.",
-            stacklevel=2,
-        )
-        point_masses = None
-    if point_masses is not None:
-        lumped: list[tuple[Sequence[int], list[float]]] = []
-        for start, n, bodies in point_runs:
-            pm = [float(point_masses[start + i]) for i in range(n)]
-            if closed:
-                # Loop: N points -> N segments, every point borders two, so split each in half.
-                seg_masses = [0.5 * pm[s] + 0.5 * pm[(s + 1) % n] for s in range(n)]
+    resolved_runs: list[tuple[tuple[int, ...], list[float]]] = []
+
+    if authored is not None:
+        imported_volume = sum(sum(run.element_volumes) for run in runs)
+        if authored.element_type == "constant" and (imported_volume <= 0.0 or not math.isfinite(imported_volume)):
+            warnings.warn(
+                f"{prim.GetPath()}: simulation geometry has no positive finite volume; ignoring physics:masses.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+            authored = None
+
+    if authored is not None:
+        for run in runs:
+            volumes = list(run.element_volumes)
+            if authored.element_type == "constant":
+                segment_masses = [authored.values[0] * volume / imported_volume for volume in volumes]
+            elif authored.element_type == "curve":
+                curve_volume = sum(volumes)
+                if curve_volume <= 0.0 or not math.isfinite(curve_volume):
+                    warnings.warn(
+                        f"{prim.GetPath()}: curve {run.curve_index} has no positive finite volume; "
+                        "ignoring physics:masses.",
+                        NewtonWarning,
+                        stacklevel=2,
+                    )
+                    authored = None
+                    resolved_runs.clear()
+                    break
+                segment_masses = [authored.values[run.curve_index] * volume / curve_volume for volume in volumes]
+            elif authored.element_type == "segment":
+                segment_masses = list(authored.values[run.segment_offset : run.segment_offset + len(run.body_ids)])
             else:
-                # Open: N points -> N-1 segments. Interior points (the +0.5 terms) split between
-                # two segments; the first/last points are endpoints and give their full mass.
-                seg_masses = [
-                    (pm[s] if s == 0 else 0.5 * pm[s]) + (pm[s + 1] if s + 1 == n - 1 else 0.5 * pm[s + 1])
-                    for s in range(n - 1)
+                point_masses = authored.values[run.point_offset : run.point_offset + run.point_count]
+                if authored.legacy_implicit_type:
+                    if run.closed:
+                        segment_masses = [
+                            0.5 * point_masses[index] + 0.5 * point_masses[(index + 1) % run.point_count]
+                            for index in range(run.point_count)
+                        ]
+                    else:
+                        segment_masses = [
+                            (point_masses[index] if index == 0 else 0.5 * point_masses[index])
+                            + (
+                                point_masses[index + 1]
+                                if index + 1 == run.point_count - 1
+                                else 0.5 * point_masses[index + 1]
+                            )
+                            for index in range(run.point_count - 1)
+                        ]
+                else:
+                    indices = [(index, (index + 1) % run.point_count) for index in range(len(run.body_ids))]
+                    segment_masses = _element_masses_from_points(point_masses, indices, volumes)
+                    if segment_masses is None:
+                        warnings.warn(
+                            f"{prim.GetPath()}: curve points have no positive finite incident volume; "
+                            "ignoring physics:masses.",
+                            NewtonWarning,
+                            stacklevel=2,
+                        )
+                        authored = None
+                        resolved_runs.clear()
+                        break
+            resolved_runs.append((run.body_ids, segment_masses))
+
+    if authored is None:
+        weight_density = density if density > 0.0 else (1.0 if body_mass is not None else 0.0)
+        resolved_runs = [(run.body_ids, [weight_density * volume for volume in run.element_volumes]) for run in runs]
+        if body_mass is not None:
+            current = sum(sum(masses) for _bodies, masses in resolved_runs)
+            if current > 0.0:
+                resolved_runs = [
+                    (bodies, [mass * body_mass / current for mass in masses]) for bodies, masses in resolved_runs
                 ]
-            if len(bodies) != len(seg_masses):
-                # Defensive containment: welds that would collapse a segment are rejected
-                # upstream, so the body count should always match the per-point lumping. If
-                # it ever does not, ignore per-point masses (fall back to a body-mass total
-                # or the density-derived masses) instead of raising and aborting the import.
-                warnings.warn(
-                    f"{prim.GetPath()}: cable body count does not match ({len(bodies)} bodies for "
-                    f"{len(seg_masses)} point-derived segment masses); ignoring per-point physics:masses.",
-                    stacklevel=2,
-                )
-                point_masses = None
-                break
-            lumped.append((bodies, seg_masses))
-        else:
-            for bodies, seg_masses in lumped:
-                for b, m in zip(bodies, seg_masses, strict=True):
-                    _set_body_mass(builder, b, m)
-            return
-    # Density-derived masses: add_rod gives each segment a CAPSULE mass (cylinder + two hemispherical
-    # caps), but the proposal models a curve element as the cylindrical centerline segment. Rescale
-    # each to the cylinder mass = capsule_mass / (1 + 4r/3L) (purely geometric, from the capsule's own
-    # radius r and length L = 2*half_height), dropping the cap bias -- large for short, thick segments
-    # -- so per-segment masses follow segment length.
-    for b in body_ids:
-        shapes = builder.body_shapes[b]
-        if not shapes:
-            continue
-        r = float(builder.shape_scale[shapes[0]][0])
-        seg_len = 2.0 * float(builder.shape_scale[shapes[0]][1])
-        if r > 0.0 and seg_len > 0.0:
-            _set_body_mass(builder, b, builder.body_mass[b] / (1.0 + 4.0 * r / (3.0 * seg_len)))
-    if body_mass is None:
-        return
-    # A body-mass total has no per-point profile; rescale the cylinder masses to that total.
-    current = float(sum(builder.body_mass[b] for b in body_ids))
-    if current <= 0.0:
-        return
-    scale = body_mass / current
-    for b in body_ids:
-        _set_body_mass(builder, b, builder.body_mass[b] * scale)
+
+    for bodies, masses in resolved_runs:
+        for body, mass in zip(bodies, masses, strict=True):
+            _set_body_mass(builder, body, mass)
+    return authored
 
 
 def _cable_attachment_anchors(
@@ -754,6 +1201,7 @@ def _cable_attachment_anchors(
             warnings.warn(
                 f"{attachment_path}: point index {site_index} is not an imported cable point on {src_path}; "
                 "skipping that attachment site.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return []
@@ -772,12 +1220,14 @@ def _cable_attachment_anchors(
         warnings.warn(
             f"{attachment_path}: segment index {site_index} is not an imported cable segment on {src_path}; "
             "skipping that attachment site.",
+            NewtonWarning,
             stacklevel=2,
         )
         return []
     if coord is None:
         warnings.warn(
             f"{attachment_path}: segment attachment site {site_index} is missing coords0; skipping.",
+            NewtonWarning,
             stacklevel=2,
         )
         return []
@@ -786,6 +1236,7 @@ def _cable_attachment_anchors(
     if segment_length <= 1.0e-8:
         warnings.warn(
             f"{attachment_path}: segment index {site_index} has zero length; skipping that attachment site.",
+            NewtonWarning,
             stacklevel=2,
         )
         return []
@@ -822,6 +1273,8 @@ class _DeformablePrimBuckets:
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
     body_owner: dict[str, str] = field(default_factory=dict)
+    # Graphics meshes in traversal order, grouped by their owning deformable body.
+    visual_meshes: dict[str, list[Usd.Prim]] = field(default_factory=dict)
     # Prim paths the native rigid-physics loader must not parse: deformable simulation
     # geometry (any family) and collider prims governed by an imported deformable body.
     # Excluding them avoids duplicate rigid shapes for dedicated deformable colliders and
@@ -980,64 +1433,59 @@ def _scout_deformable_prims(
                 buckets.cloth.append(prim)
                 claim_body(prim)
 
-    # Every PointBased prim governed by an imported deformable body belongs to the
-    # deformable contract, never to the native rigid loader: colliders feed the
-    # collision-gating approximation, and untagged graphics geometry must deform with
-    # the simulation geometry per the proposal. Embedding is not implemented, so the
-    # graphics geometry is skipped with a warning -- importing it as a static shape
-    # would leave a frozen copy behind while the deformable moves away. Resolved after
-    # the traversal over just the discovered body subtrees, so a stage without
-    # deformables pays nothing extra.
+    # Claim graphics before the rigid loader can create a frozen duplicate.
+    # Only discovered body subtrees are visited, not the whole stage again.
     if buckets.body_owner:
-        deformable_sim_apis = (
-            "PhysicsCurvesDeformableSimAPI",
-            "PhysicsSurfaceDeformableSimAPI",
-            "PhysicsVolumeDeformableSimAPI",
-        )
         stage = root_prim.GetStage()
-        for body_path, owner_path in buckets.body_owner.items():
+        for body_path in buckets.body_owner:
             body_prim = stage.GetPrimAtPath(body_path)
             if not body_prim or not body_prim.IsValid():
                 continue
+            for prim in usd.find_deformable_visual_prims(body_prim):
+                if usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI"):
+                    continue
+                path = str(prim.GetPath())
+                if not prim.GetPath().HasPrefix(root_prim.GetPath()) or _is_ignored_path(path, ignore_paths):
+                    continue
+                buckets.native_physics_exclude_paths.append(path)
+                if prim.IsA(UsdGeom.Mesh):
+                    buckets.visual_meshes.setdefault(body_path, []).append(prim)
+                elif not prim.IsA(UsdGeom.TetMesh):
+                    # The volume pass already reports untagged TetMeshes.
+                    logger.warning(
+                        "%s: unsupported graphics geometry under deformable body %s; skipping.", path, body_path
+                    )
             for prim in _iter_deformable_pointbased_prims(body_prim, ignore_paths):
                 path = str(prim.GetPath())
                 if _prim_has_collision_api(prim):
                     buckets.native_physics_exclude_paths.append(path)
-                elif path != owner_path and not (
-                    prim.IsA(UsdGeom.TetMesh)
-                    or any(s in deformable_sim_apis for s in prim.GetPrimTypeInfo().GetAppliedAPISchemas())
-                ):
-                    # Simulation candidates of any family are handled (or warned) by their
-                    # own passes; everything else is unembedded graphics geometry.
-                    buckets.native_physics_exclude_paths.append(path)
-                    warnings.warn(
-                        f"{path}: PointBased geometry under deformable body {body_path} cannot "
-                        f"deform with the simulation geometry (embedding is not implemented); "
-                        f"skipping it.",
-                        stacklevel=2,
-                    )
     return buckets
 
 
 @dataclass(slots=True)
 class _DeformableImportContext:
-    """Shared state for the deformable import passes (cable / cloth / volume / attachment).
+    """Shared state for the deformable import passes (cable / cloth / volume / attachment / visual).
 
-    Bundles the :func:`parse_usd` inputs, the helper closures the passes need, and the result maps
-    they populate, so the passes can live in this module instead of as closures in ``parse_usd``.
-    The result maps are the same dict objects ``parse_usd`` returns, mutated in place.
+    Bundles the ``parse_usd()`` inputs, the helper closures the passes need, and the result maps
+    they populate, so the passes can live in sibling modules instead of as closures in
+    ``parse_usd()``. The result maps are the same dict objects ``parse_usd()`` returns, mutated in
+    place.
     """
 
     builder: ModelBuilder
     stage: Usd.Stage
     root_prim: Usd.Prim
     resolver: Any
+    material_specs: dict[str, _PhysicsMaterial]
     collect_schema_attrs: bool
     deformable_read: Callable
     get_prim_world_mat: Callable
     get_rigid_body_ancestor_path: Callable
     get_first_target: Callable
     get_tetmesh_cached: Callable
+    is_viewport_drawn: Callable
+    load_visual_shapes: bool
+    hide_collision_shapes: bool
     incoming_world_xform: wp.transform
     linear_unit: float
     ignore_paths: Sequence[str]
@@ -1054,5 +1502,14 @@ class _DeformableImportContext:
     path_soft_attrs: dict
     path_attachment_map: dict
     path_attachment_attrs: dict
+    # Articulation index -> self-collision flag, consumed by the importer's filter pass.
+    articulation_has_self_collision: dict[int, bool]
     # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
     prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)
+    # Reference poses of imported cable bodies for visual binding, and per-body reasons when
+    # a curve's bind pose could not be used; both filled by the cable pass.
+    cable_visual_bind_poses: dict[int, wp.transform] = field(default_factory=dict)
+    cable_visual_bind_errors: dict[int, str] = field(default_factory=dict)
+    cable_visual_sim_paths: set[str] = field(default_factory=set)
+    cable_visual_bind_points: dict[str, np.ndarray | None] = field(default_factory=dict)
+    path_deformable_visual_map: dict[str, int] = field(default_factory=dict)
