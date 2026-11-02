@@ -1240,8 +1240,7 @@ class SolverSteel(SolverBase, CouplingInterface):
       and raises :class:`NotImplementedError` when any of these is active: joint velocity
       limits, PGS drive rows, mimic and loop-closing joints, friction patches, contact
       regularization, restitution, warm start, velocity-only iterations, contact torsion,
-      free-body rolling and spin friction, contact compliance, sleeping
-      and the propagation contact responses. Contact torsion is CUDA-only, so on a CPU device a
+      contact compliance, sleeping and the propagation contact responses. Contact torsion is CUDA-only, so on a CPU device a
       positive torsion radius raises :class:`ValueError` first.
 
     ``articulated_contact_response`` selects how contacts of articulated bodies are
@@ -14896,8 +14895,8 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_compliance: Add ``gamma * lambda`` to every contact-normal residual in each
             sweep (``contact_compliance``); ``gamma`` is zero on rigid rows.
         free_rigid_angular_friction: Solve the rolling pair and spin row that follow free-body
-            contacts' sliding pairs (``ShapeFrictionMode.TORSIONAL`` and above); requires ``"fixed_normal"`` and no factor
-            coordinates.
+            contacts' sliding pairs (``ShapeFrictionMode.TORSIONAL`` and above); requires
+            ``"fixed_normal"`` and no factor coordinates.
     """
     if free_rigid_angular_friction and (friction_mode != "fixed_normal" or factor_coordinates):
         raise ValueError("free-rigid angular friction rows require the fixed-normal free-body solve")
