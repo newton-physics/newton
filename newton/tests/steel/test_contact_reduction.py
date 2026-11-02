@@ -45,12 +45,11 @@ def _staged_contacts_kept(reducer, entries, pos):
     qy = np.clip(np.floor(pos[:, 1] * np.float32(2000.0)), -8192, 8191).astype(np.int64) + 8192
     pos_key = (qx << 15) | (qy << 1) | 1
     values = reducer.ht_values.numpy()
-    capacity = reducer.hashtable.capacity
-    slot_count = values.shape[0] // capacity
+    slot_count = reducer.values_per_key
     kept = np.zeros(len(entries), dtype=np.int32)
     for i, entry in enumerate(entries):
         if entry >= 0:
-            slot_keys = {int(values[slot * capacity + entry]) & 0x7FFFFFFF for slot in range(slot_count)}
+            slot_keys = {int(values[entry * slot_count + slot]) & 0x7FFFFFFF for slot in range(slot_count)}
             kept[i] = int(int(pos_key[i]) in slot_keys)
     return kept
 

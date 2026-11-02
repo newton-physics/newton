@@ -794,6 +794,7 @@ def _clear_active_kernel(
     buffer_overflows: wp.array[wp.int32],
     ht_capacity: int,
     values_per_key: int,
+    entry_major: int,
     num_threads: int,
 ):
     """Clear active hashtable entries, values, hydroelastic aggregates, and counters.
@@ -848,6 +849,8 @@ def _clear_active_kernel(
                         agg_moment2_reduced[entry_idx] = 0.0
 
             value_idx = local_idx * ht_capacity + entry_idx
+            if entry_major != 0:
+                value_idx = entry_idx * values_per_key + local_idx
             ht_values[value_idx] = wp.uint64(0)
             i += num_threads
     else:
@@ -870,6 +873,8 @@ def _clear_active_kernel(
 
             for local_idx in range(values_per_key):
                 value_idx = local_idx * ht_capacity + entry_idx
+                if entry_major != 0:
+                    value_idx = entry_idx * values_per_key + local_idx
                 ht_values[value_idx] = wp.uint64(0)
 
             active_idx += num_threads
@@ -1182,6 +1187,7 @@ class GlobalContactReducer:
                 self.buffer_overflows,
                 self.hashtable.capacity,
                 self.values_per_key,
+                int(self.group_reduction is not None),
                 num_threads,
             ],
             device=self.device,
@@ -2382,6 +2388,20 @@ def _group_value(score: float, pos_key: wp.uint64) -> wp.uint64:
 
 
 @wp.func
+def _group_slot(entry_idx: int, slot: int) -> int:
+    """Entry-major slot address: one entry's 13 slots share cache lines."""
+    return entry_idx * wp.static(GROUP_VALUES_PER_KEY) + slot
+
+
+@wp.func
+def _group_update_slot(entry_idx: int, slot: int, value: wp.uint64, values: wp.array[wp.uint64]):
+    """``atomic_max`` a group slot, skipping the atomic when the slot already holds a larger value."""
+    idx = _group_slot(entry_idx, slot)
+    if values[idx] < value:
+        wp.atomic_max(values, idx, value)
+
+
+@wp.func
 def _group_find_or_insert(key: wp.uint64, keys: wp.array[wp.uint64], active_slots: wp.array[wp.int32]) -> int:
     """``hashtable_find_or_insert`` limited to ``GROUP_PROBE_BUDGET`` probes."""
     capacity = keys.shape[0]
@@ -2548,18 +2568,14 @@ def _register_group_contact(
     group_data.contact_gap[contact_id] = gap
     group_data.contact_pos2d[contact_id] = pos_2d
 
-    ht_capacity = reducer_data.ht_capacity
+    values = reducer_data.ht_values
     pos_key = _group_pos_key(pos_2d)
-    reduction_update_slot(
-        entry_idx, wp.static(GROUP_DEEPEST_SLOT), _group_value(-gap, pos_key), reducer_data.ht_values, ht_capacity
-    )
+    _group_update_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT), _group_value(-gap, pos_key), values)
     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
         value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key)
-        reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
+        _group_update_slot(entry_idx, dir_i, value, values)
         if gap <= 0.0:
-            reduction_update_slot(
-                entry_idx, wp.static(GROUP_TOUCHING_SLOT_OFFSET) + dir_i, value, reducer_data.ht_values, ht_capacity
-            )
+            _group_update_slot(entry_idx, wp.static(GROUP_TOUCHING_SLOT_OFFSET) + dir_i, value, values)
 
 
 @wp.kernel(enable_backward=False)
@@ -2605,25 +2621,23 @@ def _group_contact_won(
 ) -> bool:
     """Whether one of the values a registered contact submitted won its slot."""
     entry_idx = group_data.contact_entry[contact_id]
-    ht_capacity = reducer_data.ht_capacity
+    values = reducer_data.ht_values
     gap = group_data.contact_gap[contact_id]
     pos_2d = group_data.contact_pos2d[contact_id]
     pos_key = _group_pos_key(pos_2d)
-    deepest = reducer_data.ht_values[wp.static(GROUP_DEEPEST_SLOT) * ht_capacity + entry_idx]
+    deepest = values[_group_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT))]
     my_depth = _group_value(-gap, pos_key)
     won = deepest == my_depth
     beaten = my_depth > deepest
     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
         value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key)
-        slot_value = reducer_data.ht_values[dir_i * ht_capacity + entry_idx]
+        slot_value = values[_group_slot(entry_idx, dir_i)]
         if slot_value == value:
             won = True
         elif value > slot_value:
             beaten = True
         if gap <= 0.0:
-            touch_value = reducer_data.ht_values[
-                (wp.static(GROUP_TOUCHING_SLOT_OFFSET) + dir_i) * ht_capacity + entry_idx
-            ]
+            touch_value = values[_group_slot(entry_idx, wp.static(GROUP_TOUCHING_SLOT_OFFSET) + dir_i)]
             if touch_value == value:
                 won = True
             elif value > touch_value:
