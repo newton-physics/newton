@@ -17,6 +17,8 @@ from ...core.reset import reset_world_selected
 from ...geometry import ParticleFlags
 from ...math.spatial import velocity_at_point
 from ...sim.contacts import contact_surface_point
+from ...sim.enums import ShapeFrictionMode
+from ..solver import contact_friction_mode
 
 _PARTICLE_FLAG_ACTIVE = wp.constant(int(ParticleFlags.ACTIVE))
 _INACTIVE_U_MIN = wp.constant(-1.0e8)
@@ -1460,6 +1462,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     body_mass_a: wp.array[float],
     body_mass_b: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     use_contact_matching: int,
     contact_matching_force_scale: float,
     capacity: int,
@@ -1563,6 +1566,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     W[dst] = weight
     # Geometric-mean combining of shape material friction (matches AVBD).
     friction[dst] = wp.sqrt(shape_material_mu[sa] * shape_material_mu[sb])
+    if contact_friction_mode(shape_material_friction_mode, sa, sb) == int(ShapeFrictionMode.NONE):
+        friction[dst] = 0.0
 
     lambda_out = wp.vec3(0.0, 0.0, 0.0)
     if use_contact_matching != 0:
@@ -1756,6 +1761,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
     body_mass: wp.array[float],
     particle_mass: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     particle_mu: float,
     capacity: int,
     active_count: wp.array[int],
@@ -1829,6 +1835,8 @@ def contact_rp_fill_from_soft_contacts_kernel(
     W[dst] = weight
     # Geometric-mean combining of shape and particle friction.
     friction[dst] = wp.sqrt(shape_material_mu[s] * particle_mu)
+    if contact_friction_mode(shape_material_friction_mode, s, -1) == int(ShapeFrictionMode.NONE):
+        friction[dst] = 0.0
     lambda_[dst] = lambda0
 
 

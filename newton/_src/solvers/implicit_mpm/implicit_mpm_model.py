@@ -210,6 +210,9 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
     """Returns the collision materials from the model for a list of shapes"""
     thicknesses = model.shape_margin.numpy()[shape_ids]
     friction = model.shape_material_mu.numpy()[shape_ids]
+    if model.shape_material_friction_mode is not None:
+        frictionless = model.shape_material_friction_mode.numpy()[shape_ids] == int(newton.ShapeFrictionMode.NONE)
+        friction = np.where(frictionless, 0.0, friction)
 
     # Adhesion and projection threshold are optional ``mpm:*`` shape attributes
     mpm_attributes = getattr(model, "mpm", None)

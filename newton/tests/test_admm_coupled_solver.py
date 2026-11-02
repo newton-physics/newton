@@ -535,12 +535,14 @@ def _run_inclined_plane_particle_box(
     *,
     steps: int = 120,
     dt: float = 1.0 / 360.0,
+    friction_mode: newton.ShapeFrictionMode = newton.ShapeFrictionMode.SLIDING,
 ) -> tuple[float, float, int]:
     model, plane_body, _, particle_ids = _build_inclined_plane_particle_box_scene(angle)
     # ADMM derives friction from material properties; set both sides so the
     # geometric-mean combine reduces to the requested coefficient.
     model.particle_mu = float(friction)
     model.shape_material_mu = wp.full(model.shape_count, float(friction), dtype=wp.float32, device=model.device)
+    model.shape_material_friction_mode.fill_(int(friction_mode))
     solver = _make_admm_inclined_plane_particle_box_solver(
         model,
         plane_body,
@@ -1633,6 +1635,19 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         self.assertLess(math.tan(angle), friction)
         self.assertLess(abs(displacement), 0.01)
         self.assertLess(abs(velocity), 0.05)
+
+    def test_collision_frictionless_shape_releases_subcritical_inclined_box(self):
+        """Slide particles down a frictionless plane at an angle that friction would hold."""
+        angle = math.radians(15.0)
+        steps, dt = 120, 1.0 / 360.0
+        displacement, _velocity, contact_count = _run_inclined_plane_particle_box(
+            angle, 0.4, steps=steps, dt=dt, friction_mode=newton.ShapeFrictionMode.NONE
+        )
+
+        t = steps * dt
+        expected_displacement = 0.5 * 10.0 * math.sin(angle) * t * t
+        self.assertGreater(contact_count, 0)
+        self.assertAlmostEqual(displacement, expected_displacement, delta=0.45 * expected_displacement)
 
     def test_collision_rigid_rigid_frictional_contact_matches_inclined_plane_box_motion(self):
         friction = 0.35
