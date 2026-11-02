@@ -873,7 +873,7 @@ def apply_hydroelastic_compliance_kernel(
     if elliptic or dim == 1:
         # The elliptic solver assumes fixed ratios between normal and tangent
         # regularizers. Preserve that metric and the authored friction slopes.
-        ratio = compliance / wp.max(efc_D[world, row], MJ_MINVAL)
+        ratio = compliance / efc_D[world, row]
         geoms = contact_geom[cid]
         invweight_world = world % body_invweight.shape[0]
         invweight = (
@@ -883,8 +883,10 @@ def apply_hydroelastic_compliance_kernel(
         for axis in range(1, dim):
             tangent_row = contact_address[cid, axis]
             if tangent_row >= 0 and tangent_row < nefc[world]:
-                old_D = wp.max(efc_D[world, tangent_row], MJ_MINVAL)
-                new_D = wp.max(old_D * ratio, MJ_MINVAL)
+                old_D = efc_D[world, tangent_row]
+                # A per-row floor breaks the cone metric for small rolling or
+                # torsional weights. Apply the same scale to every axis.
+                new_D = old_D * ratio
                 efc_D[world, tangent_row] = new_D
                 # Preserve the existing free-contact inverse-weight approximation
                 # (including refsafe), rather than just preserving D * aref.

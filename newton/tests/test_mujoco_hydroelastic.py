@@ -193,6 +193,30 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
                         solver.step(state_in, state_out, None, contacts, dt)
                         self.assertAlmostEqual(float(state_out.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
 
+    def test_soft_contacts_preserve_elliptic_friction_metric(self):
+        """Retain the cone metric for small sliding, torsional and rolling weights."""
+        dt = 1.0 / 7680.0
+        for condim in (3, 4, 6):
+            with self.subTest(condim=condim):
+                _, solver, contacts, state_in, state_out = _make_contacts(4, stiffness=1.0, velocity=0.0, condim=condim)
+                solver.step(state_in, state_out, None, contacts, dt)
+                data = solver.mjw_data
+                mapping = solver._contact_tid_to_cid.numpy()[:4]
+                addresses = data.contact.efc_address.numpy()
+                friction = data.contact.friction.numpy()
+                diagonal = data.efc.D.numpy()[0]
+                weights = contacts.rigid_contact_stiffness.numpy()
+                ir = float(solver.mjw_model.opt.impratio_invsqrt.numpy()[0])
+                for tid, cid in enumerate(mapping):
+                    rows = addresses[cid, :condim]
+                    self.assertTrue(np.all(rows >= 0))
+                    expected = np.full(condim, dt * dt * float(weights[tid]))
+                    # MuJoCo's elliptic projection requires one common metric:
+                    # D_normal = D_tangent * (ir * mu_sliding / mu_axis)^2.
+                    mu = friction[cid, : condim - 1].astype(np.float64)
+                    expected[1:] *= (mu / (ir * mu[0])) ** 2
+                    np.testing.assert_allclose(diagonal[rows], expected, rtol=2.0e-6, atol=0.0)
+
     def test_static_pressure_force_matches_load(self):
         """Balance a known load at the material's physical equilibrium depth."""
         stiffness, penetration = 1.0e4, 0.005
