@@ -1779,6 +1779,7 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
                 0.0,
                 0.0,
                 0,
+                wp.zeros(1, dtype=int),
                 1,
             ],
         )

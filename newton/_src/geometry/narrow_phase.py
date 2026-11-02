@@ -60,7 +60,6 @@ from ..geometry.contact_reduction_global import (
     create_export_reduced_contacts_kernel,
     finish_group_frame_kernel,
     mesh_triangle_contacts_to_reducer_kernel,
-    record_group_output_base_kernel,
     reduce_buffered_contacts_kernel,
     reduce_buffered_contacts_speculative_kernel,
     register_group_contacts_kernel,
@@ -3954,9 +3953,11 @@ class NarrowPhase:
         if self._group_reduction is not None:
             reducer_data = group_reducer_data
             group_data = self.group_contact_reducer.get_group_data_struct(body_q, shape_body)
+            # Both passes grid-stride over the staged contacts, which never exceed the staging capacity.
+            group_threads = min(self.total_num_threads, max(self.group_contact_reducer.capacity, 1))
             wp.launch(
                 kernel=register_group_contacts_kernel,
-                dim=self.total_num_threads,
+                dim=group_threads,
                 inputs=[
                     reducer_data,
                     group_data,
@@ -3969,22 +3970,16 @@ class NarrowPhase:
                     collision_update_dt,
                     max_speculative_extension,
                     int(self.speculative),
-                    self.total_num_threads,
+                    writer_data.contact_count,
+                    group_threads,
                 ],
                 device=device,
                 block_dim=self.block_dim,
                 record_tape=False,
             )
             wp.launch(
-                kernel=record_group_output_base_kernel,
-                dim=1,
-                inputs=[group_data, writer_data.contact_count],
-                device=device,
-                record_tape=False,
-            )
-            wp.launch(
                 kernel=self.export_group_contacts_kernel,
-                dim=self.total_num_threads,
+                dim=group_threads,
                 inputs=[
                     reducer_data,
                     group_data,
@@ -3992,7 +3987,7 @@ class NarrowPhase:
                     shape_data,
                     shape_base_gap,
                     writer_data,
-                    self.total_num_threads,
+                    group_threads,
                 ],
                 device=device,
                 block_dim=self.block_dim,

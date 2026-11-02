@@ -1199,14 +1199,6 @@ class GlobalContactReducer:
             device=self.device,
             record_tape=False,
         )
-        if self.group_reduction is not None:
-            wp.launch(
-                prepare_group_frame_kernel,
-                dim=1,
-                inputs=[self.group_frame_state],
-                device=self.device,
-                record_tape=False,
-            )
 
     def get_data_struct(self) -> GlobalContactReducerData:
         """Get a GlobalContactReducerData struct for passing to kernels.
@@ -2308,7 +2300,7 @@ GROUP_PROBE_BUDGET = 128
 GROUP_ENTRY_REJECTED = -2  # beyond the contact gap: never written
 GROUP_ENTRY_UNREGISTERED = -1  # probe budget exhausted: kept by the frame fallback
 
-# ``GroupReductionData.frame_state`` fields, reset by ``prepare_group_frame_kernel``.
+# ``GroupReductionData.frame_state`` fields; ``finish_group_frame_kernel`` zeroes them for the next frame.
 GROUP_FRAME_FALLBACK = 0
 # Admitted contacts are the staged ones less the rejected; kept ones are what the
 # export added to the writer's count. Neither takes a per-contact atomic.
@@ -2453,13 +2445,6 @@ def stage_contact_in_reducer(
     reducer_data.contact_fingerprints[contact_id] = contact_data.sort_sub_key
 
 
-@wp.kernel(enable_backward=False)
-def prepare_group_frame_kernel(frame_state: wp.array[wp.int32]):
-    """Reset the per-frame group-reduction counters."""
-    for i in range(wp.static(GROUP_FRAME_STATE_COUNT)):
-        frame_state[i] = 0
-
-
 @wp.func
 def _staged_contact_data(
     contact_id: int,
@@ -2587,10 +2572,16 @@ def register_group_contacts_kernel(
     collision_update_dt: float,
     max_speculative_extension: float,
     speculative: int,
+    output_count: wp.array[int],
     total_num_threads: int,
 ):
-    """Enter every staged contact into the slots of its group."""
+    """Enter every staged contact into the slots of its group.
+
+    Also records the writer's count, which only the group export changes from here on.
+    """
     tid = wp.tid()
+    if tid == 0:
+        group_data.frame_state[wp.static(GROUP_FRAME_OUTPUT_BASE)] = output_count[0]
     num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
     for i in range(tid, num_contacts, total_num_threads):
         _register_group_contact(
@@ -2677,12 +2668,6 @@ def create_export_group_contacts_kernel(writer_func: Any):
 
 
 @wp.kernel(enable_backward=False)
-def record_group_output_base_kernel(group_data: GroupReductionData, output_count: wp.array[int]):
-    """Record the writer's contact count before the group export adds its winners."""
-    group_data.frame_state[wp.static(GROUP_FRAME_OUTPUT_BASE)] = output_count[0]
-
-
-@wp.kernel(enable_backward=False)
 def finish_group_frame_kernel(
     group_data: GroupReductionData,
     reducer_data: GlobalContactReducerData,
@@ -2723,6 +2708,8 @@ def finish_group_frame_kernel(
         stats[wp.static(GROUP_STAT_INPUT_OVERFLOW_FRAMES)] = stats[
             wp.static(GROUP_STAT_INPUT_OVERFLOW_FRAMES)
         ] + wp.int64(1)
+    for i in range(wp.static(GROUP_FRAME_STATE_COUNT)):
+        frame[i] = 0
 
 
 @wp.func
