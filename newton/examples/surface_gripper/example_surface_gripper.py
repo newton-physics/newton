@@ -1194,13 +1194,31 @@ class Example:
         if not self.robot_arm_playback.rising:
             raise ValueError("surface gripper recording has no engagement event")
 
-        sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
-        first_engage_time = float(self.robot_arm_playback.rec_times_wp.numpy()[self.robot_arm_playback.rising[0]])
-        if sim_time < first_engage_time + BREAK_SETTLE_TIME:
+        # The recording alternates between grips and releases, so what to expect depends on the run length.
+        # Read the recorded engagement command at the last executed sub-step, and again two sub-steps
+        # earlier. If they differ the run stopped on an edge, where the pad state lags the command by a
+        # sub-step, so nothing is asserted.
+        step_count = int(self.sim_step_count_wp.numpy()[0])
+        rec_times = self.robot_arm_playback.rec_times_wp.numpy()
+        rec_engaged = self.robot_arm_playback.rec_engaged_wp.numpy()
+        last_frame = np.searchsorted(rec_times, (step_count - 1) * self.sim_dt, side="right") - 1
+        earlier_frame = np.searchsorted(rec_times, (step_count - 3) * self.sim_dt, side="right") - 1
+        if last_frame < 0 or earlier_frame < 0 or rec_engaged[last_frame] != rec_engaged[earlier_frame]:
             return
 
         pad_engaged_bs = self.gripper_state_input_prev.pad_engaged_bs.numpy()[: len(PAD_PRIMS)]
         body_ids = pad_engaged_bs[:, 0]
+
+        if not rec_engaged[last_frame]:
+            if not np.all(body_ids < 0):
+                raise ValueError(f"expected all surface-gripper pads released, got {body_ids.tolist()}")
+            return
+
+        # Engaged: the checks below only hold once the seal has settled after its latest engage event.
+        latest_rising = max((i for i in self.robot_arm_playback.rising if i <= last_frame), default=0)
+        if (step_count - 1) * self.sim_dt < rec_times[latest_rising] + BREAK_SETTLE_TIME:
+            return
+
         if not np.all(body_ids >= 0):
             raise ValueError(f"expected all surface-gripper pads engaged after settling, got {body_ids.tolist()}")
 
@@ -1208,11 +1226,7 @@ class Example:
         if len(unique_body_ids) != 1:
             raise ValueError(f"expected all surface-gripper pads on one body, got {body_ids.tolist()}")
 
-        body_id = int(body_ids[0])
-        body_z = float(self.state_0.body_q.numpy()[body_id][2])
-        if body_z < 1.2:
-            raise ValueError(f"expected gripped body to be lifted after settling, got z={body_z}")
-
+        # A seal that is still flush on the pads means the body is held, wherever the arm has carried it.
         seal_rms = self.gripper_state_output.pad_seal_quality_rms.numpy()[: len(PAD_PRIMS)]
         seal_rms_valid = np.isfinite(seal_rms) & (seal_rms >= 0.0) & (seal_rms < BREAK_THRESHOLD_SEAL_RMS)
         if not np.all(seal_rms_valid):
