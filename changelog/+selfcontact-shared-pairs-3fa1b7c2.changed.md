@@ -8,16 +8,14 @@ knobs and the pipeline/`Contacts` `*_pre_alloc` parameters now size one
 global buffer per family (capacity = value x element count, shared by all
 primitives); the defaults keep their previous values. On overflow
 excess contacts are dropped and flagged; call
-`TriMeshCollisionDetector.check_and_grow_collision_buffers()` (or the
-`SolverVBD.check_and_grow_self_contact_buffers()` /
-`CollisionPipeline.check_and_grow_soft_self_contact_buffers()` wrappers)
-between steps to report and grow the storage in place. Contacts buffers
+`SolverVBD.check_and_grow_self_contact_buffers()` or
+`CollisionPipeline.check_and_grow_soft_self_contact_buffers()` between steps
+to report and grow the storage in place. Contacts buffers
 allocated before a grow are resized automatically at their next use, and
 `SolverVBD.particle_self_contact_info()` returns the live self-contact
 results for either construction path while keeping the solver's launch
 size in sync.
-`TriMeshCollisionDetector(sort_contact_rows=True)` optionally sorts each row
-into a canonical order. Most self-contact demos run faster end to end;
+Most self-contact demos run faster end to end;
 detection alone costs about 4-14% more than before on the recorded example
 scenes and 1.2-1.8x on uniformly dense synthetic two-layer meshes, where the
 row build adds up to 43% of the pass.
