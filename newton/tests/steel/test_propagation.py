@@ -21,7 +21,11 @@ from newton._src.solvers.steel.kernels import (
     PROPAGATION_UNIT_META,
     PROPAGATION_UNIT_RING,
 )
-from newton._src.solvers.steel.solver_steel import _colored_staging_supported, _SteelTreePlan
+from newton._src.solvers.steel.solver_steel import (
+    _colored_staging_supported,
+    _get_color_propagation_prebuild_kernel,
+    _SteelTreePlan,
+)
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import (
     CONTACT_MAX,
@@ -124,9 +128,9 @@ def _step(model, solver, steps=1, dt=1.0 / 240.0):
 
 
 def test_contact_effective_mass_matches_dense_response(test, device):
-    """Give each propagation row the effective mass ``J H^-1 J^T`` of its dense immediate row, mass-split.
+    """Match each propagation row's exact response to its dense immediate row, and step it with the split response.
 
-    The response of a body is scaled by the row-bearing bodies of its coupling group. Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
+    Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
     multi-DOF (ball) joints. The rows of contacts between an articulated body and the
     ground are compared at the same state, before any solve.
     """
@@ -163,17 +167,24 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             world = solver._contact_world.numpy()[:count]
             dense_diag = reference._diag.numpy()
             eff_mass_inv = solver._propagation_eff_mass_inv.numpy()
+            body_a = solver._propagation_body_a.numpy()
+            J_a = solver._propagation_J_a.numpy()
+            J_b = solver._propagation_J_b.numpy()
             # Each compared row has the ground on one side.
-            row_body = np.maximum(solver._propagation_body_a.numpy(), solver._propagation_body_b.numpy())
-            split = solver._propagation_coupling_group_body_count.numpy()[
-                solver._propagation_body_coupling_group.numpy()
-            ]
+            row_body = np.maximum(body_a, solver._propagation_body_b.numpy())
+            response = solver._propagation_body_response.numpy()
+            response_split = solver._propagation_body_response_split.numpy()
             checked = 0
             # Contacts between links of one articulation stay dense in both responses.
             for c in np.flatnonzero((ref_path == DENSE_PATH) & (ref_slot >= 0) & (path == PROPAGATION_PATH)):
                 for row in range(3):
-                    expected = float(dense_diag[world[c], ref_slot[c] + row]) * split[row_body[world[c], slot[c] + row]]
-                    got = 1.0 / float(eff_mass_inv[world[c], slot[c] + row])
+                    w, s = world[c], slot[c] + row
+                    body = row_body[w, s]
+                    J = J_a[w, s] if body_a[w, s] >= 0 else J_b[w, s]
+                    dense = float(dense_diag[w, ref_slot[c] + row])
+                    test.assertAlmostEqual(float(J @ response[body] @ J) + solver.cfm, dense, delta=2.0e-4 * dense)
+                    expected = float(J @ response_split[body] @ J) + solver.cfm
+                    got = 1.0 / float(eff_mass_inv[w, s])
                     test.assertAlmostEqual(got, expected, delta=2.0e-4 * expected)
                     checked += 1
             test.assertGreater(checked, 0, "no articulated contact rows were compared")
@@ -1202,7 +1213,7 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
     A row regularizes against its unsplit diagonal ``d``: ``w = 1 / (1 + g d / d_s)`` for the split diagonal ``d_s``.
     """
     model = _combination_scene(device)
-    state = _settled_state(model, 60)
+    state = _settled_state(model, 90)
     for response in RESPONSES:
         with test.subTest(response=response):
             solver, _, _ = _one_step(
@@ -1352,6 +1363,64 @@ def _three_foot_slider_model(device):
     return builder.finalize(device=device)
 
 
+def _linkage_gripper_model(device):
+    """Two pads on passive mimic linkages of one soft, effort-limited driver, under a stiff lift, around a box."""
+    builder = newton.ModelBuilder()
+    lift = builder.add_link(mass=5.0, inertia=wp.mat33(np.eye(3) * 0.05))
+    joints = [
+        builder.add_joint_prismatic(
+            -1,
+            lift,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform((0.0, 0.0, 0.175), wp.quat_identity()),
+            target_ke=5.0e4,
+            target_kd=500.0,
+        )
+    ]
+    palm = builder.add_link(mass=0.7, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    joints.append(builder.add_joint_revolute(lift, palm, axis=(0.0, 0.0, 1.0), target_ke=5.0e4, target_kd=50.0))
+    pad_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=5.0, gap=0.005)
+    knuckles, fingers = {}, {}
+    for side in (-1.0, 1.0):
+        driven = side < 0.0
+        knuckle = builder.add_link(mass=0.013, inertia=wp.mat33(np.eye(3) * 2.0e-6))
+        knuckles[side] = builder.add_joint_revolute(
+            palm,
+            knuckle,
+            axis=(0.0, side, 0.0),
+            parent_xform=wp.transform((side * 0.0532, 0.0, -0.03), wp.quat_identity()),
+            target_ke=100.0 if driven else 0.0,
+            target_kd=10.0 if driven else 0.0,
+            effort_limit=10.0 if driven else 1.0e6,
+            limit_lower=-0.1,
+            limit_upper=0.9,
+        )
+        pad = builder.add_link(mass=0.04, inertia=wp.mat33(np.eye(3) * 1.0e-5))
+        builder.add_shape_box(
+            pad, xform=wp.transform((0.0, 0.0, -0.03), wp.quat_identity()), hx=0.006, hy=0.012, hz=0.03, cfg=pad_cfg
+        )
+        fingers[side] = builder.add_joint_revolute(
+            knuckle,
+            pad,
+            axis=(0.0, side, 0.0),
+            parent_xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()),
+            limit_lower=-0.9,
+            limit_upper=0.1,
+        )
+        joints += [knuckles[side], fingers[side]]
+    builder.add_articulation(joints)
+    # The left knuckle drives the right knuckle and both pad joints.
+    builder.set_joint_mimic(knuckles[1.0], knuckles[-1.0], coeffs=(0.0, 1.0))
+    for finger in fingers.values():
+        builder.set_joint_mimic(finger, knuckles[-1.0], coeffs=(0.0, -1.0))
+    box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.0305), wp.quat_identity()))
+    builder.add_shape_box(
+        box, hx=0.03, hy=0.024, hz=0.03, cfg=newton.ModelBuilder.ShapeConfig(density=0.3 / 1.728e-4, mu=0.5, gap=0.005)
+    )
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    return builder.finalize(device=device), palm, box
+
+
 def _coupled_solver(model, response, iterations, cached=False, **kwargs):
     options = {
         "articulated_contact_response": response,
@@ -1390,6 +1459,43 @@ def test_shared_dof_feet_reach_rest(test, device):
                 test.assertLess(abs(float(qd[0])), 1.0e-3)
 
 
+def test_shared_dof_feet_split_their_whole_response(test, device):
+    """Split all of the response of feet whose only mobility is one shared DOF, on the native and generic kernels."""
+    model = _three_foot_slider_model(device)
+    feet = [1, 2, 3]
+    for tree_kernel in ("auto", "generic"):
+        with test.subTest(tree_kernel=tree_kernel):
+            with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
+                solver = _coupled_solver(model, "propagation", 1, baumgarte=0.0, cfm=0.0)
+            test.assertEqual(solver._propagation_native_tree[solver._propagation_tree_sizes[0]], tree_kernel == "auto")
+            list(_rollout(model, solver, np.array([-1.0], dtype=np.float32), 1))
+            exact = solver._propagation_body_response.numpy()[feet]
+            split = solver._propagation_body_response_split.numpy()[feet]
+            test.assertGreater(float(np.abs(exact).max()), 0.0)
+            np.testing.assert_allclose(split, 3.0 * exact, rtol=1.0e-5, atol=1.0e-7)
+
+
+def test_shared_root_split_matches_across_kernels(test, device):
+    """Split only the shared free root of four feet with private leg joints, alike on the native and generic kernels."""
+    model = _quadruped_model(device)
+    feet = [1, 2, 3, 4]
+    responses = []
+    for tree_kernel in ("auto", "generic"):
+        with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
+            solver = _coupled_solver(model, "propagation", 1)
+        test.assertEqual(solver._propagation_native_tree[solver._propagation_tree_sizes[0]], tree_kernel == "auto")
+        list(_rollout(model, solver, np.zeros(model.joint_dof_count, dtype=np.float32), 1))
+        np.testing.assert_array_equal(solver._propagation_joint_split.numpy(), [4, 1, 1, 1, 1])
+        exact = solver._propagation_body_response.numpy()[feet]
+        split = solver._propagation_body_response_split.numpy()[feet]
+        # The split differs from both the exact response and the whole-response split.
+        test.assertGreater(float(np.abs(split - exact).max()), 1.0e-3 * float(np.abs(exact).max()))
+        test.assertGreater(float(np.abs(4.0 * exact - split).max()), 1.0e-3 * float(np.abs(exact).max()))
+        responses.append((exact, split))
+    for native, generic in zip(*responses, strict=True):
+        np.testing.assert_allclose(generic, native, rtol=1.0e-4, atol=1.0e-5 * float(np.abs(native).max()))
+
+
 def test_regularized_feet_reach_immediate_equilibrium(test, device):
     """Keep the regularized contact fixed point of three coupled feet under the split."""
     model = _three_foot_slider_model(device)
@@ -1404,7 +1510,7 @@ def test_regularized_feet_reach_immediate_equilibrium(test, device):
 
 
 def test_graph_replay_matches_eager_steps(test, device):
-    """Recount the coupled bodies on every replay of a captured step pair."""
+    """Recount the per-joint split on every replay of a captured step pair."""
     model = _three_foot_slider_model(device)
     for response, cached in PROPAGATION_ROUTES:
         with test.subTest(response=response, cached=cached):
@@ -1426,7 +1532,47 @@ def test_graph_replay_matches_eager_steps(test, device):
             for _ in range(3):
                 wp.capture_launch(capture.graph)
             np.testing.assert_allclose(output.joint_qd.numpy(), expected, atol=1.0e-6)
-            test.assertEqual(int(solver._propagation_coupling_group_body_count.numpy().max()), 3)
+            test.assertEqual(int(solver._propagation_joint_split.numpy().max()), 3)
+
+
+def test_linkage_gripper_holds_lifted_box(test, device):
+    """Hold a box through a lift with pads whose mobility is their own passive linkage."""
+    model, palm, box = _linkage_gripper_model(device)
+
+    def box_below_palm(state):
+        body_q = state.body_q.numpy()
+        return float(body_q[palm, 2] - body_q[box, 2])
+
+    for response in PROPAGATION_RESPONSES:
+        with test.subTest(response=response):
+            solver = SolverSteel(
+                model,
+                articulated_contact_response=response,
+                iterations=64,
+                friction_anchor_beta=0.0,
+                contact_friction_gap_max=0.001,
+            )
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            state, output, control = model.state(), model.state(), model.control()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            with wp.ScopedCapture(device=model.device) as capture:
+                pipeline.collide(state, contacts)
+                for source, target in ((state, output), (output, state)) * 2:
+                    source.clear_forces()
+                    solver.step(source, target, control, contacts, 1.0 / 800.0)
+            joint_target = model.joint_target_q.numpy()
+            grasped = None
+            # Close the driver, then lift by 0.2 m along a smoothstep and hold.
+            joint_target[2] = 0.8
+            for tick in range(110):
+                lift = min(max(tick - 40, 0) / 50.0, 1.0)
+                joint_target[0] = 0.2 * lift * lift * (3.0 - 2.0 * lift)
+                control.joint_target_q.assign(joint_target)
+                wp.capture_launch(capture.graph)
+                if tick == 39:
+                    grasped = box_below_palm(state)
+            test.assertLess(abs(grasped - box_below_palm(state)), 0.01)
 
 
 def test_floating_quadruped_with_joint_velocities_stays_bounded(test, device):
@@ -1448,8 +1594,11 @@ class TestSteelPropagationCoupledContacts(unittest.TestCase):
 
 for _fn in (
     test_shared_dof_feet_reach_rest,
+    test_shared_dof_feet_split_their_whole_response,
+    test_shared_root_split_matches_across_kernels,
     test_regularized_feet_reach_immediate_equilibrium,
     test_graph_replay_matches_eager_steps,
+    test_linkage_gripper_holds_lifted_box,
     test_floating_quadruped_with_joint_velocities_stays_bounded,
 ):
     add_function_test(TestSteelPropagationCoupledContacts, _fn.__name__, _fn, devices=devices)
@@ -1837,8 +1986,7 @@ def _color_counts(solver):
 
 
 def _first_fit_reference(solver, world=0):
-    """Color world 0's units on the host: sort by contact, first fit, stable counting sort."""
-    entries = PROPAGATION_COLOR_TAIL + 2
+    """Color world 0's units on the host in the solver's color order."""
     stride = solver._propagation_max_constraints
     n = min(int(solver._color_world_unit_cursor.numpy()[world]), stride)
     base = world * stride
@@ -1846,7 +1994,15 @@ def _first_fit_reference(solver, world=0):
     body_a = solver._color_unit_body_a.numpy()[base : base + n]
     body_b = solver._color_unit_body_b.numpy()[base : base + n]
     length = solver._color_unit_len.numpy()[base : base + n]
-    order = np.argsort(contact, kind="stable")
+    longest_first = solver.propagation_color_order == "longest_first"
+    return (n, *_first_fit_coloring(contact, body_a, body_b, length, longest_first))
+
+
+def _first_fit_coloring(contact, body_a, body_b, length, longest_first):
+    """Sort units by contact (after row count, longest first, if asked), color first-fit, and counting-sort by color."""
+    entries = PROPAGATION_COLOR_TAIL + 2
+    n = len(contact)
+    order = np.lexsort((contact, -np.minimum(length, 15))) if longest_first else np.argsort(contact, kind="stable")
     used = {}
     color = np.zeros(n, dtype=np.int64)
     for u in order:
@@ -1865,7 +2021,70 @@ def _first_fit_reference(solver, world=0):
         position_unit[cursor[color[u]]] = u
         cursor[color[u]] += 1
     row_start = np.concatenate([[0], np.cumsum(length[position_unit])])[:n]
-    return n, color, offsets, row_start, contact[position_unit]
+    return color, offsets, row_start, contact[position_unit]
+
+
+def _sweep_cost(color, length):
+    """Rows a world's colored sweep walks: each color costs its longest unit, each tail unit its own rows."""
+    tail = color == PROPAGATION_COLOR_TAIL
+    colored = sum(int(length[color == c].max()) for c in np.unique(color[~tail]))
+    return colored + int(length[tail].sum())
+
+
+def _run_prebuild(device, worlds, max_constraints, max_body_span, longest_first):
+    """Color per-world unit lists ``(contact, body_a, body_b, length)`` with the pre-build kernel."""
+    device = wp.get_device(device)
+    entries = PROPAGATION_COLOR_TAIL + 2
+    words = (PROPAGATION_COLOR_TAIL + 31) // 32
+    stride = 1 << max(max_constraints - 1, 0).bit_length()
+    count = len(worlds)
+    fields = np.zeros((4, count * max_constraints), dtype=np.int32)
+    for w, units in enumerate(worlds):
+        for f, values in enumerate(units):
+            fields[f, w * max_constraints : w * max_constraints + len(values)] = values
+    body_count = int(fields[1:3].max()) + 1
+    contact_count = int(fields[0].max()) + 1
+    cursor = wp.array([len(units[0]) for units in worlds], dtype=wp.int32, device=device)
+    unit_contact, unit_body_a, unit_body_b, unit_len = (wp.array(f, dtype=wp.int32, device=device) for f in fields)
+    unit_color = wp.zeros(count * max_constraints, dtype=wp.int32, device=device)
+    contact_slot = wp.full(contact_count, -1, dtype=wp.int32, device=device)
+    row_order = wp.zeros(count * max_constraints, dtype=wp.int32, device=device)
+    offsets = wp.zeros(count * entries, dtype=wp.int32, device=device)
+    sorted_contact = wp.zeros(count * max_constraints, dtype=wp.int32, device=device)
+    kernel = _get_color_propagation_prebuild_kernel(
+        max_constraints, entries, 256, stride, device.arch, max_body_span=max_body_span, longest_first=longest_first
+    )
+    wp.launch_tiled(
+        kernel,
+        dim=[count],
+        inputs=[
+            count,
+            cursor,
+            unit_contact,
+            unit_body_a,
+            unit_body_b,
+            unit_len,
+            wp.zeros(body_count * words, dtype=wp.int32, device=device),
+            wp.zeros(count * stride, dtype=wp.int32, device=device),
+            unit_color,
+            contact_slot,
+            row_order,
+            offsets,
+            sorted_contact,
+        ],
+        block_dim=256,
+        device=device,
+    )
+    return [
+        (
+            unit_color.numpy()[w * max_constraints : w * max_constraints + len(units[0])],
+            offsets.numpy()[w * entries : (w + 1) * entries],
+            row_order.numpy()[w * max_constraints : w * max_constraints + len(units[0])],
+            sorted_contact.numpy()[w * max_constraints : w * max_constraints + len(units[0])],
+            contact_slot.numpy(),
+        )
+        for w, units in enumerate(worlds)
+    ]
 
 
 def test_dense_heap_colors_without_a_serial_tail(test, device):
@@ -1916,23 +2135,29 @@ def test_kinematic_free_body_is_recorded_as_static(test, device):
 
 
 def test_colored_result_matches_the_immediate_response(test, device):
-    """Settle the heap like the immediate response."""
+    """Settle the heap like the immediate response in either color order."""
+    variants = {
+        "immediate": {"articulated_contact_response": "immediate"},
+        "contact": {"propagation_color_order": "contact"},
+        "longest_first": {"propagation_color_order": "longest_first"},
+    }
     finals = {}
-    for response in ("propagation_colored", "immediate"):
+    for name, options in variants.items():
         model = _heap(device, nx=4, ny=4, nz=2)
-        solver = _colored_solver(model, articulated_contact_response=response, row_watermark=True)
+        solver = _colored_solver(model, row_watermark=True, **options)
         state, _ = _settle(model, solver, steps=24)
         test.assertEqual(solver.constraint_row_watermarks()["free_body_dropped_contact_rows_high_water"], 0)
-        finals[response] = state.body_q.numpy()[:, :3]
+        finals[name] = state.body_q.numpy()[:, :3]
     test.assertTrue(np.isfinite(finals["immediate"]).all())
     # A different sweep order, so the heights agree only to a tolerance.
-    test.assertLess(float(np.max(np.abs(finals["propagation_colored"][:, 2] - finals["immediate"][:, 2]))), 0.01)
+    for name in ("contact", "longest_first"):
+        test.assertLess(float(np.max(np.abs(finals[name][:, 2] - finals["immediate"][:, 2]))), 0.01, name)
 
 
 def test_coloring_is_deterministic_for_a_fixed_contact_set(test, device):
     """Give the same partition and velocities for the same state and contacts.
 
-    The units are gathered with an atomic cursor, so the coloring sorts them by contact first.
+    The units are gathered with an atomic cursor, so the coloring sorts them (by row count and) by contact first.
     """
     model = _heap(device)
     state, _ = _settle(model, _colored_solver(model))
@@ -1959,12 +2184,12 @@ def test_coloring_is_deterministic_for_a_fixed_contact_set(test, device):
 
 
 def test_prebuild_matches_the_first_fit_reference(test, device):
-    """Reproduce sort-by-contact first-fit exactly, with shared and with global used-color masks."""
-    for shape in ((6, 6, 3), (7, 7, 6)):
-        with test.subTest(shape=shape):
+    """Reproduce the host first-fit coloring exactly in either order, with shared and with global used-color masks."""
+    for shape, order in (((6, 6, 3), "longest_first"), ((7, 7, 6), "longest_first"), ((7, 7, 6), "contact")):
+        with test.subTest(shape=shape, order=order):
             model = _heap(device, *shape)
             # The large heap overflows the rows; the coloring covers the units that were allocated.
-            solver = _colored_solver(model, warn_constraint_overflow=False)
+            solver = _colored_solver(model, warn_constraint_overflow=False, propagation_color_order=order)
             state, _ = _settle(model, solver, steps=4)
             test.assertTrue(np.isfinite(state.body_q.numpy()).all())
             n, color, offsets, row_start, sorted_contact = _first_fit_reference(solver)
@@ -1973,6 +2198,90 @@ def test_prebuild_matches_the_first_fit_reference(test, device):
             np.testing.assert_array_equal(solver._color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2], offsets)
             np.testing.assert_array_equal(solver._color_world_row_order.numpy()[:n], row_start)
             np.testing.assert_array_equal(solver._color_unit_sorted.numpy()[:n], sorted_contact)
+
+
+def test_longest_first_reaches_the_hub_lower_bound(test, device):
+    """Cost only the hub's own rows with longest_first when long and short units share a hub.
+
+    Every hub unit needs its own color, so a sweep walks at least the hub units' rows. A star of
+    long units with the lowest contact indices and ground contacts on the hub's partners fill the
+    colors of short hub units under the contact order, which then costs more.
+    """
+    k, star = 6, 4
+    hub, star_center = 0, 50
+    units = [(j, star_center, star_center + 1 + j, 6) for j in range(star)]
+    for j in range(k):
+        units.append((10 + 2 * j, hub, 1 + j, 1))
+        units.append((11 + 2 * j, hub, 1 + k + j, 6))
+    units.extend((100 + j, -1, 1 + j, 3) for j in range(k))
+    contact, body_a, body_b, length = (np.array(f, dtype=np.int32) for f in zip(*units, strict=True))
+    perm = np.random.default_rng(0).permutation(len(contact))
+    contact, body_a, body_b, length = contact[perm], body_a[perm], body_b[perm], length[perm]
+    hub_rows = int(length[(body_a == hub) | (body_b == hub)].sum())
+
+    contact_rows = _sweep_cost(_first_fit_coloring(contact, body_a, body_b, length, longest_first=False)[0], length)
+    test.assertGreater(contact_rows, hub_rows, "the case does not discriminate the order")
+    # The sort-paths test's kernels; its larger world covers the global used-color masks.
+    for longest_first in (True, False):
+        with test.subTest(longest_first=longest_first):
+            color, offsets, row_start, sorted_contact, slot = _run_prebuild(
+                device, [(contact, body_a, body_b, length)], 8192, 256, longest_first
+            )[0]
+            test.assertEqual(_sweep_cost(color, length), hub_rows if longest_first else contact_rows)
+            test.assertFalse(np.any(color == PROPAGATION_COLOR_TAIL))
+            for c in np.unique(color):
+                bodies = np.concatenate([body_a[color == c], body_b[color == c]])
+                bodies = bodies[bodies >= 0]
+                test.assertEqual(len(bodies), len(np.unique(bodies)), f"color {c} shares a body")
+            expected = _first_fit_coloring(contact, body_a, body_b, length, longest_first)
+            np.testing.assert_array_equal(color, expected[0])
+            np.testing.assert_array_equal(offsets, expected[1])
+            np.testing.assert_array_equal(row_start, expected[2])
+            np.testing.assert_array_equal(sorted_contact, expected[3])
+            np.testing.assert_array_equal(slot[sorted_contact], row_start)
+
+
+def test_prebuild_matches_the_reference_on_both_sort_paths(test, device):
+    """Match the reference in either order whether a world sorts in shared memory or, above 4096 units, in global memory.
+
+    Each world is colored twice from differently shuffled unit lists, as the atomic gather would
+    produce, and both launches must match the reference exactly.
+    """
+    rng = np.random.default_rng(1)
+    worlds, next_contact, body_base = [], 0, 0
+    for n_units, n_bodies in ((700, 40), (5000, 400)):
+        contact = np.sort(rng.choice(4 * n_units, n_units, replace=False)).astype(np.int32) + next_contact
+        next_contact = int(contact.max()) + 1
+        body_a = (rng.integers(0, n_bodies, n_units) + body_base).astype(np.int32)
+        body_b = (rng.integers(0, n_bodies, n_units) + body_base).astype(np.int32)
+        body_b[body_b == body_a] = -1
+        body_a[rng.random(n_units) < 0.2] = -1
+        length = rng.choice(np.array([1, 3, 6, 7], dtype=np.int32), n_units)
+        worlds.append((contact, body_a, body_b, length))
+        body_base += n_bodies
+    for longest_first, trial in ((True, 0), (True, 1), (False, 0), (False, 1)):
+        shuffled = []
+        for units in worlds:
+            perm = rng.permutation(len(units[0]))
+            shuffled.append(tuple(f[perm] for f in units))
+        results = _run_prebuild(device, shuffled, 8192, 256, longest_first)
+        for w, (units, result) in enumerate(zip(shuffled, results, strict=True)):
+            expected = _first_fit_coloring(*units, longest_first)
+            for name, got, want in zip(("color", "offsets", "row start", "contact"), result, expected, strict=False):
+                np.testing.assert_array_equal(
+                    got, want, err_msg=f"longest_first {longest_first} trial {trial} world {w} {name}"
+                )
+
+
+def test_color_order_option_is_validated(test, device):
+    """Reject an unknown propagation_color_order and keep the option read-only."""
+    model = _heap(device, nx=2, ny=2, nz=1)
+    with test.assertRaisesRegex(ValueError, "propagation_color_order must be"):
+        _colored_solver(model, propagation_color_order="longest")
+    solver = _colored_solver(model, propagation_color_order="longest_first")
+    test.assertEqual(solver.propagation_color_order, "longest_first")
+    with test.assertRaises(AttributeError):
+        solver.propagation_color_order = "contact"
 
 
 def test_colored_accepts_a_large_row_budget(test, device):
@@ -1994,6 +2303,9 @@ for _fn in (
     test_colored_result_matches_the_immediate_response,
     test_coloring_is_deterministic_for_a_fixed_contact_set,
     test_prebuild_matches_the_first_fit_reference,
+    test_longest_first_reaches_the_hub_lower_bound,
+    test_prebuild_matches_the_reference_on_both_sort_paths,
+    test_color_order_option_is_validated,
     test_colored_accepts_a_large_row_budget,
 ):
     add_function_test(TestSteelColoredScheduling, _fn.__name__, _fn, devices=devices)

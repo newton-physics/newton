@@ -399,7 +399,8 @@ The following patterns are valid and commonly used:
      - Fully used by dynamics
    * - Mass matrix / constraint role
      - No active DOFs when fixed to world
-     - Solver-dependent infinite-mass approximation along kinematic DOFs
+     - Solver-dependent: an infinite-mass approximation along kinematic DOFs, or a weld to the world
+       in :class:`~newton.solvers.SolverMuJoCo`
      - Standard articulated mass matrix
    * - Typical applications
      - Environment geometry, fixtures
@@ -452,8 +453,8 @@ Implementation details differ by coordinate formulation:
   PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
   that reaches the target pose within the step.
 
-In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
-large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
+:class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld constraint to the world, and
+massless kinematic roots cannot become dynamic. See :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 
