@@ -494,7 +494,7 @@ def eval_body_joints(
                     joint_limit_kd[i_0],
                     joint_damping[i_0],
                     joint_stiffness[i_0],
-                    joint_rest_q[q_start + i_0 - qd_start],
+                    joint_rest_q[q_start + lin_axis_count],
                     True,
                 )
             )

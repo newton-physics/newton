@@ -24,6 +24,7 @@ from ._resolution_policy import (
     _shift_joint_limits_for_reference,
 )
 from .schema_resolver import PrimType
+from .schemas import _mjc_angle_scale
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdPhysics
@@ -57,11 +58,7 @@ def _resolve_scalar_spring(
     )
     springref = resolver.get_value(prim, PrimType.JOINT, "springref", default=None)
     ref = resolver.get_value(prim, PrimType.JOINT, "ref", default=None)
-    angle_scale = 1.0
-    if is_revolute:
-        angle_attr = physics_scene_prim.GetAttribute("mjc:compiler:angle") if physics_scene_prim else None
-        if not angle_attr or not angle_attr.HasAuthoredValue() or str(angle_attr.Get()) == "degree":
-            angle_scale = joint_properties.degrees_to_radian
+    angle_scale = _mjc_angle_scale(physics_scene_prim) if is_revolute else 1.0
     # Registered custom values have already passed through their unit transformers.
     if springref is not None:
         springref = float(springref) * angle_scale

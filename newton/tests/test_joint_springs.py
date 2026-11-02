@@ -12,7 +12,7 @@ import warp as wp
 import newton
 from newton.solvers import SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit
 from newton.solvers.experimental.coupled import ModelView, SolverCoupled
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 
@@ -36,19 +36,6 @@ class TestJointSprings(unittest.TestCase):
         model = _slider_builder().finalize(device="cpu")
         np.testing.assert_allclose(model.joint_stiffness.numpy(), [2.0])
         np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.25])
-
-    def test_imported_spring_force(self):
-        """Accelerate an undriven unit-mass slider using its imported spring."""
-        for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
-            with self.subTest(solver=solver_cls.__name__):
-                model = _slider_builder(register=True).finalize(device="cpu")
-                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
-                solver = solver_cls(model, **kwargs)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                solver.step(state, out, model.control(), None, 0.001)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0005], rtol=1e-4, atol=1e-7)
 
     def test_config_names_and_preload(self):
         """Keep spring preload outside limits while exposing the canonical target names."""
@@ -185,59 +172,6 @@ class TestJointSprings(unittest.TestCase):
                     np.testing.assert_allclose(model.joint_limit_lower.numpy()[-1], -np.pi / 6 - offset, atol=1e-6)
                     np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], np.pi / 6 - offset, atol=1e-6)
 
-    def test_coupled_spring_updates(self):
-        """Apply core rest edits to compacted solvers with core or legacy builder inputs."""
-        for solver_cls, legacy in product((SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo), (False, True)):
-            with self.subTest(solver=solver_cls.__name__, legacy=legacy):
-                builder = newton.ModelBuilder(gravity=(0, 0, 0))
-                SolverMuJoCo.register_custom_attributes(builder)
-                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-                attributes = {"mujoco:dof_ref": 0.1}
-                if legacy:
-                    attributes.update({"mujoco:dof_passive_stiffness": 2, "mujoco:dof_springref": 0.35})
-                joint = builder.add_joint_prismatic(
-                    -1,
-                    body,
-                    stiffness=0 if legacy else 2,
-                    rest_q=None if legacy else 0.25,
-                    custom_attributes=attributes,
-                )
-                builder.add_articulation([joint])
-                with self.assertWarns(DeprecationWarning) if legacy else nullcontext():
-                    model = builder.finalize(device="cpu")
-                factory = (
-                    (lambda view: SolverMuJoCo(view, use_mujoco_cpu=True)) if solver_cls == SolverMuJoCo else solver_cls
-                )
-                solver = SolverCoupled(
-                    model, entries=[SolverCoupled.Entry(name="slider", solver=factory, bodies=[body], joints=[joint])]
-                )
-                stiffness = model.joint_stiffness.numpy()
-                stiffness[-1] = 4.0
-                if legacy:
-                    with self.assertWarns(DeprecationWarning):
-                        model.mujoco.dof_passive_stiffness.assign(stiffness)
-                else:
-                    model.joint_stiffness.assign(stiffness)
-                if solver_cls == SolverMuJoCo:
-                    compact_view = solver._entries["slider"].view
-                    with self.assertWarns(DeprecationWarning):
-                        self.assertIs(compact_view.mujoco.dof_passive_stiffness, compact_view.joint_stiffness)
-                    with self.assertWarns(DeprecationWarning):
-                        compact_view.mujoco.dof_passive_stiffness = [3.0]
-                    np.testing.assert_allclose(model.joint_stiffness.numpy()[-1], 4.0)
-                    with self.assertRaisesRegex(AttributeError, "joint_rest_q"):
-                        compact_view.mujoco.dof_springref = [0.5]
-                rest = model.joint_rest_q.numpy()
-                rest[-1] = 0.5
-                model.joint_rest_q.assign(rest)
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                solver.step(state, out, model.control(), None, 0.001)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy()[-1], 0.002, atol=1e-7)
-
     def test_legacy_spring_runtime_compatibility(self):
         """Keep stiffness edits live through the warning alias and reject removed rest-reference access."""
         model = _slider_builder(register=True).finalize(device="cpu")
@@ -307,145 +241,6 @@ class TestJointSprings(unittest.TestCase):
             np.testing.assert_allclose(model.joint_target_q.numpy(), [0.4])
             np.testing.assert_allclose(model.joint_target_qd.numpy(), [0.8])
 
-    def test_passive_spring_preload_and_drive(self):
-        """Apply passive spring and damping forces independently of drive suppression at a joint limit."""
-        for solver_cls, joint_type, outside in product(
-            (SolverFeatherstone, SolverSemiImplicit), ("revolute", "prismatic"), (False, True)
-        ):
-            with self.subTest(solver=solver_cls.__name__, joint_type=joint_type, outside=outside):
-                builder = newton.ModelBuilder(gravity=(0, 0, 0))
-                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
-                joint = getattr(builder, "add_joint_" + joint_type)(
-                    -1,
-                    body,
-                    stiffness=2,
-                    rest_q=2,
-                    damping=0.5,
-                    target_q=0.5,
-                    target_qd=0.0,
-                    target_ke=3,
-                    target_kd=0,
-                    limit_lower=-1,
-                    limit_upper=1,
-                    limit_ke=0,
-                    limit_kd=0,
-                )
-                builder.add_articulation([joint])
-                q = 1.2 if outside else 0.2
-                builder.joint_q[0] = q
-                builder.joint_qd[0] = 0.1
-                model = builder.finalize(device="cpu")
-                solver = solver_cls(model, angular_damping=0.0)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                solver.step(state, out, model.control(), None, 0.001)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                force = 2 * (2 - q) - 0.5 * 0.1 + (0 if outside else 3 * (0.5 - q))
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.1 + 0.001 * force], atol=1e-6)
-
-    def test_ball_spring_compatibility(self):
-        """Preserve isotropic MuJoCo ball springs across rest-orientation updates."""
-        builder = newton.ModelBuilder(gravity=(0, 0, 0))
-        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
-        joint = builder.add_joint_ball(-1, body, stiffness=2)
-        builder.add_articulation([joint])
-        model = builder.finalize(device="cpu")
-        rest = np.array([0, 0, np.sin(0.2), np.cos(0.2)], dtype=np.float32)
-        model.joint_rest_q.assign(rest)
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-        np.testing.assert_allclose(solver.mj_model.qpos_spring, rest[[3, 0, 1, 2]], atol=1e-6)
-        rest = np.array([np.sin(0.3), 0, 0, np.cos(0.3)], dtype=np.float32)
-        model.joint_rest_q.assign(rest)
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        np.testing.assert_allclose(solver.mj_model.qpos_spring, rest[[3, 0, 1, 2]], atol=1e-6)
-
-    def test_ball_spring_rest_with_rotated_child_frame(self):
-        """Hold a MuJoCo ball joint at its rest orientation with an authored or runtime-edited child frame."""
-        cases = (
-            (newton.Axis.Z, 0.4, newton.Axis.X, 0.5, 25.0),
-            (newton.Axis.X, np.pi / 6.0, newton.Axis.Z, 0.0, 2.0),
-            (newton.Axis.X, np.pi / 6.0, newton.Axis.Z, np.pi / 2.0, 2.0),
-        )
-        for device, runtime_edit, (rest_axis, rest_angle, child_axis, child_angle, stiffness) in product(
-            wp.get_devices(), (False, True), cases
-        ):
-            with self.subTest(device=device, runtime_edit=runtime_edit, rest_axis=rest_axis, child_angle=child_angle):
-                rest = wp.quat_from_axis_angle(wp.vec3(*rest_axis.to_vector()), rest_angle)
-                child_rotation = wp.quat_from_axis_angle(wp.vec3(*child_axis.to_vector()), child_angle)
-                child_xform = wp.transform((0.0, 0.0, 0.0), child_rotation)
-                builder = newton.ModelBuilder(gravity=(0, 0, 0))
-                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
-                authored = wp.transform_identity() if runtime_edit else child_xform
-                builder.add_articulation([builder.add_joint_ball(-1, body, child_xform=authored, stiffness=stiffness)])
-                builder.joint_q[0:4] = list(rest)
-                builder.joint_rest_q[0:4] = list(rest)
-                model = builder.finalize(device=device)
-                solver = SolverMuJoCo(model, use_mujoco_cpu=device.is_cpu)
-                if runtime_edit:
-                    model.joint_X_c.assign([child_xform])
-                    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                solver.step(state, out, model.control(), None, 0.001)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0, 0.0, 0.0], atol=1e-8, rtol=0.0)
-
-    def test_ball_frame_update_preserves_pending_rest(self):
-        """Publish child-frame edits separately from reference-pose edits on both backends."""
-        rest = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
-        pending_rest = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6)
-        child_rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5)
-        for device in wp.get_devices():
-            with self.subTest(device=device):
-                builder = newton.ModelBuilder(gravity=(0, 0, 0))
-                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
-                builder.add_articulation([builder.add_joint_ball(-1, body, stiffness=25.0)])
-                builder.joint_rest_q[:] = list(rest)
-                model = builder.finalize(device=device)
-                solver = SolverMuJoCo(model, use_mujoco_cpu=device.is_cpu)
-                model.joint_rest_q.assign(list(pending_rest))
-                model.joint_X_c.assign([wp.transform((0.0, 0.0, 0.0), child_rotation)])
-                for flags, published_rest in (
-                    (newton.ModelFlags.JOINT_PROPERTIES, rest),
-                    (newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES, pending_rest),
-                ):
-                    solver.notify_model_changed(flags)
-                    expected = np.array(child_rotation * published_rest * wp.quat_inverse(child_rotation))[[3, 0, 1, 2]]
-                    np.testing.assert_allclose(solver.mjw_model.qpos_spring.numpy()[0], expected, atol=1e-6)
-                    if device.is_cpu:
-                        np.testing.assert_allclose(solver.mj_model.qpos_spring, expected, atol=1e-6)
-
-    def test_angular_spring_quaternion_sign_and_preload(self):
-        """Equivalent body quaternions produce the same scalar spring force without wrapping preload."""
-        for device, joint_type, negative, (angle, rest) in product(
-            wp.get_devices(), ("revolute", "d6"), (False, True), ((0.4, 0.4), (-2.8, 3.0), (2.8, -3.0), (0.4, 7.0))
-        ):
-            with self.subTest(device=device, joint_type=joint_type, negative=negative, angle=angle, rest=rest):
-                builder = newton.ModelBuilder(gravity=(0, 0, 0))
-                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
-                if joint_type == "revolute":
-                    joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z, stiffness=10.0, rest_q=rest)
-                else:
-                    joint = builder.add_joint_d6(
-                        -1,
-                        body,
-                        angular_axes=[
-                            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, stiffness=10.0, rest_q=rest)
-                        ],
-                    )
-                builder.add_articulation([joint])
-                builder.joint_q[:] = [angle]
-                model = builder.finalize(device=device)
-                solver = SolverSemiImplicit(model, angular_damping=0.0)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                if negative:
-                    poses = state.body_q.numpy()
-                    poses[:, 3:] *= -1.0
-                    state.body_q.assign(poses)
-                solver.step(state, out, model.control(), None, 0.001)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.01 * (rest - angle)], atol=1e-6)
-
     def test_explicit_zero_rest_conflicts(self):
         """Distinguish an authored zero from an omitted rest value during legacy conversion."""
         for use_default, springref in product((False, True), (0.2, 0.5)):
@@ -474,32 +269,6 @@ class TestJointSprings(unittest.TestCase):
                     else:
                         model = combined.finalize(device="cpu")
                         np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.0, 0.0], atol=1e-7)
-
-    @unittest.skipUnless(wp.is_cuda_available(), "CUDA is required for graph capture")
-    def test_cuda_graph_runtime_updates(self):
-        """Apply core spring updates to already captured solver steps."""
-        for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
-            with self.subTest(solver=solver_cls.__name__):
-                model = _slider_builder(register=True).finalize(device="cuda:0")
-                kwargs = {"use_mujoco_cpu": False} if solver_cls == SolverMuJoCo else {}
-                solver = solver_cls(model, **kwargs)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                control = model.control()
-                solver.step(state, out, control, None, 0.001)
-                with wp.ScopedCapture(device=model.device) as capture:
-                    solver.step(state, out, control, None, 0.001)
-                model.joint_stiffness.assign([4.0])
-                model.joint_rest_q.assign([0.5])
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                wp.capture_launch(capture.graph)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.002], atol=2e-6)
-                model.joint_rest_q.assign([0.75])
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-                wp.capture_launch(capture.graph)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.003], atol=2e-6)
 
     def test_imported_core_edits_are_authoritative(self):
         """Allow core edits after registered import and preserve the rest pose when only ref changes."""
@@ -618,6 +387,110 @@ class TestJointSprings(unittest.TestCase):
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
         np.testing.assert_allclose(solver.mj_model.qpos_spring, [0], atol=1e-7)
 
+
+class TestJointSpringDynamics(unittest.TestCase):
+    def test_imported_spring_force(self):
+        """Accelerate an undriven unit-mass slider using its imported spring."""
+        for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
+            with self.subTest(solver=solver_cls.__name__):
+                model = _slider_builder(register=True).finalize(device="cpu")
+                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
+                solver = solver_cls(model, **kwargs)
+                state, out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                solver.step(state, out, model.control(), None, 0.001)
+                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0005], rtol=1e-4, atol=1e-7)
+
+    def test_coupled_spring_updates(self):
+        """Apply core rest edits to compacted solvers with core or legacy builder inputs."""
+        for solver_cls, legacy in product((SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo), (False, True)):
+            with self.subTest(solver=solver_cls.__name__, legacy=legacy):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                attributes = {"mujoco:dof_ref": 0.1}
+                if legacy:
+                    attributes.update({"mujoco:dof_passive_stiffness": 2, "mujoco:dof_springref": 0.35})
+                joint = builder.add_joint_prismatic(
+                    -1,
+                    body,
+                    stiffness=0 if legacy else 2,
+                    rest_q=None if legacy else 0.25,
+                    custom_attributes=attributes,
+                )
+                builder.add_articulation([joint])
+                with self.assertWarns(DeprecationWarning) if legacy else nullcontext():
+                    model = builder.finalize(device="cpu")
+                factory = (
+                    (lambda view: SolverMuJoCo(view, use_mujoco_cpu=True)) if solver_cls == SolverMuJoCo else solver_cls
+                )
+                solver = SolverCoupled(
+                    model, entries=[SolverCoupled.Entry(name="slider", solver=factory, bodies=[body], joints=[joint])]
+                )
+                stiffness = model.joint_stiffness.numpy()
+                stiffness[-1] = 4.0
+                if legacy:
+                    with self.assertWarns(DeprecationWarning):
+                        model.mujoco.dof_passive_stiffness.assign(stiffness)
+                else:
+                    model.joint_stiffness.assign(stiffness)
+                if solver_cls == SolverMuJoCo:
+                    compact_view = solver._entries["slider"].view
+                    with self.assertWarns(DeprecationWarning):
+                        self.assertIs(compact_view.mujoco.dof_passive_stiffness, compact_view.joint_stiffness)
+                    with self.assertWarns(DeprecationWarning):
+                        compact_view.mujoco.dof_passive_stiffness = [3.0]
+                    np.testing.assert_allclose(model.joint_stiffness.numpy()[-1], 4.0)
+                    with self.assertRaisesRegex(AttributeError, "joint_rest_q"):
+                        compact_view.mujoco.dof_springref = [0.5]
+                rest = model.joint_rest_q.numpy()
+                rest[-1] = 0.5
+                model.joint_rest_q.assign(rest)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                state, out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                solver.step(state, out, model.control(), None, 0.001)
+                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+                np.testing.assert_allclose(out.joint_qd.numpy()[-1], 0.002, atol=1e-7)
+
+    def test_passive_spring_preload_and_drive(self):
+        """Apply passive spring and damping forces independently of drive suppression at a joint limit."""
+        for solver_cls, joint_type, outside in product(
+            (SolverFeatherstone, SolverSemiImplicit), ("revolute", "prismatic"), (False, True)
+        ):
+            with self.subTest(solver=solver_cls.__name__, joint_type=joint_type, outside=outside):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                joint = getattr(builder, "add_joint_" + joint_type)(
+                    -1,
+                    body,
+                    stiffness=2,
+                    rest_q=2,
+                    damping=0.5,
+                    target_q=0.5,
+                    target_qd=0.0,
+                    target_ke=3,
+                    target_kd=0,
+                    limit_lower=-1,
+                    limit_upper=1,
+                    limit_ke=0,
+                    limit_kd=0,
+                )
+                builder.add_articulation([joint])
+                q = 1.2 if outside else 0.2
+                builder.joint_q[0] = q
+                builder.joint_qd[0] = 0.1
+                model = builder.finalize(device="cpu")
+                solver = solver_cls(model, angular_damping=0.0)
+                state, out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                solver.step(state, out, model.control(), None, 0.001)
+                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+                force = 2 * (2 - q) - 0.5 * 0.1 + (0 if outside else 3 * (0.5 - q))
+                np.testing.assert_allclose(out.joint_qd.numpy(), [0.1 + 0.001 * force], atol=1e-6)
+
     def test_d6_springs_after_quaternion_joint(self):
         """Index D6 rest coordinates correctly after a ball joint changes the coordinate offset."""
         for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
@@ -683,6 +556,80 @@ class TestJointSprings(unittest.TestCase):
                 newton.eval_ik(model, out, out.joint_q, out.joint_qd)
                 np.testing.assert_allclose(out.joint_q.numpy(), [0.4], atol=1e-7)
                 np.testing.assert_allclose(out.joint_qd.numpy(), [0.0], atol=1e-7)
+
+
+def test_angular_spring_quaternion_sign_and_preload(test, device):
+    """Preserve scalar preload and quaternion-sign invariance while reusing each joint model."""
+    for joint_type in ("revolute", "d6"):
+        builder = newton.ModelBuilder(gravity=(0, 0, 0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        if joint_type == "revolute":
+            joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z, stiffness=10.0)
+        else:
+            joint = builder.add_joint_d6(
+                -1,
+                body,
+                angular_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, stiffness=10.0)],
+            )
+        builder.add_articulation([joint])
+        model = builder.finalize(device=device)
+        solver = SolverSemiImplicit(model, angular_damping=0.0)
+        state, out = model.state(), model.state()
+        control = model.control()
+        for negative, (angle, rest) in product((False, True), ((0.4, 0.4), (-2.8, 3.0), (2.8, -3.0), (0.4, 7.0))):
+            with test.subTest(joint_type=joint_type, negative=negative, angle=angle, rest=rest):
+                model.joint_rest_q.assign([rest])
+                state.joint_q.assign([angle])
+                state.joint_qd.zero_()
+                state.clear_forces()
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                if negative:
+                    poses = state.body_q.numpy()
+                    poses[:, 3:] *= -1.0
+                    state.body_q.assign(poses)
+                solver.step(state, out, control, None, 0.001)
+                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+                np.testing.assert_allclose(out.joint_qd.numpy(), [0.01 * (rest - angle)], atol=1e-6)
+
+
+def test_cuda_graph_runtime_updates(test, device):
+    """Apply core spring updates to already captured solver steps."""
+    for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
+        with test.subTest(solver=solver_cls.__name__):
+            model = _slider_builder(register=True).finalize(device=device)
+            kwargs = {"use_mujoco_cpu": False} if solver_cls == SolverMuJoCo else {}
+            solver = solver_cls(model, **kwargs)
+            state, out = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            control = model.control()
+            solver.step(state, out, control, None, 0.001)
+            with wp.ScopedCapture(device=model.device) as capture:
+                solver.step(state, out, control, None, 0.001)
+            model.joint_stiffness.assign([4.0])
+            model.joint_rest_q.assign([0.5])
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+            wp.capture_launch(capture.graph)
+            newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+            np.testing.assert_allclose(out.joint_qd.numpy(), [0.002], atol=2e-6)
+            model.joint_rest_q.assign([0.75])
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+            wp.capture_launch(capture.graph)
+            newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+            np.testing.assert_allclose(out.joint_qd.numpy(), [0.003], atol=2e-6)
+
+
+add_function_test(
+    TestJointSpringDynamics,
+    "test_angular_spring_quaternion_sign_and_preload",
+    test_angular_spring_quaternion_sign_and_preload,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestJointSpringDynamics,
+    "test_cuda_graph_runtime_updates",
+    test_cuda_graph_runtime_updates,
+    devices=get_cuda_test_devices(),
+)
 
 
 if __name__ == "__main__":

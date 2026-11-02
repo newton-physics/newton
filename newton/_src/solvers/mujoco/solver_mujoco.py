@@ -1507,17 +1507,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ``mjc:ref`` and ``mjc:springref`` use the units declared by ``mjc:compiler:angle``; the mjcPhysics
             schema defaults an unauthored value to degrees.
             """
+            from ...usd.schemas import _mjc_angle_scale  # noqa: PLC0415
+
             angle = float(value)
             prim = context.get("prim")
-            physics_scene_prim = context.get("physics_scene_prim")
             if prim is None or prim.GetTypeName() != "PhysicsRevoluteJoint":
                 return angle
-            if physics_scene_prim is None:
-                return angle * (np.pi / 180.0)
-            angle_attr = physics_scene_prim.GetAttribute("mjc:compiler:angle")
-            if not angle_attr or not angle_attr.HasAuthoredValue() or str(angle_attr.Get()) == "degree":
-                return angle * (np.pi / 180.0)
-            return angle
+            return angle * _mjc_angle_scale(context.get("physics_scene_prim"))
 
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))

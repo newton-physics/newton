@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
@@ -476,6 +477,13 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     """
     _, damping = solref_to_stiffness_damping(solref)
     return damping
+
+
+def _mjc_angle_scale(physics_scene_prim: Usd.Prim | None) -> float:
+    """Convert MuJoCo USD angles to radians, defaulting unauthored compiler units to degrees."""
+    if not physics_scene_prim or usd.get_attribute(physics_scene_prim, "mjc:compiler:angle", "degree") == "degree":
+        return math.pi / 180.0
+    return 1.0
 
 
 def _mjc_joint_effort_limit(prim: Usd.Prim) -> float | None:
