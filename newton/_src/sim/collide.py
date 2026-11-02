@@ -2902,7 +2902,7 @@ class CollisionPipeline:
         else:
             detector.refit(new_pos)
 
-    def check_and_grow_soft_self_contact_buffers(self, warn: bool = True) -> bool:
+    def check_and_grow_soft_self_contact_buffers(self, *, warn: bool = True) -> bool:
         """Check self-contact overflow on the last detection and grow the storage.
 
         For standalone pipeline use; the counterpart of
