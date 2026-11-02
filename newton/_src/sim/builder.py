@@ -7440,17 +7440,6 @@ class ModelBuilder:
         body_merged_transform = {}
         velocity_updated_bodies: set[int] = set()
 
-        def resolve_body_frame(body: int) -> tuple[int, wp.transform | None]:
-            """Return the surviving original body and the old-to-surviving frame transform.
-
-            The DFS records the full transform across each fixed-joint chain. Keep original
-            body indices here because shapes/sites move during traversal, before reindexing.
-            Retained bodies and world (-1) need no geometry transformation.
-            """
-            if body in body_merged_parent:
-                return body_merged_parent[body], body_merged_transform[body]
-            return body, None
-
         # Joints already retained as loop-closing edges (by original id), so a joint
         # reachable through several traversal paths is kept exactly once.
         retained_loop_joint_ids = set()
@@ -7550,10 +7539,9 @@ class ModelBuilder:
                 }
                 body_merged_parent[child_body] = last_dynamic_body
                 body_merged_transform[child_body] = incoming_xform
-                shape_parent, shape_xform = resolve_body_frame(child_body)
                 for shape in self.body_shapes[child_id]:
                     shape_tf = self.shape_transform[shape]
-                    self.shape_transform[shape] = shape_xform * shape_tf
+                    self.shape_transform[shape] = incoming_xform * shape_tf
                     if verbose:
                         logger.info(
                             "  Shape %s moved to body %s with transform %s",
@@ -7561,9 +7549,9 @@ class ModelBuilder:
                             last_dynamic_body_label,
                             self.shape_transform[shape],
                         )
-                    if shape_parent > -1:
-                        self.shape_body[shape] = body_data[shape_parent]["id"]
-                        body_data[shape_parent]["shapes"].append(shape)
+                    if last_dynamic_body > -1:
+                        self.shape_body[shape] = body_data[last_dynamic_body]["id"]
+                        body_data[last_dynamic_body]["shapes"].append(shape)
                     else:
                         self.shape_body[shape] = -1
                         self.body_shapes[-1].append(shape)
@@ -7744,6 +7732,16 @@ class ModelBuilder:
             else:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
+
+        def remap_body_frame(body: int) -> tuple[int, wp.transform | None]:
+            """Return the final body index and the old-to-surviving frame transform.
+
+            The DFS records the full transform across each fixed-joint chain.
+            Retained bodies and world (-1) need no geometry transformation.
+            """
+            if body in body_merged_parent:
+                return body_remap[body_merged_parent[body]], body_merged_transform[body]
+            return body_remap[body], None
 
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
@@ -7972,8 +7970,7 @@ class ModelBuilder:
 
         # Keep tendon contact geometry in the same world frame when its body is merged.
         for guide_idx, old_body in enumerate(self.tendon_guide_body):
-            parent_body, merge_xform = resolve_body_frame(old_body)
-            self.tendon_guide_body[guide_idx] = body_remap[parent_body]
+            self.tendon_guide_body[guide_idx], merge_xform = remap_body_frame(old_body)
             if merge_xform is None:
                 continue
 
@@ -8028,14 +8025,11 @@ class ModelBuilder:
         for i in range(self._equality_constraint_count):
             old_body1 = _at(body1_values, i, body1_attr.default)
             old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = old_body1 in body_merged_parent
-            body2_was_merged = old_body2 in body_merged_parent
-
             constraint_type = _at(type_values, i, type_attr.default)
 
             # Transform anchor/relpose from merged body's frame to parent body's frame
-            if body1_was_merged:
-                merge_xform = body_merged_transform[old_body1]
+            if old_body1 in body_merged_parent:
+                _, merge_xform = remap_body_frame(old_body1)
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                     while len(anchor_values) <= i:
@@ -8047,8 +8041,8 @@ class ModelBuilder:
                         relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
-            if body2_was_merged and constraint_type == EqType.WELD:
-                merge_xform = body_merged_transform[old_body2]
+            if old_body2 in body_merged_parent and constraint_type == EqType.WELD:
+                _, merge_xform = remap_body_frame(old_body2)
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
                 while len(anchor_values) <= i:
@@ -8128,8 +8122,7 @@ class ModelBuilder:
         # frame so the attachment keeps its world-space position.
         for i in range(len(self.attachment_particle_body_body)):
             old_body = self.attachment_particle_body_body[i]
-            parent_body, merge_xform = resolve_body_frame(old_body)
-            self.attachment_particle_body_body[i] = body_remap[parent_body]
+            self.attachment_particle_body_body[i], merge_xform = remap_body_frame(old_body)
             if merge_xform is not None:
                 self.attachment_particle_body_body_point[i] = wp.transform_point(
                     merge_xform, self.attachment_particle_body_body_point[i]
@@ -8148,8 +8141,8 @@ class ModelBuilder:
             except (TypeError, ValueError):
                 return value
             if idx in body_remap or idx in body_merged_parent:
-                parent_body, _ = resolve_body_frame(idx)
-                return body_remap[parent_body]
+                new_body, _ = remap_body_frame(idx)
+                return new_body
             return value
 
         def _remap_joint_reference(value: Any) -> Any:
