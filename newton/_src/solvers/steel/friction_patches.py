@@ -1556,29 +1556,28 @@ def seed_patch_impulses(
     dt: float,
     history: wp.array[float],
 ):
-    """Transport cached patch impulses after all contact normals have been seeded.
+    """Transport cached patch impulses and project every anchor's seed onto its patch cone.
 
-    Anchors without patch history keep whatever the contact-matched warm start
-    seeded; only carried anchors overwrite their friction rows. Carried impulses are
-    scaled by ``decay`` and by the step ratio :func:`warmstart_dt_scale`.
+    Anchors without patch history keep the contact-matched warm start, bounded by the region's load.
+    Carried impulses are scaled by ``decay`` and by the step ratio :func:`warmstart_dt_scale`.
     """
     c = wp.tid()
     if c >= count[0] or path[c] != route or slot[c] < 0 or slots_needed[c] < 3:
         return
-    source = frame.source[c]
-    if source < 0:
-        return
-    tangent = prev.tangent_impulse[source] * (decay * warmstart_dt_scale(dt, history))
-    if frame.body_a[c] >= 0:
-        tangent = wp.transform_vector(q[frame.body_a[c]], tangent)
-    n = frame.normal[c]
-    if frame.flipped[c] != 0:
-        n = -n
-        tangent = -tangent
-    t0, t1 = contact_tangent_basis(n)
-    value = wp.vec2(wp.dot(tangent, t0), wp.dot(tangent, t1))
     w = world[c]
     s = slot[c]
+    value = wp.vec2(impulses[w, s + 1], impulses[w, s + 2])
+    source = frame.source[c]
+    if source >= 0:
+        tangent = prev.tangent_impulse[source] * (decay * warmstart_dt_scale(dt, history))
+        if frame.body_a[c] >= 0:
+            tangent = wp.transform_vector(q[frame.body_a[c]], tangent)
+        n = frame.normal[c]
+        if frame.flipped[c] != 0:
+            n = -n
+            tangent = -tangent
+        t0, t1 = contact_tangent_basis(n)
+        value = wp.vec2(wp.dot(tangent, t0), wp.dot(tangent, t1))
     radius = wp.max(mu[w, s + 1] * patch_normal_load(parents, impulses, w, s), 0.0)
     magnitude = wp.length(value)
     if magnitude > radius and magnitude > 0.0:
