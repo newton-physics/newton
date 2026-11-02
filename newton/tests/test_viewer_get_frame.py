@@ -16,6 +16,7 @@ from newton._src.viewer import viewer_gl
 from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+from newton.tests.unittest_utils import import_pyglet_window
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -754,7 +755,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
 class TestViewerGLMinimumVersion(unittest.TestCase):
     def setUp(self):
         try:
-            import pyglet.window
+            pyglet = import_pyglet_window()
         except Exception as exc:
             if not _is_viewer_gl_unavailable_error(self, exc):
                 raise
@@ -817,7 +818,7 @@ class TestViewerGLMultisampling(unittest.TestCase):
     def test_scene_keeps_msaa_without_a_multisampled_window_config(self):
         """Verify the scene stays anti-aliased when the window config has no MSAA."""
         try:
-            import pyglet.window
+            pyglet = import_pyglet_window()
         except Exception as exc:
             if not _is_viewer_gl_unavailable_error(self, exc):
                 raise
