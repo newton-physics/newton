@@ -589,7 +589,7 @@ def _apply_rows(
     mu: wp.array2d[float],
     phi: wp.array2d[float],
     target: wp.array2d[float],
-    restitution: wp.array2d[float],
+    rebound_velocity: wp.array2d[float],
     membership: wp.array2d[int],
     row_radius: wp.array2d[float],
     propagation_body_a: wp.array2d[int],
@@ -644,7 +644,7 @@ def _apply_rows(
     mu[world, row] = work.coefficient[rep]
     row_radius[world, row] = work.radius[rep]
     phi[world, row] = 0.0
-    restitution[world, row] = 0.0
+    rebound_velocity[world, row] = 0.0
     target[world, row] = _prescribed_spin(work, lead, body_art, prescribed, body_velocity)
 
 
@@ -1071,7 +1071,7 @@ class DeviceTorsionPreparation:
                 s._row_mu,
                 s._phi,
                 s._target_velocity,
-                s._row_restitution,
+                s._row_rebound_velocity,
                 s._contact_torsion_group,
                 s._torsion_row_radius,
                 *self._propagation_rows(

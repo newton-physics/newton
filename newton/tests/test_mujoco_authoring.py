@@ -653,7 +653,9 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon1.numpy(), [0, 2])
         np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon2.numpy(), [1, 3])
 
-        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+        solver = newton.solvers.SolverMuJoCo(
+            model, use_mujoco_cpu=False, disable_contacts=True, kinematic_switchable_roots=False
+        )
         native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
         np.testing.assert_array_equal(solver.mj_model.eq_type, [native.mjtEq.mjEQ_TENDON])
         np.testing.assert_array_equal(solver.mj_model.eq_obj1id, [0])

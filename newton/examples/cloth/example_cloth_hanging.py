@@ -28,6 +28,7 @@ from newton.solvers import style3d
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the hanging cloth scene with the selected solver."""
         self.args = args
 
         # setup simulation parameters first
@@ -129,7 +130,7 @@ class Example:
         elif self.solver_type == "style3d":
             self.solver = newton.solvers.SolverStyle3D(
                 model=self.model,
-                iterations=self.iterations,
+                config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
             )
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(
