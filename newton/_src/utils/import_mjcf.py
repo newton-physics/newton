@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, AxisType, Sequence, Transform, vec10
+from ..core.types import MAXVAL, Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
@@ -1088,6 +1088,25 @@ def parse_mjcf(
             return wp.types.vector(len(default), wp.float32)(*([float(out[0])] * len(default)))
 
         return wp.types.vector(length, wp.float32)(out)
+
+    autolimits = compiler_attribs.get("autolimits", "true").lower() == "true"
+
+    def is_limited(attrib: dict[str, Any], limited_key: str, range_key: str) -> bool:
+        """Resolve a tri-state ``*limited`` attribute the way MuJoCo's compiler does."""
+        limited = attrib.get(limited_key, "auto").lower()
+        if limited in ("true", "false"):
+            return limited == "true"
+        has_range = range_key in attrib and any(parse_vec(attrib, range_key, None))
+        if has_range and not autolimits:
+            # MuJoCo rejects this; follow autolimits and leave the range inactive.
+            warnings.warn(
+                f"MJCF element {attrib.get('name', 'unnamed')!r} has {range_key!r} but no {limited_key!r} while "
+                f"compiler autolimits is false; ignoring the range.",
+                NewtonWarning,
+                stacklevel=3,
+            )
+            return False
+        return has_range
 
     def warn_invalid_joint_solreflimit(joint_attrib: dict[str, Any]) -> None:
         if "solreflimit" not in joint_attrib:
@@ -2325,6 +2344,13 @@ def parse_mjcf(
                         joint_ref_value *= scale
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
+                if has_range and not is_limited(joint_attrib, "limited", "range"):
+                    limit_lower, limit_upper = -MAXVAL, MAXVAL
+                    # Native inheritrange still reads the inert range, without degree conversion.
+                    disabled_joint_ranges[joint_name[-1]] = (
+                        joint_range[0] * scale if is_linear else joint_range[0],
+                        joint_range[1] * scale if is_linear else joint_range[1],
+                    )
 
                 # ``solreflimit`` is a native MuJoCo solver parameter, not a
                 # force-space gain. Preserve it through the custom attribute and
@@ -2335,29 +2361,11 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                if "actuatorfrcrange" in joint_attrib:
+                if "actuatorfrcrange" in joint_attrib and is_limited(
+                    joint_attrib, "actuatorfrclimited", "actuatorfrcrange"
+                ):
                     actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
-                    if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
-                        actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
-                        autolimits_attr = builder.custom_attributes.get("mujoco:autolimits")
-                        autolimits_val = True
-                        if autolimits_attr is not None:
-                            autolimits_values = autolimits_attr.values
-                            autolimits_raw = (
-                                autolimits_values.get(0, autolimits_attr.default)
-                                if isinstance(autolimits_values, dict)
-                                else autolimits_attr.default
-                            )
-                            autolimits_val = bool(autolimits_raw)
-                        if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
-                            effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
-                        elif verbose:
-                            logger.warning(
-                                "Joint '%s' has actuatorfrcrange but actuatorfrclimited='%s'. Force clamping "
-                                "will be disabled.",
-                                joint_attrib.get("name", "unnamed"),
-                                actuatorfrclimited,
-                            )
+                    effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
 
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
@@ -3035,6 +3043,7 @@ def parse_mjcf(
     # Maps individual MJCF joint names to their specific DOF index.
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
+    disabled_joint_ranges: dict[str, tuple[float, float]] = {}
     mjcf_slide_joint_names: set[str] = set()
     # Maps tendon names to their index in the tendon custom attributes.
     # Used to resolve actuators targeting tendons.
@@ -3478,6 +3487,8 @@ def parse_mjcf(
             dof_ref = float(ref_attr.values.get(dof, ref_attr.default))
         lower = builder.joint_limit_lower[dof] + dof_ref
         upper = builder.joint_limit_upper[dof] + dof_ref
+        if joint_name in disabled_joint_ranges:
+            lower, upper = disabled_joint_ranges[joint_name]
         if lower < upper:
             mean = (upper + lower) / 2.0
             radius = (upper - lower) / 2.0 * inheritrange
