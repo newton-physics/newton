@@ -483,15 +483,26 @@ class TestRequires(unittest.TestCase):
         self.assertEqual(calls, ["test_present"])
         self.assertTrue(result.wasSuccessful())
 
+    def test_missing_dependency_of_installed_module_counts_as_broken(self):
+        """Treat a module whose own import fails on another missing module as broken, not missing."""
+        name = "newton_tests_parent.child"
+        unittest_utils._import_error.cache_clear()
+        try:
+            for missing, broken in (("newton_tests_parent", False), (name, False), ("numpy_missing_dep", True)):
+                with self.subTest(missing=missing):
+                    unittest_utils._import_error.cache_clear()
+                    error = ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+                    with mock.patch.object(unittest_utils.importlib, "import_module", side_effect=error):
+                        self.assertEqual(unittest_utils._broken_error(name) is not None, broken)
+        finally:
+            unittest_utils._import_error.cache_clear()
+
     def test_broken_installed_module_fails_only_the_tests_that_need_it(self):
         """Fail, rather than skip, the tests that require an installed module that fails to import."""
         name = "newton_tests_broken_module"
         unittest_utils._import_error.cache_clear()
         try:
-            with (
-                mock.patch.object(unittest_utils, "_installed_top_level_modules", return_value=frozenset({name})),
-                mock.patch.object(unittest_utils.importlib, "import_module", side_effect=OSError("missing library")),
-            ):
+            with mock.patch.object(unittest_utils.importlib, "import_module", side_effect=OSError("missing library")):
                 self.assertFalse(unittest_utils.has_module(name))
                 with self.assertRaises(unittest_utils.BrokenTestDependencyError):
                     unittest_utils.missing_modules([name])
