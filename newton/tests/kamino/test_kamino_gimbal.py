@@ -16,6 +16,7 @@ import newton
 from newton import Contacts
 from newton._src.sim import JointType
 from newton._src.solvers.kamino._src.core.joints import JointDoFType
+from newton._src.solvers.kamino._src.core.types import mat63f, vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import (
     gimbal_reciprocal_axes,
     gimbal_transported_axes,
@@ -54,6 +55,16 @@ def _evaluate_gimbal_chart(
     basis_product[0] = wp.transpose(reciprocal) @ gimbal_transported_axes(selected[0], third_axis_sign)
     rates = map_gimbal_angular_velocity_to_rates(selected[0], omega[0], third_axis_sign)
     power[0] = wp.vec2f(wp.dot(effort[0], rates), wp.dot(reciprocal @ effort[0], omega[0]))
+
+
+@wp.kernel
+def _evaluate_d6_dof_type(axes: wp.array[wp.mat33f], dof_type: wp.array[wp.int32]):
+    """Map a three-DoF rotational D6 joint with the given axes to a Kamino DoF type."""
+    tid = wp.tid()
+    dof_axes = mat63f()
+    for i in range(3):
+        dof_axes[i] = axes[tid][i]
+    dof_type[tid] = JointDoFType.from_newton_wp(int(JointType.D6), 3, 3, wp.vec2i(0, 3), vec6f(), vec6f(), dof_axes)
 
 
 def _build_rotational_d6(
@@ -306,17 +317,14 @@ class TestGimbal(unittest.TestCase):
 
     def test_from_newton_derives_gimbal_handedness(self):
         """Derive the gimbal type from the orientation of its three axes."""
-        limits = np.zeros(3, dtype=np.float32)
-        right_handed = JointDoFType.from_newton(JointType.D6, 3, 3, (0, 3), limits, limits, np.eye(3, dtype=np.float32))
-        left_handed = JointDoFType.from_newton(
-            JointType.D6,
-            3,
-            3,
-            (0, 3),
-            limits,
-            limits,
-            np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+        axes = wp.array(
+            [np.eye(3), [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]],
+            dtype=wp.mat33f,
+            device=self.default_device,
         )
+        dof_types = wp.empty(2, dtype=wp.int32, device=self.default_device)
+        wp.launch(_evaluate_d6_dof_type, dim=2, inputs=[axes], outputs=[dof_types], device=self.default_device)
+        right_handed, left_handed = dof_types.numpy()
         self.assertEqual(right_handed, JointDoFType.GIMBAL)
         self.assertEqual(left_handed, JointDoFType.GIMBAL_LEFT_HANDED)
 
