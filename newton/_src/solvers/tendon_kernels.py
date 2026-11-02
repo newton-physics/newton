@@ -38,6 +38,41 @@ def _material_sweep_contact_error(
 
 
 @wp.func
+def _material_sweep_guide_converged(
+    guide: int,
+    stretch: wp.array[float],
+    length: wp.array[float],
+    compliance: wp.array[float],
+    damping: wp.array[float],
+    ratio: wp.array[float],
+    cone_l: wp.array[int],
+    cone_r: wp.array[int],
+    transfer: wp.array[float],
+    min_rest: float,
+    rtol: float,
+    atol: float,
+) -> bool:
+    """Check an active guide after both adjacent spans have their final sweep values."""
+    left = cone_l[guide]
+    right = cone_r[guide]
+    damping_l = damping[left] if compliance[left] > 0.0 else 0.0
+    damping_r = damping[right] if compliance[right] > 0.0 else 0.0
+    tension_l = wp.max(stretch[left] / wp.max(compliance[left], 1.0e-30) + damping_l, 0.0)
+    tension_r = wp.max(stretch[right] / wp.max(compliance[right], 1.0e-30) + damping_r, 0.0)
+    # Compare bounds at stretch scale; reconstructed rest lengths can round
+    # a depleted span slightly above its floor.
+    error = _material_sweep_contact_error(
+        tension_l,
+        tension_r,
+        ratio[guide],
+        transfer[guide],
+        stretch[left] < length[left] - min_rest,
+        stretch[right] < length[right] - min_rest,
+    )
+    return error <= atol + rtol * wp.max(tension_l, tension_r)
+
+
+@wp.func
 def tendon_body_pose(body_q: wp.array[wp.transform], body: int) -> wp.transform:
     """Use world coordinates for guides attached to body -1."""
     if body < 0:
@@ -1263,6 +1298,8 @@ def solve_tendon_material(
                 break
 
             tendon_cone_sweep_count[tendon_id] = tendon_cone_sweep_count[tendon_id] + 1
+            converged = int(adaptive_cone_sweeps != 0 and tendon_settle_tol > 0.0)
+            previous_guide = int(-1)
             for order in range(1, num_guides - 1):
                 i = order
                 if material_sweep % 2 == 1:
@@ -1362,41 +1399,42 @@ def solve_tendon_material(
                 seg_stretch[seg_right] = current_r + change
                 guide_material_transfer[guide_idx] = delta
 
-            # Neighbor updates can invalidate an earlier contact. Check the
-            # complete final state, not intermediate changes or peak forces.
-            if adaptive_cone_sweeps != 0 and tendon_settle_tol > 0.0:
-                converged = int(1)
-                for i_check in range(1, num_guides - 1):
-                    guide = guide_start + i_check
-                    kind = tendon_guide_type[guide]
-                    enabled = (
-                        apply_rolling_transfer != 0
-                        and kind == int(TendonGuideType.ROLLER)
-                        and tendon_guide_active[guide]
-                    ) or (apply_pinhole_slip != 0 and kind == int(TendonGuideType.PINHOLE))
-                    left = tendon_guide_cone_seg_l[guide]
-                    right = tendon_guide_cone_seg_r[guide]
-                    if not enabled or left < 0 or right < 0:
-                        continue
-                    compliance_l = seg_active_compliance[left]
-                    compliance_r = seg_active_compliance[right]
-                    damping_l = seg_damping_tension[left] if compliance_l > 0.0 else 0.0
-                    damping_r = seg_damping_tension[right] if compliance_r > 0.0 else 0.0
-                    tension_l = wp.max(seg_stretch[left] / wp.max(compliance_l, 1.0e-30) + damping_l, 0.0)
-                    tension_r = wp.max(seg_stretch[right] / wp.max(compliance_r, 1.0e-30) + damping_r, 0.0)
-                    error = _material_sweep_contact_error(
-                        tension_l,
-                        tension_r,
-                        tendon_guide_cap_ratio[guide],
-                        guide_material_transfer[guide],
-                        # Compare where the updates live; reconstructing rest lengths
-                        # can round a bound slightly above the minimum.
-                        seg_stretch[left] < seg_length[left] - min_rest,
-                        seg_stretch[right] < seg_length[right] - min_rest,
-                    )
-                    if error > tendon_settle_atol + tendon_settle_tol * wp.max(tension_l, tension_r):
+                # The preceding active guide is final once its downstream
+                # neighbor has updated their shared span (reverse on odd sweeps).
+                if converged != 0 and previous_guide >= 0:
+                    if not _material_sweep_guide_converged(
+                        previous_guide,
+                        seg_stretch,
+                        seg_length,
+                        seg_active_compliance,
+                        seg_damping_tension,
+                        tendon_guide_cap_ratio,
+                        tendon_guide_cone_seg_l,
+                        tendon_guide_cone_seg_r,
+                        guide_material_transfer,
+                        min_rest,
+                        tendon_settle_tol,
+                        tendon_settle_atol,
+                    ):
                         converged = int(0)
-                        break
+                previous_guide = guide_idx
+
+            if converged != 0 and previous_guide >= 0:
+                if not _material_sweep_guide_converged(
+                    previous_guide,
+                    seg_stretch,
+                    seg_length,
+                    seg_active_compliance,
+                    seg_damping_tension,
+                    tendon_guide_cap_ratio,
+                    tendon_guide_cone_seg_l,
+                    tendon_guide_cone_seg_r,
+                    guide_material_transfer,
+                    min_rest,
+                    tendon_settle_tol,
+                    tendon_settle_atol,
+                ):
+                    converged = int(0)
 
         # rebuild rest lengths from the telescoped stretch state (one cancellation per call,
         # paid once instead of every sweep -- this is what keeps the capstan accurate for stiff
