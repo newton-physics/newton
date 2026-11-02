@@ -9590,6 +9590,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # update solver options from Newton model (only if not overridden by constructor)
             self._update_solver_options(overridden_options=overridden_options)
 
+            if self.mj_model.neq and not self.use_mujoco_cpu:
+                self._mark_inferred_weld_poses()
+
             # so far we have only defined the first world,
             # now complete the data from the Newton model
             self.notify_model_changed(ModelFlags.ALL)
@@ -10029,6 +10032,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._dampratio_inv_mass_moment = wp.empty_like(self._dampratio_moment)
             if self._notify_qpos_saved is None:
                 self._notify_qpos_saved = wp.empty_like(self.mjw_data.qpos)
+
+    def _mark_inferred_weld_poses(self) -> None:
+        """Mark each world's body welds without an authored relpose in ``eq_data[11]`` for ``set_const`` to infer.
+
+        The compiler marks only the template world's welds, which ``put_model`` copies to every world.
+        """
+        relpose = getattr(getattr(self.model, "mujoco", None), "equality_constraint_relpose", None)
+        if relpose is None or relpose.shape[0] == 0 or self.mjc_eq_to_newton_eq is None:
+            return
+        mujoco = self._mujoco
+        weld = (self.mj_model.eq_type == mujoco.mjtEq.mjEQ_WELD) & (
+            self.mj_model.eq_objtype == mujoco.mjtObj.mjOBJ_BODY
+        )
+        newton_eq = self.mjc_eq_to_newton_eq.numpy()
+        mapped = weld & (newton_eq >= 0)
+        infer = np.all(relpose.numpy()[:, 3:] == 0.0, axis=1)[np.maximum(newton_eq, 0)]
+        eq_data = self.mjw_model.eq_data.numpy()
+        eq_data[..., 11] = np.where(mapped, infer.astype(eq_data.dtype), eq_data[..., 11])
+        self.mjw_model.eq_data.assign(eq_data)
 
     def _init_dampratio_invweight_actuators(self, actuators: np.ndarray) -> None:
         """Select actuators whose reflected inertia ``set_const_0`` already computes exactly.
