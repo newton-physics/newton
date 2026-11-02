@@ -1282,7 +1282,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.trimesh_collision_info = None
             self._self_contact_info_source = None
             self._self_contact_storage_generation = -1
-            self.particle_self_contact_info()
+            self._sync_self_contact_info()
         else:
             self.particle_self_contact_evaluation_kernel_launch_size = None
 
@@ -1330,19 +1330,29 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         return self.trimesh_collision_detector
 
     def particle_self_contact_info(self) -> TriMeshCollisionInfo | None:
-        """Return the live self-contact results, keeping the solver's launch size in sync.
+        """Return the live self-contact results.
 
-        Resolves the result struct from whichever path owns it (the
-        solver-owned pipeline's ``contacts`` buffer, or the solver's standalone
-        detector). The contact kernels take that struct by value, so the
-        solver keeps no copy of it. When the struct or its storage changed
-        since the solver last looked (storage growth, an automatic resize at
-        bind, or a replaced ``contacts`` buffer), this refreshes the one
-        derived cache the contact kernels rely on: the per-pair launch size.
+        The struct is the one the contact kernels read: its rows describe the
+        last detection, whichever path owns the storage (the solver-owned
+        pipeline's ``contacts`` buffer, or the solver's standalone detector).
+        When the struct or its storage changed since the solver last looked
+        (storage growth, an automatic resize at bind, a replaced ``contacts``
+        buffer), the call first refreshes the solver's per-pair launch size,
+        so what it returns is always what the next step uses.
 
         Returns:
             The bound :class:`TriMeshCollisionInfo`, or ``None`` when
             self-contact is disabled.
+        """
+        return self._sync_self_contact_info()
+
+    def _sync_self_contact_info(self) -> TriMeshCollisionInfo | None:
+        """Resolve the live result struct and refresh the launch size when it changed.
+
+        Tracks the struct identity and the detector's storage generation; a
+        change in either means the capacity-sized row arrays were replaced, so
+        the per-pair launch size is recomputed from the new capacity. The
+        contact kernels take the struct by value, so nothing else is cached.
         """
         if not self.particle_enable_self_contact or self.model.particle_count == 0:
             return None
@@ -1408,7 +1418,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # heals the solver's derived cache (the launch size) whatever the
         # trigger was: growth here, or an upgrade at bind
         detector.check_and_grow_collision_buffers(warn=warn)
-        info = self.particle_self_contact_info()
+        info = self._sync_self_contact_info()
         return info is not source_before or self._self_contact_storage_generation != generation_before
 
     def _init_rigid_system(
@@ -5719,7 +5729,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
         # a bind-time auto-resize or a replaced contacts buffer must reach the
         # launch size before this step's contact kernels launch
-        self.particle_self_contact_info()
+        self._sync_self_contact_info()
 
     def rebuild_bvh(self, state: State):
         """This function will rebuild the BVHs used for detecting self-contacts using the input `state`.
