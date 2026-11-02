@@ -18,6 +18,7 @@ from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     build_mf_contact_rows,
 )
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -714,7 +715,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         )
         builder.add_shape_sphere(free, radius=_RADIUS, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
         model = builder.finalize()
-        with self.assertWarns(newton.NewtonWarning):
+        with self.assertWarns(NewtonWarning):
             solver = SolverSteel(model, solve_mode="matrix_free")
         self.assertFalse(solver._free_rigid_angular_rows)
         # A rolling ground reaches the free sphere's contacts.
@@ -733,7 +734,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             ({"friction_mode": "bisection", "friction_anchor_beta": 0.0}, "friction_mode='bisection'"),
             ({"articulated_contact_response": "propagation"}, "articulated_contact_response='propagation'"),
         ):
-            with self.subTest(option=option), self.assertWarnsRegex(newton.NewtonWarning, option):
+            with self.subTest(option=option), self.assertWarnsRegex(NewtonWarning, option):
                 solver = SolverSteel(model, **{"solve_mode": "matrix_free", **options})
             self.assertFalse(solver._free_rigid_angular_rows)
         for mode in (-1, 4):
