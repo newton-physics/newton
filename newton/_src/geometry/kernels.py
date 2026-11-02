@@ -1510,7 +1510,7 @@ def vertex_adjacent_to_triangle(v: wp.int32, a: wp.int32, b: wp.int32, c: wp.int
     return v == a or v == b or v == c
 
 
-@wp.kernel
+@wp.kernel(module="unique", module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED})
 def vertex_triangle_collision_detection_kernel(
     max_query_radius: float,
     min_query_radius: float,
@@ -1549,6 +1549,13 @@ def vertex_triangle_collision_detection_kernel(
     ``global_pair_counts[VT_PAIR_OVERFLOW]`` is set so the host can warn and grow the
     array. The demand count saturates at ``DEMAND_CURSOR_SATURATION``, so the
     cursor cannot wrap.
+
+    The kernel opts out of Warp's deterministic lowering (see the decorator):
+    the cursor's return value only picks a slot in the append log, and the rows
+    are rebuilt from each element's own list, so slot order never reaches the
+    result. The lowering cannot handle this kernel anyway: the cursor array is
+    read for the saturation guard and atomically updated in the same kernel,
+    and a return-value atomic inside the traversal loop has no per-thread bound.
 
     Args:
         max_query_radius: the upper bound of collision distance.
@@ -1697,7 +1704,7 @@ def vertex_triangle_collision_detection_kernel(
     vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
 
 
-@wp.kernel
+@wp.kernel(module="unique", module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED})
 def edge_colliding_edges_detection_kernel(
     max_query_radius: float,
     min_query_radius: float,
@@ -1732,6 +1739,13 @@ def edge_colliding_edges_detection_kernel(
     counted by the cursor (total demand for the overflow report) but not stored
     or linked, and ``global_pair_counts[EE_PAIR_OVERFLOW]`` is set. The demand
     count saturates at ``DEMAND_CURSOR_SATURATION``, so the cursor cannot wrap.
+
+    The kernel opts out of Warp's deterministic lowering (see the decorator):
+    the cursor's return value only picks a slot in the append log, and the rows
+    are rebuilt from each element's own list, so slot order never reaches the
+    result. The lowering cannot handle this kernel anyway: the cursor array is
+    read for the saturation guard and atomically updated in the same kernel,
+    and a return-value atomic inside the traversal loop has no per-thread bound.
 
     Args:
         max_query_radius: the upper bound of collision distance.
