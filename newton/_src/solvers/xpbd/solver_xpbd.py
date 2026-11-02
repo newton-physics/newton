@@ -150,6 +150,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         enable_restitution: bool = False,
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
+        tendon_settle_atol: float = 1.0e-6,
         tendon_activation_tol: float = 2.0e-3,
         deterministic: wp.DeterministicMode | None = None,
     ):
@@ -182,7 +183,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
                 positional solve. Defaults to ``False``.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per solver iteration.
-            tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
+            tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
+                Zero disables early-out; must be finite and nonnegative.
+            tendon_settle_atol: Absolute final capstan-force residual tolerance [N].
+                Combined with the relative tolerance; must be finite and nonnegative.
+                Ignored when ``tendon_settle_tol`` is zero.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel module. Pass a :class:`warp.DeterministicMode`, or
@@ -205,6 +210,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.iterations = iterations
         self.tendon_max_sweeps = tendon_max_sweeps
         self.tendon_settle_tol = tendon_settle_tol
+        self.tendon_settle_atol = tendon_settle_atol
         self.tendon_activation_tol = tendon_activation_tol
 
         self.soft_body_relaxation = soft_body_relaxation
@@ -1059,6 +1065,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 1,
                                 self.tendon_max_sweeps,
                                 self.tendon_settle_tol,
+                                self.tendon_settle_atol,
                                 self._tendon_guide_material_transfer,
                             ],
                             device=model.device,
@@ -1223,6 +1230,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         1,
                         self.tendon_max_sweeps,
                         self.tendon_settle_tol,
+                        self.tendon_settle_atol,
                         self._tendon_guide_material_transfer,
                     ],
                     device=model.device,
