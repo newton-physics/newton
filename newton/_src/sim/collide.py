@@ -2677,7 +2677,7 @@ class CollisionPipeline:
         (``check_and_grow_collision_buffers``, or
         ``SolverVBD.check_and_grow_self_contact_buffers``) invalidates the
         storage of buffers allocated earlier: each is resized automatically at
-        its next :meth:`collide` use, with a ``UserWarning`` and its previous
+        its next :meth:`collide` use, with a ``NewtonWarning`` and its previous
         self-contact results discarded.
 
         Returns:
@@ -2924,7 +2924,7 @@ class CollisionPipeline:
         re-created.
 
         Args:
-            warn: Emit a ``UserWarning`` describing the overflow (per-family
+            warn: Emit a ``NewtonWarning`` describing the overflow (per-family
                 demand versus capacity) before growing. Pass ``False`` to grow
                 silently and rely on the return value instead.
 
