@@ -2262,6 +2262,28 @@ def test_detection_under_global_deterministic_mode(test, device):
     test.assertEqual(deterministic_rows, reference_rows)
 
 
+def test_self_contact_step_repeatable_under_deterministic_mode(test, device):
+    """Two solvers built in RUN_TO_RUN mode produce bitwise identical positions
+    after several self-contact steps: the per-pair accumulation is covered by
+    the deterministic lowering while every stored pair has its own thread."""
+
+    def run():
+        model, solver = _build_two_layer_cloth(device, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+        states = [model.state(), model.state()]
+        control = model.control()
+        for i in range(4):
+            solver.step(states[i % 2], states[(i + 1) % 2], control, None, 1e-3)
+        wp.synchronize_device(wp.get_device(device))
+        counts = solver.particle_self_contact_info().global_pair_counts.numpy()
+        return states[0].particle_q.numpy().copy(), int(counts[0]) + int(counts[2])
+
+    positions_a, stored_pairs = run()
+    positions_b, _ = run()
+    test.assertGreater(stored_pairs, 200)
+    test.assertFalse(np.isnan(positions_a).any())
+    np.testing.assert_array_equal(positions_a, positions_b)
+
+
 devices = get_test_devices()
 
 
@@ -2351,6 +2373,12 @@ add_function_test(
     TestCollision,
     "test_detection_under_global_deterministic_mode",
     test_detection_under_global_deterministic_mode,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_self_contact_step_repeatable_under_deterministic_mode",
+    test_self_contact_step_repeatable_under_deterministic_mode,
     devices=devices,
 )
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)

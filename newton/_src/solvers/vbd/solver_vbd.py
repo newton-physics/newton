@@ -759,10 +759,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``wp.config.deterministic`` mode. Body-particle contact forces
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
-                atomics in every other mode. Self-contact force
-                accumulation is excluded: its shared pair arrays have no
-                per-element record bound, so its sums stay
-                scheduling-dependent even under a deterministic mode.
+                atomics in every other mode. Self-contact forces are
+                accumulated with atomics in every mode; the deterministic
+                lowering covers them while every stored pair has its own
+                thread, that is while the pair capacity of each family (budget
+                times element count) stays within the per-pair launch size
+                (2048 threads per SM on CUDA). Above that the strided pair
+                loops revisit the atomic sites, Warp's static per-thread record
+                bound no longer holds and the deterministic buffers can
+                overflow, which Warp reports only with
+                ``wp.config.deterministic_debug`` enabled. Raise
+                ``wp.config.deterministic_max_records`` to cover such scenes,
+                or keep self-contact in ``NOT_GUARANTEED`` mode.
             enable_fast_math: Compile the particle kernels, the rigid body
                 solve, and the joint dual update with Warp's ``fast_math``
                 (approximate division and square root). Results change at the
@@ -1043,12 +1051,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     particle_deterministic_max_records,
                     attachment_records,
                 )
-        # Deterministic-atomics records for self-contact were bounded by the old
-        # fixed per-element rows (a vertex received at most row_size pieces per
-        # launch). The shared pair arrays have no per-element bound, so the
-        # deterministic mode no longer covers the self-contact scatter; an
-        # atomic-free fixed-order gather is the planned replacement (its
-        # per-vertex contact table gives reproducible sums by construction).
+        # Self-contact forces are accumulated with atomics in every mode. The
+        # deterministic lowering bounds the records per thread statically, which
+        # holds while every stored pair has its own thread (pair capacity within
+        # the launch size, see _update_self_contact_launch_size); larger
+        # capacities revisit the atomic sites and can overflow the deterministic
+        # buffers (see the ``deterministic`` argument docstring).
         if model.particle_count > 0:
             self._set_module_options(
                 {
