@@ -135,7 +135,7 @@ This section covers bodies integrated by :class:`~newton.solvers.SolverVBD`,
 including capsule cables connected by rod joints. Use the default compliant
 ALM path (``rigid_compliant_alm=True``) and initially leave its stabilization
 and retention parameters (``rigid_avbd_alpha``, ``rigid_avbd_gamma``) at their
-mode defaults; deprecated hard/soft and penalty-ramping controls are not part
+defaults; deprecated hard/soft and penalty-ramping controls are not part
 of this workflow. Compliant ALM can produce different behavior from legacy
 AVBD with the same settings; revalidate existing scenes and tuning when
 migrating.
@@ -306,9 +306,11 @@ for persistent contacts; it does not change the authored friction coefficient.
 Compare latest matching plus history against the baseline, measuring drift,
 penetration, and total collision plus solver time. Treat sticky matching as
 a separate choice: test sliding, separation, and changing contact normals as
-well as rest. Increasing matching thresholds can retain correspondence or
-anchors farther from fresh contacts; see :ref:`Contact Matching`. Neither
-mode guarantees improvement or replaces convergence work.
+well as rest. Increasing ``contact_matching_pos_threshold`` allows matching
+across larger position changes; decreasing
+``contact_matching_normal_dot_threshold`` allows matching across larger
+changes in contact normal. See :ref:`Contact Matching`. Neither mode
+guarantees improvement or replaces convergence work.
 
 Contact matching and solver history add computation and memory costs.
 Contact matching alone does not guarantee a deterministic GPU rigid-contact
@@ -382,10 +384,11 @@ solver caches; it does not recompute these model arrays.
 
 Rebuild the solver for construction-only settings, constraint layout, or
 non-rod reference-transform changes. Non-rod structural stiffness and damping
-are set by ``rigid_joint_linear_ke`` / ``rigid_joint_angular_ke`` (default
-``1.0e5`` N/m and N·m/rad) and ``rigid_joint_linear_kd`` /
-``rigid_joint_angular_kd`` (default ``0.0`` N·s/m and N·m·s/rad); changing
-drive gains does not change that structural response.
+are set by ``rigid_joint_linear_ke`` / ``rigid_joint_angular_ke`` and
+``rigid_joint_linear_kd`` / ``rigid_joint_angular_kd``. Omitted arguments use
+the corresponding settings stored in ``model.vbd`` when present; otherwise,
+stiffness defaults to ``1.0e5`` N/m and N·m/rad, and damping to ``0.0`` N·s/m
+and N·m·s/rad. Changing drive gains does not change that structural response.
 
 For an episode reset, call :meth:`~newton.solvers.SolverVBD.reset` to clear
 rigid solver history and optionally restore selected state fields from the
