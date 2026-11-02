@@ -210,7 +210,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         SolverVBD's public API and behavior may change without prior notice.
 
     Tuning guide: :ref:`Tuning VBD`
-    (https://newton-physics.github.io/newton/latest/concepts/simulation_tuning_vbd.html)
+    (https://newton-physics.github.io/newton/stable/concepts/simulation_tuning_vbd.html)
     covers cloth and soft bodies, their self-contact and their contact with shapes:
 
     - Parameter effects: the constructor arguments that matter for particle systems,

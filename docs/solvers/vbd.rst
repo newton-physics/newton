@@ -66,13 +66,9 @@ made of a centre of mass :math:`\mathbf{c}_b` and a rotation
 Step objective
 ~~~~~~~~~~~~~~
 
-Every time step is one minimization, solved one block at a time. A particle
-:math:`i` has 3 degrees of freedom, its position :math:`\mathbf{x}_i`, and a
-mass :math:`m_i`. A rigid body :math:`b` has 6 degrees of freedom, its pose
-made of a centre of mass :math:`\mathbf{c}_b` and a rotation
-:math:`\mathbf{R}_b`, with a mass :math:`m_b` and an inertia tensor
-:math:`\mathbf{I}_b`. With :math:`h` the time step, the step finds the
-positions and poses that minimize
+Every time step is one minimization, solved one block at a time. With the
+blocks and notation above, the step finds the positions and poses that
+minimize
 
 .. math::
 
@@ -136,7 +132,8 @@ The real call tree, with the control flow written out:
    SolverVBD.step(state_in, state_out, control, contacts, dt)
      _initialize_rigid_bodies   -> forward_step_rigid_bodies   (predicted poses)
      _initialize_particles      -> forward_step                (predicted positions y)
-     collision detection (default schedule: before and after this initialization)
+     collision detection (default: self-contact before and after this initialization;
+                          rigid contacts before it only, or before and after it with rigid-soft DAT)
      for iteration in range(iterations):
          if detection is due in this iteration (ITERATIONS schedule only):
              detect again, refresh the DAT reference
@@ -566,8 +563,9 @@ primitive move on curved trajectories because the body rotates, so their
 crossing times are found by sampling and bisection, with an interval bound on
 the signed-distance derivative for rows that start inside the plane's band;
 ``rigid_soft_dat_use_interval_arithmetic`` additionally certifies the sampled
-prefix with interval arithmetic (experimental). Full-surface mesh contacts
-name the exact rigid triangle, edge or vertex through
+prefix with interval arithmetic (experimental). Without it, a crossing that
+happens and reverses between two sample points can be missed. Full-surface
+mesh contacts name the exact rigid triangle, edge or vertex through
 ``Contacts.soft_contact_rigid_indices``; analytic SDF contacts and
 penetration-recovery contacts truncate only their stored rigid surface point.
 Each body then scales its whole pose update, translation and rotation about
@@ -604,7 +602,7 @@ and the solver, in that order:
 
 .. code-block:: python
 
-   builder.color()
+   builder.color(include_bending=True)  # the model has bending edges
    model = builder.finalize()
 
    collision_pipeline = newton.CollisionPipeline(model)

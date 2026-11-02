@@ -121,13 +121,18 @@ writing; the class docstring is the source of truth.
    * - ``collision_frequency_type``, ``collision_frequency``
        (``SOFT_SELF_CONTACT`` slot)
      - When self-contact detection runs. ``AUTO`` resolves to before and
-       after the inertial step. ``ITERATIONS`` with frequency :math:`k` also
-       detects before iterations :math:`k, 2k, \ldots`
+       after the inertial step. ``ITERATIONS`` with frequency :math:`k`
+       detects before the inertial step and then before iterations
+       :math:`k, 2k, \ldots`; the pass after the inertial step does not run,
+       so a :math:`k` above the iteration count detects less often than
+       ``AUTO``.
      - Fast motion with a small gap; for jitter only as the last resort.
      - One detection pass per refresh.
    * - ``rigid_soft_contact_use_log_barrier`` (False)
      - Rigid-soft normal law: quadratic penalty, or the self-contact barrier.
-     - A gripper must never let a thin sheet through.
+     - Rigid-soft contacts that sink deep under load with the quadratic
+       penalty: the barrier force grows like :math:`1/d` as the gap closes.
+       It does not stop a crossing; that is ``rigid_soft_enable_dat``.
      - Stiffer local systems, more iterations.
    * - ``rigid_soft_enable_dat`` (False)
      - DAT truncation of rigid pose updates and particles against rigid-soft
@@ -487,7 +492,11 @@ Work through these steps in order and stop at the first one that fixes it.
           collision_frequency={newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: 2},
       )
 
-   which detects before every second iteration.
+   which detects before the inertial step and then before every second
+   iteration, in place of the pass after the inertial step. With
+   ``rigid_soft_enable_dat`` on, give the ``RIGID`` slot the same type and
+   frequency; the solver raises in ``step`` otherwise, because the two DAT
+   families share one motion reference.
 
 .. _vbd-explosion-checklist:
 
@@ -733,7 +742,7 @@ The checker is opt-in:
 
 It never raises; it warns and adds the mesh anyway. The same checks are
 available directly as :func:`newton.utils.validate_triangle_mesh` and
-``newton.utils.validate_tet_mesh``. The checker inspects element quality and
+:func:`newton.utils.validate_tet_mesh`. The checker inspects element quality and
 manifoldness; it does not detect intersections between or inside meshes.
 Thresholds at the time of writing:
 
@@ -854,7 +863,7 @@ material measurement.
      - dt, iterations
      - Resembles
    * - Cloth drape
-       (`cloth_hanging <https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_hanging.py>`__)
+       (`cloth_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_hanging.py>`__)
      - grid cells 0.1 m, 0.1 kg per particle; ``tri_ke`` 1e3, ``tri_ka`` 1e3,
        ``tri_kd`` 1e2, ``edge_ke`` 10, ``edge_kd`` 0
      - radius 0.05, margin 0.02, gap 0.01; ``soft_contact_ke`` 1e2, ``kd``
@@ -862,7 +871,7 @@ material measurement.
      - 1/600, 10
      - heavy cotton sheet at a coarse scale
    * - Cloth with a robot
-       (`cloth_franka <https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py>`__,
+       (`cloth_franka <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_franka.py>`__,
        scene in centimetres)
      - density 0.02; ``tri_ke`` 1e4, ``tri_ka`` 1e4, ``tri_kd`` 1.5e-2,
        ``edge_ke`` 5, ``edge_kd`` 0.5
@@ -872,21 +881,21 @@ material measurement.
      - 1/600, 5
      - cotton cloth handled by a gripper
    * - Stiff sheets
-       (`cloth_poker_cards <https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_poker_cards.py>`__)
+       (`cloth_poker_cards <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_poker_cards.py>`__)
      - 1.8 g per card over 35 particles; ``tri_ke`` 1e4, ``tri_ka`` 1e4,
        ``tri_kd`` 1, ``edge_ke`` 1e2, ``edge_kd`` 1
      - radius 3 mm, margin 1 mm, gap 0.5 mm, pipeline gap 5 mm
      - 1/1200, 10
      - playing cards, cardboard
    * - Inextensible sheet
-       (`cloth_stiff_material_hanging <https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cloth_stiff_material_hanging.py>`__)
+       (`cloth_stiff_material_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_cloth_stiff_material_hanging.py>`__)
      - density 0.2; ``tri_ke`` 1e8, ``tri_ka`` 1e8, ``tri_kd`` 0, ``edge_ke``
        10, ``edge_kd`` 0
      - margin 2 mm, gap 1.5 mm
      - 1/600, 10
      - a plastic membrane that drapes but does not stretch
    * - Soft-body beams
-       (`softbody_hanging <https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_hanging.py>`__)
+       (`softbody_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/softbody/example_softbody_hanging.py>`__)
      - cells 0.1 m, density 1e3; ``k_mu`` 1e5, ``k_lambda`` 1e5, ``k_damp``
        10 to 1e4
      - ground contact only: ``soft_contact_ke`` 100, ``kd`` 0, ``mu`` 1;
@@ -894,7 +903,7 @@ material measurement.
      - 1/600, 10
      - rubber to foam beams, depending on ``k_damp``
    * - Soft box with ribbon
-       (`softbody_gift <https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_softbody_gift.py>`__)
+       (`softbody_gift <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/multiphysics/example_softbody_gift.py>`__)
      - box density 100, ``k_mu`` 1e5, ``k_lambda`` 1e5, ``k_damp`` 1; ribbon
        density 0.02, ``tri_ke`` 1e5, ``tri_ka`` 1e5, ``tri_kd`` 1,
        ``edge_ke`` 0.01, ``edge_kd`` 1e-4
@@ -902,14 +911,14 @@ material measurement.
      - 1/600, 15
      - foam box, thin ribbon
    * - Soft-body grasp
-       (`softbody_franka <https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_franka.py>`__)
+       (`softbody_franka <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/softbody/example_softbody_franka.py>`__)
      - density 100; ``k_mu`` 1e6, ``k_lambda`` 1e6, ``k_damp`` 1
      - radius 5 mm, margin 3 mm, gap 2 mm, pipeline gap 10 mm;
        ``soft_contact_ke`` 2e6, ``kd`` 0.2
      - 1/600, 5
      - a firm rubber block in a gripper
    * - Thin bags with contents
-       (`vbd_soft_rigid_contact <https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_soft_rigid_contact.py>`__)
+       (`vbd_soft_rigid_contact <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_vbd_soft_rigid_contact.py>`__)
      - density 0.08; ``tri_ke`` 1e5, ``tri_ka`` 1e5, ``tri_kd`` 1e2,
        ``edge_ke`` 50, ``edge_kd`` 0.5
      - radius 3 mm, margin 3 mm, gap 3 mm, pipeline gap 10 mm, shape margin
@@ -918,7 +927,7 @@ material measurement.
      - 1/300, 15
      - plastic bags holding rigid objects
    * - Tarp under fast impacts
-       (`vbd_dat_rigid_soft <https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_vbd_dat_rigid_soft.py>`__)
+       (`vbd_dat_rigid_soft <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/multiphysics/example_vbd_dat_rigid_soft.py>`__)
      - 1.6 m sheet, 40 cells, 0.6 kg; ``tri_ke`` 4e3, ``tri_ka`` 4e3,
        ``tri_kd`` 0.2, ``edge_ke`` 1
      - radius 6 mm, margin 12 mm, gap 40 mm, pipeline gap 60 mm; shapes
@@ -927,7 +936,7 @@ material measurement.
      - 1/240, 8
      - a tarp struck by thrown objects
    * - Gripper on a soft pad
-       (`vbd_gripper_soft_grid <https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_gripper_soft_grid.py>`__)
+       (`vbd_gripper_soft_grid <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_vbd_gripper_soft_grid.py>`__)
      - 4 particles of 0.1 kg each (0.4 kg pad); ``tri_ke`` 5e2, ``tri_kd`` 0.1
      - radius 10 mm, pipeline gap 10 mm; ``soft_contact_ke`` 1e3, ``kd`` 10,
        ``mu`` 1
