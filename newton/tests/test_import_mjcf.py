@@ -542,8 +542,12 @@ class TestImportMjcfBasic(unittest.TestCase):
 
         self.assertEqual(builder.joint_count, 3)
         self.assertTrue(any(label.endswith("/floating_base") for label in builder.joint_label))
-        self.assertTrue(any(label.endswith("/chassis/chassis_joint") for label in builder.joint_label))
-        self.assertTrue(any(label.endswith("/sensor/sensor_joint") for label in builder.joint_label))
+        for name, parent in (("chassis", "base_link"), ("sensor", "chassis")):
+            child_id = next(i for i, label in enumerate(builder.body_label) if label.endswith("/" + name))
+            parent_id = next(i for i, label in enumerate(builder.body_label) if label.endswith("/" + parent))
+            joint = builder.joint_child.index(child_id)
+            self.assertEqual(builder.joint_parent[joint], parent_id)
+            self.assertEqual(builder.joint_type[joint], newton.JointType.FIXED)
 
         root_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/floating_base"))
         root_body = builder.joint_child[root_joint]
@@ -590,11 +594,10 @@ class TestImportMjcfBasic(unittest.TestCase):
 
         self.assertEqual(builder.joint_count, 2)
         self.assertTrue(any(label.endswith("/floating_base") for label in builder.joint_label))
-        self.assertFalse(any(label.endswith("/chassis/chassis_joint") for label in builder.joint_label))
-        self.assertTrue(any(label.endswith("/sensor/sensor_joint") for label in builder.joint_label))
-
         root_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/floating_base"))
-        sensor_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/sensor/sensor_joint"))
+        sensor = next(i for i, label in enumerate(builder.body_label) if label.endswith("/sensor"))
+        sensor_joint = builder.joint_child.index(sensor)
+        self.assertEqual(builder.joint_parent[sensor_joint], builder.joint_child[root_joint])
         self.assertGreater(builder.body_mass[builder.joint_child[root_joint]], 0.0)
         self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
         self.assertEqual(builder.joint_type[sensor_joint], newton.JointType.FIXED)
@@ -688,8 +691,8 @@ class TestImportMjcfBasic(unittest.TestCase):
             for i in range(1, 4):
                 mesh_path = os.path.join(tmpdir, f"mesh{i}.obj")
                 with open(mesh_path, "w") as f:
-                    # Simple triangle mesh
-                    f.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+                    # Volumetric collider accepted by both compilers.
+                    f.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n")
 
             with open(mjcf_path, "w") as f:
                 f.write(mjcf_content)
@@ -1995,23 +1998,28 @@ class TestImportMjcfMeshFileCache(unittest.TestCase):
 class TestImportMjcfMeshScale(unittest.TestCase):
     """Tests for MJCF mesh scale resolution from default classes."""
 
-    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+    _OBJ_TETRAHEDRON = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n"
 
     def _build(self, mjcf_content: str) -> newton.ModelBuilder:
         with tempfile.TemporaryDirectory() as tmpdir:
             mjcf_path = os.path.join(tmpdir, "test.xml")
             mesh_path = os.path.join(tmpdir, "mesh.obj")
             with open(mesh_path, "w") as f:
-                f.write(self._OBJ_TRIANGLE)
+                f.write(self._OBJ_TETRAHEDRON)
             with open(mjcf_path, "w") as f:
                 f.write(mjcf_content)
             builder = newton.ModelBuilder()
             builder.add_mjcf(mjcf_path, parse_meshes=True)
         return builder
 
+    def _mesh_vertices(self, builder, shape_idx=0):
+        pose = builder.shape_transform[shape_idx]
+        vertices = np.asarray(builder.shape_source[shape_idx].vertices) * np.asarray(builder.shape_scale[shape_idx])
+        return np.array([wp.transform_point(pose, wp.vec3(v)) for v in vertices])
+
     def _mesh_extent(self, builder: newton.ModelBuilder, shape_idx: int = 0) -> float:
         """Return the vertex extent (max - min) of a mesh shape."""
-        v = np.asarray(builder.shape_source[shape_idx].vertices)
+        v = self._mesh_vertices(builder, shape_idx)
         return float(v.max() - v.min())
 
     def test_mesh_no_class_no_explicit_scale(self):
@@ -2173,19 +2181,18 @@ class TestImportMjcfMeshScale(unittest.TestCase):
     </body>
   </worldbody>
 </mujoco>""")
-        vertices = np.asarray(builder.shape_source[0].vertices)
+        vertices = self._mesh_vertices(builder)
         expected = np.array(
             [
                 [-4.0, 3.0, -12.0],
                 [-4.0, 0.0, -12.0],
                 [-2.0, 3.0, -12.0],
+                [-4.0, 3.0, -8.0],
             ]
         )
-        np.testing.assert_allclose(
-            vertices,
-            expected,
-            atol=1e-5,
-        )
+        distances = np.linalg.norm(vertices[:, None] - expected[None, :], axis=-1)
+        np.testing.assert_allclose(distances.min(axis=1), 0.0, atol=1e-5)
+        np.testing.assert_allclose(distances.min(axis=0), 0.0, atol=1e-5)
 
     def test_mesh_reference_pose_rejects_nonfinite_values(self):
         """Reject non-finite mesh reference positions and quaternions."""
@@ -6048,9 +6055,9 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         </body>
     </worldbody>
     <equality>
-        <weld body1="body1" body2="body2" solref="0.03 0.8"/>
-        <connect body1="body2" body2="body3" anchor="0 0 0"/>
-        <weld body1="body1" body2="body3" solref="0.05 1.2"/>
+        <weld name="first_weld" body1="body1" body2="body2" solref="0.03 0.8"/>
+        <connect name="connect" body1="body2" body2="body3" anchor="0 0 0"/>
+        <weld name="second_weld" body1="body1" body2="body3" solref="0.05 1.2"/>
     </equality>
 </mujoco>
 """
@@ -6065,18 +6072,12 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         eq_solref = model.mujoco.eq_solref.numpy()
         self.assertEqual(model.mujoco.equality_constraint_count, 3, "Should have 3 equality constraints")
 
-        # Note: Newton parses equality constraints in type order: connect, then weld, then joint
-        # So the order is: connect (default), weld (0.03, 0.8), weld (0.05, 1.2)
-        expected_values = {
-            0: [0.02, 1.0],  # connect - default
-            1: [0.03, 0.8],  # first weld
-            2: [0.05, 1.2],  # second weld
-        }
-
-        for eq_idx, expected in expected_values.items():
-            actual = eq_solref[eq_idx].tolist()
-            for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
-                self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
+        labels = model.mujoco.equality_constraint_label
+        expected_values = {"connect": [0.02, 1.0], "first_weld": [0.03, 0.8], "second_weld": [0.05, 1.2]}
+        for name, expected in expected_values.items():
+            with self.subTest(equality=name):
+                row = next(i for i, label in enumerate(labels) if label.split("/")[-1] == name)
+                np.testing.assert_allclose(eq_solref[row], expected, atol=1e-6)
 
     def test_eq_solref_from_default(self):
         """Regression test: <default><equality solref="..."/></default> attributes propagate.
@@ -9144,24 +9145,30 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
                    solreffriction="0.05 2.0" solimpfriction="0.7 0.85 0.02 0.3 1.5"
                    stiffness="2.0" damping="3.0" springref="45" ref="30"
                    actuatorgravcomp="true"/>
-            <general gainprm="100" biasprm="0 -100 -10" dyntype="filter"
-                     ctrllimited="true" forcelimited="true" ctrlrange="-2 2"
-                     forcerange="-100 100" gear="2 0 0 0 0 0"
-                     dynprm="0.5 0 0 0 0 0 0 0 0 0"
-                     actlimited="true" actrange="-1 1" actdim="1" actearly="true"/>
+            <default class="general">
+                <general gainprm="100" biasprm="0 -100 -10" dyntype="filter"
+                         ctrllimited="true" forcelimited="true" ctrlrange="-2 2"
+                         forcerange="-100 100" gear="2 0 0 0 0 0"
+                         dynprm="0.5 0 0 0 0 0 0 0 0 0"
+                         actlimited="true" actrange="-1 1" actdim="1" actearly="true"/>
+                <default class="general_special">
+                    <general gainprm="200" biasprm="0 -200 -20"
+                             ctrllimited="false" ctrlrange="-5 5"
+                             gear="3 0 0 0 0 0"/>
+                    <default class="general_child">
+                        <general gainprm="300" biasprm="0 -300 -30"/>
+                    </default>
+                </default>
+            </default>
             <position kp="50"/>
             <default class="special">
                 <geom condim="6" solmix="5.0"
                       solimp="0.7 0.85 0.005 0.3 1.5"/>
                 <joint margin="10.0" stiffness="20.0" damping="30.0"
                        springref="90" ref="60"/>
-                <general gainprm="200" biasprm="0 -200 -20"
-                         ctrllimited="false" ctrlrange="-5 5"
-                         gear="3 0 0 0 0 0"/>
                 <position kp="500"/>
                 <default class="special_child">
                     <geom priority="99" gap="0.05"/>
-                    <general gainprm="300" biasprm="0 -300 -30"/>
                     <position kp="3000"/>
                 </default>
             </default>
@@ -9192,14 +9199,14 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             </body>
         </worldbody>
         <actuator>
-            <general name="act_default" joint="j_default"
+            <general name="act_default" joint="j_default" class="general"
                      gaintype="fixed" biastype="affine"/>
-            <general name="act_class" joint="j_class" class="special"
+            <general name="act_class" joint="j_class" class="general_special"
                      gaintype="fixed" biastype="affine"/>
-            <general name="act_override" joint="j_override" class="special"
+            <general name="act_override" joint="j_override" class="general_special"
                      gaintype="fixed" biastype="affine"
                      gainprm="999" biasprm="0 -999 -99"/>
-            <general name="act_child" joint="j_child" class="special_child"
+            <general name="act_child" joint="j_child" class="general_child"
                      gaintype="fixed" biastype="affine"/>
             <position name="pos_default" joint="j_child2"/>
             <position name="pos_class" joint="j_class" class="special"/>
@@ -9469,7 +9476,6 @@ class TestMjcfPositionDampratioParsing(unittest.TestCase):
         </worldbody>
         <actuator>
             <position name="pos_dampratio" joint="j1" kp="100" dampratio="0.7"/>
-            <position name="pos_kv_wins" joint="j1" kp="50" kv="3.0" dampratio="0.9"/>
         </actuator>
     </mujoco>
     """
@@ -9487,7 +9493,12 @@ class TestMjcfPositionDampratioParsing(unittest.TestCase):
 
     def test_kv_wins_over_dampratio(self):
         """kv should override dampratio and set biasprm[2] negative."""
-        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF.replace("</actuator>", '<position joint="j1" kp="50" kv="3" dampratio=".9"/></actuator>'),
+            ctrl_direct=True,
+        )
+        biasprm = builder.finalize().mujoco.actuator_biasprm.numpy()
         self.assertAlmostEqual(float(biasprm[1, 2]), -3.0, places=6)
 
 
@@ -11515,6 +11526,7 @@ class TestMjcfMultiRootArticulations(unittest.TestCase):
         """ignore_classes should correctly interact with multi-root articulation splitting."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="scene">
+    <default><default class="visual"/></default>
     <worldbody>
         <body name="robot" pos="0 0 0">
             <geom type="sphere" size="0.1" mass="1.0"/>
@@ -11888,7 +11900,7 @@ class TestOverrideRootXform(unittest.TestCase):
     <body name="robotA" pos="10 0 0">
       <geom type="sphere" size="0.1" mass="1"/>
       <joint type="free"/>
-      <body name="child" pos="0 0 1">
+      <body name="childA" pos="0 0 1">
         <geom type="sphere" size="0.1" mass="0.5"/>
         <joint type="hinge" axis="1 0 0"/>
       </body>
@@ -11896,7 +11908,7 @@ class TestOverrideRootXform(unittest.TestCase):
     <body name="robotB" pos="0 20 0">
       <geom type="sphere" size="0.1" mass="1"/>
       <joint type="free"/>
-      <body name="child" pos="0 0 1">
+      <body name="childB" pos="0 0 1">
         <geom type="sphere" size="0.1" mass="0.5"/>
         <joint type="hinge" axis="1 0 0"/>
       </body>

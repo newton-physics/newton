@@ -278,6 +278,9 @@ def _mesh(model, mesh_id, material_id, maxhullvert):
             texture = model.tex_data[adr : adr + h * w * c].reshape(h, w, c).copy()
         if uvs is not None:
             uvs *= model.mat_texrepeat[material_id]
+    if uvs is not None:
+        # Newton's viewers use the opposite image-row convention.
+        uvs[:, 1] = 1.0 - uvs[:, 1]
     return Mesh(
         vertices=vertices,
         indices=np.arange(len(vertices)),

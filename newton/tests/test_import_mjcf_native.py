@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.mujoco import import_mjcf_native
+from newton._src.utils.texture import normalize_texture
 from newton.solvers import SolverMuJoCo, SolverXPBD
 from newton.tests import test_import_mjcf
 from newton.tests.test_mujoco_general_actuators import MJCF_SLIDERCRANK_ACTUATOR
@@ -192,7 +193,7 @@ class TestImportMjcfNative(unittest.TestCase):
                 builder,
                 [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]],
-                uvs=[[0, 0], [1, 0], [0, 1], [1, 1]],
+                uvs=[[0, 1], [1, 1], [0, 0], [1, 0]],
             )
             texture = builder.shape_source[0].texture
             if isinstance(texture, str):
@@ -1265,6 +1266,178 @@ class TestImportMjcfNative(unittest.TestCase):
             with self.subTest(option=option):
                 xml = f'<mujoco><compiler {option}/><worldbody><body><geom size=".1"/></body><body>{joint}<geom type="box" size=".1 .2 .3" pos=".2 .3 .4" euler="10 20 30"/></body></worldbody></mujoco>'
                 self.assert_roundtrip(xml, ("body_mass", "body_pos", "body_ipos", "geom_pos", "qpos0"))
+
+    def test_native_rejects_malformed_legacy_inputs(self):
+        """Reject malformed sources that the legacy parser skips or tolerates."""
+        import mujoco
+
+        world = """<worldbody><body name="b"><joint name="j"/><geom name="g" size=".1"/>
+            <site name="tip"/></body><body name="other"><geom name="other_g" size=".1"/>
+            <site name="base"/></body></worldbody>"""
+        cases = {
+            "generated geom label": world + '<contact><pair geom1="worldbody/b/g" geom2="other_g"/></contact>',
+            "unknown equality": world + "<equality><unknown/></equality>",
+            "missing tendon": world + '<equality><tendon tendon1="absent"/></equality>',
+            "exclude missing body": world + '<contact><exclude body1="b" body2="absent"/></contact>',
+            "exclude missing attribute": world + '<contact><exclude body1="b"/></contact>',
+            "unknown flag": world + '<option><flag mysteryflag="enable"/></option>',
+            "missing include attribute": "<include/>",
+            "undefined default class": world.replace('name="b"', 'name="b" childclass="absent"'),
+            "duplicate body name": world.replace('name="other"', 'name="b"'),
+            "conflicting position damping": world + '<actuator><position joint="j" kv="3" dampratio=".9"/></actuator>',
+            "activation without dynamics": world + '<actuator><general joint="j" actrange="-1 1"/></actuator>',
+            "parent transmission inherited range": world
+            + '<actuator><position jointinparent="j" inheritrange="1"/></actuator>',
+            "missing crank site": world
+            + '<actuator><general cranksite="absent" slidersite="base" cranklength="1"/></actuator>',
+            "missing slider site": world + '<actuator><general cranksite="tip" cranklength="1"/></actuator>',
+            "missing transmission": world + '<actuator><general cranklength="1"/></actuator>',
+            "invalid crank length": world
+            + '<actuator><general cranksite="tip" slidersite="base" cranklength="-1"/></actuator>',
+            "zero length site": world.replace(
+                '<site name="tip"/>', '<site type="capsule" size=".1" fromto="0 0 0 0 0 0"/>'
+            ),
+        }
+        for attribute in (
+            'diaginertia="1 2"',
+            'diaginertia="1 2 3 4"',
+            'fullinertia="1 2 3 0 0"',
+            'fullinertia="1 2 3 0 0 0 0"',
+            'fullinertia="2 3 4 .1 .2 .3" quat="1 0 0 0"',
+        ):
+            cases[attribute] = f'<worldbody><body><inertial pos="0 0 0" mass="1" {attribute}/></body></worldbody>'
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                xml = f"<mujoco>{content}</mujoco>"
+                with self.assertRaises(ValueError):
+                    mujoco.MjSpec.from_string(xml).compile()
+                builder = newton.ModelBuilder()
+                with self.assertRaises(ValueError):
+                    builder.add_mjcf_native(xml)
+                self.assertEqual((builder.body_count, builder.joint_count, builder.shape_count), (0, 0, 0))
+
+    def test_native_requires_compilable_sources(self):
+        """Keep standalone mass and collision-hull requirements explicit."""
+        import mujoco
+
+        sources = (
+            "<mujoco><worldbody><body><joint/></body></worldbody></mujoco>",
+            '<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0"/></asset>'
+            '<worldbody><geom type="mesh" mesh="m"/></worldbody></mujoco>',
+            '<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 1 1 0" face="0 1 2 1 3 2"/></asset>'
+            '<worldbody><geom type="mesh" mesh="m"/></worldbody></mujoco>',
+        )
+        for xml in sources:
+            with self.subTest(xml=xml):
+                with self.assertRaises(ValueError):
+                    mujoco.MjSpec.from_string(xml).compile()
+                with self.assertRaises(ValueError):
+                    newton.ModelBuilder().add_mjcf_native(xml)
+
+    def test_native_small_primitive_mass(self):
+        """Retain native mass below the legacy reference-volume cutoff."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body><freejoint/>
+            <geom type="sphere" size=".00005" mass=".6"/>
+            </body></worldbody></mujoco>"""
+        reference = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml)
+        np.testing.assert_allclose(builder.body_mass, [0.6], rtol=1e-6)
+        np.testing.assert_allclose(
+            np.asarray(builder.body_inertia[0]).reshape(3, 3), np.diag(reference.body_inertia[1]), rtol=1e-6, atol=0
+        )
+
+    def test_native_scaled_inherited_slide_range(self):
+        """Resolve scaled activation limits with a nonzero slide reference."""
+        xml = """<mujoco><worldbody><body><joint name="j" type="slide" range="-.3 .5" ref=".1"/>
+            <geom size=".1" mass="1"/></body></worldbody>
+            <actuator><intvelocity joint="j" kp="20" inheritrange="1"/></actuator></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml, scale=2)
+        model = builder.finalize()
+        np.testing.assert_array_equal(model.mujoco.actuator_actrange.numpy(), [[0, 0]])
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.6, 1]])
+        np.testing.assert_allclose(model.mujoco.actuator_actrange.numpy(), [[-0.6, 1]])
+        np.testing.assert_array_equal(solver.mj_model.actuator_actlimited, [True])
+
+    def test_native_compiled_primitive_fitting(self):
+        """Retain fitted primitive poses and sizes from the native compiler."""
+        with tempfile.TemporaryDirectory() as directory:
+            mesh = Path(directory) / "box.stl"
+            test_import_mjcf.TestImportMjcfGeometry._write_box_stl(mesh, hx=1, hy=0.5, hz=2)
+            for kind in ("box", "ellipsoid"):
+                for scale, fitscale in (("1 1 1", 1), ("2 3 4", 0.7)):
+                    with self.subTest(kind=kind, scale=scale, fitscale=fitscale):
+                        xml = f'''<mujoco><compiler fitaabb="true"/>
+                            <default><mesh scale="{scale}"/></default>
+                            <asset><mesh name="m" file="{mesh}"/></asset><worldbody><body>
+                            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                            <geom type="{kind}" mesh="m" fitscale="{fitscale}"/>
+                            </body></worldbody></mujoco>'''
+                        self.assert_roundtrip(xml, ("geom_size", "geom_pos", "geom_quat"))
+
+    def test_native_texture_orientation(self):
+        """Match MuJoCo texture samples through Newton's viewer conventions."""
+        import mujoco
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "asymmetric.png"
+            Image.fromarray(np.array([[[255, 0, 0], [0, 255, 0]], [[0, 0, 255], [255, 255, 0]]], np.uint8)).save(path)
+            xml = f'''<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"
+                face="0 2 1 0 1 3 0 3 2 1 2 3" texcoord=".1 .2 .6 .3 .2 .8 .7 .9"/>
+                <texture name="t" type="2d" file="{path}"/><material name="mat" texture="t"/>
+                </asset><worldbody><geom type="mesh" mesh="m" material="mat"/></worldbody></mujoco>'''
+            reference = mujoco.MjModel.from_xml_string(xml)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf_native(xml)
+            mesh = builder.shape_source[0]
+            uv = reference.mesh_texcoord[reference.mesh_facetexcoord.reshape(-1)]
+            reference_image = reference.tex_data.reshape(2, 2, 3)
+            expected = reference_image[(uv[:, 1] * 2).astype(int), (uv[:, 0] * 2).astype(int)]
+            for flip_image in (False, True):
+                with self.subTest(flip_image=flip_image):
+                    image = normalize_texture(mesh.texture, flip_vertical=flip_image)
+                    v = mesh.uvs[:, 1] if flip_image else 1 - mesh.uvs[:, 1]
+                    actual = image[(v * 2).astype(int), (mesh.uvs[:, 0] * 2).astype(int), :3]
+                    np.testing.assert_array_equal(actual, expected)
+
+    def test_native_binary_mesh_geometry(self):
+        """Preserve MSH surfaces and attributes across compiled vertex duplication."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
+        normals = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0]], dtype=np.float32)
+        uvs = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]], dtype=np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            for has_faces, has_normals, has_uvs in product((False, True), repeat=3):
+                with self.subTest(faces=has_faces, normals=has_normals, uvs=has_uvs):
+                    path = Path(directory) / f"mesh_{has_faces}_{has_normals}_{has_uvs}.msh"
+                    with path.open("wb") as output:
+                        output.write(np.array([4, 4 * has_normals, 4 * has_uvs, 4 * has_faces], np.int32).tobytes())
+                        output.write(vertices.tobytes())
+                        if has_normals:
+                            output.write(normals.tobytes())
+                        if has_uvs:
+                            output.write(uvs.tobytes())
+                        if has_faces:
+                            output.write(faces.tobytes())
+                    xml = f'''<mujoco><asset><mesh name="m" file="{path}"/></asset>
+                        <worldbody><geom type="mesh" mesh="m"/></worldbody></mujoco>'''
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf_native(xml)
+                    expected_uvs = uvs.copy()
+                    expected_uvs[:, 1] = 1 - expected_uvs[:, 1]
+                    _assert_mesh_geometry(
+                        self,
+                        builder,
+                        vertices,
+                        faces,
+                        normals=normals if has_normals else None,
+                        uvs=expected_uvs if has_uvs else None,
+                    )
 
     def test_source_errors_preserve_context(self):
         """Report file and parse errors without suggesting an importer switch."""

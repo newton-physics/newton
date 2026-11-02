@@ -677,7 +677,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         """Recompute automatic tendon rest lengths while retaining explicit zero."""
         import mujoco
 
-        for springlength in ("-1", "0", ".2 .4"):
+        for springlength in ("-1", "0", "6", ".2 .4"):
             with self.subTest(springlength=springlength):
                 xml = f'''<mujoco><worldbody><site name="anchor"/><body><joint name="j" type="slide"/>
                     <geom size=".1"/><site name="tip" pos="0 0 1"/></body></worldbody>
