@@ -20,4 +20,4 @@ size in sync.
 into a canonical order. Most self-contact demos run faster end to end;
 detection alone costs about 4-14% more than before on the recorded example
 scenes and 1.2-1.8x on uniformly dense synthetic two-layer meshes, where the
-row build dominates.
+row build adds up to 43% of the pass.
