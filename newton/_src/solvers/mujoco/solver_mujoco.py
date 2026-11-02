@@ -7714,6 +7714,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if len({hfield_asset_key(shape)[1] for shape in shapes}) > 1:
                         heterogeneous_geoms = True
                         break
+            if not heterogeneous_geoms:
+                # Cones are tessellated into meshes from their radius and half-height.
+                cone_columns = shape_type[selected_shapes] == GeoType.CONE
+                cone_sizes = shape_size[shape_layout.world_shapes[:, cone_columns], :2]
+                heterogeneous_geoms = bool(np.any(cone_sizes != cone_sizes[:1]))
             if heterogeneous_geoms and self.use_mujoco_cpu:
                 raise ValueError(
                     "Per-world mesh or heightfield assets with separate_worlds=True require use_mujoco_cpu=False."
@@ -7852,6 +7857,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             shape_mesh_names[shape] = name
             return name
 
+        cone_mesh_names = {}
+
+        def add_cone_asset(shape: int) -> str:
+            """Register the tessellated mesh of a Newton cone shape, sharing equal sizes."""
+            radius, half_height = (float(v) for v in shape_size[shape][:2])
+            name = cone_mesh_names.get((radius, half_height))
+            if name is None:
+                mesh_src = Mesh.create_cone(
+                    radius,
+                    half_height,
+                    up_axis=Axis.Z,
+                    compute_normals=False,
+                    compute_uvs=False,
+                    compute_inertia=False,
+                )
+                name = f"newton_cone_{shape}"
+                register_mesh_asset(name, mesh_src.vertices, mesh_src.indices, mesh_src.maxhullvert)
+                cone_mesh_names[(radius, half_height)] = name
+            shape_mesh_names[shape] = name
+            return name
+
         if heterogeneous_geoms:
             for shape in np.unique(shape_layout.world_shapes[shape_layout.world_shapes >= 0]):
                 if shape_flags[shape] & ShapeFlags.SITE:
@@ -7860,6 +7886,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     add_mesh_asset(int(shape))
                 elif shape_type[shape] == GeoType.HFIELD and model.shape_source[shape] is not None:
                     add_hfield_asset(int(shape))
+                elif shape_type[shape] == GeoType.CONE:
+                    add_cone_asset(int(shape))
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -7937,18 +7965,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # re-applies the same shift whenever geom poses are synced.
                     tf = tf * wp.transform(wp.vec3(0.0, 0.0, hfield_src.min_z * hfield_scale[2]), wp.quat_identity())
                 elif stype == GeoType.CONE:
-                    size = shape_size[shape]
-                    mesh_src = Mesh.create_cone(
-                        float(size[0]),
-                        float(size[1]),
-                        up_axis=Axis.Z,
-                        compute_normals=False,
-                        compute_uvs=False,
-                        compute_inertia=False,
-                    )
-                    mesh_name = f"newton_cone_{shape}"
-                    register_mesh_asset(mesh_name, mesh_src.vertices, mesh_src.indices, mesh_src.maxhullvert)
-                    geom_params["meshname"] = mesh_name
+                    geom_params["meshname"] = add_cone_asset(shape)
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     geom_params["meshname"] = add_mesh_asset(shape)
                 geom_params["pos"] = tf.p

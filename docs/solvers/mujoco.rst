@@ -835,8 +835,8 @@ Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
 worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
-and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh and
-heightfield assets, scales, and convex-hull counts may differ across worlds. Collision
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
+heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
 flags may also differ when Newton supplies contacts. Native MuJoCo contacts
 require matching collision flags, groups, and exclusions for corresponding geom
 slots. With native contacts,
