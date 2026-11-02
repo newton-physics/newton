@@ -2518,6 +2518,9 @@ in contact-buffer order when constructed with
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
+See :doc:`determinism` for which solvers support deterministic mode and
+what it costs.
+
 .. note::
 
    Deterministic mode disables hydroelastic pre-pruning, so the generated
