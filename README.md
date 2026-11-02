@@ -54,6 +54,14 @@ If you run the examples from a source checkout with uv, use
 `uv run --extra examples -m newton.examples <example_name>` instead of the
 `python -m newton.examples <example_name>` commands below.
 
+Every example keeps its general description and success criteria beside its
+implementation. Inspect the resulting specification without running the
+example:
+
+```bash
+python -m newton.examples --describe robot_omniwheel
+```
+
 <table>
   <tr>
     <td colspan="3"><h3>Basic Examples</h3></td>
@@ -1061,6 +1069,33 @@ If you run the examples from a source checkout with uv, use
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples kamino_earworm_flowers</code>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3"><h3>Steel Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/steel/example_steel_sleeping.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_steel_sleeping.jpg" alt="Steel Sleeping">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/steel/example_steel_determinism_arms.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_steel_determinism_arms.jpg" alt="Steel Determinism Arms">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples steel_sleeping</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples steel_determinism_arms</code>
+    </td>
+    <td align="center" width="33%">
     </td>
   </tr>
 </table>

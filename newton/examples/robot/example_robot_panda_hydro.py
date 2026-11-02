@@ -1,16 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Panda Hydro
-#
-# Shows how to set up a pick-and-place manipulation simulation using a
-# Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
-# Supports different scene configurations: pen or cube.
-#
-# Command: python -m newton.examples panda_hydro --scene pen --world-count 1
-#
-###########################################################################
+"""Example Panda Hydro
+
+Shows how to set up a pick-and-place manipulation simulation using a
+Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
+Supports different scene configurations: pen or cube.
+
+Success criteria:
+- Each world shows a Franka arm, a support box, a cup, and the selected grasp object.
+- The arm lifts and transports the object while the cup remains upright.
+
+Runs:
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene cube`
+  - The arm grasps the cube and releases it on top of the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene pen`
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --scene pen --world-count 1`
+  - One world appears.
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+"""
 
 import argparse
 import copy

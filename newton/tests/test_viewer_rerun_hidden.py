@@ -9,6 +9,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 
+import newton
+
 # ruff: noqa: PLC0415
 
 
@@ -61,6 +63,36 @@ class TestViewerRerunHidden(unittest.TestCase):
                         viewer = ViewerRerun(serve_web_viewer=False)
 
         return viewer
+
+    def test_skinned_visibility_and_cached_path_texture(self):
+        """Hide and show a skin in Rerun without decoding its path texture again."""
+        viewer = self._create_viewer()
+        builder = newton.ModelBuilder()
+        for point in ((0, 0, 0), (1, 0, 0), (0, 1, 0)):
+            builder.add_particle(point, (0, 0, 0), mass=1)
+        builder.add_deformable_visual_mesh(
+            builder.particle_q,
+            [0, 1, 2],
+            kind="particle",
+            parent=[0, 1, 2],
+            uvs=[[0, 0], [1, 0], [0, 1]],
+            texture="texture.png",
+        )
+        model = builder.finalize("cpu")
+        state = model.state()
+        with (
+            patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr),
+            patch("newton._src.viewer.utils.prepare_viewer_texture", return_value=np.zeros((2, 2, 3))) as decode,
+        ):
+            viewer.set_model(model)
+            viewer.show_particles = False
+            for visible in (True, True, False, False, True):
+                viewer.show_deformable_visual_meshes = visible
+                viewer.log_state(state)
+            self.assertEqual(decode.call_count, 1)
+            self.mock_rr.Clear.assert_called()
+            self.assertTrue(viewer._meshes["/model/deformable_visual_meshes/mesh_0"]["visible"])
+            viewer.close()
 
     def test_constructor_filter_does_not_retry_failures(self):
         """Propagate constructor failures without retrying unsupported arguments."""
