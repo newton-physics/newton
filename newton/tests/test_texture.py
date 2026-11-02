@@ -3,7 +3,6 @@
 
 """Tests for texture loading, assets packaged inside USD (.usdz) archives, and linear-to-sRGB conversion."""
 
-import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,9 +10,9 @@ from pathlib import Path
 import numpy as np
 
 from newton._src.utils.texture import linear_texture_to_srgb, load_texture
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import has_module, requires
 
-_PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
+_PIL_AVAILABLE = has_module("PIL")
 
 
 class TestLinearTextureToSrgb(unittest.TestCase):
@@ -70,7 +69,7 @@ def _build_usdz_with_texture(tmpdir: str, color: tuple[int, int, int]) -> Path:
     return usdz_path
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 @unittest.skipUnless(_PIL_AVAILABLE, "Requires Pillow")
 class TestPackagedTextureLoading(unittest.TestCase):
     def test_load_texture_from_usdz_package(self):

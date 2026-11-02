@@ -21,10 +21,10 @@ from newton.tests._usd_deformable_test_utils import (
     _deformable_stage,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableAttachments(unittest.TestCase):
     """Proposal PhysicsAttachment + element-collision-filter import onto cable bodies."""
 

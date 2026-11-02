@@ -36,7 +36,13 @@ from newton._src.utils.color import color_linear_to_srgb
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests._usd_import_test_utils import _expect_jointless_articulation_warning
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    assert_np_equal,
+    get_test_devices,
+    patch_sys_module,
+    requires,
+)
 
 devices = get_test_devices()
 
@@ -48,7 +54,7 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 
 class TestImportUsdPhysics(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_nonfinite_contact_materials_rejected_at_finalize(self):
         """Reject imported non-finite contact materials while preserving finite values and shape labels."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
@@ -93,7 +99,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                         builder.finalize(device="cpu")
             usd_attr.Set(original)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_material_binding_outside_import_root(self):
         """Import shared physics materials without importing unrelated bodies."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -128,7 +134,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                     self.assertAlmostEqual(builder.shape_material_mu[shape], 0.4, places=6)
                     self.assertAlmostEqual(builder.shape_material_restitution[shape], 0.2, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_per_import_shape_defaults(self):
         """Keep unbound material and shape defaults independent between imports."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -162,7 +168,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                 self.assertEqual(builder.shape_sdf_max_resolution[shape], defaults.sdf_max_resolution)
                 self.assertAlmostEqual(builder.body_mass[result["path_body_map"]["/Body"]], defaults.density * 8.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_rigid_body_velocity(self):
         """Import rigid-body velocities correctly with either body ordering."""
         for bodies_follow_joint_ordering in (False, True):
@@ -205,7 +211,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_physx_joint_state_velocity_units(self):
         """PhysX joint-state angular velocities are authored in deg/s and imported in rad/s."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -268,7 +274,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         qd_start = builder.joint_qd_start[merged]
         np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -317,7 +323,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mass_calculations(self):
         builder = newton.ModelBuilder()
 
@@ -345,7 +351,7 @@ class TestImportUsdPhysics(unittest.TestCase):
             atol=1e-7,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mass_fallback_instanced_colliders(self):
         """Regression test: bodies with PhysicsMassAPI but no authored mass properties
         and instanceable collision shapes must get positive mass from shape accumulation.
@@ -393,7 +399,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
         self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mass_fallback_instanced_collider_massapi_without_body_massapi(self):
         """Test collider MassAPI fallback through instance proxies without body MassAPI."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -440,7 +446,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                     atol=1e-6,
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_kinematic_enabled_flag(self):
         """USD bodies with physics:kinematicEnabled=true get BodyFlags.KINEMATIC."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -481,7 +487,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertTrue(flags[kin_idx] & int(BodyFlags.KINEMATIC))
         self.assertEqual(flags[dyn_idx], int(BodyFlags.DYNAMIC))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_kinematic_enabled_articulation(self):
         """Kinematic flag is parsed for articulation root bodies from USD."""
         builder = newton.ModelBuilder()
@@ -496,7 +502,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertEqual(builder.body_flags[link1_idx], int(BodyFlags.DYNAMIC))
         self.assertEqual(builder.body_flags[link2_idx], int(BodyFlags.DYNAMIC))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_cube_cylinder_joint_count(self):
         builder = newton.ModelBuilder()
         import_results = builder.add_usd(
@@ -524,6 +530,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                     builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5
                 )
 
+    @requires("pxr.Usd")
     def test_mesh_approximation(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -627,7 +634,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mesh_approximation_cfg(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -679,7 +686,7 @@ class TestImportUsdPhysics(unittest.TestCase):
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_physx_convex_decomposition_limits(self):
         """Import opt-in PhysX limits without merging disconnected components."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -776,7 +783,7 @@ class TestImportUsdPhysics(unittest.TestCase):
                             self.assertEqual(model.shape_count, builder.shape_count)
                             self.assertTrue(np.isfinite(model.shape_scale.numpy()).all())
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_disabled_mesh_collider_skips_approximation(self):
         """Preserve the authored mesh for a disabled collider."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -818,7 +825,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visual_match_collision_shapes(self):
         builder = newton.ModelBuilder()
         builder.add_usd(newton.examples.get_asset("humanoid.usda"))
@@ -842,7 +849,7 @@ class TestImportUsdPhysics(unittest.TestCase):
             self.assertFalse(builder.shape_flags[vi] & newton.ShapeFlags.COLLIDE_SHAPES)
             self.assertTrue(builder.shape_flags[ci] & newton.ShapeFlags.COLLIDE_SHAPES)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_axial_visual_scale_matches_collision(self):
         from pxr import Usd
 
@@ -880,7 +887,7 @@ def Xform "World" {{
                     collision = builder.shape_label.index("/World/link/collision")
                     np.testing.assert_allclose(builder.shape_scale[visual], builder.shape_scale[collision])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_axial_visual_default_dims_match_collision(self):
         from pxr import Usd
 
@@ -914,7 +921,7 @@ def Xform "World" {{
                 np.testing.assert_allclose(builder.shape_scale[visual], builder.shape_scale[collision])
                 np.testing.assert_allclose(builder.shape_scale[collision][:2], dims)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_planar_visual_scale_follows_axis(self):
         from pxr import Usd
 
@@ -951,7 +958,7 @@ def Xform "World" {{
                 normal = wp.quat_rotate(builder.shape_transform[plane].q, wp.vec3(0.0, 0.0, 1.0))
                 np.testing.assert_allclose(normal, newton.Axis.from_string(axis).to_vec3(), atol=1e-7)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_non_symmetric_inertia(self):
         """Test importing USD with inertia specified in principal axes that don't align with body frame."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -1013,7 +1020,7 @@ def Xform "World" {{
         # Verify the parsed inertia matches our calculated body frame inertia
         np.testing.assert_allclose(inertia_parsed.reshape(3, 3), I_body_expected, rtol=1e-5, atol=1e-8)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_force_limits(self):
         """Test importing USD with force limits specified."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -1110,7 +1117,7 @@ def Xform "World" {{
         joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -1229,7 +1236,7 @@ def Xform "Articulation" (
         self.assertTrue(found_joint1, f"Expected solimplimit {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solimplimit {expected_joint2} not found in model")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_solreflimit_parsing(self):
         """Verify that native MuJoCo limit response does not replace generic Newton gains."""
         from pxr import Usd
@@ -1399,7 +1406,7 @@ def Xform "Articulation" (
         np.testing.assert_array_equal(raw_solreflimit[dof4], [0.0, 0.0])
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_solreflimit_keeps_generic_authored_gains(self):
         """Keep native MuJoCo solref and generic Newton gains independently."""
         from pxr import Sdf, Usd
@@ -1473,7 +1480,7 @@ def Xform "Articulation" (
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[dof], [0.08, 1.0], rtol=1.0e-6, atol=0.0)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_RAW)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_solreflimit_mode_declared_on_physics_scene(self):
         """Verify that a PhysicsScene declaration exposes imported joint modes."""
         from pxr import Usd
@@ -1552,7 +1559,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_unauthored_usd_solreflimit_uses_mujoco_default(self):
         """Preserve MuJoCo's implicit limit response for an unauthored USD joint."""
         from pxr import Usd
@@ -1643,7 +1650,7 @@ def Xform "Articulation" (
                     atol=1.0e-6,
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_solreflimit_parsing_revolute(self):
         """Verify that revolute MuJoCo solref stays separate from generic Newton gains."""
         from pxr import Usd
@@ -1753,6 +1760,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof2]), builder.default_joint_cfg.limit_kd, places=3)
         self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_MJCF_DEFAULT)
 
+    @requires("pxr.Usd")
     def test_limit_margin_parsing(self):
         """Test importing limit_margin from USD with mjc:margin on joint."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -1813,7 +1821,7 @@ def Xform "Articulation" (
         self.assertTrue(hasattr(model.mujoco, "limit_margin"))
         np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_solreffriction_parsing(self):
         """Test that solreffriction attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -1932,7 +1940,7 @@ def Xform "Articulation" (
         self.assertTrue(found_joint1, f"Expected solreffriction {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solreffriction {expected_joint2} not found in model")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_geom_solimp_parsing(self):
         """Test that geom_solimp attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -2049,7 +2057,7 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_default, f"Expected default solimp {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected solimp {expected_explicit_2} not found in model")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -2166,7 +2174,7 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_default, f"Expected default solmix {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected solmix {expected_explicit_2} not found in model")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_shape_gap_from_usd(self):
         """Test that mjc:gap attribute is parsed into shape_gap from USD."""
         from pxr import Usd
@@ -2279,7 +2287,7 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_explicit_1, f"Expected gap {expected_explicit_1} not found in model")
         self.assertTrue(found_explicit_2, f"Expected gap {expected_explicit_2} not found in model")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_margin_gap_combined_conversion(self):
         """Test legacy MuJoCo->Newton conversion via legacy_margin_gap=True.
 
@@ -2356,7 +2364,7 @@ def PhysicsRevoluteJoint "Joint2"
         shape_idx = builder.shape_label.index("/Body1/Collision1")
         self.assertAlmostEqual(builder.shape_margin[shape_idx], 0.7)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_usd_margin_gap_identity_import(self):
         """USD import of mjc:margin and mjc:gap is identity under MuJoCo 3.9
         semantics (margin/gap mean the same as Newton's shape_margin/shape_gap)."""
@@ -2390,7 +2398,7 @@ def PhysicsRevoluteJoint "Joint2"
         )
         self.assertTrue(found, "Expected identity: margin=0.5, gap=0.2 (MuJoCo 3.9 default semantics)")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_actuator_mode_inference_from_drive(self):
         """Test that JointTargetMode is correctly inferred from USD joint drives."""
         from pxr import Usd
@@ -3021,7 +3029,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
 
 
 class TestImportSampleAssetsBasic(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_ant(self):
         builder = newton.ModelBuilder()
 
@@ -3036,7 +3044,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         model = builder.finalize()
         verify_usdphysics_parser(self, asset_path, model, compare_min_max_coords=True, floating=True)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_anymal(self):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         asset_root = newton.utils.download_asset("anybotics_anymal_d/usd")
@@ -3058,7 +3066,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         model = builder.finalize()
         verify_usdphysics_parser(self, stage_path, model, True, floating=True)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_cartpole(self):
         builder = newton.ModelBuilder()
 
@@ -3073,7 +3081,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         model = builder.finalize()
         verify_usdphysics_parser(self, asset_path, model, compare_min_max_coords=True, floating=False)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_g1(self):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_g1/usd") / "g1_isaac.usd")
@@ -3088,7 +3096,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         model = builder.finalize()
         verify_usdphysics_parser(self, asset_path, model, compare_min_max_coords=False, floating=True)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_h1(self):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usda")
@@ -3103,7 +3111,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         model = builder.finalize()
         verify_usdphysics_parser(self, asset_path, model, compare_min_max_coords=True, floating=True)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_static_visual_shapes_loading_flag(self):
         """Load static visual instance proxies by default with an explicit opt-out."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -3156,7 +3164,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertNotIn(body_visual.GetPath().pathString, result_no_visuals["path_shape_map"])
         self.assertIn(static_collider.GetPath().pathString, result_no_visuals["path_shape_map"])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_static_visual_scout_excludes_ignored_prims(self):
         """Exclude ignored prims from static visual scout buckets."""
         from pxr import Usd, UsdGeom
@@ -3176,7 +3184,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
 
         self.assertEqual([str(prim.GetPath()) for prim in buckets.static_visuals], ["/World/Kept"])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_static_gaussian_respects_loading_flag(self):
         """Control static Gaussian splats with the static visual loading flag."""
         from pxr import Sdf, Usd, UsdGeom
@@ -3230,7 +3238,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
             sh.SetColorSpace(attribute_color_space)
         return prim
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_gaussian_sh_color_space_follows_usd_schema(self):
         """Resolve the SH color space from the coefficient attribute and ignore prim and inherited color spaces."""
         from pxr import Usd
@@ -3278,7 +3286,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertIn("lin_ap1_scene", logs.output[0])
         self.assertIn("/World/AP1", logs.output[0])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_gaussian_sh_color_space_follows_the_loaded_coefficient_attribute(self):
         """Use the color space of the single- or half-precision coefficient attribute that supplies the radiance."""
         from pxr import Usd
@@ -3310,7 +3318,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
                 self.assertEqual(gaussian.sh_color_space, expected)
                 np.testing.assert_allclose(gaussian.sh_coeffs, [single_radiance])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_gaussian_sh_color_space_allowlist(self):
         """Map supported Rec.709 color-space names exactly and warn for every other name."""
         from pxr import Usd
@@ -3353,7 +3361,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
                 self.assertEqual(gaussian.sh_color_space, expected)
                 self.assertIn(token, logs.output[0])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_gaussian_with_non_rec709_linear_radiance_does_not_abort_import(self):
         """Import every splat of a stage whose radiance is tagged with a non-Rec.709 linear color space."""
         from pxr import Usd, UsdGeom
@@ -3368,7 +3376,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertIn("/World/A", result["path_shape_map"])
         self.assertIn("/World/B", result["path_shape_map"])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_disabled_static_collider_has_no_collision_flags(self):
         """Disable shape and particle collisions regardless of visual loading."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -3392,7 +3400,7 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertFalse(headless_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(headless_flags & ShapeFlags.COLLIDE_PARTICLES)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_granular_loading_flags(self):
         """Test the granular control over sites and visual shapes loading."""
         from pxr import Usd
@@ -3479,7 +3487,7 @@ def Xform "TestBody" (
         self.assertLess(count_visuals_only, count_all, "Excluding sites should reduce shape count")
         self.assertLess(count_physics_only, count_all, "Excluding both should reduce shape count most")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_granular_loading_with_sites(self):
         """Test loading control specifically for files with sites."""
         from pxr import Usd
@@ -3578,7 +3586,7 @@ def Xform "TestBody" (
             builder_visuals.shape_count, collision_count + visual_count, "Should have collision + visuals only"
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_granular_loading_with_newton_sites(self):
         """Verify that prims with NewtonSiteAPI are recognized as sites, in parity with MjcSiteAPI."""
         from pxr import Usd
@@ -3662,7 +3670,7 @@ def Xform "TestBody" (
             "load_sites=False should leave 1 collision + 1 visual shape, with NewtonSiteAPI prims excluded entirely",
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_mass_api_parsing(self):
         """Exhaustive test of NewtonMassAPI mass/inertia combinations.
 
@@ -3999,7 +4007,7 @@ def Xform "TensorOnly" (
         expected = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
         np.testing.assert_allclose(inertia, expected, atol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_newton_inertia_tensor_validation(self):
         """Malformed newton:inertia tensors emit warnings and fall back to shape-derived values."""
         from pxr import Usd
@@ -4109,7 +4117,7 @@ def Xform "NotPSD" (
         self.assertTrue(any("expected 6" in m and "WrongLength" in m for m in warning_messages))
         self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
         from pxr import Sdf, Usd, UsdPhysics
@@ -4145,7 +4153,7 @@ def Xform "NotPSD" (
         self.assertTrue(np.any(np.isclose(gravcomp, 0.5)))
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_joint_stiffness_damping(self):
         """Verify joint stiffness and damping are parsed correctly from USD."""
         from pxr import Usd
@@ -4308,7 +4316,7 @@ def Xform "Articulation" (
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_joint_damping_respects_schema_resolver_priority(self):
         """Honor resolver priority when multiple damping schemas are authored."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -4348,7 +4356,7 @@ def Xform "Articulation" (
                 dof_start = int(model.joint_qd_start.numpy()[joint_index])
                 self.assertAlmostEqual(float(model.joint_damping.numpy()[dof_start]), expected_damping, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_damping_from_spherical_joint_via_schema_resolver(self):
         """Verify MuJoCo USD damping reaches every spherical-joint DOF."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -4383,7 +4391,7 @@ def Xform "Articulation" (
         np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 3], [0.75] * 3)
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_spherical_joint_armature_and_friction_via_schema_resolver(self):
         """Verify schema-resolved armature and friction reach every spherical-joint DOF."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -4444,7 +4452,7 @@ def Xform "Articulation" (
                 np.testing.assert_allclose(solver.mj_model.dof_armature, [armature] * 3)
                 np.testing.assert_allclose(solver.mj_model.dof_frictionloss, [friction] * 3)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_damping_from_d6_joint_via_schema_resolver(self):
         """Verify MuJoCo USD damping reaches linear and angular D6 DOFs."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -4480,7 +4488,7 @@ def Xform "Articulation" (
         dof_start = int(model.joint_qd_start.numpy()[joint_index])
         np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 2], [0.75, 0.75])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_mjc_actuatorfrcrange_from_joint_via_schema_resolver(self):
         """Verify a MuJoCo USD joint actuator force range becomes the joint effort limit."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -4540,7 +4548,7 @@ def Xform "Articulation" (
                 solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
                 np.testing.assert_allclose(solver.mj_model.jnt_actfrcrange, [[-expected, expected]])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_geom_priority_parsing(self):
         """Test that geom_priority attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -4632,7 +4640,7 @@ def Xform "Articulation" (
         self.assertTrue(np.any(geom_priority == 1))
         self.assertTrue(np.any(geom_priority == 0))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_geom_group_parsing_and_conversion(self):
         """Test USD geom groups are imported and converted to MuJoCo."""
         from pxr import Usd
@@ -4671,7 +4679,7 @@ def Xform "Body" (
 
 
 class TestImportSampleAssetsParsing(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_add_usd_mjc_schemas_without_mujoco(self):
         asset_path = os.path.join(os.path.dirname(__file__), "assets", "mjc_schema_import.usda")
         original_import = builtins.__import__
@@ -4725,7 +4733,7 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
                         {SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT},
                     )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_jnt_actgravcomp_parsing(self):
         """Test that jnt_actgravcomp attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -4820,7 +4828,7 @@ def Xform "Articulation" (
         self.assertTrue(np.any(jnt_actgravcomp))
         self.assertTrue(np.any(~jnt_actgravcomp))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_option_scalar_world_parsing(self):
         """Test parsing of WORLD frequency scalar options from USD PhysicsScene (6 options)."""
         from pxr import Usd
@@ -4895,7 +4903,7 @@ def Xform "World"
                 self.assertEqual(len(value), 1)
                 self.assertAlmostEqual(value[0], expected, places=places)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_option_vector_world_parsing(self):
         """Test parsing of WORLD frequency vector options from USD PhysicsScene (2 options)."""
         from pxr import Usd
@@ -4966,7 +4974,7 @@ def Xform "World"
                 self.assertEqual(len(value), 1)
                 self.assertTrue(np.allclose(value[0], expected))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_option_numeric_once_parsing(self):
         """Test parsing of ONCE frequency numeric options from USD PhysicsScene (5 options)."""
         from pxr import Usd
@@ -5040,7 +5048,7 @@ def Xform "World"
                 self.assertEqual(len(value), 1)  # ONCE frequency
                 self.assertEqual(value[0], expected)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_option_enum_once_parsing(self):
         """Test parsing of ONCE frequency enum options from USD PhysicsScene (4 options)."""
         from pxr import Usd
@@ -5114,7 +5122,7 @@ def Xform "World"
                 self.assertEqual(len(value), 1)  # ONCE frequency
                 self.assertEqual(value[0], expected_int)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_parse_mujoco_options_disabled(self):
         """Test that MuJoCo options from PhysicsScene are not parsed when parse_mujoco_options=False."""
         from pxr import Usd
@@ -5163,7 +5171,7 @@ def Xform "World"
         # impratio should remain at default (1.0), not the USD value (99.0)
         self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 1.0, places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_ref_attribute_parsing(self):
         """Interpret an unauthored-angle revolute ``mjc:ref`` in degrees."""
         from pxr import Usd
@@ -5220,7 +5228,7 @@ def Xform "Articulation" (
         revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
         self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], np.deg2rad(90.0), places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_ref_does_not_change_usd_drive_target(self):
         """Keep a standard USD drive target unchanged when ``mjc:ref`` is present."""
         from pxr import Usd
@@ -5277,7 +5285,7 @@ def Xform "Articulation" (
         target_idx = model.joint_target_q_start.numpy()[joint_idx]
         self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_springref_compiler_angle_units(self):
         """Convert revolute springrefs using compiler units, including merged D6 joints."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -5331,7 +5339,7 @@ def Xform "Articulation" (
                     self.assertAlmostEqual(springref[dof], expected_spring, places=5)
                     self.assertAlmostEqual(reference[dof], expected_ref, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_springref_attribute_parsing(self):
         """Test that 'mjc:springref' attribute is parsed for revolute and prismatic joints."""
         from pxr import Usd
@@ -5428,7 +5436,7 @@ def Xform "Articulation" (
         prismatic_joint_idx = model.joint_label.index("/Articulation/prismatic_joint")
         self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_converter_degree_joint_angles_are_converted(self):
         """Convert declared degree refs and springrefs while preserving prismatic lengths.
 
@@ -5536,7 +5544,7 @@ def Xform "Articulation" (
             with self.subTest(name):
                 self.assertAlmostEqual(value, expected, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_material_parsing(self):
         """Test that material attributes are parsed correctly from USD."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -5595,7 +5603,7 @@ def Xform "Articulation" (
         rolling = model.shape_material_mu_rolling.numpy()[shape_idx]
         self.assertAlmostEqual(rolling, 0.08, places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visual_mesh_material_subsets_create_separate_visual_shapes(self):
         """Test that visual mesh material subsets import as separate colored shapes."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
@@ -5681,7 +5689,7 @@ def Xform "Articulation" (
         self.assertEqual(blue_mesh.texture, "blue.png")
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visual_mesh_generates_sharp_normals(self):
         """Resolve non-smoothing USD visuals to ordinary per-vertex normals."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -5705,7 +5713,7 @@ def Xform "Articulation" (
         shape = result["path_shape_map"]["/Body/VisualMesh"]
         np.testing.assert_allclose(builder.shape_source[shape].normals, [(0, 0, 1)] * 3)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visual_polygon_mesh_preserves_authored_normals(self):
         """Preserve authored normals on imported polygonal visual meshes."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -5734,7 +5742,7 @@ def Xform "Articulation" (
         self.assertEqual(get_mesh.call_count, 1)
         np.testing.assert_allclose(visual_mesh.normals, np.array([(0.0, 1.0, 0.0)] * 3), atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visual_mesh_material_subset_with_loaded_texture_array(self):
         """Import a material-subset mesh whose subset texture decodes to an image array.
 
@@ -5807,7 +5815,7 @@ def Xform "Articulation" (
         self.assertIsInstance(tex_mesh.texture, np.ndarray)
         self.assertEqual(np.asarray(tex_mesh.texture).shape[-1], 4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_textured_visual_mesh_uses_white_base_color(self):
         """A textured full mesh with no scalar color imports with a white base color.
 
@@ -5898,7 +5906,7 @@ def Xform "Articulation" (
 
         return stage, shape_path
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_uvless_textured_visual_mesh_disables_uv_sampling(self):
         """Verify a full visual mesh retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
@@ -5915,7 +5923,7 @@ def Xform "Articulation" (
             {r.levelno for r in log_ctx.records if "texture sampling is disabled" in r.getMessage()}, {logging.DEBUG}
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_uvless_textured_visual_mesh_subset_disables_uv_sampling(self):
         """Verify a material subset retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
@@ -5985,7 +5993,7 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_fallback_texture_ignores_scalar_data_maps(self):
         """A shader wiring only a single-channel data map imports no base-color texture.
 
@@ -5999,7 +6007,7 @@ def Xform "Articulation" (
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_fallback_texture_prefers_color_output(self):
         """The fallback texture search selects the color (``rgb``) map over a scalar data map."""
         stage = self._build_custom_shader_mesh_stage(with_diffuse=True)
@@ -6009,7 +6017,7 @@ def Xform "Articulation" (
         self.assertIsInstance(src.texture, str)
         self.assertTrue(src.texture.endswith("diffuse.png"), src.texture)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_fallback_texture_ignores_connected_normal_map(self):
         """A normal map connected via the ``rgb`` output must not be read as the base color.
 
@@ -6089,7 +6097,7 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mdl_direct_asset_selects_diffuse_texture(self):
         """An MDL shader's direct ``diffuse_texture`` parameter imports as the base color.
 
@@ -6106,7 +6114,7 @@ def Xform "Articulation" (
         self.assertIsInstance(src.texture, str)
         self.assertTrue(src.texture.endswith("albedo.png"), src.texture)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mdl_direct_asset_ignores_non_color_maps(self):
         """An MDL shader wiring only a normal map imports no base-color texture."""
         stage = self._build_mdl_shader_mesh_stage({"normalmap_texture": "normal.png"})
@@ -6115,7 +6123,7 @@ def Xform "Articulation" (
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_usd_transform2d_mapping_is_preserved(self):
         """Preserve standard UsdTransform2d order and its upstream primvar reader."""
         from pxr import Sdf, UsdGeom, UsdShade
@@ -6172,7 +6180,7 @@ def Xform "Articulation" (
             with self.subTest(input_name=input_name):
                 self.assertNotIn(input_name, importer_source)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_loads_alternate_texcoord_set(self):
         """``get_mesh`` loads UVs from an alternate texcoord set name (``st_0``), not just ``st``.
 
@@ -6195,7 +6203,7 @@ def Xform "Articulation" (
         self.assertIsNotNone(result.uvs, "UVs from the st_0 set should be loaded")
         self.assertEqual(len(result.uvs), len(result.vertices))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_uses_material_texcoord_set(self):
         """``get_mesh`` loads the texcoord set the bound material references, not just the first ``st*``.
 
@@ -6238,7 +6246,7 @@ def Xform "Articulation" (
         # Must load st_1 (has non-zero corners), not the all-zero "st" decoy the naive path would pick.
         self.assertGreater(float(np.asarray(result.uvs).max()), 0.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_uses_mdl_uv_space_index_texcoord_set(self):
         """``get_mesh`` resolves an MDL/OmniPBR ``uv_space_index`` to the ``st_<index>`` set.
 
@@ -6274,7 +6282,7 @@ def Xform "Articulation" (
         # Must load st_1 (non-zero corners), not the all-zero "st" decoy.
         self.assertGreater(float(np.asarray(result.uvs).max()), 0.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_subset_splitting_is_independent_of_material_vocabulary(self):
         """Subsets binding unrecognized materials split identically to recognized ones.
 
@@ -6371,7 +6379,7 @@ def Xform "Articulation" (
                 submesh = builder.shape_source[result["path_shape_map"][label]]
                 self.assertEqual(len(submesh.indices), 3)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_uv_length_mismatch_uses_info_logging(self):
         """Verify UV fallback diagnostics use `logger.info`, not `warnings.warn`."""
         import logging as _logging  # noqa: PLC0415
@@ -6430,7 +6438,7 @@ def Xform "Articulation" (
         for text in ("UV primvar length", "texture sampling is disabled"):
             self.assertEqual({r.levelno for r in log_ctx.records if text in r.getMessage()}, {_logging.DEBUG})
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_material_density_used_by_mass_properties(self):
         """Test that physics material density contributes to imported body mass/inertia."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -6476,7 +6484,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_material_density_mass_properties_with_stage_linear_scale(self):
         """Test mass/inertia parsing when stage metersPerUnit is not 1.0."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -6521,7 +6529,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_authored_mass_with_non_unit_mass_unit_warns(self):
         """Test unsupported kilogramsPerUnit warning and unscaled authored mass."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -6553,7 +6561,7 @@ def Xform "Articulation" (
         inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
         np.testing.assert_allclose(np.diag(inertia), np.array([0.1, 0.2, 0.3]), atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collider_massapi_density_used_by_mass_properties(self):
         """Test that collider MassAPI density contributes in ComputeMassProperties fallback."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -6593,7 +6601,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collider_massapi_without_body_massapi(self):
         """Test collider MassAPI aggregation when the rigid body has no MassAPI."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -6650,7 +6658,7 @@ def Xform "Articulation" (
                         rtol=1e-5,
                     )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collider_massapi_aggregates_material_density_sibling(self):
         """Combine collider MassAPI mass with sibling material density."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -6686,7 +6694,7 @@ def Xform "Articulation" (
         expected_mass = explicit_mass + material_density * 0.2**3
         self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_density_precedence_in_recorded_fallback(self):
         """Honor collider, body, and material density precedence in fallback aggregation."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -6737,7 +6745,7 @@ def Xform "Articulation" (
                     rtol=1e-5,
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_density_without_colliders_keeps_zero_properties(self):
         """Keep builder mass properties zero when density has no collider volume."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -6758,7 +6766,7 @@ def Xform "Articulation" (
         np.testing.assert_array_equal(np.array(builder.body_inertia[body_idx]).reshape(3, 3), np.zeros((3, 3)))
         np.testing.assert_array_equal(np.array(builder.body_inv_inertia[body_idx]).reshape(3, 3), np.zeros((3, 3)))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_material_density_without_massapi_uses_shape_material(self):
         """Test that non-MassAPI bodies use collider material density for mass accumulation."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -6800,7 +6808,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_material_without_density_uses_default_shape_density(self):
         """Test that bound materials without authored density fall back to default shape density."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -6843,7 +6851,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_authored_com_matches_scaled_collider_frame(self):
         """Authored body COM uses the same scaled frame as collider offsets."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -6898,7 +6906,7 @@ def Xform "Articulation" (
                     shape_pos = builder.shape_transform[shape_idx].p
                     np.testing.assert_allclose(builder.body_com[body_idx], shape_pos, atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_authored_com_survives_failed_mass_computation(self):
         """Authored body COM keeps descriptor scale when mass properties cannot be computed."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -6920,7 +6928,7 @@ def Xform "Articulation" (
         body_idx = result["path_body_map"]["/World/Scaled/Body"]
         np.testing.assert_allclose(builder.body_com[body_idx], [0.6, 0.0, 0.0], atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
         """If body has authored mass+diagonalInertia, use them directly without compute fallback."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -6955,7 +6963,7 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.diag(inertia), np.array([0.1, 0.2, 0.3]), atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(inertia - np.diag(np.diag(inertia)), np.zeros((3, 3), dtype=np.float32), atol=1e-7)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_partial_body_falls_back_to_compute(self):
         """If body MassAPI is partial (missing inertia), compute fallback should provide inertia."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -6993,7 +7001,7 @@ def Xform "Articulation" (
             np.diag(inertia), np.array([expected_diag, expected_diag, expected_diag]), atol=1e-5, rtol=1e-5
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_fallback_values_are_ignored(self):
         """Explicitly authored MassAPI schema fallbacks behave like unauthored values."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -7043,7 +7051,7 @@ def Xform "Articulation" (
                     builder.body_com[authored], builder.body_com[unauthored], atol=1e-6, rtol=1e-6
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_zero_inertia_with_authored_mass_scales_accumulated(self):
         """A zero diagonalInertia sentinel must not disable inertia scaling to authored mass."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -7075,7 +7083,7 @@ def Xform "Articulation" (
             builder.body_inertia[zero_inertia], builder.body_inertia[mass_only], atol=1e-6, rtol=1e-6
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_non_finite_mass_and_density_are_ignored(self):
         """Non-finite authored body mass/density values fall back like the 0.0 sentinel."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7121,7 +7129,7 @@ def Xform "Articulation" (
                     builder.body_inertia[authored], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_non_finite_material_density_uses_default(self):
         """A non-finite physics material density warns and falls back to the importer default."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -7153,7 +7161,7 @@ def Xform "Articulation" (
                 expected_mass = builder.default_shape_cfg.density * 8.0
                 self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collider_massapi_invalid_mass_warns_and_uses_geometry(self):
         """Invalid non-fallback collider mass warns; the 0.0 fallback stays silent."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -7195,7 +7203,7 @@ def Xform "Articulation" (
             newton.ModelBuilder().add_usd(make_stage(0.0, Gf.Vec3f(0.1)))
         self.assertFalse([w for w in caught if "must be positive and finite" in str(w.message)])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_invalid_diag_inertia_is_unspecified_and_warns(self):
         """Negative or non-finite body diagonalInertia warns and falls back like unauthored."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -7236,7 +7244,7 @@ def Xform "Articulation" (
                     builder.body_inertia[invalid], builder.body_inertia[control], atol=1e-6, rtol=1e-6
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_invalid_collider_diag_inertia_is_unspecified_and_warns(self):
         """Negative or non-finite collider diagonalInertia warns and falls back like unauthored."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -7280,7 +7288,7 @@ def Xform "Articulation" (
                     # stage and alter its result; fixing that is a deferred follow-up.
                     np.testing.assert_allclose(invalid_inertia, builder.body_inertia[control], atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_blocked_attributes_are_unspecified(self):
         """Blocked MassAPI attributes resolve to no value and behave like unauthored ones."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -7332,7 +7340,7 @@ def Xform "Articulation" (
             )
             np.testing.assert_allclose(builder.body_com[body_idx], builder.body_com[unauthored], atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_blocked_attribute_preserves_mass_precedence(self):
         """A blocked fallback must not let density rescale inertia when mass wins."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7370,7 +7378,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(builder.body_mass[blocked], builder.body_mass[control], places=6)
         np.testing.assert_allclose(builder.body_inertia[blocked], builder.body_inertia[control], atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_invalid_body_values_warn(self):
         """Invalid non-fallback body mass/density warn when the authored override is dropped."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7414,7 +7422,7 @@ def Xform "Articulation" (
                     builder.body_inertia[body_idx], control_builder.body_inertia[control_idx], atol=1e-6, rtol=1e-6
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_invalid_collider_density_warns(self):
         """Invalid collider density warns and falls back like an unspecified value."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7449,7 +7457,7 @@ def Xform "Articulation" (
                     builder.body_inertia[invalid], builder.body_inertia[control], atol=1e-6, rtol=1e-6
                 )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_density_rescale_keeps_inverse_inertia_consistent(self):
         """The accumulated-property fallback rescales inertia and its inverse together."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7481,7 +7489,7 @@ def Xform "Articulation" (
         inv_inertia = np.array(builder.body_inv_inertia[body_idx]).reshape(3, 3)
         np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), atol=1e-5, rtol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_authored_mass_without_colliders_uses_small_sphere_inertia(self):
         """Authored mass without inertia or colliders gets OpenUSD's small-sphere inertia.
 
@@ -7524,7 +7532,7 @@ def Xform "Articulation" (
         np.testing.assert_allclose(inertia("Cube"), np.eye(3) * 2.0**2 / 6.0, rtol=1e-5)
         np.testing.assert_allclose(np.diag(inertia("Authored")), [1.0, 2.0, 3.0], rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
         """Authored mass without inertia should produce inertia consistent with a uniform-density body.
 
@@ -7574,7 +7582,7 @@ def Xform "Articulation" (
                 np.diag(inertia), [expected_i] * 3, atol=1e-5, rtol=1e-5, err_msg=f"Body {name} inertia"
             )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):
         """Compute fallback must rotate cone/capsule/cylinder mass frame for non-Z axes."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7619,7 +7627,7 @@ def Xform "Articulation" (
         body_com = np.array(builder.body_com[body_idx], dtype=np.float32)
         np.testing.assert_allclose(body_com, np.array([-0.5, 0.0, 0.0], dtype=np.float32), atol=1e-5, rtol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_partial_body_mesh_uses_cached_mesh_loading(self):
         """Mesh collider mass fallback should not reload the same USD mesh multiple times."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7685,7 +7693,7 @@ def Xform "Articulation" (
 
         self.assertEqual(get_mesh_call_count, 1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_massapi_partial_body_warns_and_skips_noncontributing_collider(self):
         """Fallback compute warns and skips colliders that cannot provide positive mass info."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7710,7 +7718,7 @@ def Xform "Articulation" (
         with self.assertWarnsRegex(UserWarning, r"Skipping collider .* mass aggregation"):
             builder.add_usd(stage)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_contact_margin_parsing(self):
         """Test that newton:contactMargin is parsed into shape margin [m]."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7746,7 +7754,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_margin.numpy()[shape1_idx], 0.05, places=4)
         self.assertAlmostEqual(model.shape_margin.numpy()[shape2_idx], 1e-5, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_contact_gap_parsing(self):
         """Test that newton:contactGap is parsed into shape gap [m]."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7782,7 +7790,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_gap.numpy()[shape1_idx], 0.02, places=4)
         self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_contact_response_parsing(self):
         """Test ke/kd/kf/ka parsed from NewtonMaterialAPI on bound material."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -7857,7 +7865,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_none], builder.default_shape_cfg.kf, places=1)
         self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_none], builder.default_shape_cfg.ka, places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_contact_response_inf_sentinel(self):
         """Test that -inf authored on material attrs yields builder defaults."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -7895,7 +7903,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_material_kf.numpy()[idx], builder.default_shape_cfg.kf, places=1)
         self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], builder.default_shape_cfg.ka, places=4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_contact_response_legacy_shape_fallback(self):
         """Test deprecated newton:contact_ke/kd/kf/ka on shape prim with exact warnings."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
@@ -7989,7 +7997,7 @@ def Xform "Articulation" (
                 dep_msgs.count(expected_msg), 2, f"expected exactly two {legacy_attr!r} deprecation warnings"
             )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_contact_response_solref_over_material(self):
         """Test MuJoCo per-geom solref wins over material when MuJoCo resolver has priority."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
@@ -8043,7 +8051,7 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model2.shape_material_ke.numpy()[idx2], 4000.0, places=1)
         self.assertAlmostEqual(model2.shape_material_kd.numpy()[idx2], 100.0, places=1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mimic_constraint_parsing(self):
         """Verify NewtonMimicAPI is parsed into joint-owned mimic metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -8108,7 +8116,7 @@ def Xform "Articulation" (
         # coef1 is dimensionless and is passed through unscaled.
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[joint2_idx, 1], 2.0, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mimic_coef0_units_follow_the_follower_joint(self):
         """newton:mimicCoef0 is degrees for an angular follower and distance for a linear one.
 
@@ -8172,7 +8180,7 @@ def Xform "Articulation" (
                 self.assertEqual(len(followers), 1)
                 self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[followers[0], 0], expected, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mimic_rejects_dimension_change_from_joint_merging(self):
         """Reject a scalar leader when joint merging makes the follower multi-DOF.
 
@@ -8221,7 +8229,7 @@ def Xform "Articulation" (
             with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
                 builder.add_usd(stage)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mimic_coef0_warns_for_multi_dof_follower(self):
         """Warn and preserve the offset for a supported D6 follower with mixed coordinate units."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -8280,7 +8288,7 @@ def Xform "Articulation" (
             "expected a warning that the offset has no defined unit for a multi-DOF follower",
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_equality_joint_parsing(self):
         """Test that MjcEqualityJointAPI on a joint is parsed into an equality constraint."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -8373,7 +8381,7 @@ def Xform "Articulation" (
             np.array([0.8, 0.9, 0.002, 0.6, 3.0], dtype=np.float32),
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_equality_joint_parsing_newton_mimic_properties(self):
         """Test that MjcEqualityJointAPI is parsed from the NewtonMimicAPI properties.
 
@@ -8451,7 +8459,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_equality_joint_parsing_honors_mimic_enabled(self):
         """Test that newton:mimicEnabled disables an MjcEqualityJointAPI constraint.
 
@@ -8522,7 +8530,7 @@ def Xform "Articulation" (
         self.assertEqual(model.constraint_mimic_count, 1)
         self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_equality_connect_site_parsing(self):
         """Test that MjcEqualityConnectAPI on a spherical joint is parsed as a connect equality constraint."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -8635,7 +8643,7 @@ def Xform "Articulation" (
             np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_equality_disabled_connect_filtering(self):
         """Test that disabled MjcEqualityConnectAPI prims honor only_load_enabled_joints."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -8681,7 +8689,7 @@ def Xform "Articulation" (
         self.assertEqual(model.mujoco.equality_constraint_count, 1)
         self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mjc_equality_weld_parsing(self):
         """Test that MjcEqualityWeldAPI on a fixed joint is parsed as a weld equality constraint."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -8796,7 +8804,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_mjc_equality_conversion_roundtrips_to_mujoco(self):
         """Converted USD MJC equalities recreate the same MuJoCo equality constraints."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -8950,7 +8958,7 @@ def Xform "Articulation" (
             np.testing.assert_allclose(converted_row[5], legacy_row[5], atol=1e-6)
             np.testing.assert_allclose(converted_row[6], legacy_row[6], atol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_joint_ordering_cycle_raises(self):
         """Reject invalid joint graphs and propagate topological sort errors."""
@@ -9035,7 +9043,7 @@ def Xform "Articulation" (
                     )
                     self.assertNotIn(str(joint_x.GetPath()), result["path_joint_map"])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scene_path(self):
         """Return the selected scene path without parsing the physics range again."""
         from pxr import Usd, UsdPhysics
@@ -9054,7 +9062,7 @@ def Xform "Articulation" (
         self.assertEqual(result["physics_scene_path"], "/Scene")
         self.assertEqual(result["scene_attributes"]["physics:gravityMagnitude"], 2.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scene_gravity_enabled_parsing(self):
         """Test that gravity_enabled is parsed correctly from USD scene."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9094,7 +9102,7 @@ def Xform "Articulation" (
         # Gravity should be disabled (zero)
         np.testing.assert_allclose(builder2.gravity, (0.0, 0.0, 0.0))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scene_gravity_non_unit_linear_unit(self):
         """Test non-unit linear unit warning and unscaled PhysicsScene gravity."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9116,7 +9124,7 @@ def Xform "Articulation" (
 
         np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -12.34), atol=1.0e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scene_gravity_direction(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -9168,7 +9176,7 @@ def Xform "Articulation" (
         builder.add_usd(stage2)
         np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -9.81), atol=1.0e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scene_time_steps_per_second_parsing(self):
         """Test that time_steps_per_second is parsed correctly from USD scene."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9202,7 +9210,7 @@ def Xform "Articulation" (
         # physics_dt should be 0.001
         self.assertAlmostEqual(result["physics_dt"], 0.001, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scene_max_solver_iterations_parsing(self):
         """Test that max_solver_iterations is parsed correctly from USD scene."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9229,7 +9237,7 @@ def Xform "Articulation" (
         # max_solver_iterations should be 200
         self.assertEqual(result["max_solver_iterations"], 200)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_mesh_max_hull_vertices_parsing(self):
         """Test that max_hull_vertices is parsed correctly from mesh collision."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -9271,7 +9279,7 @@ def Xform "Articulation" (
 
 
 class TestImportSampleAssetsComposition(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_custom_frequency_usd_defaults_when_no_authored_attrs(self):
         """Test that custom frequency counts increment for prims with no authored custom attributes.
 
@@ -9348,7 +9356,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertAlmostEqual(item_values[1], default_value, places=5)
         np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, -1])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_custom_frequency_honors_ignore_paths(self):
         """Test that custom frequency parsing skips prims matching ignore_paths.
 
@@ -9397,7 +9405,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.get_custom_frequency_count("test:item"), 2)
         self.assertEqual(len(model.test.item_value.numpy()), 2)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_custom_frequency_instance_proxy_traversal(self):
         """Test that custom frequency parsing traverses instance proxy prims.
 
@@ -9467,7 +9475,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertAlmostEqual(child_values[0], 99.0, places=5)
         self.assertAlmostEqual(child_values[1], 99.0, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9490,7 +9498,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.articulation_count, 1)
         self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_custom_frequency_wildcard_usd_attribute(self):
         """Test that usd_attribute_name='*' transforms every matching prim."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -9608,7 +9616,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertIn("usd_attribute_name='*'", str(ctx.exception))
         self.assertIn("usd_value_transformer", str(ctx.exception))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_floating_false_creates_fixed_joint(self):
         """Test that floating=False creates a fixed joint for the root body."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9631,7 +9639,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.articulation_count, 1)
         self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_base_joint_dict_creates_d6_joint(self):
         """Test that base_joint dict with linear and angular axes creates a D6 joint."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9664,7 +9672,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.articulation_count, 1)
         self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_base_joint_dict_creates_custom_joint(self):
         """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9693,7 +9701,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.articulation_count, 1)
         self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_floating_and_base_joint_mutually_exclusive(self):
         """Test that specifying both floating and base_joint raises an error."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -9723,7 +9731,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
             )
         self.assertIn("Cannot specify both", str(ctx.exception))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_custom_frequency_usd_entry_expander_multiple_rows(self):
         """Test that usd_entry_expander can emit multiple rows per matched prim."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -9771,7 +9779,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(len(values), 3)
         assert_np_equal(values, np.array([1.0, 2.0, 1.0], dtype=np.float32), tol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_base_joint_respects_import_xform(self):
         """Test that base joints with parent == -1 use the import xform."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -9839,7 +9847,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         )
         self.assertTrue(quat_match, f"Body orientation should include import xform. Got {actual_quat}")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_parent_body_attaches_to_existing_body(self):
         """Test that parent_body attaches the USD root to an existing body."""
@@ -9917,7 +9925,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         gripper_articulation = joint_articulations[gripper_joint_idx]
         self.assertEqual(robot_articulation, gripper_articulation)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_parent_body_with_base_joint_creates_d6(self):
         """Test that parent_body with base_joint creates a D6 joint to parent."""
@@ -9970,7 +9978,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
         self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_parent_body_creates_joint_to_parent(self):
         """Test that parent_body creates a joint connecting to the parent body."""
@@ -10017,7 +10025,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         joint_articulation = model.joint_articulation.numpy()
         self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_floating_true_with_parent_body_raises_error(self):
         """Test that floating=True with parent_body raises an error."""
@@ -10058,7 +10066,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertIn("FREE joint", str(cm.exception))
         self.assertIn("parent_body", str(cm.exception))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_floating_false_with_parent_body_succeeds(self):
         """Test that floating=False with parent_body is explicitly allowed."""
@@ -10100,7 +10108,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertTrue(any("GripperBase" in key for key in builder.body_label))
         self.assertEqual(model.articulation_count, 1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_non_sequential_articulation_attachment(self):
         """Test that attaching to a non-sequential articulation raises an error."""
@@ -10133,7 +10141,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
             builder.add_usd(gripper_stage, parent_body=robot1_body_idx)
         self.assertIn("most recent", str(cm.exception))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_parent_body_not_in_articulation_raises_error(self):
         """Test that attaching to a body not in any articulation raises an error."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -10163,7 +10171,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         self.assertIn("not part of any articulation", str(cm.exception))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_three_level_hierarchical_composition(self):
         """Test attaching multiple levels: arm → gripper → sensor."""
@@ -10223,7 +10231,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.articulation_count, 1)
         self.assertEqual(model.joint_count, 6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_xform_relative_to_parent_body(self):
         """Test that xform is interpreted relative to parent_body when attaching."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -10265,7 +10273,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         np.testing.assert_allclose(parent_world_pos, [0.0, 0.0, 2.0], atol=1e-5)
         np.testing.assert_allclose(child_world_pos, parent_world_pos + np.array([0.0, 0.0, 0.5]), atol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_many_independent_articulations(self):
         """Test creating many (5) independent articulations and verifying indexing."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -10313,7 +10321,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.articulation_count, 5)
         self.assertEqual(model.joint_count, 10)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_custom_frequency_usd_filter_and_expander_context_unified(self):
         """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -10376,7 +10384,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(set(filter_ctx.keys()), {"prim", "builder", "result"})
         self.assertEqual(set(expander_ctx.keys()), {"prim", "builder", "result"})
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_custom_frequency_usd_ordering_producer_before_consumer(self):
         """Test deterministic custom-frequency ordering for producer/consumer dependencies."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -10447,7 +10455,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         seen_counts = model.test.consumer_seen_producer_count.numpy()
         assert_np_equal(seen_counts, np.array([1, 2, 3], dtype=np.int32), tol=0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -10482,7 +10490,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_base_joint_valid_dict_variations(self):
         """Test that various valid base_joint dict formats work correctly."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -10566,7 +10574,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 rotational axes
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collision_shape_visibility_flags(self):
         """Collider visibility follows USD purpose, with explicit import overrides.
 
@@ -10688,7 +10696,7 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_shared_collision_visual_geometry_is_visible(self):
         """Keep renderable USD colliders visible when geometry is shared.
 
@@ -10728,7 +10736,7 @@ def Xform "BodyWithoutVisuals" (
         self.assertFalse(visual_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(visual_flags & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collision_only_asset_keeps_colliders_visible(self):
         """Collision-only USD assets must remain visible by default."""
         from pxr import Usd
@@ -10760,7 +10768,7 @@ def Xform "Body" (
         self.assertTrue(collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(collision_flags & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_guide_only_asset_draws_nothing_by_default(self):
         """An asset whose every prim is guide has no render geometry.
 
@@ -10789,7 +10797,7 @@ def Xform "Body" (
         forced_shape = forced.add_usd(stage, force_show_colliders=True)["path_shape_map"]["/Body/Collider"]
         self.assertTrue(forced.shape_flags[forced_shape] & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_guide_purpose_shapes_not_visible(self):
         """Guide-purpose prims (e.g. collision geometry authored by MuJoCo-USD
         converters) should not be loaded as visible visual shapes."""
@@ -10943,7 +10951,7 @@ def Xform "Body" (
 
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visible_collision_mesh_inherits_visual_material_properties(self):
         """Visible fallback collider meshes should carry resolved visual material data."""
         stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
@@ -10967,7 +10975,7 @@ def Xform "Body" (
         self.assertAlmostEqual(mesh.roughness, 0.35, places=6)
         self.assertAlmostEqual(mesh.metallic, 0.75, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visible_collision_mesh_texture_does_not_change_body_mass(self):
         """Render-only UV loading must not perturb collider mass or inertia."""
         stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)
@@ -11026,7 +11034,7 @@ def Xform "Body" (
         np.testing.assert_allclose(mesh.vertices, render_mesh.vertices, atol=1e-6, rtol=1e-6)
         self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_hide_collision_shapes_overrides_visual_material(self):
         """hide_collision_shapes=True hides colliders even when they have visual material data."""
         stage = self._create_stage_with_pbr_collision_mesh(
@@ -11046,7 +11054,7 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_hide_collision_shapes_suppresses_approximated_visual_copy(self):
         """Verify hide_collision_shapes=True also suppresses the visual split off by approximation.
 
@@ -11080,7 +11088,7 @@ def Xform "Body" (
         drawn = [s for s in range(builder.shape_count) if builder.shape_flags[s] & ShapeFlags.VISIBLE]
         self.assertEqual(drawn, [path_shape_map["/Body/VisualSphere"]])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_unmaterialed_visual_shape_uses_neutral_color(self):
         """Verify a visual prim with no bound material gets the neutral default, not the palette.
 
@@ -11110,7 +11118,7 @@ def Xform "Body" (
         self.assertAlmostEqual(color[0], color[1], places=6)
         self.assertAlmostEqual(color[1], color[2], places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_display_color_used_without_bound_material(self):
         """Verify primvars:displayColor is honored on a prim that binds no material.
 
@@ -11134,7 +11142,7 @@ def Xform "Body" (
         for channel, want in zip(color, expected, strict=True):
             self.assertAlmostEqual(channel, want, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_display_color_inherited_from_ancestor(self):
         """Verify a constant displayColor authored on an ancestor reaches its descendants.
 
@@ -11161,7 +11169,7 @@ def Xform "Body" (
         for channel, want in zip(color, expected, strict=True):
             self.assertAlmostEqual(channel, want, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_uniform_indexed_normals_are_expanded(self):
         """Verify indexed uniform normals survive import rather than being dropped.
 
@@ -11212,7 +11220,7 @@ def Xform "Body" (
         self.assertIn((0.0, 0.0, 1.0), directions)
         self.assertIn((1.0, 0.0, 0.0), directions)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_hide_collision_shapes_fallback_with_material(self):
         """Colliders with material stay visible when the body has no other visual shapes."""
         stage = self._create_stage_with_pbr_collision_mesh(
@@ -11227,7 +11235,7 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_guide_purpose_collider_with_material_is_not_visible(self):
         """A guide-purpose collider does not inherit VISIBLE from its render material.
 
@@ -11254,7 +11262,7 @@ def Xform "Body" (
         forced_shape = forced.add_usd(stage, force_show_colliders=True)["path_shape_map"]["/Body/CollisionMesh"]
         self.assertTrue(forced.shape_flags[forced_shape] & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_approximated_viewport_collider_keeps_its_render_mesh(self):
         """Approximating a drawable collider splits it into a collider and a visual.
 
@@ -11312,7 +11320,7 @@ def Xform "Body" (
         self.assertEqual(build(UsdPhysics.Tokens.convexHull, purpose=UsdGeom.Tokens.guide).shape_count, 1)
         self.assertEqual(build(UsdPhysics.Tokens.convexHull, visible=False).shape_count, 1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_invisible_collision_shape_is_hidden(self):
         """Effective USD invisibility clears VISIBLE on colliders while preserving collision."""
         from pxr import Usd
@@ -11350,7 +11358,7 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_inherited_invisible_body_hides_collider_and_visual(self):
         """Parent invisibility propagates to child colliders and visual-only geometry."""
         from pxr import Usd
@@ -11398,7 +11406,7 @@ def Xform "Body" (
         self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_invisible_visual_sibling_does_not_suppress_collider_visibility(self):
         """An invisible visual shape must not suppress fallback-visible colliders."""
         from pxr import Usd
@@ -11449,7 +11457,7 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visible_collision_mesh_inherits_visual_material_opacity(self):
         """Preserve resolved opacity on visible collider meshes."""
         stage = self._create_stage_with_pbr_collision_mesh(
@@ -11465,7 +11473,7 @@ def Xform "Body" (
         self.assertAlmostEqual(mesh.opacity, 0.42, places=6)
         self.assertAlmostEqual(builder.shape_opacity[collision_shape], 0.42, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_display_opacity_primvar_loads_as_mesh_opacity(self):
         """Load a mesh displayOpacity primvar as opacity."""
         from pxr import Sdf, Usd, UsdGeom
@@ -11490,7 +11498,7 @@ def Xform "Body" (
 
         self.assertAlmostEqual(loaded_mesh.opacity, 0.33, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_display_color_array_does_not_create_opacity(self):
         """Keep RGB displayColor arrays from becoming opacity values."""
         from pxr import Sdf, Usd, UsdGeom
@@ -11508,7 +11516,7 @@ def Xform "Body" (
 
         self.assertIsNone(loaded_mesh.opacity)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_varying_display_opacity_uses_first_value_and_warns(self):
         """Warn and use the first varying displayOpacity value."""
         from pxr import Sdf, Usd, UsdGeom
@@ -11527,7 +11535,7 @@ def Xform "Body" (
 
         self.assertAlmostEqual(loaded_mesh.opacity, 0.2, places=6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_tet_mesh_display_appearance_imports_to_surface_triangles(self):
         """Import TetMesh display color and opacity onto generated surface triangles."""
         from pxr import Sdf, Usd, UsdGeom
@@ -11562,7 +11570,7 @@ def Xform "Body" (
         np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_primitive_collider_drawability_follows_purpose_not_material(self):
         """A collider's drawability comes from USD purpose, not from a bound material.
 
@@ -11628,7 +11636,7 @@ def Xform "Body" (
 class TestImportUsdMimicJoint(unittest.TestCase):
     """Tests for PhysxMimicJointAPI parsing during USD import."""
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_physx_mimic_joint_basic(self):
         """Verify PhysxMimicJointAPI creates joint-owned mimic metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -11708,7 +11716,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.0, places=5)
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 1], 2.0, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_physx_mimic_joint_no_api_no_constraint(self):
         """Joints without PhysxMimicJointAPI produce no mimic constraints."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -11751,7 +11759,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
 class TestHasAppliedApiSchema(unittest.TestCase):
     """Test the has_applied_api_schema helper in newton.usd.utils."""
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_unregistered_schema_via_metadata(self):
         from pxr import Usd
 
@@ -11779,7 +11787,7 @@ def Sphere "WithoutSiteAPI"
         self.assertFalse(usd.has_applied_api_schema(prim_without, "MjcSiteAPI"))
         self.assertFalse(usd.has_applied_api_schema(prim_with, "NonExistentAPI"))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_registered_schema_via_has_api(self):
         from pxr import Usd, UsdPhysics
 
@@ -11790,7 +11798,7 @@ def Sphere "WithoutSiteAPI"
         self.assertTrue(usd.has_applied_api_schema(prim, "PhysicsRigidBodyAPI"))
         self.assertFalse(usd.has_applied_api_schema(prim, "PhysicsMassAPI"))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_appended_and_explicit_items(self):
         from pxr import Usd
 
@@ -11811,7 +11819,7 @@ def Sphere "AppendedSchema" (
 
 
 class TestPhysicsSceneAccessor(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_scenes(self):
         """Return all physics scenes in parser order."""
         from pxr import Usd, UsdPhysics
@@ -11829,7 +11837,7 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
         self.assertEqual([scene.GetPrim() for scene in scenes], [first.GetPrim(), second.GetPrim()])
         self.assertEqual(scenes[0].GetGravityMagnitudeAttr().Get(), 2.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_no_scene(self):
         """Return an empty list when no physics scenes exist."""
         from pxr import Usd
@@ -11839,7 +11847,7 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
 
         self.assertEqual(usd.get_physics_scenes(stage), [])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_range(self):
         """Restrict physics scene discovery to requested ranges."""
         from pxr import Usd, UsdPhysics
@@ -11854,7 +11862,7 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
         scenes = usd.get_physics_scenes(stage, exclude_paths=["/Excluded"])
         self.assertEqual([scene.GetPrim() for scene in scenes], [included.GetPrim()])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_instance_proxy(self):
         """Find physics scenes beneath instanceable prims."""
         from pxr import Usd, UsdPhysics
@@ -11915,7 +11923,7 @@ class TestOverrideRootXform(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_default_xform_is_relative(self):
         """With override_root_xform=False (default), xform composes with ancestor transforms."""
         stage = self._make_stage_with_root_offset()
@@ -11932,7 +11940,7 @@ class TestOverrideRootXform(unittest.TestCase):
         # xform (5,0,0) composed with ancestor (100,200,0) => (105, 200, 0)
         np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.0], atol=1e-4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_override_places_at_xform(self):
         """With override_root_xform=True, root body is placed at exactly xform."""
         stage = self._make_stage_with_root_offset()
@@ -11953,7 +11961,7 @@ class TestOverrideRootXform(unittest.TestCase):
         base_idx = builder.body_label.index("/World/env/Robot/Base")
         np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_override_preserves_child_offset(self):
         """With override_root_xform=True, child body keeps its relative offset from root."""
         stage = self._make_stage_with_root_offset()
@@ -11974,7 +11982,7 @@ class TestOverrideRootXform(unittest.TestCase):
         link_idx = builder.body_label.index("/World/env/Robot/Link")
         np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_override_with_rotation(self):
         """override_root_xform=True with a non-identity rotation correctly rotates the articulation."""
         stage = self._make_stage_with_root_offset()
@@ -12002,7 +12010,7 @@ class TestOverrideRootXform(unittest.TestCase):
         # Link is at (0,0,1) relative to root; Z-rotation doesn't affect Z offset
         np.testing.assert_allclose(body_q[link_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_override_cloning(self):
         """Cloning the same articulation at multiple positions with override_root_xform=True."""
         stage = self._make_stage_with_root_offset()
@@ -12063,7 +12071,7 @@ class TestOverrideRootXform(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_multiple_articulations_default_keeps_relative(self):
         """Without override, multiple articulations keep their relative positions shifted by xform."""
         stage = self._make_two_articulation_stage()
@@ -12088,7 +12096,7 @@ class TestOverrideRootXform(unittest.TestCase):
                 err_msg=f"{name} should be at xform + original offset",
             )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_override_without_xform_raises(self):
         """override_root_xform=True without providing xform should raise a ValueError."""
         stage = self._make_stage_with_root_offset()
@@ -12133,7 +12141,7 @@ class TestOverrideRootXform(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_visual_shape_aligned_with_body(self):
         """Visual shapes stay aligned with their rigid body with default override_root_xform=False."""
         stage = self._make_stage_with_visual()
@@ -12158,7 +12166,7 @@ class TestOverrideRootXform(unittest.TestCase):
                 shape_tf.q, [0.0, 0.0, 0.0, 1.0], atol=1e-4, err_msg="Visual shape rotation should be identity"
             )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_override_visual_shape_aligned_with_body(self):
         """Visual shapes stay aligned with their rigid body when override_root_xform=True
         strips a non-identity ancestor transform."""
@@ -12229,7 +12237,7 @@ class TestOverrideRootXform(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_loop_joint_default(self):
         """Loop joint body positions are correct with default xform (relative)."""
         stage = self._make_stage_with_loop_joint()
@@ -12253,7 +12261,7 @@ class TestOverrideRootXform(unittest.TestCase):
         loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
         self.assertEqual(builder.joint_articulation[loop_idx], -1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_loop_joint_override(self):
         """Loop joint body positions are correct with override_root_xform=True."""
         stage = self._make_stage_with_loop_joint()
@@ -12372,7 +12380,7 @@ class TestOverrideRootXform(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_world_joint_default_xform(self):
         """Root joint from non-body prim: default xform composes with ancestor transforms."""
         stage = self._make_stage_with_world_joint()
@@ -12391,7 +12399,7 @@ class TestOverrideRootXform(unittest.TestCase):
         # xform (5,0,0) composed with Ground world xform (100,200,0.5) => (105, 200, 0.5)
         np.testing.assert_allclose(body_q[base_idx, :3], [105.0, 200.0, 0.5], atol=1e-4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_world_joint_empty_body0_uses_child_pose(self):
         """Root fixed joint with empty body0 keeps joint_X_p aligned with imported root pose."""
         stage = self._make_stage_with_empty_world_body0_joint()
@@ -12426,7 +12434,7 @@ class TestOverrideRootXform(unittest.TestCase):
             err_msg="Root body rotation must match USD prim orientation",
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_world_joint_override_root_xform(self):
         """Root joint from non-body prim: override_root_xform places root at xform."""
         stage = self._make_stage_with_world_joint()
@@ -12449,7 +12457,7 @@ class TestOverrideRootXform(unittest.TestCase):
         # override rebases at xform; Ground z=0.5 offset from articulation root is preserved
         np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.5], atol=1e-4)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_world_joint_override_with_rotation(self):
         """Root joint from non-body prim: override with rotation rebases correctly."""
         stage = self._make_stage_with_world_joint()
@@ -12565,7 +12573,7 @@ def Mesh "cube"
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return stage, mesh.GetPrim()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_converts_linear_texture_to_display_space(self):
         """Decode a ``raw``-color-space texture and convert its RGB to sRGB, leaving alpha unchanged."""
         from PIL import Image
@@ -12590,7 +12598,7 @@ def Mesh "cube"
         np.testing.assert_array_equal(texture[0, 0, :3], expected_rgb)
         self.assertEqual(texture[0, 0, 3], source_rgba[0, 0, 3])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_leaves_display_texture_paths_lazy(self):
         """Keep an ``sRGB``-color-space texture as an unresolved path instead of decoding it."""
         _stage, prim = self._create_stage_with_texture("display.png", source_color_space="sRGB")
@@ -12599,7 +12607,7 @@ def Mesh "cube"
 
         self.assertEqual(mesh.texture, "display.png")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_loads_normals_when_requested(self):
         """get_mesh with load_normals=True produces a Mesh with non-None normals."""
         from pxr import Usd
@@ -12614,7 +12622,7 @@ def Mesh "cube"
         mesh_without = usd.get_mesh(prim, load_normals=False)
         self.assertIsNone(mesh_without.normals, "Normals should be None when load_normals=False")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_broadcasts_constant_normals(self):
         """Broadcast constant normals to every mesh vertex."""
         from pxr import UsdGeom
@@ -12628,7 +12636,7 @@ def Mesh "cube"
         self.assertEqual(len(mesh.normals), len(mesh.vertices))
         np.testing.assert_allclose(mesh.normals, np.tile((0.0, 0.0, 1.0), (4, 1)), atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_expands_uniform_normals(self):
         """Split vertices where uniform face normals disagree."""
         from pxr import UsdGeom
@@ -12648,7 +12656,7 @@ def Mesh "cube"
         np.testing.assert_array_equal(np.asarray(mesh.com), np.asarray(physics_mesh.com))
         np.testing.assert_array_equal(np.asarray(mesh.inertia), np.asarray(physics_mesh.inertia))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_mesh_expands_indexed_vertex_normals(self):
         """Expand indexed vertex normals before constructing the mesh."""
         from pxr import Sdf, UsdGeom
@@ -12666,7 +12674,7 @@ def Mesh "cube"
         expected = np.array([(0.0, 0.0, 1.0)] * 2 + [(0.0, 1.0, 0.0)] * 2)
         np.testing.assert_allclose(mesh.normals, expected, atol=1e-6, rtol=1e-6)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_facevarying_normals_produce_correct_directions(self):
         """faceVarying normals on a flat quad should all point in +Z."""
         from pxr import Usd
@@ -12686,7 +12694,7 @@ def Mesh "cube"
                 err_msg=f"Normal {i} should point in +Z for a flat quad",
             )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_cube_facevarying_normals_vertex_splitting(self):
         """Cube with 90-degree face angles should be split (hard edges)."""
         from pxr import Usd
@@ -12732,7 +12740,7 @@ def Mesh "cube"
         uvs.Set(uv_values)
         return stage, mesh.GetPrim()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_vertex_splitting_preserves_uv_seams(self):
         """Corners sharing a smooth normal but different faceVarying UVs split into separate vertices.
 
@@ -12757,7 +12765,7 @@ def Mesh "cube"
         # Normals stay unit +Z everywhere.
         np.testing.assert_allclose(np.asarray(mesh.normals), np.tile((0, 0, 1), (5, 1)), atol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_vertex_splitting_drops_mismatched_facevarying_uvs(self):
         """faceVarying UVs whose length != corner count are dropped, not indexed out of bounds.
 
@@ -12805,7 +12813,7 @@ def Mesh "cube"
         normals.Set(corner_normals)
         return stage, mesh.GetPrim()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_vertex_splitting_clusters_against_the_running_mean(self):
         """Corners cluster by angle to their cluster's running mean, not to their spread about it.
 
@@ -12823,7 +12831,7 @@ def Mesh "cube"
                 self.assertEqual(len(mesh.vertices), 6 + expected_clusters)
                 np.testing.assert_allclose(np.linalg.norm(np.asarray(mesh.normals), axis=1), 1.0, atol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_vertex_splitting_merges_corners_exactly_at_half_the_threshold(self):
         """Corners exactly half the threshold off their mean stay one vertex.
 
@@ -12922,7 +12930,7 @@ class TestTetMesh(unittest.TestCase):
         with self.assertRaises(ValueError):
             newton.TetMesh(vertices, np.array([0, 1, 2], dtype=np.int32))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh(self):
         from pxr import Usd
 
@@ -12943,7 +12951,7 @@ class TestTetMesh(unittest.TestCase):
         assert_np_equal(tm.tet_indices[:4], np.array([0, 1, 2, 3], dtype=np.int32))
         assert_np_equal(tm.tet_indices[4:], np.array([1, 2, 3, 4], dtype=np.int32))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh_left_handed(self):
         """Test that left-handed TetMesh orientation flips winding order."""
         from pxr import Usd
@@ -12966,7 +12974,7 @@ def TetMesh "LeftHandedTet" ()
         assert_np_equal(tm.tet_indices[:4], np.array([0, 2, 1, 3], dtype=np.int32))
         assert_np_equal(tm.tet_indices[4:], np.array([1, 3, 2, 4], dtype=np.int32))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_tetmesh_create_from_usd(self):
         """Test TetMesh.create_from_usd() static factory method."""
         from pxr import Usd
@@ -12979,7 +12987,7 @@ def TetMesh "LeftHandedTet" ()
         self.assertEqual(tm.tet_count, 2)
         self.assertEqual(tm.vertex_count, 5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh_missing_points(self):
         from pxr import Usd
 
@@ -12996,7 +13004,7 @@ def TetMesh "Empty" ()
         with self.assertRaises(ValueError):
             usd.get_tetmesh(prim)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh_missing_tet_indices(self):
         from pxr import Usd
 
@@ -13013,7 +13021,7 @@ def TetMesh "NoTets" ()
         with self.assertRaises(ValueError):
             usd.get_tetmesh(prim)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_find_tetmesh_prims(self):
         from pxr import Usd
 
@@ -13025,7 +13033,7 @@ def TetMesh "NoTets" ()
         paths = sorted(str(p.GetPath()) for p in prims)
         self.assertEqual(paths, ["/Root/TetA", "/Root/TetB"])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_find_tetmesh_prims_load_all(self):
         """Test loading all TetMesh prims from a multi-mesh stage."""
         from pxr import Usd
@@ -13039,7 +13047,7 @@ def TetMesh "NoTets" ()
         counts = sorted((tm.vertex_count, tm.tet_count) for tm in tetmeshes)
         self.assertEqual(counts, [(4, 1), (5, 2)])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_find_tetmesh_prims_empty_stage(self):
         from pxr import Usd
 
@@ -13057,7 +13065,7 @@ def Mesh "JustAMesh" ()
         prims = usd.find_tetmesh_prims(stage)
         self.assertEqual(len(prims), 0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh_with_material(self):
         """Test that physics material properties are read from USD."""
         from pxr import Usd
@@ -13075,7 +13083,7 @@ def Mesh "JustAMesh" ()
         self.assertAlmostEqual(tm.k_lambda[0], 300000.0 * 0.3 / (1.3 * 0.4), places=0)
         self.assertAlmostEqual(tm.density, 40.0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh_vendor_namespace_legacy_recovery(self):
         """Vendor-namespaced material reads follow the ``compat_namespaces`` opt-in.
 
@@ -13183,7 +13191,7 @@ def Xform "World" ()
         self.assertIsNone(tm_unscoped_canonical.k_mu)
         self.assertIsNone(tm_unscoped_canonical.density)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh_no_material(self):
         """Test that TetMesh without material binding has None material properties."""
         from pxr import Usd
@@ -13196,7 +13204,7 @@ def Xform "World" ()
         self.assertIsNone(tm.k_lambda)
         self.assertIsNone(tm.density)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_get_tetmesh_warns_on_geometry_authored_moduli(self):
         """A material modulus authored on the TetMesh geometry instead of the bound material warns,
         pointing to the deformable material API, instead of being dropped silently."""
@@ -13217,7 +13225,7 @@ def TetMesh "Soft" ()
         with self.assertWarnsRegex(UserWarning, "authored on the geometry"):
             usd.get_tetmesh(prim, compat_namespaces=())
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_add_usd_imports_tetmesh(self):
         """Test that add_usd imports TetMesh prims as soft meshes."""
         asset_path = os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_material.usda")
@@ -13232,7 +13240,7 @@ def TetMesh "Soft" ()
         self.assertAlmostEqual(builder.tet_materials[0][1], 300000.0 * 0.3 / (1.3 * 0.4), places=0)
         self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, places=5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_add_usd_imports_instanced_tetmesh_once_per_instance(self):
         """Test that instance proxies import one TetMesh per instance."""
         from pxr import Sdf, Usd, UsdGeom
@@ -13265,7 +13273,7 @@ def TetMesh "Soft" ()
         self.assertEqual(len(builder.tet_indices), 2)
         self.assertEqual(len(builder.tri_indices), 8)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_add_usd_imports_tetmesh_with_transforms(self):
         """Test that add_usd applies TetMesh rotation and non-uniform scale transforms."""
         from pxr import Usd
@@ -13478,7 +13486,7 @@ def Xform "World"
         tm = newton.TetMesh(vertices, tet_indices)
         self.assertEqual(len(tm.custom_attributes), 0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_tetmesh_custom_attributes_from_usd(self):
         """Test that custom primvars are parsed from USD into custom_attributes."""
         from pxr import Usd
@@ -13604,7 +13612,7 @@ def Xform "World"
         self.assertEqual(len(region_arr), model.tet_count)
         np.testing.assert_array_equal(region_arr, region_id)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_add_usd_does_not_mutate_loaded_tetmesh_custom_attributes(self):
         """Test that add_usd filters TetMesh custom attributes without mutating the loaded mesh."""
         from pxr import Usd
@@ -13659,6 +13667,7 @@ def Xform "World"
         self.assertTrue(hasattr(model, "temperature"))
         self.assertFalse(hasattr(model, "regionId"))
 
+    @requires("trimesh")
     def test_mesh_create_from_file_obj(self):
         """Test Mesh.create_from_file with an OBJ file."""
 
@@ -14260,7 +14269,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
 
         self.assertEqual(_get_texture_source_color_space(shader, file_attr), "raw")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_preview_surface_color_is_converted_to_display_space(self):
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
@@ -14294,7 +14303,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_ancestor_binding_overrides_unapplied_mesh_binding(self):
         """An ancestor bind with strongerThanDescendants wins over a mesh's own binding.
 
@@ -14338,7 +14347,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_ancestor_binding_overrides_applied_mesh_binding_across_depth(self):
         """A grandparent strongerThanDescendants bind wins over a mesh's properly applied binding."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
@@ -14379,7 +14388,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collection_based_ancestor_binding_resolves(self):
         """Collection-based ancestor rebinds resolve through canonical ComputeBoundMaterial."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
@@ -14413,7 +14422,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             atol=1e-6,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_preview_surface_color_space_api_display_color_is_not_converted(self):
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
@@ -14482,7 +14491,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return mesh.GetPrim()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_acescg_color_and_texture_are_converted_from_linear(self):
         """Treat ``acescg`` scalar colors and textures as linear and convert them to display/sRGB."""
         from PIL import Image
@@ -14510,7 +14519,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         expected_rgb = np.round(np.asarray(color_linear_to_srgb(source_rgba[0, 0, :3] / 255.0)) * 255.0)
         np.testing.assert_array_equal(np.asarray(mesh.texture)[0, 0, :3], expected_rgb.astype(np.uint8))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_non_rec709_color_spaces_warn_for_colors_textures_and_gaussians(self):
         """Log the same warning for scalar colors, textures and Gaussians in spaces Newton does not convert."""
         from PIL import Image

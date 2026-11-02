@@ -11,7 +11,6 @@ This test suite validates:
 Note: SurfaceReconstructor requires Open3D which is an optional dependency.
 """
 
-import importlib.util
 import unittest
 
 import numpy as np
@@ -27,9 +26,10 @@ from newton._src.geometry.remesh import (
     compute_camera_basis,
     compute_voxel_key,
 )
+from newton.tests.unittest_utils import has_module
 
 # Check if Open3D is available for reconstruction tests
-OPEN3D_AVAILABLE = importlib.util.find_spec("open3d") is not None
+OPEN3D_AVAILABLE = has_module("open3d")
 
 # Check if CUDA is available (required for Warp mesh raycasting)
 _cuda_available = wp.is_cuda_available()

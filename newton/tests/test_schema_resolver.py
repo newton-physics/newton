@@ -45,7 +45,7 @@ from newton import Model, ModelBuilder
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
 from newton._src.usd.schema_resolver import SchemaResolverManager
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, requires
 from newton.usd import (
     PrimType,
     SchemaResolver,
@@ -68,7 +68,7 @@ else:
     Usd = None  # type: ignore[assignment]
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestSchemaResolver(unittest.TestCase):
     """Test schema resolver with USD import from ant.usda."""
 

@@ -12,14 +12,14 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE, get_strict_warning_args, patch_sys_module
+from newton.tests.unittest_utils import USD_AVAILABLE, get_strict_warning_args, patch_sys_module, requires
 from newton.viewer import ViewerRTX
 
 if USD_AVAILABLE:
     from pxr import Gf, Usd, UsdGeom, UsdShade
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestViewerRTXMarkers(unittest.TestCase):
     def setUp(self):
         self.ovrtx = mock.MagicMock()

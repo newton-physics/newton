@@ -13,7 +13,7 @@ import warp as wp
 import newton
 from newton._src.sensors.warp_raytrace.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID
 from newton.sensors import SensorTiledCamera
-from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation
+from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation, requires
 
 
 def setUpModule():
@@ -21,6 +21,7 @@ def setUpModule():
     ignore_sensor_tiled_camera_deprecation()
 
 
+@requires("pxr.Usd")
 class TestSensorTiledCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

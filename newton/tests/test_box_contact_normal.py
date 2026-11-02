@@ -16,7 +16,7 @@ from newton._src.geometry.collision_core import post_process_minkowski_only
 from newton._src.geometry.contact_data import ContactData
 from newton._src.geometry.multicontact import create_build_manifold
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices, requires
 
 
 def test_box_contact_nearby_face(test, device, *, split=False):
@@ -82,6 +82,7 @@ class TestBoxContactNormal(unittest.TestCase):
     pass
 
 
+@requires("scipy")
 def test_box_mesh_minimum_depth(test, device):
     """Match an independent Minkowski hull for oblique and edge contacts."""
     from scipy.spatial import ConvexHull
@@ -140,6 +141,7 @@ add_function_test(
 )
 
 
+@requires("scipy")
 def test_box_mesh_minimum_depth_split(test, device):
     """Check the cooperative axis search against the independent hull oracle."""
     if not device.is_cuda:

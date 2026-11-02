@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
-import importlib.util
 import io
 import os
 import subprocess
@@ -16,9 +15,10 @@ import warp as wp
 from newton._src.solvers.kamino.examples.rl.example_rl_drlegs import _build_observation_kernel
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
+from newton.tests.unittest_utils import has_module
 
-_HAS_ONNX = importlib.util.find_spec("onnx") is not None
-_HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
+_HAS_ONNX = has_module("onnx")
+_HAS_WARP_NN = has_module("warp_nn")
 
 if _HAS_ONNX and _HAS_WARP_NN:
     import onnx

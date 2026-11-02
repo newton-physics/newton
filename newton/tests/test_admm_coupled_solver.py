@@ -31,6 +31,7 @@ from newton.solvers.experimental.coupled import (
     SolverCoupled,
     SolverCoupledADMM,
 )
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 @wp.kernel(enable_backward=False)
@@ -781,6 +782,7 @@ class TestAdmmSmoke(unittest.TestCase):
                     else:
                         SolverCoupledADMM(model, entries, config)
 
+    @requires(*MUJOCO_MODULES)
     def test_construct_and_step_no_attachments(self):
         model, rs, re, _ = _build_cloth_rigid_scene()
         solver = _make_solver(model, rs, re, admm_iters=1)
@@ -789,6 +791,7 @@ class TestAdmmSmoke(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(body_q)))
         self.assertTrue(np.all(np.isfinite(particle_q)))
 
+    @requires(*MUJOCO_MODULES)
     def test_admm_iters_idempotent_with_no_coupling(self):
         """With gamma=0 and no attachments the iteration count should not
         change the result (no coupling = idempotent outer loop)."""
@@ -804,6 +807,7 @@ class TestAdmmSmoke(unittest.TestCase):
         np.testing.assert_allclose(part_a, part_b, atol=1e-6)
 
 
+@requires(*MUJOCO_MODULES)
 class TestAdmmProximal(unittest.TestCase):
     """Proximal terms affect constrained DOFs only."""
 
@@ -1336,6 +1340,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         np.testing.assert_array_equal(group.lambda_.numpy()[1], lambda_before[1])
 
 
+@requires(*MUJOCO_MODULES)
 class TestAdmmExternalForces(unittest.TestCase):
     """External forces set on ``state_in.body_f`` / ``particle_f`` by the
     caller (e.g. a viewer gizmo) must reach the sub-solvers."""

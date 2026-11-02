@@ -11,7 +11,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverImplicitMPM
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, requires
 
 try:
     import newton_usd_schemas
@@ -33,7 +33,7 @@ def _has_mpm_schemas() -> bool:
         return False
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMpmConfigUsdEntryGuards(unittest.TestCase):
     def test_rejects_non_scene_prim(self):
         """Reject a non-PhysicsScene prim as a configuration source."""
@@ -56,7 +56,7 @@ class TestMpmConfigUsdEntryGuards(unittest.TestCase):
             SolverImplicitMPM.Config.create_from_usd(scene)
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestImportUsdMPMFixtures(unittest.TestCase):
     def test_imports_checked_in_two_prim_fixture(self):
         """Parse the checked-in transformed, unit-scaled, two-material USDA fixture."""

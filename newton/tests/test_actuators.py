@@ -3,7 +3,6 @@
 
 """Tests for Newton actuators."""
 
-import importlib.util
 import json
 import math
 import os
@@ -43,18 +42,16 @@ from newton.actuators import (
     parse_actuator_prim,
 )
 from newton.selection import ArticulationView
+from newton.tests.unittest_utils import MUJOCO_MODULES, has_module, requires
 
-try:
+HAS_USD = has_module("pxr.Usd")
+if HAS_USD:
     from pxr import Usd
 
-    HAS_USD = True
-except ImportError:
-    HAS_USD = False
 
-
-_HAS_ONNX = importlib.util.find_spec("onnx") is not None
-_HAS_TORCH = importlib.util.find_spec("torch") is not None
-_HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
+_HAS_ONNX = has_module("onnx")
+_HAS_TORCH = has_module("torch")
+_HAS_WARP_NN = has_module("warp_nn")
 
 
 if _HAS_TORCH:
@@ -1584,7 +1581,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         without_bias = build_model(self._save_gru("declared_none.onnx", metadata))
         self.assertEqual(without_bias.actuators[0].drive.custom_inputs, ())
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_model_builder_constructs_relative_onnx_usd_actuator(self):
         """Construct a finalized GRU actuator from a relative USD asset path."""
         model_path = self._save_gru("builder_gru.onnx")
@@ -1627,7 +1624,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(by_path[shared_path].num_actuators, 2)
         self.assertEqual(by_path[distinct_path].num_actuators, 1)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_usd_dispatches_onnx_asset_to_gru(self):
         """Dispatch a USD actuator prim with gru model_type to DriveNeuralGRU."""
         from pxr import Sdf
@@ -4353,6 +4350,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             expected[sl] = np.linalg.solve(J, h * f0) / h
         np.testing.assert_allclose(_arm_values(model, control.joint_f), expected, rtol=1e-3, atol=1e-3)
 
+    @requires(*MUJOCO_MODULES)
     def test_refresh_from_solve_captures_without_warmup(self):
         """refresh_from_solve captures and replays, with no warm-up call first.
 
@@ -4387,6 +4385,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             atol=1e-6,
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_factorization(self):
         """Fill the response from MuJoCo's per-step factorized inertia.
 
@@ -4446,6 +4445,7 @@ class TestJointSpaceResponse(unittest.TestCase):
         np.testing.assert_allclose(_arm_values(model, control.joint_f)[:n], expected, rtol=1e-3, atol=1e-3)
         _assert_worlds_match(self, model, control.joint_f, rtol=1e-4, atol=1e-4)
 
+    @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_free_and_ball_joints(self):
         """Verify refresh_from_solve converts MuJoCo's free and ball joint coordinates.
 
@@ -4497,6 +4497,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             response.inverse_blocks.numpy(), reference.inverse_blocks.numpy(), rtol=1e-4, atol=1e-5
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
 
@@ -4586,7 +4587,7 @@ class TestJointSpaceResponse(unittest.TestCase):
 class TestActuatorBuilder(unittest.TestCase):
     """ModelBuilder actuator construction — grouping, params, state, and index layouts."""
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd(self):
         """Load actuators from a USD stage and verify params after finalize.
 
@@ -4627,7 +4628,7 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.drive_class, DrivePD)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd_ignore_paths(self):
         """Actuator prims matched by ignore_paths are not registered."""
         test_dir = os.path.dirname(__file__)
@@ -4641,7 +4642,7 @@ class TestActuatorBuilder(unittest.TestCase):
         result2 = parse_usd(builder2, usd_path, ignore_paths=[".*Actuator"])
         self.assertEqual(result2["actuator_count"], 0)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd_schema_plugin_not_loaded(self):
         """parse_actuator_prim works when the USD schema plugin is not registered.
 
@@ -5269,6 +5270,7 @@ class TestStateReset(unittest.TestCase):
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
 )
+@requires(*MUJOCO_MODULES)
 class TestDelayGraphCapture(unittest.TestCase):
     """Verify delayed actuator is graph-safe with device-side write_idx.
 
@@ -5645,7 +5647,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD, "pxr not installed")
+@requires("pxr.Usd")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.

@@ -30,7 +30,12 @@ from newton._src.solvers.steel.kernels import (
 )
 from newton._src.solvers.steel.solver_steel import _get_joint_limit_warp_kernel, _use_resident_mfgs_metadata
 from newton.solvers import SolverBase, SolverSteel
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: float = 1.0, scalar_builder=False):
@@ -2403,7 +2408,7 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
         _advance_hinge(solver, model, 0.2, 2)
         solver.check_constraint_capacity()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_usd_reads_only_the_steel_coefficient(self):
         """Import the authored Steel coefficient and leave physxJoint:jointFriction unmapped."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics

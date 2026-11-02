@@ -15,7 +15,7 @@ import warp as wp
 import newton
 import newton.usd
 from newton.exceptions import NewtonWarning
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, requires
 from newton.viewer import ViewerRTX, ViewerUSD
 
 if USD_AVAILABLE:
@@ -40,7 +40,7 @@ def _build_box_model() -> newton.Model:
     return builder.finalize()
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestViewerUSD(unittest.TestCase):
     def _make_viewer(self):
         # Allocate a private work dir per test so the texture PNG and any

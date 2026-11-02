@@ -13,6 +13,7 @@ from newton import ModelFlags
 from newton._src.solvers.mujoco.constants import HINGE_CONNECT_HALF_SPAN
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 class Sim:
@@ -345,6 +346,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             assert_anchors(changed_connect_anchor_leafbody1)
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _num_worlds(self):
         return 2
@@ -361,6 +363,7 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, unittest.TestCase):
     def _num_worlds(self):
         return 1
@@ -756,6 +759,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
         self._test_loop_joint_connect_constraint()
 
 
+@requires(*MUJOCO_MODULES)
 class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -768,6 +772,7 @@ class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBas
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestLoopJointConnectConstraintMuJoCoCPU(TestLoopJointConnectConstraintBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -945,6 +950,7 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
             )
 
 
+@requires(*MUJOCO_MODULES)
 class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -957,6 +963,7 @@ class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, un
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
     def _create_solver(self, model):
         return SolverMuJoCo(
@@ -1129,6 +1136,7 @@ class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
                 self.assertAlmostEqual(float(measured_joint_q[w * nq_per_world + k]), 0.0, places=4)
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectAnchorRefPoseMuJoCoWarp(TestConnectAnchorRefPoseBase, unittest.TestCase):
     def _num_worlds(self):
         return 2
@@ -1145,6 +1153,7 @@ class TestConnectAnchorRefPoseMuJoCoWarp(TestConnectAnchorRefPoseBase, unittest.
         )
 
 
+@requires(*MUJOCO_MODULES)
 class TestConnectAnchorRefPoseMuJoCoCPU(TestConnectAnchorRefPoseBase, unittest.TestCase):
     def _num_worlds(self):
         return 1

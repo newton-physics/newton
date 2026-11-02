@@ -9,7 +9,7 @@ import numpy as np
 
 import newton.usd
 from newton.tests._usd_deformable_test_utils import _author_pose
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 # The tire example of the AOUSD deformables proposal (commit 63c74d79, section "Geometry
 # Embeddings") with concrete points. It authors the pose attributes independently of the
@@ -58,7 +58,7 @@ def Xform "tire" (
 """
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUsdDeformableBindPose(unittest.TestCase):
     def test_proposal_example_reads_visual_bind_pose(self):
         """Read the proposal's tire example with the attribute names it authors."""

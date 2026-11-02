@@ -4,7 +4,6 @@
 """Test ViewerRTX compatibility, frame capture, and runtime scene updates."""
 
 import builtins
-import importlib.util
 import os
 import subprocess
 import tempfile
@@ -18,11 +17,11 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
-from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
+from newton.tests.unittest_utils import has_module, patch_sys_module, requires
 from newton.viewer import ViewerRTX
 
-OVRTX_AVAILABLE = importlib.util.find_spec("ovrtx") is not None
-OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
+OVRTX_AVAILABLE = has_module("ovrtx")
+OVSTAGE_AVAILABLE = has_module("ovstage")
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
@@ -515,7 +514,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
 class TestViewerRTXRendering(unittest.TestCase):
     """Keep real OVRTX renders in one class so class-level parallelism runs them serially."""
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_moving_scene_capture_stays_frozen_until_resume(self):
         """Freeze both modes and resume with the latest scene rather than a stale result."""
         builder = newton.ModelBuilder()
@@ -556,7 +555,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_headless_frame_capture(self):
         """Capture the latest moving scene across render mode changes."""
         builder = newton.ModelBuilder()
@@ -596,7 +595,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_runtime_shape_colors(self):
         """Recolor one of two initially identical shapes without changing its neighbor."""
         builder = newton.ModelBuilder()
@@ -670,7 +669,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_runtime_shape_opacities(self):
         """Update one shared-material instance through transparent and opaque states."""
         builder = newton.ModelBuilder()
@@ -736,7 +735,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_runtime_opacity_preserves_render_settings(self):
         """Keep explicit fractional-opacity settings when a shape becomes translucent."""
         import ovstage
@@ -776,8 +775,7 @@ class TestViewerRTXRendering(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
+    @requires("pxr.Usd", "imageio_ffmpeg")
     def test_headless_video_recording(self):
         """Encode and decode a real RTX recording without OpenGL renderer attributes."""
         import imageio_ffmpeg as ffmpeg  # noqa: PLC0415

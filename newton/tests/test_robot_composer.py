@@ -12,7 +12,13 @@ import newton.utils
 from newton import JointTargetMode
 from newton._src.utils.download_assets import MENAGERIE_REF, MENAGERIE_URL, download_git_folder
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import add_function_test, find_nan_members, get_cuda_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    find_nan_members,
+    get_cuda_test_devices,
+    requires,
+)
 
 
 class RobotComposerSim:
@@ -515,6 +521,7 @@ def test_robot_composer(test, device):
 devices = get_cuda_test_devices()
 
 
+@requires("git", "pxr.Usd", *MUJOCO_MODULES)
 class TestRobotComposer(unittest.TestCase):
     pass
 
