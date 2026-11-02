@@ -395,6 +395,12 @@ and does not execute notebooks or fetch external documentation inventories.
 The Markdown builder is ``sphinx-markdown-builder`` (MIT licensed), with a
 small Newton extension for unsupported node types.
 
+The Markdown build also generates ``llms.txt`` from Sphinx's navigation.
+Documentation deployments publish this index and the Markdown pages beside
+the HTML pages for the same version. The website root links to published
+stable and development entrypoints, including HTML for older versions that
+do not have a generated index.
+
 .. note::
 
     The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.

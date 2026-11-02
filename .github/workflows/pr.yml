@@ -83,6 +83,7 @@ jobs:
       - name: Verify Markdown documentation
         run: |
           uv run --extra docs --extra sim -m unittest newton.tests.test_documentation
+          uv run --extra docs --extra sim -m unittest scripts.ci.tests.test_docs_llms
           uv run --extra docs --extra sim docs/build_markdown.py docs/_build/markdown
       - name: Run Sphinx doctests
         run: uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest
