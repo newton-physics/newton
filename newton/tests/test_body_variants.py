@@ -511,13 +511,13 @@ add_function_test(
     test_mujoco_rest_height_follows_selection,
     devices=devices,
 )
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 add_function_test(
     TestBodyVariants,
     "test_steel_torsion_covers_variants",
     test_steel_torsion_covers_variants,
     devices=get_cuda_test_devices(),
 )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
