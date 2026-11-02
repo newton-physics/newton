@@ -155,6 +155,12 @@ def _apparent_mass(axis_w: wp.vec3, r: wp.vec3, q_b: wp.quat, inv_m: float, inv_
     world unit direction ``axis_w``: ``1/m_app = 1/m + (r x n).I^-1.(r x n)`` -- translational compliance
     plus the rotational compliance from the off-COM spin. The rotational term is evaluated in the body
     frame (``q_b``, ``inv_inertia``), where the inertia tensor is stored.
+
+    Derivation: a force ``F`` along ``n`` applied at offset ``r`` from the COM gives the point the
+    acceleration ``a = a_com + alpha x r``, with ``a_com = (F/M) n``. Project onto ``n`` and use the triple
+    product, ``(alpha x r).n = alpha.(r x n)``, so ``a.n = F/M + alpha.(r x n)``. The angular acceleration
+    follows from ``I alpha = F (r x n)``, so ``alpha = F I^-1 (r x n)``. Since ``I`` is symmetric,
+    ``a.n = F [1/M + (r x n).I^-1.(r x n)]``. The bracket is ``1/m_app``.
     """
     c_b = wp.quat_rotate_inv(q_b, wp.cross(r, axis_w))  # (r x n) in the body frame
     return 1.0 / (inv_m + wp.dot(c_b, inv_inertia * c_b))
@@ -166,6 +172,10 @@ def _apparent_inertia(axis_w: wp.vec3, q_b: wp.quat, inv_inertia: wp.mat33) -> f
     ``1/(n.I^-1.n)`` -- the free-body angular admittance about the axis, inverted. The axis is first
     rotated into the body frame (``q_b``, where ``inv_inertia`` lives). No translation term: a couple
     does not move the COM.
+
+    Derivation: a torque ``tau`` about ``n`` gives ``I alpha = tau n``, so ``alpha = tau I^-1 n``.
+    Projecting onto ``n`` gives ``alpha.n = tau (n.I^-1.n)``. The effective inertia obeys
+    ``1/I_eff = n.I^-1.n``.
     """
     axis_b = wp.quat_rotate_inv(q_b, axis_w)  # seal axis in the body frame
     return 1.0 / wp.dot(axis_b, inv_inertia * axis_b)
@@ -177,6 +187,11 @@ def _effective_damping(d: float, m_eff: float, dt: float) -> float:
     lands the pad-point velocity at the implicit value ``v*m_eff/(m_eff + d*dt)`` in one step. Bounded by
     ``m_eff/dt`` for any ``d`` (the damper can't overshoot the velocity). ``m_eff`` is the DOF's effective
     mass (translation) or effective inertia (rotation).
+
+    Derivation: with ``F = M [v(t+dt) - v(t)] / dt = -d v(t+dt)``, solve for ``v(t+dt) = v(t) M / (M + d dt)``.
+    The force that moves ``v(t)`` to ``v(t+dt)`` in ``dt`` is
+    ``F = (M/dt) {M / (M + d dt) - 1} v(t) = -d / (1 + d dt/M) v(t)``. This is an ordinary damping force
+    ``-d_eff v(t)`` with ``d_eff = d / (1 + d dt/M)``.
     """
     return d / (1.0 + d * dt / m_eff)
 
@@ -202,57 +217,8 @@ def _eval_effective_damping(
     and twist). Returns ``(d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff,
     d_torsion_eff)``. Pass ``d_torsion = 0`` when the caller's twist DOF is not viscously damped.
     """
-    # Step 1.
-    # Implicit (backward-Euler) damping.
-    # F = M * [v(t+dt) - v(t)] / dt = -gamma * v(t+dt)
-    # Solver for v(t+dt)
-    # v(t+dt) = v(t) * [M / (M + gamma * dt)] * v(t)
-    # Now compute the force required to move from v(t) to v(t+dt) in dt.
-    # F = (M/dt) *  {[M / (M + gamma * dt)] - 1} * v(t)
-    # Rearrange
-    # F = (M/dt) * [-gamma*dt]/[M + gamma*dt]
-    # Some more algebra reveals
-    # F = - gamma/[1 + gamma*dt/M] * v(t)
-    # This looks like a damping equation with simple substitutions
-    # F = -gamma_effective * v(t)
-    # with
-    # gamma_effective = gamma/[1 + gamma*dt/M]
-
-    # Step 2.
-    # For translational dofs.
-    # We apply the force at a vector r from the COM of the picked body.
-    # The goal is to prevent the dof speeds of the picked body measured
-    # at its COM from changing sign under damping.
-    # Compute the acceleration a at the COM that arises from a force F applied
-    # along a vector n.
-    # a = a_com + alpha X r
-    # with a_com = (F/M)n
-    # and alpha the angular acceleration.
-    # Now project a along n
-    # a.n = (F/M) + (alpha X r).n
-    # Now apply the triple product rule:
-    # (alpha X r).n = alpha.(r X n)
-    # and we now have
-    # a.n = (F/M) + alpha.(r X n)
-    # We can compute alpha:
-    # I * alpha = F*(r X n) so alpha = F*[I^-1 * (r X n)]
-    # a.n = (F/M) + F*[I^-1.(r X n)].(r X n)
-    # I is symmetric so we have
-    # a.n = (F/M) + F*[(r X n).I^-1].(r X n)
-    # This reveals an effective mass
-    # m_eff = 1/M + (r X n).I^-1.(r X n)
-
-    # Step 2 for rotational dofs.
-    # Applying a torque tau around an axis n follows:
-    # I*alpha = tau*n
-    # Solve for alpha
-    # alpha = tau (I^-1.n)
-    # Now project alpha onto n
-    # alpha.n = tau (n.I^-1.n)
-    # We can now say that the effective inertia I_eff obeys
-    # I_eff^-1  = n.I^-1.n
-    # Rearrange
-    # I_eff = 1/(n.I^-1.n)
+    # Each DOF's damping is rescaled by its effective mass or inertia at the seal point. The
+    # derivations are in the docstrings of _effective_damping, _apparent_mass and _apparent_inertia.
 
     # Compute the seal axes in the world frame.
     axes = wp.matrix_from_rows(
@@ -268,16 +234,14 @@ def _eval_effective_damping(
     inv_m = wp.where(mass_b > 0.0, 1.0 / mass_b, 0.0)
     inv_inertia = wp.inverse(inertia_b)
 
-    # Combine Step 1 and 2 for translational dofs
-    # gamma_effective = gamma/[1 + gamma*dt/m_eff]
+    # Translational dofs: shear x/y and normal. gamma_effective = gamma/[1 + gamma*dt/m_eff]
     d_trans_eff = wp.vec3(0.0, 0.0, 0.0)
     d_trans = wp.vec3(d_shear_x, d_shear_y, d_normal)
     for i in range(3):
         m_app = _apparent_mass(axes_w[i], r_body_b, q_body_b, inv_m, inv_inertia)
         d_trans_eff[i] = _effective_damping(d_trans[i], m_app, dt)
 
-    # Combine Step 1 and 2 for rotational dofs (peel about x/y, twist about z)
-    # gamma_effective = gamma/[1 + gamma*dt/I_eff]
+    # Rotational dofs: peel about x/y, twist about z. gamma_effective = gamma/[1 + gamma*dt/I_eff]
     d_rot_eff = wp.vec3(0.0, 0.0, 0.0)
     d_rot = wp.vec3(d_peel_x, d_peel_y, d_torsion)
     for i in range(3):
@@ -324,18 +288,12 @@ def _attach_seal_kernel(
     ],  # GB0 per body: raw body_q (attach_seal) or the fitted seated pose (attach_seal_seated)
     shape_mesh_id: wp.array[wp.uint64],  # shape_id -> SDF mesh id
     shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
-    pad_perimeter_local: wp.array[
-        wp.vec3
-    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
-    pad_perimeter_start: wp.array[
-        int
-    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    pad_perimeter_local: wp.array[wp.vec3],  # layout: see SurfaceGripperModel
+    pad_perimeter_start: wp.array[int],  # layout: see SurfaceGripperModel
     max_dist: float,  # SDF search radius [m]
     # outputs
     pad_anchor_b: wp.array[wp.transform],
-    pad_perimeter_sdf0: wp.array[
-        float
-    ],  # perimeter signed distances at the raw anchor, cached at engagement (indexed by pad_perimeter_start)
+    pad_perimeter_sdf0: wp.array[float],  # perimeter signed distances at the raw anchor, cached at engagement
 ):
     """On a disengaged->engaged rising edge, cache SB = GB0^-1 * SA0 into pad_anchor_b (see Frame nomenclature),
     and cache the perimeter signed distances at that anchor into ``pad_perimeter_sdf0`` -- the same baseline
@@ -549,12 +507,8 @@ def _seat_body_pose(
     shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
     shape_b: int,  # global shape ID of the gripped shape (indexes shape_transform)
     mesh_id: wp.uint64,
-    pad_perimeter_local: wp.array[
-        wp.vec3
-    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
-    pad_perimeter_start: wp.array[
-        int
-    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    pad_perimeter_local: wp.array[wp.vec3],  # layout: see SurfaceGripperModel
+    pad_perimeter_start: wp.array[int],  # layout: see SurfaceGripperModel
     max_dist: float,
     grad_h: float,
     damping: float,
@@ -649,21 +603,15 @@ def _attach_seal_seated_kernel(
     pad_world_start: wp.array[
         int
     ],  # start indices: world w's pads are pad-ids [pad_world_start[w] : pad_world_start[w+1]]
-    pad_perimeter_local: wp.array[
-        wp.vec3
-    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
-    pad_perimeter_start: wp.array[
-        int
-    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    pad_perimeter_local: wp.array[wp.vec3],  # layout: see SurfaceGripperModel
+    pad_perimeter_start: wp.array[int],  # layout: see SurfaceGripperModel
     max_dist: float,  # SDF search radius [m]
     grad_h: float,  # SDF central-difference step [m]
     damping: float,  # small stabiliser: steadies the fit when the pads don't fully pin the gripped object
     iters: int,  # Gauss-Newton iterations for the seat fit (1 for planar faces, more for curved objects)
     # outputs
     pad_anchor_b: wp.array[wp.transform],
-    pad_perimeter_sdf0: wp.array[
-        float
-    ],  # seated perimeter signed distances cached at engagement (indexed by pad_perimeter_start)
+    pad_perimeter_sdf0: wp.array[float],  # seated perimeter signed distances, cached at engagement
 ):
     """Seated variant of :func:`_attach_seal_kernel`: on each pad's rising edge, compute the gripped body's
     seated pose inline (:func:`_seat_body_pose`, scanning only this pad's world's pads), cache
@@ -724,13 +672,9 @@ def _seal_quality_kernel(
     shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
     pad_world: wp.array[int],
     pad_world_start: wp.array[int],
-    pad_perimeter_local: wp.array[
-        wp.vec3
-    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
+    pad_perimeter_local: wp.array[wp.vec3],  # layout: see SurfaceGripperModel
     pad_perimeter_sdf0: wp.array[float],  # seated perimeter SDFs cached at engagement (used only for engaged pads)
-    pad_perimeter_start: wp.array[
-        int
-    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    pad_perimeter_start: wp.array[int],  # layout: see SurfaceGripperModel
     max_dist: float,
     grad_h: float,  # seat-fit params (preparing case only)
     damping: float,
@@ -989,10 +933,8 @@ class SurfaceGripperBuilder:
     def finalize(self, device: str | wp.Device | None = None) -> "SurfaceGripperModel":
         """Flatten all grippers into a device-resident :class:`SurfaceGripperModel`.
 
-        Each gripper's ``n_perimeter_samples`` (perimeter sample points per pad, for the seat fit / seal-quality metric)
-        is stored per gripper (``n_perimeter_samples``). The (constant, pad-frame) perimeter positions are precomputed once
-        into ``pad_perimeter_local`` so the kernels don't rebuild cos/sin each step; because the count can differ per
-        gripper, each pad's points are addressed by the start-index array ``pad_perimeter_start`` (``pad_perimeter_sdf0`` shares it).
+        The constant pad-frame perimeter points are precomputed once into ``pad_perimeter_local`` so the kernels
+        don't rebuild cos/sin each step. See :class:`SurfaceGripperModel` for the layout.
         """
         g = self.grippers
         m = SurfaceGripperModel()
@@ -1025,16 +967,12 @@ class SurfaceGripperBuilder:
 
         # Flatten every gripper's pads into per-pad arrays, ordered by world: world 0's pads first, then
         # world 1's, and so on. So each world's pads are one contiguous range,
-        # whose first index is recorded in pad_world_start. For each pad we also lay its perimeter sample points
-        # (constant, pad frame) into pad_perimeter_local; pad_perimeter_start[p] marks where pad p's points start (a
-        # gripper's n_perimeter_samples can differ, hence a start-index array, not a fixed stride). pad_perimeter_sdf0 shares pad_perimeter_start.
+        # whose first index is recorded in pad_world_start.
         pad_gripper = []
         pad_xform = []
         pad_world = []
         pad_perimeter_local = []
-        pad_perimeter_start = [
-            0
-        ]  # [n_pads + 1]: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+        pad_perimeter_start = [0]
         pad_world_start = [0] * (m.world_count + 1)  # per-world starts, then the total
 
         for w in range(m.world_count):
@@ -1062,12 +1000,8 @@ class SurfaceGripperBuilder:
         m.n_perimeter_samples = wp.array(gripper_n_perimeter_samples, dtype=wp.int32, device=device)  # [grippers]
         m.pad_gripper = wp.array(pad_gripper, dtype=wp.int32, device=device)
         m.pad_xform = wp.array(pad_xform, dtype=wp.transform, device=device)
-        m.pad_perimeter_local = wp.array(
-            pad_perimeter_local, dtype=wp.vec3, device=device
-        )  # indexed by pad_perimeter_start
-        m.pad_perimeter_start = wp.array(
-            pad_perimeter_start, dtype=wp.int32, device=device
-        )  # [n_pads+1] start indices into pad_perimeter_local
+        m.pad_perimeter_local = wp.array(pad_perimeter_local, dtype=wp.vec3, device=device)
+        m.pad_perimeter_start = wp.array(pad_perimeter_start, dtype=wp.int32, device=device)
         m.pad_world = wp.array(pad_world, dtype=wp.int32, device=device)
         m.pad_world_start = wp.array(pad_world_start, dtype=wp.int32, device=device)
         return m
@@ -1132,6 +1066,11 @@ class SurfaceGripperModel:
 
     Constant device arrays; ``gripper_*`` indexed by gripper id, ``pad_*`` by pad id. Use
     :meth:`state_input` / :meth:`state_output` to allocate the matching per-step state objects.
+
+    Perimeter layout: ``pad_perimeter_local`` holds every pad's perimeter sample points in the pad frame.
+    ``pad_perimeter_start`` has ``n_pads + 1`` entries, and pad ``p``'s points are
+    ``pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p + 1]]``. A start-index array is
+    used because ``n_perimeter_samples`` can differ per gripper. ``pad_perimeter_sdf0`` uses the same indexing.
     """
 
     def state_input(self) -> SurfaceGripperStateInput:
@@ -1143,8 +1082,7 @@ class SurfaceGripperModel:
         return si
 
     def state_output(self) -> SurfaceGripperStateOutput:
-        """Allocate a fresh per-pad :class:`SurfaceGripperStateOutput` for this model. ``pad_perimeter_sdf0`` shares
-        the start-index scheme of ``pad_perimeter_local`` (one entry per perimeter sample point across all pads)."""
+        """Allocate a fresh per-pad :class:`SurfaceGripperStateOutput` for this model."""
         so = SurfaceGripperStateOutput()
         n = self.pad_xform.shape[0]
         so.pad_seal_load = wp.zeros(n, dtype=wp.vec4, device=self.pad_xform.device)
