@@ -208,10 +208,13 @@ force controls and angular ranges. Other solvers consume the Newton core
 representation; MuJoCo-only parameters require ``SolverMuJoCo``.
 
 With ``ctrl_direct=False``, representable scalar position/velocity servos use
-Newton joint targets. One position servo and one velocity servo on the same
-DOF share ``POSITION_VELOCITY`` targets when the position servo has no damping
-of its own. Other actuators, including ``dampratio`` and ``inheritrange``
-servos and additional servos that cannot share target gains, use
+Newton joint targets. Position-only ``dampratio`` servos retain joint-target
+control: the shared solver resolver publishes damping into ``joint_target_kd``
+after composition, using the assembled inertia and respecting explicit gain
+edits. One position servo and one velocity servo on the same DOF share
+``POSITION_VELOCITY`` targets when the position servo has no damping of its
+own. Other actuators, including ``inheritrange`` servos and additional servos
+that cannot share target gains, use
 ``control.mujoco.ctrl``.
 Use ``ctrl_direct=True`` for native actuator control throughout.
 
@@ -222,9 +225,9 @@ and replicated-world restrictions. Linear position/velocity control ranges
 scale with the import; voltage ranges do not. Actuator armature retains the
 solver's CPU-only support and warning on the Warp backend.
 
-Ball position/velocity servos without activation dynamics or deferred native
-parameters also use Newton joint targets by default. Their gains and authored
-control/force ranges apply to all three angular axes, replacing the authored
+Ball position/velocity servos without activation dynamics or additional native
+control settings also use Newton joint targets by default. Their gains and
+authored control/force ranges apply to all three angular axes, replacing the authored
 ``gear`` transmission. Position targets use a quaternion and velocity targets
 use a three-component angular velocity. A compatible position/velocity pair
 therefore produces six MuJoCo actuators, matching the legacy importer.
@@ -232,7 +235,7 @@ With ``ctrl_direct=True``, each authored ball actuator remains one scalar
 actuator with its original ``gear`` and a slot in ``control.mujoco.ctrl``.
 
 For unit-gear scalar servos without activation dynamics, native import splits
-position/velocity pairs with explicit position ``kv`` damping this way: the
+position/velocity pairs with position ``kv`` or ``dampratio`` damping this way: the
 first servo uses joint targets and the second uses its MJCF-order slot in
 ``control.mujoco.ctrl``. Set that direct-control slot for the second command;
 it does not read the corresponding joint target. The legacy importer instead

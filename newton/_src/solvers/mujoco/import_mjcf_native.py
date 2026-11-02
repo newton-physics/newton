@@ -347,14 +347,13 @@ def _scalar_servo_mode(gain, bias):
     return JointTargetMode.NONE
 
 
-def _joint_target(builder, model, i, dof, bias, values, *, dof_count=1):
+def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_count=1):
     gain = model.actuator_gainprm[i]
     if (
         model.actuator_dyntype[i] != 0
         or model.actuator_gaintype[i] != 0
         or model.actuator_biastype[i] != 1
         or (dof_count == 1 and not np.array_equal(model.actuator_gear[i], [1, 0, 0, 0, 0, 0]))
-        or bias[2] > 0
     ):
         return
     mode = _scalar_servo_mode(gain, bias)
@@ -367,14 +366,17 @@ def _joint_target(builder, model, i, dof, bias, values, *, dof_count=1):
                 return
             # Paired targets have no slot for additional position-servo damping.
             position_damping = -bias[2] if mode == JointTargetMode.POSITION else builder.joint_target_kd[axis]
-            if position_damping != 0:
+            if position_damping != 0 or axis in pending_damping:
                 return
     for axis in range(dof, dof + dof_count):
         previous = builder.joint_target_mode[axis]
         if mode == JointTargetMode.POSITION:
             builder.joint_target_ke[axis] = float(gain[0])
             if previous == JointTargetMode.NONE:
-                builder.joint_target_kd[axis] = float(-bias[2])
+                # Leave dampratio resolution to the shared solver after composition.
+                builder.joint_target_kd[axis] = float(max(0.0, -bias[2]))
+                if bias[2] > 0:
+                    pending_damping.add(axis)
         else:
             builder.joint_target_kd[axis] = float(gain[0])
         builder.joint_target_mode[axis] = (
@@ -1192,6 +1194,7 @@ def parse_mjcf(
 
     actuator_start = builder._custom_frequency_counts.get("mujoco:actuator", 0)
     skipped_actuators = 0
+    pending_damping: set[int] = set()
     for i in range(model.nu):
         transmission = {
             int(mujoco.mjtTrn.mjTRN_JOINT): int(SolverMuJoCo.TrnType.JOINT),
@@ -1273,6 +1276,7 @@ def parse_mjcf(
                 target,
                 actuator_bias[i],
                 values,
+                pending_damping,
                 dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
             )
         values.update(custom("mujoco:actuator", spec.actuators[i]))

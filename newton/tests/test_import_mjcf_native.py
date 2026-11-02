@@ -736,6 +736,21 @@ class TestImportMjcfNative(unittest.TestCase):
                         getattr(solver.mj_model, field), getattr(reference, field)[indices], rtol=3e-5
                     )
 
+        for damping in ('kv="2"', 'dampratio=".7"'):
+            for position_first in (False, True):
+                with self.subTest(damping=damping, position_first=position_first):
+                    position = f'<position joint="j" kp="10" {damping}/>'
+                    velocity = '<velocity joint="j" kv="3"/>'
+                    actuators = position + velocity if position_first else velocity + position
+                    source = f'<mujoco><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody><actuator>{actuators}</actuator></mujoco>'
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf_native(source)
+                    self.assertEqual(builder.custom_attributes["mujoco:ctrl_source"].values, [0, 1])
+                    expected_mode = (
+                        newton.JointTargetMode.POSITION if position_first else newton.JointTargetMode.VELOCITY
+                    )
+                    self.assertEqual(builder.joint_target_mode, [expected_mode])
+
     def test_general_affine_gain(self):
         """Preserve affine gain terms even when the bias resembles a position servo."""
         xml = """<mujoco><worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody>
@@ -1184,7 +1199,11 @@ class TestImportMjcfNative(unittest.TestCase):
         builder.add_mjcf_native(arm)
         with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "zero or negative mass"):
             builder.add_mjcf_native(f"<mujoco><worldbody>{hand}</worldbody></mujoco>", parent_body=0)
-        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        self.assertEqual(builder.custom_attributes["mujoco:ctrl_source"].values, [SolverMuJoCo.CtrlSource.JOINT_TARGET])
+        np.testing.assert_array_equal(builder.joint_target_kd, [0])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), -reference.actuator_biasprm[:, 2], rtol=3e-5)
         for field in ("jnt_stiffness", "dof_damping", "actuator_biasprm"):
             np.testing.assert_allclose(getattr(solver.mj_model, field), getattr(reference, field), rtol=3e-5)
             np.testing.assert_allclose(

@@ -5277,8 +5277,9 @@ class ModelBuilder:
 
         With ``ctrl_direct=False``, representable position/velocity servos use
         joint targets. Ball servos drive all three Newton angular axes, replacing
-        the authored gear transmission. Other actuators retain direct MuJoCo controls,
-        including servos whose damping depends on the assembled inertia.
+        the authored gear transmission. Position-only drives with ``dampratio``
+        retain joint-target control; ``SolverMuJoCo`` resolves their damping
+        after composition. Other actuators retain direct MuJoCo controls.
 
         A missing source file raises :class:`FileNotFoundError`. Missing includes
         detected by MuJoCo raise :class:`ValueError`, preserving its diagnostic.
