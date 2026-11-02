@@ -5774,6 +5774,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._notify_model_changed(flags)
 
     def _notify_model_changed(self, flags: ModelFlags | int) -> None:
+        self._validate_cpu_shared_properties(self.model, flags)
         need_const_fixed = False
         need_const_0 = False
         update_force = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
@@ -5995,14 +5996,42 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"Recreate the solver after resizing. Shapes: {changed_labels}."
             )
 
+    def _validate_cpu_shared_properties(self, model: Model, flags: ModelFlags | int) -> None:
+        """Reject per-world inertial and equality settings that the shared CPU model cannot represent."""
+        if not self.use_mujoco_cpu or model.world_count <= 1:
+            return
+        groups = (
+            (ModelFlags.BODY_INERTIAL_PROPERTIES, model, ("body_mass", "body_inertia", "body_com")),
+            (ModelFlags.CONSTRAINT_PROPERTIES, model.mujoco, ("eq_solref", "eq_solimp")),
+        )
+        for flag, source, names in groups:
+            if not flags & flag:
+                continue
+            for name in names:
+                attribute = getattr(source, name, None)
+                if attribute is None or attribute.size == 0:
+                    continue
+                values = attribute.numpy()
+                rows = values.reshape((model.world_count, -1, *values.shape[1:]))
+                if np.any(rows != rows[0]):
+                    raise ValueError(
+                        f"Multi-world CPU mode requires identical shared model parameters across worlds: {name} differs."
+                    )
+
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
         """Mirror equality properties from MJWarp buffers to MuJoCo-C CPU buffers."""
         if self.mj_model.neq == 0:
             return
 
+        parameters = {name: getattr(self.mjw_model, name).numpy() for name in ("eq_solref", "eq_solimp")}
+        for name, rows in parameters.items():
+            if np.any(rows != rows[0]):
+                raise ValueError(
+                    f"Multi-world CPU mode requires identical equality solver parameters across worlds: {name} differs."
+                )
         self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
-        self.mj_model.eq_solref[:] = self.mjw_model.eq_solref.numpy()[0]
-        self.mj_model.eq_solimp[:] = self.mjw_model.eq_solimp.numpy()[0]
+        for name, rows in parameters.items():
+            getattr(self.mj_model, name)[:] = rows[0]
         eq_active = self.mjw_data.eq_active.numpy()
         for world, data in enumerate(self.mj_data_by_world):
             data.eq_active[:] = eq_active[world]
@@ -6088,9 +6117,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         *,
         newton_world_offset: int = 0,
     ):
-        if control is None or control.joint_f is None:
-            if state.body_f is None:
-                return
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -6150,6 +6176,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ],
                     device=model.device,
                 )
+        if control is not None and control.joint_f is not None:
             wp.launch(
                 apply_mjc_qfrc_kernel,
                 dim=(nworld, joints_per_world),
@@ -6172,28 +6199,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ],
                 device=model.device,
             )
+        else:
+            qfrc.zero_()
 
-        if state.body_f is not None:
-            # Launch over MuJoCo bodies
-            nbody = self.mjc_body_to_newton.shape[1]
-            wp.launch(
-                apply_mjc_body_f_kernel,
-                dim=(nworld, nbody),
-                inputs=[
-                    self.mjc_body_to_newton,
-                    model.body_flags,
-                    state.body_f,
-                    model.body_mass,
-                    model.body_world,
-                    model.gravity,
-                    self.mjw_model.body_gravcomp,
-                    newton_world_offset,
-                ],
-                outputs=[
-                    xfrc,
-                ],
-                device=model.device,
-            )
+        # Launch over MuJoCo bodies
+        nbody = self.mjc_body_to_newton.shape[1]
+        wp.launch(
+            apply_mjc_body_f_kernel,
+            dim=(nworld, nbody),
+            inputs=[
+                self.mjc_body_to_newton,
+                model.body_flags,
+                state.body_f,
+                model.body_mass,
+                model.body_world,
+                model.gravity,
+                self.mjw_model.body_gravcomp,
+                newton_world_offset,
+            ],
+            outputs=[
+                xfrc,
+            ],
+            device=model.device,
+        )
         if control is not None and control.joint_f is not None:
             # Free/DISTANCE joint forces are applied via xfrc_applied to preserve COM-wrench semantics.
             nbody = self.mjc_body_to_newton.shape[1]
@@ -9485,6 +9513,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 nworld = 1
 
             njmax_requested = njmax
+            max_ncon = max(data.ncon for data in self.mj_data_by_world)
+            max_nefc = max(data.nefc for data in self.mj_data_by_world)
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
@@ -9518,21 +9548,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
                         self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
                     )
-            elif nconmax is not None and nconmax < self.mj_data.ncon:
+            elif nconmax is not None and nconmax < max_ncon:
                 warnings.warn(
-                    f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
+                    f"[WARNING] Value for nconmax is changed from {nconmax} to {max_ncon} following an MjWarp requirement.",
                     NewtonWarning,
                     stacklevel=2,
                 )
-                nconmax = self.mj_data.ncon
+                nconmax = max_ncon
 
-            if njmax is not None and njmax < self.mj_data.nefc:
+            if njmax is not None and njmax < max_nefc:
                 warnings.warn(
-                    f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
+                    f"[WARNING] Value for njmax is changed from {njmax} to {max_nefc} following an MjWarp requirement.",
                     NewtonWarning,
                     stacklevel=2,
                 )
-                njmax = self.mj_data.nefc
+                njmax = max_nefc
 
             # Each weld adds 6 rows while active. Reserve rows for roots kinematic in some world but
             # not in the template; roots made kinematic later share njmax's headroom with contacts.
@@ -11474,6 +11504,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"world 0 references tendon {tendon_refs[0, c]}, "
                         f"but other worlds reference {tendon_refs[1:, c].tolist()}."
                     )
+
+        self._validate_cpu_shared_properties(model, ModelFlags.ALL)
 
     def render_mujoco_viewer(
         self,

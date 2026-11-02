@@ -458,5 +458,117 @@ class TestMuJoCoCPUModelChanged(unittest.TestCase):
                         np.testing.assert_allclose(getattr(data, name), getattr(reference, name), atol=1e-12)
 
 
+class TestMuJoCoCPUWorldInputs(unittest.TestCase):
+    @staticmethod
+    def _scalar_model(*, equality=False):
+        """Build two driven scalar joints with optional equality constraints."""
+        equality_xml = '<equality><weld body1="body" /></equality>' if equality else ""
+        template = newton.ModelBuilder()
+        template.add_mjcf(
+            f"""
+            <mujoco>
+              <option gravity="0 0 0"/>
+              <worldbody><body name="body">
+                <joint name="joint" type="slide" axis="1 0 0"/>
+                <geom type="sphere" size=".1" mass="1"/>
+              </body></worldbody>
+              <actuator><position joint="joint" kp="10"/></actuator>
+              {equality_xml}
+            </mujoco>
+        """,
+            convert_mjc_equality_constraints=False,
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        return builder.finalize(device="cpu")
+
+    def test_scalar_targets_use_each_world_reference(self):
+        """Add each world's reference to its own scalar position target."""
+        model = self._scalar_model()
+        model.mujoco.dof_ref.assign([0.25, 0.75])
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        control = model.control()
+        control.joint_target_q.assign([0.1, -0.2])
+        solver.step(model.state(), model.state(), control, None, 0.001)
+        np.testing.assert_allclose([d.ctrl[0] for d in solver.mj_data_by_world], [0.35, 0.55], atol=1e-6)
+
+    def test_gravity_without_force_storage(self):
+        """Apply per-world gravity when external force arrays are absent."""
+        model = _build_two_world_model(device="cpu")
+        gravity = model.gravity.numpy()
+        gravity[0], gravity[1] = (0.0, 0.0, -1.0), (0.0, 0.0, -3.0)
+        model.gravity.assign(gravity)
+        for with_control in (False, True):
+            with self.subTest(with_control=with_control):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                state_in, state_out = model.state(), model.state()
+                state_in.body_f = None
+                control = model.control() if with_control else None
+                if control is not None:
+                    control.joint_f = None
+                solver.step(state_in, state_out, control, None, 0.01)
+                np.testing.assert_allclose([d.qvel[2] for d in solver.mj_data_by_world], [-0.01, -0.03], atol=1e-6)
+
+    def test_reject_mismatched_cpu_inertial_properties(self):
+        """Reject unequal shared inertial properties before publishing any native update."""
+        for name, native_name in (
+            ("body_mass", "body_mass"),
+            ("body_inertia", "body_inertia"),
+            ("body_com", "body_ipos"),
+        ):
+            for update in (False, True):
+                with self.subTest(name=name, update=update):
+                    model = _build_two_world_model(device="cpu")
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True) if update else None
+                    attribute = getattr(model, name)
+                    values = attribute.numpy()
+                    values.reshape(2, -1)[1, 0] += 0.1
+                    attribute.assign(values)
+                    before = getattr(solver.mj_model, native_name).copy() if update else None
+                    with self.assertRaisesRegex(ValueError, name):
+                        if update:
+                            solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+                        else:
+                            SolverMuJoCo(model, use_mujoco_cpu=True)
+                    if update:
+                        np.testing.assert_array_equal(getattr(solver.mj_model, native_name), before)
+
+    def test_reject_mismatched_cpu_equality_parameters(self):
+        """Reject unequal equality solver parameters without changing the native model."""
+        for name in ("eq_solref", "eq_solimp"):
+            for update in (False, True):
+                with self.subTest(name=name, update=update):
+                    model = self._scalar_model(equality=True)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True) if update else None
+                    attribute = getattr(model.mujoco, name)
+                    values = attribute.numpy()
+                    values[1, 0] += 0.01
+                    attribute.assign(values)
+                    before = getattr(solver.mj_model, name).copy() if update else None
+                    with self.assertRaisesRegex(ValueError, name):
+                        if update:
+                            solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+                        else:
+                            SolverMuJoCo(model, use_mujoco_cpu=True)
+                    if update:
+                        np.testing.assert_array_equal(getattr(solver.mj_model, name), before)
+
+    def test_initial_contact_capacity_covers_every_world(self):
+        """Raise the native contact quota for an initially contacting later world."""
+        model = _build_two_world_model(device="cpu")
+        q = model.joint_q.numpy()
+        q[model.joint_coord_count // 2 + 2] = 0.05
+        model.joint_q.assign(q)
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "nconmax"):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, nconmax=1)
+        counts = [data.ncon for data in solver.mj_data_by_world]
+        self.assertEqual(counts[0], 0)
+        self.assertGreater(counts[1], 1)
+        self.assertGreaterEqual(solver.get_max_contact_count() // 2, max(counts))
+        contacts = newton.Contacts(solver.get_max_contact_count(), 0, device="cpu")
+        solver.update_contacts(contacts)
+        self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), sum(counts))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1535,7 +1535,7 @@ def apply_mjc_control_kernel(
                 if world_target_q < joint_target_q.shape[0]:
                     ref = float(0.0)
                     if dof_ref:
-                        ref = dof_ref[world * dofs_per_world + idx]
+                        ref = dof_ref[newton_world * dofs_per_world + idx]
                     mj_ctrl[world, actuator] = joint_target_q[world_target_q] + ref
             else:
                 # Ball-joint position target
@@ -1627,7 +1627,9 @@ def apply_mjc_body_f_kernel(
         xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
         return
 
-    f = body_f[newton_body]
+    f = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
+    if body_f:
+        f = body_f[newton_body]
     v = wp.vec3(f[0], f[1], f[2])
     w = wp.vec3(f[3], f[4], f[5])
 

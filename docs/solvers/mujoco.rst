@@ -836,6 +836,10 @@ Constructing :class:`~newton.solvers.SolverMuJoCo` with
 a MuJoCo model from the **first world** only. The GPU backend replicates
 it through ``mujoco_warp``. The CPU backend shares that model across one
 independent ``MjData`` per Newton world and steps all of them synchronously.
+The CPU model shares body inertial properties and equality solver parameters:
+corresponding bodies must have identical mass, local inertia, and center of mass,
+and ``eq_solref`` and ``eq_solimp`` must match across worlds. Construction and
+model-change notifications reject differences in these shared properties.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
 assets, scales, and convex-hull counts may differ across worlds. Collision
