@@ -17,24 +17,17 @@ _PARTICLE_RADIUS = 0.1
 
 
 def test_contact_target(test, device):
-    """Correct penetration, allow gap closure, and preserve tangential collider motion."""
+    """Correct penetration and preserve separated contacts and tangential collider motion."""
     with wp.ScopedDevice(device):
         sdf = wp.array([-0.02, 0.05, 0.0, -0.02], dtype=float, device=device)
         normals = wp.array([(0, 0, 1)] * 3 + [(0, 0, 0)], dtype=wp.vec3, device=device)
-        for close_gap, gap_velocity in ((True, -0.4), (False, 0.1)):
-            with test.subTest(close_gap=close_gap):
-                velocity = wp.array([(0.2, -0.3, 0.1)] * 4, dtype=wp.vec3, device=device)
-                wp.launch(
-                    stabilize_collider_velocity,
-                    dim=4,
-                    inputs=[0.1, 0.25, close_gap, sdf, normals, velocity],
-                    device=device,
-                )
-                np.testing.assert_allclose(
-                    velocity.numpy(),
-                    [(0.2, -0.3, 0.15), (0.2, -0.3, gap_velocity), (0.2, -0.3, 0.1), (0.2, -0.3, 0.1)],
-                    atol=1.0e-7,
-                )
+        velocity = wp.array([(0.2, -0.3, 0.1)] * 4, dtype=wp.vec3, device=device)
+        wp.launch(stabilize_collider_velocity, dim=4, inputs=[0.1, 0.25, sdf, normals, velocity], device=device)
+        np.testing.assert_allclose(
+            velocity.numpy(),
+            [(0.2, -0.3, 0.15), (0.2, -0.3, 0.1), (0.2, -0.3, 0.1), (0.2, -0.3, 0.1)],
+            atol=1.0e-7,
+        )
 
 
 def _make_contact_solver(device, height, velocity, fraction, gap):
@@ -141,63 +134,6 @@ def test_sdf_gradient_normals_particle_contacts(test, device):
         solver._apply_strain_basis_transform = capture_normals
         solver.step(state, state, None, None, 0.01)
         np.testing.assert_allclose(normals[0], np.tile((-1.0, 0.0, 0.0), (3, 1)), atol=1.0e-3)
-
-
-def test_predictive_contact_grid_bases(test, device):
-    """Prevent a wall crossing with predictive contacts on grid collider bases."""
-    with wp.ScopedDevice(device):
-        capture_modes = (False, True) if wp.get_device(device).is_cuda else (False,)
-        for basis in ("Q1", "S2", "S3"):
-            for captured in capture_modes:
-                for gap in (0.0, 1.0):
-                    with test.subTest(basis=basis, captured=captured, gap=gap):
-                        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-                        SolverImplicitMPM.register_custom_attributes(builder)
-                        builder.add_particle(pos=(0.5, 0.5, 1.0), vel=(0.2, 0.0, -10.0), mass=1000.0, radius=0.1)
-                        builder.add_ground_plane(height=0.25, cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
-                        model = builder.finalize(device=device)
-                        # Isolate contact response from elasticity and material pressure.
-                        model.mpm.young_modulus.fill_(1.0e15)
-                        model.mpm.yield_pressure.zero_()
-                        model.mpm.yield_stress.zero_()
-                        model.mpm.friction.zero_()
-                        model.mpm.viscosity.zero_()
-                        solver = SolverImplicitMPM(
-                            model,
-                            config=SolverImplicitMPM.Config(
-                                voxel_size=1.0,
-                                grid_type="fixed",
-                                grid_padding=2,
-                                max_active_cell_count=128,
-                                collider_basis=basis,
-                                transfer_scheme="pic",
-                                solver="gs",
-                                max_iterations=50,
-                                tolerance=0.0,
-                                warmstart_mode="none",
-                                air_drag=1.0e-6,
-                                collider_contact_gap=gap,
-                            ),
-                        )
-                        state = model.state()
-                        if captured:
-                            solver.step(state, state, None, None, 0.1)
-                            wp.copy(state.particle_q, model.particle_q)
-                            wp.copy(state.particle_qd, model.particle_qd)
-                            solver.reset(state)
-                            with wp.ScopedCapture(device=device) as capture:
-                                solver.step(state, state, None, None, 0.1)
-                            wp.capture_launch(capture.graph)
-                        else:
-                            solver.step(state, state, None, None, 0.1)
-                        position = state.particle_q.numpy()[0]
-                        velocity = state.particle_qd.numpy()[0]
-                        test.assertTrue(np.isfinite(position).all())
-                        test.assertAlmostEqual(float(velocity[0]), 0.2, delta=2.0e-4)
-                        if gap > 0.0:
-                            test.assertAlmostEqual(float(position[2]), 0.25, delta=2.0e-5)
-                        else:
-                            test.assertLess(float(position[2]), 0.25)
 
 
 def _make_volume_solver(device, fraction, *, scheme="pic"):
@@ -463,7 +399,6 @@ for function in (
     test_predictive_contact_truncated,
     test_project_outside_keeps_particle_radius,
     test_sdf_gradient_normals_particle_contacts,
-    test_predictive_contact_grid_bases,
     test_volume_recovery_truncated,
     test_density_measures_elastic_volume,
     test_density_offset_bounded_in_p1d_modes,

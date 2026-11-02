@@ -1079,13 +1079,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Collider recovery may change without prior notice.
         """
-        collider_contact_gap: float = 0.0
-        """Predictive contact activation distance [m].
+        collider_contact_gap: float = 1.0
+        """Predictive activation distance of particle contacts, in voxels.
 
-        Positive values activate contacts before penetration for any
-        supported collider basis. Separated collider samples may approach
-        at ``gap / dt`` so they can reach the contact band during the step.
-        Zero retains the default activation distance.
+        Particle contacts (``"pic"`` and ``"picN"`` collider bases) activate
+        within this distance of collider surfaces and may approach at
+        ``gap / dt`` so they can reach the contact band during the step.
+        Zero keeps only the contact band. Grid collider bases keep their
+        own activation distance.
 
         .. experimental::
 
@@ -1796,11 +1797,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if self.gs_colored_contacts and not supports_colored_contacts:
             raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
         self._collider_recovery_fraction = float(config.collider_recovery_fraction)
-        self._collider_contact_gap = float(config.collider_contact_gap)
         if not math.isfinite(self._collider_recovery_fraction) or not 0.0 <= self._collider_recovery_fraction <= 1.0:
             raise ValueError("collider_recovery_fraction must be finite and in [0, 1]")
-        if not math.isfinite(self._collider_contact_gap) or self._collider_contact_gap < 0.0:
+        if not math.isfinite(config.collider_contact_gap) or config.collider_contact_gap < 0.0:
             raise ValueError("collider_contact_gap must be finite and nonnegative")
+        self._collider_contact_gap = (
+            float(config.collider_contact_gap) * self._mpm_model.voxel_size
+            if self.collider_basis.startswith("pic")
+            else 0.0
+        )
         if self._collider_recovery_fraction > 0.0 and not self.collider_basis.startswith("pic"):
             raise ValueError("Collider recovery requires a particle collider basis")
 
@@ -3720,14 +3725,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
 
-            if self._collider_recovery_fraction > 0.0 or self._collider_contact_gap > 0.0:
+            if self._collider_recovery_fraction > 0.0:
                 wp.launch(
                     stabilize_collider_velocity,
                     dim=collider_node_count,
                     inputs=[
                         dt,
                         self._collider_recovery_fraction,
-                        not speculative,
                         scratch.collider_distance_field.dof_values,
                         scratch.collider_normal_field.dof_values,
                         scratch.collider_velocity,

@@ -852,26 +852,18 @@ def collider_is_deformable(collider_id: int, collider: Collider):
 def stabilize_collider_velocity(
     dt: float,
     fraction: float,
-    close_gap: bool,
     collider_sdf: wp.array[float],
     collider_normals: wp.array[wp.vec3],
     collider_velocity: wp.array[wp.vec3],
 ):
-    """Correct penetration and, with ``close_gap``, allow separated contacts to close their gap.
-
-    Speculative point contacts already close their gap during rasterization.
-    """
+    """Push penetrating contacts back out by ``fraction`` of their penetration per step."""
     i = wp.tid()
     normal = collider_normals[i]
     if wp.length_sq(normal) == 0.0:
         return
     gap = collider_sdf[i]
-    target = float(0.0)
     if gap < 0.0:
-        target = -fraction * gap / dt
-    elif close_gap:
-        target = -gap / dt
-    collider_velocity[i] += target * normal
+        collider_velocity[i] -= (fraction * gap / dt) * normal
 
 
 @wp.kernel
