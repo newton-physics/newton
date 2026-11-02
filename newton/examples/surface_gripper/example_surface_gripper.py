@@ -1,92 +1,98 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Surface Gripper
-#
-# An illustration of how to develop a surface gripper (a vacuum/suction end-effector) in Newton.
-#
-# The gripper physics lives in surface_gripper.py and is deliberately kept free of policy: it models
-# the seal, reports what the seal is carrying, and leaves every decision about when to grab and when
-# to let go to the caller. This file is that caller -- it shows one way to drive the gripper, and the
-# decisions it makes are the ones a real application would have to make too.
-#
-# What the gripper models (surface_gripper.py)
-#   Each pad is a six-DOF linear spring-damper seal between the tool and the gripped body: normal
-#   pull along the pad axis, shear in the pad plane, peel about the two in-plane axes, and twist.
-#   On engagement the gripped body's pose is fitted so each pad's contact perimeter sits flush on its
-#   surface (an inline Gauss-Newton fit against the body's signed distance field), and that seated
-#   pose is cached as the seal's rest state. From then on the seal resists any drift away from it.
-#   Each step the gripper reports the four DOF-group loads it is carrying, both before and after its
-#   force caps, plus a geometric measure of how far the contact perimeter has pulled off the surface.
-#
-# What this example decides (this file)
-#   - Which mode each pad is in. A pad is always in exactly one of three modes:
-#       preparing  - approaching a target body, not yet sealed. The seat fit runs live each step, so
-#                    the seal-quality metric reports the error that engaging right now would produce.
-#       engaged    - sealed to a body. The seal carries load and resists drift from the pose it
-#                    formed at; the seal-quality metric reports how far the surface has since pulled off.
-#       disengaged - neither of the above. No seal force, and the quality metric reports -1.
-#     The drive targets and the mode of each pad are read from assets/palletizer_trajectory.csv.
-#   - Which body and shape to grab: a fixed pick order -- one wide panel, then six crates -- advanced
-#     on each release.
-#   - When the seal fractures under load, via one of two interchangeable criteria (BREAK_ON_SEAL_QUALITY):
-#       force-based    - the seal is demanding more force than its caps can supply
-#       geometry-based - the gripped surface has pulled too far off the pad contact perimeters
-#     Either way the overload must persist for BREAK_HOLD_TIME before the gripper lets go, so a
-#     transient spike does not drop the load.
-#
-# Building a multi-world gripper (the classes mirror Newton's Builder -> Model -> State/Control)
-#
-#   One SurfaceGripper per world, each attached to that world's copy of the tool body. A gripper's
-#   world index is what keeps the seat fit from mixing environments, so it must match the world its
-#   body lives in:
-#
-#     gripper_builder = SurfaceGripperBuilder()
-#     for w in range(world_count):
-#         gripper = SurfaceGripper(
-#             w * bodies_per_world + tool_body,  # this world's copy of the tool body
-#             wp.transform_identity(),           # gripper frame in that body
-#             world=w,
-#             n_perimeter_samples=16,            # contact-perimeter samples per pad, for the seat fit
-#         )
-#         # Seal gains, either directly or as (natural frequency [rad/s], damping ratio) per DOF
-#         # converted against a reference solid -- see set_stiffness_damping for the direct form.
-#         gripper.set_natural_frequency_damping_ratio(mass, inertia, f_grip_max, *modes)
-#         for pad_xform, radius, half_height in pads:
-#             gripper.add_pad(pad_xform, radius, half_height)
-#         gripper_builder.add_gripper(gripper)
-#
-#     gripper_model = gripper_builder.finalize(device=model.device)  # SurfaceGripperModel
-#
-#   The state is double-buffered, because engaging and releasing are edge-triggered: the seal is
-#   anchored on a disengaged->engaged rising edge, which needs both the previous and current step.
-#
-#     state_in_prev = gripper_model.state_input()    # SurfaceGripperStateInput: who each pad grips
-#     state_in_curr = gripper_model.state_input()
-#     state_out     = gripper_model.state_output()   # SurfaceGripperStateOutput: loads, anchors, RMS
-#     control       = gripper_model.control()        # per-pad vacuum on/off
-#
-#   Then per sub-step, with the caller deciding engagement and writing it into state_in_curr:
-#
-#     attach_seal_seated(model, state, gripper_model, state_in_prev, state_out, state_in_curr, ...)
-#     evaluate_seal_quality(model, state, gripper_model, state_in_curr, state_out, ...)
-#     ...caller's break logic, which may clear state_in_curr...
-#     evaluate_gripper_force(model, state, gripper_model, state_in_curr, state_out, control, dt)
-#     ...solver step...
-#     state_in_prev, state_in_curr = state_in_curr, state_in_prev
-#
-# The scene: a fixed-base palletizer arm (assets/palletizer_arm.usda) with four suction pads on its flange,
-# two pallets, and the pick boxes -- one wide panel and six crates (assets/palletizer_scene.usda).
-# The panel is picked first, then each crate in turn; every crate waits out of reach until its turn
-# comes, when it is teleported onto the pick pallet. Arm joint targets are interpolated from the
-# recorded timestamps before every physics sub-step, so the arm follows the recorded motion at its
-# true speed. Everything runs on device and is CUDA-graph capturable, and the whole scene can be
-# replicated across parallel environments with --world-count.
+"""Example Surface Gripper
 
+An illustration of how to develop a surface gripper (a vacuum/suction end-effector) in Newton.
 
-# Command: uv run -m newton.examples surface_gripper
-###########################################################################
+The gripper physics lives in surface_gripper.py and is deliberately kept free of policy: it models
+the seal, reports what the seal is carrying, and leaves every decision about when to grab and when
+to let go to the caller. This file is that caller -- it shows one way to drive the gripper, and the
+decisions it makes are the ones a real application would have to make too.
+
+What the gripper models (surface_gripper.py)
+  Each pad is a six-DOF linear spring-damper seal between the tool and the gripped body: normal
+  pull along the pad axis, shear in the pad plane, peel about the two in-plane axes, and twist.
+  On engagement the gripped body's pose is fitted so each pad's contact perimeter sits flush on its
+  surface (an inline Gauss-Newton fit against the body's signed distance field), and that seated
+  pose is cached as the seal's rest state. From then on the seal resists any drift away from it.
+  Each step the gripper reports the four DOF-group loads it is carrying, both before and after its
+  force caps, plus a geometric measure of how far the contact perimeter has pulled off the surface.
+
+What this example decides (this file)
+  - Which mode each pad is in. A pad is always in exactly one of three modes:
+      preparing  - approaching a target body, not yet sealed. The seat fit runs live each step, so
+                   the seal-quality metric reports the error that engaging right now would produce.
+      engaged    - sealed to a body. The seal carries load and resists drift from the pose it
+                   formed at; the seal-quality metric reports how far the surface has since pulled off.
+      disengaged - neither of the above. No seal force, and the quality metric reports -1.
+    The drive targets and the mode of each pad are read from assets/palletizer_trajectory.csv.
+  - Which body and shape to grab: a fixed pick order -- one wide panel, then six crates -- advanced
+    on each release.
+  - When the seal fractures under load, via one of two interchangeable criteria (BREAK_ON_SEAL_QUALITY):
+      force-based    - the seal is demanding more force than its caps can supply
+      geometry-based - the gripped surface has pulled too far off the pad contact perimeters
+    Either way the overload must persist for BREAK_HOLD_TIME before the gripper lets go, so a
+    transient spike does not drop the load.
+
+Building a multi-world gripper (the classes mirror Newton's Builder -> Model -> State/Control)
+
+  One SurfaceGripper per world, each attached to that world's copy of the tool body. A gripper's
+  world index is what keeps the seat fit from mixing environments, so it must match the world its
+  body lives in:
+
+    gripper_builder = SurfaceGripperBuilder()
+    for w in range(world_count):
+        gripper = SurfaceGripper(
+            w * bodies_per_world + tool_body,  # this world's copy of the tool body
+            wp.transform_identity(),           # gripper frame in that body
+            world=w,
+            n_perimeter_samples=16,            # contact-perimeter samples per pad, for the seat fit
+        )
+        # Seal gains, either directly or as (natural frequency [rad/s], damping ratio) per DOF
+        # converted against a reference solid -- see set_stiffness_damping for the direct form.
+        gripper.set_natural_frequency_damping_ratio(mass, inertia, f_grip_max, *modes)
+        for pad_xform, radius, half_height in pads:
+            gripper.add_pad(pad_xform, radius, half_height)
+        gripper_builder.add_gripper(gripper)
+
+    gripper_model = gripper_builder.finalize(device=model.device)  # SurfaceGripperModel
+
+  The state is double-buffered, because engaging and releasing are edge-triggered: the seal is
+  anchored on a disengaged->engaged rising edge, which needs both the previous and current step.
+
+    state_in_prev = gripper_model.state_input()    # SurfaceGripperStateInput: who each pad grips
+    state_in_curr = gripper_model.state_input()
+    state_out     = gripper_model.state_output()   # SurfaceGripperStateOutput: loads, anchors, RMS
+    control       = gripper_model.control()        # per-pad vacuum on/off
+
+  Then per sub-step, with the caller deciding engagement and writing it into state_in_curr:
+
+    attach_seal_seated(model, state, gripper_model, state_in_prev, state_out, state_in_curr, ...)
+    evaluate_seal_quality(model, state, gripper_model, state_in_curr, state_out, ...)
+    ...caller's break logic, which may clear state_in_curr...
+    evaluate_gripper_force(model, state, gripper_model, state_in_curr, state_out, control, dt)
+    ...solver step...
+    state_in_prev, state_in_curr = state_in_curr, state_in_prev
+
+The scene: a fixed-base palletizer arm (assets/palletizer_arm.usda) with four suction pads on its flange,
+two pallets, and the pick boxes -- one wide panel and six crates (assets/palletizer_scene.usda).
+The panel is picked first, then each crate in turn; every crate waits out of reach until its turn
+comes, when it is teleported onto the pick pallet. Arm joint targets are interpolated from the
+recorded timestamps before every physics sub-step, so the arm follows the recorded motion at its
+true speed. Everything runs on device and is CUDA-graph capturable, and the whole scene can be
+replicated across parallel environments with --world-count.
+
+Success criteria:
+- All four pads latch onto one body after the first engagement.
+- The gripped panel lifts clear of the pallet.
+- The seal quality stays below the break threshold once the seal has settled.
+- The crates are placed in turn after the panel.
+- The arm bodies stay at or above the ground.
+
+Runs:
+- `python -m newton.examples surface_gripper`
+"""
 
 import argparse
 from pathlib import Path
