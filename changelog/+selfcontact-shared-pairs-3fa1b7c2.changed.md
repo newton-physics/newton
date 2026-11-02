@@ -17,4 +17,7 @@ allocated before a grow are resized automatically at their next use, and
 results for either construction path while keeping the solver's launch
 size in sync.
 `TriMeshCollisionDetector(sort_contact_rows=True)` optionally sorts each row
-into a canonical order. Most self-contact demos run faster.
+into a canonical order. Most self-contact demos run faster end to end;
+detection alone costs about 4-14% more than before on the recorded example
+scenes and 1.2-1.8x on uniformly dense synthetic two-layer meshes, where the
+row build dominates.
