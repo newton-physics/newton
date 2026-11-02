@@ -351,8 +351,9 @@ def build_group_reduction_config(
     # A replicated scene can have one reachable pair per body, yet each pair spans
     # several bins and cells: reserve four patch entries per group at half load.
     group_budget = 8 * len(np.unique(shape_group))
-    capacity_request = int(max(group_pair_bound, group_budget) * float(hashtable_headroom))
-    capacity_request = max(1024, min(capacity_request, rigid_contact_max))
+    # Cap in float: an extreme headroom would overflow the integer conversion.
+    capacity_request = min(float(max(group_pair_bound, group_budget)) * float(hashtable_headroom), rigid_contact_max)
+    capacity_request = max(1024, int(capacity_request))
     config = GroupReductionConfig(
         shape_group=shape_group,
         cell_size=float(np.float32(cell_size)),

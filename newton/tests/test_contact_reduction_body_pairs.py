@@ -40,6 +40,7 @@ from newton._src.geometry.contact_reduction_global import (
 )
 from newton._src.sim.contacts import Contacts
 from newton.geometry import HydroelasticSDF
+from newton.solvers.experimental.coupled import SolverCoupled
 
 DT = 1.0 / 240.0
 
@@ -775,6 +776,34 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertFalse(newton.solvers.SolverXPBD.supports_body_pair_reduced_contacts)
         self.assertTrue(newton.solvers.SolverSteel.supports_body_pair_reduced_contacts)
 
+    def test_coupled_entry_contacts_keep_the_stamp(self):
+        """Carry the reduction stamp into a coupled entry's filtered contacts, refreshed per source."""
+        model = self._foot_model()
+        state = model.state()
+        coupled = SolverCoupled(
+            model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="all", solver=newton.solvers.SolverSemiImplicit, bodies=list(range(model.body_count))
+                )
+            ],
+        )
+        reduced_pipeline = _make_pipeline(model, True)
+        reduced = reduced_pipeline.contacts()
+        reduced_pipeline.collide(state, reduced)
+        plain_pipeline = _make_pipeline(model, False)
+        plain = plain_pipeline.contacts()
+        plain_pipeline.collide(state, plain)
+        self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contacts_body_pair_reduced)
+        self.assertFalse(coupled.entry_contacts("all", plain).rigid_contacts_body_pair_reduced)
+        self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contacts_body_pair_reduced)
+
+    def test_config_is_fixed_at_construction(self):
+        """Reject reassigning the pipeline's body-pair configuration after construction."""
+        pipeline = _make_pipeline(self._foot_model(), True)
+        with self.assertRaises(AttributeError):
+            pipeline.body_pair_reduction = None
+
     def test_unsupported_solver_cannot_own_a_reducing_pipeline(self):
         """Reject an owned reducing pipeline at construction, before the first step detects into it."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
@@ -951,6 +980,10 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
             large._body_pair_reducer.describe()["hashtable_capacity_request"],
             small._body_pair_reducer.describe()["hashtable_capacity_request"],
         )
+        # An extreme headroom caps at the staging capacity instead of overflowing the conversion.
+        huge = _make_pipeline(model, True, body_pair_hashtable_headroom=1.0e308)
+        desc = huge._body_pair_reducer.describe()
+        self.assertEqual(desc["hashtable_capacity_request"], max(1024, desc["rigid_contact_max"]))
 
 
 class TestBodyPairReductionGrouping(unittest.TestCase):

@@ -1856,11 +1856,7 @@ class CollisionPipeline:
         self.shape_count = shape_count
         self.device = device
         self.reduce_contacts = reduce_contacts
-        self.body_pair_reduction = body_pair_reduction
-        """Body-pair reduction configuration, or ``None`` when disabled.
-
-        .. experimental::
-        """
+        self._body_pair_reduction = body_pair_reduction
         self.requires_grad = requires_grad
         self.include_static_kinematic_pairs = include_static_kinematic_pairs
         self.speculative_contact_gap_max = speculative_contact_gap_max
@@ -2411,6 +2407,14 @@ class CollisionPipeline:
             model.rigid_contact_max = rigid_contact_max
             model.soft_contact_max = soft_contact_max
             model._contact_capacity_initialized = True
+
+    @property
+    def body_pair_reduction(self) -> CollisionPipeline.BodyPairReductionConfig | None:
+        """Body-pair reduction configuration, fixed at construction, or ``None`` when disabled.
+
+        .. experimental::
+        """
+        return self._body_pair_reduction
 
     def refresh_body_pair_reduction_groups(self):
         """Rebuild body-pair reduction groups from the model's current shape materials.
