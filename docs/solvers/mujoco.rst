@@ -213,9 +213,13 @@ control: the shared solver resolver publishes damping into ``joint_target_kd``
 after composition, using the assembled inertia and respecting explicit gain
 edits. One position servo and one velocity servo on the same DOF share
 ``POSITION_VELOCITY`` targets when the position servo has no damping of its
-own. Other actuators, including ``inheritrange`` servos and additional servos
-that cannot share target gains, use
-``control.mujoco.ctrl``.
+own. Actuator ``group`` and ``inheritrange`` settings preserve joint-target
+control; inherited ranges resolve from the assembled joint limits during solver
+construction. Control limits apply to both control sources. MuJoCo-Warp does not
+support group disabling; the solver warns when it is requested on that backend.
+Use ``use_mujoco_cpu=True`` to honor ``actuatorgroupdisable``.
+Other actuators, including those with activation dynamics or control history
+and additional servos that cannot share target gains, use ``control.mujoco.ctrl``.
 Use ``ctrl_direct=True`` for native actuator control throughout.
 
 Native import preserves actuator damping, armature, and single-input DC motors
@@ -225,8 +229,8 @@ and replicated-world restrictions. Linear position/velocity control ranges
 scale with the import; voltage ranges do not. Actuator armature retains the
 solver's CPU-only support and warning on the Warp backend.
 
-Ball position/velocity servos without activation dynamics or additional native
-control settings also use Newton joint targets by default. Their gains and
+Ball position/velocity servos without activation dynamics or control history
+also use Newton joint targets by default. Their groups, gains, and
 authored control/force ranges apply to all three angular axes, replacing the authored
 ``gear`` transmission. Position targets use a quaternion and velocity targets
 use a three-component angular velocity. A compatible position/velocity pair

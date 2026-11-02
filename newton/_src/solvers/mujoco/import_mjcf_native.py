@@ -1264,7 +1264,7 @@ def parse_mjcf(
             )
         if (
             not ctrl_direct
-            and not any(native_parameters.values())
+            and not any(native_parameters[f"native_actuator_{name}"] for name in ("delay", "nsample", "interp"))
             and transmission == 0
             and int(model.jnt_type[source_target])
             in (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE), int(mujoco.mjtJoint.mjJNT_BALL))

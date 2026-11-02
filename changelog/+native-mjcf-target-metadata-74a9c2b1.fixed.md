@@ -1,0 +1,1 @@
+Keep representable native MJCF servos on Newton joint targets when they specify actuator groups or inherited control ranges, preserving group metadata and resolving ranges from the assembled joint limits. Warn that actuator group disabling requires the CPU backend because MuJoCo-Warp does not support it.

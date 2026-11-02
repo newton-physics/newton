@@ -9110,7 +9110,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         from .mjcf_parameters import _apply_native_parameters, _sync_native_parameters  # noqa: PLC0415
 
         resolved_native_joints = _apply_native_parameters(
-            model, spec, dof_to_mjc_joint, shape_mapping, mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list
+            model, spec, dof_to_mjc_joint, shape_mapping, actuator_custom_attr_idx
         )
         self.mj_model = spec.compile()
         if (
@@ -9121,6 +9121,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
                 spec.option.disableflags |= mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
         _sync_native_parameters(model, self.mj_model, resolved_native_joints, mjc_eq_to_newton_eq_dict)
+        if not self.use_mujoco_cpu and self.mj_model.opt.disableactuator:
+            warnings.warn(
+                "SolverMuJoCo's MuJoCo-Warp backend does not support actuator group disabling. "
+                "Actuators remain enabled; use use_mujoco_cpu=True to honor actuatorgroupdisable.",
+                NewtonWarning,
+                stacklevel=3,
+            )
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "

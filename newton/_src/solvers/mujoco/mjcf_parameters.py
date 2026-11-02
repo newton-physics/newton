@@ -82,7 +82,7 @@ def _read_native_parameters(kind: str, element) -> dict:
     return {f"native_{kind}_{name}": getattr(element, name) for name in _NATIVE_FIELDS[kind][1]}
 
 
-def _apply_native_element_parameters(model, spec, shapes, actuator_sources, actuator_indices):
+def _apply_native_element_parameters(model, spec, shapes, actuator_indices):
     import mujoco
 
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
@@ -107,11 +107,7 @@ def _apply_native_element_parameters(model, spec, shapes, actuator_sources, actu
         (
             "actuator",
             _NATIVE_ACTUATOR_FIELDS,
-            (
-                (index, spec.actuators[i])
-                for i, (source, index) in enumerate(zip(actuator_sources, actuator_indices, strict=True))
-                if source == 1
-            ),
+            ((index, spec.actuators[i]) for i, index in enumerate(actuator_indices) if index >= 0),
         ),
     ):
         if not hasattr(model.mujoco, f"native_{kind}_{next(iter(fields))}"):
@@ -285,11 +281,11 @@ def _sync_native_equality_parameters(model, native, equality_rows):
     model.mujoco.equality_constraint_relpose.assign(poses)
 
 
-def _apply_native_parameters(model, spec, dof_to_joint, shapes, actuator_sources, actuator_indices):
+def _apply_native_parameters(model, spec, dof_to_joint, shapes, actuator_indices):
     if not hasattr(model, "mujoco") or not hasattr(model.mujoco, "native_option_enableflags"):
         return None
     resolved = _apply_native_joint_parameters(model, spec, dof_to_joint)
-    _apply_native_element_parameters(model, spec, shapes, actuator_sources, actuator_indices)
+    _apply_native_element_parameters(model, spec, shapes, actuator_indices)
     return resolved
 
 

@@ -1369,18 +1369,26 @@ class TestImportMjcfNative(unittest.TestCase):
         )
 
     def test_native_scaled_inherited_slide_range(self):
-        """Resolve scaled activation limits with a nonzero slide reference."""
-        xml = """<mujoco><worldbody><body><joint name="j" type="slide" range="-.3 .5" ref=".1"/>
-            <geom size=".1" mass="1"/></body></worldbody>
-            <actuator><intvelocity joint="j" kp="20" inheritrange="1"/></actuator></mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf_native(xml, scale=2)
-        model = builder.finalize()
-        np.testing.assert_array_equal(model.mujoco.actuator_actrange.numpy(), [[0, 0]])
-        solver = SolverMuJoCo(model, disable_contacts=True)
-        np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.6, 1]])
-        np.testing.assert_allclose(model.mujoco.actuator_actrange.numpy(), [[-0.6, 1]])
-        np.testing.assert_array_equal(solver.mj_model.actuator_actlimited, [True])
+        """Resolve scaled control and activation limits with a nonzero slide reference."""
+        for actuator, field in (("position", "ctrl"), ("intvelocity", "act")):
+            with self.subTest(actuator=actuator):
+                xml = f"""<mujoco><worldbody><body><joint name="j" type="slide" range="-.3 .5" ref=".1"/>
+                    <geom size=".1" mass="1"/></body></worldbody>
+                    <actuator><{actuator} joint="j" kp="20" inheritrange="1"/></actuator></mujoco>"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf_native(xml, scale=2)
+                model = builder.finalize()
+                source = (
+                    SolverMuJoCo.CtrlSource.JOINT_TARGET
+                    if actuator == "position"
+                    else SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                )
+                np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), source)
+                np.testing.assert_array_equal(getattr(model.mujoco, f"actuator_{field}range").numpy(), [[0, 0]])
+                solver = SolverMuJoCo(model, disable_contacts=True)
+                np.testing.assert_allclose(getattr(solver.mj_model, f"actuator_{field}range"), [[-0.6, 1]])
+                np.testing.assert_allclose(getattr(model.mujoco, f"actuator_{field}range").numpy(), [[-0.6, 1]])
+                np.testing.assert_array_equal(getattr(solver.mj_model, f"actuator_{field}limited"), [True])
 
     def test_native_compiled_primitive_fitting(self):
         """Retain fitted primitive poses and sizes from the native compiler."""

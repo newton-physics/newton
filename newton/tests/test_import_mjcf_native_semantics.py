@@ -492,6 +492,12 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         <actuator><{actuator} joint="j"/></actuator></mujoco>"""
                     builder = newton.ModelBuilder()
                     builder.add_mjcf_native(xml, ctrl_direct=direct)
+                    expected_source = (
+                        SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                        if direct or actuator == "intvelocity"
+                        else SolverMuJoCo.CtrlSource.JOINT_TARGET
+                    )
+                    self.assertEqual(builder.custom_attributes["mujoco:ctrl_source"].values[0], expected_source)
                     builder.joint_limit_lower[0], builder.joint_limit_upper[0] = -0.5, 0.7
                     solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
                     reference = mujoco.MjModel.from_xml_string(xml.replace('range="-.2 .4"', 'range="-.5 .7"'))
@@ -509,6 +515,47 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         np.testing.assert_allclose(
                             getattr(solver.mjw_model, field).numpy()[0], getattr(reference, field), rtol=1e-6, atol=1e-7
                         )
+
+    def test_joint_target_actuator_groups(self):
+        """Preserve groups across reordered, paired, expanded, and unauthored drives."""
+        xml = """<mujoco><compiler angle="radian"/><option gravity="0 0 0" actuatorgroupdisable="{disabled}"/>
+            <worldbody><body><joint name="j" range="-.2 .4"/><geom size=".1"/></body>
+            <body><joint name="ball" type="ball"/><geom size=".1"/></body></worldbody>
+            <actuator><motor joint="j" group="3"/><velocity joint="j" group="2" kv="3"/>
+            <position joint="j" group="1" kp="10" inheritrange="1"/>
+            <position joint="ball" group="2" kp="4"/></actuator></mujoco>"""
+        for cpu, disabled in ((False, ""), (False, "2"), (True, "2")):
+            with self.subTest(cpu=cpu, disabled=disabled):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(mass=1, inertia=wp.mat33(np.eye(3)))
+                joint = builder.add_joint_revolute(-1, body, target_ke=5)
+                builder.add_articulation([joint])
+                builder.add_mjcf_native(xml.format(disabled=disabled))
+                model = builder.finalize()
+                np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [1, 0, 0, 0])
+                expected_warning = (
+                    self.assertWarnsRegex(NewtonWarning, "does not support actuator group disabling")
+                    if disabled and not cpu
+                    else nullcontext()
+                )
+                with expected_warning:
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                np.testing.assert_array_equal(
+                    solver.mjc_actuator_to_newton_actuator_idx.numpy(), [-1, 2, 1, 3, 3, 3, 0]
+                )
+                np.testing.assert_array_equal(solver.mj_model.actuator_group, [0, 1, 2, 2, 2, 2, 3])
+                if disabled and not cpu:
+                    continue
+                control = model.control()
+                control.joint_target_q.assign([1, 1, *wp.quat_from_axis_angle(wp.normalize(wp.vec3(1, 1, 1)), 0.3)])
+                control.joint_target_qd.assign([0, 0.5, 0, 0, 0])
+                control.mujoco.ctrl.assign([2, 9, 9, 9])
+                state = model.state()
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
+                solver.step(state, model.state(), control, None, dt=0.001, observables=observables)
+                expected = [5, 6, 0, 0, 0] if disabled else [5, 7.5, *([1.2 / np.sqrt(3)] * 3)]
+                np.testing.assert_allclose(observables.qfrc_actuator.numpy().reshape(-1), expected, atol=1e-6)
 
     def test_inherited_ranges_cpu_updates(self):
         for actuator, field in (("position", "ctrlrange"), ("intvelocity", "actrange")):
