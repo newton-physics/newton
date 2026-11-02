@@ -21,7 +21,7 @@ from newton._src.solvers.steel.kernels import (
     remove_free_root_transport_from_qdd,
     update_qdd_from_velocity,
 )
-from newton.solvers import SolverFeatherstone, SolverMuJoCo, SolverSteel
+from newton.solvers import SolverFeatherstone, SolverSteel
 from newton.tests.steel._fixtures import (
     _CHILD_ANCHORS,
     _REL_P,
@@ -1915,20 +1915,13 @@ for _name in (
 SPRING_KEYS = ("mujoco:dof_passive_stiffness", "mujoco:dof_springref", "mujoco:dof_ref")
 
 
-_SPRING_WARNING = r"does not support passive joint springs yet .*#4516"
-
-
 def _hinge_model(device, *, damping: float, spring_k: float | None = None, spring_ref: float = 0.5):
     """A fixed-base link on a revolute Z joint, so gravity exerts no torque about the axis.
 
-    ``spring_k`` registers the MuJoCo spring attributes and sets the joint's stiffness.
+    ``spring_k`` sets the core passive spring stiffness.
     """
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     SolverSteel.register_custom_attributes(builder)
-    custom = {}
-    if spring_k is not None:
-        SolverMuJoCo.register_custom_attributes(builder)
-        custom = {"mujoco:dof_passive_stiffness": spring_k, "mujoco:dof_springref": spring_ref}
     link = builder.add_link(xform=wp.transform(wp.vec3(0.2, 0.0, 0.5), wp.quat_identity()))
     builder.add_shape_box(link, hx=0.1, hy=0.02, hz=0.02)
     joint = builder.add_joint_revolute(
@@ -1938,7 +1931,8 @@ def _hinge_model(device, *, damping: float, spring_k: float | None = None, sprin
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
         damping=damping,
-        custom_attributes=custom,
+        stiffness=spring_k,
+        rest_q=spring_ref,
     )
     builder.add_articulation([joint])
     return builder.finalize(device=device)
@@ -1957,16 +1951,12 @@ def _run_springs(model, solver, steps: int, qd0: float = 0.0):
     return state_0
 
 
-def _construct(test, model, *, solve_mode, expect_warning):
-    """Construct the solver, requiring exactly the spring warning or no warning."""
+def _construct(test, model, *, solve_mode):
+    """Construct silently, including when the model has unsupported spring properties."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         solver = SolverSteel(model, solve_mode=solve_mode, iterations=8)
-    messages = [f"{w.category.__name__}: {w.message}" for w in caught]
-    test.assertEqual(len(caught), int(expect_warning), messages)
-    if expect_warning:
-        test.assertIs(caught[0].category, newton.exceptions.NewtonWarning)
-        test.assertRegex(str(caught[0].message), _SPRING_WARNING)
+    test.assertEqual(caught, [], [str(w.message) for w in caught])
     return solver
 
 
@@ -1974,22 +1964,18 @@ def test_passive_damping_decays_velocity(test, device, solve_mode="matrix_free")
     """Decay joint velocity through passive damping; without damping the joint keeps coasting."""
     damped_model = _hinge_model(device, damping=0.02)
     undamped_model = _hinge_model(device, damping=0.0)
-    damped = _run_springs(
-        damped_model, _construct(test, damped_model, solve_mode=solve_mode, expect_warning=False), 480, qd0=5.0
-    )
-    undamped = _run_springs(
-        undamped_model, _construct(test, undamped_model, solve_mode=solve_mode, expect_warning=False), 480, qd0=5.0
-    )
+    damped = _run_springs(damped_model, _construct(test, damped_model, solve_mode=solve_mode), 480, qd0=5.0)
+    undamped = _run_springs(undamped_model, _construct(test, undamped_model, solve_mode=solve_mode), 480, qd0=5.0)
     qd_damped = abs(float(damped.joint_qd.numpy()[0]))
     qd_undamped = abs(float(undamped.joint_qd.numpy()[0]))
     test.assertGreater(qd_undamped, 4.0, "undamped joint should keep coasting")
     test.assertLess(qd_damped, 0.2 * qd_undamped)
 
 
-def test_nonzero_spring_stiffness_warns_and_is_ignored(test, device, solve_mode="matrix_free"):
-    """Warn once at construction for nonzero MuJoCo spring stiffness and apply no spring torque."""
+def test_nonzero_spring_stiffness_is_ignored(test, device, solve_mode="matrix_free"):
+    """Accept unsupported core spring properties silently and apply no spring torque."""
     model = _hinge_model(device, damping=0.0, spring_k=4.0, spring_ref=0.5)
-    solver = _construct(test, model, solve_mode=solve_mode, expect_warning=True)
+    solver = _construct(test, model, solve_mode=solve_mode)
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), [0.0])
     state = _run_springs(model, solver, 240)
     np.testing.assert_allclose(state.joint_q.numpy(), [0.0], atol=1.0e-6)
@@ -1997,16 +1983,16 @@ def test_nonzero_spring_stiffness_warns_and_is_ignored(test, device, solve_mode=
 
 
 def test_zero_or_absent_spring_stiffness_does_not_warn(test, device, solve_mode="matrix_free"):
-    """Construct silently without the spring attributes, and with zero registered stiffness."""
-    _construct(test, _hinge_model(device, damping=0.1), solve_mode=solve_mode, expect_warning=False)
-    _construct(test, _hinge_model(device, damping=0.1, spring_k=0.0), solve_mode=solve_mode, expect_warning=False)
+    """Construct silently with default or explicitly zero spring stiffness."""
+    _construct(test, _hinge_model(device, damping=0.1), solve_mode=solve_mode)
+    _construct(test, _hinge_model(device, damping=0.1, spring_k=0.0), solve_mode=solve_mode)
 
 
 def test_spring_attribute_edits_leave_damping_refresh_intact(test, device, solve_mode="matrix_free"):
     """Refresh damping on a JOINT_DOF_PROPERTIES notify while still applying no spring torque."""
     model = _hinge_model(device, damping=0.0, spring_k=0.0, spring_ref=0.5)
-    solver = _construct(test, model, solve_mode=solve_mode, expect_warning=False)
-    model.mujoco.dof_passive_stiffness.assign([4.0])
+    solver = _construct(test, model, solve_mode=solve_mode)
+    model.joint_stiffness.assign([4.0])
     model.joint_damping.assign([3.0])
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
     state_0, state_1 = model.state(), model.state()
@@ -2035,7 +2021,7 @@ add_function_test(
     solve_mode="split",
 )
 for _name, _func in (
-    ("test_nonzero_spring_stiffness_warns_and_is_ignored", test_nonzero_spring_stiffness_warns_and_is_ignored),
+    ("test_nonzero_spring_stiffness_is_ignored", test_nonzero_spring_stiffness_is_ignored),
     ("test_zero_or_absent_spring_stiffness_does_not_warn", test_zero_or_absent_spring_stiffness_does_not_warn),
     (
         "test_spring_attribute_edits_leave_damping_refresh_intact",

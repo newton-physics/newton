@@ -488,6 +488,13 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 attributes["deformable_visual_meshes"] = attributes.pop("_deformable_visual_meshes", ())
                 attributes["deformable_visual_mesh_count"] = len(attributes["deformable_visual_meshes"])
                 attributes.pop("_deformable_visual_skin_batches", None)
+            elif isinstance(obj, Model.AttributeNamespace):
+                # Runtime compatibility hooks are not model state; record the canonical arrays instead.
+                attributes = {
+                    name: value
+                    for name, value in attributes.items()
+                    if name not in ("_deprecated_aliases", "_removed_attributes")
+                }
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,

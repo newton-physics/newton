@@ -255,7 +255,7 @@ def _gripper_scene(device, *, lift_z=0.5, lift_drive=True, flange_drive=True, lo
                     finger,
                     axis=(side, 0.0, 0.0),
                     parent_xform=wp.transform((side * 0.06, 0.0, -0.03), wp.quat_identity()),
-                    target_pos=-0.03,
+                    target_q=-0.03,
                     target_ke=2000.0,
                     target_kd=20.0,
                     limit_lower=-0.05,

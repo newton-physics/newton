@@ -4224,22 +4224,14 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _setup_passive_joint_forces(self, model) -> None:
         """Select the passive damping of the inverse-dynamics pass; its passive springs are zero.
 
-        Passive joint springs are not applied yet (newton-physics/newton#4516): the spring
-        buffers stay zero, and nonzero ``mujoco:dof_passive_stiffness`` warns at construction.
+        Passive joint springs are not applied yet (newton-physics/newton#4516);
+        their buffers stay zero.
         """
         n_dofs = max(int(model.joint_dof_count), 1)
         self._passive_joint_damping = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._refresh_passive_joint_damping()
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._passive_spring_ref = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
-        stiffness = getattr(getattr(model, "mujoco", None), "dof_passive_stiffness", None)
-        if stiffness is not None and model.joint_dof_count and np.any(stiffness.numpy() != 0.0):
-            warnings.warn(
-                "SolverSteel does not support passive joint springs yet and ignores nonzero "
-                "mujoco:dof_passive_stiffness (see newton-physics/newton#4516).",
-                NewtonWarning,
-                stacklevel=3,
-            )
 
     def _refresh_passive_joint_damping(self) -> None:
         """Copy the model's current joint damping into the solver's fixed damping buffer."""

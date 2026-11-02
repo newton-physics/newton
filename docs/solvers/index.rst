@@ -338,6 +338,14 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |yes|
      - |no|
      - |yes|
+   * - :attr:`~newton.Model.joint_stiffness` / :attr:`~newton.Model.joint_rest_q`
+     - REVOLUTE, PRISMATIC, D6
+     - |no|
+     - REVOLUTE, PRISMATIC, D6
+     - |no|
+     - Scalar joints and isotropic BALL springs
+     - |no|
+     - |no|
    * - :attr:`~newton.Model.joint_friction`
      - |no|
      - |yes| :sup:`9`
@@ -380,6 +388,11 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
+
+SemiImplicit angular springs use principal coordinates in [-pi, pi). Crossing
+that boundary produces a force jump of ``2*pi*stiffness`` and can destabilize
+motion near it. Use Featherstone or MuJoCo for boundary-crossing or multi-turn
+motion; see :ref:`passive-joint-springs` for details.
 
 **Actuation and control**
 

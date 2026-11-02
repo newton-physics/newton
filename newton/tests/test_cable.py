@@ -4156,7 +4156,7 @@ def _cable_generic_target_pose_is_structural_rest_impl(test: unittest.TestCase, 
     angular_axes = [
         newton.ModelBuilder.JointDofConfig(
             axis=axis,
-            target_pos=float(rest_angles[i]),
+            target_q=float(rest_angles[i]),
             target_ke=(20.0, 20.0, 12.0)[i],
             actuator_mode=newton.JointTargetMode.NONE,
         )
@@ -7689,10 +7689,10 @@ class TestCable(unittest.TestCase):
             )
 
         nonzero_linear_targets = [
-            newton.ModelBuilder.JointDofConfig(axis=axis, target_pos=0.1 if i == 0 else 0.0)
+            newton.ModelBuilder.JointDofConfig(axis=axis, target_q=0.1 if i == 0 else 0.0)
             for i, axis in enumerate(canonical)
         ]
-        with self.assertRaisesRegex(ValueError, "zero linear target_pos values"):
+        with self.assertRaisesRegex(ValueError, "zero linear target_q values"):
             builder.add_joint(
                 newton.JointType.ROD,
                 -1,
