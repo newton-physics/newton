@@ -189,8 +189,8 @@ def _eval_effective_damping(
     q_seal: wp.quat,  # seal frame world orientation
     q_body_b: wp.quat,  # gripped body world orientation
     r_body_b: wp.vec3,  # gripped body COM -> seal point (world)
-    mass_b: float,  # gripped body mass
-    inertia_b: wp.mat33,  # gripped body inertia tensor (body frame)
+    inv_m: float,  # gripped body inverse mass (0 for a body with no mass)
+    inv_inertia: wp.mat33,  # gripped body inverse inertia tensor (body frame)
     d_normal: float,
     d_shear_x: float,
     d_shear_y: float,
@@ -218,9 +218,6 @@ def _eval_effective_damping(
     axes_w = wp.mat33(0.0)
     for i in range(3):
         axes_w[i] = wp.quat_rotate(q_seal, axes[i])
-
-    inv_m = wp.where(mass_b > 0.0, 1.0 / mass_b, 0.0)
-    inv_inertia = wp.inverse(inertia_b)
 
     # Translational dofs: shear x/y and normal. gamma_effective = gamma/[1 + gamma*dt/m_eff]
     d_trans_eff = wp.vec3(0.0, 0.0, 0.0)
@@ -334,8 +331,8 @@ def _eval_pad_force_linear_kernel(
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
-    body_mass: wp.array[float],
-    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
     dt: float,
     # outputs (mutated in place)
     pad_seal_load: wp.array[wp.vec4],  # out: (normal, shear, peel, torsion) after the caps
@@ -383,8 +380,8 @@ def _eval_pad_force_linear_kernel(
         q_a_seal,
         q_body_b,
         r_b,
-        body_mass[engaged_body_b],
-        body_inertia[engaged_body_b],
+        body_inv_mass[engaged_body_b],
+        body_inv_inertia[engaged_body_b],
         gripper_d_normal[gripper_id],
         gripper_d_shear_x[gripper_id],
         gripper_d_shear_y[gripper_id],
@@ -1233,7 +1230,7 @@ def evaluate_gripper_force(
     (gripped body).
 
     Args:
-        model: Finalized Newton model; source of ``body_com``, ``body_mass``, ``body_inertia``.
+        model: Finalized Newton model; source of ``body_com``, ``body_inv_mass``, ``body_inv_inertia``.
         state: Simulation state; ``body_q`` and ``body_qd`` are read, ``body_f`` is accumulated into.
         gripper_model: Finalized gripper holding pad/gripper layout and seal stiffness/damping arrays.
         gripper_state_input: Per-pad input state; ``pad_engaged_bs[..][0]`` selects engaged pads and
@@ -1276,8 +1273,8 @@ def evaluate_gripper_force(
             model.body_com,
             state.body_q,
             state.body_qd,
-            model.body_mass,
-            model.body_inertia,
+            model.body_inv_mass,
+            model.body_inv_inertia,
             dt,
             # outputs (mutated in place)
             gripper_state_output.pad_seal_load,
