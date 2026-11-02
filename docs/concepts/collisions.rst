@@ -1273,7 +1273,7 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 **How it works:**
 
-1. Contacts are binned by normal direction (the 20 face directions of an icosahedron that points a face at +Z and -Z, with +/-X and +/-Y inside faces, so contacts on a flat floor or wall stay in one bin)
+1. Contacts are binned by normal direction (polyhedron face directions)
 2. Within each bin, contacts are scored by spatial distribution and penetration depth
 3. Representative contacts are selected to preserve coverage and depth cues
 

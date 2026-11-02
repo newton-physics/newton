@@ -47,6 +47,11 @@ The reduction uses three complementary strategies:
    tracks its deepest contact, providing spatial coverage and preventing
    sudden contact jumps when different mesh regions become deepest.
 
+All normal-bin configurations balance clearance from bin boundaries across
+the coordinate axes, treating X-, Y-, and Z-up scenes equally. This stabilizes
+nearly axis-aligned ground and wall contacts. Binning remains memoryless:
+contacts near other bin boundaries can still change groups as their normals move.
+
 See Also:
     :class:`GlobalContactReducer` in ``contact_reduction_global.py`` for the
     hashtable-based approach used for mesh-mesh (SDF) collisions.
@@ -125,71 +130,63 @@ _HEXAHEDRON_NORMALS = (
     0.0,  0.0, -1.0,
 )
 
+# Rotate the cube-vertex normals 60 degrees around (1, 1, 1).
+# Every coordinate axis then has 19.4712 degrees of clearance from a bin boundary.
 _OCTAHEDRON_NORMALS = (
-    0.57735027,  0.57735027,  0.57735027,
-    0.57735027,  0.57735027, -0.57735027,
-   -0.57735027,  0.57735027,  0.57735027,
-   -0.57735027,  0.57735027, -0.57735027,
-    0.57735027, -0.57735027,  0.57735027,
-    0.57735027, -0.57735027, -0.57735027,
-   -0.57735027, -0.57735027,  0.57735027,
-   -0.57735027, -0.57735027, -0.57735027,
+     0.57735027,  0.57735027,  0.57735027,
+    -0.19245009,  0.96225045, -0.19245009,
+    -0.19245009, -0.19245009,  0.96225045,
+    -0.96225045,  0.19245009,  0.19245009,
+     0.96225045, -0.19245009, -0.19245009,
+     0.19245009,  0.19245009, -0.96225045,
+     0.19245009, -0.96225045,  0.19245009,
+    -0.57735027, -0.57735027, -0.57735027,
 )
 
-# Dodecahedron face normals (= normalised icosahedron vertices).
-# Ordered: top group (0-3, Y > 0), equatorial (4-7, Y = 0),
-# bottom group (8-11, Y < 0).
-# a = 1/sqrt(1+phi^2) ~ 0.52573111, b = phi/sqrt(1+phi^2) ~ 0.85065081
+# Rotate the canonical icosahedral vertices 23.4309116 degrees around
+# (1, 1, 1), giving every coordinate axis 14.8960 degrees of bin clearance.
+# Preserve the original top/equatorial/bottom ordering for the pruned search;
+# its cap axis is the original +Y axis after the same rotation.
 _DODECAHEDRON_NORMALS = (
-    # Top group (faces 0-3, Y > 0)
-    0.52573111,  0.85065081,  0.0,
-   -0.52573111,  0.85065081,  0.0,
-    0.0,         0.52573111,  0.85065081,
-    0.0,         0.52573111, -0.85065081,
-    # Equatorial band (faces 4-7, Y = 0)
-    0.85065081,  0.0,         0.52573111,
-    0.85065081,  0.0,        -0.52573111,
-   -0.85065081,  0.0,         0.52573111,
-   -0.85065081,  0.0,        -0.52573111,
-    # Bottom group (faces 8-11, Y < 0)
-    0.0,        -0.52573111,  0.85065081,
-    0.0,        -0.52573111, -0.85065081,
-    0.52573111, -0.85065081,  0.0,
-   -0.52573111, -0.85065081,  0.0,
+     0.32491969,  0.93903535,  0.11242688,
+    -0.66874031,  0.66874030,  0.32491970,
+     0.11242688,  0.32491969,  0.93903535,
+    -0.32491970,  0.66874031, -0.66874030,
+     0.93903535,  0.11242688,  0.32491969,
+     0.66874030,  0.32491970, -0.66874031,
+    -0.66874030, -0.32491970,  0.66874031,
+    -0.93903535, -0.11242688, -0.32491969,
+     0.32491970, -0.66874031,  0.66874030,
+    -0.11242688, -0.32491969, -0.93903535,
+     0.66874031, -0.66874030, -0.32491970,
+    -0.32491969, -0.93903535, -0.11242688,
 )
 
-# Icosahedron face normals (20 faces), oriented so a face center points at +Z
-# and another at -Z.  A world axis on a bin boundary makes flat contacts change
-# bins on rounding noise, so the yaw maximizes the bin margin at +/-X and +/-Y
-# (0.066 in dot product, about 4 degrees); the margin at +/-Z is 0.255 (about
-# 20 degrees).  Ordered by Z so get_slot() can search contiguous ranges.
+# Align the original face normals with the dual of the canonical icosahedron,
+# then rotate 97.7612433 degrees around (1, 1, 1). All coordinate axes have
+# 14.0816 degrees of bin clearance. Preserve the original cap/belt ordering
+# for the pruned search, whose cap axis rotates with the face normals.
 _ICOSAHEDRON_NORMALS = (
-    # +Z face (face 0)
-    0.0,         0.0,         1.0,
-    # Upper ring (faces 1-3, Z ~ +0.745)
-    0.17291155, -0.64385245,  0.74535603,
-    0.47113684,  0.47167205,  0.74535599,
-   -0.64404845,  0.17218052,  0.74535593,
-    # Upper belt (faces 4-9, Z ~ +0.333)
-   -0.86918069, -0.36525859,  0.33333330,
-   -0.36427169, -0.86959473,  0.33333337,
-    0.75091367, -0.57010306,  0.33333340,
-    0.93522695,  0.11932898,  0.33333339,
-    0.11826704,  0.93536185,  0.33333335,
-   -0.57095543,  0.75026579,  0.33333337,
-    # Lower belt (faces 10-15, Z ~ -0.333)
-   -0.93522697, -0.11932883, -0.33333339,
-   -0.11826707, -0.93536184, -0.33333335,
-    0.57095545, -0.75026579, -0.33333334,
-    0.86918063,  0.36525872, -0.33333332,
-    0.36427171,  0.86959472, -0.33333337,
-   -0.75091368,  0.57010308, -0.33333336,
-    # Lower ring (faces 16-18, Z ~ -0.745)
-   -0.47113677, -0.47167196, -0.74535609,
-    0.64404840, -0.17218051, -0.74535597,
-   -0.17291149,  0.64385240, -0.74535609,
-    # -Z face (face 19)
-    0.0,         0.0,        -1.0,
+     0.80103071,  0.29640806, -0.52008851,
+     0.29640808,  0.80103070, -0.52008851,
+    -0.29640806,  0.52008851, -0.80103071,
+    -0.15816595, -0.15816596, -0.97466254,
+     0.52008851, -0.29640808, -0.80103070,
+     0.80103070, -0.52008851,  0.29640808,
+     0.52008851, -0.80103071, -0.29640806,
+     0.57735027,  0.57735027,  0.57735027,
+     0.97466254,  0.15816595,  0.15816596,
+    -0.52008851,  0.80103071,  0.29640806,
+     0.15816596,  0.97466254,  0.15816595,
+    -0.97466254, -0.15816595, -0.15816596,
+    -0.80103070,  0.52008851, -0.29640808,
+    -0.15816596, -0.97466254, -0.15816595,
+    -0.57735027, -0.57735027, -0.57735027,
+     0.15816595,  0.15816596,  0.97466254,
+    -0.52008851,  0.29640808,  0.80103070,
+    -0.80103071, -0.29640806,  0.52008851,
+    -0.29640808, -0.80103070,  0.52008851,
+     0.29640806, -0.52008851,  0.80103071,
 )
 # fmt: on
 
@@ -217,44 +214,44 @@ def get_face_normal(face_idx: int) -> wp.vec3:
     if wp.static(NORMAL_BINNING_POLYHEDRON != "icosahedron"):
         return FACE_NORMALS[face_idx]
     if face_idx == 0:
-        return wp.vec3(0.0, 0.0, 1.0)
+        return wp.vec3(0.80103071, 0.29640806, -0.52008851)
     if face_idx == 1:
-        return wp.vec3(0.17291155, -0.64385245, 0.74535603)
+        return wp.vec3(0.29640808, 0.80103070, -0.52008851)
     if face_idx == 2:
-        return wp.vec3(0.47113684, 0.47167205, 0.74535599)
+        return wp.vec3(-0.29640806, 0.52008851, -0.80103071)
     if face_idx == 3:
-        return wp.vec3(-0.64404845, 0.17218052, 0.74535593)
+        return wp.vec3(-0.15816595, -0.15816596, -0.97466254)
     if face_idx == 4:
-        return wp.vec3(-0.86918069, -0.36525859, 0.33333330)
+        return wp.vec3(0.52008851, -0.29640808, -0.80103070)
     if face_idx == 5:
-        return wp.vec3(-0.36427169, -0.86959473, 0.33333337)
+        return wp.vec3(0.80103070, -0.52008851, 0.29640808)
     if face_idx == 6:
-        return wp.vec3(0.75091367, -0.57010306, 0.33333340)
+        return wp.vec3(0.52008851, -0.80103071, -0.29640806)
     if face_idx == 7:
-        return wp.vec3(0.93522695, 0.11932898, 0.33333339)
+        return wp.vec3(0.57735027, 0.57735027, 0.57735027)
     if face_idx == 8:
-        return wp.vec3(0.11826704, 0.93536185, 0.33333335)
+        return wp.vec3(0.97466254, 0.15816595, 0.15816596)
     if face_idx == 9:
-        return wp.vec3(-0.57095543, 0.75026579, 0.33333337)
+        return wp.vec3(-0.52008851, 0.80103071, 0.29640806)
     if face_idx == 10:
-        return wp.vec3(-0.93522697, -0.11932883, -0.33333339)
+        return wp.vec3(0.15816596, 0.97466254, 0.15816595)
     if face_idx == 11:
-        return wp.vec3(-0.11826707, -0.93536184, -0.33333335)
+        return wp.vec3(-0.97466254, -0.15816595, -0.15816596)
     if face_idx == 12:
-        return wp.vec3(0.57095545, -0.75026579, -0.33333334)
+        return wp.vec3(-0.80103070, 0.52008851, -0.29640808)
     if face_idx == 13:
-        return wp.vec3(0.86918063, 0.36525872, -0.33333332)
+        return wp.vec3(-0.15816596, -0.97466254, -0.15816595)
     if face_idx == 14:
-        return wp.vec3(0.36427171, 0.86959472, -0.33333337)
+        return wp.vec3(-0.57735027, -0.57735027, -0.57735027)
     if face_idx == 15:
-        return wp.vec3(-0.75091368, 0.57010308, -0.33333336)
+        return wp.vec3(0.15816595, 0.15816596, 0.97466254)
     if face_idx == 16:
-        return wp.vec3(-0.47113677, -0.47167196, -0.74535609)
+        return wp.vec3(-0.52008851, 0.29640808, 0.80103070)
     if face_idx == 17:
-        return wp.vec3(0.64404840, -0.17218051, -0.74535597)
+        return wp.vec3(-0.80103071, -0.29640806, 0.52008851)
     if face_idx == 18:
-        return wp.vec3(-0.17291149, 0.64385240, -0.74535609)
-    return wp.vec3(0.0, 0.0, -1.0)
+        return wp.vec3(-0.29640808, -0.80103070, 0.52008851)
+    return wp.vec3(0.29640806, -0.52008851, 0.80103071)
 
 
 @wp.func
@@ -265,10 +262,10 @@ def get_slot(normal: wp.vec3) -> int:
     ``NORMAL_BINNING_POLYHEDRON``:
 
     * **hexahedron** (6 faces) — O(1) axis-aligned comparison, no dot products.
-    * **dodecahedron** (12 faces) — Y-based range pruning over
+    * **dodecahedron** (12 faces) — rotated-cap-axis range pruning over
       top / equatorial / bottom groups (4-8 dot products).
-    * **icosahedron** (20 faces) — Z-based range pruning over
-      the polar faces, rings and belts (4-15 dot products).
+    * **icosahedron** (20 faces) — rotated-cap-axis range pruning over
+      top cap / equatorial belt / bottom cap (5-15 dot products).
     * **octahedron** and any other polyhedron — full linear scan.
 
     Args:
@@ -299,7 +296,7 @@ def get_slot(normal: wp.vec3) -> int:
                 return 5
 
     elif wp.static(NORMAL_BINNING_POLYHEDRON == "dodecahedron"):
-        up_dot = normal[1]
+        up_dot = wp.dot(normal, wp.vec3(-0.20209268, 0.94502682, 0.25706587))
 
         # Conservative thresholds: only skip regions when clearly in a polar cap.
         # Face layout: 0-3 = top group, 4-7 = equatorial, 8-11 = bottom group.
@@ -328,60 +325,42 @@ def get_slot(normal: wp.vec3) -> int:
         return best_slot
 
     elif wp.static(NORMAL_BINNING_POLYHEDRON == "icosahedron"):
-        up_dot = normal[2]
+        # Dot with the rotated cap axis, not world Y. Rotation preserves the
+        # original conservative cap thresholds and candidate ranges.
+        up_dot = wp.dot(normal, wp.vec3(0.29269405, 0.29269407, -0.91030784))
 
-        # Each range holds every face whose bin reaches that band of Z: the belts
-        # reach |Z| < 0.795 and the rings |Z| > 0.187 on their own side. Keep each
-        # range compile-time constant so Warp embeds only the selected normals.
-        if up_dot > 0.85:
+        # Keep each candidate range compile-time constant so Warp embeds only the selected normals.
+        if up_dot > 0.65:
             best_slot = 0
             max_dot = wp.dot(normal, FACE_NORMALS[0])
-            for i in range(1, 4):
+            for i in range(1, 5):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d
                     best_slot = i
             return best_slot
-        elif up_dot < -0.85:
-            best_slot = 16
-            max_dot = wp.dot(normal, FACE_NORMALS[16])
-            for i in range(17, 20):
-                d = wp.dot(normal, FACE_NORMALS[i])
-                if d > max_dot:
-                    max_dot = d
-                    best_slot = i
-            return best_slot
-        elif up_dot > 0.25:
-            best_slot = 0
-            max_dot = wp.dot(normal, FACE_NORMALS[0])
-            for i in range(1, 10):
-                d = wp.dot(normal, FACE_NORMALS[i])
-                if d > max_dot:
-                    max_dot = d
-                    best_slot = i
-            return best_slot
-        elif up_dot < -0.25:
-            best_slot = 10
-            max_dot = wp.dot(normal, FACE_NORMALS[10])
-            for i in range(11, 20):
+        elif up_dot < -0.65:
+            best_slot = 15
+            max_dot = wp.dot(normal, FACE_NORMALS[15])
+            for i in range(16, 20):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d
                     best_slot = i
             return best_slot
         elif up_dot >= 0.0:
-            best_slot = 1
-            max_dot = wp.dot(normal, FACE_NORMALS[1])
-            for i in range(2, 16):
+            best_slot = 0
+            max_dot = wp.dot(normal, FACE_NORMALS[0])
+            for i in range(1, 15):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d
                     best_slot = i
             return best_slot
         else:
-            best_slot = 4
-            max_dot = wp.dot(normal, FACE_NORMALS[4])
-            for i in range(5, 19):
+            best_slot = 5
+            max_dot = wp.dot(normal, FACE_NORMALS[5])
+            for i in range(6, 20):
                 d = wp.dot(normal, FACE_NORMALS[i])
                 if d > max_dot:
                     max_dot = d

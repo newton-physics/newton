@@ -13,9 +13,9 @@ import unittest
 import numpy as np
 import warp as wp
 
-import newton
 from newton._src.geometry.contact_reduction import (
     _POLYHEDRON_BINS,
+    _POLYHEDRON_NORMALS_DATA,
     FACE_NORMALS,
     MAX_CONTACTS_PER_PAIR,
     NORMAL_BINNING_POLYHEDRON,
@@ -108,7 +108,7 @@ def test_compute_num_reduction_slots(test, device):
 
 
 def test_get_slot_axis_aligned_normals(test, device):
-    """Test get_slot with axis-aligned normals."""
+    """Keep axis-aligned normals and nearby ground and wall normals in valid, stable bins."""
     test_normals = [
         wp.vec3(0.0, 1.0, 0.0),  # +Y (top)
         wp.vec3(0.0, -1.0, 0.0),  # -Y (bottom)
@@ -129,11 +129,49 @@ def test_get_slot_axis_aligned_normals(test, device):
         test.assertGreaterEqual(slot, 0, f"Slot {i} is negative")
         test.assertLess(slot, NUM_NORMAL_BINS, f"Slot {i} exceeds max ({NUM_NORMAL_BINS})")
 
+    # Require the same clearance around every coordinate axis. Keep thresholds
+    # just inside the geometric margins to allow for the rounded table entries.
+    protected_degrees = {"hexahedron": 44.0, "octahedron": 19.0, "dodecahedron": 14.0, "icosahedron": 14.0}
+    axes = np.asarray(test_normals)
+
+    # Check every table on CI even when only one configuration is compiled.
+    for polyhedron, values in _POLYHEDRON_NORMALS_DATA.items():
+        with test.subTest(polyhedron=polyhedron):
+            tilt = np.deg2rad(protected_degrees[polyhedron])
+            tilted_normals = []
+            for axis in axes:
+                tangent_axes = np.eye(3)[axis == 0.0]
+                for angle in np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False):
+                    tangent = np.cos(angle) * tangent_axes[0] + np.sin(angle) * tangent_axes[1]
+                    tilted_normals.append(np.cos(tilt) * axis + np.sin(tilt) * tangent)
+            tilted_normals = np.asarray(tilted_normals, dtype=np.float32)
+            if polyhedron == NORMAL_BINNING_POLYHEDRON:
+                configured_tilted_normals = tilted_normals
+            faces = np.asarray(values, dtype=np.float32).reshape(-1, 3)
+            best_faces = (axes @ faces.T).argmax(axis=1)
+            # Bound the whole cone, including directions between the samples:
+            # a bin boundary is perpendicular to the difference of its faces.
+            margins = []
+            for axis, best in zip(axes, best_faces, strict=True):
+                differences = faces[best] - np.delete(faces, best, axis=0)
+                distances = differences @ axis / np.linalg.norm(differences, axis=1)
+                margin = np.rad2deg(np.arcsin(np.clip(distances, -1.0, 1.0))).min()
+                test.assertGreater(margin, protected_degrees[polyhedron])
+                margins.append(margin)
+            test.assertLess(np.ptp(margins), 1.0e-4, "Axis clearances must agree within table rounding error")
+            expected = np.repeat(best_faces[:, None], 32, axis=1)
+            np.testing.assert_array_equal((tilted_normals @ faces.T).argmax(axis=1).reshape(6, 32), expected)
+
+    normals = wp.array(configured_tilted_normals, dtype=wp.vec3, device=device)
+    slots = wp.empty(len(configured_tilted_normals), dtype=int, device=device)
+    wp.launch(_get_slot_kernel, dim=len(configured_tilted_normals), inputs=[normals, slots], device=device)
+    np.testing.assert_array_equal(slots.numpy().reshape(6, 32), np.repeat(slots_np[:, None], 32, axis=1))
+
 
 def test_get_slot_matches_best_face_normal(test, device):
     """Test that get_slot returns the face with highest dot product."""
     rng = np.random.default_rng(42)
-    test_normals_np = rng.standard_normal((50, 3)).astype(np.float32)
+    test_normals_np = rng.standard_normal((2048, 3)).astype(np.float32)
     test_normals_np /= np.linalg.norm(test_normals_np, axis=1, keepdims=True)
 
     test_normals = [wp.vec3(n[0], n[1], n[2]) for n in test_normals_np]
@@ -156,88 +194,6 @@ def test_get_slot_matches_best_face_normal(test, device):
         test.assertEqual(
             result_slot, cpu_best_slot, f"Normal {i}: result slot {result_slot} != expected slot {cpu_best_slot}"
         )
-
-
-def _slots(normals, device):
-    normals = np.asarray(normals, dtype=np.float32)
-    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    out = wp.zeros(len(normals), dtype=int, device=device)
-    wp.launch(
-        _get_slot_kernel, dim=len(normals), inputs=[wp.array(normals, dtype=wp.vec3, device=device), out], device=device
-    )
-    return normals, out.numpy()
-
-
-def _tilted(axis, angle, count=16):
-    """Unit normals at ``angle`` [rad] from ``axis``, spread around it."""
-    axis = np.asarray(axis, dtype=np.float64)
-    tangent = np.cross(axis, [0.0, 0.0, 1.0] if abs(axis[2]) < 0.9 else [1.0, 0.0, 0.0])
-    tangent /= np.linalg.norm(tangent)
-    bitangent = np.cross(axis, tangent)
-    phi = np.linspace(0.0, 2.0 * np.pi, count, endpoint=False)[:, None]
-    return np.cos(angle) * axis + np.sin(angle) * (np.cos(phi) * tangent + np.sin(phi) * bitangent)
-
-
-def test_get_slot_keeps_world_axes_inside_one_bin(test, device):
-    """Normals near a world axis share the axis' bin, so rounding noise can't move flat contacts between bins."""
-    for axis, angle in (
-        ((0.0, 0.0, 1.0), np.radians(15.0)),
-        ((0.0, 0.0, -1.0), np.radians(15.0)),
-        ((1.0, 0.0, 0.0), np.radians(3.0)),
-        ((-1.0, 0.0, 0.0), np.radians(3.0)),
-        ((0.0, 1.0, 0.0), np.radians(3.0)),
-        ((0.0, -1.0, 0.0), np.radians(3.0)),
-    ):
-        normals = np.concatenate([[axis], _tilted(axis, 1.0e-4), _tilted(axis, angle)])
-        _, slots = _slots(normals, device)
-        test.assertEqual(len(set(slots.tolist())), 1, f"axis {axis} spans bins {sorted(set(slots.tolist()))}")
-
-
-def test_get_slot_matches_best_face_normal_near_range_bounds(test, device):
-    """Match a full search where get_slot() switches ranges and where bins meet."""
-    rng = np.random.default_rng(7)
-    face_normals = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)])
-    bands = []
-    for z in (1.0, 0.85, 0.79, 0.65, 0.25, 0.19, 0.0, -0.19, -0.25, -0.65, -0.79, -0.85, -1.0):
-        zz = np.clip(z + rng.uniform(-1.0e-3, 1.0e-3, 400), -1.0, 1.0)
-        phi = rng.uniform(0.0, 2.0 * np.pi, 400)
-        r = np.sqrt(1.0 - zz**2)
-        bands.append(np.stack([r * np.cos(phi), r * np.sin(phi), zz], axis=1))
-    for axis in np.eye(3):
-        bands.append(np.concatenate([[axis], [-axis], _tilted(axis, 1.0e-4), _tilted(-axis, 1.0e-4)]))
-    normals, slots = _slots(np.concatenate(bands), device)
-    # Float32 dot products can't separate faces closer than this.
-    dots = normals @ face_normals.T
-    np.testing.assert_array_less(dots.max(axis=1) - 1.0e-6, dots[np.arange(len(normals)), slots])
-
-
-def test_mesh_ground_contacts_near_up_share_one_bin(test, device):
-    """Box-on-mesh contacts whose normals are within a few degrees of +Z all bin together."""
-    rng = np.random.default_rng(0)
-    xs = np.linspace(-0.5, 0.5, 9)
-    x, y = np.meshgrid(xs, xs, indexing="ij")
-    vertices = np.stack([x.ravel(), y.ravel(), rng.uniform(-1.0e-5, 1.0e-5, x.size)], axis=1)
-    indices = []
-    for i in range(8):
-        for j in range(8):
-            a, b, c, d = i * 9 + j, (i + 1) * 9 + j, (i + 1) * 9 + j + 1, i * 9 + j + 1
-            indices += [a, b, c, a, c, d]
-    builder = newton.ModelBuilder()
-    builder.add_shape_mesh(-1, mesh=newton.Mesh(vertices.astype(np.float32), np.array(indices, dtype=np.int32)))
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0495), wp.quat_identity()), mass=1.0)
-    builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.05)
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model)
-    contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
-    count = int(contacts.rigid_contact_count.numpy()[0])
-    normals = contacts.rigid_contact_normal.numpy()[:count]
-    up = normals[np.abs(normals @ np.array([0.0, 0.0, 1.0])) > np.cos(np.radians(5.0))]
-    test.assertGreater(len(up), 4, "the box does not rest on the mesh")
-    _, slots = _slots(up, device)
-    test.assertEqual(
-        len(set(slots.tolist())), 1, f"near-vertical mesh contacts span bins {sorted(set(slots.tolist()))}"
-    )
 
 
 # =============================================================================
@@ -270,26 +226,6 @@ for device in devices:
         TestContactReduction,
         "test_get_slot_matches_best_face_normal",
         test_get_slot_matches_best_face_normal,
-        devices=[device],
-    )
-
-    if NORMAL_BINNING_POLYHEDRON == "icosahedron":
-        add_function_test(
-            TestContactReduction,
-            "test_get_slot_keeps_world_axes_inside_one_bin",
-            test_get_slot_keeps_world_axes_inside_one_bin,
-            devices=[device],
-        )
-    add_function_test(
-        TestContactReduction,
-        "test_get_slot_matches_best_face_normal_near_range_bounds",
-        test_get_slot_matches_best_face_normal_near_range_bounds,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactReduction,
-        "test_mesh_ground_contacts_near_up_share_one_bin",
-        test_mesh_ground_contacts_near_up_share_one_bin,
         devices=[device],
     )
 
