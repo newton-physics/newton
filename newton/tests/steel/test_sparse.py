@@ -47,6 +47,7 @@ from newton._src.solvers.steel.sparse_mass_matrix import (
     solve_sparse_mass_matrix,
 )
 from newton._src.solvers.steel.sparse_pgs import _get_pgs_solve_sparse_kernel
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import (
     _build_mixed_response_model,
@@ -2498,7 +2499,9 @@ class TestSteelSparseSolver(unittest.TestCase):
     def test_free_body_angular_rows_keep_dense_factors(self):
         """Keep dense factors, and solve the angular rows, when a free body has the rolling friction mode."""
         model = _build_model(free_count=1, friction_mode=newton.ShapeFrictionMode.ROLLING)
-        solver = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
+        # The tripod's rolling shapes have no torsion radius, which leaves their contacts with sliding friction.
+        with self.assertWarnsRegex(NewtonWarning, "articulated contacts"):
+            solver = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
         self.assertTrue(solver._free_rigid_angular_rows)
         self.assertIsNone(solver._sparse_mass_matrix_size)
         pipeline = newton.CollisionPipeline(model)

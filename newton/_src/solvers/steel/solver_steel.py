@@ -1326,8 +1326,8 @@ class SolverSteel(SolverBase, CouplingInterface):
       angular coefficients match. A contact with angular rows takes up to 6 free-body rows instead of 3;
       raise ``free_body_constraint_max`` if :attr:`constraint_overflow` reports dropped rows. The rows
       need ``articulated_contact_response="immediate"``, ``row_schedule="interleaved"``,
-      ``friction_mode="fixed_normal"`` and no contact compliance; otherwise the solver warns and the
-      contacts use sliding friction. The solver decides at construction whether to build the rows, so a
+      ``friction_mode="fixed_normal"`` and no contact compliance; otherwise free-body contacts keep
+      sliding friction, and ``ROLLING`` shapes warn as an unsupported mode. The solver decides at construction whether to build the rows, so a
       solver built without them must be rebuilt to gain them. On a solver with the rows, construction
       and an eager ``SHAPE_PROPERTIES`` notification raise :class:`ValueError` for a mode outside
       :class:`~newton.ShapeFrictionMode` or a negative or non-finite coefficient that a mode enables.

@@ -426,7 +426,13 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                     ),
                 )
             model = builder.finalize()
-            solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, friction_anchor_beta=0.2)
+            options = {"solve_mode": "matrix_free", "iterations": 32, "friction_anchor_beta": 0.2}
+            if mixed:
+                # The link's rolling shape has no torsion radius, which leaves its contacts with sliding friction.
+                with self.assertWarnsRegex(NewtonWarning, "articulated contacts"):
+                    solver = SolverSteel(model, **options)
+            else:
+                solver = SolverSteel(model, **options)
             self.assertEqual(solver._free_rigid_angular_rows, mixed)
             pipeline = newton.CollisionPipeline(model, deterministic=True)
             contacts = pipeline.contacts()
@@ -725,18 +731,19 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertTrue(SolverSteel(model, solve_mode="matrix_free")._free_rigid_angular_rows)
 
     def test_invalid_values_raise_and_unsupported_options_warn(self):
-        """Reject invalid modes and coefficients; warn and leave the rows off for unsupported options."""
+        """Reject invalid modes and coefficients; leave the rows off, warning for ROLLING, for unsupported options."""
         model, _ = _scene("sphere")
         model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         for options, option in (
             ({"solve_mode": "split"}, "solve_mode='split'"),
-            # Point friction: bisection with persistent patches would warn before the warning under test.
+            # Point friction: bisection with persistent patches would warn about the patches as well.
             ({"friction_mode": "bisection", "friction_anchor_beta": 0.0}, "friction_mode='bisection'"),
             ({"articulated_contact_response": "propagation"}, "articulated_contact_response='propagation'"),
         ):
-            with self.subTest(option=option), self.assertWarnsRegex(NewtonWarning, option):
-                solver = SolverSteel(model, **{"solve_mode": "matrix_free", **options})
-            self.assertFalse(solver._free_rigid_angular_rows)
+            with self.subTest(option=option):
+                with self.assertWarnsRegex(NewtonWarning, "does not support ROLLING friction"):
+                    solver = SolverSteel(model, **{"solve_mode": "matrix_free", **options})
+                self.assertFalse(solver._free_rigid_angular_rows)
         for mode in (-1, 4):
             model.shape_material_friction_mode.fill_(mode)
             with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "ShapeFrictionMode value"):

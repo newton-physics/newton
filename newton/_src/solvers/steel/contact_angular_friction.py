@@ -12,14 +12,10 @@ rolling pair on a disk, the spin row on a box. Only contacts on the free-body ro
 against free bodies or static and kinematic geometry) receive them.
 """
 
-import warnings
-
 import numpy as np
 import warp as wp
 
-from ...exceptions import NewtonWarning
 from ...sim import ShapeFrictionMode
-from ...utils.deprecation import external_stacklevel
 from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_CONTACT_SPIN,
@@ -32,8 +28,8 @@ from .kernels import (
 def configure_free_rigid_angular_friction(solver, model) -> None:
     """Decide from the shapes' friction modes whether free-body contacts get angular rows.
 
-    Needs the free-body classification. Raises :class:`ValueError` for an invalid mode or coefficient the rows read,
-    and warns and leaves the rows off for an option they do not support.
+    Needs the free-body classification. Raises :class:`ValueError` for an invalid mode or coefficient the rows read;
+    an option the rows do not support leaves them off.
     """
     solver._free_rigid_angular_rows = False
     solver._free_rigid_route_body = None
@@ -47,27 +43,13 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
     route_shape = (shape_body < 0) | (route_body[np.maximum(shape_body, 0)] != 0)
     if not np.any(route_shape & (values >= int(ShapeFrictionMode.TORSIONAL))):
         return
-    unsupported = [
-        name
-        for name, requested in (
-            (f"solve_mode={solver._solve_mode!r}", solver._solve_mode != "matrix_free"),
-            (
-                f"articulated_contact_response={solver._articulated_contact_response!r}",
-                solver._articulated_contact_response != "immediate",
-            ),
-            (f"row_schedule={solver._row_schedule!r}", solver._row_schedule != "interleaved"),
-            (f"friction_mode={solver._friction_mode!r}", solver._friction_mode != "fixed_normal"),
-            ("contact_compliance=True", solver._contact_compliance),
-        )
-        if requested
-    ]
-    if unsupported:
-        warnings.warn(
-            f"SolverSteel's free-body torsional and rolling friction does not support {', '.join(unsupported)}; "
-            "free-body contacts use sliding friction.",
-            NewtonWarning,
-            stacklevel=external_stacklevel(),
-        )
+    if (
+        solver._solve_mode != "matrix_free"
+        or solver._articulated_contact_response != "immediate"
+        or solver._row_schedule != "interleaved"
+        or solver._friction_mode != "fixed_normal"
+        or solver._contact_compliance
+    ):
         return
     _check_coefficients(model, values)
     solver._free_rigid_angular_rows = True

@@ -3944,6 +3944,8 @@ class TestSteelPairedResponse(unittest.TestCase):
                     free_body_constraint_max=32,
                 )
             set_torsion_radius(model, 0.0)
+            # The torsion radius raised the friction modes; without it, TORSIONAL would add free-body spin rows.
+            model.shape_material_friction_mode.fill_(int(newton.ShapeFrictionMode.SLIDING))
             point = SolverSteel(
                 model,
                 solve_mode="matrix_free",
