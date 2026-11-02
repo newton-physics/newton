@@ -835,7 +835,7 @@ class Example:
             env_body_to_shape_id[crate_body_local_ids[i]] = pick["path_shape_map"][crate_prim + "/collision"]
 
         # shape_mesh_id_wp[shape_id] is the SDF mesh id for that collision shape (0 for non-pick shapes).
-        # model.shape_transform[shape_id] gives T_bs (mesh-in-body transform), replacing body_mesh_xform_wp.
+        # model.shape_transform[shape_id] gives T_bs (mesh-in-body transform).
         # For our axis-aligned boxes the mesh origin coincides with the body origin, so T_bs is identity
         # and model.shape_transform already holds the correct value from the builder.
         env_shape_count = len(env.shape_body)  # per-world shape stride
