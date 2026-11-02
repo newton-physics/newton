@@ -10380,7 +10380,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 poses at the reference pose (joint properties changed).
             update_anchors: Only the Newton constraint anchors changed.
         """
-        if not (update_anchor_rel_xform_at_ref_pose or update_anchors):
+        if not (self.has_connect_constraints or self.has_jnt_connect_constraints):
             return
 
         model = self.model
@@ -10403,8 +10403,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     model.mujoco.equality_constraint_type,
                     model.mujoco.equality_constraint_body1,
                     model.mujoco.equality_constraint_body2,
+                    model.joint_type,
                     model.joint_parent,
                     model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
                     ref_body_q,
                 ],
                 outputs=[self.connect_constraint_X_rel],

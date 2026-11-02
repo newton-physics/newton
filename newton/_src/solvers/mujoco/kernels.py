@@ -1244,8 +1244,11 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     eq_constraint_type: wp.array[wp.int32],
     eq_constraint_body1: wp.array[wp.int32],
     eq_constraint_body2: wp.array[wp.int32],
+    joint_type: wp.array[wp.int32],
     joint_parent: wp.array[wp.int32],
     joint_child: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
     ref_body_q: wp.array[wp.transform],
     # output
     X_rel_out: wp.array2d[wp.transform],
@@ -1268,6 +1271,9 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     body1 = int(-1)
     body2 = int(-1)
     if newton_jnt >= 0:
+        if joint_type[newton_jnt] == JointType.BALL:
+            X_rel_out[world, mjc_eq] = joint_X_c[newton_jnt] * wp.transform_inverse(joint_X_p[newton_jnt])
+            return
         body1 = joint_parent[newton_jnt]
         body2 = joint_child[newton_jnt]
     elif newton_eq >= 0:
