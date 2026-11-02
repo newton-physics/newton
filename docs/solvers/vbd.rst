@@ -625,14 +625,35 @@ With a solver-owned pipeline, ``SolverVBD(model, collision_pipeline=...)``, the
 solver allocates its own contacts buffer, seeds the pipeline's self-contact
 configuration from the ``particle_self_contact_*`` arguments, runs rigid
 detection itself on the schedule of ``collision_frequency_type``, and ``step``
-takes ``contacts=None``. Rigid-soft DAT requires this form. A ``RIGID`` slot
-on ``ITERATIONS`` needs ``contact_matching="latest"`` or ``"sticky"`` on the
-pipeline when the solver integrates rigid bodies: the in-flight contact
-multipliers are restored through the matched contact indices after each
-mid-iteration detection, and ``step`` raises ``RuntimeError`` with the default
-``"disabled"`` matching. The self-contact slot works in both forms;
-:ref:`vbd-jitter-pipeline` shows the arguments that put it on the
+takes ``contacts=None``. Rigid-soft DAT requires this form, and so does a
+``RIGID`` slot on ``ITERATIONS``, which also needs contact matching in the
+pipeline (:ref:`below <vbd-contact-matching>`). The self-contact slot works in both
+forms; :ref:`vbd-jitter-pipeline` shows the arguments that put it on the
 ``ITERATIONS`` schedule.
+
+.. _vbd-contact-matching:
+
+**Contact matching between steps and between iterations.** Each detection
+pass of the pipeline can label every body-body contact with the index of the
+same contact in the previous pass. ``contact_matching="latest"`` writes the
+labels and keeps the fresh geometry; ``"sticky"`` also replays the saved
+contact points and normal (experimental); the default ``"disabled"`` writes no
+labels (:ref:`Contact Matching`). The solver uses the labels in two places.
+Between steps, ``rigid_contact_history=True`` snapshots the solved state of
+every contact at the end of the step (multiplier, penalty stiffness, normal)
+and restores it onto the matched contacts at the next step's contact refresh:
+the normal multiplier along the new normal and, with ``"latest"`` matching,
+the tangential multiplier projected onto the friction disk. Unmatched contacts
+start cold, and so does every contact when two detection passes run between
+two steps. Between iterations, a ``RIGID`` slot on the ``ITERATIONS`` schedule
+re-detects inside the iteration loop and replaces the contact set in the
+middle of the solve; the solver snapshots the in-flight state before each pass
+and restores it onto the new set in the same way, so the multipliers built up
+in the earlier iterations survive the refresh. The first use is opt-in; the
+second is not. The constructor therefore raises ``ValueError`` when the
+``RIGID`` slot is on ``ITERATIONS`` and the pipeline has ``"disabled"``
+matching, and also when ``rigid_contact_history=True`` meets an owned pipeline
+without matching.
 
 For CUDA graph capture keep the same order, pipeline, contacts, solver, all
 before capture. Body-body contact state is pre-sized from the pipeline's

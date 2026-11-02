@@ -330,9 +330,9 @@ the model while the option is on. Kinematic bodies are not truncated. A pair
 without a certifiable separating plane freezes. The option needs a solver-owned
 collision pipeline; for fast bodies raise the pipeline gap first, then the
 detection frequency (a ``RIGID`` slot on ``ITERATIONS`` needs contact matching
-in the pipeline when the solver integrates rigid bodies; see step 4 of
-:ref:`vbd-jitter-pipeline`). When self-contact is enabled too, the ``RIGID``
-and ``SOFT_SELF_CONTACT`` slots must use the same schedule type, and the same
+in the pipeline; see :ref:`contact matching <vbd-contact-matching>` on the
+solver page). When self-contact is enabled too, the ``RIGID`` and
+``SOFT_SELF_CONTACT`` slots must use the same schedule type, and the same
 frequency for ``ITERATIONS``; the solver raises otherwise.
 
 Both parts remove motion. A cloth that falls fast onto a shape, or a sheet
@@ -498,12 +498,13 @@ Work through these steps in order and stop at the first one that fixes it.
    iteration, in place of the pass after the inertial step. With
    ``rigid_soft_enable_dat`` on, give the ``RIGID`` slot the same type and
    frequency; the solver raises in ``step`` otherwise, because the two DAT
-   families share one motion reference. When the solver also integrates rigid
-   bodies, a ``RIGID`` slot on ``ITERATIONS`` needs a pipeline built with
-   ``contact_matching="latest"`` (or ``"sticky"``), so that the contact
-   multipliers survive each mid-iteration refresh; with the default
-   ``"disabled"`` matching, ``step`` raises ``RuntimeError`` at the first
-   refresh.
+   families share one motion reference. A ``RIGID`` slot on ``ITERATIONS``
+   re-detects between iterations, and the solver carries each contact's
+   multipliers onto the new contact set through the pipeline's contact
+   matching. Build the pipeline with ``contact_matching="latest"`` (or
+   ``"sticky"``); with the default ``"disabled"`` the constructor raises
+   ``ValueError``. The solver page explains the mechanism
+   (:ref:`contact matching <vbd-contact-matching>`).
 
 .. _vbd-explosion-checklist:
 
