@@ -248,6 +248,7 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Allocate the dual problem data on the device
+        uses_dense_dvi = self._config.dynamics_solver == "dvi" and not self._config.sparse_dynamics
         self._problem_fd: DualProblem | None = None
         if not uses_lox or (self._config.compute_solution_metrics and self._model.size.sum_of_max_total_cts > 0):
             self._problem_fd = DualProblem(
@@ -257,8 +258,8 @@ class SolverKaminoImpl(SolverBase):
                 contacts=contacts,
                 jacobians=self._jacobians,
                 config=problem_fd_config,
-                solver=None if uses_lox else linear_solver_type,
-                solver_kwargs=None if uses_lox else linear_solver_kwargs,
+                solver=None if uses_lox or uses_dense_dvi else linear_solver_type,
+                solver_kwargs=None if uses_lox or uses_dense_dvi else linear_solver_kwargs,
                 sparse=self._config.sparse_dynamics,
             )
 

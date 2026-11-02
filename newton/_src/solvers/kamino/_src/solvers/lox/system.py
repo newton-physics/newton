@@ -157,6 +157,7 @@ class LOXSystem:
             if active_dimensions != storage_dimensions:
                 sparse_info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
             sparse_info.total_mat_size = info.total_mat_size
+            sparse_info.matrix_shape = info.matrix_shape
             sparse_info.total_vec_size = info.total_vec_size
             # Batches that fill the device take small tiles, which skip most of the zero
             # blocks of a tree-like body graph, and one warp per world, which matches the

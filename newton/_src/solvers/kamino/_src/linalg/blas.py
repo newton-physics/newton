@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import functools
+from functools import cache
 from typing import Any
 
 import warp as wp
@@ -38,49 +39,60 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ##
 
 
-@wp.kernel
-def _mult_left_right_diag_matrix_with_matrix(
-    # Inputs:
-    dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
-    vio: wp.array[wp.int32],
-    D: wp.array[wp.float32],
-    X: wp.array[wp.float32],
-    # Outputs:
-    Y: wp.array[wp.float32],
-):
-    # Retrieve the thread indices
-    wid, tid = wp.tid()
+@cache
+def make_mult_left_right_diag_matrix_with_matrix_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Retrieve the number of active dimensions in the world
-    n = dim[wid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _mult_left_right_diag_matrix_with_matrix(
+        # Inputs:
+        dim: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        vio: wp.array[wp.int32],
+        D: wp.array[wp.float32],
+        X_storage: MatrixType0,
+        # Outputs:
+        Y_storage: MatrixType0,
+    ):
+        # Retrieve the thread indices
+        wid, tid = wp.tid()
+        X = X_storage[wid] if wp.static(MatrixType0.ndim == 2) else X_storage
+        Y = Y_storage[wid] if wp.static(MatrixType0.ndim == 2) else Y_storage
 
-    # Compute i (row) and j (col) indices from the tid
-    i = tid // n
-    j = tid % n
+        # Retrieve the number of active dimensions in the world
+        n = dim[wid]
 
-    # Skip if indices exceed the problem size
-    if i >= n or j >= n:
-        return
+        # Compute i (row) and j (col) indices from the tid
+        i = tid // n
+        j = tid % n
 
-    # Retrieve the matrix index offset of the world
-    m_0 = mio[wid]
+        # Skip if indices exceed the problem size
+        if i >= n or j >= n:
+            return
 
-    # Retrieve the vector index offset of the world
-    v_0 = vio[wid]
+        # Retrieve the matrix index offset of the world
+        m_0 = mio[wid]
 
-    # Compute the global index of the matrix entry
-    m_ij = m_0 + n * i + j
+        # Retrieve the vector index offset of the world
+        v_0 = vio[wid]
 
-    # Retrieve the ij entry of the input matrix
-    X_ij = X[m_ij]
+        # Compute the global index of the matrix entry
+        m_ij = m_0 + n * i + j
 
-    # Retrieve the i,j entries of the diagonal matrix
-    D_i = D[v_0 + i]
-    D_j = D[v_0 + j]
+        # Retrieve the ij entry of the input matrix
+        X_ij = X[m_ij]
 
-    # Compute the i,j entry of the output matrix
-    Y[m_ij] = D_i * D_j * X_ij
+        # Retrieve the i,j entries of the diagonal matrix
+        D_i = D[v_0 + i]
+        D_j = D[v_0 + j]
+
+        # Compute the i,j entry of the output matrix
+        Y[m_ij] = D_i * D_j * X_ij
+
+    return _mult_left_right_diag_matrix_with_matrix
+
+
+_mult_left_right_diag_matrix_with_matrix = make_mult_left_right_diag_matrix_with_matrix_kernel()
 
 
 @wp.kernel
@@ -785,38 +797,48 @@ def _diag_gemv_kernel(
     y[idx] = s
 
 
-@wp.kernel
-def _dense_gemv_kernel(
-    x: wp.array[wp.float32],
-    y: wp.array[wp.float32],
-    A: wp.array[wp.float32],
-    active_dims: wp.array[wp.int32],
-    world_active: wp.array[wp.bool],
-    alpha: wp.float32,
-    beta: wp.float32,
-    mio: wp.array[wp.int32],
-    vio: wp.array[wp.int32],
-    tile_size: int,
-):
-    """Computes y[w] = alpha * (A[w] @ x[w]) + beta * y[w] in-place for each world w."""
-    world, row, lane = wp.tid()
-    assert world < len(active_dims)
-    dim = active_dims[world]
-    if not world_active[world] or row >= dim:
-        return
+@cache
+def make_dense_gemv_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    row_stride = active_dims[world]
-    a_offset = mio[world]
-    v_offset = vio[world]
-    zero = type(alpha)(0)
-    s = zero
-    if alpha != zero:
-        for col in range(lane, dim, tile_size):
-            s += A[a_offset + row * row_stride + col] * x[v_offset + col]
-    row_tile = wp.tile_sum(wp.tile(s * alpha))
-    if beta != zero:
-        row_tile += beta * wp.tile_load(y, shape=1, offset=v_offset + row)
-    wp.tile_store(y, row_tile, offset=v_offset + row)
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _dense_gemv_kernel(
+        x: wp.array[wp.float32],
+        y: wp.array[wp.float32],
+        A_storage: MatrixType0,
+        active_dims: wp.array[wp.int32],
+        world_active: wp.array[wp.bool],
+        alpha: wp.float32,
+        beta: wp.float32,
+        mio: wp.array[wp.int32],
+        vio: wp.array[wp.int32],
+        tile_size: int,
+    ):
+        """Computes y[w] = alpha * (A[w] @ x[w]) + beta * y[w] in-place for each world w."""
+        world, row, lane = wp.tid()
+        A = A_storage[world] if wp.static(MatrixType0.ndim == 2) else A_storage
+        assert world < len(active_dims)
+        dim = active_dims[world]
+        if not world_active[world] or row >= dim:
+            return
+
+        row_stride = active_dims[world]
+        a_offset = mio[world]
+        v_offset = vio[world]
+        zero = type(alpha)(0)
+        s = zero
+        if alpha != zero:
+            for col in range(lane, dim, tile_size):
+                s += A[a_offset + row * row_stride + col] * x[v_offset + col]
+        row_tile = wp.tile_sum(wp.tile(s * alpha))
+        if beta != zero:
+            row_tile += beta * wp.tile_load(y, shape=1, offset=v_offset + row)
+        wp.tile_store(y, row_tile, offset=v_offset + row)
+
+    return _dense_gemv_kernel
+
+
+_dense_gemv_kernel = make_dense_gemv_kernel()
 
 
 @functools.cache
@@ -1105,7 +1127,7 @@ def dense_gemv(
     if not x.device.is_cuda:
         block_dim = 1
     wp.launch(
-        _dense_gemv_kernel,
+        make_dense_gemv_kernel(A.ndim),
         dim=(n_worlds, max_dim, block_dim),
         inputs=[x, y, A, active_dims, world_active, dtype(alpha), dtype(beta), mio, vio, block_dim],
         device=x.device,

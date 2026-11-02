@@ -109,8 +109,8 @@ class TestKaminoBilateralRHS(unittest.TestCase):
                 else:
                     transpose_coords = [(row, col) for row in range(rows) for col in range(0, body_dofs, 6)]
                     transpose_values = [jacobian[row, col : col + 6] for row, col in transpose_coords]
-                for active in (False, True):
-                    with self.subTest(n=n, column_major=column_major, active=active):
+                for active, row_storage in ((False, False), (True, False), (True, True)):
+                    with self.subTest(n=n, column_major=column_major, active=active, row_storage=row_storage):
 
                         def ints(values):
                             return wp.array(values, dtype=wp.int32, device=device)
@@ -121,34 +121,44 @@ class TestKaminoBilateralRHS(unittest.TestCase):
                         rhs = wp.full(bvio + n + 2, -123.0, dtype=wp.float32, device=device)
                         solution = floats(previous)
                         lambdas = floats(impulses)
+
+                        def per_world(value, row_storage=row_storage):
+                            # Row storage solves world 1 after a NaN world 0 to observe the row index.
+                            return ints([0, value] if row_storage else [value])
+
+                        if row_storage:
+                            nan_row = np.full(n * n, np.nan, dtype=np.float32)
+                            storage = floats(np.stack((nan_row, inverse.ravel())))
+                        else:
+                            storage = floats(inverse_storage)
                         wp.launch(
-                            make_sparse_bilateral_inverse_kernel(32),
+                            make_sparse_bilateral_inverse_kernel(32, storage.ndim),
                             dim=(1, 128),
                             inputs=[
-                                ints([pvio]),
-                                ints([n]),
+                                per_world(pvio),
+                                per_world(n),
                                 floats(free),
-                                ints([n if active else 0]),
-                                ints([mio]),
-                                ints([bvio]),
+                                per_world(n if active else 0),
+                                per_world(0 if row_storage else mio),
+                                per_world(bvio),
                                 floats(scale),
-                                floats(inverse_storage),
+                                storage,
                                 rhs,
                                 solution,
                                 lambdas,
-                                ints([len(transpose_coords)]),
-                                ints([0]),
+                                per_world(len(transpose_coords)),
+                                per_world(0),
                                 ints(transpose_coords),
                                 wp.array(transpose_values, dtype=vec6f, device=device),
-                                ints([pvio]),
-                                ints([body_dofs]),
+                                per_world(pvio),
+                                per_world(body_dofs),
                                 column_major,
-                                ints([0]),
+                                per_world(0),
                                 ints(np.arange(n + 1) * 3),
                                 ints(np.arange(n * 3)),
                                 ints(coords),
                                 wp.array(blocks, dtype=vec6f, device=device),
-                                0,  # world_start
+                                int(row_storage),  # world_start
                             ],
                             device=device,
                             block_dim=128,

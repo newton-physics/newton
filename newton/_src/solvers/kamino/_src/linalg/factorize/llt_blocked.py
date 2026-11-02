@@ -24,9 +24,11 @@ __all__ = [
     "llt_blocked_factorize",
     "llt_blocked_solve",
     "llt_blocked_solve_inplace",
+    "make_flag_failed_llt_factors_kernel",
     "make_llt_blocked_factorize_kernel",
     "make_llt_blocked_solve_inplace_kernel",
     "make_llt_blocked_solve_kernel",
+    "make_shift_failed_llt_factors_kernel",
     "shift_failed_llt_factors",
 ]
 
@@ -80,52 +82,76 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 
 
-@wp.kernel
-def flag_failed_llt_factors(
-    dim: wp.array[wp.int32],
-    ld: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
-    L: wp.array[wp.float32],
-    retry_dim: wp.array[wp.int32],
-):
-    """Select blocks with a non-finite pivot for refactorization.
+@cache
+def make_flag_failed_llt_factors_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    Sets ``retry_dim`` to the dimension of each such block and leaves it unchanged for the
-    others, which should start at zero. Launch with shape ``(num_blocks, max_dim)``.
-    """
-    world, row = wp.tid()
-    n = dim[world]
-    if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
-        retry_dim[world] = n
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def flag_failed_llt_factors(
+        dim: wp.array[wp.int32],
+        ld: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        L_storage: MatrixType0,
+        retry_dim: wp.array[wp.int32],
+    ):
+        """Select blocks with a non-finite pivot for refactorization.
+
+        Sets ``retry_dim`` to the dimension of each such block and leaves it unchanged for the
+        others, which should start at zero. Launch with shape ``(num_blocks, max_dim)``.
+        """
+        world, row = wp.tid()
+        L = L_storage[world] if wp.static(MatrixType0.ndim == 2) else L_storage
+        n = dim[world]
+        if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
+            retry_dim[world] = n
+
+    return flag_failed_llt_factors
 
 
-@wp.kernel
-def shift_failed_llt_factors(
-    ld: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
-    retry_dim: wp.array[wp.int32],
-    shift: wp.float32,
-    A: wp.array[wp.float32],
-):
-    """Add ``shift`` to the diagonal of the blocks selected by :func:`flag_failed_llt_factors`."""
-    world, row = wp.tid()
-    if row < retry_dim[world]:
-        A[mio[world] + row * ld[world] + row] += shift
+flag_failed_llt_factors = make_flag_failed_llt_factors_kernel()
 
 
 @cache
-def make_llt_blocked_factorize_kernel(block_size: int):
+def make_shift_failed_llt_factors_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def shift_failed_llt_factors(
+        ld: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        retry_dim: wp.array[wp.int32],
+        shift: wp.float32,
+        A_storage: MatrixType0,
+    ):
+        """Add ``shift`` to the diagonal of the blocks selected by :func:`flag_failed_llt_factors`."""
+        world, row = wp.tid()
+        A = A_storage[world] if wp.static(MatrixType0.ndim == 2) else A_storage
+        if row < retry_dim[world]:
+            A[mio[world] + row * ld[world] + row] += shift
+
+    return shift_failed_llt_factors
+
+
+shift_failed_llt_factors = make_shift_failed_llt_factors_kernel()
+
+
+@cache
+def make_llt_blocked_factorize_kernel(block_size: int, array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
+
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_factorize_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
-        A: wp.array[wp.float32],
+        A_storage: MatrixType0,
         # Outputs:
-        L: wp.array[wp.float32],
+        L_storage: MatrixType0,
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
+        A = A_storage[tid] if wp.static(MatrixType0.ndim == 2) else A_storage
+        L = L_storage[tid] if wp.static(MatrixType0.ndim == 2) else L_storage
         num_threads_per_block = wp.block_dim()
 
         # Retrieve the matrix block dimensions and size
@@ -323,7 +349,8 @@ def make_llt_blocked_solve_func(block_size: int):
 
 
 @cache
-def make_llt_blocked_solve_kernel(block_size: int):
+def make_llt_blocked_solve_kernel(block_size: int, array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
     solve = make_llt_blocked_solve_func(block_size)
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
@@ -332,20 +359,22 @@ def make_llt_blocked_solve_kernel(block_size: int):
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L_storage: MatrixType0,
         b: wp.array[wp.float32],
         # Outputs:
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L = L_storage[tid] if wp.static(MatrixType0.ndim == 2) else L_storage
         solve(tid, tid_block, dim, mio, vio, L, b, y, x)
 
     return llt_blocked_solve_kernel
 
 
 @cache
-def make_llt_blocked_solve_inplace_kernel(block_size: int):
+def make_llt_blocked_solve_inplace_kernel(block_size: int, array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
     solve = make_llt_blocked_solve_func(block_size)
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
@@ -354,12 +383,13 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
         dim: wp.array[wp.int32],
         mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L_storage: MatrixType0,
         # Outputs:
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L = L_storage[tid] if wp.static(MatrixType0.ndim == 2) else L_storage
         solve(tid, tid_block, dim, mio, vio, L, x, y, x)
 
     return llt_blocked_solve_inplace_kernel

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from functools import cache
+
 import warp as wp
 
 from ...core.math import FLOAT32_EPS
@@ -115,83 +117,104 @@ def _reset_dvi_status(
     solver_status[wid] = DVIStatus()
 
 
-@wp.kernel
-def _copy_bilateral_block(
-    # Inputs:
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    problem_D: wp.array[float32],
-    bilateral_mio: wp.array[int32],
-    bilateral_ld: wp.array[int32],
-    bilateral_vio: wp.array[int32],
-    # Outputs:
-    bilateral_D: wp.array[float32],
-    bilateral_P: wp.array[float32],
-):
-    wid, tid = wp.tid()
+@cache
+def make_copy_bilateral_block_kernel(problem_ndim: int = 1, bilateral_ndim: int = 1):
+    """Build ``_copy_bilateral_block`` for flat or per-world row matrix storage."""
 
-    njc = problem_njc[wid]
-    if njc == 0:
-        if tid == 0:
-            bilateral_D[bilateral_mio[wid]] = float32(1.0)
-            bilateral_P[bilateral_vio[wid]] = float32(1.0)
-        return
-    if tid >= njc * njc:
-        return
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _copy_bilateral_block(
+        # Inputs:
+        problem_dim: wp.array[int32],
+        problem_mio: wp.array[int32],
+        problem_njc: wp.array[int32],
+        problem_D_storage: wp.array(dtype=float32, ndim=problem_ndim),
+        bilateral_mio: wp.array[int32],
+        bilateral_ld: wp.array[int32],
+        bilateral_vio: wp.array[int32],
+        # Outputs:
+        bilateral_D_storage: wp.array(dtype=float32, ndim=bilateral_ndim),
+        bilateral_P: wp.array[float32],
+    ):
+        wid, tid = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(problem_ndim == 2) else problem_D_storage
+        bilateral_D = bilateral_D_storage[wid] if wp.static(bilateral_ndim == 2) else bilateral_D_storage
 
-    ncts = problem_dim[wid]
-    pmio = problem_mio[wid]
-    bmio = bilateral_mio[wid]
-    bvio = bilateral_vio[wid]
-    row = tid // njc
-    col = tid - row * njc
+        njc = problem_njc[wid]
+        if njc == 0:
+            if tid == 0:
+                bilateral_D[bilateral_mio[wid]] = float32(1.0)
+                bilateral_P[bilateral_vio[wid]] = float32(1.0)
+            return
+        if tid >= njc * njc:
+            return
 
-    D_rr = problem_D[pmio + ncts * row + row]
-    D_cc = problem_D[pmio + ncts * col + col]
-    p_row = wp.sqrt(1.0 / (wp.abs(D_rr) + FLOAT32_EPS))
-    p_col = wp.sqrt(1.0 / (wp.abs(D_cc) + FLOAT32_EPS))
+        ncts = problem_dim[wid]
+        pmio = problem_mio[wid]
+        bmio = bilateral_mio[wid]
+        bvio = bilateral_vio[wid]
+        row = tid // njc
+        col = tid - row * njc
 
-    val = p_row * problem_D[pmio + ncts * row + col] * p_col
-    if row == col:
-        val += float32(BILATERAL_DIAGONAL_FLOOR)
-        bilateral_P[bvio + row] = p_row
-    bilateral_D[bmio + bilateral_ld[wid] * row + col] = val
+        D_rr = problem_D[pmio + ncts * row + row]
+        D_cc = problem_D[pmio + ncts * col + col]
+        p_row = wp.sqrt(1.0 / (wp.abs(D_rr) + FLOAT32_EPS))
+        p_col = wp.sqrt(1.0 / (wp.abs(D_cc) + FLOAT32_EPS))
+
+        val = p_row * problem_D[pmio + ncts * row + col] * p_col
+        if row == col:
+            val += float32(BILATERAL_DIAGONAL_FLOOR)
+            bilateral_P[bvio + row] = p_row
+        bilateral_D[bmio + bilateral_ld[wid] * row + col] = val
+
+    return _copy_bilateral_block
 
 
-@wp.kernel
-def _build_bilateral_rhs(
-    # Inputs:
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    problem_D: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    bilateral_vio: wp.array[int32],
-    bilateral_P: wp.array[float32],
-    solution_lambdas: wp.array[float32],
-    # Outputs:
-    bilateral_rhs: wp.array[float32],
-):
-    wid, row = wp.tid()
+_copy_bilateral_block = make_copy_bilateral_block_kernel(1, 1)
 
-    njc = problem_njc[wid]
-    if row >= njc:
-        return
 
-    ncts = problem_dim[wid]
-    pmio = problem_mio[wid]
-    pvio = problem_vio[wid]
-    bvio = bilateral_vio[wid]
+@cache
+def make_build_bilateral_rhs_kernel(array_ndim: int = 1):
+    """Build ``_build_bilateral_rhs`` for flat or per-world row Delassus storage."""
 
-    # Columns njc..ncts are the unilateral rows, so this loop subtracts the
-    # D_bu * lambda_u coupling: the current limit and contact impulses enter the
-    # joint solve, yielding rhs = -(v_f,b + D_bu * lambda_u).
-    rhs = -problem_v_f[pvio + row]
-    for col in range(njc, ncts):
-        rhs -= problem_D[pmio + ncts * row + col] * solution_lambdas[pvio + col]
-    bilateral_rhs[bvio + row] = bilateral_P[bvio + row] * rhs
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _build_bilateral_rhs(
+        # Inputs:
+        problem_dim: wp.array[int32],
+        problem_mio: wp.array[int32],
+        problem_vio: wp.array[int32],
+        problem_njc: wp.array[int32],
+        problem_D_storage: wp.array(dtype=float32, ndim=array_ndim),
+        problem_v_f: wp.array[float32],
+        bilateral_vio: wp.array[int32],
+        bilateral_P: wp.array[float32],
+        solution_lambdas: wp.array[float32],
+        # Outputs:
+        bilateral_rhs: wp.array[float32],
+    ):
+        wid, row = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(array_ndim == 2) else problem_D_storage
+
+        njc = problem_njc[wid]
+        if row >= njc:
+            return
+
+        ncts = problem_dim[wid]
+        pmio = problem_mio[wid]
+        pvio = problem_vio[wid]
+        bvio = bilateral_vio[wid]
+
+        # Columns njc..ncts are the unilateral rows, so this loop subtracts the
+        # D_bu * lambda_u coupling: the current limit and contact impulses enter the
+        # joint solve, yielding rhs = -(v_f,b + D_bu * lambda_u).
+        rhs = -problem_v_f[pvio + row]
+        for col in range(njc, ncts):
+            rhs -= problem_D[pmio + ncts * row + col] * solution_lambdas[pvio + col]
+        bilateral_rhs[bvio + row] = bilateral_P[bvio + row] * rhs
+
+    return _build_bilateral_rhs
+
+
+_build_bilateral_rhs = make_build_bilateral_rhs_kernel(1)
 
 
 @wp.kernel
@@ -424,85 +447,108 @@ __syncwarp(0xffffffffu);
 def _sync_warp(): ...
 
 
-@wp.kernel
-def _solve_bilateral_contact_response(
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    bilateral_mio: wp.array[int32],
-    bilateral_ld: wp.array[int32],
-    bilateral_vio: wp.array[int32],
-    bilateral_P: wp.array[float32],
-    projected_mio: wp.array[int32],
-    problem_D: wp.array[float32],
-    bilateral_L: wp.array[float32],
-    bilateral_permutation: wp.array[int32],
-    use_permutation: bool,
-    unilateral_begin: int32,
-    projected_D: wp.array[float32],
-):
-    wid, unilateral_local = wp.tid()
-    ncts = problem_dim[wid]
-    njc = problem_njc[wid]
-    unilateral = njc + unilateral_begin + unilateral_local
-    if njc == int32(0) or unilateral >= ncts:
-        return
+@cache
+def make_solve_bilateral_contact_response_kernel(problem_ndim: int = 1, factor_ndim: int = 1, projected_ndim: int = 1):
+    """Build ``_solve_bilateral_contact_response`` for flat or per-world row matrix storage."""
 
-    source = problem_mio[wid]
-    factor = bilateral_mio[wid]
-    ld = bilateral_ld[wid]
-    bvio = bilateral_vio[wid]
-    target = projected_mio[wid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _solve_bilateral_contact_response(
+        problem_dim: wp.array[int32],
+        problem_mio: wp.array[int32],
+        problem_njc: wp.array[int32],
+        bilateral_mio: wp.array[int32],
+        bilateral_ld: wp.array[int32],
+        bilateral_vio: wp.array[int32],
+        bilateral_P: wp.array[float32],
+        projected_mio: wp.array[int32],
+        problem_D_storage: wp.array(dtype=float32, ndim=problem_ndim),
+        bilateral_L_storage: wp.array(dtype=float32, ndim=factor_ndim),
+        bilateral_permutation: wp.array[int32],
+        use_permutation: bool,
+        unilateral_begin: int32,
+        projected_D_storage: wp.array(dtype=float32, ndim=projected_ndim),
+    ):
+        wid, unilateral_local = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(problem_ndim == 2) else problem_D_storage
+        bilateral_L = bilateral_L_storage[wid] if wp.static(factor_ndim == 2) else bilateral_L_storage
+        projected_D = projected_D_storage[wid] if wp.static(projected_ndim == 2) else projected_D_storage
+        ncts = problem_dim[wid]
+        njc = problem_njc[wid]
+        unilateral = njc + unilateral_begin + unilateral_local
+        if njc == int32(0) or unilateral >= ncts:
+            return
 
-    for row in range(njc):
-        original_row = row
-        if use_permutation:
-            original_row = bilateral_permutation[bvio + row]
-        value = bilateral_P[bvio + original_row] * problem_D[source + ncts * original_row + unilateral]
-        for k in range(row):
-            value -= bilateral_L[factor + ld * row + k] * projected_D[target + ncts * k + unilateral]
-        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + ld * row + row]
+        source = problem_mio[wid]
+        factor = bilateral_mio[wid]
+        ld = bilateral_ld[wid]
+        bvio = bilateral_vio[wid]
+        target = projected_mio[wid]
 
-    for reverse_row in range(njc):
-        row = njc - int32(1) - reverse_row
-        value = projected_D[target + ncts * row + unilateral]
-        for k in range(row + int32(1), njc):
-            value -= bilateral_L[factor + ld * k + row] * projected_D[target + ncts * k + unilateral]
-        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + ld * row + row]
+        for row in range(njc):
+            original_row = row
+            if use_permutation:
+                original_row = bilateral_permutation[bvio + row]
+            value = bilateral_P[bvio + original_row] * problem_D[source + ncts * original_row + unilateral]
+            for k in range(row):
+                value -= bilateral_L[factor + ld * row + k] * projected_D[target + ncts * k + unilateral]
+            projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + ld * row + row]
+
+        for reverse_row in range(njc):
+            row = njc - int32(1) - reverse_row
+            value = projected_D[target + ncts * row + unilateral]
+            for k in range(row + int32(1), njc):
+                value -= bilateral_L[factor + ld * k + row] * projected_D[target + ncts * k + unilateral]
+            projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + ld * row + row]
+
+    return _solve_bilateral_contact_response
 
 
-@wp.kernel
-def _assemble_bilateral_contact_response(
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    bilateral_vio: wp.array[int32],
-    bilateral_P: wp.array[float32],
-    projected_mio: wp.array[int32],
-    problem_D: wp.array[float32],
-    bilateral_permutation: wp.array[int32],
-    use_permutation: bool,
-    projected_D: wp.array[float32],
-):
-    wid, unilateral_row_local, unilateral_column_local = wp.tid()
-    ncts = problem_dim[wid]
-    njc = problem_njc[wid]
-    unilateral_row = njc + unilateral_row_local
-    unilateral_column = njc + unilateral_column_local
-    if unilateral_row >= ncts or unilateral_column >= ncts:
-        return
+_solve_bilateral_contact_response = make_solve_bilateral_contact_response_kernel(1, 1, 1)
 
-    source = problem_mio[wid]
-    bvio = bilateral_vio[wid]
-    target = projected_mio[wid]
-    value = problem_D[source + ncts * unilateral_row + unilateral_column]
-    for row in range(njc):
-        original_row = row
-        if use_permutation:
-            original_row = bilateral_permutation[bvio + row]
-        response = bilateral_P[bvio + original_row] * projected_D[target + ncts * row + unilateral_column]
-        value -= problem_D[source + ncts * unilateral_row + original_row] * response
-    projected_D[target + ncts * unilateral_row + unilateral_column] = value
+
+@cache
+def make_assemble_bilateral_contact_response_kernel(problem_ndim: int = 1, projected_ndim: int = 1):
+    """Build ``_assemble_bilateral_contact_response`` for flat or per-world row matrix storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _assemble_bilateral_contact_response(
+        problem_dim: wp.array[int32],
+        problem_mio: wp.array[int32],
+        problem_njc: wp.array[int32],
+        bilateral_vio: wp.array[int32],
+        bilateral_P: wp.array[float32],
+        projected_mio: wp.array[int32],
+        problem_D_storage: wp.array(dtype=float32, ndim=problem_ndim),
+        bilateral_permutation: wp.array[int32],
+        use_permutation: bool,
+        projected_D_storage: wp.array(dtype=float32, ndim=projected_ndim),
+    ):
+        wid, unilateral_row_local, unilateral_column_local = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(problem_ndim == 2) else problem_D_storage
+        projected_D = projected_D_storage[wid] if wp.static(projected_ndim == 2) else projected_D_storage
+        ncts = problem_dim[wid]
+        njc = problem_njc[wid]
+        unilateral_row = njc + unilateral_row_local
+        unilateral_column = njc + unilateral_column_local
+        if unilateral_row >= ncts or unilateral_column >= ncts:
+            return
+
+        source = problem_mio[wid]
+        bvio = bilateral_vio[wid]
+        target = projected_mio[wid]
+        value = problem_D[source + ncts * unilateral_row + unilateral_column]
+        for row in range(njc):
+            original_row = row
+            if use_permutation:
+                original_row = bilateral_permutation[bvio + row]
+            response = bilateral_P[bvio + original_row] * projected_D[target + ncts * row + unilateral_column]
+            value -= problem_D[source + ncts * unilateral_row + original_row] * response
+        projected_D[target + ncts * unilateral_row + unilateral_column] = value
+
+    return _assemble_bilateral_contact_response
+
+
+_assemble_bilateral_contact_response = make_assemble_bilateral_contact_response_kernel(1, 1)
 
 
 @wp.func_native(
@@ -543,301 +589,368 @@ def _compact_schur_fits(njc: int32, nu: int32, stride: int32) -> bool:
     return nu <= (njc * stride) / wp.max(nu, int32(1))
 
 
-@wp.kernel
-def _find_bilateral_factor_row_start(
-    njc: wp.array[int32],
-    mio: wp.array[int32],
-    bilateral_ld: wp.array[int32],
-    vio: wp.array[int32],
-    factor: wp.array[float32],
-    row_start: wp.array[int32],
-):
-    """Skip exact leading zeros while preserving the response reduction order."""
-    wid, row = wp.tid()
-    n = njc[wid]
-    if row >= n:
-        return
-    first = int32(0)
-    offset = mio[wid]
-    while first < row and factor[offset + bilateral_ld[wid] * row + first] == float32(0.0):
-        first += int32(1)
-    row_start[vio[wid] + row] = first / int32(16) * int32(16)
+@cache
+def make_find_bilateral_factor_row_start_kernel(array_ndim: int = 1):
+    """Build ``_find_bilateral_factor_row_start`` for flat or per-world row factor storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _find_bilateral_factor_row_start(
+        njc: wp.array[int32],
+        mio: wp.array[int32],
+        bilateral_ld: wp.array[int32],
+        vio: wp.array[int32],
+        factor_storage: wp.array(dtype=float32, ndim=array_ndim),
+        row_start: wp.array[int32],
+    ):
+        """Skip exact leading zeros while preserving the response reduction order."""
+        wid, row = wp.tid()
+        factor = factor_storage[wid] if wp.static(array_ndim == 2) else factor_storage
+        n = njc[wid]
+        if row >= n:
+            return
+        first = int32(0)
+        offset = mio[wid]
+        while first < row and factor[offset + bilateral_ld[wid] * row + first] == float32(0.0):
+            first += int32(1)
+        row_start[vio[wid] + row] = first / int32(16) * int32(16)
+
+    return _find_bilateral_factor_row_start
 
 
-@wp.kernel
-def _find_bilateral_factor_row_start_rcm(
-    njc: wp.array[int32],
-    mio: wp.array[int32],
-    bilateral_ld: wp.array[int32],
-    vio: wp.array[int32],
-    factor: wp.array[float32],
-    row_start: wp.array[int32],
-    tpo: wp.array[int32],
-    pattern: wp.array[int32],
-    block_size: int32,
-):
-    """Use the filled RCM tile mask to accelerate the exact leading-zero scan."""
-    wid, row = wp.tid()
-    n = njc[wid]
-    if row >= n:
-        return
-    tiles = (n + block_size - 1) // block_size
-    tile_offset = tpo[wid] + (row // block_size) * tiles
-    offset = mio[wid]
-    first = int32(0)
-    for tile in range((row + block_size - 1) // block_size):
-        end = wp.min(row, (tile + 1) * block_size)
-        if pattern[tile_offset + tile] == 0:
-            # Factorization clears skipped tiles, including when sparsity shrinks.
-            first = end
-        else:
-            # Marked tiles can contain numerical zeros: preserve the exact prefix.
-            while first < end and factor[offset + bilateral_ld[wid] * row + first] == float32(0.0):
-                first += 1
-            if first < end:
-                break
-    # Preserve the dense scan's 16-lane response reduction alignment.
-    row_start[vio[wid] + row] = first // 16 * 16
+_find_bilateral_factor_row_start = make_find_bilateral_factor_row_start_kernel(1)
 
 
-@wp.kernel
-def _solve_bilateral_unilateral_response_compact(
-    problem_dim: wp.array[int32],
-    problem_njc: wp.array[int32],
-    bilateral_mio: wp.array[int32],
-    bilateral_ld: wp.array[int32],
-    bilateral_vio: wp.array[int32],
-    bilateral_P: wp.array[float32],
-    bilateral_L: wp.array[float32],
-    bilateral_permutation: wp.array[int32],
-    response_mio: wp.array[int32],
-    response_stride: wp.array[int32],
-    coupling: wp.array[float32],
-    response: wp.array[float32],
-    factor_row_start: wp.array[int32],
-):
-    """Whiten permuted response columns independently for large compact batches."""
-    wid, lane = wp.tid()
-    njc = problem_njc[wid]
-    nu = problem_dim[wid] - njc
-    if not _compact_schur_fits(njc, nu, response_stride[wid]):
-        return
-    offset = response_mio[wid]
-    # One block per world avoids scheduling workers for unused contact capacity.
-    for unilateral in range(lane, nu, 128):
-        for row in range(njc):
-            original_row = bilateral_permutation[bilateral_vio[wid] + row]
-            value = bilateral_P[bilateral_vio[wid] + original_row] * coupling[offset + original_row * nu + unilateral]
-            for k in range(factor_row_start[bilateral_vio[wid] + row], row):
-                value -= (
-                    bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + k]
-                    * response[offset + k * nu + unilateral]
+@cache
+def make_find_bilateral_factor_row_start_rcm_kernel(array_ndim: int = 1):
+    """Build ``_find_bilateral_factor_row_start_rcm`` for flat or per-world row factor storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _find_bilateral_factor_row_start_rcm(
+        njc: wp.array[int32],
+        mio: wp.array[int32],
+        bilateral_ld: wp.array[int32],
+        vio: wp.array[int32],
+        factor_storage: wp.array(dtype=float32, ndim=array_ndim),
+        row_start: wp.array[int32],
+        tpo: wp.array[int32],
+        pattern: wp.array[int32],
+        block_size: int32,
+    ):
+        """Use the filled RCM tile mask to accelerate the exact leading-zero scan."""
+        wid, row = wp.tid()
+        factor = factor_storage[wid] if wp.static(array_ndim == 2) else factor_storage
+        n = njc[wid]
+        if row >= n:
+            return
+        tiles = (n + block_size - 1) // block_size
+        tile_offset = tpo[wid] + (row // block_size) * tiles
+        offset = mio[wid]
+        first = int32(0)
+        for tile in range((row + block_size - 1) // block_size):
+            end = wp.min(row, (tile + 1) * block_size)
+            if pattern[tile_offset + tile] == 0:
+                # Factorization clears skipped tiles, including when sparsity shrinks.
+                first = end
+            else:
+                # Marked tiles can contain numerical zeros: preserve the exact prefix.
+                while first < end and factor[offset + bilateral_ld[wid] * row + first] == float32(0.0):
+                    first += 1
+                if first < end:
+                    break
+        # Preserve the dense scan's 16-lane response reduction alignment.
+        row_start[vio[wid] + row] = first // 16 * 16
+
+    return _find_bilateral_factor_row_start_rcm
+
+
+_find_bilateral_factor_row_start_rcm = make_find_bilateral_factor_row_start_rcm_kernel(1)
+
+
+@cache
+def make_solve_bilateral_unilateral_response_compact_kernel(array_ndim: int = 1):
+    """Build ``_solve_bilateral_unilateral_response_compact`` for flat or per-world row factor storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _solve_bilateral_unilateral_response_compact(
+        problem_dim: wp.array[int32],
+        problem_njc: wp.array[int32],
+        bilateral_mio: wp.array[int32],
+        bilateral_ld: wp.array[int32],
+        bilateral_vio: wp.array[int32],
+        bilateral_P: wp.array[float32],
+        bilateral_L_storage: wp.array(dtype=float32, ndim=array_ndim),
+        bilateral_permutation: wp.array[int32],
+        response_mio: wp.array[int32],
+        response_stride: wp.array[int32],
+        coupling: wp.array[float32],
+        response: wp.array[float32],
+        factor_row_start: wp.array[int32],
+    ):
+        """Whiten permuted response columns independently for large compact batches."""
+        wid, lane = wp.tid()
+        bilateral_L = bilateral_L_storage[wid] if wp.static(array_ndim == 2) else bilateral_L_storage
+        njc = problem_njc[wid]
+        nu = problem_dim[wid] - njc
+        if not _compact_schur_fits(njc, nu, response_stride[wid]):
+            return
+        offset = response_mio[wid]
+        # One block per world avoids scheduling workers for unused contact capacity.
+        for unilateral in range(lane, nu, 128):
+            for row in range(njc):
+                original_row = bilateral_permutation[bilateral_vio[wid] + row]
+                value = (
+                    bilateral_P[bilateral_vio[wid] + original_row] * coupling[offset + original_row * nu + unilateral]
                 )
-            response[offset + row * nu + unilateral] = (
-                value / bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + row]
-            )
+                for k in range(factor_row_start[bilateral_vio[wid] + row], row):
+                    value -= (
+                        bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + k]
+                        * response[offset + k * nu + unilateral]
+                    )
+                response[offset + row * nu + unilateral] = (
+                    value / bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + row]
+                )
+
+    return _solve_bilateral_unilateral_response_compact
 
 
-@wp.kernel
-def _solve_bilateral_unilateral_response_cooperative(
-    problem_dim: wp.array[int32],
-    problem_njc: wp.array[int32],
-    bilateral_mio: wp.array[int32],
-    bilateral_ld: wp.array[int32],
-    bilateral_vio: wp.array[int32],
-    bilateral_P: wp.array[float32],
-    bilateral_L: wp.array[float32],
-    bilateral_permutation: wp.array[int32],
-    use_permutation: bool,
-    response_mio: wp.array[int32],
-    response_stride: wp.array[int32],
-    coupling: wp.array[float32],
-    response_factor: wp.array[float32],
-    response: wp.array[float32],
-    first_unilateral: int32,
-    tasks_per_world: int32,
-    use_forward_schur: bool,
-    factor_row_start: wp.array[int32],
-    skip_compact: bool,
-):
-    """Solve response columns, or whiten them for compact Schur construction."""
-    # Keep whitening scratch unilateral-major, but output row-major for coalesced Gram loads.
-    # The fallback response uses original_row * unilateral_stride + unilateral.
-    tid = wp.tid()
-    lane = tid % int32(32)
-    task = tid / int32(32)
-    wid = task / tasks_per_world
-    task_in_world = task - wid * tasks_per_world
-    local_lane = lane % int32(16)
-    njc = problem_njc[wid]
-    nu = problem_dim[wid] - njc
-    factor = bilateral_mio[wid]
-    ld = bilateral_ld[wid]
-    bvio = bilateral_vio[wid]
-    offset = response_mio[wid]
-    unilateral_stride = response_stride[wid]
-    compact_fits = use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride)
-    if skip_compact and compact_fits:
-        return
-    # Compact worlds store the coupling densely (see the coupling assembly kernel).
-    coupling_stride = wp.where(compact_fits, nu, unilateral_stride)
-    first_pair = (first_unilateral + int32(1)) / int32(2)
-    pair_count = (nu + int32(1)) / int32(2)
-    for unilateral_pair in range(first_pair + task_in_world, pair_count, tasks_per_world):
-        unilateral = int32(2) * unilateral_pair + lane / int32(16)
-        active = unilateral < nu
-        first_row = njc
-        if active:
-            for row in range(local_lane, njc, int32(16)):
-                original_row = row
-                if use_permutation:
-                    original_row = bilateral_permutation[bvio + row]
-                if coupling[offset + original_row * coupling_stride + unilateral] != float32(0.0):
-                    first_row = wp.min(first_row, row)
-        # Both response columns share warp barriers, so use their common prefix.
-        first_row = _warp_min_32(first_row)
-        if active:
-            for row in range(local_lane, first_row, int32(16)):
-                response_factor[offset + unilateral * njc + row] = float32(0.0)
-        _sync_warp()
-        for row in range(first_row, njc):
-            partial = float32(0.0)
+_solve_bilateral_unilateral_response_compact = make_solve_bilateral_unilateral_response_compact_kernel(1)
+
+
+@cache
+def make_solve_bilateral_unilateral_response_cooperative_kernel(array_ndim: int = 1):
+    """Build ``_solve_bilateral_unilateral_response_cooperative`` for flat or per-world row factor storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _solve_bilateral_unilateral_response_cooperative(
+        problem_dim: wp.array[int32],
+        problem_njc: wp.array[int32],
+        bilateral_mio: wp.array[int32],
+        bilateral_ld: wp.array[int32],
+        bilateral_vio: wp.array[int32],
+        bilateral_P: wp.array[float32],
+        bilateral_L_storage: wp.array(dtype=float32, ndim=array_ndim),
+        bilateral_permutation: wp.array[int32],
+        use_permutation: bool,
+        response_mio: wp.array[int32],
+        response_stride: wp.array[int32],
+        coupling: wp.array[float32],
+        response_factor: wp.array[float32],
+        response: wp.array[float32],
+        first_unilateral: int32,
+        tasks_per_world: int32,
+        use_forward_schur: bool,
+        factor_row_start: wp.array[int32],
+        skip_compact: bool,
+    ):
+        """Solve response columns, or whiten them for compact Schur construction."""
+        # Keep whitening scratch unilateral-major, but output row-major for coalesced Gram loads.
+        # The fallback response uses original_row * unilateral_stride + unilateral.
+        tid = wp.tid()
+        lane = tid % int32(32)
+        task = tid / int32(32)
+        wid = task / tasks_per_world
+        bilateral_L = bilateral_L_storage[wid] if wp.static(array_ndim == 2) else bilateral_L_storage
+        task_in_world = task - wid * tasks_per_world
+        local_lane = lane % int32(16)
+        njc = problem_njc[wid]
+        nu = problem_dim[wid] - njc
+        factor = bilateral_mio[wid]
+        ld = bilateral_ld[wid]
+        bvio = bilateral_vio[wid]
+        offset = response_mio[wid]
+        unilateral_stride = response_stride[wid]
+        compact_fits = use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride)
+        if skip_compact and compact_fits:
+            return
+        # Compact worlds store the coupling densely (see the coupling assembly kernel).
+        coupling_stride = wp.where(compact_fits, nu, unilateral_stride)
+        first_pair = (first_unilateral + int32(1)) / int32(2)
+        pair_count = (nu + int32(1)) / int32(2)
+        for unilateral_pair in range(first_pair + task_in_world, pair_count, tasks_per_world):
+            unilateral = int32(2) * unilateral_pair + lane / int32(16)
+            active = unilateral < nu
+            first_row = njc
             if active:
-                for k in range(factor_row_start[bvio + row] + local_lane, row, int32(16)):
-                    partial += bilateral_L[factor + ld * row + k] * response_factor[offset + unilateral * njc + k]
-            total = _subgroup_sum_16(partial)
-            if local_lane == int32(0) and active:
+                for row in range(local_lane, njc, int32(16)):
+                    original_row = row
+                    if use_permutation:
+                        original_row = bilateral_permutation[bvio + row]
+                    if coupling[offset + original_row * coupling_stride + unilateral] != float32(0.0):
+                        first_row = wp.min(first_row, row)
+            # Both response columns share warp barriers, so use their common prefix.
+            first_row = _warp_min_32(first_row)
+            if active:
+                for row in range(local_lane, first_row, int32(16)):
+                    response_factor[offset + unilateral * njc + row] = float32(0.0)
+            _sync_warp()
+            for row in range(first_row, njc):
+                partial = float32(0.0)
+                if active:
+                    for k in range(factor_row_start[bvio + row] + local_lane, row, int32(16)):
+                        partial += bilateral_L[factor + ld * row + k] * response_factor[offset + unilateral * njc + k]
+                total = _subgroup_sum_16(partial)
+                if local_lane == int32(0) and active:
+                    original_row = row
+                    if use_permutation:
+                        original_row = bilateral_permutation[bvio + row]
+                    value = (
+                        bilateral_P[bvio + original_row]
+                        * coupling[offset + original_row * coupling_stride + unilateral]
+                    )
+                    response_factor[offset + unilateral * njc + row] = (value - total) / bilateral_L[
+                        factor + ld * row + row
+                    ]
+                _sync_warp()
+            backward_rows = njc
+            if use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride):
+                # C.T A^-1 C = Y.T Y with Y = L^-1 P C; backward solves are unnecessary.
+                backward_rows = int32(0)
+            for reverse_row in range(backward_rows):
+                row = njc - int32(1) - reverse_row
+                partial = float32(0.0)
+                if active:
+                    for k in range(row + int32(1) + local_lane, njc, int32(16)):
+                        partial += bilateral_L[factor + ld * k + row] * response_factor[offset + unilateral * njc + k]
+                total = _subgroup_sum_16(partial)
+                if local_lane == int32(0) and active:
+                    value = response_factor[offset + unilateral * njc + row]
+                    response_factor[offset + unilateral * njc + row] = (value - total) / bilateral_L[
+                        factor + ld * row + row
+                    ]
+                _sync_warp()
+            if active:
+                for row in range(local_lane, njc, int32(16)):
+                    original_row = row
+                    if use_permutation:
+                        original_row = bilateral_permutation[bvio + row]
+                    if use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride):
+                        response[offset + row * nu + unilateral] = response_factor[offset + unilateral * njc + row]
+                    else:
+                        response[offset + original_row * unilateral_stride + unilateral] = (
+                            bilateral_P[bvio + original_row] * response_factor[offset + unilateral * njc + row]
+                        )
+
+    return _solve_bilateral_unilateral_response_cooperative
+
+
+_solve_bilateral_unilateral_response_cooperative = make_solve_bilateral_unilateral_response_cooperative_kernel(1)
+
+
+@cache
+def make_solve_bilateral_unilateral_response_kernel(array_ndim: int = 1):
+    """Build ``_solve_bilateral_unilateral_response`` for flat or per-world row factor storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _solve_bilateral_unilateral_response(
+        problem_dim: wp.array[int32],
+        problem_njc: wp.array[int32],
+        bilateral_mio: wp.array[int32],
+        bilateral_ld: wp.array[int32],
+        bilateral_vio: wp.array[int32],
+        bilateral_P: wp.array[float32],
+        bilateral_L_storage: wp.array(dtype=float32, ndim=array_ndim),
+        bilateral_permutation: wp.array[int32],
+        use_permutation: bool,
+        response_mio: wp.array[int32],
+        response_stride: wp.array[int32],
+        coupling: wp.array[float32],
+        response_factor: wp.array[float32],
+        response: wp.array[float32],
+    ):
+        # response_factor is row-major here; response always uses
+        # original_row * unilateral_stride + unilateral.
+        tid = wp.tid()
+        threads_per_world = int32(wp.block_dim())
+        lane = tid % threads_per_world
+        wid = tid / threads_per_world
+        bilateral_L = bilateral_L_storage[wid] if wp.static(array_ndim == 2) else bilateral_L_storage
+        njc = problem_njc[wid]
+        nu = problem_dim[wid] - njc
+        factor = bilateral_mio[wid]
+        ld = bilateral_ld[wid]
+        bvio = bilateral_vio[wid]
+        offset = response_mio[wid]
+        unilateral_stride = response_stride[wid]
+        for unilateral in range(lane, nu, threads_per_world):
+            for row in range(njc):
                 original_row = row
                 if use_permutation:
                     original_row = bilateral_permutation[bvio + row]
                 value = (
-                    bilateral_P[bvio + original_row] * coupling[offset + original_row * coupling_stride + unilateral]
+                    bilateral_P[bvio + original_row] * coupling[offset + original_row * unilateral_stride + unilateral]
                 )
-                response_factor[offset + unilateral * njc + row] = (value - total) / bilateral_L[
-                    factor + ld * row + row
-                ]
-            _sync_warp()
-        backward_rows = njc
-        if use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride):
-            # C.T A^-1 C = Y.T Y with Y = L^-1 P C; backward solves are unnecessary.
-            backward_rows = int32(0)
-        for reverse_row in range(backward_rows):
-            row = njc - int32(1) - reverse_row
-            partial = float32(0.0)
-            if active:
-                for k in range(row + int32(1) + local_lane, njc, int32(16)):
-                    partial += bilateral_L[factor + ld * k + row] * response_factor[offset + unilateral * njc + k]
-            total = _subgroup_sum_16(partial)
-            if local_lane == int32(0) and active:
-                value = response_factor[offset + unilateral * njc + row]
-                response_factor[offset + unilateral * njc + row] = (value - total) / bilateral_L[
-                    factor + ld * row + row
-                ]
-            _sync_warp()
-        if active:
-            for row in range(local_lane, njc, int32(16)):
+                for k in range(row):
+                    value -= (
+                        bilateral_L[factor + ld * row + k]
+                        * response_factor[offset + k * unilateral_stride + unilateral]
+                    )
+                response_factor[offset + row * unilateral_stride + unilateral] = (
+                    value / bilateral_L[factor + ld * row + row]
+                )
+
+            for reverse_row in range(njc):
+                row = njc - int32(1) - reverse_row
+                value = response_factor[offset + row * unilateral_stride + unilateral]
+                for k in range(row + int32(1), njc):
+                    value -= (
+                        bilateral_L[factor + ld * k + row]
+                        * response_factor[offset + k * unilateral_stride + unilateral]
+                    )
+                response_factor[offset + row * unilateral_stride + unilateral] = (
+                    value / bilateral_L[factor + ld * row + row]
+                )
+
+            for row in range(njc):
                 original_row = row
                 if use_permutation:
                     original_row = bilateral_permutation[bvio + row]
-                if use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride):
-                    response[offset + row * nu + unilateral] = response_factor[offset + unilateral * njc + row]
-                else:
-                    response[offset + original_row * unilateral_stride + unilateral] = (
-                        bilateral_P[bvio + original_row] * response_factor[offset + unilateral * njc + row]
-                    )
-
-
-@wp.kernel
-def _solve_bilateral_unilateral_response(
-    problem_dim: wp.array[int32],
-    problem_njc: wp.array[int32],
-    bilateral_mio: wp.array[int32],
-    bilateral_ld: wp.array[int32],
-    bilateral_vio: wp.array[int32],
-    bilateral_P: wp.array[float32],
-    bilateral_L: wp.array[float32],
-    bilateral_permutation: wp.array[int32],
-    use_permutation: bool,
-    response_mio: wp.array[int32],
-    response_stride: wp.array[int32],
-    coupling: wp.array[float32],
-    response_factor: wp.array[float32],
-    response: wp.array[float32],
-):
-    # response_factor is row-major here; response always uses
-    # original_row * unilateral_stride + unilateral.
-    tid = wp.tid()
-    threads_per_world = int32(wp.block_dim())
-    lane = tid % threads_per_world
-    wid = tid / threads_per_world
-    njc = problem_njc[wid]
-    nu = problem_dim[wid] - njc
-    factor = bilateral_mio[wid]
-    ld = bilateral_ld[wid]
-    bvio = bilateral_vio[wid]
-    offset = response_mio[wid]
-    unilateral_stride = response_stride[wid]
-    for unilateral in range(lane, nu, threads_per_world):
-        for row in range(njc):
-            original_row = row
-            if use_permutation:
-                original_row = bilateral_permutation[bvio + row]
-            value = bilateral_P[bvio + original_row] * coupling[offset + original_row * unilateral_stride + unilateral]
-            for k in range(row):
-                value -= (
-                    bilateral_L[factor + ld * row + k] * response_factor[offset + k * unilateral_stride + unilateral]
+                response[offset + original_row * unilateral_stride + unilateral] = (
+                    bilateral_P[bvio + original_row] * response_factor[offset + row * unilateral_stride + unilateral]
                 )
-            response_factor[offset + row * unilateral_stride + unilateral] = (
-                value / bilateral_L[factor + ld * row + row]
-            )
 
-        for reverse_row in range(njc):
-            row = njc - int32(1) - reverse_row
-            value = response_factor[offset + row * unilateral_stride + unilateral]
-            for k in range(row + int32(1), njc):
-                value -= (
-                    bilateral_L[factor + ld * k + row] * response_factor[offset + k * unilateral_stride + unilateral]
-                )
-            response_factor[offset + row * unilateral_stride + unilateral] = (
-                value / bilateral_L[factor + ld * row + row]
-            )
-
-        for row in range(njc):
-            original_row = row
-            if use_permutation:
-                original_row = bilateral_permutation[bvio + row]
-            response[offset + original_row * unilateral_stride + unilateral] = (
-                bilateral_P[bvio + original_row] * response_factor[offset + row * unilateral_stride + unilateral]
-            )
+    return _solve_bilateral_unilateral_response
 
 
-@wp.kernel
-def _compute_dvi_unilateral_velocities(
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_nbc: wp.array[int32],
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_bcgo: wp.array[int32],
-    problem_D: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    solution_lambdas: wp.array[float32],
-    state_v_aug: wp.array[float32],
-):
-    """Evaluate every bounded, limit, and contact row at the current dual iterate."""
-    wid, local_row = wp.tid()
-    nbc = problem_nbc[wid]
-    nl = problem_nl[wid]
-    nc = problem_nc[wid]
-    unilateral_rows = nbc + nl + int32(3) * nc
-    if local_row >= unilateral_rows:
-        return
-    ncts = problem_dim[wid]
-    mio = problem_mio[wid]
-    vio = problem_vio[wid]
-    row = problem_bcgo[wid] + local_row
-    state_v_aug[vio + row] = _compute_row_velocity(ncts, mio, vio, row, problem_D, problem_v_f, solution_lambdas)
+_solve_bilateral_unilateral_response = make_solve_bilateral_unilateral_response_kernel(1)
+
+
+@cache
+def make_compute_dvi_unilateral_velocities_kernel(array_ndim: int = 1):
+    """Build ``_compute_dvi_unilateral_velocities`` for flat or per-world row Delassus storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _compute_dvi_unilateral_velocities(
+        problem_dim: wp.array[int32],
+        problem_mio: wp.array[int32],
+        problem_vio: wp.array[int32],
+        problem_nbc: wp.array[int32],
+        problem_nl: wp.array[int32],
+        problem_nc: wp.array[int32],
+        problem_bcgo: wp.array[int32],
+        problem_D_storage: wp.array(dtype=float32, ndim=array_ndim),
+        problem_v_f: wp.array[float32],
+        solution_lambdas: wp.array[float32],
+        state_v_aug: wp.array[float32],
+    ):
+        """Evaluate every bounded, limit, and contact row at the current dual iterate."""
+        wid, local_row = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(array_ndim == 2) else problem_D_storage
+        nbc = problem_nbc[wid]
+        nl = problem_nl[wid]
+        nc = problem_nc[wid]
+        unilateral_rows = nbc + nl + int32(3) * nc
+        if local_row >= unilateral_rows:
+            return
+        ncts = problem_dim[wid]
+        mio = problem_mio[wid]
+        vio = problem_vio[wid]
+        row = problem_bcgo[wid] + local_row
+        state_v_aug[vio + row] = _compute_row_velocity(ncts, mio, vio, row, problem_D, problem_v_f, solution_lambdas)
+
+    return _compute_dvi_unilateral_velocities
+
+
+_compute_dvi_unilateral_velocities = make_compute_dvi_unilateral_velocities_kernel(1)
 
 
 @wp.func
@@ -885,288 +998,308 @@ def _dense_unilateral_terminal_residuals(
     return vec3f(r_p, r_d, r_c)
 
 
-@wp.kernel
-def _solve_dvi_inequalities_colored_pgs(
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_nbc: wp.array[int32],
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_bcgo: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_bcio: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_uio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_bound_lower: wp.array[float32],
-    problem_bound_upper: wp.array[float32],
-    problem_D: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_b: wp.array[float32],
-    block_iteration: int32,
-    inequality_num_colors: wp.array[int32],
-    inequality_ids_by_color: wp.array[int32],
-    inequality_color_starts: wp.array[int32],
-    solver_config: wp.array[DVIConfigStruct],
-    enable_adaptive: wp.bool,
-    solver_status: wp.array[DVIStatus],
-    state_delta: wp.array[float32],
-    state_v_aug: wp.array[float32],
-    solution_lambdas: wp.array[float32],
-):
-    """Apply one graph-colored PGS schedule to all DVI inequalities."""
-    tid = wp.tid()
-    threads_per_world = int32(wp.block_dim())
-    lane = tid % threads_per_world
-    wid = tid / threads_per_world
-    cfg = solver_config[wid]
-    if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
-        return
+@cache
+def make_solve_dvi_inequalities_colored_pgs_kernel(array_ndim: int = 1):
+    """Build ``_solve_dvi_inequalities_colored_pgs`` for flat or per-world row Delassus storage."""
 
-    nbc = problem_nbc[wid]
-    nl = problem_nl[wid]
-    nc = problem_nc[wid]
-    nu = nbc + nl + nc
-    if nu == 0:
-        if enable_adaptive and lane == int32(0):
-            status = solver_status[wid]
-            status.iterations = int32(1)
-            solver_status[wid] = status
-        return
-    ncts = problem_dim[wid]
-    mio = problem_mio[wid]
-    vio = problem_vio[wid]
-    bcgo = problem_bcgo[wid]
-    lcgo = problem_lcgo[wid]
-    ccgo = problem_ccgo[wid]
-    bcio = problem_bcio[wid]
-    cio = problem_cio[wid]
-    uio = problem_uio[wid]
-    schedule_offset = uio + wid
-    contact_end = ccgo + int32(3) * nc
-    sweep_count = cfg.inequality_sweeps_per_iteration
-    first_tangent_sweep = int32(0)
-    if block_iteration == int32(_FUSED_BILATERAL_BLOCK):
-        sweep_count *= cfg.max_alternating_iterations
-    elif block_iteration == int32(_FUSED_INEQUALITY_BLOCK):
-        tangent_sweep_count = sweep_count * cfg.max_alternating_iterations / int32(2)
-        sweep_count = (sweep_count + int32(1)) * cfg.max_alternating_iterations
-        first_tangent_sweep = sweep_count - tangent_sweep_count
-    adaptive = enable_adaptive and cfg.tolerance > float32(0.0)
-    completed_sweeps = sweep_count
-    pair_update = float32(0.0)
-    for _sweep in range(sweep_count):
-        sweep_update = float32(0.0)
-        phase_count = int32(2)
-        if block_iteration == int32(_FUSED_INEQUALITY_BLOCK) and _sweep < first_tangent_sweep:
-            # Establish the support load before friction in inequality-only solves.
-            phase_count = int32(1)
-        for phase in range(phase_count):
-            # Symmetric tangent ordering reduces load bias in redundant sticking patches.
-            reverse_colors = phase == int32(1) and _sweep % int32(2) != int32(0)
-            num_colors = inequality_num_colors[wid]
-            for color_index in range(num_colors):
-                color = color_index
-                if reverse_colors:
-                    color = num_colors - int32(1) - color_index
-                color_start = inequality_color_starts[schedule_offset + color]
-                color_end = inequality_color_starts[schedule_offset + color + int32(1)]
-                color_slot = color_start + lane
-                while color_slot < color_end:
-                    uid = inequality_ids_by_color[uio + color_slot]
-                    delta_0 = float32(0.0)
-                    delta_1 = float32(0.0)
-                    column = bcgo + uid
-                    column_count = int32(1)
-                    active = int32(1)
-                    if uid < nbc:
-                        if phase == int32(1):
-                            active = int32(0)
-                        else:
-                            vec_idx = vio + column
-                            bio = bcio + uid
-                            lambda_bound_old = solution_lambdas[vec_idx]
-                            diagonal = wp.abs(problem_D[mio + ncts * column + column])
-                            lambda_bound_new = _project_box_update(
-                                lambda_bound_old,
-                                state_v_aug[vec_idx],
-                                diagonal,
-                                cfg.regularization,
-                                cfg.omega,
-                                problem_bound_lower[bio],
-                                problem_bound_upper[bio],
-                            )
-                            solution_lambdas[vec_idx] = lambda_bound_new
-                            delta_0 = lambda_bound_new - lambda_bound_old
-                    elif uid < nbc + nl:
-                        column = lcgo + (uid - nbc)
-                        if phase == int32(1):
-                            active = int32(0)
-                        else:
-                            vec_idx = vio + column
-                            lambda_limit_old = solution_lambdas[vec_idx]
-                            diagonal = wp.abs(problem_D[mio + ncts * column + column])
-                            lambda_limit_new = lambda_limit_old
-                            if diagonal > FLOAT32_EPS:
-                                lambda_limit_new = wp.max(
-                                    float32(0.0),
-                                    lambda_limit_old
-                                    - cfg.omega * state_v_aug[vec_idx] / (diagonal + cfg.regularization),
-                                )
-                            solution_lambdas[vec_idx] = lambda_limit_new
-                            delta_0 = lambda_limit_new - lambda_limit_old
-                    else:
-                        cid = uid - nbc - nl
-                        column = ccgo + int32(3) * cid
-                        if phase == int32(0):
-                            column += int32(2)
-                            vec_idx = vio + column
-                            lambda_n_old = solution_lambdas[vec_idx]
-                            diagonal_n = wp.abs(problem_D[mio + ncts * column + column])
-                            lambda_n_new = _project_contact_normal_update(
-                                lambda_n_old,
-                                state_v_aug[vec_idx],
-                                diagonal_n,
-                                cfg.regularization,
-                                cfg.omega,
-                            )
-                            solution_lambdas[vec_idx] = lambda_n_new
-                            delta_0 = lambda_n_new - lambda_n_old
-                        else:
-                            column_count = int32(2)
-                            vec_idx = vio + column
-                            lambda_t0_old = solution_lambdas[vec_idx]
-                            lambda_t1_old = solution_lambdas[vec_idx + int32(1)]
-                            diagonal_t0 = wp.abs(problem_D[mio + ncts * column + column])
-                            diagonal_t1 = wp.abs(problem_D[mio + ncts * (column + int32(1)) + column + int32(1)])
-                            lambda_t_old = wp.vec2f(lambda_t0_old, lambda_t1_old)
-                            lambda_t_new = _project_contact_tangent_update(
-                                lambda_t_old,
-                                wp.vec2f(state_v_aug[vec_idx], state_v_aug[vec_idx + int32(1)]),
-                                wp.vec2f(diagonal_t0, diagonal_t1),
-                                problem_D[mio + ncts * column + column + int32(1)],
-                                cfg.regularization,
-                                cfg.omega,
-                                problem_mu[cio + cid]
-                                * _contact_friction_normal_load(
-                                    solution_lambdas[vec_idx + int32(2)],
-                                    problem_v_b[vec_idx + int32(2)],
-                                    problem_P[vec_idx + int32(2)],
-                                    wp.abs(problem_D[mio + ncts * (column + int32(2)) + column + int32(2)]),
-                                    cfg.regularization,
-                                    cfg.omega,
-                                ),
-                            )
-                            solution_lambdas[vec_idx] = lambda_t_new.x
-                            solution_lambdas[vec_idx + int32(1)] = lambda_t_new.y
-                            delta_0 = lambda_t_new.x - lambda_t_old.x
-                            delta_1 = lambda_t_new.y - lambda_t_old.y
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _solve_dvi_inequalities_colored_pgs(
+        problem_dim: wp.array[int32],
+        problem_mio: wp.array[int32],
+        problem_vio: wp.array[int32],
+        problem_nbc: wp.array[int32],
+        problem_nl: wp.array[int32],
+        problem_nc: wp.array[int32],
+        problem_bcgo: wp.array[int32],
+        problem_lcgo: wp.array[int32],
+        problem_ccgo: wp.array[int32],
+        problem_bcio: wp.array[int32],
+        problem_cio: wp.array[int32],
+        problem_uio: wp.array[int32],
+        problem_mu: wp.array[float32],
+        problem_bound_lower: wp.array[float32],
+        problem_bound_upper: wp.array[float32],
+        problem_D_storage: wp.array(dtype=float32, ndim=array_ndim),
+        problem_P: wp.array[float32],
+        problem_v_b: wp.array[float32],
+        block_iteration: int32,
+        inequality_num_colors: wp.array[int32],
+        inequality_ids_by_color: wp.array[int32],
+        inequality_color_starts: wp.array[int32],
+        solver_config: wp.array[DVIConfigStruct],
+        enable_adaptive: wp.bool,
+        solver_status: wp.array[DVIStatus],
+        state_delta: wp.array[float32],
+        state_v_aug: wp.array[float32],
+        solution_lambdas: wp.array[float32],
+    ):
+        """Apply one graph-colored PGS schedule to all DVI inequalities."""
+        tid = wp.tid()
+        threads_per_world = int32(wp.block_dim())
+        lane = tid % threads_per_world
+        wid = tid / threads_per_world
+        problem_D = problem_D_storage[wid] if wp.static(array_ndim == 2) else problem_D_storage
+        cfg = solver_config[wid]
+        if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
+            return
 
-                    if active != int32(0):
-                        if adaptive:
-                            sweep_update = wp.max(sweep_update, wp.max(wp.abs(delta_0), wp.abs(delta_1)))
-                        state_delta[vio + column] = delta_0
-                        if column_count == int32(2):
-                            state_delta[vio + column + int32(1)] = delta_1
-                    color_slot += threads_per_world
-
-                # The projected updates above have one owner per inequality.
-                # Spread their dense velocity updates across the whole block;
-                # small contact colors would otherwise leave most lanes idle.
-                _sync_threads()
-                row_count = contact_end - bcgo
-                color_size = color_end - color_start
-                update_task = lane
-                while update_task < color_size * row_count:
-                    local_color_slot = update_task / row_count
-                    row = bcgo + update_task - local_color_slot * row_count
-                    uid = inequality_ids_by_color[uio + color_start + local_color_slot]
-                    active = int32(0)
-                    if uid >= nbc + nl or phase == int32(0):
-                        active = int32(1)
-                    if active != int32(0):
+        nbc = problem_nbc[wid]
+        nl = problem_nl[wid]
+        nc = problem_nc[wid]
+        nu = nbc + nl + nc
+        if nu == 0:
+            if enable_adaptive and lane == int32(0):
+                status = solver_status[wid]
+                status.iterations = int32(1)
+                solver_status[wid] = status
+            return
+        ncts = problem_dim[wid]
+        mio = problem_mio[wid]
+        vio = problem_vio[wid]
+        bcgo = problem_bcgo[wid]
+        lcgo = problem_lcgo[wid]
+        ccgo = problem_ccgo[wid]
+        bcio = problem_bcio[wid]
+        cio = problem_cio[wid]
+        uio = problem_uio[wid]
+        schedule_offset = uio + wid
+        contact_end = ccgo + int32(3) * nc
+        sweep_count = cfg.inequality_sweeps_per_iteration
+        first_tangent_sweep = int32(0)
+        if block_iteration == int32(_FUSED_BILATERAL_BLOCK):
+            sweep_count *= cfg.max_alternating_iterations
+        elif block_iteration == int32(_FUSED_INEQUALITY_BLOCK):
+            tangent_sweep_count = sweep_count * cfg.max_alternating_iterations / int32(2)
+            sweep_count = (sweep_count + int32(1)) * cfg.max_alternating_iterations
+            first_tangent_sweep = sweep_count - tangent_sweep_count
+        adaptive = enable_adaptive and cfg.tolerance > float32(0.0)
+        completed_sweeps = sweep_count
+        pair_update = float32(0.0)
+        for _sweep in range(sweep_count):
+            sweep_update = float32(0.0)
+            phase_count = int32(2)
+            if block_iteration == int32(_FUSED_INEQUALITY_BLOCK) and _sweep < first_tangent_sweep:
+                # Establish the support load before friction in inequality-only solves.
+                phase_count = int32(1)
+            for phase in range(phase_count):
+                # Symmetric tangent ordering reduces load bias in redundant sticking patches.
+                reverse_colors = phase == int32(1) and _sweep % int32(2) != int32(0)
+                num_colors = inequality_num_colors[wid]
+                for color_index in range(num_colors):
+                    color = color_index
+                    if reverse_colors:
+                        color = num_colors - int32(1) - color_index
+                    color_start = inequality_color_starts[schedule_offset + color]
+                    color_end = inequality_color_starts[schedule_offset + color + int32(1)]
+                    color_slot = color_start + lane
+                    while color_slot < color_end:
+                        uid = inequality_ids_by_color[uio + color_slot]
+                        delta_0 = float32(0.0)
+                        delta_1 = float32(0.0)
                         column = bcgo + uid
                         column_count = int32(1)
-                        if uid >= nbc + nl:
+                        active = int32(1)
+                        if uid < nbc:
+                            if phase == int32(1):
+                                active = int32(0)
+                            else:
+                                vec_idx = vio + column
+                                bio = bcio + uid
+                                lambda_bound_old = solution_lambdas[vec_idx]
+                                diagonal = wp.abs(problem_D[mio + ncts * column + column])
+                                lambda_bound_new = _project_box_update(
+                                    lambda_bound_old,
+                                    state_v_aug[vec_idx],
+                                    diagonal,
+                                    cfg.regularization,
+                                    cfg.omega,
+                                    problem_bound_lower[bio],
+                                    problem_bound_upper[bio],
+                                )
+                                solution_lambdas[vec_idx] = lambda_bound_new
+                                delta_0 = lambda_bound_new - lambda_bound_old
+                        elif uid < nbc + nl:
+                            column = lcgo + (uid - nbc)
+                            if phase == int32(1):
+                                active = int32(0)
+                            else:
+                                vec_idx = vio + column
+                                lambda_limit_old = solution_lambdas[vec_idx]
+                                diagonal = wp.abs(problem_D[mio + ncts * column + column])
+                                lambda_limit_new = lambda_limit_old
+                                if diagonal > FLOAT32_EPS:
+                                    lambda_limit_new = wp.max(
+                                        float32(0.0),
+                                        lambda_limit_old
+                                        - cfg.omega * state_v_aug[vec_idx] / (diagonal + cfg.regularization),
+                                    )
+                                solution_lambdas[vec_idx] = lambda_limit_new
+                                delta_0 = lambda_limit_new - lambda_limit_old
+                        else:
                             cid = uid - nbc - nl
                             column = ccgo + int32(3) * cid
                             if phase == int32(0):
                                 column += int32(2)
+                                vec_idx = vio + column
+                                lambda_n_old = solution_lambdas[vec_idx]
+                                diagonal_n = wp.abs(problem_D[mio + ncts * column + column])
+                                lambda_n_new = _project_contact_normal_update(
+                                    lambda_n_old,
+                                    state_v_aug[vec_idx],
+                                    diagonal_n,
+                                    cfg.regularization,
+                                    cfg.omega,
+                                )
+                                solution_lambdas[vec_idx] = lambda_n_new
+                                delta_0 = lambda_n_new - lambda_n_old
                             else:
                                 column_count = int32(2)
-                        elif uid >= nbc:
-                            column = lcgo + uid - nbc
-                        row_mio = mio + ncts * row
-                        dv = problem_D[row_mio + column] * state_delta[vio + column]
-                        if column_count == int32(2):
-                            dv += problem_D[row_mio + column + int32(1)] * state_delta[vio + column + int32(1)]
-                        wp.atomic_add(state_v_aug, vio + row, dv)
-                    update_task += threads_per_world
-                _sync_threads()
+                                vec_idx = vio + column
+                                lambda_t0_old = solution_lambdas[vec_idx]
+                                lambda_t1_old = solution_lambdas[vec_idx + int32(1)]
+                                diagonal_t0 = wp.abs(problem_D[mio + ncts * column + column])
+                                diagonal_t1 = wp.abs(problem_D[mio + ncts * (column + int32(1)) + column + int32(1)])
+                                lambda_t_old = wp.vec2f(lambda_t0_old, lambda_t1_old)
+                                lambda_t_new = _project_contact_tangent_update(
+                                    lambda_t_old,
+                                    wp.vec2f(state_v_aug[vec_idx], state_v_aug[vec_idx + int32(1)]),
+                                    wp.vec2f(diagonal_t0, diagonal_t1),
+                                    problem_D[mio + ncts * column + column + int32(1)],
+                                    cfg.regularization,
+                                    cfg.omega,
+                                    problem_mu[cio + cid]
+                                    * _contact_friction_normal_load(
+                                        solution_lambdas[vec_idx + int32(2)],
+                                        problem_v_b[vec_idx + int32(2)],
+                                        problem_P[vec_idx + int32(2)],
+                                        wp.abs(problem_D[mio + ncts * (column + int32(2)) + column + int32(2)]),
+                                        cfg.regularization,
+                                        cfg.omega,
+                                    ),
+                                )
+                                solution_lambdas[vec_idx] = lambda_t_new.x
+                                solution_lambdas[vec_idx + int32(1)] = lambda_t_new.y
+                                delta_0 = lambda_t_new.x - lambda_t_old.x
+                                delta_1 = lambda_t_new.y - lambda_t_old.y
 
-        if adaptive:
-            sweep_update_max = wp.tile_max(wp.tile(sweep_update))[0]
-            pair_update = wp.max(pair_update, sweep_update_max)
-            if (_sweep + int32(1)) % int32(2) == int32(0):
-                if pair_update <= cfg.tolerance:
-                    local_residuals = _dense_unilateral_terminal_residuals(
-                        nl,
-                        nc,
-                        lcgo,
-                        ccgo,
-                        cio,
-                        vio,
-                        lane,
-                        threads_per_world,
-                        problem_mu,
-                        problem_P,
-                        state_v_aug,
-                        solution_lambdas,
-                    )
-                    r_p = wp.tile_max(wp.tile(local_residuals[0]))[0]
-                    r_d = wp.tile_max(wp.tile(local_residuals[1]))[0]
-                    r_c = wp.tile_max(wp.tile(local_residuals[2]))[0]
-                    if r_p <= cfg.tolerance and r_d <= cfg.tolerance and r_c <= cfg.tolerance:
-                        completed_sweeps = _sweep + int32(1)
-                        break
-                pair_update = float32(0.0)
+                        if active != int32(0):
+                            if adaptive:
+                                sweep_update = wp.max(sweep_update, wp.max(wp.abs(delta_0), wp.abs(delta_1)))
+                            state_delta[vio + column] = delta_0
+                            if column_count == int32(2):
+                                state_delta[vio + column + int32(1)] = delta_1
+                        color_slot += threads_per_world
 
-    if enable_adaptive and lane == int32(0):
-        status = solver_status[wid]
-        status.iterations = completed_sweeps
-        solver_status[wid] = status
+                    # The projected updates above have one owner per inequality.
+                    # Spread their dense velocity updates across the whole block;
+                    # small contact colors would otherwise leave most lanes idle.
+                    _sync_threads()
+                    row_count = contact_end - bcgo
+                    color_size = color_end - color_start
+                    update_task = lane
+                    while update_task < color_size * row_count:
+                        local_color_slot = update_task / row_count
+                        row = bcgo + update_task - local_color_slot * row_count
+                        uid = inequality_ids_by_color[uio + color_start + local_color_slot]
+                        active = int32(0)
+                        if uid >= nbc + nl or phase == int32(0):
+                            active = int32(1)
+                        if active != int32(0):
+                            column = bcgo + uid
+                            column_count = int32(1)
+                            if uid >= nbc + nl:
+                                cid = uid - nbc - nl
+                                column = ccgo + int32(3) * cid
+                                if phase == int32(0):
+                                    column += int32(2)
+                                else:
+                                    column_count = int32(2)
+                            elif uid >= nbc:
+                                column = lcgo + uid - nbc
+                            row_mio = mio + ncts * row
+                            dv = problem_D[row_mio + column] * state_delta[vio + column]
+                            if column_count == int32(2):
+                                dv += problem_D[row_mio + column + int32(1)] * state_delta[vio + column + int32(1)]
+                            wp.atomic_add(state_v_aug, vio + row, dv)
+                        update_task += threads_per_world
+                    _sync_threads()
+
+            if adaptive:
+                sweep_update_max = wp.tile_max(wp.tile(sweep_update))[0]
+                pair_update = wp.max(pair_update, sweep_update_max)
+                if (_sweep + int32(1)) % int32(2) == int32(0):
+                    if pair_update <= cfg.tolerance:
+                        local_residuals = _dense_unilateral_terminal_residuals(
+                            nl,
+                            nc,
+                            lcgo,
+                            ccgo,
+                            cio,
+                            vio,
+                            lane,
+                            threads_per_world,
+                            problem_mu,
+                            problem_P,
+                            state_v_aug,
+                            solution_lambdas,
+                        )
+                        r_p = wp.tile_max(wp.tile(local_residuals[0]))[0]
+                        r_d = wp.tile_max(wp.tile(local_residuals[1]))[0]
+                        r_c = wp.tile_max(wp.tile(local_residuals[2]))[0]
+                        if r_p <= cfg.tolerance and r_d <= cfg.tolerance and r_c <= cfg.tolerance:
+                            completed_sweeps = _sweep + int32(1)
+                            break
+                    pair_update = float32(0.0)
+
+        if enable_adaptive and lane == int32(0):
+            status = solver_status[wid]
+            status.iterations = completed_sweeps
+            solver_status[wid] = status
+
+    return _solve_dvi_inequalities_colored_pgs
 
 
-@wp.kernel
-def _compute_dvi_solution_vectors(
-    # Inputs:
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_D: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    # Outputs:
-    state_s: wp.array[float32],
-    state_v_aug: wp.array[float32],
-    solution_lambdas: wp.array[float32],
-    solution_v_plus: wp.array[float32],
-):
-    wid, tid = wp.tid()
+_solve_dvi_inequalities_colored_pgs = make_solve_dvi_inequalities_colored_pgs_kernel(1)
 
-    ncts = problem_dim[wid]
-    if tid >= ncts:
-        return
 
-    mio = problem_mio[wid]
-    vio = problem_vio[wid]
-    # Recover the physical post-event velocity v_plus = D * lambda + v_f.
-    # De Saxce augmentation is stored separately for cone residual evaluation.
-    v_i = _compute_row_velocity(ncts, mio, vio, tid, problem_D, problem_v_f, solution_lambdas)
-    solution_v_plus[vio + tid] = v_i
-    state_v_aug[vio + tid] = v_i
-    state_s[vio + tid] = 0.0
+@cache
+def make_compute_dvi_solution_vectors_kernel(array_ndim: int = 1):
+    """Build ``_compute_dvi_solution_vectors`` for flat or per-world row Delassus storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def _compute_dvi_solution_vectors(
+        # Inputs:
+        problem_dim: wp.array[int32],
+        problem_mio: wp.array[int32],
+        problem_vio: wp.array[int32],
+        problem_D_storage: wp.array(dtype=float32, ndim=array_ndim),
+        problem_v_f: wp.array[float32],
+        # Outputs:
+        state_s: wp.array[float32],
+        state_v_aug: wp.array[float32],
+        solution_lambdas: wp.array[float32],
+        solution_v_plus: wp.array[float32],
+    ):
+        wid, tid = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(array_ndim == 2) else problem_D_storage
+
+        ncts = problem_dim[wid]
+        if tid >= ncts:
+            return
+
+        mio = problem_mio[wid]
+        vio = problem_vio[wid]
+        # Recover the physical post-event velocity v_plus = D * lambda + v_f.
+        # De Saxce augmentation is stored separately for cone residual evaluation.
+        v_i = _compute_row_velocity(ncts, mio, vio, tid, problem_D, problem_v_f, solution_lambdas)
+        solution_v_plus[vio + tid] = v_i
+        state_v_aug[vio + tid] = v_i
+        state_s[vio + tid] = 0.0
+
+    return _compute_dvi_solution_vectors
+
+
+_compute_dvi_solution_vectors = make_compute_dvi_solution_vectors_kernel(1)
 
 
 @wp.kernel

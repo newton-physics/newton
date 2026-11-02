@@ -19,6 +19,7 @@ from ...geometry.keying import KeySorter
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
 from ...linalg import LLTBlockedRCMSolver, LLTBlockedSolver
+from ...linalg.core import validate_dense_matrix_shape
 from ...linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from .coupling import PackedCoupling
 from .effort_limit_condensation import EffortLimitCondensation
@@ -26,14 +27,14 @@ from .joint_blocks import JointBlockSolver
 from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
-    _find_bilateral_factor_row_start,
-    _find_bilateral_factor_row_start_rcm,
     _initialize_dvi_status,
     _scatter_bilateral_solution,
     _set_dvi_direct_status_iterations,
-    _solve_bilateral_unilateral_response,
-    _solve_bilateral_unilateral_response_compact,
-    _solve_bilateral_unilateral_response_cooperative,
+    make_find_bilateral_factor_row_start_kernel,
+    make_find_bilateral_factor_row_start_rcm_kernel,
+    make_solve_bilateral_unilateral_response_compact_kernel,
+    make_solve_bilateral_unilateral_response_cooperative_kernel,
+    make_solve_bilateral_unilateral_response_kernel,
 )
 from .response import (
     _RESPONSE_WIDTH,
@@ -43,11 +44,9 @@ from .response import (
 )
 from .sparse_kernels import (
     SMALL_BILATERAL_INVERSE_SIZE,
-    _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
     _assemble_compact_unilateral_schur_tiled,
     _assemble_sparse_bilateral_unilateral_coupling,
-    _build_sparse_bilateral_block,
     _build_sparse_bilateral_rhs,
     _build_sparse_bilateral_rhs_from_matvec,
     _cache_sparse_contact_diagonal,
@@ -58,7 +57,6 @@ from .sparse_kernels import (
     _compute_dvi_sparse_solution_vectors,
     _expand_colored_contact_groups,
     _group_mapped_dvi_inequalities,
-    _invert_small_bilateral_block,
     _map_active_contacts,
     _map_active_limits,
     _map_bounded_constraints,
@@ -71,13 +69,16 @@ from .sparse_kernels import (
     _prepare_full_sparse_unilateral_schur,
     _reconstruct_fused_bilateral_solution,
     _select_parallel_contact_colors,
-    _set_sparse_bilateral_diagonal,
     _solve_dvi_sparse_contacts_pgs,
     _solve_dvi_sparse_inequalities_pgs,
     _solve_dvi_sparse_inequalities_pgs_cooperative,
     _sparse_bilateral_gemv,
     _zero_bilateral_lambdas,
+    make_apply_small_bilateral_inverse_kernel,
+    make_build_sparse_bilateral_block_kernel,
     make_compact_schur_pgs_kernel,
+    make_invert_small_bilateral_block_kernel,
+    make_set_sparse_bilateral_diagonal_kernel,
     make_sparse_bilateral_inverse_kernel,
     make_sparse_bilateral_solve_kernel,
 )
@@ -245,10 +246,9 @@ class SparseDVIPath:
                 and self.size.max_of_num_bilateral_joint_cts <= SMALL_BILATERAL_INVERSE_SIZE
             ):
                 operator = self.data.bilateral_operator
-                self.bilateral_lower_inverse = wp.zeros(
-                    operator.info.total_mat_size, dtype=wp.float32, device=self.device
-                )
-                self.bilateral_inverse = wp.zeros_like(self.bilateral_lower_inverse)
+                validate_dense_matrix_shape(operator.mat.shape, operator.mat.dtype)
+                self.bilateral_lower_inverse = wp.zeros_like(operator.mat)
+                self.bilateral_inverse = wp.zeros_like(operator.mat)
 
         self.packed_coupling = PackedCoupling.create(self, self.joint_block_solver)
         self.effort_limit_condensation = EffortLimitCondensation.create(self)
@@ -1029,7 +1029,7 @@ def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) ->
         path.bilateral_solver.compute(A=operator.mat)
         if path.bilateral_inverse is not None:
             wp.launch_tiled(
-                _invert_small_bilateral_block,
+                make_invert_small_bilateral_block_kernel(path.bilateral_solver.L.ndim, path.bilateral_inverse.ndim),
                 dim=path.size.num_worlds,
                 inputs=[
                     operator.info.dim,
@@ -1046,7 +1046,7 @@ def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) ->
 def _assemble_sparse_bilateral_block(
     path: SparseDVIPath,
     problem: DualProblem,
-    matrix: wp.array[float32],
+    matrix: wp.array[float32] | wp.array2d[float32],
     inverse: wp.array[int32] | None = None,
 ) -> None:
     """Assemble the bilateral matrix directly in the requested row ordering."""
@@ -1061,7 +1061,7 @@ def _assemble_sparse_bilateral_block(
 
     jacobian = problem.delassus.constraint_jacobian
     wp.launch(
-        kernel=_set_sparse_bilateral_diagonal,
+        kernel=make_set_sparse_bilateral_diagonal_kernel(matrix.ndim),
         dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.njc,
@@ -1081,7 +1081,7 @@ def _assemble_sparse_bilateral_block(
         # Each entry has one writer, and entries outside the structural pairs
         # are never written, so the dense matrix needs no clearing.
         wp.launch(
-            kernel=_build_sparse_bilateral_block,
+            kernel=make_build_sparse_bilateral_block_kernel(matrix.ndim),
             dim=path.bilateral_entry_starts.size - 1,
             inputs=[
                 path.model.bodies.inv_m_i,
@@ -1250,7 +1250,7 @@ def _solve_sparse_bilateral_block(
             values = wp.array(ptr=values.ptr, shape=(values.size,), dtype=vec6f, device=path.device)
         body_capacity = 1 << (max(1, path.size.max_of_num_body_dofs) - 1).bit_length()
         wp.launch(
-            make_sparse_bilateral_inverse_kernel(body_capacity),
+            make_sparse_bilateral_inverse_kernel(body_capacity, path.bilateral_inverse.ndim),
             dim=(world_count, 128),
             inputs=[
                 problem.data.vio,
@@ -1312,7 +1312,7 @@ def _solve_sparse_bilateral_block(
         and not forward_only
     ):
         wp.launch(
-            make_sparse_bilateral_solve_kernel(solver._solve_block_size),
+            make_sparse_bilateral_solve_kernel(solver._solve_block_size, solver.L.ndim),
             dim=(path.size.num_worlds, solver._solve_block_dim),
             inputs=[
                 problem.data.vio,
@@ -1373,7 +1373,7 @@ def _solve_sparse_bilateral_block(
         solver = path.bilateral_solver
         info = operator.info
         wp.launch(
-            make_llt_blocked_rcm_solve_kernel(solver.block_size, True, False),
+            make_llt_blocked_rcm_solve_kernel(solver.block_size, True, False, array_ndim=solver.L.ndim),
             dim=(path.size.num_worlds, solver._solve_block_dim),
             inputs=[
                 info.dim,
@@ -1396,7 +1396,7 @@ def _solve_sparse_bilateral_block(
     if path.bilateral_inverse is not None:
         info = operator.info
         wp.launch(
-            _apply_small_bilateral_inverse,
+            make_apply_small_bilateral_inverse_kernel(path.bilateral_inverse.ndim),
             dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
             inputs=[
                 info.dim if active_dim is None else active_dim,
@@ -1598,18 +1598,22 @@ def _solve_sparse_with_bilateral_schur_complement(
     )
     factor_offsets = path.data.bilateral_operator.info.mio
     factor = path.bilateral_solver.L
-    response_kernel = _solve_bilateral_unilateral_response
+    response_kernel = make_solve_bilateral_unilateral_response_kernel(factor.ndim)
     response_block_dim = 1
     response_tasks_per_world = 0
     response_dim = path.size.num_worlds
     if path.device.is_cuda and joint_blocks is None:
-        response_kernel = _solve_bilateral_unilateral_response_cooperative
+        response_kernel = make_solve_bilateral_unilateral_response_cooperative_kernel(factor.ndim)
         # Pack independent warp workers to avoid limiting occupancy to one warp per block.
         response_block_dim = 256 if path.size.num_worlds >= 128 else 128
         response_tasks_per_world = min(32, (max_unilateral_rows + 1) // 2)
         response_dim = path.size.num_worlds * response_tasks_per_world * 32
         wp.launch(
-            kernel=_find_bilateral_factor_row_start_rcm if use_permutation else _find_bilateral_factor_row_start,
+            kernel=(
+                make_find_bilateral_factor_row_start_rcm_kernel(factor.ndim)
+                if use_permutation
+                else make_find_bilateral_factor_row_start_kernel(factor.ndim)
+            ),
             dim=(path.size.num_worlds, max_joint_rows),
             inputs=[
                 problem.data.njc,
@@ -1636,7 +1640,7 @@ def _solve_sparse_with_bilateral_schur_complement(
         joint_blocks.response(path, problem, coupling=path.packed_coupling)
     elif use_scalar_response:
         wp.launch(
-            kernel=_solve_bilateral_unilateral_response_compact,
+            kernel=make_solve_bilateral_unilateral_response_compact_kernel(factor.ndim),
             dim=(path.size.num_worlds, 128),
             inputs=[
                 problem.data.dim,
@@ -1668,7 +1672,7 @@ def _solve_sparse_with_bilateral_schur_complement(
     if use_tiled_response:
         response_width = 4 if path.size.num_worlds <= 16 else _RESPONSE_WIDTH
         wp.launch(
-            kernel=make_response_kernel(response_width),
+            kernel=make_response_kernel(response_width, factor.ndim),
             dim=(path.size.num_worlds * ((max_unilateral_rows + response_width - 1) // response_width), 128),
             inputs=[
                 problem.data.dim,
@@ -1816,7 +1820,7 @@ def _solve_sparse_with_bilateral_schur_complement(
             block_dim=128,
         )
         wp.launch(
-            make_llt_blocked_rcm_solve_kernel(solver.block_size, False),
+            make_llt_blocked_rcm_solve_kernel(solver.block_size, False, array_ndim=solver.L.ndim),
             dim=(path.size.num_worlds, solver._solve_block_dim),
             inputs=[
                 info.dim,

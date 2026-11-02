@@ -17,6 +17,7 @@ from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
 from ...linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LLTBlockedRCMSolver, LLTBlockedSolver
+from ...linalg.core import validate_dense_matrix_shape
 from ..common import (
     WarmStartMode,
     apply_dual_preconditioner_to_solution,
@@ -30,13 +31,8 @@ from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
     BILATERAL_FAILED_PIVOT_SHIFT,
-    _assemble_bilateral_contact_response,
-    _build_bilateral_rhs,
     _compute_dvi_desaxce_corrections,
-    _compute_dvi_solution_vectors,
     _compute_dvi_status_residuals,
-    _compute_dvi_unilateral_velocities,
-    _copy_bilateral_block,
     _initialize_dvi_status,
     _reset_dvi_solver_data,
     _reset_dvi_status,
@@ -44,9 +40,14 @@ from .kernels import (
     _scatter_bilateral_solution,
     _set_dvi_bilateral_active_dim,
     _set_dvi_direct_status_iterations,
-    _solve_bilateral_contact_response,
-    _solve_dvi_inequalities_colored_pgs,
     _unprecondition_dvi_solution,
+    make_assemble_bilateral_contact_response_kernel,
+    make_build_bilateral_rhs_kernel,
+    make_compute_dvi_solution_vectors_kernel,
+    make_compute_dvi_unilateral_velocities_kernel,
+    make_copy_bilateral_block_kernel,
+    make_solve_bilateral_contact_response_kernel,
+    make_solve_dvi_inequalities_colored_pgs_kernel,
 )
 from .sparse import (
     SparseDVIPath,
@@ -367,7 +368,8 @@ class DVISolver:
         operator.info.finalize(capacities, dtype=float32, device=self._device)
         self._data.bilateral_dim = wp.array(factor_dims, dtype=wp.int32, device=self._device)
         operator.info.dim = self._data.bilateral_dim
-        operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
+        validate_dense_matrix_shape(operator.info.matrix_shape, float32)
+        operator.mat = wp.zeros(shape=operator.info.matrix_shape, dtype=float32, device=self._device)
         self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
         self._data.state.bilateral_preconditioner = wp.zeros(
@@ -584,7 +586,7 @@ class DVISolver:
 
             # Evaluate the physical post-event velocity v_plus = D * lambda + v_f.
             wp.launch(
-                kernel=_compute_dvi_solution_vectors,
+                kernel=make_compute_dvi_solution_vectors_kernel(problem.data.D.ndim),
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
@@ -802,7 +804,7 @@ class DVISolver:
         )
         self._prepare_inequality_coloring(problem)
         wp.launch(
-            kernel=_compute_dvi_unilateral_velocities,
+            kernel=make_compute_dvi_unilateral_velocities_kernel(problem.data.D.ndim),
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
@@ -823,7 +825,7 @@ class DVISolver:
         # Inequality-only solves need no host work between PGS blocks.
         for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
             wp.launch(
-                kernel=_solve_dvi_inequalities_colored_pgs,
+                kernel=make_solve_dvi_inequalities_colored_pgs_kernel(problem.data.D.ndim),
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
@@ -870,7 +872,7 @@ class DVISolver:
         operator = self._data.bilateral_operator
         state = self._data.state
         wp.launch(
-            kernel=_build_bilateral_rhs,
+            kernel=make_build_bilateral_rhs_kernel(problem.data.D.ndim),
             dim=(self._size.num_worlds, self._size.max_of_num_bilateral_joint_cts),
             inputs=[
                 problem.data.dim,
@@ -912,7 +914,7 @@ class DVISolver:
         operator = self._data.bilateral_operator
         operator.info.dim = self._data.bilateral_dim
         wp.launch(
-            kernel=_copy_bilateral_block,
+            kernel=make_copy_bilateral_block_kernel(problem.data.D.ndim, operator.mat.ndim),
             dim=(
                 self._size.num_worlds,
                 self._size.max_of_num_bilateral_joint_cts * self._size.max_of_num_bilateral_joint_cts,
@@ -957,7 +959,7 @@ class DVISolver:
         threads_per_world = 64 if self.device.is_cuda else 1
         for block_iteration in range(self._max_alternating_iterations):
             wp.launch(
-                kernel=_compute_dvi_unilateral_velocities,
+                kernel=make_compute_dvi_unilateral_velocities_kernel(problem.data.D.ndim),
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
@@ -975,7 +977,7 @@ class DVISolver:
                 device=self.device,
             )
             wp.launch(
-                kernel=_solve_dvi_inequalities_colored_pgs,
+                kernel=make_solve_dvi_inequalities_colored_pgs_kernel(problem.data.D.ndim),
                 dim=self._size.num_worlds * threads_per_world,
                 inputs=[
                     problem.data.dim,
@@ -1044,7 +1046,9 @@ class DVISolver:
         unilateral_begin = 0
         unilateral_count = self._max_unilateral_rows
         wp.launch(
-            kernel=_solve_bilateral_contact_response,
+            kernel=make_solve_bilateral_contact_response_kernel(
+                problem.data.D.ndim, self._bilateral_solver.L.ndim, self._data.state.projected_D.ndim
+            ),
             dim=(self._size.num_worlds, unilateral_count),
             inputs=[
                 problem.data.dim,
@@ -1065,7 +1069,9 @@ class DVISolver:
             device=self.device,
         )
         wp.launch(
-            kernel=_assemble_bilateral_contact_response,
+            kernel=make_assemble_bilateral_contact_response_kernel(
+                problem.data.D.ndim, self._data.state.projected_D.ndim
+            ),
             dim=(
                 self._size.num_worlds,
                 self._max_unilateral_rows,
@@ -1099,7 +1105,7 @@ class DVISolver:
         self._prepare_inequality_coloring(problem)
         threads_per_world = 64 if self.device.is_cuda else 1
         wp.launch(
-            kernel=_compute_dvi_unilateral_velocities,
+            kernel=make_compute_dvi_unilateral_velocities_kernel(problem.data.D.ndim),
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 problem.data.dim,
@@ -1117,7 +1123,7 @@ class DVISolver:
             device=self.device,
         )
         wp.launch(
-            kernel=_solve_dvi_inequalities_colored_pgs,
+            kernel=make_solve_dvi_inequalities_colored_pgs_kernel(self._data.state.projected_D.ndim),
             dim=self._size.num_worlds * threads_per_world,
             inputs=[
                 problem.data.dim,

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from functools import cache
+
 import warp as wp
 
 from ...core.math import FLOAT32_EPS
@@ -32,125 +34,156 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 
 
-@wp.kernel
-def _llt_sequential_factorize(
-    # Inputs:
-    dim_in: wp.array[wp.int32],
-    mio_in: wp.array[wp.int32],
-    A_in: wp.array[wp.float32],
-    # Outputs:
-    L_out: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    tid = wp.tid()
+@cache
+def make_llt_sequential_factorize_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Retrieve the matrix start offset and dimension
-    mio = mio_in[tid]
-    n = dim_in[tid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _llt_sequential_factorize(
+        # Inputs:
+        dim_in: wp.array[wp.int32],
+        mio_in: wp.array[wp.int32],
+        A_in_storage: MatrixType0,
+        # Outputs:
+        L_out_storage: MatrixType0,
+    ):
+        # Retrieve the thread index
+        tid = wp.tid()
+        A_in = A_in_storage[tid] if wp.static(MatrixType0.ndim == 2) else A_in_storage
+        L_out = L_out_storage[tid] if wp.static(MatrixType0.ndim == 2) else L_out_storage
 
-    # Compute the Cholesky factorization sequentially
-    for i in range(n):
-        m_i = mio + n * i
-        m_ii = m_i + i
-        A_ii = A_in[m_ii]
-        for j in range(i + 1):
-            m_j = mio + n * j
-            m_jj = m_j + j
-            m_ij = m_i + j
-            A_ij = A_in[m_ij]
-            L_jj = L_out[m_jj]
-            sum = wp.float32(0.0)
-            for k in range(j):
-                m_ik = m_i + k
-                m_jk = m_j + k
-                sum += L_out[m_ik] * L_out[m_jk]
-            if i == j:
-                L_out[m_ij] = wp.sqrt(wp.max(A_ii - sum, FLOAT32_EPS))
-            else:
-                L_out[m_ij] = (A_ij - sum) / L_jj
+        # Retrieve the matrix start offset and dimension
+        mio = mio_in[tid]
+        n = dim_in[tid]
 
+        # Compute the Cholesky factorization sequentially
+        for i in range(n):
+            m_i = mio + n * i
+            m_ii = m_i + i
+            A_ii = A_in[m_ii]
+            for j in range(i + 1):
+                m_j = mio + n * j
+                m_jj = m_j + j
+                m_ij = m_i + j
+                A_ij = A_in[m_ij]
+                L_jj = L_out[m_jj]
+                sum = wp.float32(0.0)
+                for k in range(j):
+                    m_ik = m_i + k
+                    m_jk = m_j + k
+                    sum += L_out[m_ik] * L_out[m_jk]
+                if i == j:
+                    L_out[m_ij] = wp.sqrt(wp.max(A_ii - sum, FLOAT32_EPS))
+                else:
+                    L_out[m_ij] = (A_ij - sum) / L_jj
 
-@wp.kernel
-def _llt_sequential_solve(
-    # Inputs:
-    dim_in: wp.array[wp.int32],
-    mio_in: wp.array[wp.int32],
-    vio_in: wp.array[wp.int32],
-    L_in: wp.array[wp.float32],
-    b_in: wp.array[wp.float32],
-    # Outputs:
-    y_out: wp.array[wp.float32],
-    x_out: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    tid = wp.tid()
-
-    # Retrieve the start offsets and problem dimension
-    mio = mio_in[tid]
-    vio = vio_in[tid]
-    n = dim_in[tid]
-
-    # Forward substitution to solve L * y = b
-    for i in range(n):
-        m_i = mio + n * i
-        m_ii = m_i + i
-        L_ii = L_in[m_ii]
-        sum_i = b_in[vio + i]
-        for j in range(i):
-            m_ij = m_i + j
-            sum_i -= L_in[m_ij] * y_out[vio + j]
-        y_out[vio + i] = sum_i / L_ii
-
-    # Backward substitution to solve L^T * x = y
-    for i in range(n - 1, -1, -1):
-        m_i = mio + n * i
-        m_ii = m_i + i
-        LT_ii = L_in[m_ii]
-        sum_i = y_out[vio + i]
-        for j in range(i + 1, n):
-            m_ji = mio + n * j + i
-            sum_i -= L_in[m_ji] * x_out[vio + j]
-        x_out[vio + i] = sum_i / LT_ii
+    return _llt_sequential_factorize
 
 
-@wp.kernel
-def _llt_sequential_solve_inplace(
-    # Inputs:
-    dim_in: wp.array[wp.int32],
-    mio_in: wp.array[wp.int32],
-    vio_in: wp.array[wp.int32],
-    L_in: wp.array[wp.float32],
-    x_inout: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    tid = wp.tid()
+_llt_sequential_factorize = make_llt_sequential_factorize_kernel()
 
-    # Retrieve the start offsets and problem dimension
-    mio = mio_in[tid]
-    vio = vio_in[tid]
-    n = dim_in[tid]
 
-    # Forward substitution to solve L * y = b
-    for i in range(n):
-        m_i = mio + n * i
-        m_ii = m_i + i
-        L_ii = L_in[m_ii]
-        sum_i = x_inout[vio + i]
-        for j in range(i):
-            m_ij = m_i + j
-            sum_i -= L_in[m_ij] * x_inout[vio + j]
-        x_inout[vio + i] = sum_i / L_ii
+@cache
+def make_llt_sequential_solve_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Backward substitution to solve L^T * x = y
-    for i in range(n - 1, -1, -1):
-        m_i = mio + n * i
-        m_ii = m_i + i
-        LT_ii = L_in[m_ii]
-        sum_i = x_inout[vio + i]
-        for j in range(i + 1, n):
-            m_ji = mio + n * j + i
-            sum_i -= L_in[m_ji] * x_inout[vio + j]
-        x_inout[vio + i] = sum_i / LT_ii
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _llt_sequential_solve(
+        # Inputs:
+        dim_in: wp.array[wp.int32],
+        mio_in: wp.array[wp.int32],
+        vio_in: wp.array[wp.int32],
+        L_in_storage: MatrixType0,
+        b_in: wp.array[wp.float32],
+        # Outputs:
+        y_out: wp.array[wp.float32],
+        x_out: wp.array[wp.float32],
+    ):
+        # Retrieve the thread index
+        tid = wp.tid()
+        L_in = L_in_storage[tid] if wp.static(MatrixType0.ndim == 2) else L_in_storage
+
+        # Retrieve the start offsets and problem dimension
+        mio = mio_in[tid]
+        vio = vio_in[tid]
+        n = dim_in[tid]
+
+        # Forward substitution to solve L * y = b
+        for i in range(n):
+            m_i = mio + n * i
+            m_ii = m_i + i
+            L_ii = L_in[m_ii]
+            sum_i = b_in[vio + i]
+            for j in range(i):
+                m_ij = m_i + j
+                sum_i -= L_in[m_ij] * y_out[vio + j]
+            y_out[vio + i] = sum_i / L_ii
+
+        # Backward substitution to solve L^T * x = y
+        for i in range(n - 1, -1, -1):
+            m_i = mio + n * i
+            m_ii = m_i + i
+            LT_ii = L_in[m_ii]
+            sum_i = y_out[vio + i]
+            for j in range(i + 1, n):
+                m_ji = mio + n * j + i
+                sum_i -= L_in[m_ji] * x_out[vio + j]
+            x_out[vio + i] = sum_i / LT_ii
+
+    return _llt_sequential_solve
+
+
+_llt_sequential_solve = make_llt_sequential_solve_kernel()
+
+
+@cache
+def make_llt_sequential_solve_inplace_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _llt_sequential_solve_inplace(
+        # Inputs:
+        dim_in: wp.array[wp.int32],
+        mio_in: wp.array[wp.int32],
+        vio_in: wp.array[wp.int32],
+        L_in_storage: MatrixType0,
+        x_inout: wp.array[wp.float32],
+    ):
+        # Retrieve the thread index
+        tid = wp.tid()
+        L_in = L_in_storage[tid] if wp.static(MatrixType0.ndim == 2) else L_in_storage
+
+        # Retrieve the start offsets and problem dimension
+        mio = mio_in[tid]
+        vio = vio_in[tid]
+        n = dim_in[tid]
+
+        # Forward substitution to solve L * y = b
+        for i in range(n):
+            m_i = mio + n * i
+            m_ii = m_i + i
+            L_ii = L_in[m_ii]
+            sum_i = x_inout[vio + i]
+            for j in range(i):
+                m_ij = m_i + j
+                sum_i -= L_in[m_ij] * x_inout[vio + j]
+            x_inout[vio + i] = sum_i / L_ii
+
+        # Backward substitution to solve L^T * x = y
+        for i in range(n - 1, -1, -1):
+            m_i = mio + n * i
+            m_ii = m_i + i
+            LT_ii = L_in[m_ii]
+            sum_i = x_inout[vio + i]
+            for j in range(i + 1, n):
+                m_ji = mio + n * j + i
+                sum_i -= L_in[m_ji] * x_inout[vio + j]
+            x_inout[vio + i] = sum_i / LT_ii
+
+    return _llt_sequential_solve_inplace
+
+
+_llt_sequential_solve_inplace = make_llt_sequential_solve_inplace_kernel()
 
 
 ###
@@ -176,7 +209,7 @@ def llt_sequential_factorize(
         L: The flat output array containing the Cholesky factorization of each matrix block.
     """
     wp.launch(
-        kernel=_llt_sequential_factorize,
+        kernel=make_llt_sequential_factorize_kernel(A.ndim),
         dim=num_blocks,
         inputs=[dim, mio, A, L],
         device=A.device,
@@ -207,7 +240,7 @@ def llt_sequential_solve(
         x: The output array where the solution to the linear system `A @ x = b` will be stored.
     """
     wp.launch(
-        kernel=_llt_sequential_solve,
+        kernel=make_llt_sequential_solve_kernel(L.ndim),
         dim=num_blocks,
         inputs=[dim, mio, vio, L, b, y, x],
         device=L.device,
@@ -234,7 +267,7 @@ def llt_sequential_solve_inplace(
         x: The array where the solution to the linear system `A @ x = b` will be stored in-place.
     """
     wp.launch(
-        kernel=_llt_sequential_solve_inplace,
+        kernel=make_llt_sequential_solve_inplace_kernel(L.ndim),
         dim=num_blocks,
         inputs=[dim, mio, vio, L, x],
         device=L.device,

@@ -10,8 +10,9 @@ import warp as wp
 
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
-    _solve_bilateral_unilateral_response_compact,
     _solve_bilateral_unilateral_response_cooperative,
+    make_solve_bilateral_unilateral_response_compact_kernel,
+    make_solve_bilateral_unilateral_response_cooperative_kernel,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.response import (
     _add_forward_bilateral_gradient,
@@ -21,6 +22,7 @@ from newton._src.solvers.kamino._src.solvers.dvi.response import (
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _assemble_compact_unilateral_schur_tiled,
 )
+from newton.tests.kamino.utils.make import make_row_storage
 
 
 class TestKaminoBlockedResponse(unittest.TestCase):
@@ -80,6 +82,33 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                 result = output.numpy()
                 np.testing.assert_allclose(result[: n * nu].reshape(n, nu), expected, rtol=2e-6, atol=2e-6)
                 np.testing.assert_array_equal(result[n * nu :], -123.0)
+                # World 0 is inactive with a NaN factor row, so world 1 must read its own row.
+                row_factor = np.stack((np.full(n * n, np.nan, dtype=np.float32), lower.ravel()))
+                row_output = wp.full(n * stride + 7, -123.0, device=device)
+                wp.launch(
+                    make_response_kernel(width, 2),
+                    dim=(2 * ((nu + width - 1) // width), 128),
+                    inputs=[
+                        ints([0, n + nu]),
+                        ints([0, n]),
+                        ints([0, 0]),
+                        ints([n, n]),
+                        ints([0, 0]),
+                        floats(scale),
+                        wp.array(row_factor, dtype=wp.float32, device=device),
+                        ints(permutation),
+                        ints([0, 0]),
+                        ints([stride, stride]),
+                        floats(coupling_input),
+                        row_output,
+                        ints([0, 0]),
+                        ints(pattern.ravel()),
+                        nu,
+                    ],
+                    block_dim=128,
+                    device=device,
+                )
+                _assert_bits_equal(row_output.numpy(), result)
 
                 # Reuse these whitened columns to update a forward-solved RHS,
                 # then recover the final original-coordinate solution.
@@ -282,34 +311,48 @@ class TestSplitResponse(unittest.TestCase):
         scratch = [wp.zeros_like(coupling) for _ in range(2)]
         q = [wp.zeros(int(np.sum(ns + capacities)), dtype=wp.float32, device=device) for _ in range(2)]
 
-        def launch(index):
+        def launch(index, factor=L, matrix_offsets=bmio, result=outputs, work=scratch, velocity=q):
             if index:
                 wp.launch(
-                    _solve_bilateral_unilateral_response_compact,
+                    make_solve_bilateral_unilateral_response_compact_kernel(factor.ndim),
                     dim=(len(ns), 128),
                     block_dim=128,
-                    inputs=[dim, njc, bmio, njc, bvio, scale, L, order, rio, stride, coupling, outputs[index], prefix],
+                    inputs=[
+                        dim,
+                        njc,
+                        matrix_offsets,
+                        njc,
+                        bvio,
+                        scale,
+                        factor,
+                        order,
+                        rio,
+                        stride,
+                        coupling,
+                        result[index],
+                        prefix,
+                    ],
                     device=device,
                 )
             wp.launch(
-                _solve_bilateral_unilateral_response_cooperative,
+                make_solve_bilateral_unilateral_response_cooperative_kernel(factor.ndim),
                 dim=len(ns) * 64 * 32,
                 block_dim=256,
                 inputs=[
                     dim,
                     njc,
-                    bmio,
+                    matrix_offsets,
                     njc,
                     bvio,
                     scale,
-                    L,
+                    factor,
                     order,
                     True,
                     rio,
                     stride,
                     coupling,
-                    scratch[index],
-                    outputs[index],
+                    work[index],
+                    result[index],
                     0,
                     64,
                     True,
@@ -322,7 +365,7 @@ class TestSplitResponse(unittest.TestCase):
                 _assemble_compact_unilateral_schur_tiled,
                 dim=(len(ns), 16, 128),
                 block_dim=128,
-                inputs=[dim, njc, qoffset, rio, stride, outputs[index], scratch[index], q[index], 16, 0],
+                inputs=[dim, njc, qoffset, rio, stride, result[index], work[index], velocity[index], 16, 0],
                 device=device,
             )
 
@@ -387,3 +430,25 @@ class TestSplitResponse(unittest.TestCase):
             np.testing.assert_array_equal(sb[gap_mask], -123.0)
             np.testing.assert_array_equal(q[1].numpy(), expected_q)
             np.testing.assert_array_equal(q[0].numpy(), expected_q)
+
+        # Compare per-world and flat responses.
+        row_factors = floats(make_row_storage(np.asarray(factors, dtype=np.float32), mio, ns * ns))
+        row_mio = wp.zeros_like(bmio)
+        row_outputs = [wp.full(total, -456.0, dtype=wp.float32, device=device) for _ in range(2)]
+        row_scratch = [wp.full(total, -123.0, dtype=wp.float32, device=device) for _ in range(2)]
+        row_q = [wp.full(q[0].size, -789.0, dtype=wp.float32, device=device) for _ in range(2)]
+        for index in range(2):
+            launch(index, row_factors, row_mio, row_outputs, row_scratch, row_q)
+            with wp.ScopedCapture(device=device) as capture:
+                launch(index, row_factors, row_mio, row_outputs, row_scratch, row_q)
+            row_outputs[index].fill_(-456.0)
+            row_scratch[index].fill_(-123.0)
+            row_q[index].fill_(-789.0)
+            wp.capture_launch(capture.graph)
+            outputs[index].fill_(-456.0)
+            scratch[index].fill_(-123.0)
+            q[index].fill_(-789.0)
+            wp.capture_launch(graphs[index])
+            _assert_bits_equal(row_outputs[index].numpy(), outputs[index].numpy())
+            _assert_bits_equal(row_scratch[index].numpy(), scratch[index].numpy())
+            _assert_bits_equal(row_q[index].numpy(), q[index].numpy())

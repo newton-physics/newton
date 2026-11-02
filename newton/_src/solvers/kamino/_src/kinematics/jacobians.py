@@ -7,6 +7,7 @@ KAMINO: Kinematics: Jacobians
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,7 @@ from ..core.types import (
 )
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.limits import LimitsKamino
+from ..linalg.core import dense_matrix_layout, validate_dense_matrix_shape
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
 from .joints import gimbal_reciprocal_axes, universal_intermediary_axes
@@ -554,150 +556,164 @@ def compute_joint_relative_quaternion(
 ###
 
 
-@wp.kernel
-def _build_joint_jacobians_dense(
-    # Inputs
-    model_info_bodies_offset: wp.array[wp.int32],
-    model_info_joint_dofs_offset: wp.array[wp.int32],
-    model_info_joint_dynamic_cts_offset: wp.array[wp.int32],
-    model_info_joint_kinematic_cts_offset: wp.array[wp.int32],
-    model_info_joint_friction_cts_offset: wp.array[wp.int32],
-    model_info_joint_effort_cts_offset: wp.array[wp.int32],
-    model_info_joint_dynamic_cts_group_offset: wp.array[wp.int32],
-    model_info_joint_kinematic_cts_group_offset: wp.array[wp.int32],
-    model_info_joint_friction_cts_group_offset: wp.array[wp.int32],
-    model_info_joint_effort_cts_group_offset: wp.array[wp.int32],
-    model_joints_wid: wp.array[wp.int32],
-    model_joints_dof_type: wp.array[wp.int32],
-    model_joints_coords_offset: wp.array[wp.int32],
-    model_joints_dofs_offset: wp.array[wp.int32],
-    model_joints_num_dynamic_cts: wp.array[wp.int32],
-    model_joints_num_kinematic_cts: wp.array[wp.int32],
-    model_joints_num_friction_cts: wp.array[wp.int32],
-    model_joints_num_effort_cts: wp.array[wp.int32],
-    model_joints_dynamic_cts_offset: wp.array[wp.int32],
-    model_joints_kinematic_cts_offset: wp.array[wp.int32],
-    model_joints_friction_cts_offset: wp.array[wp.int32],
-    model_joints_effort_cts_offset: wp.array[wp.int32],
-    model_joints_dynamic_cts_axis: wp.array[wp.int32],
-    model_joints_friction_cts_axis: wp.array[wp.int32],
-    model_joints_effort_cts_axis: wp.array[wp.int32],
-    model_joints_bid_B: wp.array[wp.int32],
-    model_joints_bid_F: wp.array[wp.int32],
-    model_joints_X_Bj: wp.array[wp.mat33f],
-    model_joints_X_Fj: wp.array[wp.mat33f],
-    state_joints_p: wp.array[wp.transformf],
-    state_bodies_q: wp.array[wp.transformf],
-    state_joints_q: wp.array[wp.float32],
-    jac_cts_offsets: wp.array[wp.int32],
-    jac_dofs_offsets: wp.array[wp.int32],
-    # Outputs
-    jac_cts_data: wp.array[wp.float32],
-    jac_dofs_data: wp.array[wp.float32],
-):
-    """
-    A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
-    """
-    # Retrieve the thread index as the joint index
-    jid = wp.tid()
+@cache
+def make_build_joint_jacobians_dense_kernel(cts_ndim: int = 1, dofs_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if cts_ndim == 1 else wp.array2d[wp.float32]
+    MatrixType1 = wp.array[wp.float32] if dofs_ndim == 1 else wp.array2d[wp.float32]
 
-    # Retrieve the joint model data
-    wid = model_joints_wid[jid]
-    dof_type = model_joints_dof_type[jid]
-    bid_B = model_joints_bid_B[jid]
-    bid_F = model_joints_bid_F[jid]
-    dofs_offset = model_joints_dofs_offset[jid]
-    num_dyn_cts = model_joints_num_dynamic_cts[jid]
-    num_kin_cts = model_joints_num_kinematic_cts[jid]
-    num_friction_cts = model_joints_num_friction_cts[jid]
-    num_effort_cts = model_joints_num_effort_cts[jid]
-    dyn_cts_offset = model_joints_dynamic_cts_offset[jid]
-    kin_cts_offset = model_joints_kinematic_cts_offset[jid]
-    friction_cts_offset = model_joints_friction_cts_offset[jid]
-    effort_cts_offset = model_joints_effort_cts_offset[jid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _build_joint_jacobians_dense(
+        # Inputs
+        model_info_bodies_offset: wp.array[wp.int32],
+        model_info_joint_dofs_offset: wp.array[wp.int32],
+        model_info_joint_dynamic_cts_offset: wp.array[wp.int32],
+        model_info_joint_kinematic_cts_offset: wp.array[wp.int32],
+        model_info_joint_friction_cts_offset: wp.array[wp.int32],
+        model_info_joint_effort_cts_offset: wp.array[wp.int32],
+        model_info_joint_dynamic_cts_group_offset: wp.array[wp.int32],
+        model_info_joint_kinematic_cts_group_offset: wp.array[wp.int32],
+        model_info_joint_friction_cts_group_offset: wp.array[wp.int32],
+        model_info_joint_effort_cts_group_offset: wp.array[wp.int32],
+        model_joints_wid: wp.array[wp.int32],
+        model_joints_dof_type: wp.array[wp.int32],
+        model_joints_coords_offset: wp.array[wp.int32],
+        model_joints_dofs_offset: wp.array[wp.int32],
+        model_joints_num_dynamic_cts: wp.array[wp.int32],
+        model_joints_num_kinematic_cts: wp.array[wp.int32],
+        model_joints_num_friction_cts: wp.array[wp.int32],
+        model_joints_num_effort_cts: wp.array[wp.int32],
+        model_joints_dynamic_cts_offset: wp.array[wp.int32],
+        model_joints_kinematic_cts_offset: wp.array[wp.int32],
+        model_joints_friction_cts_offset: wp.array[wp.int32],
+        model_joints_effort_cts_offset: wp.array[wp.int32],
+        model_joints_dynamic_cts_axis: wp.array[wp.int32],
+        model_joints_friction_cts_axis: wp.array[wp.int32],
+        model_joints_effort_cts_axis: wp.array[wp.int32],
+        model_joints_bid_B: wp.array[wp.int32],
+        model_joints_bid_F: wp.array[wp.int32],
+        model_joints_X_Bj: wp.array[wp.mat33f],
+        model_joints_X_Fj: wp.array[wp.mat33f],
+        state_joints_p: wp.array[wp.transformf],
+        state_bodies_q: wp.array[wp.transformf],
+        state_joints_q: wp.array[wp.float32],
+        jac_cts_offsets: wp.array[wp.int32],
+        jac_dofs_offsets: wp.array[wp.int32],
+        # Outputs
+        jac_cts_data_storage: MatrixType0,
+        jac_dofs_data_storage: MatrixType1,
+    ):
+        """
+        A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
+        """
+        # Retrieve the thread index as the joint index
+        jid = wp.tid()
 
-    # Retrieve the number of body DoFs for corresponding world
-    bio = model_info_bodies_offset[wid]
-    nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
-    jdcgo = model_info_joint_dynamic_cts_group_offset[wid]
-    jkcgo = model_info_joint_kinematic_cts_group_offset[wid]
-    jfcgo = model_info_joint_friction_cts_group_offset[wid]
-    jecgo = model_info_joint_effort_cts_group_offset[wid]
+        # Retrieve the joint model data
+        wid = model_joints_wid[jid]
+        jac_cts_data = jac_cts_data_storage[wid] if wp.static(MatrixType0.ndim == 2) else jac_cts_data_storage
+        jac_dofs_data = jac_dofs_data_storage[wid] if wp.static(MatrixType1.ndim == 2) else jac_dofs_data_storage
+        dof_type = model_joints_dof_type[jid]
+        bid_B = model_joints_bid_B[jid]
+        bid_F = model_joints_bid_F[jid]
+        dofs_offset = model_joints_dofs_offset[jid]
+        num_dyn_cts = model_joints_num_dynamic_cts[jid]
+        num_kin_cts = model_joints_num_kinematic_cts[jid]
+        num_friction_cts = model_joints_num_friction_cts[jid]
+        num_effort_cts = model_joints_num_effort_cts[jid]
+        dyn_cts_offset = model_joints_dynamic_cts_offset[jid]
+        kin_cts_offset = model_joints_kinematic_cts_offset[jid]
+        friction_cts_offset = model_joints_friction_cts_offset[jid]
+        effort_cts_offset = model_joints_effort_cts_offset[jid]
 
-    # Compute local (within-world) offsets for Jacobian matrix indexing
-    dofs_offset_world = dofs_offset - model_info_joint_dofs_offset[wid]
-    dyn_cts_offset_world = dyn_cts_offset - model_info_joint_dynamic_cts_offset[wid]
-    kin_cts_offset_world = kin_cts_offset - model_info_joint_kinematic_cts_offset[wid]
-    friction_cts_offset_world = friction_cts_offset - model_info_joint_friction_cts_offset[wid]
-    effort_cts_offset_world = effort_cts_offset - model_info_joint_effort_cts_offset[wid]
+        # Retrieve the number of body DoFs for corresponding world
+        bio = model_info_bodies_offset[wid]
+        nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
+        jdcgo = model_info_joint_dynamic_cts_group_offset[wid]
+        jkcgo = model_info_joint_kinematic_cts_group_offset[wid]
+        jfcgo = model_info_joint_friction_cts_group_offset[wid]
+        jecgo = model_info_joint_effort_cts_group_offset[wid]
 
-    # Retrieve the Jacobian block offset for this world
-    J_cjmio = jac_cts_offsets[wid]
-    J_djmio = jac_dofs_offsets[wid]
+        # Compute local (within-world) offsets for Jacobian matrix indexing
+        dofs_offset_world = dofs_offset - model_info_joint_dofs_offset[wid]
+        dyn_cts_offset_world = dyn_cts_offset - model_info_joint_dynamic_cts_offset[wid]
+        kin_cts_offset_world = kin_cts_offset - model_info_joint_kinematic_cts_offset[wid]
+        friction_cts_offset_world = friction_cts_offset - model_info_joint_friction_cts_offset[wid]
+        effort_cts_offset_world = effort_cts_offset - model_info_joint_effort_cts_offset[wid]
 
-    # Constraint Jacobian row offsets for this joint
-    J_jdof_row_start = J_djmio + nbd * dofs_offset_world
-    J_jdc_row_start = J_cjmio + nbd * (jdcgo + dyn_cts_offset_world)
-    J_jkc_row_start = J_cjmio + nbd * (jkcgo + kin_cts_offset_world)
-    J_jfc_row_start = J_cjmio + nbd * (jfcgo + friction_cts_offset_world)
-    J_jec_row_start = J_cjmio + nbd * (jecgo + effort_cts_offset_world)
+        # Retrieve the Jacobian block offset for this world
+        J_cjmio = jac_cts_offsets[wid]
+        J_djmio = jac_dofs_offsets[wid]
 
-    # Compute the full jacobians, i.e. without the selection-matrix multiplication
-    JT_B_j, JT_F_j = build_full_joint_jacobian(
-        jid,
-        dof_type,
-        bid_B,
-        bid_F,
-        model_joints_X_Bj,
-        model_joints_X_Fj,
-        model_joints_coords_offset,
-        state_joints_p,
-        state_bodies_q,
-        state_joints_q,
-    )
+        # Constraint Jacobian row offsets for this joint
+        J_jdof_row_start = J_djmio + nbd * dofs_offset_world
+        J_jdc_row_start = J_cjmio + nbd * (jdcgo + dyn_cts_offset_world)
+        J_jkc_row_start = J_cjmio + nbd * (jkcgo + kin_cts_offset_world)
+        J_jfc_row_start = J_cjmio + nbd * (jfcgo + friction_cts_offset_world)
+        J_jec_row_start = J_cjmio + nbd * (jecgo + effort_cts_offset_world)
 
-    # Store joint dynamic constraint jacobians if applicable
-    # NOTE: We use the extraction method for DoFs since dynamic constraints are in DoF-space
-    if num_dyn_cts > 0:
-        for row in range(num_dyn_cts):
-            axis = model_joints_dynamic_cts_axis[dyn_cts_offset + row]
-            J_row_offset = J_jdc_row_start + nbd * row
-            store_joint_dof_jacobian_dense(
-                dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
-            )
-
-    # Store joint kinematic constraint jacobians
-    if num_kin_cts > 0:
-        store_joint_cts_jacobian_dense(
+        # Compute the full jacobians, i.e. without the selection-matrix multiplication
+        JT_B_j, JT_F_j = build_full_joint_jacobian(
+            jid,
             dof_type,
-            J_jkc_row_start,
-            nbd,
-            bio,
             bid_B,
             bid_F,
-            JT_B_j,
-            JT_F_j,
-            jac_cts_data,
+            model_joints_X_Bj,
+            model_joints_X_Fj,
+            model_joints_coords_offset,
+            state_joints_p,
+            state_bodies_q,
+            state_joints_q,
         )
 
-    # Friction rows use the DoF-direction Jacobian.
-    if num_friction_cts > 0:
-        for row in range(num_friction_cts):
-            axis = model_joints_friction_cts_axis[friction_cts_offset + row]
-            J_row_offset = J_jfc_row_start + nbd * row
-            store_joint_dof_jacobian_dense(
-                dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
-            )
-    if num_effort_cts > 0:
-        for row in range(num_effort_cts):
-            axis = model_joints_effort_cts_axis[effort_cts_offset + row]
-            J_row_offset = J_jec_row_start + nbd * row
-            store_joint_dof_jacobian_dense(
-                dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+        # Store joint dynamic constraint jacobians if applicable
+        # NOTE: We use the extraction method for DoFs since dynamic constraints are in DoF-space
+        if num_dyn_cts > 0:
+            for row in range(num_dyn_cts):
+                axis = model_joints_dynamic_cts_axis[dyn_cts_offset + row]
+                J_row_offset = J_jdc_row_start + nbd * row
+                store_joint_dof_jacobian_dense(
+                    dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+                )
+
+        # Store joint kinematic constraint jacobians
+        if num_kin_cts > 0:
+            store_joint_cts_jacobian_dense(
+                dof_type,
+                J_jkc_row_start,
+                nbd,
+                bio,
+                bid_B,
+                bid_F,
+                JT_B_j,
+                JT_F_j,
+                jac_cts_data,
             )
 
-    # Store the actuation Jacobian block if the joint is actuated
-    store_joint_dofs_jacobian_dense(dof_type, J_jdof_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_dofs_data)
+        # Friction rows use the DoF-direction Jacobian.
+        if num_friction_cts > 0:
+            for row in range(num_friction_cts):
+                axis = model_joints_friction_cts_axis[friction_cts_offset + row]
+                J_row_offset = J_jfc_row_start + nbd * row
+                store_joint_dof_jacobian_dense(
+                    dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+                )
+        if num_effort_cts > 0:
+            for row in range(num_effort_cts):
+                axis = model_joints_effort_cts_axis[effort_cts_offset + row]
+                J_row_offset = J_jec_row_start + nbd * row
+                store_joint_dof_jacobian_dense(
+                    dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+                )
+
+        # Store the actuation Jacobian block if the joint is actuated
+        store_joint_dofs_jacobian_dense(
+            dof_type, J_jdof_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_dofs_data
+        )
+
+    return _build_joint_jacobians_dense
+
+
+_build_joint_jacobians_dense = make_build_joint_jacobians_dense_kernel()
 
 
 @wp.kernel
@@ -828,77 +844,93 @@ def _build_joint_jacobians_sparse(
     )
 
 
-@wp.kernel
-def _build_limit_jacobians_dense(
-    # Inputs:
-    model_info_bodies_offset: wp.array[wp.int32],
-    model_info_joint_dofs_offset: wp.array[wp.int32],
-    data_info_limit_cts_group_offset: wp.array[wp.int32],
-    limits_model_num: wp.array[wp.int32],
-    limits_model_max: wp.int32,
-    limits_wid: wp.array[wp.int32],
-    limits_lid: wp.array[wp.int32],
-    limits_bids: wp.array[wp.vec2i],
-    limits_dof: wp.array[wp.int32],
-    limits_side: wp.array[wp.float32],
-    jacobian_dofs_offsets: wp.array[wp.int32],
-    jacobian_dofs_data: wp.array[wp.float32],
-    jacobian_cts_offsets: wp.array[wp.int32],
-    # Outputs:
-    jacobian_cts_data: wp.array[wp.float32],
-):
-    """
-    A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
-    """
-    # Retrieve the thread index as the limit index
-    lid = wp.tid()
+@cache
+def make_build_limit_jacobians_dense_kernel(cts_ndim: int = 1, dofs_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if cts_ndim == 1 else wp.array2d[wp.float32]
+    MatrixType1 = wp.array[wp.float32] if dofs_ndim == 1 else wp.array2d[wp.float32]
 
-    # Skip if cid is greater than the total number of active limits in the model
-    if lid >= wp.min(limits_model_num[0], limits_model_max):
-        return
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _build_limit_jacobians_dense(
+        # Inputs:
+        model_info_bodies_offset: wp.array[wp.int32],
+        model_info_joint_dofs_offset: wp.array[wp.int32],
+        data_info_limit_cts_group_offset: wp.array[wp.int32],
+        limits_model_num: wp.array[wp.int32],
+        limits_model_max: wp.int32,
+        limits_wid: wp.array[wp.int32],
+        limits_lid: wp.array[wp.int32],
+        limits_bids: wp.array[wp.vec2i],
+        limits_dof: wp.array[wp.int32],
+        limits_side: wp.array[wp.float32],
+        jacobian_dofs_offsets: wp.array[wp.int32],
+        jacobian_dofs_data_storage: MatrixType1,
+        jacobian_cts_offsets: wp.array[wp.int32],
+        # Outputs:
+        jacobian_cts_data_storage: MatrixType0,
+    ):
+        """
+        A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
+        """
+        # Retrieve the thread index as the limit index
+        lid = wp.tid()
 
-    # Retrieve the world index of the active limit
-    wid_l = limits_wid[lid]
+        # Skip if cid is greater than the total number of active limits in the model
+        if lid >= wp.min(limits_model_num[0], limits_model_max):
+            return
 
-    # Retrieve the limit description info
-    # NOTE: *_l is used to denote a subscript for the limit index
-    lid_l = limits_lid[lid]
-    bids_l = limits_bids[lid]
-    dof_l = limits_dof[lid]
-    side_l = limits_side[lid]
+        # Retrieve the world index of the active limit
+        wid_l = limits_wid[lid]
+        jacobian_cts_data = (
+            jacobian_cts_data_storage[wid_l] if wp.static(MatrixType0.ndim == 2) else jacobian_cts_data_storage
+        )
+        jacobian_dofs_data = (
+            jacobian_dofs_data_storage[wid_l] if wp.static(MatrixType1.ndim == 2) else jacobian_dofs_data_storage
+        )
 
-    # Retrieve the relevant model info of the world
-    bio = model_info_bodies_offset[wid_l]
-    nbd = 6 * (model_info_bodies_offset[wid_l + 1] - bio)
-    lcgo = data_info_limit_cts_group_offset[wid_l]
-    ajmio = jacobian_dofs_offsets[wid_l]
-    cjmio = jacobian_cts_offsets[wid_l]
+        # Retrieve the limit description info
+        # NOTE: *_l is used to denote a subscript for the limit index
+        lid_l = limits_lid[lid]
+        bids_l = limits_bids[lid]
+        dof_l = limits_dof[lid]
+        side_l = limits_side[lid]
 
-    # Compute local (within-world) DoF index for Jacobian matrix indexing
-    local_dof_l = dof_l - model_info_joint_dofs_offset[wid_l]
+        # Retrieve the relevant model info of the world
+        bio = model_info_bodies_offset[wid_l]
+        nbd = 6 * (model_info_bodies_offset[wid_l + 1] - bio)
+        lcgo = data_info_limit_cts_group_offset[wid_l]
+        ajmio = jacobian_dofs_offsets[wid_l]
+        cjmio = jacobian_cts_offsets[wid_l]
 
-    # Append the index offsets to the corresponding rows of the Jacobians
-    ajmio += nbd * local_dof_l
-    cjmio += nbd * (lcgo + lid_l)
+        # Compute local (within-world) DoF index for Jacobian matrix indexing
+        local_dof_l = dof_l - model_info_joint_dofs_offset[wid_l]
 
-    # Extract the body ids
-    bid_B_l = bids_l[0]
-    bid_F_l = bids_l[1]
+        # Append the index offsets to the corresponding rows of the Jacobians
+        ajmio += nbd * local_dof_l
+        cjmio += nbd * (lcgo + lid_l)
 
-    # Set the constraint Jacobian block for the follower body from the actuation Jacobian block
-    bio_F = 6 * (bid_F_l - bio)
-    act_kj = ajmio + bio_F
-    cts_kj = cjmio + bio_F
-    for i in range(6):
-        jacobian_cts_data[cts_kj + i] = side_l * jacobian_dofs_data[act_kj + i]
+        # Extract the body ids
+        bid_B_l = bids_l[0]
+        bid_F_l = bids_l[1]
 
-    # If not the world body, set the constraint Jacobian block for the base body from the actuation Jacobian block
-    if bid_B_l > -1:
-        bio_B = 6 * (bid_B_l - bio)
-        act_kj = ajmio + bio_B
-        cts_kj = cjmio + bio_B
+        # Set the constraint Jacobian block for the follower body from the actuation Jacobian block
+        bio_F = 6 * (bid_F_l - bio)
+        act_kj = ajmio + bio_F
+        cts_kj = cjmio + bio_F
         for i in range(6):
             jacobian_cts_data[cts_kj + i] = side_l * jacobian_dofs_data[act_kj + i]
+
+        # If not the world body, set the constraint Jacobian block for the base body from the actuation Jacobian block
+        if bid_B_l > -1:
+            bio_B = 6 * (bid_B_l - bio)
+            act_kj = ajmio + bio_B
+            cts_kj = cjmio + bio_B
+            for i in range(6):
+                jacobian_cts_data[cts_kj + i] = side_l * jacobian_dofs_data[act_kj + i]
+
+    return _build_limit_jacobians_dense
+
+
+_build_limit_jacobians_dense = make_build_limit_jacobians_dense_kernel()
 
 
 @wp.kernel
@@ -975,85 +1007,97 @@ def _build_limit_jacobians_sparse(
         jacobian_cts_nzb_coords[jac_cts_nzb_idx + 1, 1] = 6 * (body_id_B_l - body_index_offset)
 
 
-@wp.kernel
-def _build_contact_jacobians_dense(
-    # Inputs:
-    model_info_bodies_offset: wp.array[wp.int32],
-    data_info_contact_cts_group_offset: wp.array[wp.int32],
-    state_bodies_q: wp.array[wp.transformf],
-    contacts_model_num: wp.array[wp.int32],
-    contacts_model_max: wp.int32,
-    contacts_wid: wp.array[wp.int32],
-    contacts_cid: wp.array[wp.int32],
-    contacts_bid_AB: wp.array[wp.vec2i],
-    contacts_position_A: wp.array[wp.vec3f],
-    contacts_position_B: wp.array[wp.vec3f],
-    contacts_frame: wp.array[wp.quatf],
-    jacobian_cts_offsets: wp.array[wp.int32],
-    # Outputs:
-    jacobian_cts_data: wp.array[wp.float32],
-):
-    """
-    A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
-    """
-    # Retrieve the thread index as the contact index
-    cid = wp.tid()
+@cache
+def make_build_contact_jacobians_dense_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Skip if cid is greater than the total number of active contacts in the model
-    if cid >= wp.min(contacts_model_num[0], contacts_model_max):
-        return
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _build_contact_jacobians_dense(
+        # Inputs:
+        model_info_bodies_offset: wp.array[wp.int32],
+        data_info_contact_cts_group_offset: wp.array[wp.int32],
+        state_bodies_q: wp.array[wp.transformf],
+        contacts_model_num: wp.array[wp.int32],
+        contacts_model_max: wp.int32,
+        contacts_wid: wp.array[wp.int32],
+        contacts_cid: wp.array[wp.int32],
+        contacts_bid_AB: wp.array[wp.vec2i],
+        contacts_position_A: wp.array[wp.vec3f],
+        contacts_position_B: wp.array[wp.vec3f],
+        contacts_frame: wp.array[wp.quatf],
+        jacobian_cts_offsets: wp.array[wp.int32],
+        # Outputs:
+        jacobian_cts_data_storage: MatrixType0,
+    ):
+        """
+        A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
+        """
+        # Retrieve the thread index as the contact index
+        cid = wp.tid()
 
-    # Retrieve the contact index w.r.t the world
-    # NOTE: k denotes a notational subscript for the
-    # contact index, i.e. C_k is the k-th contact entity
-    cid_k = contacts_cid[cid]
+        # Skip if cid is greater than the total number of active contacts in the model
+        if cid >= wp.min(contacts_model_num[0], contacts_model_max):
+            return
 
-    # Retrieve the the contact-specific data
-    wid = contacts_wid[cid]
-    q_k = contacts_frame[cid]
-    bid_AB_k = contacts_bid_AB[cid]
-    r_Ac_k = contacts_position_A[cid]
-    r_Bc_k = contacts_position_B[cid]
+        # Retrieve the contact index w.r.t the world
+        # NOTE: k denotes a notational subscript for the
+        # contact index, i.e. C_k is the k-th contact entity
+        cid_k = contacts_cid[cid]
 
-    # Retrieve the relevant model info for the world
-    bio = model_info_bodies_offset[wid]
-    nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
-    ccgo = data_info_contact_cts_group_offset[wid]
-    cjmio = jacobian_cts_offsets[wid]
+        # Retrieve the the contact-specific data
+        wid = contacts_wid[cid]
+        jacobian_cts_data = (
+            jacobian_cts_data_storage[wid] if wp.static(MatrixType0.ndim == 2) else jacobian_cts_data_storage
+        )
+        q_k = contacts_frame[cid]
+        bid_AB_k = contacts_bid_AB[cid]
+        r_Ac_k = contacts_position_A[cid]
+        r_Bc_k = contacts_position_B[cid]
 
-    # Append the index offset for the contact Jacobian block in the constraint Jacobian
-    cjmio += ccgo * nbd
+        # Retrieve the relevant model info for the world
+        bio = model_info_bodies_offset[wid]
+        nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
+        ccgo = data_info_contact_cts_group_offset[wid]
+        cjmio = jacobian_cts_offsets[wid]
 
-    # Extract the individual body indices
-    bid_A_k = bid_AB_k[0]
-    bid_B_k = bid_AB_k[1]
+        # Append the index offset for the contact Jacobian block in the constraint Jacobian
+        cjmio += ccgo * nbd
 
-    # Compute the rotation matrix from the contact frame quaternion
-    R_k = wp.quat_to_matrix(q_k)  # (3 x 3)
+        # Extract the individual body indices
+        bid_A_k = bid_AB_k[0]
+        bid_B_k = bid_AB_k[1]
 
-    # Set the constraint index offset for this contact
-    cio_k = 3 * cid_k
+        # Compute the rotation matrix from the contact frame quaternion
+        R_k = wp.quat_to_matrix(q_k)  # (3 x 3)
 
-    # Compute and store the revolute Jacobian block for the follower body (subject of action)
-    r_B_k = wp.transform_get_translation(state_bodies_q[bid_B_k])
-    W_B_k = contact_wrench_matrix_from_points(r_Bc_k, r_B_k)
-    JT_c_B_k = W_B_k @ R_k  # Action is on the follower body (B)  ; (6 x 3)
-    bio_B = 6 * (bid_B_k - bio)
-    for j in range(3):
-        kj = cjmio + nbd * (cio_k + j) + bio_B
-        for i in range(6):
-            jacobian_cts_data[kj + i] = JT_c_B_k[i, j]
+        # Set the constraint index offset for this contact
+        cio_k = 3 * cid_k
 
-    # If not the world body, compute and store the revolute Jacobian block for the base body (subject of reaction)
-    if bid_A_k > -1:
-        r_A_k = wp.transform_get_translation(state_bodies_q[bid_A_k])
-        W_A_k = contact_wrench_matrix_from_points(r_Ac_k, r_A_k)
-        JT_c_A_k = -W_A_k @ R_k  # Reaction is on the base body (A)    ; (6 x 3)
-        bio_A = 6 * (bid_A_k - bio)
+        # Compute and store the revolute Jacobian block for the follower body (subject of action)
+        r_B_k = wp.transform_get_translation(state_bodies_q[bid_B_k])
+        W_B_k = contact_wrench_matrix_from_points(r_Bc_k, r_B_k)
+        JT_c_B_k = W_B_k @ R_k  # Action is on the follower body (B)  ; (6 x 3)
+        bio_B = 6 * (bid_B_k - bio)
         for j in range(3):
-            kj = cjmio + nbd * (cio_k + j) + bio_A
+            kj = cjmio + nbd * (cio_k + j) + bio_B
             for i in range(6):
-                jacobian_cts_data[kj + i] = JT_c_A_k[i, j]
+                jacobian_cts_data[kj + i] = JT_c_B_k[i, j]
+
+        # If not the world body, compute and store the revolute Jacobian block for the base body (subject of reaction)
+        if bid_A_k > -1:
+            r_A_k = wp.transform_get_translation(state_bodies_q[bid_A_k])
+            W_A_k = contact_wrench_matrix_from_points(r_Ac_k, r_A_k)
+            JT_c_A_k = -W_A_k @ R_k  # Reaction is on the base body (A)    ; (6 x 3)
+            bio_A = 6 * (bid_A_k - bio)
+            for j in range(3):
+                kj = cjmio + nbd * (cio_k + j) + bio_A
+                for i in range(6):
+                    jacobian_cts_data[kj + i] = JT_c_A_k[i, j]
+
+    return _build_contact_jacobians_dense
+
+
+_build_contact_jacobians_dense = make_build_contact_jacobians_dense_kernel()
 
 
 @wp.kernel
@@ -1411,15 +1455,12 @@ class DenseSystemJacobiansData:
 
         self.J_cts_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the constraint Jacobian matrix block of each world.
+        The constraint Jacobian offset within the flat buffer or each world row.
         Shape of ``(num_worlds,)``.
         """
 
-        self.J_cts_data: wp.array[wp.float32] | None = None
-        """
-        A flat array containing the constraint Jacobian matrix data of all worlds.
-        Shape of ``(sum(ncts_w * nbd_w),)``.
-        """
+        self.J_cts_data: wp.array[wp.float32] | wp.array2d[wp.float32] | None = None
+        """Constraint Jacobian blocks stored flat or in one packed row per world."""
 
         ###
         # DoFs Jacobian
@@ -1427,15 +1468,12 @@ class DenseSystemJacobiansData:
 
         self.J_dofs_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the DoF Jacobian matrix block of each world.
+        The DoF Jacobian offset within the flat buffer or each world row.
         Shape of ``(num_worlds,)``.
         """
 
-        self.J_dofs_data: wp.array[wp.float32] | None = None
-        """
-        A flat array containing the joint DoF Jacobian matrix data of all worlds.
-        Shape of ``(sum(njad_w * nbd_w),)``.
-        """
+        self.J_dofs_data: wp.array[wp.float32] | wp.array2d[wp.float32] | None = None
+        """DoF Jacobian blocks stored flat or in one packed row per world."""
 
 
 ###
@@ -1523,16 +1561,10 @@ class DenseSystemJacobians:
         J_cts_sizes = [maxncts[i] * nbd[i] for i in range(nw)]
         J_dofs_sizes = [njd[i] * nbd[i] for i in range(nw)]
 
-        # Compute the total size of the Jacobian matrix data
-        total_J_cts_size = sum(J_cts_sizes)
-        total_J_dofs_size = sum(J_dofs_sizes)
-
-        # Compute matrix index offsets of each Jacobian block
-        J_cts_offsets = [0] * nw
-        J_dofs_offsets = [0] * nw
-        for w in range(1, nw):
-            J_cts_offsets[w] = J_cts_offsets[w - 1] + J_cts_sizes[w - 1]
-            J_dofs_offsets[w] = J_dofs_offsets[w - 1] + J_dofs_sizes[w - 1]
+        J_cts_shape, J_cts_offsets = dense_matrix_layout(J_cts_sizes)
+        J_dofs_shape, J_dofs_offsets = dense_matrix_layout(J_dofs_sizes)
+        validate_dense_matrix_shape(J_cts_shape, wp.float32)
+        validate_dense_matrix_shape(J_dofs_shape, wp.float32)
 
         # Use the model's device
         device = model.device
@@ -1541,8 +1573,8 @@ class DenseSystemJacobians:
         with wp.ScopedDevice(device):
             self._data.J_cts_offsets = to_warp_int32_array(J_cts_offsets)
             self._data.J_dofs_offsets = to_warp_int32_array(J_dofs_offsets)
-            self._data.J_cts_data = wp.zeros(shape=(total_J_cts_size,), dtype=wp.float32)
-            self._data.J_dofs_data = wp.zeros(shape=(total_J_dofs_size,), dtype=wp.float32)
+            self._data.J_cts_data = wp.zeros(shape=J_cts_shape, dtype=wp.float32)
+            self._data.J_dofs_data = wp.zeros(shape=J_dofs_shape, dtype=wp.float32)
 
     def build(
         self,
@@ -1577,7 +1609,7 @@ class DenseSystemJacobians:
         # Build the joint constraints and actuation Jacobians
         if model.size.sum_of_num_joints > 0:
             wp.launch(
-                _build_joint_jacobians_dense,
+                make_build_joint_jacobians_dense_kernel(self._data.J_cts_data.ndim, self._data.J_dofs_data.ndim),
                 dim=model.size.sum_of_num_joints,
                 inputs=[
                     # Inputs:
@@ -1625,7 +1657,7 @@ class DenseSystemJacobians:
         # Build the limit constraints Jacobians if a limits data container is provided
         if limits is not None and limits.model_max_limits_host > 0:
             wp.launch(
-                _build_limit_jacobians_dense,
+                make_build_limit_jacobians_dense_kernel(self._data.J_cts_data.ndim, self._data.J_dofs_data.ndim),
                 dim=limits.model_max_limits_host,
                 inputs=[
                     # Inputs:
@@ -1651,7 +1683,7 @@ class DenseSystemJacobians:
         # Build the contact constraints Jacobians if a contacts data container is provided
         if contacts is not None and contacts.model_max_contacts_host > 0:
             wp.launch(
-                _build_contact_jacobians_dense,
+                make_build_contact_jacobians_dense_kernel(self._data.J_cts_data.ndim),
                 dim=contacts.model_max_contacts_host,
                 inputs=[
                     # Inputs:

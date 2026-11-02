@@ -8,6 +8,8 @@ contact triplets ``[t0, t1, n]``. Only unilateral rows are updated. Per-world
 masks select active correction solves, inner iterations, and trial steps.
 """
 
+from functools import cache
+
 import warp as wp
 
 from ..padmm.math import project_to_coulomb_cone
@@ -613,24 +615,34 @@ def guard_convergence(status: wp.array[DVIStatus]):
     status[wid] = info
 
 
-@wp.kernel
-def dense_matvec(
-    dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
-    vio: wp.array[wp.int32],
-    matrix: wp.array[wp.float32],
-    mask: wp.array[wp.bool],
-    x: wp.array[wp.float32],
-    y: wp.array[wp.float32],
-):
-    """Apply the existing dense Delassus matrix to active worlds."""
-    wid, row = wp.tid()
-    if not mask[wid] or row >= dim[wid]:
-        return
-    value = wp.float32(0.0)
-    for column in range(dim[wid]):
-        value += matrix[mio[wid] + row * dim[wid] + column] * x[vio[wid] + column]
-    y[vio[wid] + row] = value
+@cache
+def make_dense_matvec_kernel(array_ndim: int = 1):
+    """Build ``dense_matvec`` for flat or per-world row Delassus storage."""
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def dense_matvec(
+        dim: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        vio: wp.array[wp.int32],
+        matrix_storage: wp.array(dtype=wp.float32, ndim=array_ndim),
+        mask: wp.array[wp.bool],
+        x: wp.array[wp.float32],
+        y: wp.array[wp.float32],
+    ):
+        """Apply the existing dense Delassus matrix to active worlds."""
+        wid, row = wp.tid()
+        matrix = matrix_storage[wid] if wp.static(array_ndim == 2) else matrix_storage
+        if not mask[wid] or row >= dim[wid]:
+            return
+        value = wp.float32(0.0)
+        for column in range(dim[wid]):
+            value += matrix[mio[wid] + row * dim[wid] + column] * x[vio[wid] + column]
+        y[vio[wid] + row] = value
+
+    return dense_matvec
+
+
+dense_matvec = make_dense_matvec_kernel(1)
 
 
 @wp.kernel

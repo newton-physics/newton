@@ -19,7 +19,10 @@ from newton._src.solvers.kamino._src.linalg.linear import LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
     _find_bilateral_factor_row_start,
     _find_bilateral_factor_row_start_rcm,
+    make_find_bilateral_factor_row_start_kernel,
+    make_find_bilateral_factor_row_start_rcm_kernel,
 )
+from newton.tests.kamino.utils.make import make_row_storage
 
 
 class TestKaminoSymbolicFill(unittest.TestCase):
@@ -108,6 +111,30 @@ class TestKaminoFactorRowStart(unittest.TestCase):
                     _find_bilateral_factor_row_start_rcm,
                     dim=(len(dimensions), max(dimensions)),
                     inputs=[*inputs, candidate, pattern_offsets, pattern, block_size],
+                    device=device,
+                )
+                np.testing.assert_array_equal(reference.numpy(), expected)
+                np.testing.assert_array_equal(candidate.numpy(), expected)
+                rows = make_row_storage(np.asarray(matrices, dtype=np.float32), mio, np.square(dimensions))
+                row_inputs = [
+                    dims,
+                    wp.zeros_like(matrix_offsets),
+                    dims,
+                    vector_offsets,
+                    wp.array(rows, dtype=wp.float32, device=device),
+                ]
+                reference.fill_(-77)
+                candidate.fill_(-77)
+                wp.launch(
+                    make_find_bilateral_factor_row_start_kernel(2),
+                    dim=(len(dimensions), max(dimensions)),
+                    inputs=[*row_inputs, reference],
+                    device=device,
+                )
+                wp.launch(
+                    make_find_bilateral_factor_row_start_rcm_kernel(2),
+                    dim=(len(dimensions), max(dimensions)),
+                    inputs=[*row_inputs, candidate, pattern_offsets, pattern, block_size],
                     device=device,
                 )
                 np.testing.assert_array_equal(reference.numpy(), expected)

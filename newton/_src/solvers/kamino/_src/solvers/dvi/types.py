@@ -10,6 +10,7 @@ import warp as wp
 from ....config import DVISolverConfig
 from ...core.size import SizeKamino
 from ...linalg import DenseLinearOperatorData
+from ...linalg.core import dense_matrix_layout, validate_dense_matrix_shape
 from ..common import DualSolution
 
 wp.set_module_options({"enable_backward": False})
@@ -128,7 +129,7 @@ class DVIState:
         self.inequality_group_starts: wp.array[int32] | None = None
         self.inequality_tangent_cross: wp.array[float32] | None = None
         self.inequality_projected_diagonal: wp.array[float32] | None = None
-        self.projected_D: wp.array[float32] | None = None
+        self.projected_D: wp.array[float32] | wp.array2d[float32] | None = None
         self.projected_mio: wp.array[int32] | None = None
         self.bilateral_coupling: wp.array[float32] | None = None
         self.bilateral_response_mio: wp.array[int32] | None = None
@@ -164,21 +165,13 @@ class DVIState:
         self.projected_mio = wp.zeros(max(1, size.num_worlds), dtype=int32)
 
     def allocate_dense_projection(self, size: SizeKamino) -> None:
-        """Allocate dense projected Delassus storage once.
-
-        Args:
-            size: Model dimensions that determine the flattened allocation.
-
-        Raises:
-            ValueError: If the flattened allocation exceeds int32 indexing.
-        """
+        """Allocate packed projected Delassus matrices once."""
         if self.projected_D is None:
-            projected_stride = size.max_of_max_total_cts * size.max_of_max_total_cts
-            projected_size = size.num_worlds * projected_stride
-            if projected_size > 2**31 - 1:
-                raise ValueError("Dense DVI projection exceeds the supported int32 index range.")
-            self.projected_mio = wp.array([world * projected_stride for world in range(size.num_worlds)], dtype=int32)
-            self.projected_D = wp.zeros(max(1, projected_size), dtype=float32)
+            projected_stride = max(1, size.max_of_max_total_cts * size.max_of_max_total_cts)
+            shape, offsets = dense_matrix_layout([projected_stride] * size.num_worlds)
+            validate_dense_matrix_shape(shape, float32)
+            self.projected_mio = wp.array(offsets, dtype=int32)
+            self.projected_D = wp.zeros(shape, dtype=float32)
 
     def allocate_sparse_projection(
         self,
@@ -237,7 +230,7 @@ class DVIState:
         """Reset scratch arrays, optionally retaining overwritten response workspace.
 
         Args:
-            clear_response: Whether to clear the three large response matrices.
+            clear_response: Whether to clear the large response matrices.
                 Solves overwrite their active entries before reading them.
         """
         self.sigma.zero_()
@@ -260,7 +253,7 @@ class DVIState:
             self.inequality_group_starts.zero_()
             self.inequality_tangent_cross.zero_()
             self.inequality_projected_diagonal.zero_()
-        if self.projected_D is not None:
+        if self.projected_D is not None and clear_response:
             self.projected_D.zero_()
         if self.bilateral_coupling is not None:
             if clear_response:

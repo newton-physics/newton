@@ -25,13 +25,14 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 def get_matrix_block(index: int, flatmat: np.ndarray, dims: list[int], maxdims: list[int] | None = None) -> np.ndarray:
-    """Extract a specific matrix block from a flattened array of matrices."""
+    """Extract a packed matrix block from flat storage or a per-world row."""
     if maxdims is None:
         maxdims = dims
     mat_shape = (dims[index], dims[index])
-    mat_start = sum(n * n for n in maxdims[:index])
+    mat_start = 0 if flatmat.ndim == 2 else sum(n * n for n in maxdims[:index])
     mat_end = mat_start + dims[index] ** 2
-    return flatmat[mat_start:mat_end].reshape(mat_shape)
+    storage = flatmat[index] if flatmat.ndim == 2 else flatmat
+    return storage[mat_start:mat_end].reshape(mat_shape)
 
 
 def get_vector_block(index: int, flatvec: np.ndarray, dims: list[int], maxdims: list[int] | None = None) -> np.ndarray:
@@ -87,10 +88,13 @@ def extract_cts_jacobians(
     J_cts_flat_offsets = jacobians.data.J_cts_offsets.numpy().astype(int).tolist()
     J_cts_flat = jacobians.data.J_cts_data.numpy()
     J_cts_flat_total_size = J_cts_flat.size
-    J_cts_flat_sizes = [0] * num_worlds
-    J_cts_flat_offsets_ext = [*J_cts_flat_offsets, J_cts_flat_total_size]
-    for w in range(num_worlds - 1, -1, -1):
-        J_cts_flat_sizes[w] = J_cts_flat_offsets_ext[w + 1] - J_cts_flat_offsets_ext[w]
+    if J_cts_flat.ndim == 2:
+        J_cts_flat_sizes = [J_cts_flat.shape[1] - offset for offset in J_cts_flat_offsets]
+    else:
+        J_cts_flat_sizes = [0] * num_worlds
+        J_cts_flat_offsets_ext = [*J_cts_flat_offsets, J_cts_flat_total_size]
+        for w in range(num_worlds - 1, -1, -1):
+            J_cts_flat_sizes[w] = J_cts_flat_offsets_ext[w + 1] - J_cts_flat_offsets_ext[w]
 
     # Retrieve the Jacobian dimensions in each world
     has_limits = limits is not None and limits.model_max_limits_host > 0
@@ -114,7 +118,8 @@ def extract_cts_jacobians(
             raise ValueError(f"Jacobian size {J_cts_size} exceeds flat size {J_cts_flat_sizes[w]} for world {w}")
         start = J_cts_flat_offsets[w]
         end = J_cts_flat_offsets[w] + J_cts_size
-        J_cts_mat.append(J_cts_flat[start:end].reshape((ncts, num_bdofs[w])))
+        storage = J_cts_flat[w] if J_cts_flat.ndim == 2 else J_cts_flat
+        J_cts_mat.append(storage[start:end].reshape((ncts, num_bdofs[w])))
 
     # Optional verbose output
     if verbose:
@@ -152,10 +157,13 @@ def extract_dofs_jacobians(
     J_dofs_flat = jacobians.data.J_dofs_data.numpy()
     J_dofs_flat_total_size = J_dofs_flat.size
     J_dofs_flat_offsets = [int(ajmio[i]) for i in range(num_worlds)]
-    J_dofs_flat_sizes = [0] * num_worlds
-    J_dofs_flat_offsets_ext = [*J_dofs_flat_offsets, J_dofs_flat_total_size]
-    for i in range(num_worlds - 1, -1, -1):
-        J_dofs_flat_sizes[i] = J_dofs_flat_offsets_ext[i + 1] - J_dofs_flat_offsets_ext[i]
+    if J_dofs_flat.ndim == 2:
+        J_dofs_flat_sizes = [J_dofs_flat.shape[1] - offset for offset in J_dofs_flat_offsets]
+    else:
+        J_dofs_flat_sizes = [0] * num_worlds
+        J_dofs_flat_offsets_ext = [*J_dofs_flat_offsets, J_dofs_flat_total_size]
+        for i in range(num_worlds - 1, -1, -1):
+            J_dofs_flat_sizes[i] = J_dofs_flat_offsets_ext[i + 1] - J_dofs_flat_offsets_ext[i]
 
     # Extract each Jacobian as a matrix
     num_bdofs = model.info.num_body_dofs.numpy().tolist()
@@ -163,8 +171,9 @@ def extract_dofs_jacobians(
     J_dofs_mat: list[np.ndarray] = []
     for i in range(num_worlds):
         start = J_dofs_flat_offsets[i]
-        end = J_dofs_flat_offsets[i] + J_dofs_flat_sizes[i]
-        J_dofs_mat.append(J_dofs_flat[start:end].reshape((num_jdofs[i], num_bdofs[i])))
+        end = start + num_jdofs[i] * num_bdofs[i]
+        storage = J_dofs_flat[i] if J_dofs_flat.ndim == 2 else J_dofs_flat
+        J_dofs_mat.append(storage[start:end].reshape((num_jdofs[i], num_bdofs[i])))
 
     # Optional verbose output
     if verbose:
@@ -203,7 +212,8 @@ def extract_delassus(
         else:
             D_dim = D_maxdim
         D_end = D_start + D_dim * D_dim
-        D_mat.append(D_wp_np[D_start:D_end].reshape((D_dim, D_dim)))
+        storage = D_wp_np[i] if D_wp_np.ndim == 2 else D_wp_np
+        D_mat.append(storage[D_start:D_end].reshape((D_dim, D_dim)))
 
     # Return the list of Delassus matrices
     return D_mat

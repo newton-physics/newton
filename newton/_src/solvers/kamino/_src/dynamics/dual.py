@@ -54,6 +54,7 @@ Typical usage example:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cache
 from typing import Any
 
 import warp as wp
@@ -235,10 +236,9 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
-    D: wp.array[wp.float32] | None = None
+    D: wp.array[wp.float32] | wp.array2d[wp.float32] | None = None
     """
-    The flat array of Delassus matrix blocks (constraint-space apparent inertia).
-    Shape of `(sum_of_max_total_delassus_size,)`.
+    Delassus matrix blocks stored flat or in one row per world.
     """
 
     P: wp.array[wp.float32] | None = None
@@ -819,80 +819,92 @@ def _build_free_velocity_bias_contacts(
     problem_mu[cio_k] = mu_k
 
 
-@wp.kernel
-def _build_free_velocity(
-    # Inputs:
-    model_info_bodies_offset: wp.array[wp.int32],
-    data_bodies_u_i: wp.array[wp.spatial_vectorf],
-    jacobians_J_cts_offsets: wp.array[wp.int32],
-    jacobians_J_cts_data: wp.array[wp.float32],
-    problem_dim: wp.array[wp.int32],
-    problem_vio: wp.array[wp.int32],
-    problem_u_f: wp.array[wp.spatial_vectorf],
-    problem_v_b: wp.array[wp.float32],
-    problem_v_i: wp.array[wp.float32],
-    # Outputs:
-    problem_v_f: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    wid, tid = wp.tid()
+@cache
+def make_build_free_velocity_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Retrieve the problem dimensions and matrix block index offset
-    ncts = problem_dim[wid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _build_free_velocity(
+        # Inputs:
+        model_info_bodies_offset: wp.array[wp.int32],
+        data_bodies_u_i: wp.array[wp.spatial_vectorf],
+        jacobians_J_cts_offsets: wp.array[wp.int32],
+        jacobians_J_cts_data_storage: MatrixType0,
+        problem_dim: wp.array[wp.int32],
+        problem_vio: wp.array[wp.int32],
+        problem_u_f: wp.array[wp.spatial_vectorf],
+        problem_v_b: wp.array[wp.float32],
+        problem_v_i: wp.array[wp.float32],
+        # Outputs:
+        problem_v_f: wp.array[wp.float32],
+    ):
+        # Retrieve the thread index
+        wid, tid = wp.tid()
+        jacobians_J_cts_data = (
+            jacobians_J_cts_data_storage[wid] if wp.static(MatrixType0.ndim == 2) else jacobians_J_cts_data_storage
+        )
 
-    # Skip if row index exceed the problem size
-    if tid >= ncts:
-        return
+        # Retrieve the problem dimensions and matrix block index offset
+        ncts = problem_dim[wid]
 
-    # Retrieve the world-specific data
-    bio = model_info_bodies_offset[wid]
-    nb = model_info_bodies_offset[wid + 1] - bio
-    cjmio = jacobians_J_cts_offsets[wid]
-    vio = problem_vio[wid]
+        # Skip if row index exceed the problem size
+        if tid >= ncts:
+            return
 
-    # Compute the number of Jacobian rows, i.e. the number of body DoFs
-    nbd = 6 * nb
+        # Retrieve the world-specific data
+        bio = model_info_bodies_offset[wid]
+        nb = model_info_bodies_offset[wid + 1] - bio
+        cjmio = jacobians_J_cts_offsets[wid]
+        vio = problem_vio[wid]
 
-    # Compute the thread-specific index offset
-    cts_offset = vio + tid
+        # Compute the number of Jacobian rows, i.e. the number of body DoFs
+        nbd = 6 * nb
 
-    # Append the column offset to the Jacobian index
-    cjmio += nbd * tid
+        # Compute the thread-specific index offset
+        cts_offset = vio + tid
 
-    # Extract the cached impact bias scaling (i.e. restitution coefficient)
-    # NOTE: This is a quick hack to avoid multiple kernels. The
-    # proper way would be to perform this op only for contacts
-    epsilon_j = problem_v_i[cts_offset]
+        # Append the column offset to the Jacobian index
+        cjmio += nbd * tid
 
-    # Retrieve the cached velocity bias term for the constraint
-    v_b_j = problem_v_b[cts_offset]
+        # Extract the cached impact bias scaling (i.e. restitution coefficient)
+        # NOTE: This is a quick hack to avoid multiple kernels. The
+        # proper way would be to perform this op only for contacts
+        epsilon_j = problem_v_i[cts_offset]
 
-    # Buffers
-    J_i = vec6f(0.0)
-    v_f_j = wp.float32(0.0)
+        # Retrieve the cached velocity bias term for the constraint
+        v_b_j = problem_v_b[cts_offset]
 
-    # Iterate over each body to accumulate velocity contributions
-    for i in range(nb):
-        # Compute the Jacobian block index
-        m_ji = cjmio + 6 * i
+        # Buffers
+        J_i = vec6f(0.0)
+        v_f_j = wp.float32(0.0)
 
-        # Extract the twist and unconstrained velocity of the body
-        u_i = data_bodies_u_i[bio + i]
-        u_f_i = problem_u_f[bio + i]
+        # Iterate over each body to accumulate velocity contributions
+        for i in range(nb):
+            # Compute the Jacobian block index
+            m_ji = cjmio + 6 * i
 
-        # Extract the Jacobian block J_ji
-        # TODO: use slicing operation when available
-        for d in range(6):
-            J_i[d] = jacobians_J_cts_data[m_ji + d]
+            # Extract the twist and unconstrained velocity of the body
+            u_i = data_bodies_u_i[bio + i]
+            u_f_i = problem_u_f[bio + i]
 
-        # Accumulate J_i @ u_i
-        v_f_j += wp.dot(J_i, u_f_i)
+            # Extract the Jacobian block J_ji
+            # TODO: use slicing operation when available
+            for d in range(6):
+                J_i[d] = jacobians_J_cts_data[m_ji + d]
 
-        # Accumulate the impact bias term
-        v_f_j += epsilon_j * wp.dot(J_i, u_i)
+            # Accumulate J_i @ u_i
+            v_f_j += wp.dot(J_i, u_f_i)
 
-    # Store sum of velocity bias terms
-    problem_v_f[cts_offset] = v_f_j + v_b_j
+            # Accumulate the impact bias term
+            v_f_j += epsilon_j * wp.dot(J_i, u_i)
+
+        # Store sum of velocity bias terms
+        problem_v_f[cts_offset] = v_f_j + v_b_j
+
+    return _build_free_velocity
+
+
+_build_free_velocity = make_build_free_velocity_kernel()
 
 
 @wp.kernel
@@ -953,54 +965,64 @@ def _build_free_velocity_sparse(
     wp.atomic_add(problem_v_f, thread_offset, v_f_j)
 
 
-@wp.kernel
-def _build_dual_preconditioner_all_constraints(
-    # Inputs:
-    problem_config: wp.array[DualProblemConfigStruct],
-    problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
-    problem_vio: wp.array[wp.int32],
-    problem_njc: wp.array[wp.int32],
-    problem_nbc: wp.array[wp.int32],
-    problem_nl: wp.array[wp.int32],
-    problem_D: wp.array[wp.float32],
-    # Outputs:
-    problem_P: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    wid, tid = wp.tid()
+@cache
+def make_build_dual_preconditioner_all_constraints_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Retrieve the world-specific problem config
-    config = problem_config[wid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _build_dual_preconditioner_all_constraints(
+        # Inputs:
+        problem_config: wp.array[DualProblemConfigStruct],
+        problem_dim: wp.array[wp.int32],
+        problem_mio: wp.array[wp.int32],
+        problem_vio: wp.array[wp.int32],
+        problem_njc: wp.array[wp.int32],
+        problem_nbc: wp.array[wp.int32],
+        problem_nl: wp.array[wp.int32],
+        problem_D_storage: MatrixType0,
+        # Outputs:
+        problem_P: wp.array[wp.float32],
+    ):
+        # Retrieve the thread index
+        wid, tid = wp.tid()
+        problem_D = problem_D_storage[wid] if wp.static(MatrixType0.ndim == 2) else problem_D_storage
 
-    # Retrieve the number of active constraints in the world
-    ncts = problem_dim[wid]
+        # Retrieve the world-specific problem config
+        config = problem_config[wid]
 
-    # Skip if row index exceed the problem size
-    if tid >= ncts or not config.preconditioning:
-        return
+        # Retrieve the number of active constraints in the world
+        ncts = problem_dim[wid]
 
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
+        # Skip if row index exceed the problem size
+        if tid >= ncts or not config.preconditioning:
+            return
 
-    # Retrieve the vector index offset of the world
-    vio = problem_vio[wid]
+        # Retrieve the matrix index offset of the world
+        mio = problem_mio[wid]
 
-    # Infer the start of the contact constraints for this world
-    njc = problem_njc[wid]
-    nbc = problem_nbc[wid]
-    nl = problem_nl[wid]
-    njlc = njc + nbc + nl
+        # Retrieve the vector index offset of the world
+        vio = problem_vio[wid]
 
-    _build_dual_preconditioner_entry(
-        tid,
-        njlc,
-        problem_D,
-        mio,
-        ncts + 1,
-        vio,
-        problem_P,
-    )
+        # Infer the start of the contact constraints for this world
+        njc = problem_njc[wid]
+        nbc = problem_nbc[wid]
+        nl = problem_nl[wid]
+        njlc = njc + nbc + nl
+
+        _build_dual_preconditioner_entry(
+            tid,
+            njlc,
+            problem_D,
+            mio,
+            ncts + 1,
+            vio,
+            problem_P,
+        )
+
+    return _build_dual_preconditioner_all_constraints
+
+
+_build_dual_preconditioner_all_constraints = make_build_dual_preconditioner_all_constraints_kernel()
 
 
 @wp.kernel
@@ -1048,52 +1070,62 @@ def _build_dual_preconditioner_all_constraints_sparse(
     )
 
 
-@wp.kernel
-def _apply_dual_preconditioner_to_matrix(
-    # Inputs:
-    problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
-    problem_vio: wp.array[wp.int32],
-    problem_P: wp.array[wp.float32],
-    # Outputs:
-    X: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    wid, tid = wp.tid()
+@cache
+def make_apply_dual_preconditioner_to_matrix_kernel(array_ndim: int = 1):
+    MatrixType0 = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
-    # Retrieve the number of active constraints in the world
-    ncts = problem_dim[wid]
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    def _apply_dual_preconditioner_to_matrix(
+        # Inputs:
+        problem_dim: wp.array[wp.int32],
+        problem_mio: wp.array[wp.int32],
+        problem_vio: wp.array[wp.int32],
+        problem_P: wp.array[wp.float32],
+        # Outputs:
+        X_storage: MatrixType0,
+    ):
+        # Retrieve the thread index
+        wid, tid = wp.tid()
+        X = X_storage[wid] if wp.static(MatrixType0.ndim == 2) else X_storage
 
-    # Skip if there no constraints ar active
-    if ncts == 0:
-        return
+        # Retrieve the number of active constraints in the world
+        ncts = problem_dim[wid]
 
-    # Compute i (row) and j (col) indices from the tid
-    i = tid // ncts
-    j = tid % ncts
+        # Skip if there no constraints ar active
+        if ncts == 0:
+            return
 
-    # Skip if indices exceed the problem size
-    if i >= ncts or j >= ncts:
-        return
+        # Compute i (row) and j (col) indices from the tid
+        i = tid // ncts
+        j = tid % ncts
 
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
+        # Skip if indices exceed the problem size
+        if i >= ncts or j >= ncts:
+            return
 
-    # Retrieve the vector index offset of the world
-    vio = problem_vio[wid]
+        # Retrieve the matrix index offset of the world
+        mio = problem_mio[wid]
 
-    # Compute the global index of the matrix entry
-    m_ij = mio + ncts * i + j
+        # Retrieve the vector index offset of the world
+        vio = problem_vio[wid]
 
-    # Retrieve the i,j-th entry of the target matrix
-    X_ij = X[m_ij]
+        # Compute the global index of the matrix entry
+        m_ij = mio + ncts * i + j
 
-    # Retrieve the i,j-th entries of the diagonal preconditioner
-    P_i = problem_P[vio + i]
-    P_j = problem_P[vio + j]
+        # Retrieve the i,j-th entry of the target matrix
+        X_ij = X[m_ij]
 
-    # Store the preconditioned i,j-th entry of the matrix
-    X[m_ij] = P_i * (P_j * X_ij)
+        # Retrieve the i,j-th entries of the diagonal preconditioner
+        P_i = problem_P[vio + i]
+        P_j = problem_P[vio + j]
+
+        # Store the preconditioned i,j-th entry of the matrix
+        X[m_ij] = P_i * (P_j * X_ij)
+
+    return _apply_dual_preconditioner_to_matrix
+
+
+_apply_dual_preconditioner_to_matrix = make_apply_dual_preconditioner_to_matrix_kernel()
 
 
 @wp.kernel
@@ -1587,7 +1619,7 @@ class DualProblem:
             )
         else:
             wp.launch(
-                _build_free_velocity,
+                make_build_free_velocity_kernel(jacobians.data.J_cts_data.ndim),
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     # Inputs:
@@ -1864,7 +1896,7 @@ class DualProblem:
         Builds the free-velocity vector `v_f`.
         """
         wp.launch(
-            _build_free_velocity,
+            make_build_free_velocity_kernel(jacobians.data.J_cts_data.ndim),
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 # Inputs:
@@ -1907,7 +1939,7 @@ class DualProblem:
             )
         else:
             wp.launch(
-                _build_dual_preconditioner_all_constraints,
+                make_build_dual_preconditioner_all_constraints_kernel(self._data.D.ndim),
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     # Inputs:
@@ -1935,7 +1967,7 @@ class DualProblem:
             pass
         else:
             wp.launch(
-                _apply_dual_preconditioner_to_matrix,
+                make_apply_dual_preconditioner_to_matrix_kernel(self._data.D.ndim),
                 dim=(self._size.num_worlds, self.delassus._max_of_max_total_D_size),
                 inputs=[
                     # Inputs:
@@ -1968,7 +2000,7 @@ class DualProblem:
         Applies the diagonal preconditioner 'P' to a given matrix.
         """
         wp.launch(
-            _apply_dual_preconditioner_to_matrix,
+            make_apply_dual_preconditioner_to_matrix_kernel(X.ndim),
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[
                 # Inputs:
