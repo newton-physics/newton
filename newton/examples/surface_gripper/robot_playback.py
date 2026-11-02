@@ -88,8 +88,9 @@ def sample_playback_kernel(
     sim_step_count: wp.array[int],  # in: device sub-step counter (current time = sim_step_count[0] * dt)
     last_lo: wp.array[int],  # in: cached lower sample index; the forward search resumes from here
     dt: float,  # physics sub-step [s]; sim time = sim_step_count * dt
+    arm_offset: int,  # start of the arm's DOFs in joint_target_q
     # outputs
-    joint_target_q: wp.array[float],  # [num_dofs] interpolated position targets [rad]
+    joint_target_q: wp.array[float],  # interpolated position targets [rad], written at arm_offset + dof
     engaged: wp.array[wp.bool],  # [1] engagement command sampled at the current time
     preparing: wp.array[wp.bool],  # [1] preparing-to-engage signal sampled at the current time
 ):
@@ -119,7 +120,7 @@ def sample_playback_kernel(
         preparing[0] = rec_preparing[lo]  # step signal, same as engaged
 
     if lo >= n - 1:
-        joint_target_q[dof] = rec_targets[n - 1, dof]  # past the end: hold the last recorded pose
+        joint_target_q[arm_offset + dof] = rec_targets[n - 1, dof]  # past the end: hold the last recorded pose
         return
 
     # Cubic (Catmull-Rom) interpolation through the four surrounding knots. It passes through the two
@@ -133,7 +134,7 @@ def sample_playback_kernel(
     p3 = rec_targets[wp.min(lo + 2, n - 1), dof]
     f2 = frac * frac
     f3 = f2 * frac
-    joint_target_q[dof] = 0.5 * (
+    joint_target_q[arm_offset + dof] = 0.5 * (
         (2.0 * p1)
         + (-p0 + p2) * frac
         + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2
@@ -232,6 +233,7 @@ class RobotPlayback:
         sim_step_count: wp.array[int],
         last_lo: wp.array[int],
         dt: float,
+        arm_offset: int,
         joint_target_q: wp.array[float],
         engaged: wp.array[wp.bool],
         preparing: wp.array[wp.bool],
@@ -244,7 +246,8 @@ class RobotPlayback:
             sim_step_count: [1] in/out device sub-step counter (current time = ``sim_step_count * dt``).
             last_lo: [1] in/out cached lower sample index; the forward search resumes from here.
             dt: physics sub-step [s].
-            joint_target_q: [num_arm_dofs] out interpolated position targets [rad].
+            arm_offset: start of the arm's DOFs in ``joint_target_q`` (the arm's coord layout offset).
+            joint_target_q: out interpolated position targets [rad], written at ``arm_offset + dof``.
             engaged: [1] out engagement command sampled at the current time.
             preparing: [1] out preparing-to-engage flag sampled at the current time.
         """
@@ -259,6 +262,7 @@ class RobotPlayback:
                 sim_step_count,
                 last_lo,
                 float(dt),
+                arm_offset,
             ],
             outputs=[joint_target_q, engaged, preparing],
         )

@@ -990,6 +990,7 @@ class Example:
                 self.sim_step_count_wp,  # in/out: read as the current time, then advanced in place
                 self.last_lo_wp,  # in/out: forward-search index, resumed and cached
                 self.sim_dt,
+                self.arm_coord_offset,
                 self.control.joint_target_q,
                 self.example_state_curr.gripper_command_engaged_wp,  # out: engagement command (gripper_close) for world 0
                 self.example_state_curr.gripper_command_preparing_wp,  # out: preparing flag (prepare_to_engage) for world 0
