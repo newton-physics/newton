@@ -103,7 +103,7 @@ class TestImportMjcfNative(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(xml)
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml, ctrl_direct=True, **kwargs)
-        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
         for field in fields:
             with self.subTest(field=field):
                 np.testing.assert_allclose(
@@ -797,7 +797,7 @@ class TestImportMjcfNative(unittest.TestCase):
                         builder.add_mjcf_native(xml, convert_mjc_equality_constraints=convert)
                     messages = [w for w in caught if "higher-order polycoef" in str(w.message)]
                     self.assertEqual(len(messages), int(convert and nonlinear))
-                    solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+                    solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
                     reference = mujoco.MjModel.from_xml_string(xml)
                     np.testing.assert_allclose(solver.mj_model.eq_data, reference.eq_data)
 
@@ -1043,7 +1043,7 @@ class TestImportMjcfNative(unittest.TestCase):
             builder.add_builder(asset)
             builder.add_builder(asset)
             builder.end_world()
-        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
         for field in ("eq_type", "eq_data"):
             np.testing.assert_allclose(getattr(solver.mj_model, field), np.concatenate([getattr(reference, field)] * 2))
         np.testing.assert_array_equal(solver.mj_model.eq_obj1id, [0, 1, 2, 3])
@@ -1128,7 +1128,7 @@ class TestImportMjcfNative(unittest.TestCase):
                     builder = newton.ModelBuilder()
                     builder.add_builder(asset)
                     builder.add_builder(asset)
-                    solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+                    solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
                     for field in ("eq_type", "eq_objtype", "eq_data"):
                         np.testing.assert_allclose(
                             getattr(solver.mj_model, field), np.concatenate([getattr(reference, field)] * 2), atol=1e-6
@@ -1168,7 +1168,7 @@ class TestImportMjcfNative(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_builder(asset)
         builder.add_builder(asset)
-        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
         np.testing.assert_array_equal(solver.mj_model.wrap_objid, [1, 3, 5, 7])
         np.testing.assert_array_equal(solver.mj_model.eq_obj1id, [1, 3, 3, 5, 7, 7])
         np.testing.assert_array_equal(solver.mj_model.eq_obj2id, [3, 1, -1, 7, 5, -1])

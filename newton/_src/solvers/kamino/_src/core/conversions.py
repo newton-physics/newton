@@ -100,8 +100,8 @@ def compute_body_immovability_kernel(
     """Bake Kamino's per-body immovability decision from Newton's arrays.
 
     A body is immovable if it is physically massless (zero inverse mass and
-    zero inverse inertia) or flagged KINEMATIC / PROXY. Dynamics solvers that
-    simulate massless and PROXY bodies only treat KINEMATIC bodies as immovable. The
+    zero inverse inertia) or flagged KINEMATIC. Dynamics solvers that
+    simulate massless bodies only treat KINEMATIC bodies as immovable. The
     result is written once at build and kept constant for the solver's lifetime;
     runtime flips are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
     """
@@ -441,7 +441,7 @@ def validate_body_immovability_updates_kernel(
     ``is_immovable_for_kamino``): joint culling, contact culling, and the
     masking of ``inv_m_i`` / ``inv_i_I_i`` all key on the cached
     ``bodies.is_immovable`` snapshot. Flipping it at runtime, either by making
-    a body massless (or restoring its mass) or by toggling its KINEMATIC/PROXY
+    a body massless (or restoring its mass) or by toggling its KINEMATIC
     flag, would silently corrupt those layouts. We surface it as a single
     structural-update violation.
     """
@@ -628,7 +628,7 @@ def joint_conversion_kernel(
     joint_act_type[joint_id] = act_type_j
 
     # A joint between two bodies that Kamino treats as immovable (both massless
-    # and/or flagged KINEMATIC/PROXY) contributes only structurally singular
+    # and/or flagged KINEMATIC) contributes only structurally singular
     # Delassus rows that cannot affect any body's motion, so we cull all its
     # constraint rows regardless of joint-DoF regularization (armature, damping,
     # implicit PD). The joint entry is preserved with zero counts so joint
@@ -1141,7 +1141,7 @@ def validate_model_structural_updates(
         check_actuation: Whether to check the actuation updates.
         check_axes: Whether to check universal and gimbal axes.
         check_body_immovability: Whether to check that no body's immovability
-            status changed (via mass, inertia, or KINEMATIC/PROXY flag flip).
+            status changed (via mass, inertia, or KINEMATIC flag flip).
         kinematic_only_immovable: Whether only KINEMATIC bodies were built as immovable,
             see :func:`convert_rigid_bodies`.
 
@@ -1454,7 +1454,7 @@ def convert_rigid_bodies(
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
         kinematic_only_immovable: Whether only KINEMATIC bodies are immovable. Dynamics
-            solvers that simulate massless and PROXY bodies set it, so that Kamino keeps their
+            solvers that simulate massless bodies set it, so that Kamino keeps their
             joints, limits, and inertia.
 
     Returns:
@@ -1494,7 +1494,7 @@ def convert_rigid_bodies(
     q_i_0 = wp.empty((model.body_count,), dtype=wp.transformf, device=model.device)
     convert_body_origin_to_com(model.body_com, model.body_q, q_i_0)
 
-    # Bake Kamino's per-body immovability decision once (kinematic/proxy or
+    # Bake Kamino's per-body immovability decision once (kinematic or
     # already massless) and mask its owned inverse mass / inertia copies with
     # it. See ``is_immovable_for_kamino`` for the predicate. Newton's arrays
     # are never mutated. Runtime flips are rejected via

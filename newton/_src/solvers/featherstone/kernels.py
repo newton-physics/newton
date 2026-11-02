@@ -388,44 +388,57 @@ def jcalc_motion(
         return v_j_s, wp.spatial_vector()
 
     if type == JointType.D6:
-        # Apparent (intra-joint) derivative of the motion subspace. Non-zero only
-        # for >= 2 angular axes, whose FK-transported axes (see below) depend on
-        # the joint coordinates; ``c_app_ang`` collects Σ_k (Σ_{j<k} a_j x a_k q̇_j) q̇_k.
+        # Apparent (intra-joint) derivative of the motion subspace. The angular axes pass through the
+        # translated joint origin, so they move with the linear DOFs (v_lin x w_ang) and, for >= 2 angular
+        # axes, with the preceding angular DOFs (c_app_ang = sum_{j<k} a_j x a_k qd_j qd_k).
         c_app_ang = wp.vec3()
         v_j_s = wp.spatial_vector()
+        pos = wp.vec3()
+        v_lin = wp.vec3()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 0]
             joint_S_s[qd_start + 0] = S_s
+            pos += axis * joint_q[q_start + 0]
+            v_lin += axis * joint_qd[qd_start + 0]
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 1]
             joint_S_s[qd_start + 1] = S_s
+            pos += axis * joint_q[q_start + 1]
+            v_lin += axis * joint_qd[qd_start + 1]
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 2]
             joint_S_s[qd_start + 2] = S_s
+            pos += axis * joint_q[q_start + 2]
+            v_lin += axis * joint_qd[qd_start + 2]
+        # FK translates before it rotates (jcalc_transform), so the angular axes pivot about the translated origin.
+        X_sa = X_sc * wp.transform(pos, wp.quat_identity())
         # Use the FK-transported axes (transform_*_rotational_axes), not the raw joint
         # axes, so velocity and motion subspace stay consistent with FK for multi-angular D6 joints.
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
+        w_ang = wp.vec3()
         if ang_axis_count == 1:
             axis = joint_axis[iqd]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[iqd]
             joint_S_s[iqd] = S_s
+            w_ang = axis * joint_qd[iqd]
         if ang_axis_count == 2:
             a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
-            S_0 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
-            S_1 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
+            S_0 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a0))
+            S_1 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a1))
             qd0 = joint_qd[iqd + 0]
             qd1 = joint_qd[iqd + 1]
             v_j_s += S_0 * qd0 + S_1 * qd1
             joint_S_s[iqd + 0] = S_0
             joint_S_s[iqd + 1] = S_1
+            w_ang = a0 * qd0 + a1 * qd1
             # a1 = R(a0, q0) * axis_1, so da1/dq0 = a0 x a1.
             c_app_ang += wp.cross(a0, a1) * (qd0 * qd1)
         if ang_axis_count == 3:
@@ -436,9 +449,9 @@ def jcalc_motion(
                 joint_q[iq + 0],
                 joint_q[iq + 1],
             )
-            S_0 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
-            S_1 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
-            S_2 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a2))
+            S_0 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a0))
+            S_1 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a1))
+            S_2 = transform_twist(X_sa, wp.spatial_vector(wp.vec3(), a2))
             qd0 = joint_qd[iqd + 0]
             qd1 = joint_qd[iqd + 1]
             qd2 = joint_qd[iqd + 2]
@@ -446,12 +459,13 @@ def jcalc_motion(
             joint_S_s[iqd + 0] = S_0
             joint_S_s[iqd + 1] = S_1
             joint_S_s[iqd + 2] = S_2
+            w_ang = a0 * qd0 + a1 * qd1 + a2 * qd2
             # Intrinsic-Euler chain: da_k/dq_j = a_j x a_k for j < k.
             c_app_ang += wp.cross(a0, a1) * (qd0 * qd1)
             c_app_ang += wp.cross(a0, a2) * (qd0 * qd2)
             c_app_ang += wp.cross(a1, a2) * (qd1 * qd2)
 
-        c_app_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), c_app_ang))
+        c_app_s = transform_twist(X_sa, wp.spatial_vector(wp.cross(v_lin, w_ang), c_app_ang))
         return v_j_s, c_app_s
 
     if type == JointType.BALL:
@@ -954,7 +968,7 @@ def compute_link_velocity(
     v_s = v_parent_s + v_j_s
     # spatial_cross(v_s, v_j_s) is the v x S q̇ bias for a body-fixed motion subspace;
     # c_app_s adds the apparent derivative Ṡ|_local q̇ that arises when the subspace
-    # itself is configuration-dependent (multi-angular D6). See jcalc_motion.
+    # itself is configuration-dependent (D6). See jcalc_motion.
     a_s = a_parent_s + spatial_cross(v_s, v_j_s) + c_app_s
     if joint_qdd:
         for j in range(qd_start, joint_qd_start[i + 1]):

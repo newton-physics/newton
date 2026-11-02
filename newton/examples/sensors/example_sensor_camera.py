@@ -1,15 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sensor Camera
-#
-# Shows how to use the SensorCamera class and display its output
-# via Viewer.log_image.
-#
-# Command: python -m newton.examples sensor_camera
-#
-###########################################################################
+"""Example Sensor Camera
+
+Shows how to use the SensorCamera class and display its output
+via Viewer.log_image.
+
+Success criteria:
+- The sensor output contains 24 tiled Franka scenes with primitive shapes and continuously moving
+  arms.
+- Switching Observer Camera and Robot Camera changes the sensor viewpoint.
+- Color, depth, albedo, normal, shape-index, and semantic outputs show corresponding nonempty scene
+  information.
+- Disable First Row: Clear clears those sensor views; Disable Second Row: Preserve freezes the
+  affected views while other worlds continue updating.
+- On GL or RTX, Sensor Color as Main View replaces the main view with sensor color and restores
+  normal scene rendering when disabled.
+
+Runs:
+- `python -m newton.examples sensor_camera`
+"""
 
 import math
 import random
@@ -25,6 +35,8 @@ from newton.sensors import SensorCamera
 from newton.viewer import ViewerGL, ViewerRTX
 
 # Viewers with an interactive camera that can also display logged images.
+
+
 _INTERACTIVE_VIEWERS = (ViewerGL, ViewerRTX)
 
 SEMANTIC_COLOR_CYLINDER = (255, 0, 0)

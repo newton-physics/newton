@@ -118,9 +118,6 @@ step. Massless bodies on other joints stay dynamic and move with the bodies they
 are attached to. With ``config.lox.eliminate_fixed_world_islands`` enabled, LOX
 also keeps the bodies welded to the world at their pose.
 
-LOX simulates bodies flagged :attr:`~newton.BodyFlags.PROXY` as dynamic bodies
-with their mass and inertia.
-
 LOX keeps speculative contacts, whose shapes are still separated, and lets each
 close its gap within the step. It ignores
 ``config.dynamics.cull_speculative_contacts``.

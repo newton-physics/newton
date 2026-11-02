@@ -110,6 +110,30 @@ The authored workflow is demonstrated by
 ``python -m newton.examples mpm_granular --from-usd`` and
 ``newton/examples/assets/mpm_sand.usda``.
 
+Mapping loaded vertices to authored points
+------------------------------------------
+
+.. experimental::
+   The ``return_source_point_indices`` option of :func:`newton.usd.get_mesh`
+   may change without a formal deprecation cycle.
+
+:func:`newton.usd.get_mesh` can return the source point index for each loaded
+vertex. UV seams and normals can split one authored point into several render
+vertices; the indices preserve that relationship.
+
+.. code-block:: python
+
+   mesh, _, point_indices = newton.usd.get_mesh(
+       visual_prim, load_uvs=True, return_source_point_indices=True
+   )
+   vertex_data = authored_point_data[point_indices]
+
+With this option, :func:`newton.usd.get_mesh` always returns
+``(mesh, uv_indices, source_point_indices)``, where ``uv_indices`` is ``None``
+unless UV indices were requested and are available. The option requires a
+single mesh prim and is not available when merging a stage or file; see the
+function's return table for all combinations.
+
 Deformable Bodies
 -----------------
 
@@ -121,7 +145,7 @@ Deformable Bodies
    compatibility fallbacks for proposal names Newton has already released; using one emits
    a ``DeprecationWarning`` that names its replacement.
 
-   The packaged ``newton-usd-schemas`` 0.5.x dependency registers Newton's extension schemas,
+   The packaged ``newton-usd-schemas`` 0.6.x dependency registers Newton's extension schemas,
    but not these proposed core deformable APIs. Until AOUSD publishes them, the importer
    discovers their applied-schema tokens and attributes directly; no package upgrade is needed
    for this proposal revision.
@@ -301,6 +325,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
   collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
   ``PhysicsElementCollisionFilter`` support above).
 * Every imported deformable can be found by prim path in the import results (see below).
+  After ``finalize()``, selection views use the recorded deformable object labels.
+  A welded graph is selected by its graph label, not by each source curve's prim path;
+  see :ref:`deformable-objects-welded-usd-graphs`.
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
@@ -364,12 +391,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
-* **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven (embedding is not implemented): untagged
-  PointBased graphics geometry warns and is skipped (a static import would leave a frozen
-  copy behind), and a dedicated point-based collider (every one warns) only toggles the
-  simulation geometry's collision as described above and never becomes a separate rigid
-  shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
+* **Collision and graphics geometry** -- graphics Mesh prims can import as visual meshes; see
+  :ref:`usd-deformable-visual-import` for what is imported and skipped. A dedicated
+  point-based collider (every one warns) only toggles the simulation geometry's collision
+  as described above and never becomes a separate rigid shape. Deformable-owned geometry
+  is owned exclusively by the deformable importer: when a
   deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
   rather than falling back to a rigid representation. A disabled
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
@@ -427,6 +453,15 @@ The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and
 values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
 marked ``legacy_implicit_type``.
 
+After finalization, use the recorded labels to select deformable objects with
+:class:`~newton.selection.DeformableCurveView`,
+:class:`~newton.selection.DeformableSurfaceView`, or
+:class:`~newton.selection.DeformableVolumeView`. Each view selects only its family
+and provides state access and simulation-element ranges. Native and USD-created
+deformable objects use the same view API. See :ref:`deformable-selection` for
+world layout, masked resets, and getter buffers. See :ref:`deformable-objects`
+for how replication and fixed-joint collapse affect the recorded ranges.
+
 Imported deformables also populate the experimental builder identity lists
 described in :ref:`deformable-objects`. These lists are separate from the
 import result mappings above.
@@ -479,10 +514,15 @@ a rigid body's articulation follows that articulation's setting.
 
 .. code-block:: python
 
+    from newton.selection import DeformableCurveView
+
     result = builder.add_usd("cables.usda", return_deformable_results=True)
-    # Look up an imported cable by prim path:
+    # Find a cable's segments while building the scene.
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
+    # Inspect the finalized body range by label.
+    cable = DeformableCurveView(model, "/World/Cable")
+    ((body_start, body_end),) = cable.ranges("body")
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,
@@ -504,6 +544,111 @@ see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
    Solver tuning that is not part of the supported AOUSD schemas or a documented Newton schema
    extension is not imported; supply it on the builder or model after import.
 
+Reading a deformable bind pose
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
+
+Read the reference points used to bind visual geometry:
+
+.. code-block:: python
+
+   import newton.usd
+
+   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
+   points = newton.usd.get_deformable_bind_pose(visual)
+
+The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
+``bindPose``, or the geometry's default-time points when none is authored.
+It does not substitute rest-shape points or an animated sample. Multiple
+bind poses and malformed data raise an error.
+
+The returned array owns its storage. Points remain in authored order, local
+coordinates, and stage length units. Apply transforms and unit conversion
+separately. These are not render vertices split at UV or normal seams.
+
+Finding deformable visual geometry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.find_deformable_visual_prims` follows the AOUSD proposal.
+
+Use this reader to inspect visual geometry without creating a simulation:
+
+.. code-block:: python
+
+   import newton.usd
+
+   body = stage.GetPrimAtPath("/World/SoftBody")
+   visuals = newton.usd.find_deformable_visual_prims(body)
+
+The reader returns PointBased prims in traversal order, including instance
+proxies. It excludes simulation geometry and colliders, even disabled ones.
+It stops at nested deformable bodies, rigid bodies, and articulation roots.
+Visibility is not a filter. The reader does not edit the stage or compute
+embeddings; it only reports which prims the body owns.
+
+.. _usd-deformable-visual-import:
+
+Importing deformable visual meshes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   Deformable visual mesh import follows the AOUSD proposal and may change.
+
+:meth:`ModelBuilder.add_usd` uses these readers to bind graphics Mesh prims to
+their owning simulation geometry. Volume meshes use tetrahedra, cloth meshes
+use triangles, and cable meshes follow imported rigid segments. Graphics add
+no mass or collision geometry. Set ``load_visual_shapes=False`` to omit them.
+
+.. code-block:: python
+
+   import newton
+   import newton.geometry
+
+   builder = newton.ModelBuilder()
+   builder.add_usd("deformable.usda")
+   model = builder.finalize()
+   state = model.state()
+   visuals = newton.geometry.DeformableVisuals(model)
+   visuals.update(state)
+
+Binding pairs the graphics and simulation bind poses in the same world frame.
+Without an authored bind pose, each prim's default-time points provide it.
+UV corner expansion keeps the source-point mapping, so texture seams do not
+change which bind points move the visual mesh. Material textures require UVs.
+Authored ``UsdTransform2d`` texture scale, rotation, and translation are preserved.
+One mesh-level material applies to the whole graphics mesh. Face-level material
+bindings on ``GeomSubset`` prims are not imported; a diagnostic reports that they
+were ignored. Split graphics into separate Mesh prims to use different textures.
+Only meshes a viewport would draw are imported, by the rule that decides
+whether a rigid shape is visible: the prim is visible and its purpose is
+``default`` or ``proxy``. ``ignore_paths`` applies too. A malformed visual is
+logged and skipped without removing valid physics or sibling meshes.
+
+Use the optional import result to look up a visual mesh by its USD path:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   result = builder.add_usd("deformable.usda", return_deformable_results=True)
+   mesh_index = result["path_deformable_visual_map"]["/World/SoftToy/Skin"]
+   model = builder.finalize()
+   skin = model.deformable_visual_meshes[mesh_index]
+
+The map contains only successfully imported visual meshes. Its indices describe
+this builder after import; it does not track copies made by later composition or
+replication. Imported meshes use their graphics prim path as their initial label;
+``world`` identifies each copy. USD namespaces are not rebased automatically.
+
+Embeddings are computed at import time; authored per-vertex embedding weights
+are not imported. PointBased graphics other than meshes are skipped with a
+diagnostic and never become rigid shapes, and Gaussian graphics are not
+imported by this path.
+Triangle bindings discard normal offsets; vertices outside a volume are
+clamped as described in the :ref:`visualization guide <deformable-visual-meshes>`.
+
 Material Color Spaces
 ---------------------
 
@@ -523,32 +668,30 @@ colors such as ``srgb_rec709_scene`` are kept as authored.
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
 the file attribute, and converts linear/raw color textures to display/sRGB when
-they are loaded. Display/sRGB textures stay display-encoded.
+they are loaded. Display/sRGB textures stay display-encoded, as do untagged
+textures, whose ``sourceColorSpace`` is ``auto`` or unset and whose file
+attribute has no color-space metadata or ``auto``.
 
-Gaussian splat spherical-harmonics radiance is resolved from the same
-color-space metadata but with the opposite default: untagged radiance is treated
-as display/sRGB. The supported color-space names are:
+Gaussian splat spherical-harmonics radiance uses the color space of its
+coefficient attribute only (``radiance:sphericalHarmonicsCoefficients``, or its
+half-precision ``h`` variant), without ``UsdColorSpaceAPI`` inheritance.
+Untagged radiance is treated as display/sRGB.
 
-* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``
-  (and untagged): imported as :attr:`~newton.utils.ColorSpace.SRGB`.
+Scalar colors, textures and Gaussian radiance classify color-space names the
+same way. The supported names are:
+
+* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``:
+  display/sRGB (:attr:`~newton.utils.ColorSpace.SRGB`).
   ``srgb_rec709_display`` is a display-referred marker that renderers without
   special handling treat like ``srgb_rec709_scene``.
 * ``lin_rec709_scene``, ``lin_rec709``, ``lin_srgb``, ``raw``, ``data``,
-  ``identity`` and ``linear``: imported as
-  :attr:`~newton.utils.ColorSpace.LINEAR`.
+  ``identity`` and ``linear``: linear (:attr:`~newton.utils.ColorSpace.LINEAR`).
 
 Newton does not convert color primaries or transfer functions. Any other name,
 such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
 ``g22_rec709_scene``, is imported as linear if it looks linear (``lin_*`` or
-``acescg``) and as sRGB otherwise, and a warning naming the prim is logged. The
-import itself does not fail.
-
-.. note::
-
-   A ``colorSpace`` fallback that a schema declares on the coefficient attribute
-   takes precedence over a color space inherited from a parent prim or applied
-   with ``ColorSpaceAPI`` on the prim. For such prims, author linear radiance by
-   setting ``colorSpace`` on the coefficient attribute itself.
+``acescg``) and as sRGB otherwise, and a warning naming the prim or attribute
+is logged. The import itself does not fail.
 
 Mass and Inertia Precedence
 ---------------------------
@@ -916,6 +1059,10 @@ Custom Attributes from USD
 
 USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
 Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
+
+Custom values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency are not imported
+automatically yet. See :ref:`usd_deformable_custom_values` for a builder
+assignment example after import.
 
 **Overview:**
 

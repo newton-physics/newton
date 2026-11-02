@@ -1,18 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example cloth H1 (cloth-robot interaction)
-#
-# The H1 robot in a jacket waves hello to us, powered by the Style3D solver
-# for cloth and driven by an IkSolver for robot kinematics.
-#
-# Demonstrates how to leverage interpolated robot kinematics within the
-# collision processing pipeline and feed the results to the cloth solver.
-#
-# Command: python -m newton.examples cloth_h1
-#
-###########################################################################
+"""Example cloth H1 (cloth-robot interaction)
+
+The H1 robot in a jacket waves hello to us, powered by the Style3D solver
+for cloth and driven by an IkSolver for robot kinematics.
+
+Demonstrates how to leverage interpolated robot kinematics within the
+collision processing pipeline and feed the results to the cloth solver.
+
+Success criteria:
+- An H1 humanoid wears a jacket while waving its arms, then returns to a resting pose.
+- The jacket follows the robot motion and drapes around it without obvious body penetration,
+  tearing, or explosive deformation.
+
+Runs:
+- `python -m newton.examples cloth_h1`
+"""
 
 import numpy as np
 import warp as wp
@@ -28,6 +32,7 @@ from newton.solvers import style3d
 
 class Example:
     def __init__(self, viewer, args):
+        """Set up the H1 robot, cloth, and coupled simulation."""
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -175,7 +180,7 @@ class Example:
         # ------------------------------------------------------------------
         self.cloth_solver = newton.solvers.SolverStyle3D(
             model=self.model,
-            iterations=self.iterations,
+            config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
         )
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()

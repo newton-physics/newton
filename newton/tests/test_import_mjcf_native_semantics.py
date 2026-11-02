@@ -752,7 +752,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     builder.add_mjcf_native(
                         xml, xform=wp.transform((2, 0, 0), wp.quat_identity()), convert_mjc_equality_constraints=convert
                     )
-                solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+                solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
                 reference = mujoco.MjModel.from_xml_string(xml.replace('pos="1 0 0"', 'pos="3 0 0"'))
                 np.testing.assert_allclose(solver.mj_model.eq_data, reference.eq_data)
                 solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
