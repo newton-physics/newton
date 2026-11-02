@@ -298,7 +298,12 @@ def update_seal_break_kernel(
     g = wp.tid()
     lo = pad_world_start[g]  # this gripper's pads are [lo, hi)
     hi = pad_world_start[g + 1]
-    engaged = pad_engaged_bs_curr[lo][0] >= 0  # this gripper's engagement state entering the break check
+    # This gripper's engagement state entering the break check. Any pad counts, because attach_seal can
+    # leave an individual pad disengaged when it is out of range of the body.
+    engaged = wp.bool(False)
+    for p in range(lo, hi):
+        if pad_engaged_bs_curr[p][0] >= 0:
+            engaged = True
     any_broken = wp.bool(False)
     for p in range(lo, hi):
         if not engaged:

@@ -259,7 +259,9 @@ def _clamp_magnitude_2d(fx: float, fy: float, f_max: float) -> tuple[float, floa
 
 @wp.kernel
 def _attach_seal_kernel(
-    pad_engaged_bs_curr: wp.array[wp.vec2i],  # [pads] current step's gripped body/shape (``[0] < 0`` = released)
+    pad_engaged_bs_curr: wp.array[
+        wp.vec2i
+    ],  # [pads] in/out: current step's gripped body/shape (``[0] < 0`` = released); cleared if out of range
     pad_engaged_bs_prev: wp.array[
         wp.vec2i
     ],  # [pads] previous step's gripped body/shape (``[0] < 0`` = was released, for rising-edge detection)
@@ -283,7 +285,13 @@ def _attach_seal_kernel(
     """On a disengaged->engaged rising edge, cache SB = GB0^-1 * SA0 into pad_anchor_b (see Frame nomenclature),
     and cache the perimeter signed distances at that anchor into ``pad_perimeter_sdf0`` -- the same baseline
     :func:`_attach_seal_seated_kernel` caches, so :func:`evaluate_seal_quality`'s RMS reads a real deviation
-    from this pad's engagement pose regardless of which attach path (seated or raw) engaged it."""
+    from this pad's engagement pose regardless of which attach path (seated or raw) engaged it.
+
+    There is no seat fit to pull the body onto the pad, so a pad whose perimeter samples are all outside
+    ``max_dist`` of the surface is not near the body at all. It is left disengaged: ``pad_engaged_bs_curr`` is
+    cleared and nothing is cached, so the force kernel sees a released pad. The caller's carry-forward
+    keeps it released until the engage command falls. A pad with no perimeter samples cannot be judged and
+    engages as before."""
     pad = wp.tid()
     body_b = pad_engaged_bs_curr[pad][0]  # the body this pad is engaging to; the gate below keeps it valid
     shape_b = pad_engaged_bs_curr[pad][1]  # its collision shape, used to index shape_mesh_id below
@@ -293,12 +301,23 @@ def _attach_seal_kernel(
         gripper_id = pad_gripper[pad]
         seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # SA
         anchor_b = wp.transform_inverse(hold_pose_body_b[body_b]) * seal_world
-        pad_anchor_b[pad] = anchor_b
-        # Cache pad_perimeter_sdf0: SDF at each perimeter point placed by SB (in mesh frame), mirroring
-        # _attach_seal_seated_kernel's baseline but around the raw (unfit) anchor.
+        # SDF at each perimeter point placed by SB (in mesh frame), mirroring _attach_seal_seated_kernel's
+        # baseline but around the raw (unfit) anchor.
         mesh_b = shape_mesh_id[shape_b]
         anchor_in_mesh = wp.transform_inverse(shape_transform[shape_b]) * anchor_b
-        for k in range(pad_perimeter_start[pad], pad_perimeter_start[pad + 1]):
+        first_sample = pad_perimeter_start[pad]
+        end_sample = pad_perimeter_start[pad + 1]
+        # sdf_mesh returns max_dist or more for a point with no surface within max_dist.
+        near_surface = first_sample == end_sample  # no samples: nothing to judge, so engage as before
+        for k in range(first_sample, end_sample):
+            perimeter_mesh = wp.transform_point(anchor_in_mesh, pad_perimeter_local[k])
+            if sdf_mesh(mesh_b, perimeter_mesh, max_dist) < max_dist:
+                near_surface = True
+        if not near_surface:
+            pad_engaged_bs_curr[pad] = wp.vec2i(-1, -1)
+            return
+        pad_anchor_b[pad] = anchor_b
+        for k in range(first_sample, end_sample):
             perimeter_mesh = wp.transform_point(anchor_in_mesh, pad_perimeter_local[k])
             pad_perimeter_sdf0[k] = sdf_mesh(mesh_b, perimeter_mesh, max_dist)
 
@@ -1095,6 +1114,10 @@ def attach_seal(
     distances at that anchor -- the same baseline :func:`evaluate_seal_quality` measures deviation from.
     Cf. :func:`attach_seal_seated`, which seats against the inline-fitted pose.
 
+    A pad with no perimeter sample within ``max_dist`` of the body's surface is not engaged: its entry in
+    ``gripper_state_input_curr.pad_engaged_bs`` is cleared to ``(-1, -1)`` and nothing is cached for it.
+    A pad with no perimeter samples (``n_perimeter_samples = 0``) cannot be judged and engages as before.
+
     Args:
         model: Finalized Newton model; source of ``shape_transform`` (T_bs per shape).
         state: Simulation state; source of ``body_q`` (world body poses).
@@ -1105,7 +1128,7 @@ def attach_seal(
             are written on each rising edge.
         gripper_state_input_curr: Current sub-step's input state; ``pad_engaged_bs[..][0]``
             (>= 0 = engaged this step) detects the rising edge and identifies the target body,
-            while ``[..][1]`` identifies the gripped collision shape.
+            while ``[..][1]`` identifies the gripped collision shape. Cleared for a pad that is out of range.
         shape_mesh_id: shape id -> SDF mesh id (:class:`warp.Mesh`), shape [n_shapes].
         max_dist: SDF search radius [m].
     """
