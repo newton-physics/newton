@@ -5,7 +5,7 @@ from functools import cache
 
 import warp as wp
 
-from ...sim import BodyFlags, JointType
+from ...sim import BodyFlags, JointType, ShapeFrictionMode
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
@@ -13,6 +13,7 @@ from ...sim.articulation import (
 )
 from ...sim.contacts import GENERATION_SENTINEL
 from ..featherstone.kernels import jcalc_motion
+from ..solver import contact_friction_mode
 from .friction import contact_tangent_basis, friction_pair_candidate
 from .friction_patches import WARP_DETERMINISM_OFF, FrictionPatches, warmstart_dt_scale
 
@@ -4286,8 +4287,10 @@ def prescribed_relative_contact_target(
 
 
 @wp.func
-def _contact_mu(shape_a: int, shape_b: int, shape_material_mu: wp.array[float]):
-    """Return the arithmetic-mean friction coefficient of one shape pair."""
+def _contact_mu(
+    shape_a: int, shape_b: int, shape_material_mu: wp.array[float], shape_material_friction_mode: wp.array[wp.int32]
+):
+    """Return the arithmetic-mean friction coefficient of one shape pair, zero for frictionless pairs."""
     mu = float(0.0)
     material_count = int(0)
     if shape_a >= 0:
@@ -4298,6 +4301,8 @@ def _contact_mu(shape_a: int, shape_b: int, shape_material_mu: wp.array[float]):
         material_count += 1
     if material_count > 0:
         mu /= float(material_count)
+    if contact_friction_mode(shape_material_friction_mode, shape_a, shape_b) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
     return mu
 
 
@@ -4415,6 +4420,7 @@ def prepare_world_contact_rows(
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
     contact_shared_anchor: int,
@@ -4458,7 +4464,7 @@ def prepare_world_contact_rows(
             c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
         )
         phi = wp.dot(normal, point_a_world - point_b_world)
-        mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+        mu = _contact_mu(shape_a, shape_b, shape_material_mu, shape_material_friction_mode)
         tangent0, tangent1 = contact_tangent_basis(normal)
 
         world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_CONTACT
@@ -5690,6 +5696,7 @@ def _build_mf_contact_row(
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     contact_slots_needed: wp.array[int],
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
@@ -5745,7 +5752,7 @@ def _build_mf_contact_row(
         c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
     )
     phi = wp.dot(normal, point_a_world - point_b_world)
-    mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+    mu = _contact_mu(shape_a, shape_b, shape_material_mu, shape_material_friction_mode)
     restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
     t0, t1 = contact_tangent_basis(normal)
 
@@ -5835,6 +5842,7 @@ def build_mf_contact_rows(
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     contact_slots_needed: wp.array[int],
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
@@ -5878,6 +5886,7 @@ def build_mf_contact_rows(
             prescribed_articulation,
             has_target_velocity,
             shape_material_mu,
+            shape_material_friction_mode,
             contact_slots_needed,
             shape_material_restitution,
             friction_patches,
@@ -7477,6 +7486,7 @@ def build_propagation_contact_rows(
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_material_restitution: wp.array[float],
     contact_slots_needed: wp.array[int],
     contact_shared_anchor: int,
@@ -7537,7 +7547,7 @@ def build_propagation_contact_rows(
             c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
         )
         phi = wp.dot(normal, point_a_world - point_b_world)
-        mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+        mu = _contact_mu(shape_a, shape_b, shape_material_mu, shape_material_friction_mode)
         tangent0, tangent1 = contact_tangent_basis(normal)
         com_a = wp.vec3(0.0)
         com_b = wp.vec3(0.0)
