@@ -266,7 +266,7 @@ def update_seal_break_kernel(
     break_threshold: float,  # metric above this counts as over-capacity (units depend on the mode)
     break_hold_steps: int,  # sub-steps a pad must stay over threshold before the gripper fractures
     break_settle_steps: int,  # sub-steps after engaging during which the metric is not checked
-    pad_offsets: wp.array[int],  # [grippers+1] start indices: gripper g owns pads [pad_offsets[g] : pad_offsets[g+1]]
+    pad_world_start: wp.array[int],  # one gripper per world: gripper g owns pads [start[g] : start[g+1]]
     # Both counters are updated in place: one thread per gripper, and a gripper owns its pads outright,
     # so no other thread reads or writes these slots and no double buffering is needed.
     pad_seal_break_count: wp.array[int],  # [pads] consecutive over-threshold sub-steps
@@ -296,8 +296,8 @@ def update_seal_break_kernel(
     rising-edge test is needed, and the whole kernel reads and writes only the current state.
     """
     g = wp.tid()
-    lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
-    hi = pad_offsets[g + 1]
+    lo = pad_world_start[g]  # this gripper's pads are [lo, hi)
+    hi = pad_world_start[g + 1]
     engaged = pad_engaged_bs_curr[lo][0] >= 0  # this gripper's engagement state entering the break check
     any_broken = wp.bool(False)
     for p in range(lo, hi):
@@ -602,7 +602,7 @@ def update_engagement_signals_kernel(
     gripper_box_shape_ids: wp.array[int],  # [n_grippers * n_boxes_per_world] shape ids in pick order per gripper
     n_boxes_per_world: int,
     pad_gripper: wp.array[int],  # [pads] pad -> gripper
-    pad_offsets: wp.array[int],  # [grippers+1] first pad index per gripper
+    pad_world_start: wp.array[int],  # one gripper per world: first pad index per gripper
     # _prev state: read for carry-forward
     pad_engaged_bs_prev: wp.array[wp.vec2i],
     pad_preparing_bs_prev: wp.array[wp.vec2i],
@@ -640,7 +640,7 @@ def update_engagement_signals_kernel(
         pad_preparing_bs_curr[pad] = wp.vec2i(-1, -1)
 
     # Carry or advance the box index. Only the first pad of each gripper writes.
-    if pad == pad_offsets[g]:
+    if pad == pad_world_start[g]:
         if not eng_curr and eng_prev:  # falling edge: advance to next box
             gripper_curr_box_curr[g] = (curr_box + 1) % n_boxes_per_world
         else:  # otherwise: carry
@@ -654,7 +654,6 @@ def update_engagement_signals(
     gripper_box_shape_ids: wp.array[int],
     n_boxes_per_world: int,
     gripper_model: SurfaceGripperModel,
-    pad_offsets: wp.array[int],
     gripper_state_input_prev: SurfaceGripperStateInput,
     gripper_state_input_curr: SurfaceGripperStateInput,
 ) -> None:
@@ -682,7 +681,7 @@ def update_engagement_signals(
             gripper_box_shape_ids,
             n_boxes_per_world,
             gripper_model.pad_gripper,
-            pad_offsets,
+            gripper_model.pad_world_start,
             gripper_state_input_prev.pad_engaged_bs,
             gripper_state_input_prev.pad_preparing_bs,
             gripper_state_input_curr.pad_engaged_bs,
@@ -917,12 +916,6 @@ class Example:
         # Parallel to gripper_box_body_ids_wp: global shape ID of each box's collision shape.
         self.gripper_box_shape_ids_wp = wp.array(box_shape_ids, dtype=wp.int32, device=self.model.device)
 
-        # Each gripper g owns pads [g*npads : (g+1)*npads]
-        pad_offsets = []
-        for g in range(n_grippers + 1):
-            pad_offsets.append(g * len(PAD_PRIMS))
-        self.pad_offsets_wp = wp.array(pad_offsets, dtype=wp.int32, device=self.model.device)
-
         # The crates are teleported from their waiting pose to their grip pose.
         # This requires knowledge of the indices of the array elements in
         # state.joint_q used to pose each crate.
@@ -1022,7 +1015,6 @@ class Example:
                 self.gripper_box_shape_ids_wp,
                 self.n_boxes_per_world,
                 self.gripper_model,
-                self.pad_offsets_wp,
                 self.gripper_state_input_prev,
                 self.gripper_state_input_curr,
             )
@@ -1093,7 +1085,7 @@ class Example:
                     float(self.break_threshold),
                     int(self.break_hold_steps),
                     int(self.break_settle_steps),
-                    self.pad_offsets_wp,
+                    self.gripper_model.pad_world_start,
                     self.pad_seal_break_count_wp,
                     self.pad_settle_count_wp,
                 ],
