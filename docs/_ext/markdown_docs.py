@@ -59,7 +59,8 @@ class NewtonMarkdownTranslator(MarkdownTranslator):
         self.add("]")
 
     def visit_desc_type_parameter(self, node):
-        pass
+        if node.parent.index(node):
+            self.add(", ")
 
     def depart_desc_type_parameter(self, node):
         pass

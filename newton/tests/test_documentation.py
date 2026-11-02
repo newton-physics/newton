@@ -48,7 +48,7 @@ class TestMarkdownDocumentation(unittest.TestCase):
             "   * - :abbr:`Integration (Supported methods)`\n     - Value\n"
             "   * - Explicit\n     - 42\n\n"
             ".. math::\n\n   x = \\frac{1}{2}\n\n"
-            ".. py:class:: newton.Example[T]\n\n   Example API description.\n\n"
+            ".. py:class:: newton.Example[T, U]\n\n   Example API description.\n\n"
             "   .. py:method:: step(dt)\n\n      Step by dt seconds.\n\n"
             "See :py:meth:`newton.Example.step`.\n",
             encoding="utf-8",
@@ -113,7 +113,7 @@ class TestMarkdownDocumentation(unittest.TestCase):
             "Model --> State",
             "Integration (Supported methods)",
             "\\frac{1}{2}",
-            "Example[T]",
+            "Example[T, U]",
             'id="newton.Example.step"',
             "Step by dt seconds.",
         ):
