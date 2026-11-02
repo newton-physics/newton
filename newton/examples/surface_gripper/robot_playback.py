@@ -228,9 +228,8 @@ class RobotPlayback:
         self.rec_targets_wp = wp.array(rec_targets, dtype=wp.float32)  # [N, num_arm_dofs] coupled targets [rad]
         self.rec_engaged_wp = wp.array(rec_engaged, dtype=wp.bool)  # [N] engagement command per frame
         self.rec_preparing_wp = wp.array(rec_preparing, dtype=wp.bool)  # [N] preparing-to-engage signal per frame
-        # engage / disengage events: frame indices where the suction command rises (a pick) / falls (a release)
+        # engage events: frame indices where the suction command rises (a pick)
         self.rising = [i for i in range(1, len(rec_engaged)) if rec_engaged[i] and not rec_engaged[i - 1]]
-        self.falling = [i for i in range(1, len(rec_engaged)) if not rec_engaged[i] and rec_engaged[i - 1]]
 
     def step(
         self,

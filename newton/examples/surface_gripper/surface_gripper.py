@@ -945,7 +945,6 @@ class SurfaceGripperBuilder:
         m.gripper_k_torsion = wp.array([x.k_torsion for x in g], dtype=wp.float32, device=device)
         m.gripper_d_torsion = wp.array([x.d_torsion for x in g], dtype=wp.float32, device=device)
         m.gripper_f_torsion_max = wp.array([x.f_torsion_max for x in g], dtype=wp.float32, device=device)
-        m.gripper_world = wp.array([x.world for x in g], dtype=wp.int32, device=device)
         # world_count = highest world index + 1 (SurfaceGripper rejects a negative world)
         m.world_count = 0
         for gi in range(len(g)):
@@ -981,11 +980,6 @@ class SurfaceGripperBuilder:
                     pad_perimeter_start.append(len(pad_perimeter_local))  # end of this pad's perimeter points
         pad_world_start[m.world_count] = len(pad_gripper)  # total pad count
 
-        gripper_n_perimeter_samples = []
-        for gi in range(len(g)):
-            gripper_n_perimeter_samples.append(g[gi].n_perimeter_samples)
-
-        m.n_perimeter_samples = wp.array(gripper_n_perimeter_samples, dtype=wp.int32, device=device)  # [grippers]
         m.pad_gripper = wp.array(pad_gripper, dtype=wp.int32, device=device)
         m.pad_xform = wp.array(pad_xform, dtype=wp.transform, device=device)
         m.pad_perimeter_local = wp.array(pad_perimeter_local, dtype=wp.vec3, device=device)
@@ -1016,12 +1010,8 @@ class SurfaceGripperStateOutput:
     break detection, and GUI, but should not write them.
     """
 
-    # Component indices into the seal-load vec4 fields below. Usable from Warp kernels as
-    # compile-time constants, e.g. ``load[SurfaceGripperStateOutput.SEAL_LOAD_PEEL]``.
-    SEAL_LOAD_NORMAL = wp.constant(0)
-    SEAL_LOAD_SHEAR = wp.constant(1)
-    SEAL_LOAD_PEEL = wp.constant(2)
-    SEAL_LOAD_TORSION = wp.constant(3)
+    # Number of components in the seal-load vec4 fields below. Usable from Warp kernels as a
+    # compile-time constant.
     SEAL_LOAD_COUNT = wp.constant(4)
 
     # Per-pad seal loads grouped by DOF, as (normal, shear, peel, torsion):
