@@ -12,6 +12,8 @@ import warp as wp
 
 import newton
 import newton.viewer
+from newton._src.viewer import viewer_gl
+from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
 
@@ -521,6 +523,21 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
                 finally:
                     viewer.close()
+
+    def test_failed_viewer_setup_closes_its_window(self):
+        """Close the window when renderer or viewer setup fails after creating it."""
+        _make_headless_viewer_gl_or_skip(self).close()
+        import pyglet
+
+        open_windows = len(pyglet.app.windows)
+        for module, name in ((opengl, "ShaderShape"), (viewer_gl, "ImageLogger")):
+            with (
+                self.subTest(failure=name),
+                mock.patch.object(module, name, side_effect=RuntimeError("setup failed")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "setup failed"):
+                    ViewerGL(width=64, height=48, headless=True)
+                self.assertEqual(len(pyglet.app.windows), open_windows)
 
     def test_viewer_constructor_known_backend_error_skips(self):
         """Verify unavailable display/backend errors skip GL-dependent coverage."""
