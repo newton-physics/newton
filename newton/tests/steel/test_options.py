@@ -151,8 +151,14 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     np.testing.assert_allclose(model.steel.rigid_body_max_angular_velocity.numpy(), [0.5 * np.pi], rtol=1.0e-6)
     np.testing.assert_allclose(model.steel.rigid_body_max_depenetration_velocity.numpy(), [1.5])
     np.testing.assert_allclose(model.steel.min_torsional_patch_radius.numpy(), [0.004])
+    # The radius selects torsional friction of strength mu * r in every solver
+    np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.TORSIONAL])
+    np.testing.assert_allclose(
+        model.shape_material_mu_torsional.numpy(), model.shape_material_mu.numpy() * 0.004, rtol=1.0e-6
+    )
     # Contact torsion is CUDA-only; this check covers the body attributes.
     model.steel.min_torsional_patch_radius.zero_()
+    model.shape_material_friction_mode.fill_(int(newton.ShapeFrictionMode.SLIDING))
 
     solver = SolverSteel(model, **_split_or_default(device))
     model.steel.rigid_body_angular_damping = wp.zeros(1, dtype=wp.float32, device=device)

@@ -3,6 +3,8 @@
 
 import warp as wp
 
+from newton._src.sim import ShapeFrictionMode
+from newton._src.solvers.solver import contact_friction_mode
 from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
 
 
@@ -57,6 +59,7 @@ def eval_body_contact_kernel(
     contact_count: wp.array[int],
     contact_max: int,
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
@@ -77,6 +80,9 @@ def eval_body_contact_kernel(
 
     if t_id < particle_body_contact_count:
         particle_idx = soft_contact_particle[t_id]
+        contact_mu = friction_mu
+        if contact_friction_mode(shape_material_friction_mode, contact_shape[t_id], -1) == int(ShapeFrictionMode.NONE):
+            contact_mu = 0.0
         body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
             particle_idx,
             pos[particle_idx],
@@ -84,7 +90,7 @@ def eval_body_contact_kernel(
             t_id,
             soft_contact_ke,
             soft_contact_kd,
-            friction_mu,
+            contact_mu,
             friction_epsilon,
             particle_radius,
             shape_material_mu,

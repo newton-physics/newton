@@ -2402,6 +2402,33 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_invalid_friction_mode(self):
+        """Reject friction modes outside ShapeFrictionMode."""
+        for friction_mode in (-1, 4):
+            with self.subTest(friction_mode=friction_mode):
+                cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
+
+                with self.assertRaisesRegex(ValueError, "friction_mode must be a ShapeFrictionMode value"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_friction_mode_propagates_to_model(self):
+        """Carry shape friction modes through add_builder() and replicate() into the model."""
+        mode = newton.ShapeFrictionMode
+        self.assertEqual(newton.ModelBuilder.ShapeConfig().friction_mode, mode.SLIDING)
+
+        source = newton.ModelBuilder()
+        body = source.add_body()
+        source.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE))
+        source.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        source.add_shape_capsule(body, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.ROLLING))
+
+        builder = newton.ModelBuilder()
+        builder.add_builder(source)
+        builder.replicate(source, 2)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 3] * 3)
+
     def test_shape_config_rejects_invalid_density(self):
         """Reject negative and non-finite density values."""
         for density in (-1.0, float("nan"), float("inf"), float("-inf")):

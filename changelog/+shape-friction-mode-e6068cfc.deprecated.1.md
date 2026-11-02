@@ -1,0 +1,1 @@
+Deprecate `SolverKamino.Config.lox.contact_spatial_friction`; LOX now enables spatial friction automatically for shapes whose friction mode is `TORSIONAL` or `ROLLING`. Set `ModelBuilder.ShapeConfig.friction_mode` on those shapes instead of the solver option.

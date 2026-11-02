@@ -217,7 +217,7 @@ Before loading assets, register solver-specific attributes:
 
    model_mujoco = builder_mujoco.finalize()
    assert hasattr(model_mujoco, "mujoco")
-   assert hasattr(model_mujoco.mujoco, "condim")
+   assert hasattr(model_mujoco.mujoco, "geom_priority")
 
 MuJoCo boolean custom attributes use a ``parse_bool`` transformer (registered by :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes`) that handles strings (``"true"``/``"false"``), integers, and native booleans.
 
@@ -1043,7 +1043,7 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
    pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
 
 .. note::
-   When querying, use the full frequency key with namespace prefix (e.g., ``"mujoco:pair"``). This matches how attribute keys work: ``model.get_attribute_frequency("mujoco:condim")`` for a namespaced attribute.
+   When querying, use the full frequency key with namespace prefix (e.g., ``"mujoco:pair"``). This matches how attribute keys work: ``model.get_attribute_frequency("mujoco:geom_priority")`` for a namespaced attribute.
 
 ArticulationView Limitations
 ----------------------------

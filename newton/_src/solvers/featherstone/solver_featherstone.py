@@ -8,7 +8,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
+from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, ShapeFrictionMode, State
 from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
@@ -26,7 +26,7 @@ from ..semi_implicit.kernels_particle import (
     eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
@@ -194,6 +194,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
 
         super().__init__(model)
+        warn_unsupported_friction_modes(model, ShapeFrictionMode.SLIDING, "SolverFeatherstone")
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
         if self._has_joint_mimics:
             mimic_joints = model.joint_mimic_joint.numpy()
@@ -761,6 +762,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             model.shape_material_kf,
                             model.shape_material_ka,
                             model.shape_material_mu,
+                            model.shape_material_friction_mode,
                             model.shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_point0,

@@ -35,6 +35,8 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...math.spatial import velocity_at_point
+from ...sim.enums import ShapeFrictionMode
+from ..solver import contact_friction_mode
 from .friction import contact_tangent_basis
 
 # Steel orders its own order-dependent atomics; Warp's deterministic lowering would overflow on its loops.
@@ -120,6 +122,7 @@ def _prepare(
     margin1: wp.array[float],
     shape_body: wp.array[int],
     shape_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_gap: wp.array[float],
     body_radius: wp.array[float],
     q: wp.array[wp.transform],
@@ -203,6 +206,9 @@ def _prepare(
         mu_a = shape_mu[sa]
     if sb >= 0:
         mu_b = shape_mu[sb]
+    if contact_friction_mode(shape_material_friction_mode, sa, sb) == int(ShapeFrictionMode.NONE):
+        mu_a = 0.0
+        mu_b = 0.0
     frame.mu[c] = wp.vec2(mu_a, mu_b)
     # One patch carries one set of angular rows, so its free-rigid contacts must share the angular coefficients.
     # Contacts that cannot take the free-rigid route keep a zero key and group as without angular rows.
@@ -1394,6 +1400,7 @@ class _FrictionPatchState:
                 contacts.rigid_contact_margin1,
                 model.shape_body,
                 shape_material_mu,
+                model.shape_material_friction_mode,
                 model.shape_gap,
                 self.body_radius,
                 state.body_q,

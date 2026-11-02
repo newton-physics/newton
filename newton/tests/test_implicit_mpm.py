@@ -1733,12 +1733,19 @@ def test_collider_face_materials(test, device):
 
     # shape-based collider: max(shape count, requested count) materials
     shape_model = _make_mpm_particle_builder()
-    for x in (-1.0, 1.0):
+    for x, friction_mode in ((-1.0, newton.ShapeFrictionMode.NONE), (1.0, newton.ShapeFrictionMode.SLIDING)):
         shape_model.add_shape_box(
-            -1, xform=wp.transform(wp.vec3(x, -1.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
+            -1,
+            xform=wp.transform(wp.vec3(x, -1.0, 0.0), wp.quat_identity()),
+            hx=0.5,
+            hy=0.5,
+            hz=0.5,
+            cfg=newton.ModelBuilder.ShapeConfig(mu=0.7, friction_mode=friction_mode),
         )
     shape_solver = SolverImplicitMPM(shape_model.finalize(device=device), _make_mpm_config())
     test.assertEqual(shape_solver.collider_materials(0)["adhesion"].shape[0], 2)
+    # A frictionless shape gives its collider material zero friction
+    np.testing.assert_allclose(shape_solver.collider_materials(0)["friction"].numpy(), [0.0, 0.7], rtol=1.0e-6)
     shape_solver.setup_collider(collider_body_ids=[-1], collider_adhesion=[7.0], collider_material_counts=[1])
     test.assertEqual(shape_solver.collider_materials(0)["adhesion"].shape[0], 2)
     shape_solver.setup_collider(collider_body_ids=[-1], collider_adhesion=[7.0], collider_material_counts=[4])

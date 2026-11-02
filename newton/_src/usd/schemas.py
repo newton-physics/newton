@@ -49,6 +49,13 @@ def _physx_max_hull_vertices(prim: Usd.Prim) -> int | None:
     return usd.get_attribute(prim, "physxConvexHullCollision:hullVertexLimit")
 
 
+def _mjc_friction_mode(condim: int) -> int:
+    """Map ``mjc:condim`` to a :class:`~newton.ShapeFrictionMode` value."""
+    from ..sim.enums import friction_mode_from_condim  # noqa: PLC0415
+
+    return int(friction_mode_from_condim(int(condim)))
+
+
 def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
     """Return a getter that reads a legacy contact custom attr with a deprecation warning."""
 
@@ -406,6 +413,9 @@ class SchemaResolverPhysx(SchemaResolver):
                 usd_value_getter=_physx_gap_from_prim,
                 attribute_names=("physxCollision:contactOffset", "physxCollision:restOffset"),
             ),
+            # PhysX also scales a radius with the penetration depth (physxCollision:torsionalPatchRadius),
+            # which Newton does not model.
+            "torsional_patch_radius": SchemaAttribute("physxCollision:minTorsionalPatchRadius", None),
         },
         PrimType.MATERIAL: {
             "ke": SchemaAttribute("physxMaterial:compliantContactStiffness", None),
@@ -539,6 +549,7 @@ class SchemaResolverMjc(SchemaResolver):
             # and damping".
             "ke": SchemaAttribute("mjc:solref", None, solref_to_stiffness),
             "kd": SchemaAttribute("mjc:solref", None, solref_to_damping),
+            "friction_mode": SchemaAttribute("mjc:condim", None, _mjc_friction_mode),
         },
         PrimType.MATERIAL: {
             # Materials

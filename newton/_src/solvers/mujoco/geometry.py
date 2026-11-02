@@ -9,11 +9,21 @@ import numpy as np
 
 from ...geometry import GeoType, ShapeFlags
 from ...sim import Model
+from ...sim.enums import FRICTION_MODE_CONDIM
 from .collision_masks import (
     NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
     CollisionGraphCompileResult,
     compile_newton_collision_graph,
 )
+
+_FRICTION_MODE_CONDIM = np.array(FRICTION_MODE_CONDIM, dtype=np.int32)
+
+
+def resolve_shape_condim(model: Model) -> np.ndarray:
+    """Return each shape's MuJoCo ``condim`` from :attr:`~newton.Model.shape_material_friction_mode`."""
+    if model.shape_material_friction_mode is None:
+        return np.full(model.shape_count, 3, dtype=np.int32)
+    return _FRICTION_MODE_CONDIM[model.shape_material_friction_mode.numpy()]
 
 
 @dataclass(frozen=True)
@@ -66,7 +76,7 @@ def build_shape_layout(
     local_bodies = bodies.copy()
     local_bodies[bodies >= 0] %= body_count
     attrs = model.mujoco
-    condim = attrs.condim.numpy() if hasattr(attrs, "condim") else np.full(model.shape_count, 3)
+    condim = resolve_shape_condim(model)
     priority = (
         attrs.geom_priority.numpy() if hasattr(attrs, "geom_priority") else np.zeros(model.shape_count, dtype=int)
     )
@@ -120,7 +130,7 @@ def build_shape_layout(
             raise ValueError(
                 f"SolverMuJoCo shape types mismatch at position {column}: "
                 f"world {missing_world} has no matching shape for {model.shape_label[shape]!r}. "
-                "Only mesh geoms support differing counts; body, type, condim and priority must match for other shapes"
+                "Only mesh geoms support differing counts; body, type, friction mode (condim) and priority must match for other shapes"
                 + (", as must collision flags with native MuJoCo contacts." if match_collision_flags else ".")
             )
     return ShapeLayout(representatives, mapping, local_bodies[representatives], slot_colliders)

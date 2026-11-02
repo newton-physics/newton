@@ -1,0 +1,1 @@
+Require `ShapeFrictionMode.TORSIONAL` or `ROLLING` on shapes with a positive `steel:min_torsional_patch_radius` for experimental `SolverSteel` contact torsion; construction now raises `ValueError` otherwise. The USD importer selects the mode from a positive `physxCollision:minTorsionalPatchRadius`; set `ModelBuilder.ShapeConfig.friction_mode` on shapes built in code.

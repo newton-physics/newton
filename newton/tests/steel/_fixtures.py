@@ -285,6 +285,9 @@ def set_torsion_radius(model, radius, shapes=None):
     """
     radii = np.zeros(model.shape_count, dtype=np.float32)
     radii[slice(None) if shapes is None else list(shapes)] = radius
+    modes = model.shape_material_friction_mode.numpy()
+    modes[radii > 0.0] = np.maximum(modes[radii > 0.0], int(newton.ShapeFrictionMode.TORSIONAL))
+    model.shape_material_friction_mode.assign(modes)
     namespace = getattr(model, "steel", None)
     if namespace is not None and getattr(namespace, "min_torsional_patch_radius", None) is not None:
         namespace.min_torsional_patch_radius.assign(radii)
@@ -525,6 +528,9 @@ def _patch_fixture(
         shape_gap=wp.zeros(len(shape_bodies), dtype=float, device=device),
         shape_is_solid=wp.ones(len(shape_bodies), dtype=bool, device=device),
         shape_material_mu=wp.array(materials, dtype=float, device=device),
+        shape_material_friction_mode=wp.full(
+            len(shape_bodies), int(newton.ShapeFrictionMode.SLIDING), dtype=wp.int32, device=device
+        ),
     )
     state = SimpleNamespace(body_q=wp.array([wp.transform_identity()] * body_count, dtype=wp.transform, device=device))
     contacts = SimpleNamespace(

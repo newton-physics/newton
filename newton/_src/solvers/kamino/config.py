@@ -1307,7 +1307,14 @@ class LOXSolverConfig:
     """
 
     contact_spatial_friction: bool = False
-    """Enable coupled sliding, torsional, and rolling friction.
+    """Enable coupled sliding, torsional, and rolling friction for every contact.
+
+    .. deprecated:: 1.8
+        Set :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` to
+        :attr:`~newton.ShapeFrictionMode.TORSIONAL` or :attr:`~newton.ShapeFrictionMode.ROLLING`
+        on the shapes that need spatial friction instead; the solver then enables it
+        automatically. When set, every contact keeps its torsional and rolling coefficients
+        regardless of the shapes' friction modes.
 
     Uses shape ``mu_torsional`` and ``mu_rolling`` coefficients [m], mixed between the two
     shapes like the sliding friction for Newton contacts, and averaged for Kamino's unified pipeline.

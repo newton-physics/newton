@@ -15,13 +15,13 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-def warn_deprecation(message: str) -> None:
-    """Emit a deprecation warning at the caller outside Newton internals.
+def external_stacklevel() -> int:
+    """Return the ``stacklevel`` that attributes a warning issued by the caller to the first frame outside Newton.
 
     Skip internal forwarding frames so proxies such as ModelView preserve the
     warning's user-code location on Python versions without skip_file_prefixes.
     """
-    frame = inspect.currentframe()
+    frame = inspect.currentframe().f_back
     stacklevel = 1
     try:
         while frame is not None and frame.f_globals.get("__name__", "").startswith("newton._src."):
@@ -29,7 +29,12 @@ def warn_deprecation(message: str) -> None:
             frame = frame.f_back
     finally:
         del frame
-    warnings.warn(message, NewtonDeprecationWarning, stacklevel=stacklevel)
+    return stacklevel
+
+
+def warn_deprecation(message: str) -> None:
+    """Emit a deprecation warning at the caller outside Newton internals."""
+    warnings.warn(message, NewtonDeprecationWarning, stacklevel=external_stacklevel())
 
 
 class RemovedAttribute:

@@ -499,6 +499,7 @@ def _launch_dense_contact_builders(
             wp.zeros((1,), dtype=wp.int32, device=device),
             articulation_origin,
             wp.array([0.6, 0.8], dtype=wp.float32, device=device),
+            None,
             wp.array([0.2, 0.4], dtype=wp.float32, device=device),
             patches,
             *anchors,
