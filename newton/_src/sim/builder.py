@@ -6338,12 +6338,12 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
         **kwargs,
     ) -> int:
         """Adds a revolute (hinge) joint to the model. It has one degree of freedom.
@@ -6371,12 +6371,13 @@ class ModelBuilder:
             effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
+            actuator_mode: The actuator mode for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.actuator_mode`` is used.
+            target_pos: Deprecated since 1.8; use ``target_q``.
+            target_vel: Deprecated since 1.8; use ``target_qd``.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
-            target_pos: Deprecated since 1.8; use ``target_q``.
-            target_vel: Deprecated since 1.8; use ``target_qd``.
 
         Returns:
             The index of the added joint.
@@ -6447,12 +6448,12 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        target_pos: float | None = None,
-        target_vel: float | None = None,
     ) -> int:
         """Adds a prismatic (sliding) joint to the model. It has one degree of freedom.
 
@@ -6479,12 +6480,13 @@ class ModelBuilder:
             effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
+            actuator_mode: The actuator mode for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.actuator_mode`` is used.
+            target_pos: Deprecated since 1.8; use ``target_q``.
+            target_vel: Deprecated since 1.8; use ``target_qd``.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
-            target_pos: Deprecated since 1.8; use ``target_q``.
-            target_vel: Deprecated since 1.8; use ``target_qd``.
 
         Returns:
             The index of the added joint.
@@ -6541,11 +6543,11 @@ class ModelBuilder:
         friction: float | None = None,
         damping: float | None = None,
         stiffness: float | None = None,
+        actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        actuator_mode: JointTargetMode | None = None,
     ) -> int:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 
@@ -6558,11 +6560,11 @@ class ModelBuilder:
             friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             damping: Passive angular velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on all three BALL joint angular DOFs. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             stiffness: Isotropic passive angular spring stiffness [N·m/rad], supported by SolverMuJoCo. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
+            actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
-            actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
 
         Returns:
             The index of the added joint.
