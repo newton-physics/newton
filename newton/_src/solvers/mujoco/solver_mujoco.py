@@ -5997,26 +5997,217 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
 
     def _validate_cpu_shared_properties(self, model: Model, flags: ModelFlags | int) -> None:
-        """Reject per-world inertial and equality settings that the shared CPU model cannot represent."""
+        """Validate authored inputs before any update publishes to the shared native model.
+
+        MjData owns state, controls, mocap poses and equality activation. Everything
+        below contributes to MjModel and must agree across corresponding world slots.
+        Validate sources rather than updated MJWarp buffers: a mixed notification
+        must fail before even its otherwise valid flags mutate native state.
+        """
         if not self.use_mujoco_cpu or model.world_count <= 1:
             return
-        groups = (
-            (ModelFlags.BODY_INERTIAL_PROPERTIES, model, ("body_mass", "body_inertia", "body_com")),
-            (ModelFlags.CONSTRAINT_PROPERTIES, model.mujoco, ("eq_solref", "eq_solimp")),
-        )
-        for flag, source, names in groups:
-            if not flags & flag:
-                continue
+        nworld = model.world_count
+        attrs = model.mujoco
+
+        def check(source, names, indices=None):
             for name in names:
                 attribute = getattr(source, name, None)
                 if attribute is None or attribute.size == 0:
                     continue
                 values = attribute.numpy()
-                rows = values.reshape((model.world_count, -1, *values.shape[1:]))
+                rows = values[indices] if indices is not None else values.reshape((nworld, -1, *values.shape[1:]))
                 if np.any(rows != rows[0]):
                     raise ValueError(
                         f"Multi-world CPU mode requires identical shared model parameters across worlds: {name} differs."
                     )
+
+        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
+            check(model, ("body_mass", "body_inertia", "body_com"))
+            check(attrs, ("gravcomp",))
+        if flags & ModelFlags.JOINT_PROPERTIES:
+            check(model, ("joint_axis",))
+            # Free roots carry their pose in qpos; fixed roots are mocap bodies.
+            # Their world-space frames need not match the template.
+            joint_types = model.joint_type.numpy().reshape(nworld, -1)
+            parents = model.joint_parent.numpy().reshape(nworld, -1)
+            dof_counts = model.joint_dof_dim.numpy().reshape(nworld, -1, 2).sum(axis=2)
+            runtime_pose = (joint_types[0] == JointType.FREE) | (dof_counts[0] == 0)
+            local_frames = ~((parents[0] < 0) & runtime_pose)
+            indices = np.arange(model.joint_count).reshape(nworld, -1)[:, local_frames]
+            check(model, ("joint_X_p", "joint_X_c"), indices)
+
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES):
+            check(model, ("joint_armature",))
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            check(
+                model,
+                (
+                    "joint_damping",
+                    "joint_friction",
+                    "joint_target_ke",
+                    "joint_target_kd",
+                    "joint_target_mode",
+                    "joint_effort_limit",
+                    "joint_limit_lower",
+                    "joint_limit_upper",
+                    "joint_limit_ke",
+                    "joint_limit_kd",
+                ),
+            )
+            check(
+                attrs,
+                (
+                    "dof_passive_stiffness",
+                    "limit_margin",
+                    "solimplimit",
+                    "solreflimit",
+                    "solreflimit_mode",
+                    "solreffriction",
+                    "solimpfriction",
+                    "jnt_actgravcomp",
+                ),
+            )
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
+            # A differing scalar reference changes qpos - qpos0 in native FK,
+            # even when the state and target conversion add the same offset.
+            check(attrs, ("dof_ref", "dof_springref"))
+        if flags & ModelFlags.CONSTRAINT_PROPERTIES:
+            check(model, ("joint_mimic_coeffs", "constraint_mimic_coef0", "constraint_mimic_coef1"))
+            check(
+                attrs,
+                (
+                    "eq_solref",
+                    "eq_solimp",
+                    "equality_constraint_polycoef",
+                    "equality_constraint_anchor",
+                    "equality_constraint_relpose",
+                    "equality_constraint_torquescale",
+                ),
+            )
+        if flags & ModelFlags.SHAPE_PROPERTIES:
+            # Use the actual compiled shape layout: global shapes occupy the same
+            # slot in every world, and visual-only shapes may not be exported.
+            indices = getattr(self, "_cpu_shared_shape_indices", None)
+            if indices is not None:
+                check(
+                    model,
+                    (
+                        "shape_scale",
+                        "shape_transform",
+                        "shape_material_mu",
+                        "shape_material_mu_torsional",
+                        "shape_material_mu_rolling",
+                        "shape_material_ke",
+                        "shape_material_kd",
+                        "shape_margin",
+                        "shape_gap",
+                    ),
+                    indices,
+                )
+                check(attrs, ("geom_solimp", "geom_solmix", "solref", "solref_mode", "hfield_base"), indices)
+        if flags & ModelFlags.ACTUATOR_PROPERTIES:
+            check(
+                attrs,
+                (
+                    "actuator_trntype",
+                    "actuator_dyntype",
+                    "actuator_gaintype",
+                    "actuator_biastype",
+                    "ctrl_source",
+                    "ctrl_type",
+                    "actuator_ctrllimited",
+                    "actuator_forcelimited",
+                    "actuator_actlimited",
+                    "actuator_actdim",
+                    "actuator_actearly",
+                    "actuator_has_ctrlrange",
+                    "actuator_has_forcerange",
+                    "actuator_has_actrange",
+                    "actuator_ctrlrange",
+                    "actuator_forcerange",
+                    "actuator_actrange",
+                    "actuator_gainprm",
+                    "actuator_biasprm",
+                    "actuator_dynprm",
+                    "actuator_gear",
+                    "actuator_cranklength",
+                    "actuator_lengthrange",
+                ),
+            )
+        if flags & ModelFlags.TENDON_PROPERTIES:
+            check(
+                attrs,
+                (
+                    "tendon_stiffness",
+                    "tendon_damping",
+                    "tendon_frictionloss",
+                    "tendon_limited",
+                    "tendon_range",
+                    "tendon_margin",
+                    "tendon_solref_limit",
+                    "tendon_solref_limit_mode",
+                    "tendon_solimp_limit",
+                    "tendon_solref_friction",
+                    "tendon_solimp_friction",
+                    "tendon_armature",
+                    "tendon_springlength",
+                    "tendon_actuator_force_range",
+                    "tendon_actuator_force_limited",
+                    "tendon_coef",
+                    "tendon_wrap_prm",
+                ),
+            )
+        if flags & (
+            ModelFlags.CONSTRAINT_PROPERTIES
+            | ModelFlags.JOINT_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+        ):
+            self._validate_cpu_constraint_reference_geometry(model)
+
+    def _validate_cpu_constraint_reference_geometry(self, model: Model) -> None:
+        """Compare body-local reference geometry without rejecting whole-world translations."""
+        attrs = model.mujoco
+        nworld = model.world_count
+        types = attrs.equality_constraint_type.numpy()
+        relpose = attrs.equality_constraint_relpose.numpy()
+        # Explicit weld poses already have a source-array check. CONNECT anchors
+        # and inferred weld poses additionally depend on reference FK.
+        inferred = (types == self.EqType.CONNECT) | (
+            (types == self.EqType.WELD) & np.all(relpose[:, 3:] == 0.0, axis=1)
+        )
+        body1 = attrs.equality_constraint_body1.numpy()[inferred].reshape(nworld, -1)
+        body2 = attrs.equality_constraint_body2.numpy()[inferred].reshape(nworld, -1)
+
+        # Generic loop joints likewise derive CONNECT/WELD constants from FK.
+        parents = model.joint_parent.numpy()
+        children = model.joint_child.numpy()
+        articulations = model.joint_articulation.numpy()
+        loops = (articulations < 0) & np.isin(children, children[articulations >= 0])
+        body1 = np.concatenate((body1, parents[loops].reshape(nworld, -1)), axis=1)
+        body2 = np.concatenate((body2, children[loops].reshape(nworld, -1)), axis=1)
+        if body1.shape[1] == 0:
+            return
+
+        poses = self._compute_body_poses_at_qref(model, self._build_ref_q(model)).numpy()
+        relative = np.empty((*body1.shape, 7), dtype=np.float32)
+        for world, row in np.ndindex(body1.shape):
+            first, second = int(body1[world, row]), int(body2[world, row])
+            x1 = wp.transform(*poses[first]) if first >= 0 else wp.transform_identity()
+            x2 = wp.transform(*poses[second]) if second >= 0 else wp.transform_identity()
+            q2_inv = wp.quat_inverse(x2.q)
+            relative[world, row, :3] = wp.quat_rotate(q2_inv, x1.p - x2.p)
+            relative[world, row, 3:] = q2_inv * x1.q
+        # FK uses float32 transforms; a few ulps from translated copies are not
+        # different geometry. Quaternion signs represent the same orientation.
+        rotations = relative[:, :, 3:]
+        dots = np.sum(rotations * rotations[0], axis=2)
+        if not np.allclose(relative[:, :, :3], relative[0, :, :3], atol=1e-6, rtol=1e-6) or not np.allclose(
+            np.abs(dots), 1.0, atol=1e-6, rtol=1e-6
+        ):
+            raise ValueError(
+                "Multi-world CPU mode requires identical body-local constraint reference geometry across worlds."
+            )
 
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
         """Mirror equality properties from MJWarp buffers to MuJoCo-C CPU buffers."""
@@ -6024,11 +6215,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return
 
         parameters = {name: getattr(self.mjw_model, name).numpy() for name in ("eq_solref", "eq_solimp")}
-        for name, rows in parameters.items():
-            if np.any(rows != rows[0]):
-                raise ValueError(
-                    f"Multi-world CPU mode requires identical equality solver parameters across worlds: {name} differs."
-                )
         self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
         for name, rows in parameters.items():
             getattr(self.mj_model, name)[:] = rows[0]
@@ -7142,6 +7328,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"got {value} at world {first_invalid}."
                 )
 
+        def world_option_values(name: str):
+            values = getattr(mujoco_attrs, name).numpy()
+            if self.use_mujoco_cpu and np.any(values[: model.world_count] != values[0]):
+                raise ValueError(
+                    f"Multi-world CPU mode requires identical shared model parameters across worlds: {name} differs."
+                )
+            return values
+
         # Helper to resolve scalar option value
         def resolve_option(name: str, constructor_value):
             """Resolve scalar option from constructor > model attribute > None (use MuJoCo default)."""
@@ -7150,7 +7344,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return constructor_value
             if mujoco_attrs and hasattr(mujoco_attrs, name):
                 # Read from index 0 (template world) for initialization
-                return float(getattr(mujoco_attrs, name).numpy()[0])
+                return float(world_option_values(name)[0])
             return None
 
         # Helper to resolve vector option value
@@ -7161,7 +7355,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return constructor_value
             if mujoco_attrs and hasattr(mujoco_attrs, name):
                 # Read from index 0 (template world) for initialization
-                vec = getattr(mujoco_attrs, name).numpy()[0]
+                vec = world_option_values(name)[0]
                 return tuple(vec)
             return None
 
@@ -7718,6 +7912,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         break
             if heterogeneous_geoms and self.use_mujoco_cpu:
                 raise ValueError("Per-world mesh assets with separate_worlds=True require use_mujoco_cpu=False.")
+            if self.use_mujoco_cpu:
+                self._cpu_shared_shape_indices = shape_layout.world_shapes
+                self._validate_cpu_shared_properties(model, ModelFlags.SHAPE_PROPERTIES)
             if padded_shapes and pair_count:
                 raise ValueError("Differing mesh counts with explicit MuJoCo contact pairs are not supported.")
             selected_shapes_set = set(selected_shapes)
@@ -9548,6 +9745,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
                         self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
                     )
+            elif nconmax is None and self.use_mujoco_cpu:
+                from mujoco_warp._src.io import _default_nconmax
+
+                nconmax = max(_default_nconmax(self.mj_model, data) for data in self.mj_data_by_world)
             elif nconmax is not None and nconmax < max_ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {max_ncon} following an MjWarp requirement.",
@@ -9556,6 +9757,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
                 nconmax = max_ncon
 
+            if njmax is None and self.use_mujoco_cpu:
+                from mujoco_warp._src.io import _default_njmax
+
+                njmax = max(_default_njmax(self.mj_model, data) for data in self.mj_data_by_world)
             if njmax is not None and njmax < max_nefc:
                 warnings.warn(
                     f"[WARNING] Value for njmax is changed from {njmax} to {max_nefc} following an MjWarp requirement.",
@@ -11178,8 +11383,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 continue
             # Ball axes share the imported actuator's base DOF and damping ratio.
             source_dof = int(source_dofs[source_rows[actuator]])
-            # Native CPU MuJoCo only refreshes the template world's constants.
-            for world in range(1 if self.use_mujoco_cpu else nworld):
+            for world in range(nworld):
                 global_dof = world * dofs_per_world + int(dof)
                 row = position_source_rows.get(world * dofs_per_world + source_dof)
                 if row is None or modes[global_dof] != JointTargetMode.POSITION:
@@ -11192,7 +11396,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         compiled_bias = self.mjw_model.actuator_biasprm.numpy()
         if self.use_mujoco_cpu:
-            compiled_bias[0] = self.mj_model.actuator_biasprm
+            # Native constants are shared; consume every world's damping placeholder.
+            compiled_bias[:] = self.mj_model.actuator_biasprm
         for world, actuator, dof, _, ratio in damping:
             if kd[world, dof] == 0.0:
                 compiled_bias[world, actuator, 2] = ratio
@@ -11205,7 +11410,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._set_const_0(lock_kinematic=False)
         self.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
         if self.use_mujoco_cpu:
-            compiled_bias[0] = self.mj_model.actuator_biasprm
+            # Native constants are shared; consume every world's damping placeholder.
+            compiled_bias[:] = self.mj_model.actuator_biasprm
             self.mjw_model.actuator_biasprm.assign(compiled_bias)
         else:
             compiled_bias = self.mjw_model.actuator_biasprm.numpy()
@@ -11368,6 +11574,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if actuator_world_attribute is not None:
             # Group once in actuator order; these fields are not batched by MuJoCo-Warp.
             actuator_world = actuator_world_attribute.numpy()
+            if self.use_mujoco_cpu and np.any(actuator_world < 0):
+                raise ValueError(
+                    "Multi-world CPU mode does not support global actuators; author each actuator per world."
+                )
+            if self.use_mujoco_cpu and np.any(np.diff(actuator_world) < 0):
+                raise ValueError("Multi-world CPU mode requires contiguous world-local actuator layouts.")
             rows = np.flatnonzero((actuator_world >= 0) & (actuator_world < world_count))
             row_counts = np.bincount(actuator_world[rows], minlength=world_count)
             if np.any(row_counts != row_counts[0]):
@@ -11504,6 +11716,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"world 0 references tendon {tendon_refs[0, c]}, "
                         f"but other worlds reference {tendon_refs[1:, c].tolist()}."
                     )
+
+        if self.use_mujoco_cpu:
+            tendon_world = getattr(model.mujoco, "tendon_world", None)
+            if tendon_world is not None and tendon_world.size:
+                worlds = tendon_world.numpy()
+                if np.any(worlds < 0):
+                    raise ValueError(
+                        "Multi-world CPU mode does not support global tendons; author each tendon per world."
+                    )
+                counts = np.bincount(worlds, minlength=world_count)
+                if np.any(counts != counts[0]) or np.any(np.diff(worlds) < 0):
+                    raise ValueError("Multi-world CPU mode requires matching contiguous world-local tendon layouts.")
 
         self._validate_cpu_shared_properties(model, ModelFlags.ALL)
 

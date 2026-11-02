@@ -2804,8 +2804,8 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
     def test_world_attached_root_multi_world_placement(self):
         """Replicated world-attached roots must sit at each world's own root transform."""
         world_count = 3
-        for root_joint_kind in ("fixed", "locked_d6"):
-            with self.subTest(root_joint_kind=root_joint_kind):
+        for root_joint_kind, use_mujoco_cpu in itertools.product(("fixed", "locked_d6"), (False, True)):
+            with self.subTest(root_joint_kind=root_joint_kind, use_mujoco_cpu=use_mujoco_cpu):
                 template = newton.ModelBuilder()
                 root = template.add_link(
                     mass=1.0,
@@ -2831,19 +2831,32 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.replicate(template, world_count, spacing=(2.0, 0.0, 0.0))
                 model = builder.finalize(requires_grad=False)
-                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
 
                 self.assertEqual(solver.mj_model.nmocap, 1, "World-attached root should be exported as mocap")
 
-                # Refresh derived poses from the per-world root placement.
-                solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+                # Frame notifications must retain independent mocap placement, too.
+                frames = model.joint_X_p.numpy()
+                roots = np.flatnonzero(model.joint_parent.numpy() < 0)
+                frames[roots, 1] += np.arange(world_count) * 0.25
+                model.joint_X_p.assign(frames)
+                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                if use_mujoco_cpu:
+                    for data in solver.mj_data_by_world:
+                        solver._mujoco.mj_kinematics(solver.mj_model, data)
+                else:
+                    solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
                 joint_parent = model.joint_parent.numpy()
                 joint_world = model.joint_world.numpy()
                 joint_child = model.joint_child.numpy()
                 joint_X_p = model.joint_X_p.numpy()
                 mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
-                xpos = solver.mjw_data.xpos.numpy()
+                xpos = (
+                    np.stack([data.xpos for data in solver.mj_data_by_world])
+                    if use_mujoco_cpu
+                    else solver.mjw_data.xpos.numpy()
+                )
 
                 root_joints = np.where(joint_parent == -1)[0]
                 self.assertEqual(len(root_joints), world_count)

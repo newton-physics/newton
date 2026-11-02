@@ -836,10 +836,22 @@ Constructing :class:`~newton.solvers.SolverMuJoCo` with
 a MuJoCo model from the **first world** only. The GPU backend replicates
 it through ``mujoco_warp``. The CPU backend shares that model across one
 independent ``MjData`` per Newton world and steps all of them synchronously.
-The CPU model shares body inertial properties and equality solver parameters:
-corresponding bodies must have identical mass, local inertia, and center of mass,
-and ``eq_solref`` and ``eq_solimp`` must match across worlds. Construction and
-model-change notifications reject differences in these shared properties.
+The CPU backend shares native model parameters. Corresponding worlds must have
+identical body inertia and gravity compensation, joint axes and local frames,
+joint force parameters and scalar references, geom materials and sizes, equality
+parameters (including polynomial and mimic coefficients), and actuator and tendon
+parameters. Construction and model-change notifications reject differences before
+publishing updates, including notifications that combine several flags.
+Solver options must also match, unless a constructor argument overrides them
+for every world. CONNECT and inferred WELD constraints, including loop joints,
+require matching body-local reference geometry; translating an entire world
+preserves this geometry.
+Joint state, controls, applied forces, gravity, equality activation, and free or
+mocap root poses remain independent. A scalar ``dof_ref`` is a model reference,
+not an independent runtime pose; it must match across CPU worlds.
+CPU actuator and tendon rows must have matching contiguous world-local layouts;
+global actuator and tendon rows are unsupported. These CPU restrictions do not
+remove the GPU backend's supported per-world parameter variation.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
 assets, scales, and convex-hull counts may differ across worlds. Collision

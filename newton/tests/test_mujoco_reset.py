@@ -460,9 +460,10 @@ class TestMuJoCoCPUModelChanged(unittest.TestCase):
 
 class TestMuJoCoCPUWorldInputs(unittest.TestCase):
     @staticmethod
-    def _scalar_model(*, equality=False):
+    def _scalar_model(*, equality=False, damping_ratio=None):
         """Build two driven scalar joints with optional equality constraints."""
         equality_xml = '<equality><weld body1="body" /></equality>' if equality else ""
+        damping_xml = f'dampratio="{damping_ratio}"' if damping_ratio is not None else ""
         template = newton.ModelBuilder()
         template.add_mjcf(
             f"""
@@ -472,7 +473,7 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                 <joint name="joint" type="slide" axis="1 0 0"/>
                 <geom type="sphere" size=".1" mass="1"/>
               </body></worldbody>
-              <actuator><position joint="joint" kp="10"/></actuator>
+              <actuator><position joint="joint" kp="10" {damping_xml}/></actuator>
               {equality_xml}
             </mujoco>
         """,
@@ -482,15 +483,20 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
         builder.replicate(template, 2)
         return builder.finalize(device="cpu")
 
-    def test_scalar_targets_use_each_world_reference(self):
-        """Add each world's reference to its own scalar position target."""
-        model = self._scalar_model()
-        model.mujoco.dof_ref.assign([0.25, 0.75])
+    def test_scalar_targets_and_damping_share_native_reference(self):
+        """Preserve independent targets and physical poses with a shared native reference."""
+        model = self._scalar_model(damping_ratio=1.0)
+        model.mujoco.dof_ref.assign([0.25, 0.25])
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        kd = model.joint_target_kd.numpy()
+        self.assertGreater(kd[0], 0.0)
+        np.testing.assert_array_equal(kd, [kd[0], kd[0]])
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
         control = model.control()
         control.joint_target_q.assign([0.1, -0.2])
         solver.step(model.state(), model.state(), control, None, 0.001)
-        np.testing.assert_allclose([d.ctrl[0] for d in solver.mj_data_by_world], [0.35, 0.55], atol=1e-6)
+        np.testing.assert_allclose([d.ctrl[0] for d in solver.mj_data_by_world], [0.35, 0.05], atol=1e-6)
+        np.testing.assert_allclose([d.xpos[1, 0] for d in solver.mj_data_by_world], 0.0, atol=1e-6)
 
     def test_gravity_without_force_storage(self):
         """Apply per-world gravity when external force arrays are absent."""
@@ -533,6 +539,16 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                     if update:
                         np.testing.assert_array_equal(getattr(solver.mj_model, native_name), before)
 
+    def test_native_equality_activation_is_world_local(self):
+        """A shared equality model still allows independent activation at construction and notification."""
+        model = self._scalar_model(equality=True)
+        model.mujoco.equality_constraint_enabled.assign([False, True])
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_array_equal([d.eq_active[0] for d in solver.mj_data_by_world], [False, True])
+        model.mujoco.equality_constraint_enabled.assign([True, False])
+        solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+        np.testing.assert_array_equal([d.eq_active[0] for d in solver.mj_data_by_world], [True, False])
+
     def test_reject_mismatched_cpu_equality_parameters(self):
         """Reject unequal equality solver parameters without changing the native model."""
         for name in ("eq_solref", "eq_solimp"):
@@ -552,6 +568,203 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                             SolverMuJoCo(model, use_mujoco_cpu=True)
                     if update:
                         np.testing.assert_array_equal(getattr(solver.mj_model, name), before)
+
+    def test_reject_mismatched_cpu_shared_parameters(self):
+        """Validate every parameter family before a mixed notification publishes valid earlier flags."""
+        flags = newton.ModelFlags
+        cases = (
+            ("joint_damping", flags.JOINT_DOF_FORCE_PROPERTIES),
+            ("joint_friction", flags.JOINT_DOF_PROPERTIES),
+            ("joint_target_ke", flags.JOINT_DOF_FORCE_PROPERTIES),
+            ("joint_target_kd", flags.JOINT_DOF_FORCE_PROPERTIES),
+            ("joint_armature", flags.JOINT_DOF_INERTIAL_PROPERTIES),
+            ("joint_axis", flags.JOINT_PROPERTIES),
+            ("joint_X_p", flags.JOINT_PROPERTIES),
+            ("joint_X_c", flags.JOINT_PROPERTIES),
+            ("shape_material_mu", flags.SHAPE_PROPERTIES),
+            ("shape_material_mu_torsional", flags.SHAPE_PROPERTIES),
+            ("shape_material_mu_rolling", flags.SHAPE_PROPERTIES),
+            ("shape_scale", flags.SHAPE_PROPERTIES),
+            ("shape_transform", flags.SHAPE_PROPERTIES),
+            ("mujoco.gravcomp", flags.BODY_INERTIAL_PROPERTIES),
+            ("mujoco.dof_ref", flags.JOINT_REFERENCE_POSE_PROPERTIES),
+            ("mujoco.dof_springref", flags.JOINT_DOF_PROPERTIES),
+            ("mujoco.dof_passive_stiffness", flags.JOINT_DOF_FORCE_PROPERTIES),
+            ("mujoco.actuator_gear", flags.ACTUATOR_PROPERTIES),
+        )
+        for name, flag in cases:
+            with self.subTest(name=name):
+                model = self._scalar_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                source, field = (model.mujoco, name[7:]) if name.startswith("mujoco.") else (model, name)
+                attribute = getattr(source, field)
+                values = attribute.numpy()
+                values.reshape(2, -1)[1, 0] += 0.1
+                attribute.assign(values)
+                # A valid inertia edit must not leak through a later invalid flag.
+                before = solver.mj_model.body_mass.copy()
+                model.body_mass.assign(model.body_mass.numpy() * 2)
+                with self.assertRaisesRegex(ValueError, field):
+                    solver.notify_model_changed(flag | flags.BODY_INERTIAL_PROPERTIES)
+                np.testing.assert_array_equal(solver.mj_model.body_mass, before)
+                with self.assertRaisesRegex(ValueError, field):
+                    SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+    def test_reject_mismatched_cpu_equality_data(self):
+        """Joint/tendon polynomials and imported mimic coefficients share native eq_data."""
+        xml = """
+        <mujoco>
+          <worldbody>
+            <body name="a"><joint name="a" type="slide"/><geom size=".1" mass="1"/>
+              <body name="b" pos="1 0 0"><joint name="b" type="slide"/><geom size=".1" mass="1"/></body>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="a"><joint joint="a" coef="1"/></fixed>
+            <fixed name="b"><joint joint="b" coef="1"/></fixed>
+          </tendon>
+          <equality>{constraint}</equality>
+        </mujoco>
+        """
+        for kind, constraint, convert in (
+            ("joint", '<joint joint1="a" joint2="b" polycoef="0 1 0 0 0"/>', False),
+            ("tendon", '<tendon tendon1="a" tendon2="b" polycoef="0 1 0 0 0"/>', False),
+            ("mimic", '<joint joint1="a" joint2="b" polycoef="0 1 0 0 0"/>', True),
+        ):
+            with self.subTest(kind=kind):
+                template = newton.ModelBuilder()
+                template.add_mjcf(
+                    xml.format(constraint="" if convert else constraint), convert_mjc_equality_constraints=False
+                )
+                if convert:
+                    template.set_joint_mimic(0, 1, coeffs=(0.0, 1.0))
+                builder = newton.ModelBuilder()
+                builder.replicate(template, 2)
+                model = builder.finalize(device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                name = "joint_mimic_coeffs" if convert else "equality_constraint_polycoef"
+                attribute = getattr(model if convert else model.mujoco, name)
+                values = attribute.numpy()
+                followers = np.flatnonzero(model.joint_mimic_joint.numpy() >= 0)
+                row = int(followers[1]) if convert else 1
+                values[row, 0] += 0.2
+                attribute.assign(values)
+                before = solver.mj_model.eq_data.copy()
+                with self.assertRaisesRegex(ValueError, name):
+                    solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+                np.testing.assert_array_equal(solver.mj_model.eq_data, before)
+                with self.assertRaisesRegex(ValueError, name):
+                    SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+    def test_cpu_constraint_reference_geometry(self):
+        """Common world translations preserve anchors; differing relative reference geometry cannot."""
+        for kind in ("connect", "weld"):
+            with self.subTest(kind=kind):
+                anchor = 'anchor="0 0 0"' if kind == "connect" else ""
+                template = newton.ModelBuilder()
+                template.add_mjcf(
+                    f"""
+                <mujoco>
+                  <worldbody>
+                    <body name="a"><freejoint/><geom size=".1" mass="1"/></body>
+                    <body name="b" pos="1 0 0"><freejoint/><geom size=".1" mass="1"/></body>
+                  </worldbody>
+                  <equality><{kind} body1="a" body2="b" {anchor}/></equality>
+                </mujoco>
+                """,
+                    convert_mjc_equality_constraints=False,
+                )
+                builder = newton.ModelBuilder()
+                builder.replicate(template, 2, spacing=(2.0, 0.0, 0.0))
+                model = builder.finalize(device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                # Reference geometry is body-local, so translating both endpoints together is supported.
+                np.testing.assert_allclose(
+                    solver.mjw_model.eq_data.numpy()[0], solver.mjw_model.eq_data.numpy()[1], atol=1e-6
+                )
+                q = model.joint_q.numpy()
+                q[model.joint_coord_count // 2 + 7] += 0.25
+                model.joint_q.assign(q)
+                body_q = model.body_q.numpy()
+                body_q[3, 0] += 0.25
+                model.body_q.assign(body_q)
+                before = solver.mj_model.eq_data.copy()
+                flags = newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+                with self.assertRaisesRegex(ValueError, "reference geometry"):
+                    solver.notify_model_changed(flags)
+                np.testing.assert_array_equal(solver.mj_model.eq_data, before)
+                with self.assertRaisesRegex(ValueError, "reference geometry"):
+                    SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+    def test_cpu_solver_options_require_shared_values(self):
+        """Native options are shared unless a constructor override replaces every world."""
+        model = self._scalar_model()
+        for name, override in (("impratio", 2.0), ("wind", (0.0, 0.0, 0.0))):
+            with self.subTest(name=name):
+                attribute = getattr(model.mujoco, name)
+                original = attribute.numpy().copy()
+                values = original.copy()
+                values[1] += 0.1
+                attribute.assign(values)
+                with self.assertRaisesRegex(ValueError, name):
+                    SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, **{name: override})
+                np.testing.assert_allclose(getattr(solver.mj_model.opt, name), override)
+                values[: model.world_count] = override
+                attribute.assign(values)
+                shared = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                np.testing.assert_allclose(getattr(shared.mj_model.opt, name), override)
+                attribute.assign(original)
+
+    def test_reject_global_cpu_actuators(self):
+        """A global actuator cannot share a rectangular world-local control stride."""
+        template = newton.ModelBuilder()
+        template.add_mjcf("""
+        <mujoco>
+          <worldbody><body><joint name="joint" type="slide"/><geom size=".1" mass="1"/></body></worldbody>
+          <actuator><motor joint="joint"/></actuator>
+        </mujoco>
+        """)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        global_actuator = {
+            key: attribute.values[0]
+            for key, attribute in builder.custom_attributes.items()
+            if attribute.frequency == "mujoco:actuator" and attribute.values
+        }
+        global_actuator["mujoco:actuator_world"] = -1
+        builder.add_custom_values(**global_actuator)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.control().mujoco.ctrl.shape[0], 3)
+        with self.assertRaisesRegex(ValueError, "global actuators"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+    def test_default_contact_capacity_covers_every_world(self):
+        """The later world's contacts exceed the backend's 48-contact default floor."""
+        template = newton.ModelBuilder()
+        body = template.add_link(xform=wp.transform((0, 0, 1), wp.quat_identity()))
+        joint = template.add_joint_free(child=body)
+        template.add_articulation([joint])
+        for i in range(13):
+            template.add_shape_box(
+                body, xform=wp.transform((i * 0.3, 0, 0), wp.quat_identity()), hx=0.1, hy=0.1, hz=0.1
+            )
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.replicate(template, 2)
+        model = builder.finalize(device="cpu")
+        q = model.joint_q.numpy()
+        q[model.joint_coord_count // 2 + 2] = 0.05
+        model.joint_q.assign(q)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        counts = [data.ncon for data in solver.mj_data_by_world]
+        self.assertEqual(counts[0], 0)
+        self.assertGreater(counts[1], 48)
+        self.assertGreaterEqual(solver.get_max_contact_count() // 2, max(counts))
+        self.assertGreaterEqual(solver.mjw_data.njmax, max(data.nefc for data in solver.mj_data_by_world))
+        contacts = newton.Contacts(solver.get_max_contact_count(), 0, device="cpu")
+        solver.update_contacts(contacts)
+        self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), sum(counts))
 
     def test_initial_contact_capacity_covers_every_world(self):
         """Raise the native contact quota for an initially contacting later world."""
