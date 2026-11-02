@@ -706,6 +706,25 @@ def _print_examples(examples: dict[str, str]) -> None:
         print(f"  {name}")
 
 
+def _describe_example(examples: dict[str, str], argv: list[str]) -> None:
+    """Print an example's module docstring without importing or executing it."""
+    import argparse  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(prog="python -m newton.examples --describe")
+    parser.add_argument("example_name", choices=examples)
+    args = parser.parse_args(argv)
+
+    module_path = examples[args.example_name]
+    relative_module = module_path.removeprefix("newton.examples.")
+    source_path = os.path.join(get_source_directory(), *relative_module.split(".")) + ".py"
+    with open(source_path, encoding="utf-8") as source:
+        description = ast.get_docstring(ast.parse(source.read(), filename=source_path))
+    if not description:
+        parser.error(f"example '{args.example_name}' does not have a module docstring")
+
+    print(description)
+
+
 def create_parser():
     """Create a base argument parser with common parameters for Newton examples.
 
@@ -1053,6 +1072,7 @@ def main():
         print("Usage: python -m newton.examples <example_name> [options]")
         print("       python -m newton.examples          # run default basic_pendulum")
         print("       python -m newton.examples --list   # print available examples")
+        print("       python -m newton.examples --describe <example_name> # print description and QA criteria")
         print()
         print("Run 'python -m newton.examples <example_name> --help' to see the")
         print("options supported by a given example.")
@@ -1060,6 +1080,10 @@ def main():
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--list":
         _print_examples(examples)
+        sys.exit(0)
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--describe":
+        _describe_example(examples, sys.argv[2:])
         sys.exit(0)
 
     if len(sys.argv) < 2:

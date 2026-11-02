@@ -153,7 +153,10 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             # Proposal bind pose (or the mesh points), in the common world frame the
             # simulation geometry was imported in.
             try:
-                mesh, _, source_point_indices = usd.get_mesh(prim, load_uvs=True, return_source_point_indices=True)
+                # The bind pose replaces the loaded vertices, so the mesh inertia is never used.
+                mesh, _, source_point_indices = usd.get_mesh(
+                    prim, load_uvs=True, compute_inertia=False, return_source_point_indices=True
+                )
                 points = usd.get_deformable_bind_pose(prim)[source_point_indices]
             except (ValueError, IndexError) as exc:
                 # get_mesh indexes authored topology before checking it, hence IndexError.
@@ -254,7 +257,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     )
                     # Unused visual vertices do not replace a segment's capsule.
                     parents = builder._deformable_visual_meshes[index]["parent"]
-                    skinned_bodies.update(parents[vertex] for vertex in indices)
+                    skinned_bodies.update(np.unique(parents[indices]).tolist())
             except ValueError as exc:
                 logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue
@@ -264,6 +267,6 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
 
     if ctx.hide_collision_shapes:
-        for shape, body in enumerate(builder.shape_body):
-            if body in skinned_bodies:
+        for body in skinned_bodies:
+            for shape in builder.body_shapes[body]:
                 builder.shape_flags[shape] &= ~ShapeFlags.VISIBLE
