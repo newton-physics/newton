@@ -118,21 +118,19 @@ from a USD ``PhysicsScene``. They are stored in
      - ``0.0`` N·m·s/rad
 
 Precedence is explicit constructor argument, then ``model.vbd.*``, then the
-built-in default. Omitted or ``None`` iterations use the scene value; the schema
-fallback ``-1`` uses ``10``. Positive scene values are accepted; ``0`` and values below ``-1`` raise
-``ValueError``. Zero iterations skip the particle solve and do not produce
-a valid particle output state. An explicit
-``iterations=10`` still overrides the scene. Scene-authored stiffness and damping must be finite and
-non-negative, otherwise the constructor raises ``ValueError``. A scene-authored
-``contactHistory`` is ignored when VBD does not integrate rigid bodies (no
-bodies, or ``integrate_with_external_rigid_solver=True``). When VBD integrates
-bodies and is given a collision pipeline, the pipeline needs ``contact_matching``
-other than ``"disabled"``; pass ``rigid_contact_history=False`` to override the
-scene value.
-VBD runs a fixed number of iterations, rather than treating the value as a
-convergence limit. Existing assets with large ``newton:maxSolverIterations``
-values therefore perform more work per step once this setting is honored.
-Pass ``iterations=10`` explicitly to retain the previous default workload.
+built-in default. A scene ``newton:maxSolverIterations`` of ``-1`` uses the
+default; ``0`` and values below ``-1`` raise ``ValueError``. Scene-authored
+stiffness and damping must be finite and non-negative, otherwise the constructor
+raises ``ValueError``. A scene-authored ``contactHistory`` is ignored when VBD
+does not integrate rigid bodies (no bodies, or
+``integrate_with_external_rigid_solver=True``). When VBD integrates bodies and
+is given a collision pipeline, the pipeline needs ``contact_matching`` other
+than ``"disabled"``; pass ``rigid_contact_history=False`` to override the scene
+value.
+
+VBD runs exactly this many iterations per step, so assets authored for
+convergence-checked solvers (for example ``newton:maxSolverIterations = 100``)
+cost proportionally more. Pass ``iterations=`` to override.
 
 Scene values apply in both constraint modes: they are not skipped when the
 deprecated ``rigid_compliant_alm=False`` path is selected, even though the

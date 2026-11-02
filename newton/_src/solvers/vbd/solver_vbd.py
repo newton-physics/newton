@@ -470,7 +470,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             iterations: Number of VBD iterations per step. If ``None``, use the registered
                 ``newton:maxSolverIterations`` scene value, or ``10`` if absent or ``-1``.
-                Scene values must be positive or ``-1``. Explicit values override the scene.
+                Explicit values override the scene.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
@@ -2531,7 +2531,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         Currently registers:
           - ``vbd:max_solver_iterations`` for ``NewtonSceneAPI.newton:maxSolverIterations``.
-            Explicit ``iterations`` overrides the scene value; an absent value or ``-1`` uses ``10``.
           - ``vbd:rigid_contact_history``, ``vbd:rigid_joint_linear_ke``, ``vbd:rigid_joint_angular_ke``,
             ``vbd:rigid_joint_linear_kd`` and ``vbd:rigid_joint_angular_kd`` for the ``NewtonVbdSceneAPI``
             solver settings, authored in USD as ``newton:vbd:rigid:contactHistory``,
