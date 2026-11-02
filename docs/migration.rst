@@ -110,10 +110,20 @@ offsets ``[0, 1, 2, 3]`` to ``[2, (0, 1), (3, 4), 5]``, and use
 :attr:`newton.Model.joint_q_start` and
 :attr:`newton.Model.joint_qd_start` to locate each Rod slice.
 
-Rod angular rest is stored in :attr:`newton.Model.joint_target_q`; after
+Rod angular rest is stored in :attr:`newton.Model.joint_rest_q`; after
 editing it, call :meth:`newton.solvers.SolverVBD.notify_model_changed` with
 :attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`. Editing
 :attr:`newton.Model.body_q` no longer changes angular rest.
+
+Development versions before this migration stored Rod rest in
+``ModelBuilder.joint_target_q`` / ``Model.joint_target_q``. Move those rest
+reads and writes to ``joint_rest_q``, indexed by ``joint_q_start``. For
+individual joints, keep using ``add_joint_rod(rest_rotation=...)``; for generic
+``add_joint(ROD, ...)`` construction, write the rest quaternion to
+``builder.joint_rest_q[q_start + 3:q_start + 7]`` instead of setting angular
+``JointDofConfig.target_q`` values. The three translation entries must be zero.
+This replaces an unreleased API; no runtime alias is retained. Model and
+Control drive targets do not change Rod structural rest.
 
 Code that wrote the old bend offset ``qd_start + 2`` now silently sets stretch.
 The shear/bend isotropy check cannot detect every outdated offset; audit

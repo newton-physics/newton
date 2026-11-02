@@ -113,7 +113,7 @@ omitted. The final consecutive point pair defines the closing segment. With
 explicit rest points, the initial endpoints may differ.
 
 At structural rest, parent and child anchor points coincide. The rod's
-:attr:`newton.Model.joint_target_q` therefore has zero translation and stores
+:attr:`newton.Model.joint_rest_q` therefore has zero translation and stores
 the relative rest rotation as a unit quaternion. For individual joints, specify
 ``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
 the initial relative anchor rotation.
@@ -129,7 +129,7 @@ configured through :attr:`newton.Model.joint_stiffness`.
 :attr:`newton.Control.joint_target_q` and
 :attr:`newton.Control.joint_target_qd` neither actuate a rod nor change its
 structural rest. After editing rest rotations in
-:attr:`newton.Model.joint_target_q`, call
+:attr:`newton.Model.joint_rest_q`, call
 :meth:`newton.solvers.SolverVBD.notify_model_changed` with
 :attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`.
 
@@ -1300,6 +1300,8 @@ quaternion; edit the joint's four entries in ``joint_rest_q`` instead.
 Featherstone and SemiImplicit apply springs only to REVOLUTE, PRISMATIC, and D6
 coordinates. MuJoCo
 also supports isotropic BALL springs and quaternion rest orientations.
+:class:`newton.solvers.SolverVBD` uses ``joint_rest_q`` for ROD structural rest;
+its material stiffness and damping remain in ``joint_target_ke`` / ``joint_target_kd``.
 Other solvers do not consume these properties yet. As with other model
 features, unsupported springs do not produce automatic warnings; consult the
 :doc:`solver feature matrix </solvers/index>` when choosing a solver.

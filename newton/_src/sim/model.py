@@ -1220,7 +1220,7 @@ class Model:
         which aliases :attr:`joint_q_start`. Ball and free joint rotations use
         unit quaternions.
 
-        For ROD joints, this Model-owned array defines structural rest;
+        ROD joints use :attr:`joint_rest_q` for structural rest and ignore drive targets;
         see :ref:`Rod joints`.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
@@ -1271,6 +1271,8 @@ class Model:
 
         Uses the layout of :attr:`joint_q` and indexing of :attr:`joint_q_start`.
         Scalar rest coordinates may lie outside the joint limits to produce preload.
+        ROD joints store zero translation and their relative structural-rest rotation;
+        see :ref:`Rod joints`.
         """
         self.joint_damping: wp.array[wp.float32] | None = None
         """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint, shape [joint_dof_count], float."""

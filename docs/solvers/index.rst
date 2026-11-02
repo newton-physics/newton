@@ -344,7 +344,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - REVOLUTE, PRISMATIC, D6
      - |no|
      - Scalar joints and isotropic BALL springs
-     - |no|
+     - ROD ``joint_rest_q`` only
      - |no|
    * - :attr:`~newton.Model.joint_friction`
      - |no|

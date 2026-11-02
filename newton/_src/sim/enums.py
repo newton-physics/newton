@@ -50,7 +50,7 @@ class ModelFlags(IntEnum):
     """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
-    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q and Rod rest rotations in joint_target_q. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q for passive springs and Rod rest configurations. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     ALL = (
         JOINT_PROPERTIES
