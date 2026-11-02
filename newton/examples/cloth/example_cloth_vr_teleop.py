@@ -30,6 +30,7 @@ import json
 import math
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
@@ -274,7 +275,7 @@ class VRInputServer(ThreadingHTTPServer):
 
     def __init__(self, address):
         self._lock = threading.Lock()
-        self._pose = None
+        self._pose = None  # (monotonic timestamp, payload)
         self._packets = 0
         super().__init__(address, _VRRequestHandler)
 
@@ -282,12 +283,23 @@ class VRInputServer(ThreadingHTTPServer):
         if not isinstance(payload, dict):
             return
         with self._lock:
-            self._pose = payload
+            self._pose = (time.monotonic(), payload)
             self._packets += 1
 
-    def latest_pose(self):
+    def latest_pose(self, max_age=1.0):
+        """Return the freshest pose payload, or None if the client went stale.
+
+        The client posts at 30-60 Hz; a pose older than ``max_age`` seconds
+        means the headset disconnected, and the example resumes its
+        procedural choreography instead of freezing at the last pose.
+        """
         with self._lock:
-            return self._pose
+            if self._pose is None:
+                return None
+            timestamp, payload = self._pose
+        if time.monotonic() - timestamp > max_age:
+            return None
+        return payload
 
     @property
     def packets(self):
@@ -674,11 +686,13 @@ class Example:
             if self._server is not None:
                 self._mode_name = "vr"
         elif self._fallback_source is not None:
-            # No client connected yet: run the procedural choreography so the
-            # example matches its documented behavior from the first frame.
+            # No client connected (or it went stale): run the procedural
+            # choreography so the example matches its documented behavior.
             frame = self._fallback_source.next(self._frame_idx)
             if frame is not None:
                 self._frame = frame
+                if self._server is not None:
+                    self._mode_name = "vr (procedural until client connects)"
 
         targets = [self.home_left, self.home_right]
         if self._hands_enabled and self._frame is not None:
