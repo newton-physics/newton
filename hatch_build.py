@@ -20,13 +20,16 @@ class DocumentationBuildHook(BuildHookInterface):
         self.temporary = tempfile.TemporaryDirectory(prefix="newton-wheel-docs-")
         output = Path(self.temporary.name) / "docs"
         try:
-            try:
-                revision = subprocess.run(
-                    ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=False
-                )
-                source_revision = revision.stdout.strip() if revision.returncode == 0 else None
-            except FileNotFoundError:
-                source_revision = None
+            source_revision = None
+            # An unpacked sdist may be inside an unrelated Git repository.
+            if (root / ".git").exists():
+                try:
+                    revision = subprocess.run(
+                        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=False
+                    )
+                    source_revision = revision.stdout.strip() if revision.returncode == 0 else None
+                except FileNotFoundError:
+                    pass
             build = runpy.run_path(str(root / "docs/build_markdown.py"))["build"]
             source_digest = build(root, output)
             manifest = {
