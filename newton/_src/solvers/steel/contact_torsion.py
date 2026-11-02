@@ -14,11 +14,13 @@ state is rebuilt per step; there is no anchor or elastic orientation memory.
 Host grouping precludes graphs and throughput use.
 """
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonWarning
 from ...geometry import GeoType
 from .kernels import (
     _CONTACT_END_GAP_SLOP,
@@ -34,6 +36,10 @@ wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
 _TOUCH_TOLERANCE = 1.0e-5
 _NORMAL_COSINE = 0.999
 _MAX_GROUP_CONTACTS = 4096
+
+# Entry of the solver's row-overflow warning flags that the torsion rows use.
+_TORSION_WARNING = 4
+
 # Normal rows store their spin-row index in the membership array. A spin row
 # has no parent membership, so its otherwise-unused cell records admission.
 # Both host and device preparation reset every cell to -1 each step.
@@ -145,6 +151,7 @@ def _contact_groups(solver, state, contacts):
     row_types = solver._row_type.numpy()
     parents = solver._row_parent.numpy()
     row_counts = solver._constraint_count.numpy()
+    dense_dropped = solver._row_dropped_dense.numpy()
     patches = bool(solver._friction_anchors_enabled)
     owners = solver._friction_patches.current.owner.numpy()[:count] if patches else None
     groups = {}
@@ -155,6 +162,9 @@ def _contact_groups(solver, state, contacts):
     for c in range(count):
         world, slot = int(worlds[c]), int(slots[c])
         if paths[c] != 0 or slot < 0:
+            continue
+        # The surviving dense rows of a world that dropped some cannot prove complete groups.
+        if 0 <= world < len(dense_dropped) and dense_dropped[world] != 0:
             continue
         region = (world, int(owners[c])) if patches else None
         a, b = int(shape_a[c]), int(shape_b[c])
@@ -343,10 +353,6 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     solver._torsion_stats = {"rows": 0, "groups": []}
     if contacts is None:
         return
-    # The allocator rolls counters back on failure; count <= capacity cannot
-    # prove that every contact was retained. Tracking is mandatory for torsion.
-    if np.any(solver._row_dropped_dense.numpy()):
-        raise RuntimeError("Dense contact row overflow before contact torsion; refusing dropped rows")
     groups = _contact_groups(solver, state, contacts)
     if not groups:
         return
@@ -369,6 +375,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     body_velocities = augmented_state._body_v_s.numpy()
     shape_radius = solver._contact_torsion_shape_radius.numpy()
     row_radius = solver._torsion_row_radius.numpy()
+    requested = count.copy()
     for group in groups:
         world = group[0].world
         budget = _group_budget(solver, group, fields["row_mu"])
@@ -376,9 +383,10 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
             continue
         coefficient, anchors, touching = budget
         lead = touching[0]
+        requested[world] += 1
         row = int(count[world])
         if row >= solver._articulation_constraint_max:
-            raise RuntimeError("Experimental torsion row capacity exceeded; refusing dropped work")
+            continue
         count[world] += 1
         for field in fields.values():
             field[world, row] = 0
@@ -423,6 +431,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
             }
         )
     solver._torsion_stats["rows"] = len(solver._torsion_stats["groups"])
+    _flag_torsion_overflow(solver, requested, count)
     if not solver._torsion_stats["rows"]:
         return
     for name, values in fields.items():
@@ -433,6 +442,32 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     solver._constraint_count.assign(count)
     solver._slot_counter.assign(count)
     solver._contact_torsion_group.assign(membership)
+
+
+def _flag_torsion_overflow(solver, requested, count):
+    """Flag the worlds whose torsion groups did not all get a row, and warn once as the device path does."""
+    overflowed = np.flatnonzero(requested > count)
+    if not overflowed.size:
+        return
+    overflow = solver.constraint_overflow.numpy()
+    overflow[overflowed] = True
+    # Global articulations are solved in world 0's rows.
+    if overflowed[0] == 0 and solver._has_responding_global:
+        overflow[-1] = True
+    solver.constraint_overflow.assign(overflow)
+    emitted = solver._row_overflow_warning_emitted.numpy()
+    if not solver._warn_constraint_overflow or emitted[_TORSION_WARNING]:
+        return
+    emitted[_TORSION_WARNING] = 1
+    solver._row_overflow_warning_emitted.assign(emitted)
+    world = int(overflowed[0])
+    warnings.warn(
+        f"Steel contact torsion row overflow in world {world}: requested {int(requested[world])} rows, "
+        f"limit {solver._articulation_constraint_max}; dropped {int(requested[world] - count[world])} torsion rows. "
+        "Increase articulation_constraint_max.",
+        NewtonWarning,
+        stacklevel=3,
+    )
 
 
 def torque_sweep_source(dofs):
