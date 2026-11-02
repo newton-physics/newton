@@ -5,9 +5,9 @@
 
 This module owns builder-independent leaf helpers and the shared mass / density / anchor utilities
 used by the cable / cloth / volume / attachment /
-collision-filter import passes, plus the :class:`_DeformableImportContext` that carries the
+collision-filter / visual import passes, plus the :class:`_DeformableImportContext` that carries the
 ``parse_usd()`` inputs, helper closures, and result maps the passes mutate. The passes
-themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attachments}`` modules.
+themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attachments,visual}`` modules.
 """
 
 from __future__ import annotations
@@ -1464,7 +1464,7 @@ def _scout_deformable_prims(
 
 @dataclass(slots=True)
 class _DeformableImportContext:
-    """Shared state for the deformable import passes (cable / cloth / volume / attachment).
+    """Shared state for the deformable import passes (cable / cloth / volume / attachment / visual).
 
     Bundles the ``parse_usd()`` inputs, the helper closures the passes need, and the result maps
     they populate, so the passes can live in sibling modules instead of as closures in

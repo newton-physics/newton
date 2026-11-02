@@ -76,6 +76,54 @@ legacy-path controls — ``model.vbd.joint_is_hard`` and
 :meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode` (deprecated since
 1.6; no solver-mode effect under compliant ALM).
 
+Scene-authored settings
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Call :meth:`~newton.solvers.SolverVBD.register_custom_attributes` on the
+:class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
+the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored in
+``model.vbd`` and used as :class:`~newton.solvers.SolverVBD` defaults:
+
+.. list-table::
+   :header-rows: 1
+
+   * - USD attribute
+     - ``model.vbd`` attribute
+     - Constructor argument
+     - Default
+   * - ``newton:vbd:rigid:contactHistory``
+     - ``rigid_contact_history``
+     - ``rigid_contact_history``
+     - ``False``
+   * - ``newton:vbd:rigid:jointLinearStiffness``
+     - ``rigid_joint_linear_ke``
+     - ``rigid_joint_linear_ke``
+     - ``1.0e5`` N/m
+   * - ``newton:vbd:rigid:jointAngularStiffness``
+     - ``rigid_joint_angular_ke``
+     - ``rigid_joint_angular_ke``
+     - ``1.0e5`` N·m/rad
+   * - ``newton:vbd:rigid:jointLinearDamping``
+     - ``rigid_joint_linear_kd``
+     - ``rigid_joint_linear_kd``
+     - ``0.0`` N·s/m
+   * - ``newton:vbd:rigid:jointAngularDamping``
+     - ``rigid_joint_angular_kd``
+     - ``rigid_joint_angular_kd``
+     - ``0.0`` N·m·s/rad
+
+Precedence is explicit constructor argument, then ``model.vbd.*``, then the
+built-in default. Scene-authored stiffness and damping must be finite and
+non-negative, otherwise the constructor raises ``ValueError``. A scene-authored
+``contactHistory`` is ignored when VBD does not integrate rigid bodies (no
+bodies, or ``integrate_with_external_rigid_solver=True``). When VBD integrates
+bodies and is given a collision pipeline, the pipeline needs ``contact_matching``
+other than ``"disabled"``; pass ``rigid_contact_history=False`` to override the
+scene value.
+Scene values apply in both constraint modes: they are not skipped when the
+deprecated ``rigid_compliant_alm=False`` path is selected, even though the
+schema scopes them to the compliant ALM path.
+
 Coupling Modes
 ~~~~~~~~~~~~~~
 
