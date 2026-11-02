@@ -12,6 +12,9 @@ TILE_BLOCK_DIM = 32
 # ping-ponged buffers; 512 keeps them within the 48 KiB per-block
 # shared-memory floor of supported GPUs.
 FK_TILE_MAX_LEVEL_WIDTH = 512
+# Narrower trees are chains: one thread per articulation beats a 32-lane block that keeps most
+# lanes idle and synchronizes after every joint.
+FK_TILE_MIN_LEVEL_WIDTH = 3
 
 
 @functools.cache
