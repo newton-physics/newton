@@ -1942,6 +1942,16 @@ add_example_test(
     test_options={"usd_required": True},
     use_viewer=True,
 )
+# 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,
+# so test_final can assert that the pads latched, the body lifted, and the seal quality stayed healthy.
+# The default length runs past the last release (~25.6 s), when no pad is engaged any more.
+add_example_test(
+    TestUSDDependentExamples,
+    name="surface_gripper.example_surface_gripper",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 120},
+    use_viewer=True,
+)
 for example_name in (
     "contacts.example_contacts_rj45_plug",
     "vbd.example_vbd_rigid_rigid_contact",
@@ -1970,21 +1980,6 @@ for example_module in newton.examples.get_examples().values():
             devices=cuda_test_devices,
             use_viewer=True,
         )
-
-
-class TestSurfaceGripperExamples(unittest.TestCase):
-    pass
-
-
-# 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,
-# so test_final can assert that the pads latched, the body lifted, and the seal quality stayed healthy.
-add_example_test(
-    TestSurfaceGripperExamples,
-    name="surface_gripper.example_surface_gripper",
-    devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 120},
-    use_viewer=True,
-)
 
 
 if __name__ == "__main__":
