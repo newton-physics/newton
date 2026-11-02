@@ -125,9 +125,16 @@ are not supported.
 Both tendon-capable solvers expose these controls:
 
 - `tendon_max_sweeps`: maximum capstan material-relaxation sweeps per solver
-  iteration.
-- `tendon_settle_tol`: relative tension-change tolerance for stopping those
-  sweeps early.
+  iteration (default `256`). It accepts positive 32-bit integers; long routes
+  may require a larger budget.
+- `tendon_settle_tol`: relative final capstan-force residual tolerance for
+  stopping sweeps early. Zero disables early-out, including the absolute tolerance.
+- `tendon_settle_atol`: absolute final capstan-force residual tolerance in
+  newtons (default `1.0e-6`). Each guide must satisfy
+  `error <= atol + tol * max(T_left, T_right)`. Slipping guides must reach
+  the appropriate friction boundary; sticking guides must stay inside it.
+  At a span's minimum rest length, only feasible transfer directions are checked;
+  a depleted span cannot supply more material, but it can receive material again.
 - `tendon_activation_tol`: radius-relative activation gap for dynamic
   rollers. The default is `2.0e-3`.
 

@@ -450,6 +450,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Tendons
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
+        tendon_settle_atol: float = 1.0e-6,
         tendon_activation_tol: float = 2.0e-3,
         # Rigid body - penetration-free DAT truncation
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
@@ -723,7 +724,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 (approximate division and square root). Results change at the
                 floating-point rounding level. Ignored on CPU.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
-            tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
+            tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
+                Zero disables early-out; must be finite and nonnegative.
+            tendon_settle_atol: Absolute final capstan-force residual tolerance [N].
+                Combined with the relative tolerance; must be finite and nonnegative.
+                Ignored when ``tendon_settle_tol`` is zero.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
@@ -1043,6 +1048,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self.tendon_max_sweeps = tendon_max_sweeps
         self.tendon_settle_tol = tendon_settle_tol
+        self.tendon_settle_atol = tendon_settle_atol
         self.tendon_activation_tol = tendon_activation_tol
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
@@ -4472,6 +4478,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 1,
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
+                self.tendon_settle_atol,
                 self._tendon_guide_material_transfer,
             ],
             device=self.device,

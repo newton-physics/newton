@@ -13,6 +13,31 @@ from ..sim.tendon import TendonGuideFlags, TendonGuideType
 
 
 @wp.func
+def _material_sweep_contact_error(
+    tension_l: float,
+    tension_r: float,
+    ratio: float,
+    transfer: float,
+    can_decrease: bool,
+    can_increase: bool,
+) -> float:
+    """Check friction complementarity in the feasible material-transfer directions."""
+    increase_error = tension_l - ratio * tension_r
+    decrease_error = tension_r - ratio * tension_l
+    if transfer > 0.0:
+        decrease_error = -increase_error
+    elif transfer < 0.0:
+        increase_error = -decrease_error
+    # Positive transfer takes material from the right span. At its rest floor,
+    # further transfer is impossible, but returning material must remain allowed.
+    if not can_increase:
+        increase_error = 0.0
+    if not can_decrease:
+        decrease_error = 0.0
+    return wp.max(wp.max(increase_error, decrease_error), 0.0)
+
+
+@wp.func
 def tendon_body_pose(body_q: wp.array[wp.transform], body: int) -> wp.transform:
     """Use world coordinates for guides attached to body -1."""
     if body < 0:
@@ -1092,14 +1117,16 @@ def solve_tendon_material(
     adaptive_cone_sweeps: int,
     tendon_max_sweeps: int,
     tendon_settle_tol: float,
+    tendon_settle_atol: float,
     guide_material_transfer: wp.array[float],
 ):
     """Update free-span rest-length transfer for one tendon.
 
     With adaptive sweeps enabled, the capstan cone is relaxed by up to ``tendon_max_sweeps``
-    Gauss-Seidel passes and stops when the tension change relative to the first
-    sweep's peak tension falls below ``tendon_settle_tol``. Otherwise, the
-    established fixed 4/32-sweep policy is used.
+    Gauss-Seidel passes. Early-out checks every final contact's force residual
+    against ``tendon_settle_atol + tendon_settle_tol * max(T_left, T_right)``.
+    Zero relative tolerance disables early-out. Without adaptive sweeps,
+    the established fixed 4/32-sweep policy is used.
 
     XPBD derives damping from body velocities. VBD sets ``damping_from_pose_delta``
     to use the current and previous accepted poses, matching its force evaluation.
@@ -1223,7 +1250,7 @@ def solve_tendon_material(
 
         material_sweep_count = int(4)
         if adaptive_cone_sweeps != 0:
-            material_sweep_count = wp.min(tendon_max_sweeps, 256)
+            material_sweep_count = tendon_max_sweeps
         else:
             # Preserve the established fixed policy for callers that disable adaptive convergence.
             for i_policy in range(1, num_guides - 1):
@@ -1231,14 +1258,11 @@ def solve_tendon_material(
                     material_sweep_count = int(32)
 
         converged = int(0)
-        settle_tension_reference = float(0.0)
-        for material_sweep in range(256):
-            if material_sweep >= material_sweep_count or converged != 0:
+        for material_sweep in range(material_sweep_count):
+            if converged != 0:
                 break
 
             tendon_cone_sweep_count[tendon_id] = tendon_cone_sweep_count[tendon_id] + 1
-            sweep_dtension = float(0.0)
-            sweep_maxtension = float(0.0)
             for order in range(1, num_guides - 1):
                 i = order
                 if material_sweep % 2 == 1:
@@ -1291,8 +1315,6 @@ def solve_tendon_material(
                 delta = float(0.0)
                 max_delta = float(0.0)
 
-                sweep_maxtension = wp.max(sweep_maxtension, wp.max(force_l, force_r))
-
                 if force_l > force_r * cap_ratio:
                     # rest_right -= delta must keep rest_right >= min_rest.
                     max_delta = wp.max(len_r - d_r_raw - min_rest, 0.0)
@@ -1321,19 +1343,60 @@ def solve_tendon_material(
                 else:
                     delta = previous_transfer
                 change = delta - previous_transfer
+                if lower < delta and delta < upper:
+                    # Compute the small sliding correction at stretch scale.
+                    # Subtracting two large net transfers loses force accuracy.
+                    current_effective_l = current_l + comp_l * damping_tension_l
+                    current_effective_r = current_r + comp_r * damping_tension_r
+                    if delta > 0.0 and delta < max_delta:
+                        change = (comp_r * current_effective_l - cap_ratio * comp_l * current_effective_r) / (
+                            comp_r + cap_ratio * comp_l
+                        )
+                        delta = previous_transfer + change
+                    elif delta < 0.0 and -delta < max_delta:
+                        change = (cap_ratio * comp_r * current_effective_l - comp_l * current_effective_r) / (
+                            comp_l + cap_ratio * comp_r
+                        )
+                        delta = previous_transfer + change
                 seg_stretch[seg_left] = current_l - change
                 seg_stretch[seg_right] = current_r + change
                 guide_material_transfer[guide_idx] = delta
-                sweep_dtension = wp.max(sweep_dtension, wp.max(wp.abs(change) / comp_l, wp.abs(change) / comp_r))
 
-            # Keep the normalization scale fixed so an unloading cable can settle as both the
-            # tension and its change approach zero. A per-sweep scale would shrink with the
-            # residual and keep their ratio finite long after the absolute change is negligible.
-            if material_sweep == 0:
-                settle_tension_reference = sweep_maxtension
-            rel_change = sweep_dtension / wp.max(settle_tension_reference, 1.0e-30)
-            if adaptive_cone_sweeps != 0 and rel_change < tendon_settle_tol:
-                converged = 1
+            # Neighbor updates can invalidate an earlier contact. Check the
+            # complete final state, not intermediate changes or peak forces.
+            if adaptive_cone_sweeps != 0 and tendon_settle_tol > 0.0:
+                converged = int(1)
+                for i_check in range(1, num_guides - 1):
+                    guide = guide_start + i_check
+                    kind = tendon_guide_type[guide]
+                    enabled = (
+                        apply_rolling_transfer != 0
+                        and kind == int(TendonGuideType.ROLLER)
+                        and tendon_guide_active[guide]
+                    ) or (apply_pinhole_slip != 0 and kind == int(TendonGuideType.PINHOLE))
+                    left = tendon_guide_cone_seg_l[guide]
+                    right = tendon_guide_cone_seg_r[guide]
+                    if not enabled or left < 0 or right < 0:
+                        continue
+                    compliance_l = seg_active_compliance[left]
+                    compliance_r = seg_active_compliance[right]
+                    damping_l = seg_damping_tension[left] if compliance_l > 0.0 else 0.0
+                    damping_r = seg_damping_tension[right] if compliance_r > 0.0 else 0.0
+                    tension_l = wp.max(seg_stretch[left] / wp.max(compliance_l, 1.0e-30) + damping_l, 0.0)
+                    tension_r = wp.max(seg_stretch[right] / wp.max(compliance_r, 1.0e-30) + damping_r, 0.0)
+                    error = _material_sweep_contact_error(
+                        tension_l,
+                        tension_r,
+                        tendon_guide_cap_ratio[guide],
+                        guide_material_transfer[guide],
+                        # Compare where the updates live; reconstructing rest lengths
+                        # can round a bound slightly above the minimum.
+                        seg_stretch[left] < seg_length[left] - min_rest,
+                        seg_stretch[right] < seg_length[right] - min_rest,
+                    )
+                    if error > tendon_settle_atol + tendon_settle_tol * wp.max(tension_l, tension_r):
+                        converged = int(0)
+                        break
 
         # rebuild rest lengths from the telescoped stretch state (one cancellation per call,
         # paid once instead of every sweep -- this is what keeps the capstan accurate for stiff

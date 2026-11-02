@@ -3305,7 +3305,7 @@ def test_kinematic_rolling_transfer_independent_of_cone_sweeps(test, device):
         # below the capstan bound.
         np.testing.assert_allclose(np.sort(reference), [-0.04, 0.04], atol=1.0e-6, rtol=0)
         test.assertEqual(reference_sweeps, 1)
-        for tendon_max_sweeps in (2, 4, 8, 16, 64, 256):
+        for tendon_max_sweeps in (2, 4, 8, 16, 64, 256, 512):
             rest_delta, sweep_count = run_once(tendon_max_sweeps)
             np.testing.assert_allclose(
                 rest_delta,
@@ -3467,8 +3467,8 @@ def test_stiff_pinhole_capstan_matches_euler_eytelwein(test, device):
 def test_settle_tol_early_out_matches_full_sweeps(test, device):
     """The settle-based cone early-out must not change the converged capstan result.
 
-    The relaxation stops once the per-sweep relative tension change drops below
-    ``tendon_settle_tol``; the default (1e-3) must reach the same Euler-Eytelwein bound as
+    The relaxation stops once the final capstan-force residual satisfies the
+    absolute and relative tolerances; the default must reach the same Euler-Eytelwein bound as
     forcing the full sweep budget (``tendon_settle_tol=0``). Regression for an early-out that
     fires before the cone has settled and leaves the cable under-relaxed.
     """
