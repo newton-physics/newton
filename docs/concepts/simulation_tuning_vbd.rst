@@ -339,12 +339,13 @@ hover at a fixed offset, or stop. This is DAT damping. The radius cap grows with
 the query radius, so the cure is more room: a larger gap first, then a larger
 margin.
 
-.. figure:: ../images/vbd_tuning_dat_planar_division.png
+.. figure:: ../images/vbd_tuning_dat_planar_division.svg
    :alt: Planar division for a vertex-triangle pair in four displacement scenarios
    :width: 85%
    :align: center
 
-   Planar truncation for a vertex-triangle pair, from the DAT paper. Top left:
+   Planar truncation for a vertex-triangle pair, redrawn after the DAT paper.
+   Top left:
    vertex :math:`v`, triangle :math:`(v_a, v_b, v_c)` and the normal from the
    closest point on the triangle to :math:`v`. The dashed line is the division
    plane. Top right: both sides approach, :math:`v` faster, so the plane
@@ -387,8 +388,7 @@ smaller margin.
      - More active pairs
      - Larger visible gaps
      - Less (larger budget)
-     - Rest neighbours beyond the topological filter can push each other (not
-       with OGC, coming)
+     - Rest neighbours beyond the topological filter can push each other
    * - Raise the gap
      - More candidate pairs, larger buffers, more expensive collision detection
      - None
