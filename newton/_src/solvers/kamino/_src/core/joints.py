@@ -1224,12 +1224,6 @@ class JointsModel:
     Shape of ``(num_joints,)``.
     """
 
-    jid: wp.array[wp.int32] | None = None
-    """
-    Index of each joint w.r.t the world.
-    Shape of ``(num_joints,)``.
-    """
-
     ###
     # Parameterization
     ###
