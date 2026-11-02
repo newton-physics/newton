@@ -428,6 +428,98 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertFalse(output_capture.active)
 
 
+class TestRequires(unittest.TestCase):
+    _MISSING = "newton_tests_nonexistent_module"
+
+    def _run(self, cls: type[unittest.TestCase]) -> unittest.TestResult:
+        result = unittest.TestResult()
+        unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
+        return result
+
+    def test_skips_classes_and_methods_with_missing_modules(self):
+        """Skip only the decorated class or method whose module does not import."""
+
+        @unittest_utils.requires(self._MISSING)
+        class MissingClass(unittest.TestCase):
+            def test_case(self):
+                pass
+
+        class MixedClass(unittest.TestCase):
+            @unittest_utils.requires("json")
+            def test_present(self):
+                pass
+
+            @unittest_utils.requires("json", self._MISSING)
+            def test_missing(self):
+                pass
+
+        class_result = self._run(MissingClass)
+        mixed_result = self._run(MixedClass)
+
+        self.assertEqual([reason for _, reason in class_result.skipped], [f"Requires {self._MISSING}"])
+        self.assertEqual(mixed_result.testsRun, 2)
+        self.assertEqual([test._testMethodName for test, _ in mixed_result.skipped], ["test_missing"])
+        self.assertTrue(mixed_result.wasSuccessful())
+
+    def test_add_function_test_skips_generated_tests_before_setup(self):
+        """Skip generated tests from requires= or a skipped argument such as a solver factory."""
+        calls = []
+
+        class GeneratedTest(unittest.TestCase):
+            def setUp(self):
+                calls.append(self._testMethodName)
+
+        def test_func(test, device, solver_fn=None):
+            pass
+
+        missing_factory = unittest_utils.requires(self._MISSING)(lambda model: None)
+        unittest_utils.add_function_test(GeneratedTest, "test_requires", test_func, requires=(self._MISSING,))
+        unittest_utils.add_function_test(GeneratedTest, "test_factory", test_func, solver_fn=missing_factory)
+        unittest_utils.add_function_test(GeneratedTest, "test_present", test_func, requires=("json",))
+
+        result = self._run(GeneratedTest)
+
+        self.assertEqual(sorted(test._testMethodName for test, _ in result.skipped), ["test_factory", "test_requires"])
+        self.assertEqual(calls, ["test_present"])
+        self.assertTrue(result.wasSuccessful())
+
+    def test_broken_installed_module_fails_only_the_tests_that_need_it(self):
+        """Fail, rather than skip, the tests that require an installed module that fails to import."""
+        name = "newton_tests_broken_module"
+        unittest_utils._import_error.cache_clear()
+        try:
+            with (
+                mock.patch.object(unittest_utils, "_installed_top_level_modules", return_value=frozenset({name})),
+                mock.patch.object(unittest_utils.importlib, "import_module", side_effect=OSError("missing library")),
+            ):
+                self.assertFalse(unittest_utils.has_module(name))
+                with self.assertRaises(unittest_utils.BrokenTestDependencyError):
+                    unittest_utils.missing_modules([name])
+
+                @unittest_utils.requires(name)
+                class BrokenClass(unittest.TestCase):
+                    def test_case(self):
+                        pass
+
+                class MixedClass(unittest.TestCase):
+                    @unittest_utils.requires(name)
+                    def test_broken(self):
+                        pass
+
+                    def test_unaffected(self):
+                        pass
+
+            class_result = self._run(BrokenClass)
+            mixed_result = self._run(MixedClass)
+        finally:
+            unittest_utils._import_error.cache_clear()
+
+        self.assertEqual(len(class_result.errors), 1)
+        self.assertIn("BrokenTestDependencyError", class_result.errors[0][1])
+        self.assertEqual([test._testMethodName for test, _ in mixed_result.errors], ["test_broken"])
+        self.assertEqual(mixed_result.testsRun, 2)
+
+
 class TestWarpVersionAtLeast(unittest.TestCase):
     def test_orders_pre_releases_before_their_release(self):
         """Order releases, .devN, and rcN builds the way PEP 440 does."""
