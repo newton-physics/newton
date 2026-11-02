@@ -3,7 +3,6 @@
 
 """Build release-matched documentation for distributable Newton wheels."""
 
-import hashlib
 import json
 import runpy
 import subprocess
@@ -21,22 +20,6 @@ class DocumentationBuildHook(BuildHookInterface):
         self.temporary = tempfile.TemporaryDirectory(prefix="newton-wheel-docs-")
         output = Path(self.temporary.name) / "docs"
         try:
-            build = runpy.run_path(str(root / "docs/build_markdown.py"))["build"]
-            build(root, output)
-            digest = hashlib.sha256()
-            inputs = [root / "pyproject.toml", *root.glob("*.py"), *root.glob("*.rst"), *root.glob("*.md")]
-            for directory in ("newton", "docs"):
-                inputs.extend(
-                    path
-                    for path in (root / directory).rglob("*")
-                    if path.is_file()
-                    and not any(part in ("_build", "__pycache__", ".cache", "sphinx-env") for part in path.parts)
-                    and not (directory == "docs" and "_generated" in path.parts)
-                )
-            for path in sorted(set(inputs)):
-                digest.update(path.relative_to(root).as_posix().encode() + b"\0")
-                digest.update(path.read_bytes())
-                digest.update(b"\0")
             try:
                 revision = subprocess.run(
                     ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=False
@@ -44,9 +27,11 @@ class DocumentationBuildHook(BuildHookInterface):
                 source_revision = revision.stdout.strip() if revision.returncode == 0 else None
             except FileNotFoundError:
                 source_revision = None
+            build = runpy.run_path(str(root / "docs/build_markdown.py"))["build"]
+            source_digest = build(root, output)
             manifest = {
                 "version": self.metadata.version,
-                "source_digest": digest.hexdigest(),
+                "source_digest": source_digest,
                 "source_revision": source_revision,
             }
             (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

@@ -397,7 +397,9 @@ Distributable wheels automatically include a documentation snapshot generated
 from their own sources. ``uv build`` includes the canonical docs and build
 support in the sdist, then builds the wheel from that sdist. Rendering requires
 the declared build dependencies and Pandoc, supplied by ``pypandoc_binary``
-where available. Notebook cells are never executed for packaging. Editable
+where available; Windows ARM64 source builds need Pandoc installed separately.
+Optional USD type annotations use Sphinx's normal mock-import support when
+USD is unavailable. Notebook cells are never executed for packaging. Editable
 installs skip snapshot generation; their canonical sources remain in ``docs/``.
 
 .. note::

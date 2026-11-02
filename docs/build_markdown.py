@@ -4,6 +4,7 @@
 """Render Markdown in a disposable source tree, without executing notebooks."""
 
 import argparse
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -11,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 
-def build(source: Path, output: Path) -> None:
+def build(source: Path, output: Path) -> str:
     """Build resolved documentation without modifying the original sources."""
     source = source.resolve()
     output = output.resolve()
@@ -24,20 +25,33 @@ def build(source: Path, output: Path) -> None:
         for path in source.iterdir():
             if path.is_file() and path.suffix in (".rst", ".md", ".toml"):
                 shutil.copyfile(path, staged / path.name)
+        # Hash the exact staged inputs, before Sphinx generates derived files.
+        # A source checkout can change while a long rendering subprocess runs.
+        digest = hashlib.sha256()
+        for path in sorted(path for path in staged.rglob("*") if path.is_file()):
+            digest.update(path.relative_to(staged).as_posix().encode() + b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
         # A child interpreter ensures autodoc imports the staged package rather
         # than a different Newton already imported by the build frontend.
         script = """
+import importlib.util
 import os
 import sys
 from sphinx.application import Sphinx
+from sphinx.ext.autodoc.mock import mock
 os.environ['NEWTON_REQUIRE_PANDOC'] = '1'
-app = Sphinx('docs', 'docs', sys.argv[1], 'doctrees', 'markdown',
-             confoverrides={'nbsphinx_execute': 'never', 'intersphinx_mapping': {}},
-             warningiserror=True)
-app.build(force_all=True)
-sys.exit(app.statuscode)
+# Resolve optional USD annotations using Sphinx's standard mock mechanism on
+# platforms without USD wheels. Never replace a real installed USD module.
+with mock(['pxr'] if importlib.util.find_spec('pxr') is None else []):
+    app = Sphinx('docs', 'docs', sys.argv[1], 'doctrees', 'markdown',
+                 confoverrides={'nbsphinx_execute': 'never', 'intersphinx_mapping': {}},
+                 warningiserror=True)
+    app.build(force_all=True)
+    sys.exit(app.statuscode)
 """
         subprocess.run([sys.executable, "-c", script, str(output)], cwd=staged, check=True)
+        return digest.hexdigest()
 
 
 if __name__ == "__main__":
