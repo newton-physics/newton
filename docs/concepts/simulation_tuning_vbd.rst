@@ -339,7 +339,7 @@ hover at a fixed offset, or stop. This is DAT damping. The radius cap grows with
 the query radius, so the cure is more room: a larger gap first, then a larger
 margin.
 
-.. figure:: ../images/vbd_tuning_dat_planar_division.svg
+.. figure:: ../images/vbd_tuning_dat_planar_truncation.svg
    :alt: Planar division for a vertex-triangle pair in four displacement scenarios
    :width: 85%
    :align: center
