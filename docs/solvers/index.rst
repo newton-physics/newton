@@ -168,7 +168,8 @@ Supported Features
   Set ``use_mujoco_contacts=False`` to use Newton's collision pipeline.
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
-| :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``;
+| :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``
+  (MuJoCo's CPU backend is deterministic regardless of that argument);
   see :doc:`/concepts/determinism` for limitations and performance trade-offs.
 
 .. experimental::

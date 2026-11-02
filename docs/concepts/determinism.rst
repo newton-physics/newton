@@ -39,10 +39,15 @@ the solver, which consumes them.
        state_0, state_1 = state_1, state_0
 
 A solver's ``deterministic`` argument defaults to ``None``, which inherits
-``wp.config.deterministic`` at construction, so setting
-``wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN`` before
-constructing solvers enables the mode process-wide. The collision pipeline only
-follows its own ``deterministic`` flag.
+``wp.config.deterministic`` at construction. Prefer the per-object arguments
+over setting ``wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN``
+process-wide: the global setting is also Warp's default for every module that
+does not set its own option, so it additionally compiles the collision
+pipeline's kernels, other Newton utility kernels, and your own kernels with
+recorded atomics. That costs speed and memory and can overflow the record
+buffers of kernels with many atomics per thread. It does not enable the
+collision pipeline's contact sorting, which follows only the pipeline's own
+``deterministic`` flag.
 
 Sources of nondeterminism
 -------------------------
@@ -114,14 +119,16 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
      - Yes
      - Reserves constraint rows in a fixed per-world order instead of with
        atomic counters, so it costs about as much as the default.
-       ``RUN_TO_RUN`` only; ``GPU_TO_GPU`` raises. See
-       ``python -m newton.examples steel_determinism_arms``.
+       ``RUN_TO_RUN`` only; ``GPU_TO_GPU`` raises. The ``BODY_PARENT_F``
+       observable sums contact wrenches with atomics and is outside the
+       guarantee. See ``python -m newton.examples steel_determinism_arms``.
    * - :class:`~solvers.SolverMuJoCo`
      - CPU only
      - The CPU backend (``use_mujoco_cpu=True``) is always deterministic. On
        the MuJoCo Warp backend, ``deterministic`` currently fails to compile
        MuJoCo Warp's kernels with Warp 1.19, and MuJoCo Warp does not yet
-       order its contacts or constraint rows.
+       order its contacts or constraint rows. Tracked in
+       `#5042 <https://github.com/newton-physics/newton/issues/5042>`__.
    * - :class:`~solvers.SolverStyle3D`
      - No
      - Accumulates cloth and contact forces with floating-point atomics.
@@ -131,11 +138,16 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
        transfer was repeatable; the GIMP transfer is not.
    * - Coupled solvers (:mod:`newton.solvers.experimental.coupled`)
      - No
-     - Entry solvers can be deterministic, but the couplers' own kernels
-       accumulate with atomics.
+     - The couplers route contacts and sum coupling forces with atomics, so
+       contact order is not fixed inside a coupler even when an entry solver
+       is deterministic. A Steel entry with ``RUN_TO_RUN`` raises
+       :class:`NotImplementedError`; see :doc:`coupling`.
    * - :class:`~solvers.SolverKamino`
      - No
      - Converts contacts and reserves constraint rows with atomic counters.
+
+Planned work on missing solver support and on the cost of the mode is tracked
+in `#5049 <https://github.com/newton-physics/newton/issues/5049>`__.
 
 Performance
 -----------
@@ -159,112 +171,29 @@ and on whether the step runs eagerly or from a captured CUDA graph:
 - **Solver-specific ordering.** :class:`~solvers.SolverSteel` orders its work
   itself instead of relying on Warp's mode and costs little or nothing.
 
-The table below shows steady-state step times, including collision detection,
-with determinism off and on, measured on an NVIDIA L4 with Warp 1.19.0rc1 over
-200 steps after 120 warm-up steps. "Graph" times replay a captured two-step
-graph; "Eager" is the on/off ratio without capture, which also includes Python
-launch overhead and therefore understates the GPU cost. "Peak memory" is the
-CUDA memory-pool high-water mark, including graph capture. Every run with
-determinism on repeated bitwise. Timings come from a shared GPU, so treat them
-as indicative.
+Some combinations currently hit record-buffer limits:
 
-.. list-table::
-   :header-rows: 1
-   :widths: 34 16 18 10 22
-
-   * - Scene and solver
-     - Graph off [ms]
-     - Graph on [ms]
-     - Eager
-     - Peak memory [MB]
-   * - Rigid pile: XPBD
-     - 0.33
-     - 19.6 (59x)
-     - 5.3x
-     - 26 → 830
-   * - Rigid pile: SemiImplicit [1]_
-     - 0.10
-     - 3.78 (39x)
-     - 2.3x
-     - 26 → 172
-   * - Rigid pile: Featherstone [1]_
-     - 0.24
-     - 3.85 (16x)
-     - 2.3x
-     - 30 → 174
-   * - Rigid pile: Steel
-     - 5.27
-     - 5.02 (1.0x)
-     - 1.1x
-     - 435 → 484
-   * - Humanoids: Featherstone [1]_
-     - 44.7
-     - 49.3 (1.1x)
-     - 1.0x
-     - 42 → 218
-   * - Humanoids: Steel
-     - 3.38
-     - 3.47 (1.0x)
-     - 1.1x
-     - 187 → 247
-   * - Humanoids: XPBD
-     - 0.35
-     - 23.0 (66x)
-     - 6.8x
-     - 29 → 1008
-   * - Cloth: XPBD
-     - 0.54
-     - 5.34 (10x)
-     - 7.9x
-     - 24 → 172
-   * - Cloth: VBD
-     - 47.6
-     - fails [2]_
-     -
-     -
-   * - Soft bodies: SemiImplicit
-     - 3.72
-     - fails [3]_
-     - 4.0x
-     - 26 → 7841
-   * - Soft bodies: XPBD
-     - 0.71
-     - 10.5 (15x)
-     - 12.7x
-     - 26 → 425
-   * - Soft bodies: VBD
-     - 0.86
-     - 0.89 (1.0x)
-     - 1.1x
-     - 27 → 27
-
-Scenes: *rigid pile* is 64 worlds of 48 falling boxes, spheres, and capsules
-(3,072 free bodies); *humanoids* is 256 MJCF humanoids on a ground plane
-(3,328 bodies); *cloth* is a 97 x 97-particle cloth draped over a sphere;
-*soft bodies* is eight 11 x 11 x 11 tetrahedral grids (10,648 particles)
-dropped on the ground. Each solver has enough constraint capacity that no rows
-are dropped.
-
-.. [1] Simulated at 1 kHz (rigid pile) or 600 Hz (humanoids), which these
-   explicit integrators need with the default contact stiffness.
-.. [2] Runs out of memory. With particle self-contact, VBD bounds the per-thread
-   records of every kernel in its particle module by the self-contact buffer
-   sizes.
-.. [3] SemiImplicit's triangle-particle contact kernel launches one thread per
-   triangle-particle pair, so its worst-case record buffer exceeds Warp's
-   32-bit array limit during graph capture. Step eagerly or pass
-   ``enable_tri_contact=False``.
+- :class:`~solvers.SolverVBD` with particle self-contact bounds the per-thread
+  records of every kernel in its particle module by the self-contact buffer
+  sizes, so large cloth meshes can run out of memory.
+- :class:`~solvers.SolverSemiImplicit`'s triangle-particle contact kernel
+  launches one thread per triangle-particle pair, so for large meshes its
+  worst-case record buffer exceeds Warp's 32-bit array limit during graph
+  capture. Step eagerly or pass ``enable_tri_contact=False``.
 
 In practice:
 
 - Use :class:`~solvers.SolverSteel` when determinism matters for articulated or
   rigid-body scenes.
 - For other solvers, measure both eager stepping and graph replay with
-  determinism on; eager stepping can be many times faster.
+  determinism on; depending on the scene, eager stepping can be faster.
 - Size the :class:`CollisionPipeline` contact buffers (``rigid_contact_max``,
-  ``soft_contact_max``) close to the contacts a scene produces. Contact kernels
-  launch over the whole buffer, so under graph replay their record buffers grow
-  with it.
+  ``soft_contact_max``) just above the peak contact count of the densest
+  expected frame, not far beyond it. Contact kernels launch over the whole
+  buffer, so under graph replay their record buffers grow with it, but a frame
+  that exceeds the capacity drops contacts; watch for the
+  ``Contact buffer overflowed`` and ``Mesh soft-contact capacity exceeded``
+  warnings.
 - Keep deterministic mode for the runs that need it, such as tests, debugging,
   and data generation.
 
