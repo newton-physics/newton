@@ -1,0 +1,1 @@
+Rework compute_nodal_diagonalization to fix unreleased Q2d compile-time regression from #4660.
