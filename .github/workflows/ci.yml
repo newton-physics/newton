@@ -257,7 +257,9 @@ jobs:
       OS: ${{ matrix.os }}
     steps: *unittest-steps
 
-  # Tests must skip, not fail, when optional dependencies are unavailable.
+  # Tests must skip, not fail, when optional dependencies are unavailable: either
+  # none at all, or the dev extra on a platform whose pyproject.toml markers drop
+  # dependencies without wheels there.
   newton-unittests-reduced-deps:
     needs: dependency-install-test
     name: newton-unittests (${{ matrix.profile.name }}, shard ${{ matrix.shard-index }}/${{ matrix.shard-count }})
@@ -269,6 +271,11 @@ jobs:
             os: ubuntu-latest
             install: uv sync --locked --no-dev
             cache: minimal
+          # No MuJoCo, USD, Open3D, CoACD, or fast-simplification.
+          - name: windows-11-arm
+            os: windows-11-arm
+            install: uv sync --locked --extra dev --no-dev
+            cache: dev
         shard-index: [0, 1]
         shard-count: [2]
     runs-on: ${{ matrix.profile.os }}
