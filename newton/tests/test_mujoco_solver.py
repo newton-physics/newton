@@ -11597,6 +11597,15 @@ class TestActuatorDampratio(unittest.TestCase):
             self.model.mujoco.actuator_biasprm.assign(original)
             self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
+    def test_dampratio_refresh_limited_to_authored_actuators(self):
+        """Constants refreshes resolve only actuators that hold a dampratio at construction."""
+        self.assertEqual(self.solver._dampratio_actuators, [0])
+        xml = self.MJCF.replace(' dampratio="1"', ' kv="2"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize())
+        self.assertIsNone(solver._dampratio_actuators)
+
 
 class TestActuatorDampratioMultiWorld(unittest.TestCase):
     """Verify dampratio biasprm[2] is propagated to all worlds, not just world 0."""
