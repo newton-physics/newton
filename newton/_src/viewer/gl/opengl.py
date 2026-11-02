@@ -1235,6 +1235,18 @@ class RendererGL:
                 visible=not headless,
             )
 
+        try:
+            self._setup_renderer(gl, headless, device)
+        except BaseException:
+            # pyglet keeps every open window, so a window left open here would make the
+            # next renderer in this process probe GL through its stale context.
+            self.window.close()
+            raise
+
+    def _setup_renderer(self, gl, headless, device):
+        """Set up the GL state, resources, and event handling for the new window."""
+        import pyglet
+
         gl.glEnable(gl.GL_MULTISAMPLE)
         # remember sample count for later (e.g., resolving FBO)
         self.msaa_samples = RendererGL.MSAA_SAMPLES
