@@ -215,6 +215,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Coupled particle-rigid body systems
         - Compliant rigid-body-to-particle attachments
 
+    See :ref:`vbd-rigid-cable-tuning` for rigid-body and cable tuning:
+    material authoring, contact history and capacity, and reset.
+
     For rigid bodies, two paths are supported:
 
     - **Compliant ALM** (``rigid_compliant_alm=True``, default): one
