@@ -1308,7 +1308,7 @@ over all its contacts and up to six more over its touching contacts only, so
 speculative contacts cannot displace the support polygon. Mesh and
 heightfield contacts keep their per-shape-pair reduction. Only the kept
 contacts are written, and if a group cannot be registered in the table, the
-frame keeps every contact. It is an
+frame keeps every primitive and convex contact. It is an
 approximation: support is sampled, not exact, and keeping
 rim points can strengthen torsional friction. Selection is memoryless, so on
 curved or mesh supports the kept set can change between steps.

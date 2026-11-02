@@ -553,6 +553,71 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertIsNone(plain.body_pair_reduction)
         self.assertIsNone(plain._body_pair_reducer)
 
+    def test_sap_and_nxn_reduce_whatever_pair_array_the_model_carries(self):
+        """Reduce with SAP and NXN even when the model's explicit pair array is empty or unset.
+
+        Those broad phases collide by topology, not by the model's pair array, so
+        the pipeline must not take an empty array as proof there is nothing to reduce.
+        An explicit broad phase on the empty array is the control.
+        """
+        for pairs in (None, "empty"):
+            model = self._foot_model()
+            model.shape_contact_pairs = None if pairs is None else wp.empty(0, dtype=wp.vec2i, device=model.device)
+            state = model.state()
+            for broad_phase in ("nxn", "sap"):
+                with self.subTest(pairs=pairs, broad_phase=broad_phase):
+                    pipeline = newton.CollisionPipeline(
+                        model,
+                        broad_phase=broad_phase,
+                        rigid_contact_max=1024,
+                        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+                    )
+                    contacts = pipeline.contacts()
+                    pipeline.collide(state, contacts)
+                    stats = pipeline._body_pair_reducer.stats()
+                    self.assertGreater(stats["sum_contacts_in"], 0, "group reduction was skipped")
+                    self.assertLess(stats["sum_contacts_kept"], stats["sum_contacts_in"])
+                    self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), stats["sum_contacts_kept"])
+        explicit = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            rigid_contact_max=1024,
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+        )
+        contacts = explicit.contacts()
+        explicit.collide(state, contacts)
+        self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    def test_mixed_scene_reduces_only_primitive_contacts(self):
+        """Group a compound foot's contacts while a mesh body's contacts keep mesh reduction."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        _cylinder_foot(builder, (0.0, 0.0, 0.020))
+        mesh_body = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.249), wp.quat_identity()))
+        mesh = newton.Mesh.create_box(0.25, 0.25, 0.25, duplicate_vertices=False, compute_inertia=False)
+        mesh_shape = builder.add_shape_mesh(mesh_body, mesh=mesh)
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        state = model.state()
+
+        def mesh_and_other_rows(body_pair_reduction):
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", deterministic=True, body_pair_reduction=body_pair_reduction
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            rows = _full_contact_rows(contacts)
+            mesh_rows = [row for row in rows if mesh_shape in (int(row[0]), int(row[1]))]
+            return pipeline, mesh_rows, len(rows) - len(mesh_rows)
+
+        _, plain_mesh, plain_other = mesh_and_other_rows(None)
+        reduced, reduced_mesh, reduced_other = mesh_and_other_rows(newton.CollisionPipeline.BodyPairReductionConfig())
+        stats = reduced._body_pair_reducer.stats()
+        self.assertGreater(len(plain_mesh), 0)
+        self.assertEqual(reduced_mesh, plain_mesh, "body-pair reduction changed the mesh contacts")
+        self.assertEqual(stats["sum_contacts_in"], plain_other)
+        self.assertEqual(stats["sum_contacts_kept"], reduced_other)
+        self.assertLess(reduced_other, plain_other, "the compound foot was not reduced")
+
     def test_unreduced_mesh_contacts_pass_through(self):
         """Deliver unreduced mesh contacts unchanged when mesh reduction is off."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))

@@ -123,6 +123,7 @@ from .contact_reduction_global import (
     GlobalContactReducer,
     GroupReductionConfig,
 )
+from .flags import ShapeFlags
 from .types import GeoType
 
 # Solver-visible contact material fields. Shapes on one body may only share a
@@ -286,7 +287,7 @@ def build_group_reduction_config(
     material_attributes,
     shape_pairs,
     rigid_contact_max: int,
-) -> tuple[GroupReductionConfig, int, int]:
+) -> tuple[GroupReductionConfig | None, int, int]:
     """Build the group-reduction settings for a pipeline.
 
     Args:
@@ -294,7 +295,7 @@ def build_group_reduction_config(
         cell_size: Spatial cell edge [m].
         hashtable_headroom: Multiplier on the derived group-table capacity.
         material_attributes: Per-shape attributes that split groups (see :func:`build_reduction_groups`).
-        shape_pairs: The explicit broad-phase pair list, or ``None`` for the model's default pairs.
+        shape_pairs: The explicit broad phase's pair list, or ``None`` for SAP and NXN.
         rigid_contact_max: Staging capacity; also caps the table, since a group needs a contact.
 
     Returns:
@@ -302,35 +303,37 @@ def build_group_reduction_config(
         candidate pair can produce primitive or convex contacts, since mesh and heightfield
         contacts keep their shape-pair reduction.
     """
-    # Imported here: shape_contact_pairs imports the geometry package.
-    from ..sim.shape_contact_pairs import (  # noqa: PLC0415
-        _shape_contact_pair_count_for_mask,
-        _shape_contact_pair_counts,
-        _shape_contact_pair_override,
-        _shape_contact_pair_topology,
-        _shape_contact_pairs_for_mask,
-    )
-
     shape_type = model.shape_type.numpy()
     primitive_shapes = (shape_type != int(GeoType.MESH)) & (shape_type != int(GeoType.HFIELD))
-    if _shape_contact_pair_count_for_mask(model, primitive_shapes, shape_pairs=shape_pairs) == 0:
+    # An explicit broad phase collides exactly its list; SAP and NXN follow the model's
+    # topology, whatever pair array the model carries.
+    topology = model._shape_contact_pair_data
+    if shape_pairs is not None:
+        pairs = shape_pairs.numpy().reshape(-1, 2)
+        if not np.any(primitive_shapes[pairs[:, 0]] & primitive_shapes[pairs[:, 1]]):
+            return None, 0, 0
+    elif topology is not None and int(topology.count_pairs(primitive_shapes).sum()) == 0:
         return None, 0, 0
     shape_group, group_count = build_reduction_groups(model, material_attributes)
     if group_count > MAX_GROUP_ID + 1:
         raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
     # Size the group table from the broad phase's own candidate pairs; enumerate only an explicit list.
-    if shape_pairs is not None or _shape_contact_pair_override(model)[0]:
-        candidate_pairs = _shape_contact_pairs_for_mask(
-            model, np.ones(model.shape_count, dtype=bool), shape_pairs=shape_pairs
-        )
-        group_pair_bound = build_reduction_group_pair_bound(candidate_pairs, shape_group)
-    else:
-        topology = _shape_contact_pair_topology(model)
+    if shape_pairs is not None:
+        group_pair_bound = build_reduction_group_pair_bound(pairs, shape_group)
+    elif topology is not None:
         group_pair_bound = min(
-            int(_shape_contact_pair_counts(model).sum()),
+            int(topology.count_pairs().sum()),
             build_reduction_group_pair_upper_bound(
                 topology.shape_body, topology.shape_world, topology._active(), shape_group
             ),
+        )
+    else:
+        # Replacing the model's pair array drops its topology summary; bound from the shape arrays.
+        active = ((model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0) & (
+            model.shape_collision_group.numpy() != 0
+        )
+        group_pair_bound = build_reduction_group_pair_upper_bound(
+            np.maximum(model.shape_body.numpy(), -1), model.shape_world.numpy(), active, shape_group
         )
     # A replicated scene can have one reachable pair per body, yet each pair spans
     # several bins and cells: reserve four patch entries per group at half load.
