@@ -40,7 +40,6 @@ from .contact_angular_friction import (
     accumulate_free_rigid_angular_wrenches,
     configure_free_rigid_angular_friction,
     free_rigid_angular_friction_gs_sources,
-    free_rigid_route_bodies,
     launch_free_rigid_angular_friction_rows,
     refresh_free_rigid_angular_friction,
     validate_free_rigid_angular_friction,
@@ -1241,7 +1240,7 @@ class SolverSteel(SolverBase, CouplingInterface):
       and raises :class:`NotImplementedError` when any of these is active: joint velocity
       limits, PGS drive rows, mimic and loop-closing joints, friction patches, contact
       regularization, restitution, warm start, velocity-only iterations, contact torsion,
-      free-body rolling and spin friction (``steel:condim``), contact compliance, sleeping
+      free-body rolling and spin friction, contact compliance, sleeping
       and the propagation contact responses. Contact torsion is CUDA-only, so on a CPU device a
       positive torsion radius raises :class:`ValueError` first.
 
@@ -1312,12 +1311,27 @@ class SolverSteel(SolverBase, CouplingInterface):
       iterations and gap gates for speculative contacts are configured on the
       constructor. Experimental contact torsion (per-shape ``steel:min_torsional_patch_radius``)
       adds a load-bounded spin-friction row per contact group. Experimental rolling and spin
-      friction rows for free-body contacts are opt-in per shape (``steel:condim``, see
-      :meth:`register_custom_attributes`), and experimental implicit compliance of
-      hydroelastic contacts is opt-in (``contact_compliance``). Friction patches,
+      friction rows for free-body contacts follow the shapes'
+      :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` (see below), and experimental implicit
+      compliance of hydroelastic contacts is opt-in (``contact_compliance``). Friction patches,
       restitution, regularization, warm start, velocity-only iterations, contact torsion,
       the free-body angular rows and contact compliance need ``solve_mode="matrix_free"``;
       the split solve uses point friction.
+
+      The free-body angular rows act on contacts between free bodies, and of free bodies with static
+      or kinematic geometry, whose :class:`~newton.ShapeFrictionMode` (the higher of the two shapes')
+      is ``TORSIONAL`` or ``ROLLING``. ``TORSIONAL`` adds a spin row about the normal bounded by
+      :attr:`~newton.Model.shape_material_mu_torsional` [m] times the normal load; ``ROLLING`` also adds
+      a rolling pair bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is
+      the larger of the two shapes' values. Under friction patches, contacts share a patch only if their
+      angular coefficients match. A contact with angular rows takes up to 6 free-body rows instead of 3;
+      raise ``free_body_constraint_max`` if :attr:`constraint_overflow` reports dropped rows. The rows
+      need ``articulated_contact_response="immediate"``, ``row_schedule="interleaved"``,
+      ``friction_mode="fixed_normal"`` and no contact compliance; otherwise the solver warns and the
+      contacts use sliding friction. The solver decides at construction whether to build the rows, so a
+      solver built without them must be rebuilt to gain them. On a solver with the rows, construction
+      and an eager ``SHAPE_PROPERTIES`` notification raise :class:`ValueError` for a mode outside
+      :class:`~newton.ShapeFrictionMode` or a negative or non-finite coefficient that a mode enables.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
     - Experimental passive-island sleeping (``enable_sleeping``, ``solve_mode="matrix_free"``
@@ -1543,7 +1557,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Register the body, shape and joint DOF attributes consumed by Steel in the ``steel`` namespace.
 
-        Each body attribute, and the torsion attribute below, maps to the matching PhysX USD attribute:
+        Each body and shape attribute maps to the matching PhysX USD attribute:
 
         - ``steel:rigid_body_angular_damping`` [1/s] damps the angular velocity of free bodies and
           floating bases as ``w *= 1 - d dt`` each step (``physxRigidBody:angularDamping``,
@@ -1561,24 +1575,6 @@ class SolverSteel(SolverBase, CouplingInterface):
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
           torsion). PhysX also scales a radius with the penetration depth through
           ``physxCollision:torsionalPatchRadius``; this solver does not.
-
-        One experimental per-shape attribute adds rolling and spin friction rows to free-body contacts:
-
-        - ``steel:condim`` (default 3) borrows MuJoCo's 3/4/6 convention; other values raise
-          :class:`ValueError`. At 4 a shape contributes :attr:`~newton.Model.shape_material_mu_torsional`
-          [m] to a spin row bounded by that coefficient times the normal load; at 6 also
-          :attr:`~newton.Model.shape_material_mu_rolling` [m] to a rolling pair. A contact takes the
-          larger coefficient of its two shapes, regardless of the other shape's condim. Only contacts
-          between free bodies, and free bodies on static or kinematic geometry, read it. USD reads it
-          only from an explicitly authored ``newton:steel:condim``; the MJCF importer leaves it to
-          :class:`~newton.solvers.SolverMuJoCo`'s ``mujoco:condim``. Under friction patches, contacts
-          share a patch only if their angular coefficients match. A contact with angular rows takes up
-          to 6 free-body rows instead of 3; raise ``free_body_constraint_max`` if
-          :attr:`constraint_overflow` reports dropped rows. The solver reads ``steel:condim`` at
-          construction and, on a solver built with the rows, at :meth:`notify_model_changed` with
-          ``SHAPE_PROPERTIES``; a solver built without any condim above 3 ignores the attribute and must be
-          rebuilt to gain the rows. A negative or non-finite coefficient that a shape's condim enables
-          raises :class:`ValueError` at the same points.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -1598,7 +1594,7 @@ class SolverSteel(SolverBase, CouplingInterface):
               ``steel:joint_friction_load_coefficient``, its USD name ``newton:steel:jointFrictionLoadCoefficient``
               and its load law may change without the normal deprecation period.
 
-        The solver reads the other attributes from the model at every step, for example
+        The solver reads them from the model at every step, for example
         ``model.steel.rigid_body_angular_damping``. Models built without these attributes use the defaults.
 
         Args:
@@ -1656,19 +1652,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 dtype=wp.float32,
                 default=0.0,
                 usd_attribute_name="physxCollision:minTorsionalPatchRadius",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="condim",
-                namespace=_ATTRIBUTE_NAMESPACE,
-                frequency=Model.AttributeFrequency.SHAPE,
-                assignment=Model.AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=3,
-                # The default MJCF/URDF name, condim, belongs to SolverMuJoCo's mujoco:condim.
-                mjcf_attribute_name="steel:condim",
-                urdf_attribute_name="steel:condim",
             )
         )
         builder.add_custom_attribute(
@@ -2416,19 +2399,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
-        warn_unsupported_friction_modes(model, ShapeFrictionMode.TORSIONAL, "SolverSteel")
-        torsion_radius = self._contact_torsion_shape_radius
-        if model.shape_count and model.shape_material_friction_mode is not None:
-            radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
-            if np.any(
-                (model.shape_material_friction_mode.numpy() >= int(ShapeFrictionMode.TORSIONAL)) & (radii <= 0.0)
-            ):
-                warnings.warn(
-                    "SolverSteel applies torsional friction only to shapes with a positive "
-                    "steel:min_torsional_patch_radius; the other shapes use sliding friction.",
-                    NewtonWarning,
-                    stacklevel=2,
-                )
         if solve_mode == "split":
             unsupported = [
                 name
@@ -2478,7 +2448,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 f"got {articulated_contact_response!r}"
             )
         self._articulated_contact_response = articulated_contact_response
-        configure_free_rigid_angular_friction(self, model)
         inherited = deterministic is None
         if inherited:
             deterministic = wp.config.deterministic
@@ -2649,6 +2618,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         self._has_prescribed_response = bool(np.any(self._model_plan.prescribed_articulation != 0))
         self._compute_articulation_metadata(model)
+        configure_free_rigid_angular_friction(self, model)
+        self._warn_unsupported_friction_modes(model)
         self._init_joint_friction(model)
         if self._enable_joint_friction:
             self._validate_joint_friction()
@@ -2821,12 +2792,11 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         self._shape_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._shape_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
-        # Free-rigid angular coefficients after the condim gate; the kernels read them only when the rows are enabled.
+        # Free-rigid angular coefficients, clamped; the kernels read them only when the rows are enabled.
         self._free_rigid_mu_torsional = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._free_rigid_mu_rolling = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
         self._check_restitution_support()
-        self._free_rigid_route_body = free_rigid_route_bodies(self)
 
         self._contact_torsion_device = bool(contact_torsion_device)
         self._device_torsion = None
@@ -3077,9 +3047,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
         raises :class:`ValueError` for invalid values, after applying every other update. Likewise, on a
-        solver constructed with free-body angular rows, an eager shape notification reads ``steel:condim`` and the
-        torsional and rolling coefficients it enables on the host and raises :class:`ValueError` for a condim other
-        than 3, 4 or 6 or a negative or non-finite coefficient. A captured notification skips these checks.
+        solver constructed with free-body angular rows, an eager shape notification reads the friction modes and the
+        torsional and rolling coefficients they enable on the host and raises :class:`ValueError` for a mode outside
+        :class:`~newton.ShapeFrictionMode` or a negative or non-finite coefficient. A captured notification skips
+        these checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3154,6 +3125,30 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._validate_joint_friction()
         if flags & ModelFlags.SHAPE_PROPERTIES and not capturing:
             validate_free_rigid_angular_friction(self)
+
+    def _warn_unsupported_friction_modes(self, model) -> None:
+        """Warn once for friction modes this configuration leaves as sliding friction."""
+        rows = self._free_rigid_angular_rows
+        warn_unsupported_friction_modes(
+            model, ShapeFrictionMode.ROLLING if rows else ShapeFrictionMode.TORSIONAL, "SolverSteel"
+        )
+        if not model.shape_count or model.shape_material_friction_mode is None:
+            return
+        torsion_radius = self._contact_torsion_shape_radius
+        radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
+        missing = (model.shape_material_friction_mode.numpy() >= int(ShapeFrictionMode.TORSIONAL)) & (radii <= 0.0)
+        if rows:
+            # The free-body angular rows cover the shapes whose contacts take the free-body route.
+            shape_body = model.shape_body.numpy()
+            route = self._free_rigid_route_body.numpy()
+            missing &= (shape_body >= 0) & (route[np.maximum(shape_body, 0)] == 0)
+        if np.any(missing):
+            warnings.warn(
+                "SolverSteel applies torsional friction to articulated contacts only for shapes with a positive "
+                "steel:min_torsional_patch_radius; the other shapes use sliding friction there.",
+                NewtonWarning,
+                stacklevel=3,
+            )
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
@@ -9841,6 +9836,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._friction_gap,
                     self._friction_patches.view,
                     int(self._free_rigid_angular_rows),
+                    model.shape_material_friction_mode,
                     self._free_rigid_mu_torsional,
                     self._free_rigid_mu_rolling,
                     int(self._ordered_rows),
@@ -14900,7 +14896,7 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_compliance: Add ``gamma * lambda`` to every contact-normal residual in each
             sweep (``contact_compliance``); ``gamma`` is zero on rigid rows.
         free_rigid_angular_friction: Solve the rolling pair and spin row that follow free-body
-            contacts' sliding pairs (``steel:condim``); requires ``"fixed_normal"`` and no factor
+            contacts' sliding pairs (``ShapeFrictionMode.TORSIONAL`` and above); requires ``"fixed_normal"`` and no factor
             coordinates.
     """
     if free_rigid_angular_friction and (friction_mode != "fixed_normal" or factor_coordinates):

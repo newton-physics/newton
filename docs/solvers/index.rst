@@ -207,11 +207,13 @@ formulation.
   and rolling friction share its elliptic friction budget). Other solvers
   warn and apply sliding friction only.
   :class:`~newton.solvers.SolverSteel` provides experimental torsion on
-  ``TORSIONAL`` shapes that also set ``steel:min_torsional_patch_radius``.
+  ``TORSIONAL`` shapes that also set ``steel:min_torsional_patch_radius``, and
+  experimental torsional and rolling friction on the contacts of free bodies.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
-  :class:`~newton.solvers.SolverMuJoCo`, and the LOX backend of
-  :class:`~newton.solvers.SolverKamino`, on contacts whose ``friction_mode``
-  enables them.
+  :class:`~newton.solvers.SolverMuJoCo`, the LOX backend of
+  :class:`~newton.solvers.SolverKamino`, and the free-body contacts of
+  :class:`~newton.solvers.SolverSteel` (larger of the two shapes), on contacts
+  whose ``friction_mode`` enables them.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
   contacts used by :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`, and

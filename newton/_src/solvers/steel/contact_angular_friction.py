@@ -2,42 +2,51 @@
 # SPDX-License-Identifier: Apache-2.0
 """Experimental rolling and spin friction rows for free-body contacts.
 
-A shape opts in through the ``steel:condim`` custom attribute, borrowing MuJoCo's 3/4/6
-convention: at 4 it contributes :attr:`~newton.Model.shape_material_mu_torsional` [m]
-to a spin row about the contact normal, at 6 also :attr:`~newton.Model.shape_material_mu_rolling`
-[m] to a rolling pair about the contact tangents. A contact takes the larger coefficient of its
-two shapes. The rows follow the contact's sliding pair, ``[normal, t1, t2, roll1, roll2, spin]``,
+A contact's :attr:`~newton.Model.shape_material_friction_mode`, the higher mode of its two shapes, enables them:
+``TORSIONAL`` adds a spin row about the contact normal bounded by
+:attr:`~newton.Model.shape_material_mu_torsional` [m], ``ROLLING`` also a rolling pair about the contact
+tangents bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is the larger of the
+two shapes' values. The rows follow the contact's sliding pair, ``[normal, t1, t2, roll1, roll2, spin]``,
 and are bounded by their coefficient times the pooled normal load of the contact's patch: the
 rolling pair on a disk, the spin row on a box. Only contacts on the free-body route (free bodies
 against free bodies or static and kinematic geometry) receive them.
 """
 
+import warnings
+
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonWarning
+from ...sim import ShapeFrictionMode
+from ...utils.deprecation import external_stacklevel
 from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_CONTACT_SPIN,
     accumulate_free_rigid_angular_wrenches_from_impulses,
     build_mf_angular_friction_rows,
-    gate_free_rigid_angular_coefficients,
+    clamp_free_rigid_angular_coefficients,
 )
 
 
 def configure_free_rigid_angular_friction(solver, model) -> None:
-    """Decide from the shapes' ``steel:condim`` whether free-body contacts get angular rows, and validate the options.
+    """Decide from the shapes' friction modes whether free-body contacts get angular rows.
 
-    Raises :class:`ValueError` for a condim other than 3, 4 or 6 or an invalid gated coefficient, and
-    :class:`NotImplementedError` for an option the angular rows do not support.
+    Needs the free-body classification. Raises :class:`ValueError` for an invalid mode or coefficient the rows read,
+    and warns and leaves the rows off for an option they do not support.
     """
-    condim = solver._namespaced_attribute("condim")
-    values = condim.numpy() if condim is not None and model.shape_count else None
-    if values is not None:
-        _check_condim_values(values)
-    solver._free_rigid_angular_rows = bool(values is not None and np.any(values >= 4))
-    if not solver._free_rigid_angular_rows:
+    solver._free_rigid_angular_rows = False
+    solver._free_rigid_route_body = None
+    modes = model.shape_material_friction_mode
+    if modes is None or not model.shape_count or not solver._has_free_rigid_bodies:
         return
-    _check_gated_coefficients(model, values)
+    values = modes.numpy()
+    _check_mode_values(values)
+    route_body = _free_rigid_route_body_mask(solver, model)
+    shape_body = model.shape_body.numpy()
+    route_shape = (shape_body < 0) | (route_body[np.maximum(shape_body, 0)] != 0)
+    if not np.any(route_shape & (values >= int(ShapeFrictionMode.TORSIONAL))):
+        return
     unsupported = [
         name
         for name, requested in (
@@ -53,19 +62,27 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
         if requested
     ]
     if unsupported:
-        raise NotImplementedError(f"steel:condim above 3 does not support {', '.join(unsupported)}")
+        warnings.warn(
+            f"SolverSteel's free-body torsional and rolling friction does not support {', '.join(unsupported)}; "
+            "free-body contacts use sliding friction.",
+            NewtonWarning,
+            stacklevel=external_stacklevel(),
+        )
+        return
+    _check_coefficients(model, values)
+    solver._free_rigid_angular_rows = True
+    solver._free_rigid_route_body = wp.array(route_body, dtype=wp.int32, device=model.device)
 
 
 def refresh_free_rigid_angular_friction(solver) -> None:
-    """Write each shape's gated torsional and rolling coefficients [m] on the device; capturable."""
+    """Copy each shape's torsional and rolling coefficients [m] to the rows' buffers on the device; capturable."""
     if not solver._free_rigid_angular_rows:
         return
     model = solver.model
     wp.launch(
-        gate_free_rigid_angular_coefficients,
+        clamp_free_rigid_angular_coefficients,
         dim=model.shape_count,
         inputs=[
-            solver._namespaced_attribute("condim"),
             model.shape_material_mu_torsional,
             model.shape_material_mu_rolling,
         ],
@@ -75,29 +92,11 @@ def refresh_free_rigid_angular_friction(solver) -> None:
 
 
 def validate_free_rigid_angular_friction(solver) -> None:
-    """Read ``steel:condim`` and the gated coefficients on the host and raise :class:`ValueError` for invalid values."""
+    """Read the friction modes and the coefficients they enable on the host and raise :class:`ValueError` if invalid."""
     if solver._free_rigid_angular_rows:
-        values = solver._namespaced_attribute("condim").numpy()
-        _check_condim_values(values)
-        _check_gated_coefficients(solver.model, values)
-
-
-def free_rigid_route_bodies(solver) -> wp.array | None:
-    """Mark the bodies whose contacts can take the free-body route; ``None`` without angular rows.
-
-    A contact takes that route when each side is a free rigid body or has no response DOFs, as the allocator decides.
-    """
-    if not solver._free_rigid_angular_rows:
-        return None
-    model = solver.model
-    route = np.zeros(max(model.body_count, 1), dtype=np.int32)
-    if model.body_count and solver._has_free_rigid_bodies:
-        body_art = solver._body_to_articulation.numpy()[: model.body_count]
-        response = solver._articulation_response_dof_count.numpy()
-        free = solver._is_free_rigid.numpy()
-        safe = np.maximum(body_art, 0)
-        route[: model.body_count] = (body_art < 0) | (response[safe] == 0) | (free[safe] != 0)
-    return wp.array(route, dtype=wp.int32, device=model.device)
+        values = solver.model.shape_material_friction_mode.numpy()
+        _check_mode_values(values)
+        _check_coefficients(solver.model, values)
 
 
 def launch_free_rigid_angular_friction_rows(solver, state_aug, contacts, threads: int) -> None:
@@ -122,6 +121,7 @@ def launch_free_rigid_angular_friction_rows(solver, state_aug, contacts, threads
             state_aug._body_v_s,
             solver._prescribed_articulation,
             int(solver._has_prescribed_response),
+            solver.model.shape_material_friction_mode,
             solver._free_rigid_mu_torsional,
             solver._free_rigid_mu_rolling,
         ],
@@ -237,19 +237,39 @@ def free_rigid_angular_friction_gs_sources() -> tuple[str, str, str]:
     return skip, radius, update
 
 
-def _check_condim_values(values: np.ndarray) -> None:
-    """Reject a ``steel:condim`` other than the implemented 3, 4 and 6."""
-    invalid = np.setdiff1d(values, (3, 4, 6))
+def _free_rigid_route_body_mask(solver, model) -> np.ndarray:
+    """Return a per-body flag of the bodies whose contacts can take the free-body route, as the allocator decides.
+
+    A contact takes that route when each side is a free rigid body or has no response DOFs.
+    """
+    route = np.zeros(max(model.body_count, 1), dtype=np.int32)
+    if model.body_count:
+        body_art = solver._body_to_articulation.numpy()[: model.body_count]
+        response = solver._articulation_response_dof_count.numpy()
+        free = solver._is_free_rigid.numpy()
+        safe = np.maximum(body_art, 0)
+        route[: model.body_count] = (body_art < 0) | (response[safe] == 0) | (free[safe] != 0)
+    return route
+
+
+def _check_mode_values(values: np.ndarray) -> None:
+    """Reject a friction mode outside :class:`~newton.ShapeFrictionMode`."""
+    invalid = np.setdiff1d(values, [int(mode) for mode in ShapeFrictionMode])
     if invalid.size:
-        raise ValueError(f"steel:condim must be 3, 4 or 6, got {int(invalid[0])}")
+        raise ValueError(f"shape_material_friction_mode must be a ShapeFrictionMode value, got {int(invalid[0])}")
 
 
-def _check_gated_coefficients(model, condim: np.ndarray) -> None:
-    """Reject a negative or non-finite coefficient on a shape whose condim enables its row."""
-    for name, array, gate in (
-        ("shape_material_mu_torsional", model.shape_material_mu_torsional, 4),
-        ("shape_material_mu_rolling", model.shape_material_mu_rolling, 6),
+def _check_coefficients(model, modes: np.ndarray) -> None:
+    """Reject a negative or non-finite coefficient that a contact's friction mode can enable.
+
+    A contact takes the higher mode of its shapes, so with any shape at a mode, every shape's coefficient counts.
+    """
+    for name, array, mode in (
+        ("shape_material_mu_torsional", model.shape_material_mu_torsional, ShapeFrictionMode.TORSIONAL),
+        ("shape_material_mu_rolling", model.shape_material_mu_rolling, ShapeFrictionMode.ROLLING),
     ):
-        values = array.numpy()[condim >= gate]
+        if not np.any(modes >= int(mode)):
+            continue
+        values = array.numpy()
         if not np.all(np.isfinite(values)) or np.any(values < 0.0):
-            raise ValueError(f"{name} must be finite and non-negative on shapes with steel:condim {gate} or above")
+            raise ValueError(f"{name} must be finite and non-negative with a shape at ShapeFrictionMode.{mode.name}")

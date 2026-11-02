@@ -2006,8 +2006,10 @@ def _build_chain(device, *, links=6):
     return builder.finalize(device=device)
 
 
-def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, condim=None):
-    """Replicate a contacting tripod, optionally surrounded by separate free bodies with a ``steel:condim``."""
+def _build_model(
+    *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, friction_mode=None
+):
+    """Replicate a contacting tripod, optionally surrounded by separate free bodies, all with a friction mode."""
     env = newton.ModelBuilder()
     if prescribed:
         support = env.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.02), wp.quat_identity()), is_kinematic=True)
@@ -2065,8 +2067,6 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
     if not free_first:
         add_objects()
     builder = newton.ModelBuilder()
-    if condim is not None:
-        SolverSteel.register_custom_attributes(builder)
     if heterogeneous:
         builder.add_world(env)
         free_world = newton.ModelBuilder()
@@ -2078,8 +2078,8 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
     if not prescribed:
         builder.add_ground_plane()
     model = builder.finalize(device="cuda:0")
-    if condim is not None:
-        model.steel.condim.fill_(condim)
+    if friction_mode is not None:
+        model.shape_material_friction_mode.fill_(int(friction_mode))
     return model
 
 
@@ -2496,8 +2496,8 @@ class TestSteelSparseSolver(unittest.TestCase):
         )
 
     def test_free_body_angular_rows_keep_dense_factors(self):
-        """Keep dense factors, and solve the angular rows, when a free body has ``steel:condim`` 6."""
-        model = _build_model(free_count=1, condim=6)
+        """Keep dense factors, and solve the angular rows, when a free body has the rolling friction mode."""
+        model = _build_model(free_count=1, friction_mode=newton.ShapeFrictionMode.ROLLING)
         solver = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
         self.assertTrue(solver._free_rigid_angular_rows)
         self.assertIsNone(solver._sparse_mass_matrix_size)

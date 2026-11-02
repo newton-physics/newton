@@ -110,6 +110,33 @@ def _local_point(q: wp.array[wp.transform], body: int, point: wp.vec3):
     return result
 
 
+@wp.func
+def free_rigid_angular_friction_coefficients(
+    shape_a: int,
+    shape_b: int,
+    shape_material_friction_mode: wp.array[wp.int32],
+    free_rigid_mu_torsional: wp.array[float],
+    free_rigid_mu_rolling: wp.array[float],
+):
+    """Return a free-rigid pair's torsional and rolling coefficients [m], as the pair's friction mode enables them.
+
+    Each enabled coefficient is the larger of the two shapes' values; a disabled one is zero.
+    """
+    mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
+    torsional = float(0.0)
+    rolling = float(0.0)
+    if mode >= int(ShapeFrictionMode.TORSIONAL):
+        if shape_a >= 0:
+            torsional = wp.max(torsional, free_rigid_mu_torsional[shape_a])
+            rolling = wp.max(rolling, free_rigid_mu_rolling[shape_a])
+        if shape_b >= 0:
+            torsional = wp.max(torsional, free_rigid_mu_torsional[shape_b])
+            rolling = wp.max(rolling, free_rigid_mu_rolling[shape_b])
+    if mode < int(ShapeFrictionMode.ROLLING):
+        rolling = 0.0
+    return torsional, rolling
+
+
 @wp.kernel(enable_backward=False)
 def _prepare(
     count: wp.array[int],
@@ -219,14 +246,10 @@ def _prepare(
     if free_rigid_route and b >= 0:
         free_rigid_route = free_rigid_route_body[b] != 0
     if free_rigid_route:
-        for side in range(2):
-            shape = sa
-            if side == 1:
-                shape = sb
-            if shape >= 0:
-                angular = wp.vec2(
-                    wp.max(angular[0], shape_mu_torsional[shape]), wp.max(angular[1], shape_mu_rolling[shape])
-                )
+        torsional, rolling = free_rigid_angular_friction_coefficients(
+            sa, sb, shape_material_friction_mode, shape_mu_torsional, shape_mu_rolling
+        )
+        angular = wp.vec2(torsional, rolling)
     frame.angular[c] = angular
     r = float(1.0e10)
     if a >= 0:
@@ -1382,7 +1405,7 @@ class _FrictionPatchState:
     ):
         """Build this step's friction patches.
 
-        ``angular_mu`` is ``(torsional, rolling, route)`` with free-rigid angular rows: the gated per-shape
+        ``angular_mu`` is ``(torsional, rolling, route)`` with free-rigid angular rows: the per-shape
         coefficients [m] and a per-body flag of the bodies whose contacts take the free-rigid route. Such
         contacts then share a patch only if their pair coefficients match.
         """

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental rolling and spin friction rows on SolverSteel free-body contacts (``steel:condim``)."""
+"""Experimental rolling and spin friction rows on SolverSteel free-body contacts (``ShapeFrictionMode``)."""
 
 import math
 import unittest
@@ -30,11 +30,14 @@ _GRAVITY = 9.81
 _ROLLING = {"linear": (0.0, -0.3, 0.0), "angular": (10.0, 0.0, 0.0)}
 # Principal moments 0.6, 1 and 1.4 with an x-z product: a physically valid anisotropic inertia.
 _ANISOTROPIC = np.array([[1.0, 0.0, 0.4], [0.0, 1.0, 0.0], [0.4, 0.0, 1.0]])
+_SLIDING = newton.ShapeFrictionMode.SLIDING
+_TORSIONAL = newton.ShapeFrictionMode.TORSIONAL
+_ROLLING_MODE = newton.ShapeFrictionMode.ROLLING
 
 
 def _rows(rolling: float = 0.0, torsional: float = 0.0) -> dict:
-    """Return ``_simulate`` options that give every shape condim 6 with these coefficients [m]."""
-    return {"condim": 6, "rolling_material": rolling, "torsional_material": torsional}
+    """Return ``_simulate`` options that give every shape the rolling mode with these coefficients [m]."""
+    return {"friction_mode": _ROLLING_MODE, "rolling_material": rolling, "torsional_material": torsional}
 
 
 def _coulomb_stopping_distance(speed: float, rolling: float) -> float:
@@ -92,7 +95,7 @@ def _simulate(
     rolling_material=None,
     torsional_material=None,
     sliding_material=None,
-    condim=None,
+    friction_mode=None,
     count=1,
     support_angular=None,
     observe=None,
@@ -111,8 +114,10 @@ def _simulate(
         model.shape_material_mu_torsional.fill_(torsional_material)
     if sliding_material is not None:
         model.shape_material_mu.fill_(sliding_material)
-    if condim is not None:
-        model.steel.condim.fill_(condim)
+    if friction_mode is not None:
+        # One mode for every shape, or one per shape (table first).
+        modes = np.broadcast_to(np.asarray(friction_mode, dtype=np.int32), (model.shape_count,))
+        model.shape_material_friction_mode.assign(np.ascontiguousarray(modes))
     options = {"solve_mode": "matrix_free", "iterations": 32, "deterministic": _RUN_TO_RUN, **solver_kwargs}
     solver = SolverSteel(model, **options)
     if on_solver is not None:
@@ -177,7 +182,7 @@ def _simulate(
 @unittest.skipUnless(wp.is_cuda_available(), "Steel matrix-free requires CUDA")
 class TestFreeRigidAngularFriction(unittest.TestCase):
     def test_rolling_sphere_stops_at_the_coulomb_distance(self):
-        """Stop a rolling sphere within 5% of the analytic Coulomb distance; keep it rolling at condim 3."""
+        """Stop a rolling sphere within 5% of the analytic Coulomb distance; keep it rolling with sliding friction."""
         _, twist_free, travel_free = _simulate("sphere", 0.5, rolling_material=0.004, **_ROLLING)
         self.assertGreater(np.linalg.norm(twist_free[3:6]), 9.0)
         self.assertGreater(travel_free, 0.12)
@@ -188,16 +193,16 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 expected = _coulomb_stopping_distance(0.3, rolling)
                 self.assertAlmostEqual(travel, expected, delta=0.05 * expected)
 
-    def test_condim_selects_the_rows(self):
-        """Add a spin row at condim 4 and a rolling pair at 6, from the builder's default coefficients."""
-        for condim, expected in ((3, 3), (4, 4), (6, 6)):
+    def test_friction_mode_selects_the_rows(self):
+        """Add a spin row for the torsional mode and a rolling pair for rolling, from the default coefficients."""
+        for mode, expected in ((_SLIDING, 3), (_TORSIONAL, 4), (_ROLLING_MODE, 6)):
             seen = {}
 
             def observe(solver, contacts, observables, seen=seen):
                 seen["slots"] = int(solver._contact_slots_needed.numpy()[0])
 
-            with self.subTest(condim=condim):
-                _simulate("sphere", 0.0, steps=1, condim=condim, observe=observe)
+            with self.subTest(mode=mode.name):
+                _simulate("sphere", 0.0, steps=1, friction_mode=mode, observe=observe)
                 self.assertEqual(seen["slots"], expected)
 
     def test_rows_exchange_equal_and_opposite_angular_impulse_between_free_bodies(self):
@@ -209,12 +214,14 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
         SolverSteel.register_custom_attributes(builder)
         inertia = wp.mat33(*(np.eye(3) * 0.4 * _MASS * _RADIUS**2).astype(np.float32).ravel())
-        cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0, mu_torsional=5.0e-4, mu_rolling=1.0e-3)
+        cfg = newton.ModelBuilder.ShapeConfig(
+            density=0.0, mu=0.0, mu_torsional=5.0e-4, mu_rolling=1.0e-3, friction_mode=_ROLLING_MODE
+        )
         for x in (-_RADIUS, _RADIUS):
             body = builder.add_body(
                 xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()), mass=_MASS, inertia=inertia, lock_inertia=True
             )
-            builder.add_shape_sphere(body, radius=_RADIUS, cfg=cfg, custom_attributes={"steel:condim": 6})
+            builder.add_shape_sphere(body, radius=_RADIUS, cfg=cfg)
         model = builder.finalize()
         model.steel.rigid_body_angular_damping.fill_(0.0)
         solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, deterministic=_RUN_TO_RUN)
@@ -244,9 +251,9 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         _, free, _ = _simulate("sphere", 0.2, angular=(0.0, 0.0, 6.0))
         self.assertGreater(free[5], 5.9)
         rate = torsional * _MASS * _GRAVITY / (0.4 * _MASS * _RADIUS**2)
-        for condim in (4, 6):
-            with self.subTest(condim=condim):
-                options = {"condim": condim, "torsional_material": torsional, "rolling_material": 0.0}
+        for mode in (_TORSIONAL, _ROLLING_MODE):
+            with self.subTest(mode=mode.name):
+                options = {"friction_mode": mode, "torsional_material": torsional, "rolling_material": 0.0}
                 _, twist, _ = _simulate("sphere", 0.2, angular=(0.0, 0.0, 6.0), **options)
                 self.assertAlmostEqual(twist[5], 6.0 - rate * 0.2, delta=0.1)
                 _, twist, _ = _simulate("sphere", 0.6, angular=(0.0, 0.0, 6.0), **options)
@@ -259,7 +266,12 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         """
         torsional = 5.0e-4
         rate = torsional * _MASS * _GRAVITY / (_MASS * (2.0 * _RADIUS) ** 2 / 6.0)
-        options = {"angular": (0.0, 0.0, 6.0), "condim": 4, "torsional_material": torsional, "sliding_material": 0.0}
+        options = {
+            "angular": (0.0, 0.0, 6.0),
+            "friction_mode": _TORSIONAL,
+            "torsional_material": torsional,
+            "sliding_material": 0.0,
+        }
         for beta in (0.0, 0.2):
             with self.subTest(friction_anchor_beta=beta):
                 _, twist, _ = _simulate("box", 0.2, friction_anchor_beta=beta, **options)
@@ -290,7 +302,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 self.assertLessEqual(energy(twist), energy(twist_free) * (1.0 + 1.0e-4))
 
     def test_spin_is_relative_to_a_turning_support(self):
-        """Spin a resting sphere up to a kinematic turntable's rate at mu_s m g / I; leave it still at condim 3."""
+        """Spin a resting sphere up to a kinematic turntable's rate at mu_s m g / I; leave it still when sliding."""
         torsional = 5.0e-4
         table = (0.0, 0.0, 2.0)
         _, free, _ = _simulate("sphere", 0.5, support_angular=table, torsional_material=torsional)
@@ -323,10 +335,10 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                     self.assertAlmostEqual(rotated_travel, travel, delta=1.0e-4)
 
     def test_patch_angular_rows_do_not_depend_on_contact_order(self):
-        """Keep each material's angular rows when two shapes of one body with different condim rest side by side,
+        """Keep each material's angular rows when two shapes of one body with different modes rest side by side,
         whichever shape's contacts come first."""
         results = []
-        for order in ((3, 6), (6, 3)):
+        for order in ((_SLIDING, _ROLLING_MODE), (_ROLLING_MODE, _SLIDING)):
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             SolverSteel.register_custom_attributes(builder)
             table = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
@@ -339,16 +351,17 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 lock_inertia=True,
             )
             shapes = {}
-            for condim in order:
-                x = -0.02 if condim == 3 else 0.02
-                shapes[condim] = builder.add_shape_box(
+            for mode in order:
+                x = -0.02 if mode == _SLIDING else 0.02
+                shapes[mode] = builder.add_shape_box(
                     body,
                     xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
                     hx=0.02,
                     hy=0.02,
                     hz=0.02,
-                    cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu_torsional=0.01, mu_rolling=0.002),
-                    custom_attributes={"steel:condim": condim},
+                    cfg=newton.ModelBuilder.ShapeConfig(
+                        density=0.0, mu_torsional=0.01, mu_rolling=0.002, friction_mode=mode
+                    ),
                 )
             model = builder.finalize()
             solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, friction_anchor_beta=0.2)
@@ -365,16 +378,16 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             shape1 = contacts.rigid_contact_shape1.numpy()[:count]
             slots = solver._contact_slots_needed.numpy()[:count]
             angular = {}
-            for condim, shape in shapes.items():
+            for mode, shape in shapes.items():
                 mask = (shape0 == shape) | (shape1 == shape)
-                angular[condim] = int(np.count_nonzero(slots[mask] == 6))
+                angular[mode] = int(np.count_nonzero(slots[mask] == 6))
             results.append(angular)
         for angular in results:
-            self.assertEqual(angular[3], 0)
-            self.assertEqual(angular[6], 1)
+            self.assertEqual(angular[_SLIDING], 0)
+            self.assertEqual(angular[_ROLLING_MODE], 1)
 
-    def test_articulated_contacts_group_patches_regardless_of_condim(self):
-        """Group an articulated body's patches as without angular rows: mixed condim matches the condim 3 control."""
+    def test_articulated_contacts_group_patches_regardless_of_friction_mode(self):
+        """Group an articulated body's patches as without angular rows: mixed modes match the sliding control."""
         seen = {}
         for mixed in (False, True):
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -392,8 +405,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             builder.add_shape_sphere(
                 free,
                 radius=_RADIUS,
-                cfg=newton.ModelBuilder.ShapeConfig(density=0.0),
-                custom_attributes={"steel:condim": 6 if mixed else 3},
+                cfg=newton.ModelBuilder.ShapeConfig(density=0.0, friction_mode=_ROLLING_MODE if mixed else _SLIDING),
             )
             inertia = wp.mat33(*(np.eye(3) * 1.0e-4).astype(np.float32).ravel())
             link = builder.add_link(mass=_MASS, inertia=inertia, lock_inertia=True)
@@ -401,15 +413,16 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 -1, link, parent_xform=wp.transform((0.0, 0.0, 0.0201), wp.quat_identity()), axis=newton.Axis.X
             )
             builder.add_articulation([joint])
-            for x, condim in ((-0.02, 3), (0.02, 6 if mixed else 3)):
+            for x, mode in ((-0.02, _SLIDING), (0.02, _ROLLING_MODE if mixed else _SLIDING)):
                 builder.add_shape_box(
                     link,
                     xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
                     hx=0.02,
                     hy=0.02,
                     hz=0.02,
-                    cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu_torsional=0.01, mu_rolling=0.002),
-                    custom_attributes={"steel:condim": condim},
+                    cfg=newton.ModelBuilder.ShapeConfig(
+                        density=0.0, mu_torsional=0.01, mu_rolling=0.002, friction_mode=mode
+                    ),
                 )
             model = builder.finalize()
             solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, friction_anchor_beta=0.2)
@@ -433,7 +446,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertEqual(seen[True], seen[False])
 
     def test_toppling_and_sliding_cube_are_unchanged(self):
-        """Leave a toppling or sliding cube within 2 mm of the condim 3 pose; the spinning cube slows at most."""
+        """Leave a toppling or sliding cube within 2 mm of the sliding-mode pose; the spinning cube slows at most."""
         for kwargs in ({"tilt_deg": 40.0}, {"linear": (0.5, 0.0, 0.0)}, {"angular": (0.0, 0.0, 6.0)}):
             with self.subTest(**kwargs):
                 pose_free, _, _ = _simulate("box", 0.5, **kwargs)
@@ -517,13 +530,13 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             row = int(slots[int(np.flatnonzero(needed == 6)[0])])
             seen["mu"] = solver._mf_row_mu.numpy()[0][[row + 1, row + 3, row + 5]]
 
-        _simulate("sphere", 0.0, steps=1, condim=6, on_solver=on_solver, observe=observe)
+        _simulate("sphere", 0.0, steps=1, friction_mode=_ROLLING_MODE, on_solver=on_solver, observe=observe)
         np.testing.assert_array_equal(seen["mu"], [(mu[0] + mu[1]) / np.float32(2.0), rolling.max(), torsional.max()])
 
     def test_shape_notify_inside_graph_capture_refreshes_coefficients(self):
         """Capture a shape-property notify that changes mu_rolling, and replay it into the rows' bound."""
         model, _ = _scene("sphere")
-        model.steel.condim.fill_(6)
+        model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         model.shape_material_mu_rolling.fill_(0.001)
         solver = SolverSteel(model, solve_mode="matrix_free")
         with wp.ScopedCapture(device=model.device) as capture:
@@ -532,18 +545,18 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         wp.capture_launch(capture.graph)
         np.testing.assert_allclose(solver._free_rigid_mu_rolling.numpy()[: model.shape_count], 0.003)
 
-    def test_default_condim_and_zero_coefficients_match_the_base(self):
-        """Match the default bit for bit at condim 3, and add no rows for zero coefficients at condim 6."""
+    def test_sliding_mode_and_zero_coefficients_match_the_base(self):
+        """Match the default bit for bit with sliding friction, and add no rows for zero rolling-mode coefficients."""
         default, _, _ = _simulate("sphere", 0.3, **_ROLLING)
-        condim3, _, _ = _simulate("sphere", 0.3, condim=3, **_ROLLING)
+        sliding, _, _ = _simulate("sphere", 0.3, friction_mode=_SLIDING, **_ROLLING)
         zero, _, _ = _simulate("sphere", 0.3, **_rows(), **_ROLLING)
-        np.testing.assert_array_equal(default, condim3)
+        np.testing.assert_array_equal(default, sliding)
         np.testing.assert_array_equal(default, zero)
 
     def test_inactive_friction_zeroes_both_rows_of_each_pair(self):
         """Hold both rows of a sliding and a rolling pair at zero until friction activates, then solve both."""
         model, _ = _scene("sphere")
-        model.steel.condim.fill_(6)
+        model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         model.shape_material_mu_rolling.fill_(0.002)
         model.shape_material_mu_torsional.fill_(0.0)
         solver = SolverSteel(
@@ -616,20 +629,24 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
 
         Rotated FREE root anchors put the rows' Jacobians in the anchor frame; the reported wrench stays world-frame.
         """
-        cases = [(c, a, d) for c, a in ((4, (0.0, 0.0, 60.0)), (6, (100.0, 0.0, 0.0))) for d in (None, 90.0, 30.0)]
-        for condim, angular, anchor_deg in cases:
+        cases = [
+            (m, a, d)
+            for m, a in ((_TORSIONAL, (0.0, 0.0, 60.0)), (_ROLLING_MODE, (100.0, 0.0, 0.0)))
+            for d in (None, 90.0, 30.0)
+        ]
+        for mode, angular, anchor_deg in cases:
             seen = {}
 
             def observe(solver, contacts, observables, seen=seen):
                 seen["parent_f"] = observables.body_parent_f.numpy()[1]
 
-            with self.subTest(condim=condim, anchor_deg=anchor_deg):
+            with self.subTest(mode=mode.name, anchor_deg=anchor_deg):
                 _, twist, _ = _simulate(
                     "sphere",
                     0.0,
                     steps=2,
                     angular=angular,
-                    condim=condim,
+                    friction_mode=mode,
                     rolling_material=0.01,
                     torsional_material=0.01,
                     parent_f=True,
@@ -639,38 +656,106 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 self.assertLess(np.linalg.norm(twist[3:6]), 0.99 * np.linalg.norm(angular))
                 np.testing.assert_allclose(seen["parent_f"], 0.0, atol=1.0e-5)
 
-    def test_invalid_options_raise(self):
-        """Reject invalid condim values and unsupported options; a solver without the rows ignores condim edits."""
+    def test_pair_takes_the_higher_mode_and_the_larger_coefficient(self):
+        """Enable the rows by the higher mode of the pair, and bound them by the larger coefficient of both shapes.
+
+        The sliding table's coefficients count once the sphere's mode enables a row, and a rolling table gives a
+        sliding sphere the rows too.
+        """
+        torsional = np.array([0.004, 0.002], dtype=np.float32)
+        rolling = np.array([0.003, 0.001], dtype=np.float32)
+        for modes, expected in (
+            ((_SLIDING, _ROLLING_MODE), 6),
+            ((_ROLLING_MODE, _SLIDING), 6),
+            ((_SLIDING, _TORSIONAL), 4),
+        ):
+            seen = {}
+
+            def on_solver(solver):
+                solver.model.shape_material_mu_torsional.assign(torsional)
+                solver.model.shape_material_mu_rolling.assign(rolling)
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+            def observe(solver, contacts, observables, seen=seen):
+                slot = int(solver._contact_slot.numpy()[0])
+                seen["slots"] = int(solver._contact_slots_needed.numpy()[0])
+                seen["mu"] = solver._mf_row_mu.numpy()[0][slot + 3 : slot + seen["slots"]]
+
+            with self.subTest(table=modes[0].name, sphere=modes[1].name):
+                _simulate("sphere", 0.0, steps=1, friction_mode=modes, on_solver=on_solver, observe=observe)
+                self.assertEqual(seen["slots"], expected)
+                if expected == 6:
+                    np.testing.assert_array_equal(seen["mu"], [rolling.max(), rolling.max(), torsional.max()])
+                else:
+                    np.testing.assert_array_equal(seen["mu"], [torsional.max()])
+
+    def test_rows_need_a_free_body_route_shape_above_sliding(self):
+        """Build no rows for torsional shapes only on articulated bodies, and for a model without free bodies."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverSteel.register_custom_attributes(builder)
+        builder.add_ground_plane()
+        link = builder.add_link(mass=_MASS, inertia=wp.mat33(*(np.eye(3) * 1.0e-4).ravel()), lock_inertia=True)
+        joint = builder.add_joint_prismatic(
+            -1, link, parent_xform=wp.transform((0.0, 0.0, 0.0201), wp.quat_identity()), axis=newton.Axis.X
+        )
+        builder.add_articulation([joint])
+        builder.add_shape_box(
+            link,
+            hx=0.02,
+            hy=0.02,
+            hz=0.02,
+            cfg=newton.ModelBuilder.ShapeConfig(density=0.0, friction_mode=_ROLLING_MODE),
+        )
+        free = builder.add_body(
+            xform=wp.transform((0.5, 0.0, _RADIUS), wp.quat_identity()),
+            mass=_MASS,
+            inertia=wp.mat33(*(np.eye(3) * 1.0e-4).ravel()),
+            lock_inertia=True,
+        )
+        builder.add_shape_sphere(free, radius=_RADIUS, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+        model = builder.finalize()
+        with self.assertWarns(newton.NewtonWarning):
+            solver = SolverSteel(model, solve_mode="matrix_free")
+        self.assertFalse(solver._free_rigid_angular_rows)
+        # A rolling ground reaches the free sphere's contacts.
+        modes = model.shape_material_friction_mode.numpy()
+        modes[0] = int(_ROLLING_MODE)
+        model.shape_material_friction_mode.assign(modes)
+        self.assertTrue(SolverSteel(model, solve_mode="matrix_free")._free_rigid_angular_rows)
+
+    def test_invalid_values_raise_and_unsupported_options_warn(self):
+        """Reject invalid modes and coefficients; warn and leave the rows off for unsupported options."""
         model, _ = _scene("sphere")
-        model.steel.condim.fill_(6)
+        model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         for options, option in (
             ({"solve_mode": "split"}, "solve_mode='split'"),
-            # Point friction: bisection with persistent patches would warn before the rejection under test.
+            # Point friction: bisection with persistent patches would warn before the warning under test.
             ({"friction_mode": "bisection", "friction_anchor_beta": 0.0}, "friction_mode='bisection'"),
             ({"articulated_contact_response": "propagation"}, "articulated_contact_response='propagation'"),
         ):
-            with self.subTest(option=option), self.assertRaisesRegex(NotImplementedError, option):
-                SolverSteel(model, **{"solve_mode": "matrix_free", **options})
-        for condim in (0, 1, 2, 5, 7):
-            model.steel.condim.fill_(condim)
-            with self.subTest(condim=condim), self.assertRaisesRegex(ValueError, "3, 4 or 6"):
+            with self.subTest(option=option), self.assertWarnsRegex(newton.NewtonWarning, option):
+                solver = SolverSteel(model, **{"solve_mode": "matrix_free", **options})
+            self.assertFalse(solver._free_rigid_angular_rows)
+        for mode in (-1, 4):
+            model.shape_material_friction_mode.fill_(mode)
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "ShapeFrictionMode value"):
                 SolverSteel(model, solve_mode="matrix_free")
-        model.steel.condim.fill_(6)
+        model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         solver = SolverSteel(model, solve_mode="matrix_free")
-        model.steel.condim.fill_(5)
+        model.shape_material_friction_mode.fill_(4)
         spatial_inertia = solver._body_I_m.numpy()
         model.body_mass.assign(2.0 * model.body_mass.numpy())
         flags = newton.ModelFlags.SHAPE_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
-        with self.assertRaisesRegex(ValueError, "3, 4 or 6"):
+        with self.assertRaisesRegex(ValueError, "ShapeFrictionMode value"):
             solver.notify_model_changed(flags)
         # The check raises after the notification's other updates are applied.
         self.assertFalse(np.array_equal(solver._body_I_m.numpy(), spatial_inertia))
-        # Reject an invalid coefficient that a shape's condim enables, at construction and at notify.
-        for name, condim in (("shape_material_mu_torsional", 4), ("shape_material_mu_rolling", 6)):
+        # Reject an invalid coefficient that a mode enables, at construction and at notify.
+        for name, mode in (("shape_material_mu_torsional", _TORSIONAL), ("shape_material_mu_rolling", _ROLLING_MODE)):
             array = getattr(model, name)
             original = array.numpy()
             for value in (-1.0e-3, np.nan):
-                model.steel.condim.fill_(condim)
+                model.shape_material_friction_mode.fill_(int(mode))
                 array.fill_(value)
                 with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
                     SolverSteel(model, solve_mode="matrix_free")
@@ -680,16 +765,16 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 with self.subTest(name=name, value=value, notify=True), self.assertRaisesRegex(ValueError, name):
                     solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
                 array.assign(original)
-        # A coefficient the shape's condim leaves off is not read.
-        model.steel.condim.fill_(4)
+        # A coefficient that no mode enables is not read.
+        model.shape_material_friction_mode.fill_(int(_TORSIONAL))
         model.shape_material_mu_rolling.fill_(-1.0)
         SolverSteel(model, solve_mode="matrix_free")
         model.shape_material_mu_rolling.fill_(0.0)
-        # A solver built without the rows ignores later condim edits.
-        model.steel.condim.fill_(3)
+        # A solver built without the rows ignores later mode edits.
+        model.shape_material_friction_mode.fill_(int(_SLIDING))
         solver = SolverSteel(model, solve_mode="matrix_free")
-        for condim in (5, 6):
-            model.steel.condim.fill_(condim)
+        for mode in (4, int(_ROLLING_MODE)):
+            model.shape_material_friction_mode.fill_(mode)
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         self.assertFalse(solver._free_rigid_angular_rows)
 
@@ -749,6 +834,7 @@ def test_linear_row_builder_leaves_the_angular_rows(test, device):
             ints(0),
             0,
             floats(0.5),
+            wp.full((1,), int(_SLIDING), dtype=wp.int32, device=device),
             ints(6),
             floats(0.0),
             patches,
@@ -781,49 +867,31 @@ add_function_test(
 )
 
 
+@unittest.skipUnless(wp.is_cuda_available(), "Steel matrix-free requires CUDA")
 class TestFreeRigidAngularFrictionImport(unittest.TestCase):
-    """MJCF ``condim`` stays with MuJoCo: registering the Steel attributes never enables angular rows."""
-
-    def test_mjcf_condim_does_not_enable_angular_rows(self):
-        """Leave the registered ``steel:condim`` at 3 for an MJCF condim of 6, direct or inherited."""
+    def test_mjcf_condim_enables_the_rows(self):
+        """Give an MJCF sphere with condim 6, direct or inherited, the rolling pair and spin row."""
         for inherited in (False, True):
             with self.subTest(inherited=inherited):
                 default = '<default><geom condim="6"/></default>' if inherited else ""
                 geom = "" if inherited else ' condim="6"'
                 mjcf = (
                     f"<mujoco>{default}<worldbody>"
-                    '<geom type="plane" size="1 1 0.1"/>'
-                    f'<body pos="0 0 0.1"><freejoint/><geom type="sphere" size="0.03"{geom}/></body>'
+                    '<geom type="plane" size="1 1 0.1" condim="3"/>'
+                    f'<body pos="0 0 0.0299"><freejoint/><geom type="sphere" size="0.03"{geom}/></body>'
                     "</worldbody></mujoco>"
                 )
                 builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
                 SolverSteel.register_custom_attributes(builder)
                 builder.add_mjcf(mjcf)
-                model = builder.finalize(device="cpu")
-                np.testing.assert_array_equal(model.steel.condim.numpy(), 3)
-
-    def test_usd_reads_the_authored_steel_condim(self):
-        """Read ``newton:steel:condim`` from a USD shape and leave unauthored shapes at 3."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-        for name, authored in (("ball", 6), ("plain", None)):
-            xform = UsdGeom.Xform.Define(stage, f"/{name}")
-            UsdPhysics.RigidBodyAPI.Apply(xform.GetPrim())
-            sphere = UsdGeom.Sphere.Define(stage, f"/{name}/geom")
-            UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
-            if authored is not None:
-                sphere.GetPrim().CreateAttribute("newton:steel:condim", Sdf.ValueTypeNames.Int).Set(authored)
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        SolverSteel.register_custom_attributes(builder)
-        builder.add_usd(stage)
-        model = builder.finalize(device="cpu")
-        labels = list(model.shape_label)
-        condim = model.steel.condim.numpy()
-        self.assertEqual(int(condim[next(i for i, label in enumerate(labels) if label.startswith("/ball"))]), 6)
-        self.assertEqual(int(condim[next(i for i, label in enumerate(labels) if label.startswith("/plain"))]), 3)
+                model = builder.finalize()
+                solver = SolverSteel(model, solve_mode="matrix_free")
+                pipeline = newton.CollisionPipeline(model)
+                contacts = pipeline.contacts()
+                state_0, state_1 = model.state(), model.state()
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, model.control(), contacts, _DT)
+                self.assertEqual(int(solver._contact_slots_needed.numpy()[0]), 6)
 
 
 if __name__ == "__main__":

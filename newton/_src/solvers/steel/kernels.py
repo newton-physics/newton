@@ -15,7 +15,12 @@ from ...sim.contacts import GENERATION_SENTINEL
 from ..featherstone.kernels import jcalc_motion
 from ..solver import contact_friction_mode
 from .friction import contact_tangent_basis, friction_pair_candidate
-from .friction_patches import WARP_DETERMINISM_OFF, FrictionPatches, warmstart_dt_scale
+from .friction_patches import (
+    WARP_DETERMINISM_OFF,
+    FrictionPatches,
+    free_rigid_angular_friction_coefficients,
+    warmstart_dt_scale,
+)
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
 wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
@@ -4144,25 +4149,6 @@ def contact_row_points(
 
 
 @wp.func
-def free_rigid_angular_friction_coefficients(
-    shape_a: int,
-    shape_b: int,
-    free_rigid_mu_torsional: wp.array[float],
-    free_rigid_mu_rolling: wp.array[float],
-):
-    """Return a free-rigid pair's torsional and rolling coefficients [m]: the larger of its shapes' gated values."""
-    torsional = float(0.0)
-    rolling = float(0.0)
-    if shape_a >= 0:
-        torsional = wp.max(torsional, free_rigid_mu_torsional[shape_a])
-        rolling = wp.max(rolling, free_rigid_mu_rolling[shape_a])
-    if shape_b >= 0:
-        torsional = wp.max(torsional, free_rigid_mu_torsional[shape_b])
-        rolling = wp.max(rolling, free_rigid_mu_rolling[shape_b])
-    return torsional, rolling
-
-
-@wp.func
 def free_rigid_angular_slots(torsional: float, rolling: float):
     """Return a free-body contact's row count with sliding friction: normal, sliding pair, rolling pair, spin."""
     slots = int(3)
@@ -4232,6 +4218,7 @@ def _allocate_world_contact_slot(
     contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
     free_rigid_angular: int,
+    shape_material_friction_mode: wp.array[wp.int32],
     free_rigid_mu_torsional: wp.array[float],
     free_rigid_mu_rolling: wp.array[float],
     classify_only: int,
@@ -4401,7 +4388,11 @@ def _allocate_world_contact_slot(
             and (friction_patches.enabled == 0 or _first_patch_anchor(friction_patches, c))
         ):
             torsional, rolling = free_rigid_angular_friction_coefficients(
-                contact_shape0[c], contact_shape1[c], free_rigid_mu_torsional, free_rigid_mu_rolling
+                contact_shape0[c],
+                contact_shape1[c],
+                shape_material_friction_mode,
+                free_rigid_mu_torsional,
+                free_rigid_mu_rolling,
             )
             slots_needed = free_rigid_angular_slots(torsional, rolling)
     if (
@@ -4494,6 +4485,7 @@ def allocate_world_contact_slots(
     contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
     free_rigid_angular: int,
+    shape_material_friction_mode: wp.array[wp.int32],
     free_rigid_mu_torsional: wp.array[float],
     free_rigid_mu_rolling: wp.array[float],
     classify_only: int,
@@ -4568,6 +4560,7 @@ def allocate_world_contact_slots(
             contact_friction_gap_limit,
             friction_patches,
             free_rigid_angular,
+            shape_material_friction_mode,
             free_rigid_mu_torsional,
             free_rigid_mu_rolling,
             classify_only,
@@ -6390,23 +6383,17 @@ def build_mf_contact_rows(
 
 
 @wp.kernel
-def gate_free_rigid_angular_coefficients(
-    shape_condim: wp.array[wp.int32],
+def clamp_free_rigid_angular_coefficients(
     shape_mu_torsional: wp.array[float],
     shape_mu_rolling: wp.array[float],
     # outputs
     free_rigid_mu_torsional: wp.array[float],
     free_rigid_mu_rolling: wp.array[float],
 ):
-    """Write each shape's free-rigid coefficients [m]: torsional from ``condim`` 4, rolling from 6, else zero."""
+    """Copy each shape's torsional and rolling coefficients [m], with a negative or non-finite value as zero."""
     shape = wp.tid()
-    condim = shape_condim[shape]
-    torsional = float(0.0)
-    rolling = float(0.0)
-    if condim >= 4:
-        torsional = shape_mu_torsional[shape]
-    if condim >= 6:
-        rolling = shape_mu_rolling[shape]
+    torsional = shape_mu_torsional[shape]
+    rolling = shape_mu_rolling[shape]
     if not wp.isfinite(torsional) or torsional < 0.0:
         torsional = 0.0
     if not wp.isfinite(rolling) or rolling < 0.0:
@@ -6433,6 +6420,7 @@ def build_mf_angular_friction_rows(
     body_v_s: wp.array[wp.spatial_vector],
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
+    shape_material_friction_mode: wp.array[wp.int32],
     free_rigid_mu_torsional: wp.array[float],
     free_rigid_mu_rolling: wp.array[float],
     # outputs
@@ -6462,7 +6450,7 @@ def build_mf_angular_friction_rows(
         shape_a = contact_shape0[c]
         shape_b = contact_shape1[c]
         torsional, rolling = free_rigid_angular_friction_coefficients(
-            shape_a, shape_b, free_rigid_mu_torsional, free_rigid_mu_rolling
+            shape_a, shape_b, shape_material_friction_mode, free_rigid_mu_torsional, free_rigid_mu_rolling
         )
         body_a = -1
         body_b = -1
