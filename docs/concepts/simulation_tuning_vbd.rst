@@ -236,6 +236,19 @@ existing shapes. Choose a gap that detects the required contacts reliably.
 If those contacts exceed the available capacity, increase the relevant
 :ref:`contact buffer <vbd-contact-buffers>`.
 
+**Collision filtering.** Directly jointed body pairs are filtered by default
+(``collision_filter_parent``), but other nearby cable segments can still
+overlap, especially with short segments or thick capsules. Unfiltered overlaps
+can produce unwanted contact forces from the first step. Inspect the initial
+geometry and add explicit exclusions for overlaps that should not produce
+contact forces, using :meth:`ModelBuilder.add_shape_collision_filter_pair`
+before ``finalize()``.
+
+Filtering additional neighbors along the cable can also reduce contact
+processing and buffer demand. Exclude only pairs whose collision response is
+unnecessary throughout the expected motion; preserve self-contact needed for
+folding and tight bends.
+
 **Normal support before friction.** Check penetration and normal-load support
 before increasing ``mu``. VBD mixes body–body ``ke`` and ``kd`` with an
 arithmetic mean and ``mu`` with a geometric mean, so one stiff shape can
