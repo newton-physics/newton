@@ -633,6 +633,50 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertLess(both_count, mesh_count, "group reduction kept as many contacts as mesh reduction")
         self.assertEqual(stats["input_overflow_frames"], 0)
 
+    def test_curved_mesh_patches_do_not_exhaust_default_table(self):
+        """Size the group table for mesh patches that spread over many bins and cells.
+
+        A hull sphere pressed into a triangle grid puts one shape pair's
+        contacts into dozens of (bin, cell) entries, which the pair topology
+        cannot predict. Replicated, that outgrows a topology-only table and
+        every frame would keep all contacts.
+        """
+        axis = np.linspace(-1.0, 1.0, 13, dtype=np.float32)
+        xx, yy = np.meshgrid(axis, axis, indexing="xy")
+        vertices = np.column_stack((xx.ravel(), yy.ravel(), np.zeros(xx.size, dtype=np.float32)))
+        triangles = []
+        for y in range(12):
+            for x in range(12):
+                i0 = y * 13 + x
+                triangles.extend(((i0, i0 + 1, i0 + 14), (i0, i0 + 14, i0 + 13)))
+        grid = newton.Mesh(vertices, np.asarray(triangles, dtype=np.int32), compute_inertia=False)
+        hull = newton.Mesh.create_sphere(
+            0.55, num_latitudes=24, num_longitudes=48, compute_normals=False, compute_uvs=False
+        )
+        cfg = newton.ModelBuilder.ShapeConfig(gap=0.002, margin=0.0)
+        world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        world.add_shape_mesh(body=-1, mesh=grid, cfg=cfg)
+        body = world.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.20)))
+        world.add_shape_convex_hull(body=body, mesh=hull, cfg=cfg)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.replicate(world, 48)
+        model = builder.finalize(device=wp.get_device())
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            rigid_contact_max=512 * 48,
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        stats = pipeline._body_pair_reducer.stats()
+        self.assertEqual(stats["input_overflow_frames"], 0)
+        self.assertGreater(stats["max_hashtable_entries"], 1024, "the scene does not outgrow a topology-only table")
+        self.assertEqual(stats["fallback_frames"], 0)
+        self.assertLess(stats["max_contacts_kept"], stats["max_contacts_in"])
+
     def test_body_pair_reduction_rejects_other_types(self):
         """Reject values that are not a BodyPairReductionConfig."""
         model = self._foot_model()

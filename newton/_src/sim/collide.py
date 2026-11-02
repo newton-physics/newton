@@ -2168,6 +2168,7 @@ class CollisionPipeline:
                     body_pair_reduction.material_attributes,
                     self.shape_pairs_filtered,
                     rigid_contact_max,
+                    has_mesh_like=has_meshes or has_heightfields,
                 )
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,

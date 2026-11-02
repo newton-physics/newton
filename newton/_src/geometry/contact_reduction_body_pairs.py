@@ -293,7 +293,13 @@ def build_reduction_group_pair_upper_bound(shape_body, shape_world, shape_active
 
 
 def build_group_reduction_config(
-    model, cell_size: float, hashtable_headroom: float, material_attributes, shape_pairs, rigid_contact_max: int
+    model,
+    cell_size: float,
+    hashtable_headroom: float,
+    material_attributes,
+    shape_pairs,
+    rigid_contact_max: int,
+    has_mesh_like: bool,
 ) -> tuple[GroupReductionConfig, int, int]:
     """Build the group-reduction settings for a pipeline.
 
@@ -304,6 +310,7 @@ def build_group_reduction_config(
         material_attributes: Per-shape attributes that split groups (see :func:`build_reduction_groups`).
         shape_pairs: The explicit broad-phase pair list, or ``None`` for the model's default pairs.
         rigid_contact_max: Staging capacity; also caps the table, since a group needs a contact.
+        has_mesh_like: Whether the scene has mesh or heightfield shapes.
 
     Returns:
         ``(config, group_pair_bound, hashtable_capacity_request)``.
@@ -336,7 +343,10 @@ def build_group_reduction_config(
     # A replicated scene can have one reachable pair per body, yet each pair spans
     # several bins and cells: reserve four patch entries per group at half load.
     group_budget = 8 * len(np.unique(shape_group))
-    capacity_request = int(max(group_pair_bound, group_budget) * float(hashtable_headroom))
+    # A curved mesh or heightfield patch spreads one pair over many bins and cells,
+    # which the topology cannot see, so also reserve one entry per eight staged contacts.
+    staged_budget = rigid_contact_max // 8 if has_mesh_like else 0
+    capacity_request = int(max(group_pair_bound, group_budget, staged_budget) * float(hashtable_headroom))
     capacity_request = max(1024, min(capacity_request, rigid_contact_max))
     config = GroupReductionConfig(
         shape_group=shape_group,
