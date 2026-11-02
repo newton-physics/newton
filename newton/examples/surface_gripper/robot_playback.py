@@ -197,19 +197,28 @@ def _load_playback(path: str | Path, num_arm_dofs: int) -> tuple[np.ndarray, np.
     return rec_times, rec_targets, rec_engaged, rec_preparing
 
 
+_SMOOTH_BLOCK_ROWS = 256  # output samples smoothed at once; bounds the weight matrix to block x N
+
+
 def _gaussian_smooth(times: np.ndarray, values: np.ndarray, sigma: float) -> np.ndarray:
     """Gaussian-smooth ``values`` ([N, D]) over the non-uniform sample ``times`` ([N]).
 
     Each output sample is a Gaussian-weighted average of all samples by *time* distance
     (``w_ij = exp(-((t_i - t_j) / sigma)^2 / 2)``), so it correctly handles the non-uniform sample
     rate. ``sigma <= 0`` returns the input unchanged.
+
+    The weights are built for a block of output samples at a time, so memory grows with N instead of N^2.
     """
     if sigma <= 0.0:
         return values
-    dt = times[:, None] - times[None, :]  # [N, N] pairwise time differences [s]
-    weights = np.exp(-0.5 * (dt / sigma) ** 2)  # Gaussian weights by time distance
-    weights /= weights.sum(axis=1, keepdims=True)  # normalize per output sample
-    return weights @ values  # [N, D] smoothed targets
+    smoothed = np.empty(values.shape, dtype=np.result_type(times, values, np.float32))  # [N, D] smoothed targets
+    for start in range(0, len(times), _SMOOTH_BLOCK_ROWS):
+        rows = slice(start, start + _SMOOTH_BLOCK_ROWS)
+        dt = times[rows, None] - times[None, :]  # [block, N] pairwise time differences [s]
+        weights = np.exp(-0.5 * (dt / sigma) ** 2)  # Gaussian weights by time distance
+        weights /= weights.sum(axis=1, keepdims=True)  # normalize per output sample
+        smoothed[rows] = weights @ values
+    return smoothed
 
 
 class RobotPlayback:
