@@ -29,6 +29,7 @@ from ..geometry.contact_reduction_body_pairs import (
     MAX_GROUP_ID,
     BodyPairContactReducer,
     build_reduction_group_pair_bound,
+    build_reduction_group_pair_upper_bound,
     build_reduction_groups,
 )
 from ..geometry.contact_reduction_global import CONTACT_ID_BITS
@@ -57,6 +58,8 @@ from ..sim.model import Model
 from ..sim.shape_contact_pairs import (
     _shape_contact_pair_count_for_mask,
     _shape_contact_pair_counts,
+    _shape_contact_pair_override,
+    _shape_contact_pair_topology,
     _shape_contact_pairs_for_mask,
 )
 from ..sim.state import State
@@ -1544,10 +1547,12 @@ class CollisionPipeline:
             if not np.isfinite(hashtable_headroom) or hashtable_headroom <= 0.0:
                 raise ValueError("BodyPairReductionConfig.hashtable_headroom must be finite and > 0")
             if self.material_attributes is not None:
-                if isinstance(self.material_attributes, str) or not all(
+                if not isinstance(self.material_attributes, (tuple, list)) or not all(
                     isinstance(name, str) for name in self.material_attributes
                 ):
-                    raise TypeError("BodyPairReductionConfig.material_attributes must be a sequence of str or None")
+                    raise TypeError(
+                        "BodyPairReductionConfig.material_attributes must be a tuple or list of str, or None"
+                    )
                 object.__setattr__(self, "material_attributes", tuple(self.material_attributes))
 
     def __init__(
@@ -2393,10 +2398,20 @@ class CollisionPipeline:
             shape_group, group_count = build_reduction_groups(model, body_pair_reduction.material_attributes)
             if group_count > MAX_GROUP_ID + 1:
                 raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
-            # Size the group table from the broad phase's own candidate pairs, built on the host.
-            candidate_pairs = _shape_contact_pairs_for_mask(
-                model, np.ones(model.shape_count, dtype=bool), shape_pairs=self.shape_pairs_filtered
-            )
+            # Size the group table from the broad phase's own candidate pairs; enumerate only an explicit list.
+            if self.shape_pairs_filtered is not None or _shape_contact_pair_override(model)[0]:
+                candidate_pairs = _shape_contact_pairs_for_mask(
+                    model, np.ones(model.shape_count, dtype=bool), shape_pairs=self.shape_pairs_filtered
+                )
+                group_pair_bound = build_reduction_group_pair_bound(candidate_pairs, shape_group)
+            else:
+                topology = _shape_contact_pair_topology(model)
+                group_pair_bound = min(
+                    int(_shape_contact_pair_counts(model).sum()),
+                    build_reduction_group_pair_upper_bound(
+                        topology.shape_body, topology.shape_world, topology._active(), shape_group
+                    ),
+                )
             self._body_pair_reducer = BodyPairContactReducer(
                 rigid_contact_max,
                 body_pair_reduction.cell_size,
@@ -2404,7 +2419,7 @@ class CollisionPipeline:
                 shape_group=shape_group,
                 up_axis=int(model.up_axis),
                 hashtable_headroom=body_pair_reduction.hashtable_headroom,
-                group_pair_bound=build_reduction_group_pair_bound(candidate_pairs, shape_group),
+                group_pair_bound=group_pair_bound,
                 borrowed_scratch=(self._contact_sorter.borrow_full_scratch() if self._contact_sorter else None),
                 preserve_sort_keys=deterministic and matching_enabled,
             )

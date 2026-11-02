@@ -218,7 +218,10 @@ def shape_material_attribute_names(model) -> tuple[str, ...]:
         sorted(
             name
             for name, spec in model._iter_attribute_specs()
-            if spec.frequency == Model.AttributeFrequency.SHAPE and spec.assignment == Model.AttributeAssignment.MODEL
+            # Model.add_attribute() leaves the assignment unset for model-owned attributes.
+            if spec.frequency == Model.AttributeFrequency.SHAPE
+            and spec.assignment in (None, Model.AttributeAssignment.MODEL)
+            and name not in Model._CORE_ATTRIBUTE_SPECS
         )
     )
 
@@ -275,9 +278,10 @@ def build_reduction_group_pair_bound(pairs: np.ndarray, shape_group) -> int:
     The reduction key is ``(group_a, group_b, normal bin, spatial cell)``.  This
     returns an EXACT upper bound on the pair dimension alone: the image of the
     candidate shape pairs under :func:`build_reduction_groups`, deduped the same
-    unordered way :func:`_make_group_key` packs it.  The caller passes the
-    explicit pair list in explicit broad-phase mode and the model's default
-    pairs otherwise, which SAP and NXN filter the same way.
+    unordered way :func:`_make_group_key` packs it.  The caller passes an
+    explicit pair list; the model's default pairs, which SAP and NXN use, are
+    bounded by :func:`build_reduction_group_pair_upper_bound` without being
+    enumerated.
 
     It bounds ONE dimension of the key, not the entry count, and is loose in
     both directions: a pair spread over several normal bins or spatial cells
@@ -305,6 +309,40 @@ def build_reduction_group_pair_bound(pairs: np.ndarray, shape_group) -> int:
     # Group ids are asserted below MAX_GROUP_ID (2**23) at pipeline construction,
     # so this packing stays far inside int64 and cannot alias two distinct pairs.
     return int(np.unique(lo * (int(sg.max()) + 1) + hi).size)
+
+
+def build_reduction_group_pair_upper_bound(shape_body, shape_world, shape_active, shape_group) -> int:
+    """Bound the distinct group pairs the model's default contact pairs can produce, in O(shape count).
+
+    Default pairs join shapes on different bodies in one world, or with a
+    global shape, and never two static shapes.  A dynamic group lives on one
+    body and a static group is one shape, so counting group pairs under the
+    same rules bounds :func:`build_reduction_group_pair_bound` of those pairs.
+
+    Args:
+        shape_body: Per-shape body index, ``-1`` for static shapes.
+        shape_world: Per-shape world index, ``-1`` for global shapes.
+        shape_active: Per-shape mask of shapes that take part in contact pairs.
+        shape_group: Per-shape group ids from :func:`build_reduction_groups`.
+
+    Returns:
+        An upper bound on the number of distinct unordered group pairs.
+    """
+    active = np.asarray(shape_active, dtype=bool)
+    groups = np.asarray(shape_group, dtype=np.int64)[active]
+    if groups.size == 0:
+        return 0
+    _, first = np.unique(groups, return_index=True)
+    group_world = np.asarray(shape_world, dtype=np.int64)[active][first] + 1
+    group_dynamic = np.asarray(shape_body, dtype=np.int64)[active][first] >= 0
+    slots = int(group_world.max()) + 1
+    # Slot 0 holds global groups, slot w + 1 the groups of world w.
+    dynamic = np.bincount(group_world[group_dynamic], minlength=slots).astype(np.int64)
+    static = np.bincount(group_world[~group_dynamic], minlength=slots).astype(np.int64)
+    dg, sg = int(dynamic[0]), int(static[0])
+    dw, sw = dynamic[1:], static[1:]
+    per_world = dw * (dw - 1) // 2 + dw * (sw + dg + sg) + sw * dg
+    return int(per_world.sum()) + dg * (dg - 1) // 2 + dg * sg
 
 
 @wp.func

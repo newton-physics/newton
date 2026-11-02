@@ -32,6 +32,7 @@ from newton._src.geometry.contact_reduction_body_pairs import (
     CELL_COORD_MAX,
     BodyPairContactReducer,
     _up_axis_rotation,
+    build_reduction_group_pair_bound,
 )
 from newton._src.sim.contacts import Contacts
 from newton.geometry import HydroelasticSDF
@@ -863,6 +864,35 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
         )
         self.assertEqual(explicit._body_pair_reducer.describe()["group_pair_bound"], 3)
 
+    def test_default_pair_bound_does_not_enumerate_pairs(self):
+        """Bound SAP and NXN group pairs without enumerating shape pairs, and never below the exact count."""
+        template = newton.ModelBuilder()
+        _cylinder_foot(template, wp.vec3(0.0, 0.0, 0.015))
+        body = template.add_body(xform=wp.transform(wp.vec3(0.5, 0.0, 0.02), wp.quat_identity()), mass=1.0)
+        template.add_shape_sphere(body, radius=0.01)
+        template.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(0.0, 0.5, 0.0), wp.quat_identity()), hx=0.1, hy=0.1, hz=0.1
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 3, spacing=(2.0, 0.0, 0.0))
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        topology = type(model._shape_contact_pair_data)
+        for broad_phase in ("nxn", "sap"):
+            with unittest.mock.patch.object(topology, "build_pairs", side_effect=AssertionError("enumerated pairs")):
+                pipeline = newton.CollisionPipeline(
+                    model,
+                    broad_phase=broad_phase,
+                    body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+                )
+            bound = pipeline._body_pair_reducer.describe()["group_pair_bound"]
+            exact = build_reduction_group_pair_bound(
+                model.shape_contact_pairs.numpy(), pipeline._body_pair_reducer.shape_group.numpy()
+            )
+            # Per world: foot-sphere, each body against the world's box and against the global ground.
+            self.assertEqual(exact, 15)
+            self.assertEqual(bound, exact, broad_phase)
+
     def test_headroom_scales_the_derived_capacity(self):
         """Scale the derived capacity by ``hashtable_headroom``."""
         model = self._scene(24)
@@ -1046,6 +1076,34 @@ class TestBodyPairReductionGrouping(unittest.TestCase):
         self.assertEqual(self._pad_contact_count(merged, pad), 0, "an unnamed attribute still split the group")
         with self.assertRaisesRegex(ValueError, "steel:missing"):
             _make_pipeline(model, True, body_pair_material_attributes=("steel:missing",))
+
+    def test_runtime_registered_attribute_splits_groups(self):
+        """Split groups on a per-shape attribute registered through ``Model.add_attribute()``."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0195), wp.quat_identity()), mass=1.0)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.02)
+        inner = builder.add_shape_box(body, hx=0.02, hy=0.02, hz=0.02)
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        radii = np.zeros(model.shape_count, dtype=np.float32)
+        radii[inner] = 0.05
+        model.add_attribute(
+            "min_torsional_patch_radius",
+            wp.array(radii, dtype=wp.float32, device=model.device),
+            frequency=newton.Model.AttributeFrequency.SHAPE,
+            namespace="steel",
+        )
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        for material_attributes in (None, ("steel:min_torsional_patch_radius",)):
+            contacts = _collide_once(
+                model, state, True, body_pair_cell_size=10.0, body_pair_material_attributes=material_attributes
+            )
+            self.assertGreater(
+                self._pad_contact_count(contacts, inner), 0, f"material_attributes={material_attributes!r}"
+            )
+        merged = _collide_once(model, state, True, body_pair_cell_size=10.0, body_pair_material_attributes=())
+        self.assertEqual(self._pad_contact_count(merged, inner), 0, "the scene does not exercise the split")
 
     def test_swapped_endpoints_share_one_group(self):
         """Merge one physical patch whose contacts arrive with both endpoint orders.
@@ -1256,8 +1314,9 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         ):
             with self.assertRaises(ValueError, msg=f"accepted invalid {kwargs}"):
                 _make_pipeline(model, True, **kwargs)
-        with self.assertRaises(TypeError):
-            _make_pipeline(model, True, body_pair_material_attributes="steel:min_torsional_patch_radius")
+        for material_attributes in ("steel:min_torsional_patch_radius", (name for name in ("steel:x",)), [1]):
+            with self.assertRaises(TypeError, msg=f"accepted material_attributes={material_attributes!r}"):
+                _make_pipeline(model, True, body_pair_material_attributes=material_attributes)
 
     def test_identity_frames_leave_buffer_untouched(self):
         """Detect no-benefit frames and skip compaction without changing results.
