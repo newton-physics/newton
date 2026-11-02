@@ -691,100 +691,67 @@ def compute_nodal_diagonalization(
     """
     row = wp.tid()
     diag_index = wps.bsr_block_index(row, row, offsets, columns)
-
-    # Thread-local arrays instead of n x n matrix values keep CUDA compilation of 27 x 27
-    # (Q2d) blocks from taking minutes, and a runtime `n` keeps the loops rolled.
-    # `a[i] += x` lowers to atomics on arrays, so updates are written out explicitly.
-    block_row = type(values.dtype(0.0)[0])(0.0)
-    n = basis_transform.shape[1]
-    scales = wp.zeros(shape=block_row.length, dtype=float)
-    test_scales = wp.zeros(shape=block_row.length, dtype=float)
-    coordinates = wp.zeros(shape=block_row.length, dtype=float)
-    modes = wp.zeros(shape=(block_row.length, block_row.length), dtype=float)  # one eigenvector per row
-    completion = wp.zeros(shape=(block_row.length, block_row.length), dtype=float)  # one supported direction per row
-    projector = wp.zeros(shape=(block_row.length, block_row.length), dtype=float)
-    transform = wp.zeros(shape=(block_row.length, block_row.length), dtype=float)
-    coefficient_transform = wp.zeros(shape=(block_row.length, block_row.length), dtype=float)
-    for k in range(n):
-        scales[k] = 1.0
+    transform = values.dtype(0.0)
+    coefficient_transform = values.dtype(0.0)
+    scales = type(transform[0])(1.0)
 
     if diag_index != -1:
         mass = values[diag_index]
         # A uniform spectral shift avoids singular QR pivots without changing
         # eigenvectors or regularizing the mass used by the solve.
         shift = _EIGENVALUE_FLOOR
-        shifted_mass = mass + wp.identity(n=block_row.length, dtype=float) * shift
-        eigenvalues, eigenvectors = fem.linalg.symmetric_eigenvalues_qr(shifted_mass, _QR_TOLERANCE)
-        eigenvalues -= type(eigenvalues)(shift)
-        finite = wp.ddot(eigenvectors, eigenvectors) < _NAN_THRESHOLD and wp.length_sq(eigenvalues) < _NAN_THRESHOLD
-        for k in range(n):
-            scales[k] = wp.where(finite, eigenvalues[k], mass[k, k])
-            for j in range(n):
-                modes[k, j] = wp.where(finite, eigenvectors[k, j], wp.where(k == j, 1.0, 0.0))
+        shifted_mass = mass + wp.identity(n=scales.length, dtype=float) * shift
+        scales, modes = fem.linalg.symmetric_eigenvalues_qr(shifted_mass, _QR_TOLERANCE)
+        scales -= type(scales)(shift)
+        if not (wp.ddot(modes, modes) < _NAN_THRESHOLD and wp.length_sq(scales) < _NAN_THRESHOLD):
+            scales = wp.get_diag(mass)
+            modes = wp.identity(n=scales.length, dtype=float)
 
-        reference_mass = 1.0 / float(n)
-        active_count = int(0)
-        for k in range(n):
+        full_rank = wp.min(scales) > _EIGENVALUE_FLOOR
+
+        reference_mass = 1.0 / float(scales.length)
+        active_count = int(scales.length)
+        test_scales = type(scales)(0.0)
+        coefficient_scales = type(scales)(0.0)
+        for k in range(scales.length):
             if scales[k] > _EIGENVALUE_FLOOR:
                 test_scales[k] = wp.sqrt(reference_mass / scales[k])
-                active_count += 1
-        full_rank = active_count == n
-
+                coefficient_scales[k] = 1.0 / test_scales[k]
+            else:
+                active_count -= 1
+        completion = values.dtype(0.0)
         if not full_rank and active_count > 0:
             # The projector is independent of arbitrary rotations of null eigenvectors.
-            for a in range(n):
-                for b in range(n):
-                    p = float(0.0)
-                    for k in range(n):
-                        if test_scales[k] > 0.0:
-                            p += modes[k, a] * modes[k, b]
-                    projector[a, b] = p
-            # Resolve roundoff-level pivot ties in nodal order.
-            pivot_tolerance = wp.static(32.0 * float(np.finfo(np.float32).eps)) * float(n)
+            projector = values.dtype(0.0)
+            for k in range(scales.length):
+                if scales[k] > _EIGENVALUE_FLOOR:
+                    projector += wp.outer(modes[k], modes[k])
             for i in range(active_count):
-                pivot = int(0)
-                for j in range(1, n):
-                    if projector[j, j] > projector[pivot, pivot]:
-                        pivot = j
+                diagonal = wp.get_diag(projector)
+                pivot = int(wp.argmax(diagonal))
+                # Resolve roundoff-level pivot ties in nodal order.
+                pivot_tolerance = wp.static(32.0 * float(np.finfo(np.float32).eps)) * float(scales.length)
                 for j in range(pivot):
-                    if projector[j, j] >= projector[pivot, pivot] - pivot_tolerance:
+                    if diagonal[j] >= diagonal[pivot] - pivot_tolerance:
                         pivot = j
                         break
-                norm_sq = float(0.0)
-                for j in range(n):
-                    norm_sq += projector[j, pivot] * projector[j, pivot]
-                norm = wp.sqrt(norm_sq)
-                for j in range(n):
-                    completion[i, j] = wp.where(norm > 0.0, projector[j, pivot] / norm, 0.0)
-                for a in range(n):
-                    for b in range(n):
-                        projector[a, b] = projector[a, b] - completion[i, a] * completion[i, b]
-
+                direction = wp.normalize(projector[:, pivot])
+                completion[:, i] = direction
+                projector -= wp.outer(direction, direction)
         for i in range(active_count):
-            for k in range(n):
-                coordinate = modes[k, i]
-                if not full_rank:
-                    coordinate = float(0.0)
-                    for j in range(n):
-                        coordinate += modes[k, j] * completion[i, j]
-                coordinates[k] = coordinate
-            for j in range(n):
-                test_value = float(0.0)
-                coefficient_value = float(0.0)
-                for k in range(n):
-                    if test_scales[k] > 0.0:
-                        test_value += coordinates[k] * test_scales[k] * modes[k, j]
-                        coefficient_value += coordinates[k] / test_scales[k] * modes[k, j]
-                transform[i, j] = test_value
-                coefficient_transform[i, j] = coefficient_value
+            coordinates = modes[:, i]
+            if not full_rank:
+                coordinates = modes * completion[:, i]
+            transform[i] = wp.cw_mul(coordinates, test_scales) * modes
+            coefficient_transform[i] = wp.cw_mul(coordinates, coefficient_scales) * modes
 
-        for k in range(n):
+        for k in range(scales.length):
             if k >= active_count:
                 scales[k] = 1.0
             else:
                 mean = float(0.0)
                 norm_sq = float(0.0)
-                for j in range(n):
+                for j in range(scales.length):
                     mean += transform[k, j] * ones[row, j]
                     norm_sq += transform[k, j] * transform[k, j]
                 # Rescaling keeps modes orthogonal. Give the unit field unit coefficients, and
@@ -792,13 +759,13 @@ def compute_nodal_diagonalization(
                 row_scale = wp.max(wp.abs(mean) / reference_mass, 1.0 / wp.sqrt(norm_sq))
                 scales[k] = reference_mass * row_scale * row_scale
                 orientation = wp.where(mean < 0.0, -1.0, 1.0)
-                for j in range(n):
-                    transform[k, j] = transform[k, j] * orientation * row_scale
-                    coefficient_transform[k, j] = coefficient_transform[k, j] * orientation / row_scale
+                for j in range(scales.length):
+                    transform[k, j] *= orientation * row_scale
+                    coefficient_transform[k, j] *= orientation / row_scale
 
-    for k in range(n):
+    for k in range(scales.length):
         diagonal_mass[row, k] = scales[k]
-        for j in range(n):
+        for j in range(scales.length):
             basis_transform[row, k, j] = transform[k, j]
             stress_transform[row, k, j] = coefficient_transform[k, j]
 
