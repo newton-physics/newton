@@ -839,13 +839,16 @@ independent ``MjData`` per Newton world and steps all of them synchronously.
 The CPU backend shares native model parameters. Corresponding worlds must have
 identical body inertia and gravity compensation, joint axes and local frames,
 joint force parameters and scalar references, geom materials and sizes, equality
-parameters (including polynomial and mimic coefficients), and actuator and tendon
-parameters. Construction and model-change notifications reject differences before
+parameters (including polynomial and mimic coefficients), explicit contact-pair
+parameters, and actuator and tendon parameters. Construction and model-change notifications reject differences before
 publishing updates, including notifications that combine several flags.
 Solver options must also match, unless a constructor argument overrides them
 for every world. CONNECT and inferred WELD constraints, including loop joints,
-require matching body-local reference geometry; translating an entire world
-preserves this geometry.
+require matching body-local reference geometry. Translating both body endpoints
+together preserves this geometry; translating a body relative to the shared world
+endpoint does not. An explicit WELD target can still be shared by worlds with
+different initial poses. Changing an equality type requires recreating the CPU
+solver, even when every world requests the same new type.
 Joint state, controls, applied forces, gravity, equality activation, and free or
 mocap root poses remain independent. A scalar ``dof_ref`` is a model reference,
 not an independent runtime pose; it must match across CPU worlds.

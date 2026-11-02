@@ -6079,12 +6079,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 (
                     "eq_solref",
                     "eq_solimp",
+                    "equality_constraint_type",
                     "equality_constraint_polycoef",
                     "equality_constraint_anchor",
                     "equality_constraint_relpose",
                     "equality_constraint_torquescale",
                 ),
             )
+            compiled_types = getattr(self, "_cpu_equality_types", None)
+            if compiled_types is not None and not np.array_equal(
+                attrs.equality_constraint_type.numpy(), compiled_types
+            ):
+                raise ValueError("Changing equality_constraint_type requires recreating the multi-world CPU solver.")
         if flags & ModelFlags.SHAPE_PROPERTIES:
             # Use the actual compiled shape layout: global shapes occupy the same
             # slot in every world, and visual-only shapes may not be exported.
@@ -6192,7 +6198,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         def equal(name, values):
             if np.any(values != values[0]):
-                raise ValueError(f"Multi-world CPU mode requires matching world-local references: {name} differs.")
+                raise ValueError(f"Multi-world CPU mode requires matching world-local model inputs: {name} differs.")
 
         def normalize(name, values, domain):
             if not np.any(values >= 0):
@@ -6256,7 +6262,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             for name in ("joint_mimic_joint", "constraint_mimic_joint0", "constraint_mimic_joint1"):
                 references(name, getattr(model, name).numpy().reshape(nworld, -1), "joint")
 
-        if flags & (ModelFlags.ACTUATOR_PROPERTIES | ModelFlags.SHAPE_PROPERTIES) and hasattr(attrs, "actuator_trnid"):
+        if (
+            flags & (ModelFlags.ACTUATOR_PROPERTIES | ModelFlags.SHAPE_PROPERTIES)
+            and hasattr(attrs, "actuator_trnid")
+            and hasattr(self, "_cpu_site_label_indices")
+        ):
             targets = attrs.actuator_trnid.numpy().copy()
             types = attrs.actuator_trntype.numpy().copy()
             trn = self.TrnType
@@ -6264,23 +6274,45 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             legacy = tendon & ((targets[:, 0] < 0) | ((targets[:, 0] == 0) & (targets[:, 1] > 0)))
             targets[legacy, 0] = targets[legacy, 1]
             labels = getattr(attrs, "actuator_target_label", ())
-            # Mirror deferred label resolution and the SITE label-first rule used by _init_actuators.
-            label_domains = (
-                (getattr(attrs, "joint_dof_label", []), trn.JOINT),
-                (getattr(attrs, "tendon_label", []), trn.TENDON),
-                (
-                    {model.shape_label[i]: i for i in np.flatnonzero(model.shape_flags.numpy() & ShapeFlags.SITE)},
-                    trn.SITE,
-                ),
-            )
+
+            def label_lookup(names, indices, *, first_match):
+                lookup = {}
+                for index in indices:
+                    if index >= len(names):
+                        continue
+                    label = names[index]
+                    if first_match:
+                        lookup.setdefault(label, int(index))
+                    else:
+                        lookup[label] = int(index)
+                return lookup
+
+            # Each row resolves against its world's exported entities. Preserve the
+            # exporter's first-match DOF/tendon and last-match SITE semantics.
+            label_domains = []
+            for world in range(nworld):
+                world_domains = []
+                for name, kind in (("joint_dof_label", trn.JOINT), ("tendon_label", trn.TENDON)):
+                    names = getattr(attrs, name, [])
+                    count = len(names) // nworld
+                    indices = range(world * count, (world + 1) * count)
+                    world_domains.append((label_lookup(names, indices, first_match=True), kind))
+                world_domains.append(
+                    (
+                        label_lookup(model.shape_label, self._cpu_site_label_indices[world], first_match=False),
+                        trn.SITE,
+                    )
+                )
+                label_domains.append(world_domains)
+            actuator_worlds = attrs.actuator_world.numpy()
             for row, label in enumerate(labels):
                 if not label or (targets[row, 0] >= 0 and types[row] != trn.SITE):
                     continue
-                for names, kind in label_domains:
+                for names, kind in label_domains[int(actuator_worlds[row])]:
                     if types[row] == trn.SITE and targets[row, 0] >= 0 and kind != trn.SITE:
                         continue
                     if label in names:
-                        targets[row, 0] = names[label] if kind == trn.SITE else names.index(label)
+                        targets[row, 0] = names[label]
                         types[row] = kind
                         break
                 if targets[row, 0] < 0:
@@ -6308,6 +6340,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             indices = np.asarray(rows, dtype=np.int32)
             for name in ("pair_geom1", "pair_geom2"):
                 references(name, getattr(attrs, name).numpy()[indices], "shape")
+            for name in (
+                "pair_condim",
+                "pair_friction",
+                "pair_solref",
+                "pair_solreffriction",
+                "pair_solimp",
+                "pair_margin",
+                "pair_gap",
+            ):
+                attribute = getattr(attrs, name, None)
+                if attribute is not None:
+                    equal(name, attribute.numpy()[indices])
 
         if flags & (ModelFlags.TENDON_PROPERTIES | ModelFlags.SHAPE_PROPERTIES) and hasattr(attrs, "tendon_type"):
             types = attrs.tendon_type.numpy().reshape(nworld, -1)
@@ -6354,6 +6398,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _validate_cpu_constraint_reference_geometry(self, model: Model) -> None:
         """Compare body-local reference geometry without rejecting whole-world translations."""
+        if not hasattr(self, "_cpu_reference_loop_indices"):
+            # Construction repeats this check after the converter classifies standalone roots.
+            return
         attrs = model.mujoco
         nworld = model.world_count
         types = attrs.equality_constraint_type.numpy()
@@ -6369,10 +6416,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Generic loop joints likewise derive CONNECT/WELD constants from FK.
         parents = model.joint_parent.numpy()
         children = model.joint_child.numpy()
-        articulations = model.joint_articulation.numpy()
-        loops = (articulations < 0) & np.isin(children, children[articulations >= 0])
-        body1 = np.concatenate((body1, parents[loops].reshape(nworld, -1)), axis=1)
-        body2 = np.concatenate((body2, children[loops].reshape(nworld, -1)), axis=1)
+        loops = self._cpu_reference_loop_indices
+        body1 = np.concatenate((body1, parents[loops]), axis=1)
+        body2 = np.concatenate((body2, children[loops]), axis=1)
         if body1.shape[1] == 0:
             return
 
@@ -6399,7 +6445,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             origins[world] = origin
             frames[world_roots, :3] -= origins[world]
         reference_model.joint_X_p = wp.array(frames, dtype=wp.transform, device=model.device)
-        poses = self._compute_body_poses_at_qref(reference_model, ref_q).numpy()
+        # eval_fk only visits articulations. Seed standalone poses using the same
+        # sources as add_body_from_joint: body_q for FREE, joint frames otherwise.
+        seed = model.body_q.numpy().copy()
+        seed[:, :3] -= origins[model.body_world.numpy()]
+        child_frames = model.joint_X_c.numpy()
+        for joint in self._cpu_standalone_root_indices.flat:
+            if joint_types[joint] != JointType.FREE:
+                pose = wp.transform(*frames[joint]) * wp.transform_inverse(wp.transform(*child_frames[joint]))
+                seed[children[joint]] = tuple(pose)
+        poses = self._compute_body_poses_at_qref(
+            reference_model, ref_q, ref_body_q=wp.array(seed, dtype=wp.transform, device=model.device)
+        ).numpy()
         relative = np.empty((*body1.shape, 7), dtype=np.float32)
         for world, row in np.ndindex(body1.shape):
             first, second = int(body1[world, row]), int(body2[world, row])
@@ -7460,6 +7517,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Validate model compatibility with separate_worlds mode
         if separate_worlds:
             self._validate_model_for_separate_worlds(model)
+            if self.use_mujoco_cpu:
+                self._cpu_equality_types = model.mujoco.equality_constraint_type.numpy().copy()
             if self.enable_sleeping and model.world_count > 1:
                 dofs_per_world = model.joint_dof_count // model.world_count
                 joint_qd = model.joint_qd.numpy().reshape(model.world_count, dofs_per_world)
@@ -7931,6 +7990,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joints_loop = np.asarray(
             [joint for joint in joints_unassigned if joint not in standalone_root_set], dtype=np.int32
         )
+
+        if self.use_mujoco_cpu and model.world_count > 1:
+            offsets = (np.arange(model.world_count, dtype=np.int32) - first_world)[:, None]
+            offsets *= model.joint_count // model.world_count
+            # Reuse conversion's classification, excluding imported equalities already
+            # checked through their source rows and unsupported loop mappings.
+            reference_loops = np.asarray(
+                [
+                    j
+                    for j in joints_loop
+                    if int(j) not in equality_loop_joints
+                    and (
+                        joint_type[j] == JointType.FIXED or (joint_dof_dim[j][0] == 0 and joint_dof_dim[j][1] in (1, 3))
+                    )
+                ],
+                dtype=np.int32,
+            )
+            self._cpu_reference_loop_indices = offsets + reference_loops[None, :]
+            self._cpu_standalone_root_indices = (
+                offsets + np.asarray(sorted(standalone_root_set), dtype=np.int32)[None, :]
+            )
+            self._validate_cpu_constraint_reference_geometry(model)
 
         # Every selected body needs exactly one creation path before its shapes and state can be converted.
         instantiated_bodies = articulated_bodies | standalone_root_bodies
@@ -9424,6 +9505,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if eq_constraint_solimp is not None:
                 eq.solimp = eq_constraint_solimp[i]
             mjc_eq_to_newton_eq_dict[eq.id] = i
+
+        if self.use_mujoco_cpu and model.world_count > 1:
+            # SITE label precedence follows the actual export order, including global
+            # sites. Recheck actuator targets now that this order is available.
+            slots = {int(shape): column for column, shape in enumerate(self._cpu_shared_shape_indices[first_world])}
+            site_columns = [slots[int(shape)] for shape in site_mapping]
+            self._cpu_site_label_indices = self._cpu_shared_shape_indices[:, site_columns]
+            self._validate_cpu_shared_references(model, ModelFlags.ACTUATOR_PROPERTIES)
 
         # Process MuJoCo general actuators (motor, general, etc.) from custom attributes
         actuator_count += self._init_actuators(
