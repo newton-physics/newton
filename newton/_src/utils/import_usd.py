@@ -2705,9 +2705,7 @@ def parse_usd(
         """Keep one direction of equivalent reciprocal USD declarations."""
         if builder.joint_mimic_joint[leader_idx] == joint_idx:
             reverse_offset, reverse_multiplier = builder.joint_mimic_coeffs[leader_idx]
-            # Vendor and Newton schemas can author opposite directions of the
-            # same relation. Only discard the redundant equation, not a chain
-            # or a conflicting cycle. Coefficients may come from USD floats.
+            # USD float storage can round equivalent inverse coefficients.
             if (
                 math.isfinite(coef0)
                 and math.isfinite(coef1)
@@ -2715,6 +2713,15 @@ def parse_usd(
                 and math.isclose(coef0, -coef1 * reverse_offset, rel_tol=1.0e-6, abs_tol=1.0e-8)
             ):
                 return
+            declarations = sorted(
+                (
+                    (builder.joint_label[joint_idx], coef0, coef1),
+                    (builder.joint_label[leader_idx], reverse_offset, reverse_multiplier),
+                )
+            )
+            raise ValueError(
+                f"Conflicting reciprocal USD mimic declarations (joint, offset, multiplier): {declarations}"
+            )
         builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
 
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).

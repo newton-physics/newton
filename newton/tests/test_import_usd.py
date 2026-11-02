@@ -11488,8 +11488,8 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         for schemas in (("Newton", "Physx"), ("Physx", "Newton"), ("Newton", "Newton"), ("Physx", "Physx")):
-            for offset, multiplier in ((0.0, 1.0), (0.125, -2.0), (0.15, 0.3)):
-                for conflict in (None, "offset", "multiplier"):
+            for offset, multiplier in ((0.0, 1.0), (0.125, -2.0), (0.15, 0.3), (0.0, 3.0)):
+                for conflict in (None, "offset", "multiplier", *(("rounded_multiplier",) if multiplier == 3.0 else ())):
                     with self.subTest(schemas=schemas, offset=offset, multiplier=multiplier, conflict=conflict):
                         stage = Usd.Stage.CreateInMemory()
                         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -11515,6 +11515,8 @@ class TestImportUsdMimicJoint(unittest.TestCase):
                             joints.append(joint.GetPrim())
                         reverse_offset = -offset / multiplier + (0.01 if conflict == "offset" else 0.0)
                         reverse_multiplier = 1.0 / multiplier + (0.01 if conflict == "multiplier" else 0.0)
+                        if conflict == "rounded_multiplier":
+                            reverse_multiplier = 0.3333
                         for i, (schema, coefficients) in enumerate(
                             zip(schemas, ((reverse_offset, reverse_multiplier), (offset, multiplier)), strict=True)
                         ):
@@ -11540,7 +11542,9 @@ class TestImportUsdMimicJoint(unittest.TestCase):
                                 ).Set(-coef1)
                         builder = newton.ModelBuilder()
                         if conflict is not None:
-                            with self.assertRaisesRegex(ValueError, "already a mimic joint"):
+                            with self.assertRaisesRegex(
+                                ValueError, "Conflicting reciprocal USD mimic declarations.*left_joint.*right_joint"
+                            ):
                                 builder.add_usd(stage)
                             continue
                         result = builder.add_usd(stage)
@@ -11548,6 +11552,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
                         followers = [i for i, reference in enumerate(builder.joint_mimic_joint) if reference >= 0]
                         self.assertEqual(len(followers), 1)
                         follower = followers[0]
+                        self.assertEqual(follower, right if schemas == ("Newton", "Physx") else left)
                         leader = builder.joint_mimic_joint[follower]
                         self.assertEqual({follower, leader}, {left, right})
                         self.assertEqual(builder.joint_mimic_joint[leader], -1)
