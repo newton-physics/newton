@@ -948,6 +948,77 @@ def test_box_drop(test, device, solver_fn):
         test.assertLess(vel_magnitude, 1.0, f"Body {i} not at rest (v={vel_magnitude:.3f})")
 
 
+def test_shape_friction_modes(test, device, solver_fn, supports_torsion):
+    """Apply only the friction components that each contact's friction mode enables.
+
+    Spheres slide and spin on a frictionless ground: the frictionless sphere keeps
+    its motion, the sliding sphere starts rolling without losing its spin, and the
+    torsional sphere also stops spinning where the solver supports torsional friction.
+    """
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    mode = newton.ShapeFrictionMode
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE))
+    sphere_modes = (mode.NONE, mode.SLIDING, mode.TORSIONAL)
+    for i, sphere_mode in enumerate(sphere_modes):
+        body = builder.add_body(xform=wp.transform((0.5 * i, 0.0, 0.0995), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(friction_mode=sphere_mode, mu=0.5, mu_torsional=0.05)
+        builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    builder.color()
+    model = builder.finalize(device=device)
+    if supports_torsion:
+        solver = solver_fn(model)
+    else:
+        with test.assertWarns(newton.exceptions.NewtonWarning):
+            solver = solver_fn(model)
+
+    state_0, state_1 = model.state(), model.state()
+    joint_qd = state_0.joint_qd.numpy().reshape(len(sphere_modes), 6)
+    joint_qd[:, 0] = 0.5
+    joint_qd[:, 5] = 10.0
+    state_0.joint_qd.assign(joint_qd.reshape(-1))
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    native_contacts = isinstance(solver, newton.solvers.SolverMuJoCo)
+    collision_pipeline = None if native_contacts else newton.CollisionPipeline(model)
+    contacts = None if native_contacts else collision_pipeline.contacts()
+    simulate(solver, model, state_0, state_1, None, collision_pipeline, contacts, 0.2, 100)
+
+    frictionless, sliding, torsional = state_0.body_qd.numpy()
+    test.assertAlmostEqual(frictionless[0], 0.5, delta=0.02)
+    test.assertAlmostEqual(frictionless[5], 10.0, delta=0.2)
+    test.assertLess(sliding[0], 0.45)
+    test.assertAlmostEqual(sliding[5], 10.0, delta=0.5)
+    if supports_torsion:
+        test.assertLess(abs(torsional[5]), 5.0)
+    else:
+        test.assertAlmostEqual(torsional[5], 10.0, delta=0.5)
+
+
+def test_particle_friction_modes(test, device, solver_fn):
+    """Keep particles sliding on a frictionless shape and slow them on a frictional one."""
+    builder = newton.ModelBuilder()
+    mode = newton.ShapeFrictionMode
+    for i, ground_mode in enumerate((mode.NONE, mode.SLIDING)):
+        cfg = newton.ModelBuilder.ShapeConfig(friction_mode=ground_mode)
+        builder.add_shape_box(
+            -1, xform=wp.transform((0.0, 2.0 * i, -0.1), wp.quat_identity()), hx=1.0, hy=0.5, hz=0.1, cfg=cfg
+        )
+        builder.add_particle((0.0, 2.0 * i, 0.0499), (0.5, 0.0, 0.0), mass=0.01, radius=0.05)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    state_0, state_1 = model.state(), model.state()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    simulate(solver, model, state_0, state_1, None, collision_pipeline, contacts, 0.2, 100)
+
+    frictionless, sliding = state_0.particle_qd.numpy()
+    test.assertAlmostEqual(frictionless[0], 0.5, delta=0.02)
+    test.assertLess(sliding[0], 0.4)
+
+
 devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
@@ -1035,6 +1106,45 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
+
+
+# Register friction mode tests; the listed solvers apply torsional friction.
+for device in devices:
+    friction_mode_solvers = {
+        **solvers,
+        "kamino_lox": lambda model: newton.solvers.SolverKamino(
+            model, newton.solvers.SolverKamino.Config(dynamics_solver="lox")
+        ),
+        "vbd": newton.solvers.SolverVBD,
+    }
+    for solver_name, solver_fn in friction_mode_solvers.items():
+        if device.is_cpu and solver_name == "mujoco_warp":
+            continue
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRigidContact,
+            f"test_shape_friction_modes_{solver_name}",
+            test_shape_friction_modes,
+            devices=[device],
+            solver_fn=solver_fn,
+            supports_torsion=solver_name in ("mujoco_cpu", "mujoco_warp", "xpbd", "kamino_lox"),
+        )
+
+
+particle_solvers = {
+    "xpbd": newton.solvers.SolverXPBD,
+    "semi_implicit": newton.solvers.SolverSemiImplicit,
+    "vbd": newton.solvers.SolverVBD,
+}
+for solver_name, solver_fn in particle_solvers.items():
+    add_function_test(
+        TestRigidContact,
+        f"test_particle_friction_modes_{solver_name}",
+        test_particle_friction_modes,
+        devices=devices,
+        solver_fn=solver_fn,
+    )
 
 
 # Register MuJoCo convex<>convex tests for appropriate backends

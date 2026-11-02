@@ -200,8 +200,18 @@ formulation.
   ``enable_restitution=False``),
   :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
   :class:`~newton.solvers.SolverKamino`.
-- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
-  :class:`~newton.solvers.SolverMuJoCo`.
+- ``friction_mode``: ``NONE`` makes contacts frictionless in every built-in
+  solver. ``TORSIONAL`` and ``ROLLING`` are supported by
+  :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
+  and :class:`~newton.solvers.SolverKamino` with the LOX backend (torsional
+  and rolling friction share its elliptic friction budget). Other solvers
+  warn and apply sliding friction only.
+  :class:`~newton.solvers.SolverSteel` provides experimental torsion on
+  ``TORSIONAL`` shapes that also set ``steel:min_torsional_patch_radius``.
+- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverMuJoCo`, and the LOX backend of
+  :class:`~newton.solvers.SolverKamino`, on contacts whose ``friction_mode``
+  enables them.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
   contacts used by :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`, and
