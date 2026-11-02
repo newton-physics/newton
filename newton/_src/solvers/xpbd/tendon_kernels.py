@@ -320,6 +320,12 @@ def solve_tendon_slip(
     damping_tension_r = seg_damping_tension[seg_right] if compliance_r > 0.0 else 0.0
     force_l = wp.max(seg_material_tension[seg_left] + damping_tension_l, 0.0)
     force_r = wp.max(seg_material_tension[seg_right] + damping_tension_r, 0.0)
+    # An inextensible span carries tension in its constraint multiplier;
+    # dividing residual stretch by near-zero compliance cannot recover it.
+    if compliance_l <= 0.0:
+        force_l = wp.max(-seg_lambda[seg_left] / dt, 0.0)
+    if compliance_r <= 0.0:
+        force_r = wp.max(-seg_lambda[seg_right] / dt, 0.0)
 
     force_sum = force_l + force_r
     allowed_diff = beta * force_sum

@@ -2665,6 +2665,73 @@ def test_tendon_damping_does_not_generate_compression(test, device):
         test.assertAlmostEqual(tension, 0.0, delta=1.0e-6)
 
 
+def test_xpbd_spin_reaction_bounds_accumulated_impulse(test, device):
+    """Bound the total friction impulse and retract it when the cable unloads."""
+    with wp.ScopedDevice(device):
+        for mu, compliance, material in (
+            (0.0, [0.01, 0.01], [100.0, 100.0]),
+            (0.1, [0.01, 0.01], [100.0, 100.0]),
+            (10.0, [0.01, 0.01], [100.0, 100.0]),
+            (0.1, [0.0, 0.0], [1.0e26, 1.0e26]),
+            (0.1, [0.0, 0.0], [0.0, 0.0]),
+            (0.1, [0.0, 0.01], [1.0e26, 100.0]),
+            (0.1, [0.01, 0.0], [100.0, 0.0]),
+        ):
+            with test.subTest(mu=mu, compliance=compliance, material=material):
+                lambdas = wp.zeros(2)
+                tension = wp.array(material, dtype=float)
+                reaction = wp.zeros(3, dtype=wp.vec3)
+                deltas = wp.zeros(1, dtype=wp.spatial_vector)
+                inputs = [
+                    wp.array([wp.transform_identity()], dtype=wp.transform),
+                    wp.array([-1, 0, -1], dtype=int),
+                    wp.array([-1, 1, -1], dtype=int),
+                    wp.zeros(3, dtype=int),
+                    wp.array(
+                        [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
+                        dtype=int,
+                    ),
+                    wp.array([0.0, 1.0, 0.0], dtype=float),
+                    wp.array([0.0, mu, 0.0], dtype=float),
+                    wp.ones(3, dtype=bool),
+                    wp.zeros(3, dtype=wp.vec3),
+                    wp.array([[0.0, 1.0, 0.0]] * 3, dtype=wp.vec3),
+                    wp.array([[-1.0, 0.0, -1.0], [1.0, 0.0, 0.0]], dtype=wp.vec3),
+                    wp.array([[-1.0, 0.0, 0.0], [1.0, 0.0, -1.0]], dtype=wp.vec3),
+                    wp.array(compliance, dtype=float),
+                    tension,
+                    wp.zeros(2),
+                    lambdas,
+                    0.01,
+                    reaction,
+                ]
+                accumulated = 0.0
+                for pair in ([-1.0, 0.0], [-1.0, 0.0], [-2.0, 0.0], [-0.5, -0.5], [0.0, -1.0]):
+                    lambdas.assign(np.asarray(pair, dtype=np.float32))
+                    deltas.zero_()
+                    wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
+                    accumulated += float(deltas.numpy()[0, 4])
+                    rho = np.exp(min(mu * np.pi, 20.0))
+                    forces = np.where(np.asarray(compliance) > 0.0, material, -np.asarray(pair) / 0.01)
+                    bound = 0.01 * (rho - 1.0) / (rho + 1.0) * float(forces.sum())
+                    expected = np.clip(pair[0] - pair[1], -bound, bound)
+                    test.assertAlmostEqual(accumulated, float(expected), delta=1.0e-6)
+                # Hard spans carry force in their multipliers, not geometric stretch.
+                if 0.0 in compliance:
+                    lambdas.zero_()
+                tension.zero_()
+                deltas.zero_()
+                wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
+                accumulated += float(deltas.numpy()[0, 4])
+                test.assertAlmostEqual(accumulated, 0.0, delta=1.0e-6)
+                # A world roller must never write its reaction to the last body.
+                inputs[3].fill_(-1)
+                tension.fill_(100.0)
+                deltas.zero_()
+                wp.launch(solve_tendon_slip, dim=3, inputs=inputs, outputs=[deltas])
+                np.testing.assert_array_equal(deltas.numpy(), 0.0)
+
+
 def test_tendon_slip_uses_active_route_segments(test, device):
     """The slip cone should use the current routed neighbors and their physical tension."""
     with wp.ScopedDevice(device):
@@ -3156,7 +3223,9 @@ def test_motorized_pulley_updates_rest_in_first_step(test, device):
 
 
 def _moving_rolling_route_material_error(solver_factory, mu, short_segment=None):
-    model, _ = build_kinematic_rolling_transport(mu=mu)
+    # Keep both spans taut in the depletion case; a slack neighbor would
+    # simply refill the short span instead of exercising its rest floor.
+    model, _ = build_kinematic_rolling_transport(mu=mu, pre_stretch=0.25 if short_segment is not None else 0.0)
     endpoint = int(model.tendon_guide_body.numpy()[2])
     start_angle = -0.2
     body_q = model.body_q.numpy()
@@ -3169,7 +3238,7 @@ def _moving_rolling_route_material_error(solver_factory, mu, short_segment=None)
     if short_segment is not None:
         rest = solver.tendon_segment_rest_length.numpy()
         total_rest = float(np.sum(rest))
-        rest[short_segment] = 5.0e-3
+        rest[short_segment] = 1.0e-5
         rest[1 - short_segment] = total_rest - rest[short_segment]
         state_0.tendon_segment_rest_length.assign(rest)
 
@@ -3225,6 +3294,8 @@ def test_moving_rolling_route_conserves_material(test, device):
                     f"Cable material drifted by {error} m when segment {short_segment} started near its minimum rest length",
                 )
                 test.assertGreaterEqual(min_rest, 0.99e-6)
+                if short_segment == 1:
+                    test.assertLess(min_rest, 1.1e-6, "The moving route must actually deplete the outgoing span")
 
 
 def test_kinematic_rolling_transfer_independent_of_iterations(test, device):
@@ -3806,6 +3877,14 @@ add_test(
     "slack_tendon_settles_without_chasing_vanishing_tension",
     devices,
     test_slack_tendon_settles_without_chasing_vanishing_tension,
+)
+
+
+add_test(
+    TestTendonCapstan,
+    "xpbd_spin_reaction_bounds_accumulated_impulse",
+    devices,
+    test_xpbd_spin_reaction_bounds_accumulated_impulse,
 )
 
 
