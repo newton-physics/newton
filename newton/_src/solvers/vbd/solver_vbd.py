@@ -1362,12 +1362,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._self_contact_storage_generation = generation
         return info
 
-    def check_and_grow_self_contact_buffers(self) -> bool:
+    def check_and_grow_self_contact_buffers(self, *, warn: bool = True) -> bool:
         """Check self-contact overflow, grow the storage, refresh solver state.
 
         Reads the overflow flags of the last detection back, grows the pooled
         storage in place to 1.5x the measured demand when a family overflowed
-        (with a ``NewtonWarning``), and afterwards refreshes the one solver-side
+        (with a ``NewtonWarning`` unless ``warn`` is ``False``), and afterwards refreshes the one solver-side
         piece the in-place growth cannot reach, the per-pair launch size. The solver never calls
         this on its own (each check synchronizes the device): call it between
         steps at whatever cadence suits the workload. The grown storage is
@@ -1382,6 +1382,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         PREVIOUSLY captured graph that contains this solver's step is
         invalid: it still operates on the old storage, so replaying it
         silently produces stale results. Re-capture after growth.
+
+        Args:
+            warn: Emit a ``NewtonWarning`` describing the overflow and the new
+                budgets before growing. Pass ``False`` to grow silently and
+                rely on the return value instead.
 
         Returns:
             True if the storage was reallocated: grown here, or automatically
@@ -1402,7 +1407,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # overflow handling and resizing are the detector's job; the accessor
         # heals the solver's derived cache (the launch size) whatever the
         # trigger was: growth here, or an upgrade at bind
-        detector.check_and_grow_collision_buffers()
+        detector.check_and_grow_collision_buffers(warn=warn)
         info = self.particle_self_contact_info()
         return info is not source_before or self._self_contact_storage_generation != generation_before
 

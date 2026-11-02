@@ -1021,7 +1021,7 @@ class TriMeshCollisionDetector:
             info.triangle_colliding_vertices_offsets.zero_()
         self.storage_generation += 1
 
-    def check_and_grow_collision_buffers(self, warn: bool = True) -> bool:
+    def check_and_grow_collision_buffers(self, *, warn: bool = True) -> bool:
         """Check the last detection's overflow flags and grow the result storage.
 
         Reads the global_pair_counts back (synchronizes the device). When a family
