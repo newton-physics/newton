@@ -2775,21 +2775,49 @@ def copy_actuator_moment_kernel(
 
 
 @wp.kernel
-def actuator_reflected_inertia_kernel(
+def capture_actuator_dampratio_kernel(
+    actuators: wp.array[wp.int32],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_biasprm: wp.array2d[vec10],
+    # outputs
+    dampratio_out: wp.array2d[float],
+):
+    """Store each position-like actuator's ``dampratio`` placeholder (a positive ``biasprm[2]``), or zero."""
+    world, i = wp.tid()
+    actuator = actuators[i]
+    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
+    bias = actuator_biasprm[world, actuator]
+    ratio = float(0.0)
+    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= MJ_MINVAL:
+        ratio = bias[2]
+    dampratio_out[world, actuator] = ratio
+
+
+@wp.kernel
+def resolve_actuator_dampratio_kernel(
     actuator: int,
+    dampratio: wp.array2d[float],
+    actuator_gainprm: wp.array2d[vec10],
     moment: wp.array2d[float],
     inv_mass_moment: wp.array2d[float],
-    inertia_out: wp.array2d[float],
+    # outputs
+    actuator_biasprm: wp.array2d[vec10],
 ):
-    """Store the actuator's reflected inertia ``1 / (J M^-1 J^T)``, or zero if it is singular."""
+    """Convert a ``dampratio`` to damping using the reflected inertia ``1 / (J M^-1 J^T)``, as MuJoCo's compiler."""
     world = wp.tid()
+    ratio = dampratio[world, actuator]
+    if ratio <= 0.0:
+        return
     inv_weight = float(0.0)
     for i in range(moment.shape[1]):
         inv_weight += moment[world, i] * inv_mass_moment[world, i]
     inertia = float(0.0)
     if inv_weight > MJ_MINVAL:
         inertia = 1.0 / inv_weight
-    inertia_out[world, actuator] = inertia
+    bias = actuator_biasprm[world, actuator]
+    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
+    bias[2] = -ratio * 2.0 * wp.sqrt(kp * inertia)
+    actuator_biasprm[world, actuator] = bias
 
 
 @wp.kernel(enable_backward=False)

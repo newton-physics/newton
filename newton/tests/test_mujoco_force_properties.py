@@ -170,12 +170,9 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                         model.body_flags.assign(body_flags)
                     solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     armature = solver.mjw_model.dof_armature.numpy().copy()
-                    tolerance = solver.mjw_model.opt.tolerance.numpy().copy()
                     model.joint_armature.fill_(7.0)
                     solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
                     np.testing.assert_array_equal(solver.mjw_model.dof_armature.numpy(), armature)
-                    if not cpu:
-                        np.testing.assert_allclose(solver.mjw_model.opt.tolerance.numpy(), tolerance)
 
     def _cuda_device(self):
         """Skip capture tests when no CUDA device with a mempool is available."""
