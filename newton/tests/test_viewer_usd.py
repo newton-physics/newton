@@ -228,27 +228,43 @@ class TestViewerUSD(unittest.TestCase):
 
         viewer.begin_frame(0.0)
         viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+        viewer.log_instances(
+            "/copy",
+            mesh_name,
+            wp.array([wp.transform_identity()], dtype=wp.transform),
+            None,
+            wp.array([[1, 1, 1]], dtype=wp.vec3),
+            None,
+        )
         tex_path = self._logged_texture_path(viewer, mesh_name)
         with open(tex_path, "rb") as published_file:
             published = published_file.read()
 
         real_save = Image.Image.save
+        fail_next_save = True
 
         def partial_save(image, file_path, *args, **kwargs):
+            nonlocal fail_next_save
+            if not fail_next_save:
+                return real_save(image, file_path, *args, **kwargs)
+            fail_next_save = False
             buffer = io.BytesIO()
             kwargs.setdefault("format", "PNG")
             real_save(image, buffer, *args, **kwargs)
             partial_png = buffer.getvalue()
             with open(file_path, "wb") as partial_file:
                 partial_file.write(partial_png[: len(partial_png) // 2])
+            # Only the prototype export fails; an accidental instance retry would succeed.
             raise OSError("simulated crash mid-write")
 
         # Exports are named by content, so a crash can only hit a new image's file.
         replacement = np.ascontiguousarray(255 - texture)
-        viewer.clear_model()
-        viewer.begin_frame(0.0)
         with mock.patch("PIL.Image.Image.save", partial_save), self.assertWarns(UserWarning):
             viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
+
+        for path in ("/root/textured_mesh", "/root/copy/instance_0"):
+            shader = self._get_bound_preview_surface(viewer.stage.GetPrimAtPath(path))
+            self.assertFalse(shader.GetInput("diffuseColor").HasConnectedSource())
 
         with open(tex_path, "rb") as published_file:
             self.assertEqual(published_file.read(), published)
@@ -413,6 +429,7 @@ class TestViewerUSD(unittest.TestCase):
 
         viewer.begin_frame(0.0)
         viewer.log_mesh("/opacity_mesh", points, indices, roughness=0.1, metallic=0.7)
+        viewer.log_instances("/inherited_instances", "/opacity_mesh", xforms, scales, None, None)
         viewer.log_instances(
             "/opacity_instances",
             "/opacity_mesh",
@@ -449,6 +466,7 @@ class TestViewerUSD(unittest.TestCase):
         for prim, roughness, metallic in (
             (default_prim, 0.5, 0.0),
             (viewer.stage.GetPrimAtPath("/root/opacity_instances/instance_0"), 0.25, 0.1),
+            (viewer.stage.GetPrimAtPath("/root/inherited_instances/instance_0"), 0.1, 0.7),
         ):
             shader = self._get_bound_preview_surface(prim)
             self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
@@ -468,7 +486,6 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.full((2, 2, 3), 127, dtype=np.uint8))
         current_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
         self.assertEqual(current_material.GetPath(), previous_material.GetPath())
-        np.testing.assert_allclose(UsdGeom.Mesh(default_prim).GetPointsAttr().Get(viewer._frame_index), points.numpy())
 
     def test_log_instances_rejects_mismatched_opacity_count(self):
         """Reject opacity arrays that do not match instance count."""

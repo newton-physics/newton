@@ -1931,6 +1931,9 @@ void main() {
                 same_texture = same_texture and exported is not None and exported[0] is next_texture
             if not same_texture:
                 appearance = self._mesh_appearance.setdefault(name, {})
+                appearance["texture_path"] = (
+                    self._resolve_texture_path(name, next_texture) if next_texture is not None else None
+                )
                 for key, value in (
                     ("color", color),
                     ("roughness", roughness),
@@ -1941,7 +1944,7 @@ void main() {
                         appearance[key] = value
                 material = self._get_preview_surface_material(
                     name,
-                    texture=next_texture,
+                    texture=appearance["texture_path"],
                     color=appearance.get("color"),
                     roughness=appearance.get("roughness"),
                     metallic=appearance.get("metallic"),

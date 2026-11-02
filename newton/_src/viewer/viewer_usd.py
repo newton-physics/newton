@@ -390,6 +390,7 @@ class ViewerUSD(ViewerBase):
             if value is not None:
                 appearance[key] = value
         appearance["texture"] = texture if valid_texture else None
+        appearance["texture_path"] = self._resolve_texture_path(name, texture) if valid_texture else None
         color, roughness, metallic, opacity = (
             appearance.get(key) for key in ("color", "roughness", "metallic", "opacity")
         )
@@ -411,7 +412,7 @@ class ViewerUSD(ViewerBase):
         if valid_texture:
             material = self._get_preview_surface_material(
                 name,
-                texture=texture,
+                texture=appearance["texture_path"],
                 opacity=opacity,
                 roughness=roughness,
                 metallic=metallic,
@@ -783,7 +784,7 @@ class ViewerUSD(ViewerBase):
             cached_opacities = None
 
         mesh_appearance = self._mesh_appearance.get(mesh, {})
-        mesh_texture = mesh_appearance.get("texture")
+        mesh_texture = mesh_appearance.get("texture_path")
         mesh_opacity = mesh_appearance.get("opacity")
 
         for i in range(len(xforms)):
@@ -868,15 +869,22 @@ class ViewerUSD(ViewerBase):
                 references = instance.GetMetadata("references")
                 if not references or not any(ref.primPath == mesh_path for ref in references.GetAppliedItems()):
                     continue
+                # A binding inherited through the prototype needs no local override.
+                binding_path = instance.GetPath().AppendProperty("material:binding")
+                if not self.stage.GetRootLayer().GetRelationshipAtPath(binding_path):
+                    updated.append((name, i, base["material_path"]))
+                    continue
                 colors = appearance.get("colors")
                 params = appearance.get("materials")
                 opacities = appearance.get("opacities")
                 color = colors[i] if colors is not None else base.get("color")
                 material_params = params[i] if params is not None else None
-                use_texture = base.get("texture") is not None and (material_params is None or material_params[3] > 0.5)
+                use_texture = base.get("texture_path") is not None and (
+                    material_params is None or material_params[3] > 0.5
+                )
                 material = self._get_preview_surface_material(
                     mesh,
-                    texture=base.get("texture") if use_texture else None,
+                    texture=base.get("texture_path") if use_texture else None,
                     color=None if use_texture else color,
                     roughness=float(material_params[0]) if material_params is not None else None,
                     metallic=float(material_params[1]) if material_params is not None else None,
