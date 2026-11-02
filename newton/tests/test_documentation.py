@@ -71,6 +71,7 @@ class TestMarkdownDocumentation(unittest.TestCase):
         cls.output = (cls.root / "output/index.md").read_text(encoding="utf-8")
 
     def test_navigation_regeneration(self):
+        """Regenerate navigation after adding, renaming, and removing a page."""
         guide = self.source / "guide.rst"
         guide.write_text("Modeling guide\n==============\n\nModeling instructions.\n", encoding="utf-8")
         index = self.source / "index.rst"
@@ -102,6 +103,7 @@ class TestMarkdownDocumentation(unittest.TestCase):
         self.assertNotIn("modeling.md", entrypoint.read_text(encoding="utf-8"))
 
     def test_rendered_content(self):
+        """Preserve resolved notices, includes, notebook code, tables, and math."""
         for content in (
             "#### Experimental",
             "Preserve this limitation.",
@@ -119,12 +121,14 @@ class TestMarkdownDocumentation(unittest.TestCase):
                 self.assertIn(content, self.output)
 
     def test_generated_api_index(self):
+        """Link the generated API inventory to actual rendered anchors."""
         output = self.root / "output"
         symbols = json.loads((output / "symbols.json").read_text(encoding="utf-8"))
         self.assertEqual(symbols["newton.Example.step"]["path"], "index.md#newton.Example.step")
         self.assertIn("newton.Example.step", (output / "genindex.md").read_text(encoding="utf-8"))
 
     def test_unknown_node_fails(self):
+        """Reject unsupported nodes rather than silently dropping their content."""
         document = self.app.env.get_and_resolve_doctree("index", self.app.builder)
         document += nodes.sidebar("", nodes.paragraph(text="Unsupported content must not disappear."))
         translator = self.app.builder.create_translator(document, self.app.builder)

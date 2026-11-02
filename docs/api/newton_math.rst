@@ -11,7 +11,6 @@ newton.math
 
 .. autosummary::
    :toctree: _generated
-   :signatures: long
 
    boltzmann
    leaky_max

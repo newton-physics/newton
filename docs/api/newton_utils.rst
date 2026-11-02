@@ -22,7 +22,6 @@ newton.utils
 
 .. autosummary::
    :toctree: _generated
-   :signatures: long
 
    bourke_color_map
    color_graph

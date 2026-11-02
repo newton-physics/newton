@@ -59,7 +59,6 @@ newton
 
 .. autosummary::
    :toctree: _generated
-   :signatures: long
 
    AxisType
    eval_fk
