@@ -8128,7 +8128,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _set_const_cpu_data(self) -> None:
         """Recompute shared model constants and refresh every native world."""
         for data in self.mj_data_by_world:
+            # mj_setConst uses the reference pose as scratch space.
+            qpos = data.qpos.copy()
+            qvel = data.qvel.copy()
             self._mujoco.mj_setConst(self.mj_model, data)
+            data.qpos[:] = qpos
+            data.qvel[:] = qvel
+            self._mujoco.mj_forward(self.mj_model, data)
 
     def _update_body_properties(self, apply_kinematic_armature: bool = True):
         """Update body-property dependent MuJoCo DOF parameters.

@@ -324,5 +324,36 @@ class TestMuJoCoReset(unittest.TestCase):
         np.testing.assert_allclose(result[1], poisoned[1], atol=1e-6)
 
 
+class TestMuJoCoCPUModelChanged(unittest.TestCase):
+    def test_notify_preserves_native_world_state(self):
+        """Preserve each CPU world's live state and refresh derived dynamics."""
+        import mujoco
+
+        for world_count in (1, 2):
+            with self.subTest(world_count=world_count):
+                model = _build_two_world_model(world_count=world_count, device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0)
+                saved = []
+                for world, data in enumerate(solver.mj_data_by_world):
+                    data.qpos[0] += 0.3 + world
+                    data.qpos[-1] = 0.2 * (world + 1)
+                    data.qvel[:] = 0.1 * (world + 1)
+                    data.time = 0.25
+                    mujoco.mj_forward(solver.mj_model, data)
+                    saved.append((data.qpos.copy(), data.qvel.copy(), data.time))
+                model.body_mass.assign(model.body_mass.numpy() * 1.5)
+                solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+                for data, (qpos, qvel, time) in zip(solver.mj_data_by_world, saved, strict=True):
+                    np.testing.assert_array_equal(data.qpos, qpos)
+                    np.testing.assert_array_equal(data.qvel, qvel)
+                    self.assertEqual(data.time, time)
+                    reference = mujoco.MjData(solver.mj_model)
+                    reference.qpos[:] = qpos
+                    reference.qvel[:] = qvel
+                    mujoco.mj_forward(solver.mj_model, reference)
+                    for name in ("xpos", "cvel", "qacc"):
+                        np.testing.assert_allclose(getattr(data, name), getattr(reference, name), atol=1e-12)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
