@@ -618,7 +618,7 @@ OpenGL Viewer
 ~~~~~~~~~~~~~
 
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
-The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
+The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed, and a graphics driver that supports OpenGL 3.3 or newer.
 
 .. code-block:: python
 

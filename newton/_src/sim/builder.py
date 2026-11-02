@@ -1020,9 +1020,11 @@ class ModelBuilder:
         :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
         on the solver constructor for this field to take effect.
         :class:`~newton.solvers.SolverSteel` uses the arithmetic mean of the
-        two shapes' coefficients, each clamped to ``[0, 1]`` (non-finite values
-        count as zero), for contacts whose closing speed at the start of the step
+        two shapes' coefficients, each clamped to ``[0, 1]``, for contacts whose
+        closing speed at the start of the step
         exceeds its ``restitution_velocity_threshold``.
+        Non-finite contact material values on colliding shapes are rejected by
+        :meth:`ModelBuilder.finalize` unless shape validation is disabled.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -1215,6 +1217,30 @@ class ModelBuilder:
             ):
                 raise ValueError(
                     "Hydroelastic shapes require an SDF. Set either sdf_max_resolution or sdf_target_voxel_size."
+                )
+
+        def _validate_site(self, shape_label: str) -> None:
+            """Validate collision, density, and group settings for a site."""
+            if self.has_shape_collision or self.has_particle_collision:
+                raise ValueError(
+                    f"Site shape '{shape_label}' cannot have collision enabled. "
+                    f"Sites must be non-colliding reference points. "
+                    f"has_shape_collision={self.has_shape_collision}, "
+                    f"has_particle_collision={self.has_particle_collision}"
+                )
+
+            if self.density != 0.0:
+                raise ValueError(
+                    f"Site shape '{shape_label}' must have zero density. "
+                    f"Sites do not contribute to body mass. "
+                    f"Got density={self.density}"
+                )
+
+            if self.collision_group != 0:
+                raise ValueError(
+                    f"Site shape '{shape_label}' must have collision_group=0. "
+                    f"Sites do not participate in collision detection. "
+                    f"Got collision_group={self.collision_group}"
                 )
 
         def mark_as_site(self) -> None:
@@ -8615,34 +8641,8 @@ class ModelBuilder:
                     "Mirroring of heightfields is not yet supported."
                 )
 
-        # Validate site invariants
         if cfg.is_site:
-            shape_label = label or f"shape_{self.shape_count}"
-
-            # Sites must not have collision enabled
-            if cfg.has_shape_collision or cfg.has_particle_collision:
-                raise ValueError(
-                    f"Site shape '{shape_label}' cannot have collision enabled. "
-                    f"Sites must be non-colliding reference points. "
-                    f"has_shape_collision={cfg.has_shape_collision}, "
-                    f"has_particle_collision={cfg.has_particle_collision}"
-                )
-
-            # Sites must have zero density (no mass contribution)
-            if cfg.density != 0.0:
-                raise ValueError(
-                    f"Site shape '{shape_label}' must have zero density. "
-                    f"Sites do not contribute to body mass. "
-                    f"Got density={cfg.density}"
-                )
-
-            # Sites must have collision group 0 (no collision filtering)
-            if cfg.collision_group != 0:
-                raise ValueError(
-                    f"Site shape '{shape_label}' must have collision_group=0. "
-                    f"Sites do not participate in collision detection. "
-                    f"Got collision_group={cfg.collision_group}"
-                )
+            cfg._validate_site(label or f"shape_{self.shape_count}")
 
         resolved_opacity = opacity
         if resolved_opacity is None and src is not None:
@@ -10261,8 +10261,12 @@ class ModelBuilder:
                 offset by half its rest length. The world-space origin equals the initial
                 segment start only when initial and rest lengths match. ``"com"`` places
                 the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
+                body origin and COM coincide. Defaults to ``"com"``.
+
+                .. deprecated:: 1.8
+                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                    Use ``"com"`` instead. For manually authored body-local anchors,
+                    subtract the old ``body_com`` offset.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10523,6 +10527,21 @@ class ModelBuilder:
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
+
+        cfg.validate(shape_type=GeoType.CAPSULE)
+        if cfg.is_site:
+            shape_label = f"{label}_edge_capsule_0" if label else f"shape_{self.shape_count}"
+            cfg._validate_site(shape_label)
+
+        # Warn after validation but before mutating the builder.
+        if body_frame_origin == "start":
+            warnings.warn(
+                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
+                'Use the default "com" origin. For manually authored body-local anchors, '
+                "subtract the old body_com offset.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         # Create all edge bodies first.
         for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
@@ -13158,7 +13177,7 @@ class ModelBuilder:
             )
 
     def _validate_shapes(self) -> bool:
-        """Validate shape gaps for stable broad phase detection.
+        """Validate finite contact materials and shape gaps for stable collision handling.
 
         Margin is an outward offset from a shape's surface [m], while broad phase uses
         ``margin + gap`` [m] for expansion/filtering. For reliable detection, ``gap`` [m]
@@ -13168,8 +13187,12 @@ class ModelBuilder:
         This check only considers shapes that participate in collisions (with the
         `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
 
+        Raises:
+            ValueError: If a colliding shape has a non-finite contact material value
+                or insufficient hydroelastic SDF padding.
+
         Warns:
-            UserWarning: If any colliding shape has ``gap < 0``.
+            NewtonWarning: If any colliding shape has ``gap < 0``.
 
         Returns:
             Whether all colliding shapes have non-negative gaps.
@@ -13177,6 +13200,28 @@ class ModelBuilder:
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_gap = []
         with self._raw_array_access():
+            colliding = (np.asarray(self.shape_flags, dtype=np.int32) & int(collision_flags_mask)) != 0
+            if np.any(colliding):
+                # Validate resolved builder arrays so imported and directly authored materials share the same checks.
+                for name in (
+                    "shape_material_ke",
+                    "shape_material_kd",
+                    "shape_material_kf",
+                    "shape_material_ka",
+                    "shape_material_mu",
+                    "shape_material_restitution",
+                    "shape_material_mu_torsional",
+                    "shape_material_mu_rolling",
+                    "shape_material_kh",
+                ):
+                    values = np.asarray(getattr(self, name))
+                    invalid = colliding & ~np.isfinite(values)
+                    if np.any(invalid):
+                        idx = int(np.flatnonzero(invalid)[0])
+                        label = self.shape_label[idx] or f"shape_{idx}"
+                        raise ValueError(
+                            f"Invalid {name} for shape {idx} ('{label}'): expected a finite value, got {values[idx]}."
+                        )
             shape_flags = _list_for_iteration(self.shape_flags)
             shape_margin = _list_for_iteration(self.shape_margin)
             shape_gap = _list_for_iteration(self.shape_gap)
@@ -14443,7 +14488,8 @@ class ModelBuilder:
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
                 joints cannot connect separate articulations, and non-root joints must belong to an articulation or
                 close a loop; standalone world-root joints are allowed.
-            skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_shapes: If True, skips validation of finite contact materials, contact gaps, and
+                hydroelastic SDF padding on colliding shapes. Default is False.
             skip_validation_inertia: If True, skips all rigid body mass/inertia validation and correction,
                 preserving the builder's mass and inertia. Derived inverses are always recomputed.
                 Skipped checks include finiteness, symmetry,
@@ -14456,6 +14502,9 @@ class ModelBuilder:
 
         Returns:
             A fully constructed Model object containing all simulation data on the specified device.
+
+        Raises:
+            ValueError: If an enabled validation fails, including non-finite contact material values on colliding shapes.
 
         Notes:
             - Validates and corrects rigid body inertia and mass unless ``skip_validation_inertia``
@@ -14491,7 +14540,7 @@ class ModelBuilder:
             if not skip_all_validations and not skip_validation_joints:
                 self._validate_joints()
 
-            # validate shapes have valid contact margins
+            # validate contact materials, gaps, and hydroelastic SDF padding
             if not skip_all_validations and not skip_validation_shapes:
                 self._validate_shapes()
 
