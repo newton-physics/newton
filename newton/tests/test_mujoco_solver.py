@@ -2436,9 +2436,10 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
                 self.assertAlmostEqual(damping(), expected, delta=1.0e-5 * abs(expected))
                 self.assertAlmostEqual(float(model.mujoco.actuator_biasprm.numpy()[0, 2]), 0.5, places=6)
-                model.body_flags.fill_(int(BodyFlags.DYNAMIC))
-                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
-                self.assertAlmostEqual(damping(), expected, delta=1.0e-5 * abs(expected))
+                for flags in (BodyFlags.DYNAMIC, BodyFlags.KINEMATIC):
+                    model.body_flags.fill_(int(flags))
+                    solver.notify_model_changed(ModelFlags.BODY_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+                    self.assertAlmostEqual(damping(), expected, delta=1.0e-5 * abs(expected))
 
     @staticmethod
     def _build_kinematic_root(kind: str):
@@ -11605,6 +11606,62 @@ class TestActuatorDampratio(unittest.TestCase):
         builder.add_mjcf(xml, ctrl_direct=True)
         solver = SolverMuJoCo(builder.finalize())
         self.assertIsNone(solver._dampratio_actuators)
+
+    def test_dampratio_transmissions_match_native_compile(self):
+        """Resolve dampratio like MuJoCo's compiler for joint, tendon, and site transmissions."""
+        xml = """<?xml version="1.0" ?>
+        <mujoco>
+            <worldbody>
+                <body name="base" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+                    <body name="upper" pos="0 0 0.3">
+                        <joint name="hinge" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.03" mass="0.7"/>
+                        <body name="lower" pos="0 0 0.3">
+                            <joint name="slide" type="slide" axis="1 0 0"/>
+                            <geom type="box" size="0.05 0.05 0.05" mass="0.4"/>
+                            <body name="tip" pos="0 0 0.1">
+                                <joint name="ball" type="ball"/>
+                                <geom type="box" size="0.08 0.03 0.02" pos="0.05 0 0" mass="0.3"/>
+                                <site name="tip_site" pos="0.1 0 0"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="coupled">
+                    <joint joint="hinge" coef="1"/>
+                    <joint joint="slide" coef="-0.5"/>
+                </fixed>
+            </tendon>
+            <actuator>
+                <position name="hinge_act" joint="hinge" kp="100" dampratio="1" gear="2"/>
+                <position name="slide_act" joint="slide" kp="50" dampratio="0.5"/>
+                <position name="tendon_act" tendon="coupled" kp="80" dampratio="0.7"/>
+                <position name="ball_act" joint="ball" kp="30" dampratio="1" gear="0 1 0"/>
+                <position name="site_act" site="tip_site" kp="40" dampratio="0.8" gear="0 0 1 0 0 0"/>
+            </actuator>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, ctrl_direct=True)
+        model = builder.finalize()
+        for cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu)
+                expected = solver._mujoco.MjModel.from_xml_string(xml).actuator_biasprm[:, 2]
+                self.assertTrue(np.all(expected < 0.0))
+                if not cpu:
+                    self.assertEqual(solver._dampratio_invweight_actuators, {0, 1, 2})
+                # Construction and later refreshes resolve the same damping.
+                for _ in range(2):
+                    if cpu:
+                        actual = solver.mj_model.actuator_biasprm[:, 2]
+                    else:
+                        actual = solver.mjw_model.actuator_biasprm.numpy()[0, :, 2]
+                    np.testing.assert_allclose(actual, expected, rtol=1.0e-4)
+                    solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
 
 class TestActuatorDampratioMultiWorld(unittest.TestCase):

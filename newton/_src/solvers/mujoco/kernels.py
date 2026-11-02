@@ -2793,6 +2793,46 @@ def capture_actuator_dampratio_kernel(
     dampratio_out[world, actuator] = ratio
 
 
+@wp.func
+def _dampratio_damping(ratio: float, kp: float, inv_weight: float):
+    """Return the damping for a ``dampratio`` given the inverse reflected inertia ``J M^-1 J^T``, as MuJoCo's compiler."""
+    inertia = float(0.0)
+    if inv_weight > MJ_MINVAL:
+        inertia = 1.0 / inv_weight
+    return ratio * 2.0 * wp.sqrt(kp * inertia)
+
+
+@wp.kernel
+def resolve_actuator_dampratio_invweight_kernel(
+    actuators: wp.array[wp.int32],
+    actuator_dofs: wp.array[wp.int32],
+    actuator_tendons: wp.array[wp.int32],
+    dampratio: wp.array2d[float],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    dof_invweight0: wp.array2d[float],
+    tendon_invweight0: wp.array2d[float],
+    # outputs
+    actuator_biasprm: wp.array2d[vec10],
+):
+    """Resolve ``dampratio`` on scalar-joint and tendon actuators from ``set_const_0``'s exact inverse weights."""
+    world, i = wp.tid()
+    actuator = actuators[i]
+    ratio = dampratio[world, actuator]
+    if ratio <= 0.0:
+        return
+    inv_weight = float(0.0)
+    if actuator_dofs[i] >= 0:
+        inv_weight = dof_invweight0[world % dof_invweight0.shape[0], actuator_dofs[i]]
+    else:
+        inv_weight = tendon_invweight0[world % tendon_invweight0.shape[0], actuator_tendons[i]]
+    gear = actuator_gear[world % actuator_gear.shape[0], actuator][0]
+    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
+    bias = actuator_biasprm[world, actuator]
+    bias[2] = -_dampratio_damping(ratio, kp, gear * gear * inv_weight)
+    actuator_biasprm[world, actuator] = bias
+
+
 @wp.kernel
 def resolve_actuator_dampratio_kernel(
     actuator: int,
@@ -2811,12 +2851,9 @@ def resolve_actuator_dampratio_kernel(
     inv_weight = float(0.0)
     for i in range(moment.shape[1]):
         inv_weight += moment[world, i] * inv_mass_moment[world, i]
-    inertia = float(0.0)
-    if inv_weight > MJ_MINVAL:
-        inertia = 1.0 / inv_weight
     bias = actuator_biasprm[world, actuator]
     kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
-    bias[2] = -ratio * 2.0 * wp.sqrt(kp * inertia)
+    bias[2] = -_dampratio_damping(ratio, kp, inv_weight)
     actuator_biasprm[world, actuator] = bias
 
 

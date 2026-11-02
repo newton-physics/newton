@@ -99,6 +99,7 @@ from .kernels import (
     reset_joint_state_kernel,
     reset_sleeping_state_kernel,
     reset_world_buffers_kernel,
+    resolve_actuator_dampratio_invweight_kernel,
     resolve_actuator_dampratio_kernel,
     restore_sleeping_state_kernel,
     sync_qpos0_kernel,
@@ -4735,6 +4736,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # MuJoCo actuators whose dampratio placeholder is resolved on every constants refresh.
         self._dampratio_actuators: list[int] | None = None
         self._dampratio_actuator_ids: wp.array[wp.int32] | None = None
+        # Scalar-joint and tendon actuators resolved from set_const_0's inverse weights, with their DOF or tendon.
+        self._dampratio_invweight_actuators: frozenset[int] = frozenset()
+        self._dampratio_invweight_ids: wp.array[wp.int32] | None = None
+        self._dampratio_invweight_dofs: wp.array[wp.int32] | None = None
+        self._dampratio_invweight_tendons: wp.array[wp.int32] | None = None
+        # Whether no welded root is kinematic; None once captured notifications publish flags the host can't see.
+        self._kinematic_roots_dynamic: bool | None = False
         self._actuator_dampratio: wp.array2d[float] | None = None
         self._dampratio_moment: wp.array2d[float] | None = None
         self._dampratio_inv_mass_moment: wp.array2d[float] | None = None
@@ -9813,6 +9821,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._dampratio_actuators = direct.tolist()
                 self._dampratio_actuator_ids = wp.array(direct, dtype=wp.int32, device=self.model.device)
                 self._allocate_dampratio_scratch()
+                if not self.use_mujoco_cpu:
+                    self._init_dampratio_invweight_actuators(direct)
         if not self.use_mujoco_cpu and self._kinematic_weld_eq is not None and self._notify_qpos_saved is None:
             self._notify_qpos_saved = wp.empty_like(self.mjw_data.qpos)
         solref = getattr(getattr(self.model, "mujoco", None), "solreflimit", None)
@@ -9965,15 +9975,42 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         and limit regularization treat the roots as immovable. Stepping armature stays physical.
         """
         lock = lock_kinematic and self._kinematic_weld_eq is not None
-        if lock or self._dampratio_actuators is not None:
-            self._update_physical_qpos0_inertia(lock)
+        # set_const_0's inverse weights include the armature locking kinematic roots, so solve when roots may be locked.
+        invweight = self._dampratio_invweight_ids is not None and (
+            not lock or (bool(self._kinematic_roots_dynamic) and not self.model.device.is_capturing)
+        )
+        solve = [
+            actuator
+            for actuator in self._dampratio_actuators or ()
+            if not invweight or actuator not in self._dampratio_invweight_actuators
+        ]
+        if lock or solve:
+            self._update_physical_qpos0_inertia(lock, solve)
         if lock:
             self._update_dof_armature(lock=True)
         if self.use_mujoco_cpu:
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             self._mujoco.mj_setConst(self.mj_model, self.mj_data)
         else:
-            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+            m = self.mjw_model
+            self._mujoco_warp.set_const_0(m, self.mjw_data)
+            if invweight:
+                wp.launch(
+                    resolve_actuator_dampratio_invweight_kernel,
+                    dim=(self.mjw_data.nworld, self._dampratio_invweight_ids.shape[0]),
+                    inputs=[
+                        self._dampratio_invweight_ids,
+                        self._dampratio_invweight_dofs,
+                        self._dampratio_invweight_tendons,
+                        self._actuator_dampratio,
+                        m.actuator_gainprm,
+                        m.actuator_gear,
+                        m.dof_invweight0,
+                        m.tendon_invweight0,
+                    ],
+                    outputs=[m.actuator_biasprm],
+                    device=self.model.device,
+                )
         if not lock:
             return
         self._update_dof_armature()
@@ -9993,7 +10030,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if self._notify_qpos_saved is None:
                 self._notify_qpos_saved = wp.empty_like(self.mjw_data.qpos)
 
-    def _update_physical_qpos0_inertia(self, lock: bool) -> None:
+    def _init_dampratio_invweight_actuators(self, actuators: np.ndarray) -> None:
+        """Select actuators whose reflected inertia ``set_const_0`` already computes exactly.
+
+        For hinge and slide joints and tendons, ``J M^-1 J^T`` is ``gear^2`` times ``dof_invweight0`` or
+        ``tendon_invweight0``; ball and free joints average their DOFs' weights.
+        """
+        mujoco, m = self._mujoco, self.mj_model
+        trntype, trnid = m.actuator_trntype[actuators], m.actuator_trnid[actuators, 0]
+        joint = np.isin(trntype, (mujoco.mjtTrn.mjTRN_JOINT, mujoco.mjtTrn.mjTRN_JOINTINPARENT))
+        joint[joint] = np.isin(m.jnt_type[trnid[joint]], (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE))
+        tendon = trntype == mujoco.mjtTrn.mjTRN_TENDON
+        selected = joint | tendon
+        if not selected.any():
+            return
+        dofs = np.where(joint, m.jnt_dofadr[np.where(joint, trnid, 0)], -1)
+        tendons = np.where(tendon, trnid, -1)
+        device = self.model.device
+        self._dampratio_invweight_actuators = frozenset(actuators[selected].tolist())
+        self._dampratio_invweight_ids = wp.array(actuators[selected], dtype=wp.int32, device=device)
+        self._dampratio_invweight_dofs = wp.array(dofs[selected], dtype=wp.int32, device=device)
+        self._dampratio_invweight_tendons = wp.array(tendons[selected], dtype=wp.int32, device=device)
+
+    def _update_physical_qpos0_inertia(self, lock: bool, dampratio_actuators: list[int]) -> None:
         """Evaluate the physical qpos0 inertia for kinematic root locking and ``dampratio`` damping.
 
         On MuJoCo Warp this assembles only the mass matrix, since a second ``set_const_0`` would double every
@@ -10001,8 +10060,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         if self.use_mujoco_cpu:
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-            if self._dampratio_actuators is not None:
-                self._resolve_dampratio_cpu()
+            if dampratio_actuators:
+                self._resolve_dampratio_cpu(dampratio_actuators)
             if lock:
                 # Native MuJoCo's constants are cheap.
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
@@ -10029,11 +10088,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 outputs=[self._physical_dof_M0],
                 device=self.model.device,
             )
-        if self._dampratio_actuators is not None:
+        if dampratio_actuators:
             self._mujoco_warp.factor_m(m, d)
             self._mujoco_warp.transmission(m, d)
             moment, inv_mass_moment = self._dampratio_moment, self._dampratio_inv_mass_moment
-            for actuator in self._dampratio_actuators:
+            for actuator in dampratio_actuators:
                 wp.launch(
                     copy_actuator_moment_kernel,
                     dim=d.nworld,
@@ -10051,12 +10110,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         wp.copy(d.qpos, self._notify_qpos_saved)
 
-    def _resolve_dampratio_cpu(self) -> None:
+    def _resolve_dampratio_cpu(self, actuators: list[int]) -> None:
         """CPU counterpart of the ``dampratio`` resolution in :meth:`_update_physical_qpos0_inertia`."""
         mujoco = self._mujoco
         m, d = self.mj_model, self.mj_data
         ratio = self._actuator_dampratio.numpy()[0]
-        actuators = [a for a in self._dampratio_actuators if ratio[a] > 0.0]
+        actuators = [a for a in actuators if ratio[a] > 0.0]
         if not actuators:
             return
         qpos = d.qpos.copy()
@@ -10150,8 +10209,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Args:
             previous_flags: The flags published before this notification, or ``None`` to skip host checks.
         """
-        if previous_flags is not None:
+        if previous_flags is None:
+            self._kinematic_roots_dynamic = None
+        else:
             kinematic = (self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+            if self._kinematic_roots_dynamic is not None:
+                welded = self._kinematic_weld_body
+                self._kinematic_roots_dynamic = not (kinematic[welded] if welded is not None else kinematic).any()
             switched = kinematic & ((previous_flags & int(BodyFlags.KINEMATIC)) == 0)
             mocap_roots = self._kinematic_mocap_root_bodies
             dynamic_mocap_root = np.flatnonzero(~kinematic & mocap_roots) if mocap_roots is not None else []
