@@ -625,9 +625,14 @@ With a solver-owned pipeline, ``SolverVBD(model, collision_pipeline=...)``, the
 solver allocates its own contacts buffer, seeds the pipeline's self-contact
 configuration from the ``particle_self_contact_*`` arguments, runs rigid
 detection itself on the schedule of ``collision_frequency_type``, and ``step``
-takes ``contacts=None``. Rigid-soft DAT requires this form. The self-contact
-slot works in both forms; :ref:`vbd-jitter-pipeline` shows the arguments that
-put it on the ``ITERATIONS`` schedule.
+takes ``contacts=None``. Rigid-soft DAT requires this form. A ``RIGID`` slot
+on ``ITERATIONS`` needs ``contact_matching="latest"`` or ``"sticky"`` on the
+pipeline when the solver integrates rigid bodies: the in-flight contact
+multipliers are restored through the matched contact indices after each
+mid-iteration detection, and ``step`` raises ``RuntimeError`` with the default
+``"disabled"`` matching. The self-contact slot works in both forms;
+:ref:`vbd-jitter-pipeline` shows the arguments that put it on the
+``ITERATIONS`` schedule.
 
 For CUDA graph capture keep the same order, pipeline, contacts, solver, all
 before capture. Body-body contact state is pre-sized from the pipeline's
