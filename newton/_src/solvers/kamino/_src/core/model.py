@@ -24,7 +24,6 @@ from .conversions import (
 )
 from .data import DataKamino, DataKaminoInfo
 from .geometry import GeometriesData, GeometriesModel
-from .gravity import GravityModel
 from .joints import (
     JointsData,
     JointsModel,
@@ -524,8 +523,11 @@ class ModelKamino:
     time: TimeModel | None = None
     """The time model container holding time-step of each world."""
 
-    gravity: GravityModel | None = None
-    """The gravity model container holding the gravity configurations for each world."""
+    gravity: wp.array[wp.vec3] | None = None
+    """
+    Per-world gravity vector [m/s²], aliasing :attr:`newton.Model.gravity`.
+    Shape of ``(num_worlds,)``.
+    """
 
     bodies: RigidBodiesModel | None = None
     """The rigid bodies model container holding all rigid body entities in the model."""
@@ -833,9 +835,6 @@ class ModelKamino:
                 inv_dt=wp.zeros(shape=(model.world_count,), dtype=wp.float32),
             )
 
-            # Per-world gravity
-            model_gravity = GravityModel.from_newton(model)
-
             # Bodies
             model_bodies = convert_rigid_bodies(
                 conversion_model, model_size, model_info, kinematic_only_immovable=kinematic_only_immovable
@@ -870,7 +869,7 @@ class ModelKamino:
             size=model_size,
             info=model_info,
             time=model_time,
-            gravity=model_gravity,
+            gravity=model.gravity,
             bodies=model_bodies,
             joints=model_joints,
             geoms=model_geoms,
