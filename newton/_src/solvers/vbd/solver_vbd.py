@@ -1346,11 +1346,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def check_and_grow_self_contact_buffers(self) -> bool:
         """Check self-contact overflow, grow the storage, refresh solver state.
 
-        Thin wrapper over
-        ``TriMeshCollisionDetector.check_and_grow_collision_buffers()``, which
-        owns the overflow readback, the warning, and the in-place 1.5x-demand
-        resize; this method afterwards refreshes the one solver-side piece
-        the in-place growth cannot reach, the per-pair launch size. The solver never calls
+        Reads the overflow flags of the last detection back, grows the pooled
+        storage in place to 1.5x the measured demand when a family overflowed
+        (with a ``NewtonWarning``), and afterwards refreshes the one solver-side
+        piece the in-place growth cannot reach, the per-pair launch size. The solver never calls
         this on its own (each check synchronizes the device): call it between
         steps at whatever cadence suits the workload. The grown storage is
         empty until the next step's detection fills it. Growth invalidates

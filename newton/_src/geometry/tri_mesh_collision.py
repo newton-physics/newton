@@ -976,12 +976,14 @@ class TriMeshCollisionDetector:
                 f"{self.collision_info.vertex_colliding_triangles.shape[0] // 2}, "
                 f"edge-edge demand {ee_demand} / capacity "
                 f"{self.collision_info.edge_colliding_edges.shape[0] // 2}); "
-                "excess contacts were dropped this detection. Raise the average "
+                "excess contacts were dropped in this detection. Raise the average "
                 "per-element budgets (SolverVBD: particle_vertex_contact_buffer_size / "
-                "particle_edge_contact_buffer_size; detector or pipeline: the "
-                "vertex/edge *_pre_alloc parameters), or call "
-                "check_and_grow_collision_buffers() between detections "
-                "(SolverVBD users: check_and_grow_self_contact_buffers()).",
+                "particle_edge_contact_buffer_size; CollisionPipeline.init_soft_self_contact(): "
+                "vertex_buffer_pre_alloc / edge_buffer_pre_alloc; Contacts: "
+                "soft_self_contact_vertex_buffer_pre_alloc / soft_self_contact_edge_buffer_pre_alloc), "
+                "or grow the storage between steps with "
+                "SolverVBD.check_and_grow_self_contact_buffers() or "
+                "CollisionPipeline.check_and_grow_soft_self_contact_buffers().",
                 NewtonWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
@@ -1044,15 +1046,14 @@ class TriMeshCollisionDetector:
         PREVIOUSLY captured graph that contains detection or contact kernels
         is invalid: it still operates on the old row arrays, so replaying it
         silently produces stale results. Re-create such graphs after growth.
-        Device-side COPIES of the struct also go stale (``SolverVBD`` keeps
-        one for its contact kernels; its
-        ``check_and_grow_self_contact_buffers`` wrapper refreshes it).
+        ``SolverVBD`` derives its per-pair launch size from the capacity; its
+        ``check_and_grow_self_contact_buffers`` wrapper refreshes it.
 
         Args:
             warn: Emit a ``NewtonWarning`` describing the overflow (per-family
-                demand versus capacity and how to raise the budgets) before
-                growing. Pass ``False`` to grow silently and rely on the
-                return value instead.
+                demand versus capacity) and the new budgets before growing.
+                Pass ``False`` to grow silently and rely on the return value
+                instead.
 
         Returns:
             True if the storage was reallocated.
@@ -1060,10 +1061,13 @@ class TriMeshCollisionDetector:
         if self.device.is_capturing:
             return False
         self._require_collision_info()
-        vt_demand, ee_demand, vt_overflow, ee_overflow = self.check_self_contact_overflow(warn=warn)
+        vt_demand, ee_demand, vt_overflow, ee_overflow = self.check_self_contact_overflow(warn=False)
         if not (vt_overflow or ee_overflow):
             return False
 
+        info = self.collision_info
+        vt_capacity = info.vertex_colliding_triangles.shape[0] // 2
+        ee_capacity = info.edge_colliding_edges.shape[0] // 2
         particle_count = max(self.model.particle_count, 1)
         edge_count = max(self.model.edge_count, 1)
         if vt_overflow:
@@ -1074,7 +1078,18 @@ class TriMeshCollisionDetector:
             self.edge_collision_buffer_pre_alloc = max(
                 self.edge_collision_buffer_pre_alloc + 1, -(-3 * ee_demand // (2 * edge_count))
             )
-        self._replace_row_arrays(self.collision_info, vt_overflow, ee_overflow)
+        if warn:
+            warnings.warn(
+                f"tri-mesh self-contact pair arrays overflowed (vertex-triangle demand {vt_demand} / "
+                f"capacity {vt_capacity}, edge-edge demand {ee_demand} / capacity {ee_capacity}); "
+                "excess contacts were dropped in the last detection. Growing the average per-element "
+                f"budgets to {self.vertex_collision_buffer_pre_alloc} / {self.edge_collision_buffer_pre_alloc}; "
+                "the grown rows fill at the next detection, and any previously captured graph that "
+                "contains detection or contact kernels must be re-created.",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+        self._replace_row_arrays(info, vt_overflow, ee_overflow)
         self._ensure_scratch()
         return True
 

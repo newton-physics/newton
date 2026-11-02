@@ -2674,7 +2674,7 @@ class CollisionPipeline:
         When soft self-contact is configured (:meth:`init_soft_self_contact`),
         the buffer's self-contact storage is sized from the detector's budgets
         at call time. Growing the budgets later
-        (``check_and_grow_collision_buffers``, or
+        (:meth:`check_and_grow_soft_self_contact_buffers`, or
         ``SolverVBD.check_and_grow_self_contact_buffers``) invalidates the
         storage of buffers allocated earlier: each is resized automatically at
         its next :meth:`collide` use, with a ``NewtonWarning`` and its previous
@@ -2905,11 +2905,9 @@ class CollisionPipeline:
     def check_and_grow_soft_self_contact_buffers(self, warn: bool = True) -> bool:
         """Check self-contact overflow on the last detection and grow the storage.
 
-        Public wrapper over
-        ``TriMeshCollisionDetector.check_and_grow_collision_buffers()`` for
-        standalone pipeline use; the counterpart of
+        For standalone pipeline use; the counterpart of
         ``SolverVBD.check_and_grow_self_contact_buffers()`` (a solver that owns
-        the pipeline additionally refreshes device-side solver state, so solver
+        the pipeline additionally refreshes its per-pair launch size, so solver
         users should call that wrapper instead). Reads the overflow flags back,
         which synchronizes the device: call it between steps at whatever
         cadence suits the workload, never inside CUDA graph capture (while
