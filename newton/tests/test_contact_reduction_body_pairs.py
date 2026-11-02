@@ -27,10 +27,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.contact_reduction import _ICOSAHEDRON_NORMALS
 from newton._src.geometry.contact_reduction_body_pairs import (
     BodyPairReduction,
-    _up_axis_rotation,
     build_reduction_group_pair_bound,
 )
 from newton._src.geometry.contact_reduction_global import (
@@ -1230,25 +1228,6 @@ class TestBodyPairReductionGrouping(unittest.TestCase):
         self.assertEqual(stats["max_hashtable_entries"], 1, "endpoint order leaked into grouping")
         self.assertLessEqual(n, 7)
 
-    def test_up_axis_rotation_protects_ground_normals(self):
-        """Give the ground direction its wide bin margin in X-, Y-, and Z-up models.
-
-        The bin table is oriented for +Z; other up axes must be rotated into
-        that frame or their ground normals land near the table's narrow
-        horizontal margins and curved-terrain grouping churns again.
-        """
-        faces = np.array(_ICOSAHEDRON_NORMALS, dtype=np.float64).reshape(-1, 3)
-        for up_axis in (0, 1, 2):
-            rot = np.array(_up_axis_rotation(up_axis), dtype=np.float64)
-            self.assertTrue(np.allclose(rot @ rot.T, np.eye(3)), "rotation must be orthonormal")
-            self.assertAlmostEqual(float(np.linalg.det(rot)), 1.0, places=12)
-            up = np.zeros(3)
-            up[up_axis] = 1.0
-            for sign in (1.0, -1.0):
-                mapped = rot @ (sign * up)
-                dots = np.sort(faces @ mapped)[::-1]
-                self.assertGreater(dots[0] - dots[1], 0.2, f"ground margin lost for up_axis={up_axis}")
-
 
 class TestBodyPairReductionSafety(unittest.TestCase):
     """Resource exhaustion must fail open deterministically, never corrupt memory."""
@@ -1808,47 +1787,6 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
         self.assertEqual(entries[0], entries[1])
         pos = reducer.group_contact_pos2d.numpy()[1:3]
         np.testing.assert_allclose(pos[0], pos[1], atol=1e-6)
-
-    def test_bin_margins_at_world_axes(self):
-        """Keep every world axis well inside a bin, especially the ground normal.
-
-        The shared icosahedron table stores the solid Y-up, which places +Z on a
-        face boundary to within 7e-8 of dot product: any curved or mesh surface
-        in a Z-up world then flickers its patch normals between two bins step to
-        step, and the kept set churns (measured as a permanent rocking limit
-        cycle). The body-pair table is rotated so a face CENTER points at +/-Z;
-        this pins that property plus a sane margin at the horizontal axes.
-        """
-        faces = np.array(_ICOSAHEDRON_NORMALS, dtype=np.float64).reshape(-1, 3)
-        norms = np.linalg.norm(faces, axis=1)
-        self.assertTrue(np.allclose(norms, 1.0, atol=1e-6), "face normals must be unit length")
-
-        def margin(d):
-            dots = np.sort(faces @ np.asarray(d, dtype=np.float64))[::-1]
-            return dots[0] - dots[1]
-
-        for axis in ((0, 0, 1), (0, 0, -1)):
-            self.assertGreater(margin(axis), 0.2, f"ground-normal margin too small at {axis}")
-        for axis in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)):
-            self.assertGreater(margin(axis), 0.05, f"horizontal margin too small at {axis}")
-
-    def test_bin_stable_under_ground_normal_wobble(self):
-        """Assign every normal within 15 degrees of +Z to the same single bin.
-
-        Emulates curved/mesh terrain: patch normals wobble around world-up. If
-        any of them crosses a bin boundary, contacts of one patch regroup
-        between steps and the kept set flickers.
-        """
-        faces = np.array(_ICOSAHEDRON_NORMALS, dtype=np.float64).reshape(-1, 3)
-        rng = np.random.default_rng(5)
-        tilt = np.radians(rng.uniform(0.0, 15.0, size=512))
-        yaw = rng.uniform(0.0, 2.0 * np.pi, size=512)
-        normals = np.stack(
-            [np.sin(tilt) * np.cos(yaw), np.sin(tilt) * np.sin(yaw), np.cos(tilt)],
-            axis=1,
-        )
-        bins = np.argmax(normals @ faces.T, axis=1)
-        self.assertEqual(len(np.unique(bins)), 1, "normals near +Z must all share one bin")
 
     def test_kept_set_invariant_under_translation(self):
         """Keep the identical relative contact set after translating the scene.

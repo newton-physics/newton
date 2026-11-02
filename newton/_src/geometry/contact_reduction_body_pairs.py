@@ -125,22 +125,6 @@ from .contact_reduction_global import (
 )
 from .types import GeoType
 
-
-def _up_axis_rotation(up_axis: int) -> tuple:
-    """Exact rotation (rows of a permutation matrix) mapping ``up_axis`` to +Z.
-
-    The bin table is oriented so its widest margins protect the WORLD UP
-    direction; Newton models can be X-, Y-, or Z-up, so grouping geometry is
-    rotated into a Z-up frame first.  The entries are exactly 0/1 (cyclic axis
-    permutations, det +1), so the rotation introduces no rounding.
-    """
-    if up_axis == 0:  # X-up: X->Z, Y->X, Z->Y
-        return ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
-    if up_axis == 1:  # Y-up: X->Y, Y->Z, Z->X
-        return ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
-    return ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
-
-
 # Solver-visible contact material fields. Shapes on one body may only share a
 # reduction group when ALL of these are exactly equal: the surviving contacts'
 # shape ids are what the solvers read material laws from, so merging shapes
@@ -358,7 +342,6 @@ def build_group_reduction_config(
         shape_group=shape_group,
         cell_size=float(np.float32(cell_size)),
         hashtable_capacity=capacity_request,
-        up_rotation=_up_axis_rotation(int(model.up_axis)),
     )
     return config, group_pair_bound, capacity_request
 

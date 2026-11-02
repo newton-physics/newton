@@ -909,14 +909,11 @@ class GroupReductionConfig:
         shape_group: Per-shape reduction-group ids, each at most ``MAX_GROUP_ID``.
         cell_size: Spatial cell edge [m] on a normal bin's face plane.
         hashtable_capacity: Requested group-table capacity (rounded up to a power of two).
-        up_rotation: Exact 0/1 rotation, as three rows, mapping the model's up axis to +Z,
-            where the normal bins have their widest margins.
     """
 
     shape_group: Any
     cell_size: float
     hashtable_capacity: int
-    up_rotation: tuple = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 
 
 class GlobalContactReducer:
@@ -1121,7 +1118,6 @@ class GlobalContactReducer:
 
         if group_reduction is not None:
             self.shape_group = wp.array(group_reduction.shape_group, dtype=wp.int32, device=device)
-            self.up_rotation = wp.mat33(*(v for row in group_reduction.up_rotation for v in row))
             self.cell_size = float(group_reduction.cell_size)
             self.group_contact_entry = wp.zeros(buffer_size, dtype=wp.int32, device=device)
             self.group_contact_gap = wp.zeros(buffer_size, dtype=wp.float32, device=device)
@@ -1255,7 +1251,6 @@ class GlobalContactReducer:
         data.shape_group = self.shape_group
         data.shape_body = shape_body
         data.body_q = body_q
-        data.up_rotation = self.up_rotation
         data.cell_size = self.cell_size
         data.contact_entry = self.group_contact_entry
         data.contact_gap = self.group_contact_gap
@@ -2346,7 +2341,6 @@ class GroupReductionData:
     shape_group: wp.array[wp.int32]
     shape_body: wp.array[wp.int32]
     body_q: wp.array[wp.transform]
-    up_rotation: wp.mat33
     cell_size: float
     # Indexed by staged contact ID.
     contact_entry: wp.array[wp.int32]
@@ -2552,8 +2546,8 @@ def _register_group_contact(
     elif b1 >= 0:
         ref = wp.transform_get_translation(group_data.body_q[b1])
 
-    bin_id = get_slot(group_data.up_rotation * n_group)
-    pos_2d = project_point_to_plane(bin_id, group_data.up_rotation * (center - ref))
+    bin_id = get_slot(n_group)
+    pos_2d = project_point_to_plane(bin_id, center - ref)
     # Round to nearest so the reference body's origin is a cell center, not a corner.
     bound = float(GROUP_CELL_COORD_MAX + 1)
     cx = wp.int32(wp.clamp(wp.floor(pos_2d[0] / group_data.cell_size + 0.5), -bound, bound))
