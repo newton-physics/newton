@@ -80,11 +80,10 @@ The Warp array has one row per cloth and one ``wp.vec3`` per particle. The
 second output shows the first particle's vertical velocity in each cloth.
 The other two cloths are unchanged.
 
-For deformable views, clone a getter result before editing it: it may share
-the state's storage or use a reusable read buffer. Use the setter to write
-the changes. Values retain the full view shape, even when the mask selects
-only one row. Getters can also read a model's initial state arrays, for example
-to save reset values.
+Clone a getter result before editing it: it may share the state's storage or
+use a reusable read buffer. Use the setter to write the changes. Values retain
+the full view shape, even when the mask selects only one row. Getters can also
+read a model's initial state arrays, for example to save reset values.
 
 .. _selection-particle-properties:
 

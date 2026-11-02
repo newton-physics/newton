@@ -392,8 +392,6 @@ class ActuatorView:
     def get_attribute(self, name: str, source: Any) -> wp.array:
         """Read selected values from a simulation array.
 
-        Clone the result before editing it, then use :meth:`set_attribute` to write changes back.
-
         Args:
             name: Dotted or colon-separated attribute path.
             source: Object or mapping holding the attribute.
