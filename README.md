@@ -1121,6 +1121,143 @@ python -m newton.examples --describe robot_omniwheel
     <td align="center" width="33%">
     </td>
   </tr>
+  <tr>
+    <td colspan="3"><h3>VBD Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cable_bend_stiffness.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bend_stiffness.jpg" alt="Cable Bend Stiffness">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cable_bend_twist_analytic.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bend_twist_analytic.jpg" alt="Cable Bend Twist Analytic">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cable_dahl_hysteresis.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_dahl_hysteresis.jpg" alt="Cable Dahl Hysteresis">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_bend_stiffness</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_bend_twist_analytic</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_dahl_hysteresis</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cable_michell_threshold.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_michell_threshold.jpg" alt="Cable Michell Threshold">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cable_torsion_material_mapping.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_torsion_material_mapping.jpg" alt="Cable Torsion Material Mapping">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cable_twist_buckling.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_twist_buckling.jpg" alt="Cable Twist Buckling">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_michell_threshold</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_torsion_material_mapping</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_twist_buckling</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cable_twist_transfer.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_twist_transfer.jpg" alt="Cable Twist Transfer">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cloth_stiff_material_hanging.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_stiff_material_hanging.jpg" alt="Cloth Stiff Material Hanging">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cloth_stiff_material_stretch.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_stiff_material_stretch.jpg" alt="Cloth Stiff Material Stretch">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_twist_transfer</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cloth_stiff_material_hanging</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cloth_stiff_material_stretch</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_gripper_soft_grid.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_vbd_gripper_soft_grid.jpg" alt="VBD Gripper Soft Grid">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_gripper_soft_triangle.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_vbd_gripper_soft_triangle.jpg" alt="VBD Gripper Soft Triangle">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_rigid_rigid_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_vbd_rigid_rigid_contact.jpg" alt="VBD Rigid Rigid Contact">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples vbd_gripper_soft_grid</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples vbd_gripper_soft_triangle</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples vbd_rigid_rigid_contact</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_soft_rigid_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_vbd_soft_rigid_contact.jpg" alt="VBD Soft Rigid Contact">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_soft_rigid_mix_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_vbd_soft_rigid_mix_contact.jpg" alt="VBD Soft Rigid Mix Contact">
+      </a>
+    </td>
+    <td width="33%"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples vbd_soft_rigid_contact</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples vbd_soft_rigid_mix_contact</code>
+    </td>
+    <td width="33%"></td>
+  </tr>
 </table>
 
 #### Joint impedance heterogeneous
