@@ -3823,7 +3823,7 @@ f 4 5 8
         )
 
     def test_autolimits_false_joint_effort_limit(self):
-        """Test that autolimits=false prevents auto-applying effort_limit from actuatorfrcrange."""
+        """Test that actuatorfrcrange sets effort_limit only when actuatorfrclimited resolves to true."""
         mjcf_autolimits_true = """<?xml version="1.0" ?>
 <mujoco>
   <worldbody>
@@ -3847,7 +3847,7 @@ f 4 5 8
       <geom type="box" size="0.1 0.1 0.1"/>
       <body name="link1" pos="0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-1 1" limited="true"
-               actuatorfrcrange="-100 100"/>
+               actuatorfrclimited="false" actuatorfrcrange="-100 100"/>
         <geom type="cylinder" size="0.05 0.025"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
@@ -3864,7 +3864,7 @@ f 4 5 8
         effort_limit_true = model_true.joint_effort_limit.numpy()[0]
         self.assertAlmostEqual(effort_limit_true, 100.0, places=4)
 
-        # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
+        # With explicit actuatorfrclimited="false", the force range is inert
         builder_false = newton.ModelBuilder()
         builder_false.add_mjcf(mjcf_autolimits_false)
         model_false = newton.ModelBuilder()
@@ -9207,14 +9207,12 @@ class TestMjcfJointLimited(unittest.TestCase):
         solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
         np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
 
-    def test_autolimits_false_ignores_range_without_limited(self):
-        """Ignore a joint range without ``limited`` under ``autolimits="false"``."""
-        builder = newton.ModelBuilder()
-        with self.assertLogs("newton", level="WARNING") as logs:
-            builder.add_mjcf(self._xml('type="hinge" range="-1 2"', compiler='autolimits="false"'))
-        self.assertIn("autolimits", "\n".join(logs.output))
-        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
-        np.testing.assert_array_equal(solver.mj_model.jnt_limited, [0])
+    def test_autolimits_false_rejects_range_without_limited(self):
+        """Reject ranges without an explicit limited flag under ``autolimits="false"``, like MuJoCo."""
+        for attrs in ('range="-1 2"', 'actuatorfrcrange="-1 2"'):
+            with self.subTest(attrs=attrs):
+                with self.assertRaisesRegex(ValueError, "autolimits"):
+                    newton.ModelBuilder().add_mjcf(self._xml(f'type="hinge" {attrs}', compiler='autolimits="false"'))
 
 
 class TestMjcfDefaultCustomAttributes(unittest.TestCase):

@@ -1098,14 +1098,10 @@ def parse_mjcf(
             return limited == "true"
         has_range = range_key in attrib and any(parse_vec(attrib, range_key, None))
         if has_range and not autolimits:
-            # MuJoCo rejects this; follow autolimits and leave the range inactive.
-            logger.warning(
-                "MJCF element '%s' has '%s' but no '%s' while compiler autolimits is false; ignoring the range.",
-                attrib.get("name", "unnamed"),
-                range_key,
-                limited_key,
+            raise ValueError(
+                f"MJCF element '{attrib.get('name', 'unnamed')}' has '{range_key}' but no '{limited_key}' "
+                f'while compiler autolimits is false; set {limited_key}="true" or "false" explicitly.'
             )
-            return False
         return has_range
 
     def warn_invalid_joint_solreflimit(joint_attrib: dict[str, Any]) -> None:
