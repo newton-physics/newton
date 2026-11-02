@@ -145,7 +145,7 @@ Deformable Bodies
    compatibility fallbacks for proposal names Newton has already released; using one emits
    a ``DeprecationWarning`` that names its replacement.
 
-   The packaged ``newton-usd-schemas`` 0.5.x dependency registers Newton's extension schemas,
+   The packaged ``newton-usd-schemas`` 0.6.x dependency registers Newton's extension schemas,
    but not these proposed core deformable APIs. Until AOUSD publishes them, the importer
    discovers their applied-schema tokens and attributes directly; no package upgrade is needed
    for this proposal revision.

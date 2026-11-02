@@ -362,12 +362,18 @@ repository examples spend tuning effort, not a shared solver API.
        constraint formulation. Examples mostly use constructor defaults; one
        tracked example disables triangle contact with ``enable_tri_contact``.
    * - :class:`~newton.solvers.SolverStyle3D`
-     - ``iterations``, ``linear_iterations``, ``drag_spring_stiff``,
-       ``enable_mouse_dragging``.
+     - :class:`~newton.solvers.SolverStyle3D.Config`, including ``iterations``,
+       ``linear_iterations``, ``drag_spring_stiff``, and ``enable_mouse_dragging``.
+       The public ``solver.config`` object can be edited between steps, and the
+       updated values take effect on the next step. Recapture CUDA graphs after
+       changing the configuration.
      - Cloth material stiffness is usually authored when calling
        :mod:`newton.solvers.style3d` helper functions. Examples tune
-       ``iterations`` on the solver and keep interaction-specific drag knobs
-       separate from material stiffness.
+       ``Config.iterations`` and keep interaction-specific drag knobs
+       separate from material stiffness. The original constructor keyword
+       options and solver attribute aliases are deprecated as of Newton 1.8;
+       use ``Config`` and ``solver.config`` instead. Deprecated constructor
+       options cannot be combined with an explicit ``config``.
    * - :class:`~newton.solvers.SolverKamino`
      - :class:`~newton.solvers.SolverKamino.Config`, including
        ``sparse_jacobian``, ``sparse_dynamics``, ``use_collision_detector``,
