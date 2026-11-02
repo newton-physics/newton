@@ -19,10 +19,21 @@ from ...core.reset import reset_world_selected
 from ...core.types import override
 from ...exceptions import NewtonWarning
 from ...geometry.flags import ShapeFlags
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ...sim import (
+    BodyFlags,
+    Contacts,
+    Control,
+    JointType,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    ShapeFrictionMode,
+    State,
+    StateFlags,
+)
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
 from .contact_torsion import (
@@ -2364,6 +2375,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
+        warn_unsupported_friction_modes(model, ShapeFrictionMode.TORSIONAL, "SolverSteel")
+        torsion_radius = self._contact_torsion_shape_radius
+        if model.shape_count and model.shape_material_friction_mode is not None:
+            radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
+            if np.any(
+                (model.shape_material_friction_mode.numpy() >= int(ShapeFrictionMode.TORSIONAL)) & (radii <= 0.0)
+            ):
+                warnings.warn(
+                    "SolverSteel applies torsional friction only to shapes with a positive "
+                    "steel:min_torsional_patch_radius; the other shapes use sliding friction.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
         if solve_mode == "split":
             unsupported = [
                 name
@@ -9766,6 +9790,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._prescribed_articulation,
                     self._articulation_origin,
                     self._shape_mu,
+                    model.shape_material_friction_mode,
                     self._shape_restitution,
                     self._friction_patches.view,
                     *self._contact_anchor_args,
@@ -9916,6 +9941,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._prescribed_articulation,
                         int(self._has_prescribed_response),
                         self._shape_mu,
+                        model.shape_material_friction_mode,
                         self._contact_slots_needed,
                         self._shape_restitution,
                         self._friction_patches.view,
@@ -10972,6 +10998,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._prescribed_articulation,
                 self._articulation_origin,
                 self._shape_mu,
+                model.shape_material_friction_mode,
                 self._shape_restitution,
                 self._contact_slots_needed,
                 *self._contact_anchor_args,

@@ -26,6 +26,7 @@ from ._mass_properties import _is_enabled_collider
 from ._resolution_policy import (
     _resolve_physics_material,
     _resolve_shape_contact,
+    _resolve_shape_friction_mode,
     _resolve_shape_hydroelastic,
     _resolve_shape_offsets,
     _resolve_shape_sdf,
@@ -222,6 +223,9 @@ def _parse_colliders(
                 )
 
                 shape_contact = _resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose)
+                friction_mode = _resolve_shape_friction_mode(
+                    prim, R, material, builder.default_shape_cfg, shape_contact, shape_custom_attrs, verbose=verbose
+                )
 
                 shape_color = material_props.get("color")
                 carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
@@ -266,6 +270,7 @@ def _parse_colliders(
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
                         **shape_contact,
+                        friction_mode=friction_mode,
                         margin=inertia_margin,
                         gap=gap_val,
                         density=shape_density,

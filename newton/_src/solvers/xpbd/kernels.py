@@ -12,10 +12,11 @@ from ...math import (
     vec_min,
     velocity_at_point,
 )
-from ...sim import BodyFlags, JointType, Model
+from ...sim import BodyFlags, JointType, Model, ShapeFrictionMode
 from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
+from ..solver import contact_friction_mode
 
 
 @wp.kernel
@@ -133,6 +134,7 @@ def solve_particle_shape_contacts(
     body_flags: wp.array[wp.int32],
     shape_body: wp.array[int],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     particle_mu: float,
     particle_ka: float,
     contact_count: wp.array[int],
@@ -191,6 +193,8 @@ def solve_particle_shape_contacts(
 
     # take average material properties of shape and particle parameters
     mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
+    if contact_friction_mode(shape_material_friction_mode, shape_index, -1) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     # body velocity
     body_v_s = wp.spatial_vector()
@@ -2553,6 +2557,7 @@ def _solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     relaxation: float,
     dt: float,
     deltas: wp.array[wp.spatial_vector],
@@ -2646,6 +2651,13 @@ def _solve_body_contact_positions(
         mu /= float(mat_nonzero)
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
+    friction_mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
+    if friction_mode < int(ShapeFrictionMode.SLIDING):
+        mu = 0.0
+    if friction_mode < int(ShapeFrictionMode.TORSIONAL):
+        mu_torsional = 0.0
+    if friction_mode < int(ShapeFrictionMode.ROLLING):
+        mu_rolling = 0.0
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2792,6 +2804,7 @@ def solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     relaxation: float,
     dt: float,
     deltas: wp.array[wp.spatial_vector],
@@ -2824,6 +2837,7 @@ def solve_body_contact_positions(
         shape_material_mu,
         shape_material_mu_torsional,
         shape_material_mu_rolling,
+        shape_material_friction_mode,
         relaxation,
         dt,
         deltas,

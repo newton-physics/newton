@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..exceptions import NewtonWarning
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointTargetMode, ShapeFrictionMode, friction_mode_from_condim
 from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from . import utils as usd
 from .schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -341,6 +341,8 @@ class _PhysicsMaterial:
     kd: float | None = None
     kf: float | None = None
     ka: float | None = None
+    friction_mode: int | None = None
+    """Lowest friction mode implied by authored Newton torsional/rolling coefficients, if any."""
 
 
 def _resolve_physics_material(
@@ -367,24 +369,26 @@ def _resolve_physics_material(
             stacklevel=3,
         )
 
+    torsional, torsional_resolver = resolver.get_value_with_resolver(
+        prim, prim_type=PrimType.MATERIAL, key="mu_torsional", default=defaults.mu_torsional, verbose=verbose
+    )
+    rolling, rolling_resolver = resolver.get_value_with_resolver(
+        prim, prim_type=PrimType.MATERIAL, key="mu_rolling", default=defaults.mu_rolling, verbose=verbose
+    )
+    # An authored Newton coefficient enables its friction component.
+    friction_mode = None
+    if rolling_resolver is not None and rolling_resolver.name == "newton":
+        friction_mode = int(ShapeFrictionMode.ROLLING)
+    elif torsional_resolver is not None and torsional_resolver.name == "newton":
+        friction_mode = int(ShapeFrictionMode.TORSIONAL)
+
     return _PhysicsMaterial(
         staticFriction=desc.staticFriction,
         dynamicFriction=desc.dynamicFriction,
         restitution=desc.restitution,
-        torsionalFriction=resolver.get_value(
-            prim,
-            prim_type=PrimType.MATERIAL,
-            key="mu_torsional",
-            default=defaults.mu_torsional,
-            verbose=verbose,
-        ),
-        rollingFriction=resolver.get_value(
-            prim,
-            prim_type=PrimType.MATERIAL,
-            key="mu_rolling",
-            default=defaults.mu_rolling,
-            verbose=verbose,
-        ),
+        torsionalFriction=torsional,
+        rollingFriction=rolling,
+        friction_mode=friction_mode,
         # Treat non-positive, non-finite, or unauthored material density as "use importer default".
         # Effective collider/body MassAPI mass+inertia is handled later.
         density=desc.density if math.isfinite(desc.density) and desc.density > 0.0 else default_shape_density,
@@ -393,6 +397,47 @@ def _resolve_physics_material(
         kf=_resolve_contact_attr("kf"),
         ka=_resolve_contact_attr("ka"),
     )
+
+
+def _resolve_shape_friction_mode(
+    prim: Usd.Prim,
+    resolver: SchemaResolverManager,
+    material: _PhysicsMaterial,
+    defaults: ModelBuilder.ShapeConfig,
+    shape_contact: dict[str, float],
+    shape_custom_attrs: dict[str, Any],
+    *,
+    verbose: bool,
+) -> ShapeFrictionMode:
+    """Select the shape's friction mode, raised by authored torsion radii and material coefficients.
+
+    A positive torsional patch radius ``r`` [m] also sets ``shape_contact["mu_torsional"]``
+    to ``mu * r`` unless the material authors Newton angular coefficients.
+    """
+    mode = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="friction_mode", verbose=verbose)
+    # Registered MuJoCo attributes read mjc:condim without the mjc resolver; consume the
+    # deprecated mujoco:condim so only the friction mode carries it.
+    condim = shape_custom_attrs.pop("mujoco:condim", None)
+    if mode is None and condim is not None:
+        mode = friction_mode_from_condim(int(condim))
+    mode = int(defaults.friction_mode) if mode is None else int(mode)
+    # MuJoCo colliders select friction components by mjc:condim alone; converters
+    # author MuJoCo's friction coefficients on their materials regardless.
+    if usd.has_applied_api_schema(prim, "MjcCollisionAPI"):
+        return ShapeFrictionMode(mode)
+
+    # Registered Steel attributes read the PhysX radius without the PhysX resolver.
+    radius = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="torsional_patch_radius", verbose=verbose)
+    if radius is None:
+        radius = shape_custom_attrs.get("steel:min_torsional_patch_radius")
+    if radius is not None and float(radius) > 0.0:
+        mode = max(mode, int(ShapeFrictionMode.TORSIONAL))
+        if material.friction_mode is None:
+            shape_contact["mu_torsional"] = shape_contact["mu"] * float(radius)
+
+    if material.friction_mode is not None:
+        mode = max(mode, material.friction_mode)
+    return ShapeFrictionMode(mode)
 
 
 # Shape-property warnings pass through _parse_colliders() and parse_usd()

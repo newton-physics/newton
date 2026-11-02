@@ -161,6 +161,59 @@ class BodyFlags(IntEnum):
     """Filter bitmask selecting all body types."""
 
 
+class ShapeFrictionMode(IntEnum):
+    """Friction components a shape enables in its rigid contacts.
+
+    The modes follow the contact models of grasping: frictionless point contact,
+    point contact with sliding friction, and soft-finger contact that adds
+    torsional friction about the normal; ``ROLLING`` adds rolling resistance.
+    They correspond to MuJoCo's ``condim`` 1, 3, 4, and 6.
+
+    Each mode includes the components of the lower modes. To leave out a lower
+    component, set its coefficient to zero; for example, ``ROLLING`` with
+    :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` of zero gives rolling
+    resistance without torsional friction. A contact uses the higher mode of its
+    two shapes (:class:`~newton.solvers.SolverMuJoCo` lets a higher
+    ``mujoco:geom_priority`` decide instead) and combines the coefficients of
+    both shapes by the solver's usual rule, so disabling a component for a
+    contact pair takes a zero coefficient on both shapes.
+
+    The mode fixes which friction constraints a solver creates when it is
+    constructed; the coefficients :attr:`~newton.Model.shape_material_mu`,
+    :attr:`~newton.Model.shape_material_mu_torsional`, and
+    :attr:`~newton.Model.shape_material_mu_rolling` set their strength and may
+    change at runtime.
+
+    Particles have no friction mode, so they count as ``NONE`` and a contact
+    between a particle and a shape follows the shape's mode. Because particles
+    do not rotate, the modes above ``SLIDING`` act as sliding friction for them.
+    A rigid contact is only frictionless when both shapes are ``NONE``.
+    """
+
+    NONE = 0
+    """Frictionless contact."""
+
+    SLIDING = 1
+    """Sliding friction tangential to the contact."""
+
+    TORSIONAL = 2
+    """Sliding friction and torsional friction about the contact normal."""
+
+    ROLLING = 3
+    """Sliding, torsional, and rolling friction."""
+
+
+FRICTION_MODE_CONDIM = (1, 3, 4, 6)
+"""MuJoCo ``condim`` of each :class:`ShapeFrictionMode`, indexed by mode."""
+
+
+def friction_mode_from_condim(condim: int) -> ShapeFrictionMode:
+    """Return the :class:`ShapeFrictionMode` of a MuJoCo ``condim``."""
+    if condim not in FRICTION_MODE_CONDIM:
+        raise ValueError(f"condim must be 1, 3, 4, or 6 (got {condim}).")
+    return ShapeFrictionMode(FRICTION_MODE_CONDIM.index(condim))
+
+
 # Types of joints linking rigid bodies
 class JointType(IntEnum):
     """

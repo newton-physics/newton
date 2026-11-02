@@ -388,6 +388,14 @@ def test_invalid_input_and_unsupported_modes(test, device):
             fixture(radius, device=device)
     with test.assertRaises(ValueError):
         fixture(0.01, device=device, contact_warmstart=True)
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    builder.add_shape_box(builder.add_body(), hx=0.1, hy=0.1, hz=0.1)
+    model = builder.finalize(device=device)
+    set_torsion_radius(model, 0.01)
+    model.shape_material_friction_mode.fill_(int(newton.ShapeFrictionMode.SLIDING))
+    with test.assertRaisesRegex(ValueError, "TORSIONAL"):
+        SolverSteel(model, solve_mode="matrix_free")
 
 
 def test_capture_is_explicitly_rejected(test, device):
