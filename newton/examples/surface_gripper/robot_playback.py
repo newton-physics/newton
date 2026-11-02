@@ -175,22 +175,26 @@ def _arm_targets_rad(frame: Frame, num_arm_dofs: int) -> np.ndarray:
     return np.deg2rad(np.asarray(j, dtype=np.float32))
 
 
-def _load_playback(path: str | Path, num_arm_dofs: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+def recording_duration(path: str | Path) -> float:
+    """Length of the recording at ``path`` [s]: the time of its last frame relative to the first."""
+    return recorded_times(load_recording(path))[-1]
+
+
+def _load_playback(path: str | Path, num_arm_dofs: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load a recording and extract the arrays the sim consumes.
 
-    Returns ``(rec_times, rec_targets, rec_engaged, rec_preparing, rec_duration)``:
+    Returns ``(rec_times, rec_targets, rec_engaged, rec_preparing)``:
         - ``rec_times``: sample times [s], shape [N], starting at 0 (:func:`recorded_times`).
         - ``rec_targets``: coupled arm joint targets [rad], shape [N, num_arm_dofs].
         - ``rec_engaged``: suction-cup engagement command (``gripper_close``) per frame, shape [N] bool.
         - ``rec_preparing``: preparing-to-engage signal (``prepare_to_engage``) per frame, shape [N] bool.
-        - ``rec_duration``: recording length [s] (``rec_times[-1]``).
     """
     frames = load_recording(path)
     rec_times = np.asarray(recorded_times(frames), dtype=np.float64)
     rec_targets = np.stack([_arm_targets_rad(f, num_arm_dofs) for f in frames]).astype(np.float64)
     rec_engaged = np.array([f.gripper_close for f in frames], dtype=bool)  # [N]
     rec_preparing = np.array([f.prepare_to_engage for f in frames], dtype=bool)  # [N]
-    return rec_times, rec_targets, rec_engaged, rec_preparing, float(rec_times[-1])
+    return rec_times, rec_targets, rec_engaged, rec_preparing
 
 
 def _gaussian_smooth(times: np.ndarray, values: np.ndarray, sigma: float) -> np.ndarray:
@@ -213,12 +217,12 @@ class RobotPlayback:
 
     Loads the recording at ``path``, applies the J3->J2 coupling and Gaussian smoothing (width
     ``smoothing_sigma`` [s]), and holds the sample times, coupled arm drive targets, and per-frame
-    suction engagement command as device arrays, plus the recording duration. ``num_arm_dofs`` is the
-    number of arm joints to extract (J1-J6).
+    suction engagement command as device arrays. ``num_arm_dofs`` is the number of arm joints to
+    extract (J1-J6).
     """
 
     def __init__(self, path: str | Path, smoothing_sigma: float, num_arm_dofs: int):
-        rec_times, rec_targets, rec_engaged, rec_preparing, self.rec_duration = _load_playback(path, num_arm_dofs)
+        rec_times, rec_targets, rec_engaged, rec_preparing = _load_playback(path, num_arm_dofs)
         rec_targets = _gaussian_smooth(rec_times, rec_targets, smoothing_sigma)  # smooth the coarse waypoints
         self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)  # [N] sample times [s]
         self.rec_targets_wp = wp.array(rec_targets, dtype=wp.float32)  # [N, num_arm_dofs] coupled targets [rad]

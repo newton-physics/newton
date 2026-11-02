@@ -103,7 +103,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.surface_gripper.robot_playback import RobotPlayback
+from newton.examples.surface_gripper.robot_playback import RobotPlayback, recording_duration
 from newton.examples.surface_gripper.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
@@ -128,10 +128,6 @@ ROBOT_ARTICULATION_PATTERN = "*Robot*"
 PICK_SCENE_USD = ASSETS / "palletizer_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
 RECORDING_CSV = ASSETS / "palletizer_trajectory.csv"
-# Duration of that recording [s]: one panel pick followed by six crate picks, the last release at
-# ~25.6 s. Used to default --num-frames so a plain run plays the whole cycle rather than stopping
-# partway through the first pick.
-RECORDING_DURATION = 26.15  # [s]
 
 # rendered frames per second
 FPS = 60
@@ -713,7 +709,9 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        parser.set_defaults(num_frames=round(RECORDING_DURATION * FPS))
+        # Default --num-frames to the whole recorded cycle (one panel pick, then six crate picks) so a
+        # plain run does not stop partway through the first pick.
+        parser.set_defaults(num_frames=round(recording_duration(RECORDING_CSV) * FPS))
         return parser
 
     def __init__(self, viewer: ViewerBase, args: argparse.Namespace):
