@@ -6512,18 +6512,18 @@ def accumulate_free_rigid_angular_wrenches_from_impulses(
     contact_slot: wp.array[wp.int32],
     contact_path: wp.array[wp.int32],
     contact_slots_needed: wp.array[wp.int32],
+    contact_normal: wp.array[wp.vec3],
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
     shape_body: wp.array[int],
     mf_constraint_count: wp.array[wp.int32],
-    mf_J_a: wp.array3d[float],
-    mf_J_b: wp.array3d[float],
+    mf_row_type: wp.array2d[int],
     mf_impulses: wp.array2d[wp.float32],
     inv_dt: float,
     # outputs
     body_contact_wrench: wp.array[wp.spatial_vector],
 ):
-    """Add the rolling and spin rows of each free-body contact to its two bodies as torques."""
+    """Add the rolling and spin rows of each free-body contact to its two bodies as world-frame torques."""
     c = wp.tid()
     if c >= wp.min(contact_count[0], rigid_contact_max) or contact_path[c] != 1:
         return
@@ -6531,16 +6531,21 @@ def accumulate_free_rigid_angular_wrenches_from_impulses(
     if slot < 0:
         return
     world = contact_world[c]
-    torque_a = wp.vec3(0.0)
-    torque_b = wp.vec3(0.0)
+    # Rebuild the row axes from the world contact basis; the rows' J is in each free body's anchor frame.
+    normal = -contact_normal[c]
+    t0, t1 = contact_tangent_basis(normal)
+    torque = wp.vec3(0.0)
     for row in range(slot + 3, wp.min(slot + contact_slots_needed[c], mf_constraint_count[world])):
-        lam = mf_impulses[world, row] * inv_dt
-        torque_a += lam * wp.vec3(mf_J_a[world, row, 3], mf_J_a[world, row, 4], mf_J_a[world, row, 5])
-        torque_b += lam * wp.vec3(mf_J_b[world, row, 3], mf_J_b[world, row, 4], mf_J_b[world, row, 5])
+        axis = normal
+        if mf_row_type[world, row] == PGS_CONSTRAINT_TYPE_CONTACT_ROLLING:
+            axis = t0
+            if row == slot + 4:
+                axis = t1
+        torque += mf_impulses[world, row] * inv_dt * axis
     if contact_shape0[c] >= 0 and shape_body[contact_shape0[c]] >= 0:
-        wp.atomic_add(body_contact_wrench, shape_body[contact_shape0[c]], wp.spatial_vector(wp.vec3(0.0), torque_a))
+        wp.atomic_add(body_contact_wrench, shape_body[contact_shape0[c]], wp.spatial_vector(wp.vec3(0.0), torque))
     if contact_shape1[c] >= 0 and shape_body[contact_shape1[c]] >= 0:
-        wp.atomic_add(body_contact_wrench, shape_body[contact_shape1[c]], wp.spatial_vector(wp.vec3(0.0), torque_b))
+        wp.atomic_add(body_contact_wrench, shape_body[contact_shape1[c]], wp.spatial_vector(wp.vec3(0.0), -torque))
 
 
 @wp.kernel

@@ -612,14 +612,18 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertAlmostEqual(reported_tangent, seen["sliding"], delta=1.0e-4 + 1.0e-4 * seen["sliding"])
 
     def test_free_joint_parent_wrench_balances_the_angular_rows(self):
-        """Report a zero BODY_PARENT_F on a free joint while its spin or rolling rows slow the sphere."""
-        for condim, angular in ((4, (0.0, 0.0, 60.0)), (6, (100.0, 0.0, 0.0))):
+        """Report a zero BODY_PARENT_F on a free joint while its spin or rolling rows slow the sphere.
+
+        Rotated FREE root anchors put the rows' Jacobians in the anchor frame; the reported wrench stays world-frame.
+        """
+        cases = [(c, a, d) for c, a in ((4, (0.0, 0.0, 60.0)), (6, (100.0, 0.0, 0.0))) for d in (None, 90.0, 30.0)]
+        for condim, angular, anchor_deg in cases:
             seen = {}
 
             def observe(solver, contacts, observables, seen=seen):
                 seen["parent_f"] = observables.body_parent_f.numpy()[1]
 
-            with self.subTest(condim=condim):
+            with self.subTest(condim=condim, anchor_deg=anchor_deg):
                 _, twist, _ = _simulate(
                     "sphere",
                     0.0,
@@ -629,6 +633,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                     rolling_material=0.01,
                     torsional_material=0.01,
                     parent_f=True,
+                    anchor_deg=anchor_deg,
                     observe=observe,
                 )
                 self.assertLess(np.linalg.norm(twist[3:6]), 0.99 * np.linalg.norm(angular))
