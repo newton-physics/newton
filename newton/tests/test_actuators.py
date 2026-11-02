@@ -48,12 +48,7 @@ if has_module("pxr.Usd"):
     from pxr import Usd
 
 
-_HAS_ONNX = has_module("onnx")
-_HAS_TORCH = has_module("torch")
-_HAS_WARP_NN = has_module("warp_nn")
-
-
-if _HAS_TORCH:
+if has_module("torch"):
     import torch as _torch
 
     class _LSTMNet(_torch.nn.Module):
@@ -668,7 +663,7 @@ class TestDrivePID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralGRU(unittest.TestCase):
     """DriveNeuralGRU ONNX loading and Warp-NN inference."""
 
@@ -1649,7 +1644,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralMLP(unittest.TestCase):
     """DriveNeuralMLP - load via model_path, call compute() directly."""
 
@@ -2084,7 +2079,7 @@ class TestDriveNeuralMLP(unittest.TestCase):
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralLSTM(unittest.TestCase):
     """DriveNeuralLSTM - load via model_path, call compute() directly."""
 
@@ -2317,7 +2312,7 @@ class _TorchCheckpointTestMixin:
         return path
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@requires("torch")
 class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """DriveNeuralMLP loading from pt2 checkpoints."""
 
@@ -2422,7 +2417,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         np.testing.assert_allclose(forces.numpy(), expected.cpu().numpy(), rtol=1e-4, atol=1e-6)
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@requires("torch")
 class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """DriveNeuralLSTM loading from pt2 checkpoints."""
 
@@ -5513,7 +5508,7 @@ class TestActuatorStateAssign(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "undeclared state attributes: extra"):
             Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
 
-    @unittest.skipUnless(_HAS_TORCH, "PyTorch is required")
+    @requires("torch")
     def test_assign_copies_torch_state_without_aliasing(self):
         """Copy Torch-backed drive state without aliasing the source tensors."""
         with _torch.inference_mode():
@@ -5730,7 +5725,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+    @requires("onnx")
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
         model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
@@ -5748,7 +5743,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(cls, ClampingDCMotor)
         self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
 
-    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+    @requires("onnx")
     def test_parse_lstm_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
         model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})
