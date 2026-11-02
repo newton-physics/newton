@@ -270,7 +270,6 @@ def test_deep_articulation(test, device):
     test.assertEqual(articulation_level_start[1] - articulation_level_start[0], 41)
     test.assertEqual(model._fk_level_capacity, 1)
     test.assertEqual(model._fk_level_parent_pos.numpy()[-1], 0)
-    # chains take the serial kernel
     test.assertFalse(_fk_prefers_tiled(model))
 
     state_reference = model.state()
