@@ -6675,6 +6675,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=model.device,
             )
         if not model.articulation_count:
+            if model.joint_count:
+                # Standalone joints keep their coordinates, as their bodies keep their state.
+                wp.copy(state_out.joint_q, state_in.joint_q)
+                wp.copy(state_out.joint_qd, state_in.joint_qd)
             # Bodies outside every articulation carry no parent wrench.
             for target in (body_parent_f, state_out.body_parent_f):
                 if target is not None:

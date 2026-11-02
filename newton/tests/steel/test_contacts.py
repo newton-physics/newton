@@ -4002,6 +4002,24 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         np.testing.assert_array_equal(observables.body_parent_f.numpy(), 0.0)
         np.testing.assert_array_equal(state_out.body_parent_f.numpy(), 0.0)
 
+    def test_model_without_articulations_publishes_its_joint_state(self):
+        """Pass a standalone revolute joint's coordinates through a step of a model without articulations."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link()
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_joint_revolute(parent=-1, child=body, axis=(0.0, 1.0, 0.0))
+        model = builder.finalize(device="cpu")
+        self.assertEqual((model.joint_dof_count, model.articulation_count), (1, 0))
+        solver = SolverSteel(model, solve_mode="split")
+        state_in, state_out = model.state(), model.state()
+        state_in.joint_q.fill_(0.3)
+        state_in.joint_qd.fill_(0.5)
+        state_out.joint_q.fill_(np.nan)
+        state_out.joint_qd.fill_(np.nan)
+        solver.step(state_in, state_out, None, None, DEFAULT_DT)
+        np.testing.assert_array_equal(state_out.joint_q.numpy(), state_in.joint_q.numpy())
+        np.testing.assert_array_equal(state_out.joint_qd.numpy(), state_in.joint_qd.numpy())
+
 
 class TestSteelPairedResponse(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "paired response ownership requires CUDA")
