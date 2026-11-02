@@ -256,6 +256,15 @@ class ViewerGL(ViewerBase):
         super().__init__()
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
+        try:
+            self._setup_viewer(headless, paused, num_frames)
+        except BaseException:
+            # Close the renderer's window, as RendererGL does when its own setup fails.
+            self.renderer.close()
+            raise
+
+    def _setup_viewer(self, headless: bool, paused: bool, num_frames: int | None):
+        """Set up the camera, input handling, and UI around the new renderer."""
         self.renderer.set_title("Newton Viewer")
         self._image_logger = ImageLogger(device=self.device)
 
