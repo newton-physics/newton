@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import StateFlags
+from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE
 from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers import SolverMuJoCo
 
@@ -699,7 +700,7 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
     def test_cpu_solver_options_require_shared_values(self):
         """Native options are shared unless a constructor override replaces every world."""
         model = self._scalar_model()
-        for name, override in (("impratio", 2.0), ("wind", (0.0, 0.0, 0.0))):
+        for name, override in (("impratio", 2.0), ("wind", (0.3, -0.2, 0.1))):
             with self.subTest(name=name):
                 attribute = getattr(model.mujoco, name)
                 original = attribute.numpy().copy()
@@ -738,6 +739,214 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
         self.assertEqual(model.control().mujoco.ctrl.shape[0], 3)
         with self.assertRaisesRegex(ValueError, "global actuators"):
             SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+    @staticmethod
+    def _reference_model():
+        """A free root makes DOF, joint, shape, and tendon offsets distinct."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(
+            """
+        <mujoco>
+          <worldbody>
+            <body name="a"><freejoint/><geom name="g0" size=".1" mass="1"/><site name="s0"/>
+              <body name="b" pos=".1 .2 .3"><joint name="b" type="slide"/>
+                <geom name="g1" size=".1" mass="1"/><site name="s1"/>
+                <body name="c" pos=".4 .5 .6"><joint name="c" type="slide"/>
+                  <geom size=".1" mass="1"/><site name="s2"/>
+                </body>
+                <body name="d" pos=".7 .8 .9"><joint name="d" type="slide"/><geom size=".1" mass="1"/></body>
+              </body>
+            </body>
+          </worldbody>
+          <contact><pair geom1="g0" geom2="g1"/></contact>
+          <tendon>
+            <fixed name="t0" limited="true" range="-.5 .5"><joint joint="b" coef="1"/></fixed>
+            <fixed name="t1"><joint joint="c" coef="1"/></fixed>
+            <spatial name="t2"><site site="s0"/><site site="s1"/><site site="s2"/></spatial>
+          </tendon>
+          <equality>
+            <joint joint1="b" joint2="c"/>
+            <connect body1="a" body2="b" anchor="0 0 0"/>
+          </equality>
+          <actuator>
+            <motor joint="b"/>
+            <motor tendon="t0"/>
+            <general site="s1" refsite="s0" gear="1 0 0 0 0 0"/>
+          </actuator>
+        </mujoco>
+        """,
+            convert_mjc_equality_constraints=False,
+        )
+        builder = newton.ModelBuilder()
+        ground = builder.add_ground_plane()
+        sphere = builder.add_shape_sphere(-1, xform=wp.transform((10, 0, 1), wp.quat_identity()), radius=0.1)
+        builder.add_site(-1, label="shared_site")
+        builder.replicate(template, 2)
+        global_pair = {
+            key: attribute.values[0]
+            for key, attribute in builder.custom_attributes.items()
+            if attribute.frequency == "mujoco:pair" and attribute.values
+        }
+        global_pair.update(
+            {
+                "mujoco:pair_world": -1,
+                "mujoco:pair_geom1": ground,
+                "mujoco:pair_geom2": sphere,
+            }
+        )
+        builder.add_custom_values(**global_pair)
+        return builder.finalize(device="cpu")
+
+    def test_cpu_reference_targets_match_local_entities(self):
+        """Equal counts and parameter values do not imply equal compiled reference graphs."""
+        flags = newton.ModelFlags
+        for name, flag, row, column in (
+            ("equality_constraint_joint1", flags.CONSTRAINT_PROPERTIES, 3, None),
+            ("equality_constraint_joint2", flags.CONSTRAINT_PROPERTIES, 3, None),
+            ("equality_constraint_body1", flags.CONSTRAINT_PROPERTIES, 2, None),
+            ("actuator_trnid", flags.ACTUATOR_PROPERTIES, 3, 0),
+            ("actuator_trnid", flags.ACTUATOR_PROPERTIES, 4, 0),
+            ("actuator_trnid", flags.ACTUATOR_PROPERTIES, 5, 0),
+            ("actuator_trnid", flags.ACTUATOR_PROPERTIES, 5, 1),
+            ("tendon_joint", flags.TENDON_PROPERTIES, 2, None),
+            ("tendon_wrap_shape", flags.TENDON_PROPERTIES, 4, None),
+            ("pair_geom2", flags.SHAPE_PROPERTIES, 1, None),
+            ("pair_world", flags.SHAPE_PROPERTIES, 1, None),
+        ):
+            with self.subTest(name=name, row=row, column=column):
+                model = self._reference_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                attribute = getattr(model.mujoco, name)
+                values = attribute.numpy().copy()
+                if column is None:
+                    # Pick another valid target in the same world.
+                    delta = (
+                        2
+                        if name
+                        in (
+                            "tendon_wrap_shape",
+                            "pair_geom2",
+                            "equality_constraint_joint1",
+                            "equality_constraint_body1",
+                        )
+                        else 1
+                    )
+                    values[row] = 0 if name == "pair_world" else values[row] + delta
+                else:
+                    values[row, column] += 1 if row < 5 else 2
+                attribute.assign(values)
+                before = solver.mj_model.body_mass.copy()
+                model.body_mass.assign(model.body_mass.numpy() * 2)
+                with self.assertRaisesRegex(ValueError, name):
+                    solver.notify_model_changed(flag | flags.BODY_INERTIAL_PROPERTIES)
+                np.testing.assert_array_equal(solver.mj_model.body_mass, before)
+                with self.assertRaisesRegex(ValueError, name):
+                    SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+    def test_cpu_equivalent_reference_encodings_are_supported(self):
+        """Labels, global sites, inactive fields, and reordered path storage retain their meaning."""
+        model = self._reference_model()
+        attrs = model.mujoco
+        targets = attrs.actuator_trnid.numpy().copy()
+        for row in (0, 3):
+            label = f"joint_target_{row}"
+            attrs.joint_dof_label[int(targets[row, 0])] = label
+            attrs.actuator_target_label[row] = label
+            targets[row, 0] = -1
+            targets[row, 1] = -1 - row  # Unused by JOINT transmissions.
+        for row in (1, 4):
+            targets[row, 1] = targets[row, 0]
+            targets[row, 0] = -1  # Legacy tendon transmission encoding.
+        targets[[2, 5], 1] = model.shape_label.index("shared_site")
+        attrs.actuator_trnid.assign(targets)
+
+        unused = attrs.equality_constraint_joint1.numpy().copy()
+        unused[2] = 0  # CONNECT does not consume the joint reference fields.
+        attrs.equality_constraint_joint1.assign(unused)
+
+        joints = attrs.tendon_joint.numpy().copy()
+        joints[2:4] = joints[2:4][::-1]
+        attrs.tendon_joint.assign(joints)
+        starts = attrs.tendon_joint_adr.numpy().copy()
+        starts[3:5] = starts[3:5][::-1]
+        attrs.tendon_joint_adr.assign(starts)
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nu, 3)
+        self.assertEqual(solver.mj_model.npair, 2)  # One local pair and one shared global pair.
+        solver.notify_model_changed(
+            newton.ModelFlags.ACTUATOR_PROPERTIES
+            | newton.ModelFlags.TENDON_PROPERTIES
+            | newton.ModelFlags.CONSTRAINT_PROPERTIES
+            | newton.ModelFlags.SHAPE_PROPERTIES
+        )
+
+    def test_cpu_tendon_force_gains_are_shared_only_when_authored(self):
+        """Only force-space tendon gains are independent inputs to the native limit model."""
+        for name in ("tendon_limit_ke", "tendon_limit_kd"):
+            with self.subTest(name=name):
+                model = self._reference_model()
+                attribute = getattr(model.mujoco, name)
+                values = attribute.numpy().copy()
+                values[3] += 100
+                attribute.assign(values)
+                # RAW rows derive gains from solref, so unrelated cached gains can differ.
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                # Construction derives and overwrites RAW gains; re-author the unequal inputs.
+                attribute.assign(values)
+                modes = model.mujoco.tendon_solref_limit_mode.numpy()
+                modes[0] = modes[3] = SOLREF_MODE_FORCE_SPACE
+                model.mujoco.tendon_solref_limit_mode.assign(modes)
+                before = solver.mj_model.tendon_solref_lim.copy()
+                with self.assertRaisesRegex(ValueError, name):
+                    solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
+                np.testing.assert_array_equal(solver.mj_model.tendon_solref_lim, before)
+                with self.assertRaisesRegex(ValueError, name):
+                    SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+    def test_cpu_constraint_reference_geometry_ignores_large_world_translation(self):
+        """Local link offsets must not acquire float32 cancellation from world placement."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(
+            """
+        <mujoco><worldbody>
+          <body name="a"><freejoint/><geom size=".1" mass="1"/>
+            <body name="b" pos=".1234567 .2345678 .3456789">
+              <joint type="hinge"/><geom size=".1" mass="1"/>
+            </body>
+          </body>
+        </worldbody><equality><connect body1="a" body2="b" anchor="0 0 0"/></equality></mujoco>
+        """,
+            convert_mjc_equality_constraints=False,
+        )
+        builder = newton.ModelBuilder()
+        for offset in (0.0, 16.0, 32.0, 1000.0):
+            builder.add_world(template, xform=wp.transform((offset, offset, offset), wp.quat_identity()))
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        # Existing reference-geometry regression covers a genuinely different relative pose.
+
+    def test_cpu_heightfields_require_matching_source_data(self):
+        """Equal-valued distinct heightfield objects are valid; different terrain is not."""
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            template = newton.ModelBuilder()
+            body = template.add_link()
+            joint = template.add_joint_free(body)
+            template.add_articulation([joint])
+            template.add_shape_sphere(body, radius=0.1)
+            template.add_shape_heightfield(heightfield=newton.Heightfield([[0, 1], [1, 0]], 2, 2))
+            builder.add_world(template)
+        with self.assertWarnsRegex(UserWarning, "Heightfield-vs-heightfield"):
+            model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        shapes = np.flatnonzero(model.shape_type.numpy() == newton.GeoType.HFIELD)
+        model.shape_source[int(shapes[1])] = newton.Heightfield([[0, 0.5], [1, 0]], 2, 2)
+        with self.assertRaisesRegex(ValueError, "heightfield"):
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        with self.assertRaisesRegex(ValueError, "heightfield"):
+            SolverMuJoCo(model, use_mujoco_cpu=True)
 
     def test_default_contact_capacity_covers_every_world(self):
         """The later world's contacts exceed the backend's 48-contact default floor."""

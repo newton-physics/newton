@@ -13,6 +13,7 @@ import warnings
 from array import array
 from collections.abc import Iterable
 from contextlib import contextmanager
+from copy import copy
 from dataclasses import dataclass, fields
 from enum import IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any
@@ -6105,6 +6106,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     indices,
                 )
                 check(attrs, ("geom_solimp", "geom_solmix", "solref", "solref_mode", "hfield_base"), indices)
+                for column in np.flatnonzero(model.shape_type.numpy()[indices[0]] == GeoType.HFIELD):
+                    sources = [model.shape_source[int(shape)] for shape in indices[:, column]]
+                    first = sources[0]
+                    for source in sources[1:]:
+                        if source is first:
+                            continue
+                        fields = ("nrow", "ncol", "hx", "hy", "min_z", "max_z")
+                        if (
+                            first is None
+                            or source is None
+                            or any(getattr(source, field) != getattr(first, field) for field in fields)
+                            or not np.array_equal(source.data, first.data)
+                        ):
+                            raise ValueError("Multi-world CPU mode requires identical heightfield source data.")
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             check(
                 attrs,
@@ -6153,10 +6168,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "tendon_springlength",
                     "tendon_actuator_force_range",
                     "tendon_actuator_force_limited",
-                    "tendon_coef",
-                    "tendon_wrap_prm",
                 ),
             )
+            tendon_modes = getattr(attrs, "tendon_solref_limit_mode", None)
+            if tendon_modes is not None:
+                modes = tendon_modes.numpy().reshape(nworld, -1)
+                indices = np.arange(modes.size).reshape(modes.shape)[:, modes[0] == SOLREF_MODE_FORCE_SPACE]
+                check(attrs, ("tendon_limit_ke", "tendon_limit_kd"), indices)
+        self._validate_cpu_shared_references(model, flags)
         if flags & (
             ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.JOINT_PROPERTIES
@@ -6164,6 +6183,174 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
         ):
             self._validate_cpu_constraint_reference_geometry(model)
+
+    def _validate_cpu_shared_references(self, model: Model, flags: ModelFlags | int) -> None:
+        """Compare the exported reference graph, retaining sentinels and shared global shapes."""
+        attrs = model.mujoco
+        nworld = model.world_count
+        domains = {}
+
+        def equal(name, values):
+            if np.any(values != values[0]):
+                raise ValueError(f"Multi-world CPU mode requires matching world-local references: {name} differs.")
+
+        def normalize(name, values, domain):
+            if not np.any(values >= 0):
+                return values.copy()
+            if domain not in domains:
+                if domain == "shape":
+                    mapping = getattr(self, "_cpu_shared_shape_indices", None)
+                    if mapping is None:
+                        # Construction repeats this check after building the actual shape slots.
+                        return None
+                    owners = model.shape_world.numpy()
+                    keys = np.full(model.shape_count, -1, dtype=np.int32)
+                    keys[mapping] = np.broadcast_to(np.arange(mapping.shape[1]), mapping.shape)
+                else:
+                    if domain == "dof":
+                        owners = np.repeat(np.arange(nworld), model.joint_dof_count // nworld)
+                    else:
+                        source = attrs if domain == "tendon" else model
+                        owners = getattr(source, f"{domain}_world").numpy()
+                    keys = np.arange(owners.size) % max(1, owners.size // nworld)
+                domains[domain] = owners, keys
+            owners, keys = domains[domain]
+            result = values.copy()
+            present = result >= 0
+            targets = result[present]
+            if np.any(targets >= owners.size):
+                raise ValueError(f"Multi-world CPU mode has out-of-range {name} references.")
+            expected = np.broadcast_to(np.arange(nworld).reshape(nworld, *([1] * (values.ndim - 1))), values.shape)
+            target_owners = owners[targets]
+            valid_owner = target_owners == expected[present]
+            if domain == "shape":
+                valid_owner |= target_owners == -1
+            if np.any(~valid_owner) or np.any(keys[targets] < 0):
+                raise ValueError(
+                    f"Multi-world CPU mode requires world-local {name} references or shared global shapes."
+                )
+            result[present] = keys[targets]
+            return result
+
+        def references(name, values, domain):
+            normalized = normalize(name, values, domain)
+            if normalized is not None:
+                equal(name, normalized)
+
+        if flags & ModelFlags.CONSTRAINT_PROPERTIES:
+            types = attrs.equality_constraint_type.numpy().reshape(nworld, -1)
+            for domain, kinds, names in (
+                ("joint", (self.EqType.JOINT,), ("equality_constraint_joint1", "equality_constraint_joint2")),
+                (
+                    "body",
+                    (self.EqType.CONNECT, self.EqType.WELD),
+                    ("equality_constraint_body1", "equality_constraint_body2"),
+                ),
+                ("tendon", (self.EqType.TENDON,), ("equality_constraint_tendon1", "equality_constraint_tendon2")),
+            ):
+                selected = np.isin(types[0], kinds)
+                if not np.any(selected):
+                    continue
+                for name in names:
+                    references(name, getattr(attrs, name).numpy().reshape(nworld, -1)[:, selected], domain)
+            for name in ("joint_mimic_joint", "constraint_mimic_joint0", "constraint_mimic_joint1"):
+                references(name, getattr(model, name).numpy().reshape(nworld, -1), "joint")
+
+        if flags & (ModelFlags.ACTUATOR_PROPERTIES | ModelFlags.SHAPE_PROPERTIES) and hasattr(attrs, "actuator_trnid"):
+            targets = attrs.actuator_trnid.numpy().copy()
+            types = attrs.actuator_trntype.numpy().copy()
+            trn = self.TrnType
+            tendon = types == trn.TENDON
+            legacy = tendon & ((targets[:, 0] < 0) | ((targets[:, 0] == 0) & (targets[:, 1] > 0)))
+            targets[legacy, 0] = targets[legacy, 1]
+            labels = getattr(attrs, "actuator_target_label", ())
+            # Mirror deferred label resolution and the SITE label-first rule used by _init_actuators.
+            label_domains = (
+                (getattr(attrs, "joint_dof_label", []), trn.JOINT),
+                (getattr(attrs, "tendon_label", []), trn.TENDON),
+                (
+                    {model.shape_label[i]: i for i in np.flatnonzero(model.shape_flags.numpy() & ShapeFlags.SITE)},
+                    trn.SITE,
+                ),
+            )
+            for row, label in enumerate(labels):
+                if not label or (targets[row, 0] >= 0 and types[row] != trn.SITE):
+                    continue
+                for names, kind in label_domains:
+                    if types[row] == trn.SITE and targets[row, 0] >= 0 and kind != trn.SITE:
+                        continue
+                    if label in names:
+                        targets[row, 0] = names[label] if kind == trn.SITE else names.index(label)
+                        types[row] = kind
+                        break
+                if targets[row, 0] < 0:
+                    raise ValueError("Multi-world CPU mode requires resolvable actuator_trnid target labels.")
+            types = types.reshape(nworld, -1)
+            targets = targets.reshape(nworld, -1, 2)
+            equal("actuator_trnid transmission", types)
+            for kinds, domain, columns in (
+                ((trn.JOINT, trn.JOINT_IN_PARENT), "dof", (0,)),
+                ((trn.TENDON,), "tendon", (0,)),
+                ((trn.BODY,), "body", (0,)),
+                ((trn.SITE, trn.SLIDERCRANK), "shape", (0, 1)),
+            ):
+                selected = np.isin(types[0], kinds)
+                for column in columns:
+                    references("actuator_trnid", targets[:, selected, column], domain)
+
+        if flags & ModelFlags.SHAPE_PROPERTIES and hasattr(attrs, "pair_world"):
+            # Global pair rows are already shared; local rows must describe the same
+            # ordered graph even when they are not stored contiguously by world.
+            worlds = attrs.pair_world.numpy()
+            rows = [np.flatnonzero(worlds == world) for world in range(nworld)]
+            if any(len(row) != len(rows[0]) for row in rows):
+                raise ValueError("Multi-world CPU mode requires matching pair_world counts.")
+            indices = np.asarray(rows, dtype=np.int32)
+            for name in ("pair_geom1", "pair_geom2"):
+                references(name, getattr(attrs, name).numpy()[indices], "shape")
+
+        if flags & (ModelFlags.TENDON_PROPERTIES | ModelFlags.SHAPE_PROPERTIES) and hasattr(attrs, "tendon_type"):
+            types = attrs.tendon_type.numpy().reshape(nworld, -1)
+            equal("tendon_type", types)
+            for kind, prefix, entries in (
+                (0, "tendon_joint", "tendon_joint"),
+                (1, "tendon_wrap", "tendon_wrap_type"),
+            ):
+                selected = types[0] == kind
+                if not np.any(selected):
+                    continue
+                size = getattr(attrs, entries).size
+                counts = getattr(attrs, f"{prefix}_num").numpy().reshape(nworld, -1)[:, selected]
+                starts = getattr(attrs, f"{prefix}_adr").numpy().reshape(nworld, -1)[:, selected]
+                equal(f"{prefix}_num", counts)
+                if np.any(counts < 0) or np.any((counts > 0) & ((starts < 0) | (starts + counts > size))):
+                    raise ValueError(f"Multi-world CPU mode has invalid {prefix}_adr/num paths.")
+                # Follow each tendon's authored path, rather than assuming flat entry arrays
+                # are partitioned at total_entry_count / world_count.
+                rows = np.asarray(
+                    [
+                        [
+                            entry
+                            for start, count in zip(world_starts, world_counts, strict=True)
+                            for entry in range(int(start), int(start + count))
+                        ]
+                        for world_starts, world_counts in zip(starts, counts, strict=True)
+                    ],
+                    dtype=np.int32,
+                )
+                if kind == 0:
+                    references("tendon_joint", attrs.tendon_joint.numpy()[rows], "joint")
+                    equal("tendon_coef", attrs.tendon_coef.numpy()[rows])
+                else:
+                    wrap_types = attrs.tendon_wrap_type.numpy()[rows]
+                    equal("tendon_wrap_type", wrap_types)
+                    references(
+                        "tendon_wrap_shape", attrs.tendon_wrap_shape.numpy()[rows][:, wrap_types[0] < 2], "shape"
+                    )
+                    references(
+                        "tendon_wrap_sidesite", attrs.tendon_wrap_sidesite.numpy()[rows][:, wrap_types[0] == 1], "shape"
+                    )
+                    equal("tendon_wrap_prm", attrs.tendon_wrap_prm.numpy()[rows][:, wrap_types[0] == 2])
 
     def _validate_cpu_constraint_reference_geometry(self, model: Model) -> None:
         """Compare body-local reference geometry without rejecting whole-world translations."""
@@ -6189,12 +6376,36 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if body1.shape[1] == 0:
             return
 
-        poses = self._compute_body_poses_at_qref(model, self._build_ref_q(model)).numpy()
+        # Remove a common translation before float32 FK adds local link offsets.
+        # Subtracting already-rounded absolute body positions loses those offsets.
+        reference_model = copy(model)
+        frames = model.joint_X_p.numpy().copy()
+        ref_q = self._build_ref_q(model)
+        coordinates = ref_q.numpy()
+        starts = model.joint_q_start.numpy()
+        joint_types = model.joint_type.numpy()
+        joint_worlds = model.joint_world.numpy()
+        origins = np.zeros((nworld, 3), dtype=np.float32)
+        roots = np.flatnonzero(parents < 0)
+        for world in range(nworld):
+            world_roots = roots[joint_worlds[roots] == world]
+            if world_roots.size == 0:
+                continue
+            root = int(world_roots[0])
+            frame = wp.transform(*frames[root])
+            origin = frame.p
+            if joint_types[root] in (JointType.FREE, JointType.DISTANCE):
+                origin = origin + wp.quat_rotate(frame.q, wp.vec3(*coordinates[starts[root] : starts[root] + 3]))
+            origins[world] = origin
+            frames[world_roots, :3] -= origins[world]
+        reference_model.joint_X_p = wp.array(frames, dtype=wp.transform, device=model.device)
+        poses = self._compute_body_poses_at_qref(reference_model, ref_q).numpy()
         relative = np.empty((*body1.shape, 7), dtype=np.float32)
         for world, row in np.ndindex(body1.shape):
             first, second = int(body1[world, row]), int(body2[world, row])
-            x1 = wp.transform(*poses[first]) if first >= 0 else wp.transform_identity()
-            x2 = wp.transform(*poses[second]) if second >= 0 else wp.transform_identity()
+            world_pose = wp.transform(-wp.vec3(*origins[world]), wp.quat_identity())
+            x1 = wp.transform(*poses[first]) if first >= 0 else world_pose
+            x2 = wp.transform(*poses[second]) if second >= 0 else world_pose
             q2_inv = wp.quat_inverse(x2.q)
             relative[world, row, :3] = wp.quat_rotate(q2_inv, x1.p - x2.p)
             relative[world, row, 3:] = q2_inv * x1.q

@@ -850,8 +850,12 @@ Joint state, controls, applied forces, gravity, equality activation, and free or
 mocap root poses remain independent. A scalar ``dof_ref`` is a model reference,
 not an independent runtime pose; it must match across CPU worlds.
 CPU actuator and tendon rows must have matching contiguous world-local layouts;
-global actuator and tendon rows are unsupported. These CPU restrictions do not
-remove the GPU backend's supported per-world parameter variation.
+global actuator and tendon rows are unsupported. Equality, actuator, tendon-path,
+and explicit contact-pair references must identify corresponding local entities
+or the same global shapes. Heightfield source dimensions and elevation data must
+also match. Reference geometry is compared after removing common world
+translations. These CPU restrictions do not remove the GPU backend's supported
+per-world parameter variation.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
 assets, scales, and convex-hull counts may differ across worlds. Collision
