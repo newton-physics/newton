@@ -14,7 +14,7 @@ excess contacts are dropped and flagged; call
 between steps to report and grow the storage in place. Contacts buffers
 allocated before a grow are resized automatically at their next use, and
 `SolverVBD.particle_self_contact_info()` returns the live self-contact
-results for either construction path while keeping the solver's device-side
-view in sync.
+results for either construction path while keeping the solver's launch
+size in sync.
 `TriMeshCollisionDetector(sort_contact_rows=True)` optionally sorts each row
 into a canonical order. Most self-contact demos run faster.

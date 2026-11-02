@@ -1277,8 +1277,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,
                 )
 
-            # the device-side struct copy and the launch size are derived caches
-            # over the result struct; the accessor builds and heals them
+            # the per-pair launch size is a derived cache over the result
+            # struct; the accessor builds and heals it
             self.trimesh_collision_info = None
             self._self_contact_info_source = None
             self._self_contact_storage_generation = -1
@@ -1330,18 +1330,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         return self.trimesh_collision_detector
 
     def particle_self_contact_info(self) -> TriMeshCollisionInfo | None:
-        """Return the live self-contact results, keeping the solver's device-side view in sync.
+        """Return the live self-contact results, keeping the solver's launch size in sync.
 
         Resolves the result struct from whichever path owns it (the
         solver-owned pipeline's ``contacts`` buffer, or the solver's standalone
-        detector). When the struct or its storage changed since the solver
-        last looked (storage growth, an automatic resize at bind, or a
-        replaced ``contacts`` buffer), this refreshes the two derived caches
-        the contact kernels rely on: the device-side struct copy and the
-        per-pair launch size. The refresh cannot run during CUDA graph
-        capture; a stale view there raises instead (synchronize once outside
-        capture by calling this method or stepping once, then re-create the
-        graph).
+        detector). The contact kernels take that struct by value, so the
+        solver keeps no copy of it. When the struct or its storage changed
+        since the solver last looked (storage growth, an automatic resize at
+        bind, or a replaced ``contacts`` buffer), this refreshes the one
+        derived cache the contact kernels rely on: the per-pair launch size.
 
         Returns:
             The bound :class:`TriMeshCollisionInfo`, or ``None`` when
@@ -1359,15 +1356,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         generation = self._self_contact_detector().storage_generation
         if info is self._self_contact_info_source and generation == self._self_contact_storage_generation:
             return info
-        if self.device.is_capturing:
-            raise RuntimeError(
-                "self-contact storage changed since the solver last synchronized its "
-                "device-side view, and the refresh cannot run during graph capture. "
-                "Synchronize once outside capture (call particle_self_contact_info() "
-                "or step once), then re-create the graph."
-            )
-        # the contact kernels take the struct by value, so the solver keeps the
-        # struct itself; the per-pair launch size is the only derived cache
         self.trimesh_collision_info = info
         self._update_self_contact_launch_size(info)
         self._self_contact_info_source = info
@@ -1380,9 +1368,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Thin wrapper over
         ``TriMeshCollisionDetector.check_and_grow_collision_buffers()``, which
         owns the overflow readback, the warning, and the in-place 1.5x-demand
-        resize; this method afterwards refreshes the two solver-side pieces
-        the in-place growth cannot reach (the device-side struct copy the
-        contact kernels read, and the per-pair launch size). The solver never calls
+        resize; this method afterwards refreshes the one solver-side piece
+        the in-place growth cannot reach, the per-pair launch size. The solver never calls
         this on its own (each check synchronizes the device): call it between
         steps at whatever cadence suits the workload. The grown storage is
         empty until the next step's detection fills it. Growth invalidates
@@ -1400,7 +1387,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Returns:
             True if the storage was reallocated: grown here, or automatically
             resized when this solver's buffer was bound after an outside
-            growth (the device-side view was refreshed either way).
+            growth (the launch size was refreshed either way).
         """
         if not self.particle_enable_self_contact or self.model.particle_count == 0:
             return False
@@ -1414,8 +1401,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         else:
             detector = self.trimesh_collision_detector
         # overflow handling and resizing are the detector's job; the accessor
-        # heals the solver's derived caches (device-side struct copy, launch
-        # size) whatever the trigger was: growth here, or an upgrade at bind
+        # heals the solver's derived cache (the launch size) whatever the
+        # trigger was: growth here, or an upgrade at bind
         detector.check_and_grow_collision_buffers()
         info = self.particle_self_contact_info()
         return info is not source_before or self._self_contact_storage_generation != generation_before
@@ -5727,7 +5714,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 min_distance_filtering_ref_pos=self.particle_q_rest,
             )
         # a bind-time auto-resize or a replaced contacts buffer must reach the
-        # device-side struct copy before this step's contact kernels launch
+        # launch size before this step's contact kernels launch
         self.particle_self_contact_info()
 
     def rebuild_bvh(self, state: State):
