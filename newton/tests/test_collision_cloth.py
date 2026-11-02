@@ -1849,15 +1849,15 @@ def _build_two_layer_cloth_model(device):
     return model
 
 
-def _build_two_layer_cloth(device, budgets=None):
+def _build_two_layer_cloth(device, budgets=None, **solver_kwargs):
     model = _build_two_layer_cloth_model(device)
 
-    kwargs = {}
+    kwargs = dict(solver_kwargs)
     if budgets is not None:
-        kwargs = {
-            "particle_vertex_contact_buffer_size": budgets[0],
-            "particle_edge_contact_buffer_size": budgets[1],
-        }
+        kwargs.update(
+            particle_vertex_contact_buffer_size=budgets[0],
+            particle_edge_contact_buffer_size=budgets[1],
+        )
     solver = SolverVBD(
         model=model,
         iterations=2,
@@ -2133,7 +2133,9 @@ def _accumulate_self_contact_reference_sequential(
 def test_self_contact_scatter_matches_sequential_reference(test, device):
     """The per-contact scatter must reproduce a single-thread sequential
     summation of the same pairs (identical evaluators; order-only differences)."""
-    model, solver = _build_two_layer_cloth(device)
+    # The solver compiles the production kernel with fast math by default; the
+    # reference kernel in this module is not, so compare both in exact math.
+    model, solver = _build_two_layer_cloth(device, enable_fast_math=False)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     dt = 1e-3
