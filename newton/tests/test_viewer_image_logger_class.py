@@ -17,7 +17,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton.tests.unittest_utils import patch_sys_module
+from newton.tests.unittest_utils import make_headless_viewer_gl_or_skip, patch_sys_module
 
 
 class _GLuintArray(list):
@@ -587,13 +587,7 @@ class TestViewerGLClearModelClearsImageLogger(unittest.TestCase):
     """
 
     def test_clear_model_clears_image_logger(self):
-        try:
-            import newton.viewer  # noqa: PLC0415
-
-            viewer = newton.viewer.ViewerGL(headless=True)
-        except Exception as exc:
-            self.skipTest(f"ViewerGL not available: {exc}")
-            return
+        viewer = make_headless_viewer_gl_or_skip(self)
 
         try:
             viewer.log_image("color", np.zeros((4, 4), dtype=np.uint8))

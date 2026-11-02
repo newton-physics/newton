@@ -15,7 +15,8 @@ import warp as wp
 
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests.kamino import setup_tests
-from newton.tests.test_viewer_get_frame import _make_box_model, _make_headless_viewer_gl_or_skip
+from newton.tests.test_viewer_get_frame import _make_box_model
+from newton.tests.unittest_utils import make_headless_viewer_gl_or_skip
 
 
 @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
@@ -50,7 +51,7 @@ class TestKaminoViewerRecording(unittest.TestCase):
 
         # Build a minimal CPU scene so get_frame() returns a real rendered image.
         with wp.ScopedDevice("cpu"):
-            viewer = _make_headless_viewer_gl_or_skip(self)
+            viewer = make_headless_viewer_gl_or_skip(self)
         model = _make_box_model("cpu")
         viewer.set_model(model)
         state = model.state()

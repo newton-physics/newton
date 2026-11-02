@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
-import sys
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -14,56 +13,17 @@ import newton
 import newton.viewer
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+from newton.tests import unittest_utils
+from newton.tests.unittest_utils import (
+    _viewer_gl_unavailable_error_types,
+    is_viewer_gl_unavailable_error,
+    make_headless_viewer_gl_or_skip,
+)
 
 
-def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
-    try:
-        __import__("pyglet")
-    except ImportError as exc:
-        test.skipTest(f"ViewerGL dependencies not available: {exc}")
-
-    unavailable_errors = []
-    for module_name, exception_names in (
-        ("pyglet.gl", ("ConfigException", "ContextException")),
-        ("pyglet.gl.lib", ("MissingFunctionException",)),
-        ("pyglet.window", ("NoSuchConfigException", "NoSuchDisplayException")),
-    ):
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        unavailable_errors.extend(
-            exception_type
-            for exception_name in exception_names
-            if isinstance(exception_type := getattr(module, exception_name, None), type)
-        )
-
-    return tuple(dict.fromkeys(unavailable_errors))
-
-
-def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> bool:
-    if isinstance(exc, _viewer_gl_unavailable_error_types(test)):
-        return True
-
-    # Some pyglet platform backends raise their own NoSuchDisplayException
-    # while importing pyglet.window, before the window-level class exists.
-    return type(exc).__module__.startswith("pyglet.") and type(exc).__name__ in {
-        "ConfigException",
-        "ContextException",
-        "MissingFunctionException",
-        "NoSuchConfigException",
-        "NoSuchDisplayException",
-    }
-
-
-def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
-    _viewer_gl_unavailable_error_types(test)
-
-    try:
-        return newton.viewer.ViewerGL(width=width, height=height, headless=True)
-    except Exception as exc:
-        if _is_viewer_gl_unavailable_error(test, exc):
-            test.skipTest(f"ViewerGL display/backend not available: {exc}")
-        raise
+def _isolated_unavailable_record():
+    """Keep simulated backend failures from skipping later real viewer tests."""
+    return mock.patch.object(unittest_utils, "_viewer_gl_unavailable_reason", None)
 
 
 def _make_box_model(device: str | wp.Device):
@@ -77,7 +37,7 @@ class TestRenderingPauseGL(unittest.TestCase):
     def test_freeze_capture_resize_and_resume(self):
         """Keep an image stable through logging, resize, and UI-driven toggles."""
         with wp.ScopedDevice("cpu"):
-            viewer = _make_headless_viewer_gl_or_skip(self)
+            viewer = make_headless_viewer_gl_or_skip(self)
         self.addCleanup(viewer.close)
         model = _make_box_model("cpu")
         viewer.set_model(model)
@@ -201,7 +161,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         if cuda_devices:
             wp.zeros(1, dtype=wp.float32, device=cuda_devices[0])
 
-        viewer = _make_headless_viewer_gl_or_skip(self)
+        viewer = make_headless_viewer_gl_or_skip(self)
 
         try:
             cpu_device = wp.get_device("cpu")
@@ -242,7 +202,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
     def test_large_quad_is_stable_under_parallel_camera_translation(self):
         """Keep a large uniform quad stable while translating the camera parallel to it."""
-        viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        viewer = make_headless_viewer_gl_or_skip(self, width=400, height=300)
 
         try:
             viewer.renderer.draw_sky = False
@@ -347,7 +307,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
     def test_contact_shadows_on_planar_and_concave_receivers(self):
         """Keep box shadows attached without darkening unobstructed ramps or bowls."""
-        viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        viewer = make_headless_viewer_gl_or_skip(self, width=400, height=300)
         try:
             viewer.renderer.draw_sky = False
             viewer.renderer.sky_upper = (0.0, 0.0, 0.0)
@@ -476,7 +436,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
     def test_headless_capture_main_image_frame(self):
         """Verify get_frame captures a main image rendered headlessly."""
-        viewer = _make_headless_viewer_gl_or_skip(self)
+        viewer = make_headless_viewer_gl_or_skip(self)
 
         try:
             width = viewer.renderer._screen_width
@@ -507,7 +467,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         """Verify a viewer renders after a previous viewer was closed."""
         for cycle in range(2):
             with self.subTest(cycle=cycle):
-                viewer = _make_headless_viewer_gl_or_skip(self)
+                viewer = make_headless_viewer_gl_or_skip(self)
                 try:
                     self.assertTrue(viewer.is_running())
                     width = viewer.renderer._screen_width
@@ -531,10 +491,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
         )
 
         with (
+            _isolated_unavailable_record(),
             mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("no GL config")),
             self.assertRaises(unittest.SkipTest),
         ):
-            _make_headless_viewer_gl_or_skip(self)
+            make_headless_viewer_gl_or_skip(self)
 
     def test_viewer_constructor_pyglet_backend_display_error_skips(self):
         """Verify pyglet backend display errors skip GL-dependent coverage."""
@@ -545,10 +506,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
         )
 
         with (
+            _isolated_unavailable_record(),
             mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("no display")),
             self.assertRaises(unittest.SkipTest),
         ):
-            _make_headless_viewer_gl_or_skip(self)
+            make_headless_viewer_gl_or_skip(self)
 
     def test_viewer_constructor_pyglet_missing_function_error_skips(self):
         """Verify pyglet missing GL function errors skip GL-dependent coverage."""
@@ -559,18 +521,40 @@ class TestViewerGLGetFrame(unittest.TestCase):
         )
 
         with (
+            _isolated_unavailable_record(),
             mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("glCreateShader unavailable")),
             self.assertRaises(unittest.SkipTest),
         ):
-            _make_headless_viewer_gl_or_skip(self)
+            make_headless_viewer_gl_or_skip(self)
 
     def test_viewer_constructor_unexpected_error_raises(self):
         """Verify unexpected ViewerGL constructor errors fail the test."""
         with (
+            _isolated_unavailable_record(),
             mock.patch.object(newton.viewer, "ViewerGL", side_effect=RuntimeError("initialization regression")),
             self.assertRaisesRegex(RuntimeError, "initialization regression"),
         ):
-            _make_headless_viewer_gl_or_skip(self)
+            make_headless_viewer_gl_or_skip(self)
+
+    def test_unavailable_backend_is_not_retried(self):
+        """Verify later viewers skip without reopening a backend that already failed."""
+        unavailable_error = type(
+            "MissingFunctionException",
+            (Exception,),
+            {"__module__": "pyglet.gl.lib"},
+        )
+
+        with (
+            _isolated_unavailable_record(),
+            mock.patch.object(
+                newton.viewer, "ViewerGL", side_effect=unavailable_error("glCreateShader unavailable")
+            ) as viewer_gl,
+        ):
+            for _ in range(2):
+                with self.assertRaises(unittest.SkipTest):
+                    make_headless_viewer_gl_or_skip(self)
+
+        self.assertEqual(viewer_gl.call_count, 1)
 
     def test_cpu_viewer_uses_host_pbo_readback(self):
         """Verify CPU get_frame uses host PBO readback without CUDA interop."""
@@ -634,7 +618,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
     def test_texture_affine_transform_matches_authored_coordinates(self):
         """Apply a UsdTransform2d affine mapping exactly once before GL sampling."""
-        viewer = _make_headless_viewer_gl_or_skip(self, width=320, height=240)
+        viewer = make_headless_viewer_gl_or_skip(self, width=320, height=240)
 
         try:
             renderer = viewer.renderer
@@ -744,7 +728,7 @@ class TestViewerGLMultisampling(unittest.TestCase):
         therefore buys a default framebuffer that goes unused, and narrows the
         set of drivers that can match the request.
         """
-        viewer = _make_headless_viewer_gl_or_skip(self)
+        viewer = make_headless_viewer_gl_or_skip(self)
 
         try:
             # A driver offering no multi-sampled config at all reports 0, and a
@@ -764,7 +748,7 @@ class TestViewerGLMultisampling(unittest.TestCase):
             pyglet.options["debug_gl"] = False
             import pyglet.window
         except Exception as exc:
-            if not _is_viewer_gl_unavailable_error(self, exc):
+            if not is_viewer_gl_unavailable_error(self, exc):
                 raise
             self.skipTest(f"pyglet window backend not available: {exc}")
 
@@ -780,7 +764,7 @@ class TestViewerGLMultisampling(unittest.TestCase):
             return real_window(*args, **kwargs)
 
         with mock.patch.object(pyglet.window, "Window", _reject_multisampled_config):
-            viewer = _make_headless_viewer_gl_or_skip(self)
+            viewer = make_headless_viewer_gl_or_skip(self)
 
         try:
             # _setup_frame_buffer creates the multi-sampled framebuffer before

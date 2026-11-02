@@ -9,7 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.viewer.camera import Camera
-from newton.viewer import ViewerGL
+from newton.tests.unittest_utils import make_headless_viewer_gl_or_skip
 
 
 def _as_np(value):
@@ -138,11 +138,7 @@ class TestViewerGLSetModelState(unittest.TestCase):
         model_a = _build_viewer_model(1.0)
         model_b = _build_viewer_model(2.0)
 
-        try:
-            viewer = ViewerGL(headless=True)
-        except Exception as exc:
-            self.skipTest(f"ViewerGL not available: {exc}")
-            return
+        viewer = make_headless_viewer_gl_or_skip(self)
 
         try:
             viewer.set_model(model_a)
@@ -180,11 +176,7 @@ class TestViewerGLSetModelState(unittest.TestCase):
         model_a = _build_viewer_model(1.0, up_axis=newton.Axis.Z)
         model_b = _build_viewer_model(2.0, up_axis=newton.Axis.Y)
 
-        try:
-            viewer = ViewerGL(headless=True)
-        except Exception as exc:
-            self.skipTest(f"ViewerGL not available: {exc}")
-            return
+        viewer = make_headless_viewer_gl_or_skip(self)
 
         try:
             viewer.set_model(model_a)

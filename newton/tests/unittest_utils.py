@@ -151,6 +151,68 @@ def patch_sys_module(name: str, module: Any):
             sys.modules[name] = original
 
 
+# Once a backend fails, later windows on it can raise spurious GL errors (OpenGL 1.1
+# Windows runners), so the rest of the process skips without opening another.
+_viewer_gl_unavailable_reason: str | None = None
+
+
+def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
+    try:
+        __import__("pyglet")
+    except ImportError as exc:
+        test.skipTest(f"ViewerGL dependencies not available: {exc}")
+
+    unavailable_errors = []
+    for module_name, exception_names in (
+        ("pyglet.gl", ("ConfigException", "ContextException")),
+        ("pyglet.gl.lib", ("MissingFunctionException",)),
+        ("pyglet.window", ("NoSuchConfigException", "NoSuchDisplayException")),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        unavailable_errors.extend(
+            exception_type
+            for exception_name in exception_names
+            if isinstance(exception_type := getattr(module, exception_name, None), type)
+        )
+
+    return tuple(dict.fromkeys(unavailable_errors))
+
+
+def is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> bool:
+    if isinstance(exc, _viewer_gl_unavailable_error_types(test)):
+        return True
+
+    # Some pyglet platform backends raise their own NoSuchDisplayException
+    # while importing pyglet.window, before the window-level class exists.
+    return type(exc).__module__.startswith("pyglet.") and type(exc).__name__ in {
+        "ConfigException",
+        "ContextException",
+        "MissingFunctionException",
+        "NoSuchConfigException",
+        "NoSuchDisplayException",
+    }
+
+
+def make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
+    global _viewer_gl_unavailable_reason  # noqa: PLW0603
+
+    _viewer_gl_unavailable_error_types(test)
+    if _viewer_gl_unavailable_reason is not None:
+        test.skipTest(_viewer_gl_unavailable_reason)
+
+    import newton.viewer  # noqa: PLC0415
+
+    try:
+        return newton.viewer.ViewerGL(width=width, height=height, headless=True)
+    except Exception as exc:
+        if is_viewer_gl_unavailable_error(test, exc):
+            _viewer_gl_unavailable_reason = f"ViewerGL display/backend not available: {exc}"
+            test.skipTest(_viewer_gl_unavailable_reason)
+        raise
+
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")

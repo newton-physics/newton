@@ -19,8 +19,7 @@ import warp as wp
 import newton
 from newton._src.viewer.viewer_file import HAS_CBOR2, transfer_to_model
 from newton.exceptions import NewtonWarning
-from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import assert_np_equal, get_test_devices, make_headless_viewer_gl_or_skip
 from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
 
 
@@ -774,7 +773,7 @@ class TestDeformableVisualViewer(unittest.TestCase):
     def test_gl_render_motion_visibility_and_shared_output(self):
         """Render the skin, move it, and toggle it independently of ordinary visuals."""
         with wp.ScopedDevice("cpu"):
-            viewer = _make_headless_viewer_gl_or_skip(self, width=128, height=96)
+            viewer = make_headless_viewer_gl_or_skip(self, width=128, height=96)
         self.addCleanup(viewer.close)
         builder = _particle_mesh()
         _attach(builder, label="0 skin/path")
@@ -819,7 +818,7 @@ class TestDeformableVisualViewer(unittest.TestCase):
     def test_gl_world_and_layer_placement(self):
         """Place replicated skins independently using device world and layer offsets."""
         with wp.ScopedDevice("cpu"):
-            viewer = _make_headless_viewer_gl_or_skip(self)
+            viewer = make_headless_viewer_gl_or_skip(self)
         self.addCleanup(viewer.close)
         source = _particle_mesh()
         _attach(source)
@@ -889,7 +888,7 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
 
         if not wp.is_cuda_available():
             self.skipTest("CUDA is not available")
-        with wp.ScopedDevice("cuda:0"), contextlib.closing(_make_headless_viewer_gl_or_skip(self)) as viewer:
+        with wp.ScopedDevice("cuda:0"), contextlib.closing(make_headless_viewer_gl_or_skip(self)) as viewer:
             builder = newton.ModelBuilder()
             points = np.array([[-0.5, 0, 0], [0.5, 0, 0], [0, 0, 1]], dtype=np.float32)
             for point in points:
@@ -952,7 +951,7 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
         with (
             wp.ScopedDevice("cpu"),
             tempfile.TemporaryDirectory() as directory,
-            contextlib.closing(_make_headless_viewer_gl_or_skip(self)) as viewer,
+            contextlib.closing(make_headless_viewer_gl_or_skip(self)) as viewer,
         ):
             texture = np.zeros((2, 2, 3), dtype=np.uint8)
             texture[:, :, 0] = 255
