@@ -52,6 +52,7 @@ See Also:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import warp as wp
@@ -59,6 +60,7 @@ import warp as wp
 from newton._src.geometry.hashtable import (
     HASHTABLE_EMPTY_KEY,
     HashTable,
+    _hashtable_hash,
     hashtable_find,
     hashtable_find_or_insert,
 )
@@ -69,7 +71,7 @@ from .collision_core import (
     get_triangle_shape_from_mesh,
 )
 from .collision_primitive import collide_sphere_sphere
-from .contact_data import ContactData, compute_contact_approach_speed
+from .contact_data import ContactData, compute_contact_approach_speed, contact_passes_speculative_gap_check
 from .contact_reduction import (
     MAX_CONTACTS_PER_PAIR,
     NUM_NORMAL_BINS,
@@ -707,6 +709,10 @@ class GlobalContactReducerData:
     reclaimed_contact_bits: wp.array[wp.uint32]
     reclaimed_contact_count: wp.array[wp.int32]
     capacity: int
+    # Read by the primitive and convex kernels when they stage through
+    # :func:`stage_contact_in_reducer`; those reserve indices but never skip a batch.
+    contact_max: int
+    shape_gap: wp.array[float]
 
     # Deterministic fingerprint per contact (triangle/edge/vertex index).
     # Used as a deterministic tiebreaker in make_contact_value so that
@@ -890,6 +896,24 @@ def _zero_active_count_kernel(
     ht_active_slots[ht_capacity] = 0
 
 
+@dataclass(frozen=True)
+class GroupReductionConfig:
+    """Group-reduction settings for :class:`GlobalContactReducer`.
+
+    Attributes:
+        shape_group: Per-shape reduction-group ids, each at most ``MAX_GROUP_ID``.
+        cell_size: Spatial cell edge [m] on a normal bin's face plane.
+        hashtable_capacity: Requested group-table capacity (rounded up to a power of two).
+        up_rotation: Exact 0/1 rotation, as three rows, mapping the model's up axis to +Z,
+            where the normal bins have their widest margins.
+    """
+
+    shape_group: Any
+    cell_size: float
+    hashtable_capacity: int
+    up_rotation: tuple = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+
+
 class GlobalContactReducer:
     """Global contact reduction using hashtable-based tracking.
 
@@ -951,6 +975,7 @@ class GlobalContactReducer:
         hashtable_size_factor: float = 0.25,
         enable_contact_reclamation: bool = False,
         enable_reduction: bool = True,
+        group_reduction: GroupReductionConfig | None = None,
     ):
         """Initialize the global contact reducer.
 
@@ -969,6 +994,9 @@ class GlobalContactReducer:
                 by predictive contact reduction.
             enable_reduction: Allocate hashtable values and aggregate arrays.
                 Disable when the contact buffer is decoded without reduction.
+            group_reduction: Key entries on per-shape reduction groups instead of
+                shapes (see :class:`GroupReductionConfig`). ``capacity`` must then
+                hold every narrow-phase contact, which is staged before reduction.
         """
         hashtable_size_factor = float(hashtable_size_factor)
         if not hashtable_size_factor > 0.0:
@@ -976,7 +1004,10 @@ class GlobalContactReducer:
 
         # Predictive entries reserve packed ID zero for provisional winners.
         max_det_contacts = 1 << int(CONTACT_ID_BITS)
-        if deterministic and capacity >= max_det_contacts:
+        if group_reduction is not None and (store_hydroelastic_data or enable_contact_reclamation):
+            raise ValueError("group reduction supports neither hydroelastic data nor contact reclamation")
+        # Group values carry no contact ID, so the ID width does not bound the staging buffer.
+        if deterministic and group_reduction is None and capacity >= max_det_contacts:
             raise ValueError(
                 f"Deterministic contact packing supports at most {max_det_contacts - 1} "
                 f"buffered contacts ({int(CONTACT_ID_BITS)}-bit contact_id), "
@@ -991,7 +1022,9 @@ class GlobalContactReducer:
         self.enable_contact_reclamation = enable_contact_reclamation
         self.enable_reduction = enable_reduction
 
-        self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
+        self.group_reduction = group_reduction
+        self._empty_shape_gap = wp.zeros(0, dtype=float, device=device)
+        self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1 if group_reduction is None else GROUP_VALUES_PER_KEY
 
         # Contact buffer (struct of arrays)
         # ID zero is reserved for provisional winners; real contacts use the
@@ -1035,6 +1068,8 @@ class GlobalContactReducer:
         # memory compatibility, while exposing a factor for dense batched scenes.
         # A full open-addressed table can turn failed inserts into whole-table probes.
         hashtable_size = max(int(capacity * hashtable_size_factor), 1024) if enable_reduction else 1
+        if group_reduction is not None:
+            hashtable_size = group_reduction.hashtable_capacity
         self.hashtable = HashTable(hashtable_size, device=device)
 
         # Values array for hashtable - managed here, not by HashTable
@@ -1075,6 +1110,18 @@ class GlobalContactReducer:
             self.agg_moment_unreduced = wp.zeros(0, dtype=wp.float32, device=device)
             self.agg_moment_reduced = wp.zeros(0, dtype=wp.float32, device=device)
             self.agg_moment2_reduced = wp.zeros(0, dtype=wp.float32, device=device)
+
+        if group_reduction is not None:
+            self.shape_group = wp.array(group_reduction.shape_group, dtype=wp.int32, device=device)
+            self.up_rotation = wp.mat33(*(v for row in group_reduction.up_rotation for v in row))
+            self.cell_size = float(group_reduction.cell_size)
+            self.group_contact_entry = wp.zeros(buffer_size, dtype=wp.int32, device=device)
+            self.group_contact_gap = wp.zeros(buffer_size, dtype=wp.float32, device=device)
+            self.group_contact_pos2d = wp.zeros(buffer_size, dtype=wp.vec2, device=device)
+            self.group_frame_state = wp.zeros(GROUP_FRAME_STATE_COUNT, dtype=wp.int32, device=device)
+            self.group_stats = wp.zeros(GROUP_STAT_COUNT, dtype=wp.int64, device=device)
+            # Re-checks every discarded contact against its slots; for tests and debugging.
+            self.verify = False
 
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
@@ -1135,6 +1182,7 @@ class GlobalContactReducer:
                 num_threads,
             ],
             device=self.device,
+            record_tape=False,
         )
         # Zero the active-slots count in a separate kernel so the write is
         # ordered (by the CUDA kernel-launch boundary) after every read in
@@ -1144,7 +1192,16 @@ class GlobalContactReducer:
             dim=1,
             inputs=[self.hashtable.active_slots, self.hashtable.capacity],
             device=self.device,
+            record_tape=False,
         )
+        if self.group_reduction is not None:
+            wp.launch(
+                prepare_group_frame_kernel,
+                dim=1,
+                inputs=[self.group_frame_state],
+                device=self.device,
+                record_tape=False,
+            )
 
     def get_data_struct(self) -> GlobalContactReducerData:
         """Get a GlobalContactReducerData struct for passing to kernels.
@@ -1161,6 +1218,8 @@ class GlobalContactReducer:
         data.reclaimed_contact_bits = self.reclaimed_contact_bits
         data.reclaimed_contact_count = self.reclaimed_contact_count
         data.capacity = self.capacity
+        data.contact_max = 2**31 - 1
+        data.shape_gap = self._empty_shape_gap
         data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
         data.contact_pressure = self.contact_pressure
@@ -1179,6 +1238,22 @@ class GlobalContactReducer:
         data.ht_capacity = self.hashtable.capacity
         data.ht_values_per_key = self.values_per_key
         data.deterministic = 1 if self.deterministic else 0
+        return data
+
+    def get_group_data_struct(self, body_q: wp.array, shape_body: wp.array) -> GroupReductionData:
+        """Get the :class:`GroupReductionData` for this frame's body poses."""
+        data = GroupReductionData()
+        data.shape_group = self.shape_group
+        data.shape_body = shape_body
+        data.body_q = body_q
+        data.up_rotation = self.up_rotation
+        data.cell_size = self.cell_size
+        data.contact_entry = self.group_contact_entry
+        data.contact_gap = self.group_contact_gap
+        data.contact_pos2d = self.group_contact_pos2d
+        data.frame_state = self.group_frame_state
+        data.stats = self.group_stats
+        data.verify = 1 if self.verify else 0
         return data
 
 
@@ -2197,6 +2272,441 @@ def write_contact_to_reducer(
         fingerprint=contact_data.sort_sub_key,
         reducer_data=reducer_data,
     )
+
+
+# =============================================================================
+# Group reduction
+# =============================================================================
+# With ``group_reduction`` the reducer keys entries on per-shape reduction groups
+# instead of shapes: a dynamic shape's group is its body plus an exact material
+# signature, a static shape is its own group. All narrow-phase contacts are
+# staged, and an entry is ``(group_a, group_b, normal bin, spatial cell)`` with
+# one slot per scan direction over all contacts, the deepest contact, and one
+# slot per scan direction over touching contacts (separation <= 0). Slot values
+# carry no contact ID: each staged contact finds out whether it won by comparing
+# its own packed values against the slots, so the kept set is a function of
+# contact geometry only and the staging buffer has no ID-width limit.
+
+GROUP_ID_BITS = 23
+MAX_GROUP_ID = (1 << GROUP_ID_BITS) - 1
+# Cells are two signed 6-bit coordinates measured from the pair's reference
+# body: +/-31 cells, beyond which a coordinate clamps to the border cell.
+GROUP_CELL_COORD_BITS = 6
+GROUP_CELL_COORD_MAX = (1 << (GROUP_CELL_COORD_BITS - 1)) - 1
+GROUP_DEEPEST_SLOT = NUM_SPATIAL_DIRECTIONS
+GROUP_TOUCHING_SLOT_OFFSET = NUM_SPATIAL_DIRECTIONS + 1
+GROUP_VALUES_PER_KEY = 2 * NUM_SPATIAL_DIRECTIONS + 1
+# A probe chain this long means the table is saturated for this frame; the whole
+# frame then keeps every contact rather than let scheduling pick which groups fit.
+GROUP_PROBE_BUDGET = 128
+
+# Staged-contact markers in ``GroupReductionData.contact_entry``.
+GROUP_ENTRY_REJECTED = -2  # beyond the contact gap: never written
+GROUP_ENTRY_UNREGISTERED = -1  # probe budget exhausted: kept by the frame fallback
+
+# ``GroupReductionData.frame_state`` fields, reset by ``prepare_group_frame_kernel``.
+GROUP_FRAME_FALLBACK = 0
+GROUP_FRAME_CONTACTS_IN = 1
+GROUP_FRAME_CONTACTS_KEPT = 2
+GROUP_FRAME_PROBE_FAILURES = 3
+GROUP_FRAME_CELL_CLAMPS = 4
+GROUP_FRAME_VIOLATIONS = 5
+GROUP_FRAME_OUTRANKED = 6
+GROUP_FRAME_STATE_COUNT = 7
+
+# ``GroupReductionData.stats`` (int64, whole-run) fields.
+GROUP_STAT_TOTAL_FRAMES = 0
+GROUP_STAT_SUM_CONTACTS_IN = 1
+GROUP_STAT_SUM_CONTACTS_KEPT = 2
+GROUP_STAT_MAX_CONTACTS_IN = 3
+GROUP_STAT_MAX_CONTACTS_KEPT = 4
+GROUP_STAT_MAX_ENTRIES = 5
+GROUP_STAT_PROBE_FAILURES = 6
+GROUP_STAT_FALLBACK_FRAMES = 7
+GROUP_STAT_CELL_CLAMP_EVENTS = 8
+GROUP_STAT_INVARIANT_VIOLATIONS = 9
+GROUP_STAT_OUTRANKED_DISCARDS = 10
+GROUP_STAT_INPUT_OVERFLOW_FRAMES = 11
+GROUP_STAT_COUNT = 12
+
+
+@wp.struct
+class GroupReductionData:
+    """Per-shape groups, grouping frame and per-contact caches for group reduction."""
+
+    shape_group: wp.array[wp.int32]
+    shape_body: wp.array[wp.int32]
+    body_q: wp.array[wp.transform]
+    up_rotation: wp.mat33
+    cell_size: float
+    # Indexed by staged contact ID.
+    contact_entry: wp.array[wp.int32]
+    contact_gap: wp.array[wp.float32]
+    contact_pos2d: wp.array[wp.vec2]
+    frame_state: wp.array[wp.int32]
+    stats: wp.array[wp.int64]
+    verify: int
+
+
+@wp.func
+def make_group_contact_key(group_a: int, group_b: int, bin_id: int, cx: int, cy: int) -> wp.uint64:
+    """Pack ``(group_a, group_b, normal bin, cell)`` into 63 bits.
+
+    Layout: ``[62:40] group_a | [39:17] group_b | [16:12] bin | [11:6] cx | [5:0] cy``.
+    """
+    ux = wp.uint64(wp.clamp(cx, -GROUP_CELL_COORD_MAX, GROUP_CELL_COORD_MAX) + GROUP_CELL_COORD_MAX)
+    uy = wp.uint64(wp.clamp(cy, -GROUP_CELL_COORD_MAX, GROUP_CELL_COORD_MAX) + GROUP_CELL_COORD_MAX)
+    return (
+        (wp.uint64(group_a) << wp.uint64(40))
+        | (wp.uint64(group_b) << wp.uint64(17))
+        | ((wp.uint64(bin_id) & wp.uint64(0x1F)) << wp.uint64(12))
+        | (ux << wp.uint64(6))
+        | uy
+    )
+
+
+@wp.func
+def _group_pos_key(pos_2d: wp.vec2) -> wp.uint64:
+    """Quantize a face-plane position to a 31-bit, never-zero tie-break key (0.5 mm)."""
+    # Clamp in float before converting so extreme coordinates cannot overflow the conversion.
+    qx = wp.int32(wp.clamp(wp.floor(pos_2d[0] * 2000.0), -32768.0, 32767.0)) + 32768
+    qy = wp.int32(wp.clamp(wp.floor(pos_2d[1] * 2000.0), -8192.0, 8191.0)) + 8192
+    return (wp.uint64(qx) << wp.uint64(15)) | (wp.uint64(qy) << wp.uint64(1)) | wp.uint64(1)
+
+
+@wp.func
+def _group_value(score: float, pos_key: wp.uint64) -> wp.uint64:
+    """Pack ``(score, position key)`` so ``atomic_max`` ranks by score, then position."""
+    return (wp.uint64(float_flip(score)) << wp.uint64(31)) | pos_key
+
+
+@wp.func
+def _group_find_or_insert(key: wp.uint64, keys: wp.array[wp.uint64], active_slots: wp.array[wp.int32]) -> int:
+    """``hashtable_find_or_insert`` limited to ``GROUP_PROBE_BUDGET`` probes."""
+    capacity = keys.shape[0]
+    capacity_mask = capacity - 1
+    idx = _hashtable_hash(key, capacity_mask)
+    for _i in range(wp.static(GROUP_PROBE_BUDGET)):
+        stored_key = keys[idx]
+        if stored_key == key:
+            return idx
+        if stored_key == HASHTABLE_EMPTY_KEY:
+            old_key = wp.atomic_cas(keys, idx, HASHTABLE_EMPTY_KEY, key)
+            if old_key == HASHTABLE_EMPTY_KEY:
+                active_idx = wp.atomic_add(active_slots, capacity, 1)
+                if active_idx < capacity:
+                    active_slots[active_idx] = idx
+                return idx
+            elif old_key == key:
+                return idx
+        idx = (idx + 1) & capacity_mask
+    return -1
+
+
+@wp.func
+def stage_contact_in_reducer(
+    contact_data: Any,
+    reducer_data: GlobalContactReducerData,
+    output_index: int,
+):
+    """Writer that stages a contact for group reduction, at ``output_index`` when one was reserved.
+
+    Reserved indices come from ``reducer_data.contact_count``, as do the ones
+    :func:`export_contact_to_buffer` allocates, so both share one staging range.
+    """
+    if output_index < 0:
+        export_contact_to_buffer(
+            shape_a=contact_data.shape_a,
+            shape_b=contact_data.shape_b,
+            position=contact_data.contact_point_center,
+            normal=contact_data.contact_normal_a_to_b,
+            depth=contact_data.contact_distance,
+            fingerprint=contact_data.sort_sub_key,
+            reducer_data=reducer_data,
+        )
+        return
+    if output_index >= reducer_data.capacity:
+        wp.atomic_add(reducer_data.buffer_overflows, 0, 1)
+        return
+    contact_id = output_index + 1  # ID zero is reserved.
+    pos = contact_data.contact_point_center
+    reducer_data.position_depth[contact_id] = wp.vec4(pos[0], pos[1], pos[2], contact_data.contact_distance)
+    reducer_data.normal[contact_id] = encode_oct(contact_data.contact_normal_a_to_b)
+    reducer_data.shape_pairs[contact_id] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
+    reducer_data.contact_fingerprints[contact_id] = contact_data.sort_sub_key
+
+
+@wp.kernel(enable_backward=False)
+def prepare_group_frame_kernel(frame_state: wp.array[wp.int32]):
+    """Reset the per-frame group-reduction counters."""
+    for i in range(wp.static(GROUP_FRAME_STATE_COUNT)):
+        frame_state[i] = 0
+
+
+@wp.func
+def _staged_contact_data(
+    contact_id: int,
+    reducer_data: GlobalContactReducerData,
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],
+    shape_gap: wp.array[float],
+) -> ContactData:
+    """Rebuild the writer's ``ContactData`` for a staged contact."""
+    position, contact_normal, depth = unpack_contact(contact_id, reducer_data.position_depth, reducer_data.normal)
+    pair = reducer_data.shape_pairs[contact_id]
+    shape_a = pair[0]
+    shape_b = pair[1]
+    contact_data = ContactData()
+    contact_data.contact_point_center = position
+    contact_data.contact_normal_a_to_b = contact_normal
+    contact_data.contact_distance = depth
+    contact_data.radius_eff_a = compute_effective_radius(shape_types[shape_a], shape_data[shape_a])
+    contact_data.radius_eff_b = compute_effective_radius(shape_types[shape_b], shape_data[shape_b])
+    contact_data.margin_a = shape_data[shape_a][3]
+    contact_data.margin_b = shape_data[shape_b][3]
+    contact_data.shape_a = shape_a
+    contact_data.shape_b = shape_b
+    contact_data.gap_sum = shape_gap[shape_a] + shape_gap[shape_b]
+    contact_data.sort_sub_key = reducer_data.contact_fingerprints[contact_id]
+    return contact_data
+
+
+@wp.func
+def _register_group_contact(
+    contact_id: int,
+    reducer_data: GlobalContactReducerData,
+    group_data: GroupReductionData,
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],
+    shape_gap: wp.array[float],
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    collision_update_dt: float,
+    max_speculative_extension: float,
+    speculative: int,
+):
+    """Admit a staged contact as the writer would, then enter it into every slot of its group."""
+    contact_data = _staged_contact_data(contact_id, reducer_data, shape_types, shape_data, shape_gap)
+    n = contact_data.contact_normal_a_to_b
+    # The writer's separation: centerline distance less both margins.
+    gap = contact_data.contact_distance - contact_data.margin_a - contact_data.margin_b
+    admitted = gap <= contact_data.gap_sum
+    if speculative != 0:
+        admitted = contact_passes_speculative_gap_check(
+            contact_data,
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            collision_update_dt,
+            max_speculative_extension,
+        )
+    if not admitted:
+        group_data.contact_entry[contact_id] = wp.static(GROUP_ENTRY_REJECTED)
+        return
+    wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_CONTACTS_IN), 1)
+
+    s0 = contact_data.shape_a
+    s1 = contact_data.shape_b
+    # Midpoint of the two effective surfaces the solver sees.
+    center = contact_data.contact_point_center + n * (0.5 * (contact_data.margin_a - contact_data.margin_b))
+    g0 = group_data.shape_group[s0]
+    g1 = group_data.shape_group[s1]
+    ga = wp.min(g0, g1)
+    gb = wp.max(g0, g1)
+    # One patch can arrive with both endpoint orders; bin it by a canonical normal.
+    n_group = n
+    if g1 < g0:
+        n_group = -n
+
+    # Cells are measured from the pair's lowest-indexed dynamic body, so the
+    # origin is shared by every contact of the pair.
+    b0 = group_data.shape_body[s0]
+    b1 = group_data.shape_body[s1]
+    ref = wp.vec3(0.0, 0.0, 0.0)
+    if b0 >= 0 and (b1 < 0 or b0 <= b1):
+        ref = wp.transform_get_translation(group_data.body_q[b0])
+    elif b1 >= 0:
+        ref = wp.transform_get_translation(group_data.body_q[b1])
+
+    bin_id = get_slot(group_data.up_rotation * n_group)
+    pos_2d = project_point_to_plane(bin_id, group_data.up_rotation * (center - ref))
+    # Round to nearest so the reference body's origin is a cell center, not a corner.
+    bound = float(GROUP_CELL_COORD_MAX + 1)
+    cx = wp.int32(wp.clamp(wp.floor(pos_2d[0] / group_data.cell_size + 0.5), -bound, bound))
+    cy = wp.int32(wp.clamp(wp.floor(pos_2d[1] / group_data.cell_size + 0.5), -bound, bound))
+    if wp.abs(cx) > GROUP_CELL_COORD_MAX or wp.abs(cy) > GROUP_CELL_COORD_MAX:
+        wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_CELL_CLAMPS), 1)
+    key = make_group_contact_key(ga, gb, bin_id, cx, cy)
+    entry_idx = _group_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+    group_data.contact_entry[contact_id] = entry_idx
+    if entry_idx < 0:
+        group_data.frame_state[wp.static(GROUP_FRAME_FALLBACK)] = 1
+        wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_PROBE_FAILURES), 1)
+        return
+    group_data.contact_gap[contact_id] = gap
+    group_data.contact_pos2d[contact_id] = pos_2d
+
+    ht_capacity = reducer_data.ht_capacity
+    pos_key = _group_pos_key(pos_2d)
+    reduction_update_slot(
+        entry_idx, wp.static(GROUP_DEEPEST_SLOT), _group_value(-gap, pos_key), reducer_data.ht_values, ht_capacity
+    )
+    for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
+        value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key)
+        reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
+        if gap <= 0.0:
+            reduction_update_slot(
+                entry_idx, wp.static(GROUP_TOUCHING_SLOT_OFFSET) + dir_i, value, reducer_data.ht_values, ht_capacity
+            )
+
+
+@wp.kernel(enable_backward=False)
+def register_group_contacts_kernel(
+    reducer_data: GlobalContactReducerData,
+    group_data: GroupReductionData,
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],
+    shape_gap: wp.array[float],
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    collision_update_dt: float,
+    max_speculative_extension: float,
+    speculative: int,
+    total_num_threads: int,
+):
+    """Enter every staged contact into the slots of its group."""
+    tid = wp.tid()
+    num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
+    for i in range(tid, num_contacts, total_num_threads):
+        _register_group_contact(
+            i + 1,
+            reducer_data,
+            group_data,
+            shape_types,
+            shape_data,
+            shape_gap,
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            collision_update_dt,
+            max_speculative_extension,
+            speculative,
+        )
+
+
+@wp.func
+def _group_contact_won(
+    contact_id: int,
+    reducer_data: GlobalContactReducerData,
+    group_data: GroupReductionData,
+) -> bool:
+    """Whether one of the values a registered contact submitted won its slot."""
+    entry_idx = group_data.contact_entry[contact_id]
+    ht_capacity = reducer_data.ht_capacity
+    gap = group_data.contact_gap[contact_id]
+    pos_2d = group_data.contact_pos2d[contact_id]
+    pos_key = _group_pos_key(pos_2d)
+    deepest = reducer_data.ht_values[wp.static(GROUP_DEEPEST_SLOT) * ht_capacity + entry_idx]
+    my_depth = _group_value(-gap, pos_key)
+    won = deepest == my_depth
+    beaten = my_depth > deepest
+    for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
+        value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key)
+        slot_value = reducer_data.ht_values[dir_i * ht_capacity + entry_idx]
+        if slot_value == value:
+            won = True
+        elif value > slot_value:
+            beaten = True
+        if gap <= 0.0:
+            touch_value = reducer_data.ht_values[
+                (wp.static(GROUP_TOUCHING_SLOT_OFFSET) + dir_i) * ht_capacity + entry_idx
+            ]
+            if touch_value == value:
+                won = True
+            elif value > touch_value:
+                beaten = True
+    if group_data.verify != 0 and not won and beaten:
+        # A discarded contact out-ranks a recorded winner: an update was lost.
+        wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_OUTRANKED), 1)
+    return won
+
+
+def create_export_group_contacts_kernel(writer_func: Any):
+    """Create the kernel that writes every staged contact that won a slot of its group."""
+
+    @wp.kernel(enable_backward=False, module=f"export_group_contacts_{writer_func.__name__}")
+    def export_group_contacts_kernel(
+        reducer_data: GlobalContactReducerData,
+        group_data: GroupReductionData,
+        shape_types: wp.array[int],
+        shape_data: wp.array[wp.vec4],
+        shape_gap: wp.array[float],
+        writer_data: Any,
+        total_num_threads: int,
+    ):
+        tid = wp.tid()
+        num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
+        keep_all = group_data.frame_state[wp.static(GROUP_FRAME_FALLBACK)] != 0
+        for i in range(tid, num_contacts, total_num_threads):
+            contact_id = i + 1
+            entry_idx = group_data.contact_entry[contact_id]
+            if entry_idx == wp.static(GROUP_ENTRY_REJECTED):
+                continue
+            keep = keep_all
+            if entry_idx >= 0:
+                won = _group_contact_won(contact_id, reducer_data, group_data)
+                keep = keep or won
+            if keep:
+                wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_CONTACTS_KEPT), 1)
+                contact_data = _staged_contact_data(contact_id, reducer_data, shape_types, shape_data, shape_gap)
+                writer_func(contact_data, writer_data, -1)
+
+    return export_group_contacts_kernel
+
+
+@wp.kernel(enable_backward=False)
+def finish_group_frame_kernel(
+    group_data: GroupReductionData,
+    ht_active_slots: wp.array[wp.int32],
+    ht_capacity: int,
+    buffer_overflows: wp.array[wp.int32],
+):
+    """Fold this frame's group-reduction counters into the whole-run statistics."""
+    frame = group_data.frame_state
+    stats = group_data.stats
+    contacts_in = wp.int64(frame[wp.static(GROUP_FRAME_CONTACTS_IN)])
+    contacts_kept = wp.int64(frame[wp.static(GROUP_FRAME_CONTACTS_KEPT)])
+    stats[wp.static(GROUP_STAT_TOTAL_FRAMES)] = stats[wp.static(GROUP_STAT_TOTAL_FRAMES)] + wp.int64(1)
+    stats[wp.static(GROUP_STAT_SUM_CONTACTS_IN)] = stats[wp.static(GROUP_STAT_SUM_CONTACTS_IN)] + contacts_in
+    stats[wp.static(GROUP_STAT_SUM_CONTACTS_KEPT)] = stats[wp.static(GROUP_STAT_SUM_CONTACTS_KEPT)] + contacts_kept
+    stats[wp.static(GROUP_STAT_MAX_CONTACTS_IN)] = wp.max(stats[wp.static(GROUP_STAT_MAX_CONTACTS_IN)], contacts_in)
+    stats[wp.static(GROUP_STAT_MAX_CONTACTS_KEPT)] = wp.max(
+        stats[wp.static(GROUP_STAT_MAX_CONTACTS_KEPT)], contacts_kept
+    )
+    stats[wp.static(GROUP_STAT_MAX_ENTRIES)] = wp.max(
+        stats[wp.static(GROUP_STAT_MAX_ENTRIES)], wp.int64(ht_active_slots[ht_capacity])
+    )
+    stats[wp.static(GROUP_STAT_PROBE_FAILURES)] = stats[wp.static(GROUP_STAT_PROBE_FAILURES)] + wp.int64(
+        frame[wp.static(GROUP_FRAME_PROBE_FAILURES)]
+    )
+    stats[wp.static(GROUP_STAT_FALLBACK_FRAMES)] = stats[wp.static(GROUP_STAT_FALLBACK_FRAMES)] + wp.int64(
+        frame[wp.static(GROUP_FRAME_FALLBACK)]
+    )
+    stats[wp.static(GROUP_STAT_CELL_CLAMP_EVENTS)] = stats[wp.static(GROUP_STAT_CELL_CLAMP_EVENTS)] + wp.int64(
+        frame[wp.static(GROUP_FRAME_CELL_CLAMPS)]
+    )
+    stats[wp.static(GROUP_STAT_INVARIANT_VIOLATIONS)] = stats[wp.static(GROUP_STAT_INVARIANT_VIOLATIONS)] + wp.int64(
+        frame[wp.static(GROUP_FRAME_VIOLATIONS)]
+    )
+    stats[wp.static(GROUP_STAT_OUTRANKED_DISCARDS)] = stats[wp.static(GROUP_STAT_OUTRANKED_DISCARDS)] + wp.int64(
+        frame[wp.static(GROUP_FRAME_OUTRANKED)]
+    )
+    if buffer_overflows[0] > 0:
+        stats[wp.static(GROUP_STAT_INPUT_OVERFLOW_FRAMES)] = stats[
+            wp.static(GROUP_STAT_INPUT_OVERFLOW_FRAMES)
+        ] + wp.int64(1)
 
 
 @wp.func

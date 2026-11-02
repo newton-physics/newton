@@ -55,10 +55,15 @@ from ..geometry.contact_reduction_global import (
     EXPORT_REDUCED_CONTACTS_THREAD_BUDGET_MULTIPLIER,
     HASHTABLE_WARN_LOAD_PERCENT,
     GlobalContactReducer,
+    GroupReductionConfig,
+    create_export_group_contacts_kernel,
     create_export_reduced_contacts_kernel,
+    finish_group_frame_kernel,
     mesh_triangle_contacts_to_reducer_kernel,
     reduce_buffered_contacts_kernel,
     reduce_buffered_contacts_speculative_kernel,
+    register_group_contacts_kernel,
+    stage_contact_in_reducer,
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
@@ -2599,6 +2604,7 @@ class NarrowPhase:
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative: bool = False,
         contact_writer_supports_speculative: bool = False,
+        group_reduction: GroupReductionConfig | None = None,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -2680,6 +2686,10 @@ class NarrowPhase:
                 gaps and exact speculative-contact data. Defaults to False.
             contact_writer_supports_speculative: Whether a custom contact writer performs exact speculative-contact
                 admission. Required when ``speculative`` and ``contact_writer_warp_func`` are both provided.
+            group_reduction: Reduce every contact by per-shape reduction group (see
+                :class:`GroupReductionConfig`). All contacts are staged in the global reducer,
+                whose capacity is ``contact_max``, and only the winners reach the writer.
+                :meth:`launch` then needs ``body_q`` and ``shape_body``.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -2717,6 +2727,9 @@ class NarrowPhase:
             )
         if speculative and hydroelastic_sdf is not None:
             raise NotImplementedError("Speculative contact generation does not yet support hydroelastic SDF contacts")
+        if group_reduction is not None and hydroelastic_sdf is not None:
+            raise ValueError("group reduction does not support hydroelastic contacts")
+        self.group_reduction = group_reduction
         device_obj = wp.get_device(device)
         # Contact reduction requires either meshes or heightfields (the
         # mesh/heightfield-triangle path feeds the global reducer, so
@@ -2753,6 +2766,8 @@ class NarrowPhase:
             writer_func = _write_contact_simple_speculative if speculative else write_contact_simple
         else:
             writer_func = contact_writer_warp_func
+        # Group reduction stages every contact; only its export calls the caller's writer.
+        contact_func = writer_func if group_reduction is None else stage_contact_in_reducer
 
         # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
         # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
@@ -2791,7 +2806,7 @@ class NarrowPhase:
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
         self.primitive_kernel = create_narrow_phase_primitive_kernel(
-            writer_func,
+            contact_func,
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
@@ -2804,7 +2819,7 @@ class NarrowPhase:
             # (skip axial shape rolling stabilization) to reduce GPU i-cache pressure
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
                 self.external_aabb,
-                writer_func,
+                contact_func,
                 support_func=support_map_lean_accelerated if convex_support_acceleration else support_map_lean,
                 post_process_contact=post_process_minkowski_only,
                 speculative=speculative,
@@ -2812,7 +2827,7 @@ class NarrowPhase:
         else:
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
                 self.external_aabb,
-                writer_func,
+                contact_func,
                 support_func=support_map_accelerated if convex_support_acceleration else support_map,
                 speculative=speculative,
             )
@@ -2830,7 +2845,7 @@ class NarrowPhase:
                 self.narrow_phase_manifold_kernel,
             ) = create_narrow_phase_kernels_gjk_mpr_split(
                 self.external_aabb,
-                writer_func,
+                contact_func,
                 support_func=split_support,
                 post_process_contact=split_post_process,
                 speculative=speculative,
@@ -2843,7 +2858,7 @@ class NarrowPhase:
         # Create triangle contacts kernel when meshes or heightfields are present
         if has_meshes or has_heightfields:
             self.mesh_triangle_contacts_kernel = create_narrow_phase_process_mesh_triangle_contacts_kernel(
-                writer_func,
+                contact_func,
                 convex_support_acceleration=convex_support_acceleration,
             )
         else:
@@ -2861,9 +2876,9 @@ class NarrowPhase:
                 )
             else:
                 self.mesh_plane_contacts_kernel = create_narrow_phase_process_mesh_plane_contacts_kernel(
-                    writer_func,
+                    contact_func,
                 )
-            if self.reduce_contacts:
+            if self.reduce_contacts and group_reduction is None:
                 self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     write_contact_to_reducer,
                     enable_heightfields=has_heightfields,
@@ -2885,14 +2900,14 @@ class NarrowPhase:
                 )
             else:
                 self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    writer_func,
+                    contact_func,
                     enable_heightfields=has_heightfields,
                     speculative=speculative,
                     use_texture_sdf_only=self.mesh_sdf_texture_only,
                     use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
                 )
                 self.mesh_mesh_contacts_kernel_precomputed = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    writer_func,
+                    contact_func,
                     enable_heightfields=has_heightfields,
                     use_precomputed_edge_data=True,
                     use_texture_sdf_only=self.mesh_sdf_texture_only,
@@ -2907,7 +2922,17 @@ class NarrowPhase:
         # Create global contact reduction kernels for mesh/heightfield-triangle
         # contacts (mirror the predicate used to gate ``self.reduce_contacts``
         # above so heightfield-only scenes also get the reducer allocated).
-        if self.reduce_contacts and (has_meshes or has_heightfields):
+        self.export_group_contacts_kernel = None
+        if group_reduction is not None:
+            self.export_reduced_contacts_kernel = None
+            self.export_group_contacts_kernel = create_export_group_contacts_kernel(writer_func)
+            self.global_contact_reducer = GlobalContactReducer(
+                max_candidate_pairs if contact_max is None else contact_max,
+                device=device,
+                deterministic=deterministic,
+                group_reduction=group_reduction,
+            )
+        elif self.reduce_contacts and (has_meshes or has_heightfields):
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
@@ -3306,6 +3331,8 @@ class NarrowPhase:
         shape_angular_velocity: wp.array[wp.vec3] | None = None,
         collision_update_dt: float = 0.0,
         max_speculative_extension: float = 0.0,
+        body_q: wp.array[wp.transform] | None = None,
+        shape_body: wp.array[wp.int32] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -3373,6 +3400,8 @@ class NarrowPhase:
             shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
             collision_update_dt: Collision prediction horizon [s].
             max_speculative_extension: Maximum speculative clearance [m].
+            body_q: Body poses, required with group reduction (cells are measured from a body).
+            shape_body: Per-shape body index, required with group reduction.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -3418,6 +3447,17 @@ class NarrowPhase:
         ):
             self._counter_array.zero_()
 
+        reducer_data = None
+        contact_writer_data = writer_data
+        if self.group_reduction is not None:
+            if body_q is None or shape_body is None:
+                raise ValueError("NarrowPhase with group_reduction requires body_q and shape_body")
+            # Every stage stages into the reducer, so clear it before the first one writes.
+            self.global_contact_reducer.clear_active()
+            reducer_data = self.global_contact_reducer.get_data_struct()
+            reducer_data.shape_gap = shape_base_gap
+            contact_writer_data = reducer_data
+
         # Stage 1: Launch primitive kernel for fast analytical collisions
         # This handles sphere-sphere, sphere-capsule, capsule-capsule, plane-sphere, plane-capsule
         # and routes remaining pairs to gjk_candidate_pairs and mesh buffers
@@ -3440,7 +3480,7 @@ class NarrowPhase:
                 shape_sdf_index,
                 shape_edge_range,
                 self._shape_unit_scale_sdf,
-                writer_data,
+                contact_writer_data,
                 self.total_num_threads,
             ],
             outputs=[
@@ -3493,7 +3533,7 @@ class NarrowPhase:
                 shape_collision_radius,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
-                writer_data,
+                contact_writer_data,
             )
 
         # Skip mesh/heightfield kernels when no meshes or heightfields are present
@@ -3513,7 +3553,7 @@ class NarrowPhase:
                         shape_voxel_resolution,
                         self.shape_pairs_mesh_plane,
                         self.shape_pairs_mesh_plane_count,
-                        writer_data,
+                        contact_writer_data,
                         self.num_tile_blocks,
                     ],
                     device=device,
@@ -3606,8 +3646,9 @@ class NarrowPhase:
             if self.reduce_contacts:
                 # Unified global reduction for all mesh contact types.
                 assert self.global_contact_reducer is not None
-                self.global_contact_reducer.clear_active()
-                reducer_data = self.global_contact_reducer.get_data_struct()
+                if reducer_data is None:
+                    self.global_contact_reducer.clear_active()
+                    reducer_data = self.global_contact_reducer.get_data_struct()
 
                 # Mesh-plane contacts → global reducer (meshes only)
                 if self.has_meshes and self.max_mesh_plane_pairs > 0:
@@ -3693,7 +3734,7 @@ class NarrowPhase:
                         heightfield_elevations,
                         self.triangle_pairs,
                         self.triangle_pairs_count,
-                        writer_data,
+                        contact_writer_data,
                         self.total_num_threads,
                     ],
                     device=device,
@@ -3703,7 +3744,7 @@ class NarrowPhase:
 
             # Register mesh-plane/mesh-triangle contacts in hashtable BEFORE mesh-mesh.
             # Mesh-mesh does inline hashtable registration in its kernel.
-            if self.reduce_contacts:
+            if self.reduce_contacts and self.group_reduction is None:
                 if self.speculative:
                     wp.launch(
                         kernel=reduce_buffered_contacts_speculative_kernel,
@@ -3765,7 +3806,7 @@ class NarrowPhase:
                     if has_precomputed_edge_data
                     else self.mesh_mesh_contacts_kernel
                 )
-                if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
+                if self.reduce_contacts and self.group_reduction is None and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration
                     compute_mesh_mesh_block_offsets_scan(
                         shape_pairs_mesh_mesh=self.shape_pairs_mesh_mesh,
@@ -3852,7 +3893,7 @@ class NarrowPhase:
                             mesh_edge_centers,
                             mesh_edge_halves,
                             shape_edge_range,
-                            writer_data,
+                            contact_writer_data,
                             self.num_tile_blocks,
                         ],
                         device=device,
@@ -3861,7 +3902,7 @@ class NarrowPhase:
                     )
 
             # Export reduced contacts from hashtable
-            if self.reduce_contacts:
+            if self.reduce_contacts and self.group_reduction is None:
                 # Export has only one writer lane per block, so use a wider grid than
                 # the contact-generation kernels. On CPU, tiled kernels expose one lane.
                 effective_block_dim = min(self.block_dim, EXPORT_REDUCED_CONTACTS_BLOCK_DIM)
@@ -3911,6 +3952,59 @@ class NarrowPhase:
 
         if main_stream is not None:
             main_stream.wait_event(self._convex_stream.record_event(self._convex_events[1]))
+
+        if self.group_reduction is not None:
+            reducer = self.global_contact_reducer
+            group_data = reducer.get_group_data_struct(body_q, shape_body)
+            wp.launch(
+                kernel=register_group_contacts_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    reducer_data,
+                    group_data,
+                    shape_types,
+                    shape_data,
+                    shape_base_gap,
+                    shape_transform,
+                    shape_linear_velocity,
+                    shape_angular_velocity,
+                    collision_update_dt,
+                    max_speculative_extension,
+                    int(self.speculative),
+                    self.total_num_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+                record_tape=False,
+            )
+            wp.launch(
+                kernel=self.export_group_contacts_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    reducer_data,
+                    group_data,
+                    shape_types,
+                    shape_data,
+                    shape_base_gap,
+                    writer_data,
+                    self.total_num_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+                record_tape=False,
+            )
+            wp.launch(
+                kernel=finish_group_frame_kernel,
+                dim=1,
+                inputs=[
+                    group_data,
+                    reducer.hashtable.active_slots,
+                    reducer.hashtable.capacity,
+                    reducer.buffer_overflows,
+                ],
+                device=device,
+                record_tape=False,
+            )
 
         # Verify no collision pipeline buffers overflowed
         if self.verify_buffers:

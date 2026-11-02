@@ -27,12 +27,16 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.contact_reduction import _ICOSAHEDRON_NORMALS
 from newton._src.geometry.contact_reduction_body_pairs import (
-    _BP_FACE_NORMALS_DATA,
-    CELL_COORD_MAX,
-    BodyPairContactReducer,
+    BodyPairReduction,
     _up_axis_rotation,
     build_reduction_group_pair_bound,
+)
+from newton._src.geometry.contact_reduction_global import (
+    GROUP_CELL_COORD_MAX,
+    encode_oct,
+    register_group_contacts_kernel,
 )
 from newton._src.sim.contacts import Contacts
 from newton.geometry import HydroelasticSDF
@@ -243,6 +247,19 @@ def _max_angular_hole(points_xy, center_xy):
     return float(holes.max())
 
 
+@wp.kernel
+def _encode_oct_kernel(normals: wp.array[wp.vec3], out: wp.array[wp.vec2]):
+    tid = wp.tid()
+    out[tid] = encode_oct(normals[tid])
+
+
+def _encode_oct(normal):
+    """Octahedral-encode one unit normal the way the reducer stages it."""
+    out = wp.zeros(1, dtype=wp.vec2)
+    wp.launch(_encode_oct_kernel, dim=1, inputs=[wp.array([normal], dtype=wp.vec3), out])
+    return out.numpy()[0]
+
+
 def _make_pipeline(model, reduce_body_pairs, *, reduce_mesh_contacts=True, body_pair_verify=False, **kwargs):
     config_kwargs = {
         name: kwargs.pop(f"body_pair_{name}")
@@ -370,7 +387,7 @@ class TestBodyPairReductionCounts(unittest.TestCase):
 
     def test_stats_doc_tracks_packed_cell_range(self):
         """Keep the public clamp telemetry contract aligned with its bit layout."""
-        self.assertIn(f"+/-{CELL_COORD_MAX} range", BodyPairContactReducer.stats.__doc__)
+        self.assertIn(f"+/-{GROUP_CELL_COORD_MAX} range", BodyPairReduction.stats.__doc__)
 
     def _grid_on_plane(self, reduce_body_pairs):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
@@ -556,16 +573,16 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
                 body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             )
 
-    def test_mesh_and_body_pair_stages_compose(self):
-        """Run producer and body-pair reduction in order on one compound mesh patch."""
+    def test_mesh_contacts_reduce_by_group(self):
+        """Reduce a compound mesh patch's raw contacts by group, below mesh reduction's count."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, -0.0005), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(np.eye(3) * 1.0e-3),
         )
-        # Twelve-by-twelve is deliberately denser than the producer's per-pair
-        # voxel and normal-slot budget, so the first reduction is observable.
+        # Twelve-by-twelve is deliberately denser than mesh reduction's per-pair
+        # voxel and normal-slot budget, so that reduction is observable.
         grid_size = 12
         grid = np.linspace(-0.035, 0.035, grid_size, dtype=np.float32)
         vertices = np.array([(x, y, 0.0) for x in grid for y in grid], dtype=np.float32)
@@ -610,10 +627,10 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertFalse(raw.narrow_phase.reduce_contacts)
         self.assertTrue(mesh_only.narrow_phase.reduce_contacts, "mesh producer reduction was not active")
         self.assertTrue(both.narrow_phase.reduce_contacts)
-        self.assertGreater(raw_count, mesh_count, "producer stage did not reduce raw mesh-plane vertex contacts")
-        self.assertEqual(stats["sum_contacts_in"], mesh_count, "body-pair stage did not receive producer output")
+        self.assertGreater(raw_count, mesh_count, "mesh reduction did not reduce raw mesh-plane vertex contacts")
+        self.assertEqual(stats["sum_contacts_in"], raw_count, "group reduction did not receive the raw mesh contacts")
         self.assertEqual(stats["sum_contacts_kept"], both_count)
-        self.assertLess(both_count, mesh_count, "body-pair stage did not further compact the compound patch")
+        self.assertLess(both_count, mesh_count, "group reduction kept as many contacts as mesh reduction")
         self.assertEqual(stats["input_overflow_frames"], 0)
 
     def test_body_pair_reduction_rejects_other_types(self):
@@ -1155,7 +1172,7 @@ class TestBodyPairReductionGrouping(unittest.TestCase):
         that frame or their ground normals land near the table's narrow
         horizontal margins and curved-terrain grouping churns again.
         """
-        faces = np.array(_BP_FACE_NORMALS_DATA, dtype=np.float64).reshape(-1, 3)
+        faces = np.array(_ICOSAHEDRON_NORMALS, dtype=np.float64).reshape(-1, 3)
         for up_axis in (0, 1, 2):
             rot = np.array(_up_axis_rotation(up_axis), dtype=np.float64)
             self.assertTrue(np.allclose(rot @ rot.T, np.eye(3)), "rotation must be orthonormal")
@@ -1171,54 +1188,35 @@ class TestBodyPairReductionGrouping(unittest.TestCase):
 class TestBodyPairReductionSafety(unittest.TestCase):
     """Resource exhaustion must fail open deterministically, never corrupt memory."""
 
-    def test_narrowphase_overflow_fails_open(self):
-        """Deliver the raw over-capacity counter untouched when the input overflows.
+    def test_staging_overflow_is_reported(self):
+        """Report contacts that overflow the staging buffer and keep the rest reduced.
 
-        Newton's narrow phase reserves contact indices before checking capacity,
-        so the raw counter legitimately exceeds ``rigid_contact_max`` on
-        overflow and is NOT a safe array bound. The reduction must detect that
-        on device, do nothing that frame, and leave the counter and contact
-        prefix exactly as an unreduced pipeline would deliver them.
+        Every narrow-phase contact is staged before reduction, so a staging
+        buffer smaller than the scene's contacts drops some of them. The frame
+        is counted, the contact stream's reduction-overflow flag is set for the
+        solver, and the staged contacts are still reduced.
         """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         _sphere_grid_body(builder, (0.0, 0.0, 0.0095))  # 25 same-plane contacts
         builder.add_ground_plane()
         model = builder.finalize(device=wp.get_device())
         state = model.state()
-
-        plain = newton.CollisionPipeline(
-            model,
-            broad_phase="nxn",
-            deterministic=True,
-            rigid_contact_max=8,  # deliberately far below the ~25 candidates
-        )
         reduced = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
             deterministic=True,
-            rigid_contact_max=8,
+            rigid_contact_max=8,  # deliberately far below the ~25 candidates
             body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
         )
-        contacts = plain.contacts()
-        plain.collide(state, contacts)
-        raw_count = int(contacts.rigid_contact_count.numpy()[0])
-        rows_before = _full_contact_rows(contacts)
-        self.assertGreater(raw_count, 8, "scene must actually overflow the buffer")
-
-        # Isolate the postpass from a second nondeterministic narrow-phase run:
-        # applying it to this exact materialized prefix must be an identity.
-        reduced._body_pair_reducer.reduce(model, state, contacts)
-        self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), raw_count)
-        self.assertEqual(
-            _full_contact_rows(contacts),
-            rows_before,
-            "overflow fail-open changed the materialized contact prefix",
-        )
-        overflow_stats = reduced._body_pair_reducer.stats()
-        self.assertEqual(overflow_stats["total_frames"], 1)
-        self.assertEqual(overflow_stats["input_overflow_frames"], 1)
-        self.assertEqual(overflow_stats["sum_contacts_in"], 0)
-        self.assertEqual(overflow_stats["sum_contacts_kept"], 0)
+        contacts = reduced.contacts()
+        reduced.collide(state, contacts)
+        stats = reduced._body_pair_reducer.stats()
+        self.assertEqual(stats["total_frames"], 1)
+        self.assertEqual(stats["input_overflow_frames"], 1)
+        self.assertEqual(stats["sum_contacts_in"], 8)
+        self.assertLess(stats["sum_contacts_kept"], stats["sum_contacts_in"])
+        self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), stats["sum_contacts_kept"])
+        self.assertNotEqual(int(contacts._reduction_overflow.numpy()[0]), 0)
 
     def test_hashtable_saturation_keeps_whole_frame(self):
         """Keep the entire unreduced set when the group table budget is exceeded.
@@ -1318,12 +1316,11 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             with self.assertRaises(TypeError, msg=f"accepted material_attributes={material_attributes!r}"):
                 _make_pipeline(model, True, body_pair_material_attributes=material_attributes)
 
-    def test_identity_frames_leave_buffer_untouched(self):
-        """Detect no-benefit frames and skip compaction without changing results.
+    def test_single_contact_groups_keep_every_contact(self):
+        """Deliver the unreduced contacts when every group holds one contact.
 
         Single-collider bodies produce one contact per group; reduction cannot
-        remove anything, so the fast path must deliver the identical buffer an
-        unreduced pipeline would, and count the frame in telemetry.
+        remove anything, so the result must match an unreduced pipeline.
         """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         rng = np.random.default_rng(4)
@@ -1354,21 +1351,18 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         self.assertEqual(
             _full_contact_rows(contacts),
             _full_contact_rows(contacts_base),
-            "identity fast path changed a solver-visible contact field or row order",
+            "reduction changed a solver-visible contact field or row order",
         )
         stats = pipeline._body_pair_reducer.stats()
-        self.assertEqual(stats["identity_frames"], 1)
         self.assertEqual(stats["total_frames"], 1)
         self.assertEqual(stats["sum_contacts_in"], n_base)
         self.assertEqual(stats["sum_contacts_kept"], n_base)
 
-    def test_noop_frames_skip_compaction_for_small_groups(self):
-        """Detect no-op frames whose groups are larger than one contact.
+    def test_groups_within_the_slot_budget_keep_every_contact(self):
+        """Keep every contact of a group smaller than its slot budget.
 
-        A plain box on the ground is ONE group of four contacts that all fit
-        in the slots: nothing is discarded, so the copy-back must be skipped
-        (tier-2 detection after the keep scan) and the buffer delivered
-        exactly as the unreduced pipeline would.
+        A plain box on the ground is ONE group of four contacts that all win a
+        slot, so the result must match an unreduced pipeline.
         """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0495), wp.quat_identity()), mass=1.0)
@@ -1391,9 +1385,8 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         self.assertEqual(
             _full_contact_rows(contacts),
             _full_contact_rows(contacts_base),
-            "tier-two no-op changed a solver-visible contact field or row order",
+            "reduction changed a solver-visible contact field or row order",
         )
-        self.assertGreaterEqual(pipeline._body_pair_reducer.stats()["identity_frames"], 1)
 
     def test_stats_totals_give_achieved_ratio(self):
         """Accumulate paired frame totals that yield the achieved reduction ratio.
@@ -1448,7 +1441,6 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             "outranked_discards",
             "input_overflow_frames",
             "fallback_frames",
-            "identity_frames",
         ):
             self.assertEqual(cleared[key], 0, f"{key} survived clear")
 
@@ -1519,7 +1511,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
             builder.add_shape_sphere(body, radius=0.01, cfg=newton.ModelBuilder.ShapeConfig(mu=0.1 * (k + 1)))
         builder.add_ground_plane()
         model = builder.finalize(device=wp.get_device())
-        with unittest.mock.patch("newton._src.sim.collide.MAX_GROUP_ID", 4):
+        with unittest.mock.patch("newton._src.geometry.contact_reduction_body_pairs.MAX_GROUP_ID", 4):
             with self.assertRaisesRegex(ValueError, "at most 5 groups"):
                 _make_pipeline(model, True)
 
@@ -1623,7 +1615,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         """Record no reducer bookkeeping launches on an active autodiff tape.
 
         Every reducer kernel has backward disabled; recording them would only
-        bloat the tape. This guards the full reduce() path including the
+        bloat the tape. This guards the whole collide() path including the
         hashtable maintenance kernels.
         """
         model = self._foot_scene()
@@ -1631,11 +1623,12 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
-        red = pipeline._body_pair_reducer
         tape = wp.Tape()
         with tape:
-            red.reduce(model, state, contacts)
-        self.assertEqual(len(tape.launches), 0, "reducer bookkeeping was recorded on the tape")
+            pipeline.collide(state, contacts)
+        recorded = [launch[0].key for launch in tape.launches if isinstance(launch, (list, tuple))]
+        reducer_kernels = [key for key in recorded if "group" in key or "clear_active" in key or "active_count" in key]
+        self.assertEqual(reducer_kernels, [], "reducer bookkeeping was recorded on the tape")
 
     def test_requires_grad_diff_augmentation(self):
         """Evaluate finite differentiable contact distances on the compacted set."""
@@ -1690,47 +1683,67 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
     """Group assignment must be stable at world axes and under rigid translation."""
 
     def test_grouping_uses_effective_surface_midpoint(self):
-        """Keep unequal-radius contacts together by their physical surface center.
+        """Keep unequal-margin contacts together by their physical surface center.
 
-        The two synthetic records have different raw support-point midpoints
-        but exactly the same midpoint after applying their directed surface
-        margins. The tilted normal gives the raw displacement a component on
-        the selected bin plane, large enough to cross the 2 cm cell grid. A
-        raw-midpoint implementation therefore creates two table entries; the
+        The two staged contacts have different centerline midpoints but exactly
+        the same midpoint after applying their shapes' margins. The tilted
+        normal gives the centerline displacement a component on the selected
+        bin plane, large enough to cross the 2 cm cell grid. A centerline
+        implementation therefore creates two table entries; the
         effective-surface implementation creates one.
         """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform_identity(), mass=1.0)
         shape_a = builder.add_shape_sphere(body, radius=0.01)
-        shape_b = builder.add_shape_sphere(body, radius=0.02)
+        shape_b = builder.add_shape_sphere(body, radius=0.01, cfg=newton.ModelBuilder.ShapeConfig(margin=0.2))
         ground = builder.add_ground_plane()
         model = builder.finalize(device=wp.get_device())
         state = model.state()
-        pipeline = _make_pipeline(
-            model,
-            True,
-            rigid_contact_max=2,
-            body_pair_cell_size=0.02,
-        )
-        contacts = pipeline.contacts()
+        pipeline = _make_pipeline(model, True, body_pair_cell_size=0.02)
+        reducer = pipeline.narrow_phase.global_contact_reducer
 
         normal = np.array([0.3, 0.0, np.sqrt(1.0 - 0.3**2)], dtype=np.float32)
-        margins0 = np.array([0.0, 0.2], dtype=np.float32)
-        raw_centers = np.stack([np.zeros(3, dtype=np.float32), -0.5 * margins0[1] * normal])
-        contacts.rigid_contact_count.assign(np.array([2], dtype=np.int32))
-        contacts.rigid_contact_shape0.assign(np.array([shape_a, shape_b], dtype=np.int32))
-        contacts.rigid_contact_shape1.assign(np.array([ground, ground], dtype=np.int32))
-        contacts.rigid_contact_point0.assign(raw_centers)
-        contacts.rigid_contact_point1.assign(raw_centers)
-        contacts.rigid_contact_normal.assign(np.stack([normal, normal]))
-        contacts.rigid_contact_margin0.assign(margins0)
-        contacts.rigid_contact_margin1.assign(np.zeros(2, dtype=np.float32))
-
-        reducer = pipeline._body_pair_reducer
-        reducer.reduce(model, state, contacts)
-        stats = reducer.stats()
-        self.assertEqual(stats["max_hashtable_entries"], 1)
-        np.testing.assert_allclose(reducer.contact_pos2d.numpy()[0], reducer.contact_pos2d.numpy()[1], atol=1e-6)
+        margin_b = float(model.shape_margin.numpy()[shape_b])
+        self.assertGreater(margin_b, 0.1)
+        pipeline.collide(state, pipeline.contacts())  # fills the pipeline's per-shape data
+        reducer.clear_active()
+        # Staged IDs start at one. Both contacts touch: separation is distance minus margins.
+        position_depth = np.zeros((reducer.position_depth.shape[0], 4), dtype=np.float32)
+        position_depth[1] = (0.0, 0.0, 0.0, 0.0)
+        position_depth[2, :3] = -0.5 * margin_b * normal
+        position_depth[2, 3] = margin_b
+        reducer.position_depth.assign(position_depth)
+        encoded = np.zeros((reducer.normal.shape[0], 2), dtype=np.float32)
+        encoded[1:3] = _encode_oct(normal)
+        reducer.normal.assign(encoded)
+        pairs = np.zeros((reducer.shape_pairs.shape[0], 2), dtype=np.int32)
+        pairs[1] = (shape_a, ground)
+        pairs[2] = (shape_b, ground)
+        reducer.shape_pairs.assign(pairs)
+        reducer.contact_count.assign(np.array([2], dtype=np.int32))
+        wp.launch(
+            register_group_contacts_kernel,
+            dim=1,
+            inputs=[
+                reducer.get_data_struct(),
+                reducer.get_group_data_struct(state.body_q, model.shape_body),
+                model.shape_type,
+                pipeline.geom_data,
+                model.shape_gap,
+                pipeline.geom_transform,
+                wp.zeros(0, dtype=wp.vec3),
+                wp.zeros(0, dtype=wp.vec3),
+                0.0,
+                0.0,
+                0,
+                1,
+            ],
+        )
+        entries = reducer.group_contact_entry.numpy()[1:3]
+        self.assertTrue(np.all(entries >= 0), "a staged contact was not admitted")
+        self.assertEqual(entries[0], entries[1])
+        pos = reducer.group_contact_pos2d.numpy()[1:3]
+        np.testing.assert_allclose(pos[0], pos[1], atol=1e-6)
 
     def test_bin_margins_at_world_axes(self):
         """Keep every world axis well inside a bin, especially the ground normal.
@@ -1742,7 +1755,7 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
         cycle). The body-pair table is rotated so a face CENTER points at +/-Z;
         this pins that property plus a sane margin at the horizontal axes.
         """
-        faces = np.array(_BP_FACE_NORMALS_DATA, dtype=np.float64).reshape(-1, 3)
+        faces = np.array(_ICOSAHEDRON_NORMALS, dtype=np.float64).reshape(-1, 3)
         norms = np.linalg.norm(faces, axis=1)
         self.assertTrue(np.allclose(norms, 1.0, atol=1e-6), "face normals must be unit length")
 
@@ -1762,7 +1775,7 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
         any of them crosses a bin boundary, contacts of one patch regroup
         between steps and the kept set flickers.
         """
-        faces = np.array(_BP_FACE_NORMALS_DATA, dtype=np.float64).reshape(-1, 3)
+        faces = np.array(_ICOSAHEDRON_NORMALS, dtype=np.float64).reshape(-1, 3)
         rng = np.random.default_rng(5)
         tilt = np.radians(rng.uniform(0.0, 15.0, size=512))
         yaw = rng.uniform(0.0, 2.0 * np.pi, size=512)

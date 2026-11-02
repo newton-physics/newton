@@ -39,6 +39,22 @@ def _ring_model(device, penetration):
     return builder.finalize(device=device), body
 
 
+def _staged_contacts_kept(reducer, entries, pos):
+    """Whether each staged contact holds a slot of its group, by its quantized position key."""
+    qx = np.clip(np.floor(pos[:, 0] * np.float32(2000.0)), -32768, 32767).astype(np.int64) + 32768
+    qy = np.clip(np.floor(pos[:, 1] * np.float32(2000.0)), -8192, 8191).astype(np.int64) + 8192
+    pos_key = (qx << 15) | (qy << 1) | 1
+    values = reducer.ht_values.numpy()
+    capacity = reducer.hashtable.capacity
+    slot_count = values.shape[0] // capacity
+    kept = np.zeros(len(entries), dtype=np.int32)
+    for i, entry in enumerate(entries):
+        if entry >= 0:
+            slot_keys = {int(values[slot * capacity + entry]) & 0x7FFFFFFF for slot in range(slot_count)}
+            kept[i] = int(int(pos_key[i]) in slot_keys)
+    return kept
+
+
 class TestSteelBodyPairReductionGate(unittest.TestCase):
     """Steel configurations validated only on unreduced contacts reject reduced buffers."""
 
@@ -380,15 +396,12 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         probe_pipe = _make_pipeline(probe_model, True)
         probe_contacts = probe_pipe.contacts()
         probe_solver = newton.solvers.SolverXPBD(probe_model, iterations=8)
-        red = probe_pipe._body_pair_reducer
-        # Match the reduced pipeline's deterministic producer and capacity so
-        # its pre-compaction scratch rows correspond one-for-one to this raw
-        # buffer when the topology is inspected below.
+        reducer = probe_pipe.narrow_phase.global_contact_reducer
         raw_pipe = _make_pipeline(probe_model, False)
         raw_contacts = raw_pipe.contacts()
         scan_dirs = [
             (float(np.cos(k * np.pi / 3.0)), float(np.sin(k * np.pi / 3.0)))
-            for k in range(6)  # BODY_PAIR_NUM_DIRECTIONS
+            for k in range(6)  # NUM_SPATIAL_DIRECTIONS
         ]
         topology_seen = False
         _ = probe_body
@@ -398,10 +411,12 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
             probe_pipe.collide(ps0, probe_contacts)
             n_red = int(probe_contacts.rigid_contact_count.numpy()[0])
             if n_raw > 2 and n_red < n_raw and not topology_seen:
-                entries = red.contact_entry.numpy()[:n_raw]
-                gaps = red.contact_gap.numpy()[:n_raw]
-                pos = red.contact_pos2d.numpy()[:n_raw]
-                kept = red.keep_flags.numpy()[:n_raw]
+                # Staged contacts sit at IDs 1..n; read the reducer's own grouping of them.
+                n_staged = int(reducer.contact_count.numpy()[0])
+                entries = reducer.group_contact_entry.numpy()[1 : n_staged + 1]
+                gaps = reducer.group_contact_gap.numpy()[1 : n_staged + 1]
+                pos = reducer.group_contact_pos2d.numpy()[1 : n_staged + 1]
+                kept = _staged_contacts_kept(reducer, entries, pos)
                 for e in np.unique(entries[entries >= 0]):
                     members = np.where(entries == e)[0]
                     if members.size < 3:

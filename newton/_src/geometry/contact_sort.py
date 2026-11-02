@@ -266,31 +266,6 @@ class ContactSorter:
     # Public API
     # ------------------------------------------------------------------
 
-    def borrow_full_scratch(self) -> dict:
-        """Expose the full-layout scratch buffers for reuse by a sequential stage.
-
-        The buffers are only live INSIDE :meth:`sort_full`; between calls their
-        contents are dead, so a pipeline stage that runs strictly after the sort
-        (and finishes before the next one) may reuse them instead of allocating
-        a second full-size copy of every contact array. The borrower must treat
-        the contents as clobbered by every :meth:`sort_full` call.
-
-        Returns:
-            Mapping from contact field name to the scratch array.
-        """
-        return {
-            "shape0": self._full_shape0_buf,
-            "shape1": self._full_shape1_buf,
-            "point0": self._full_point0_buf,
-            "point1": self._full_point1_buf,
-            "offset0": self._full_offset0_buf,
-            "offset1": self._full_offset1_buf,
-            "normal": self._full_normal_buf,
-            "margin0": self._full_margin0_buf,
-            "margin1": self._full_margin1_buf,
-            "tids": self._full_tids_buf,
-        }
-
     def sort_simple(
         self,
         sort_keys: wp.array,
@@ -463,9 +438,10 @@ class ContactSorter:
     def scratch_pos_world(self) -> wp.array:
         """Transient position scratch available to sequential pipeline stages.
 
-        Sized ``capacity`` :class:`wp.vec3`. Sorting and body-pair reduction
-        overwrite this storage. Persistent contact matching owns separate
-        history and must not alias this buffer.
+        Sized ``capacity`` :class:`wp.vec3`.  :meth:`sort_full` overwrites this
+        storage on every call, so it cannot hold state across frames;
+        :class:`~newton._src.geometry.contact_match.ContactMatcher` keeps its
+        previous-frame history in buffers it owns.
 
         .. note::
             Contents are only meaningful to the stage that wrote them, until

@@ -77,8 +77,7 @@ The optional contact report adds one ``int32`` flag per contact.
 Per-frame call order (inside :class:`~newton.CollisionPipeline`)::
 
     sorter.sort_full(...)
-    reducer.reduce(...)  # optional; compact contacts and their sorted keys
-    matcher.match(...)  # indices name the retained stream
+    matcher.match(...)  # on the sorted stream; indices name final rows
     matcher.replay_matched(...)  # sticky-only; overwrite matched rows
     matcher.build_report(...)  # optional; must precede save_sorted_state
     matcher.save_sorted_state(...)  # after sorting, replay, and report

@@ -26,13 +26,11 @@ from ..geometry.contact_data import (
 )
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_reduction_body_pairs import (
-    MAX_GROUP_ID,
-    BodyPairContactReducer,
-    build_reduction_group_pair_bound,
-    build_reduction_group_pair_upper_bound,
+    BodyPairReduction,
+    build_group_reduction_config,
     build_reduction_groups,
 )
-from ..geometry.contact_reduction_global import CONTACT_ID_BITS
+from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
 from ..geometry.flags import MeshProperties, ShapeFlags
@@ -55,13 +53,7 @@ from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
-from ..sim.shape_contact_pairs import (
-    _shape_contact_pair_count_for_mask,
-    _shape_contact_pair_counts,
-    _shape_contact_pair_override,
-    _shape_contact_pair_topology,
-    _shape_contact_pairs_for_mask,
-)
+from ..sim.shape_contact_pairs import _shape_contact_pair_count_for_mask, _shape_contact_pair_counts
 from ..sim.state import State
 
 if TYPE_CHECKING:
@@ -1499,7 +1491,7 @@ class CollisionPipeline:
         """Configure body-pair contact reduction.
 
         Bodies built from many colliders produce one manifold per shape pair.
-        This stage compacts the narrow phase's contacts per group of
+        The narrow phase then reduces all its contacts per group of
         ``(body or static shape, other body or static shape, normal bin,
         spatial cell)``: each group keeps one depth representative, up to six
         sampled footprint extremes over all its contacts and up to six more over
@@ -1595,8 +1587,8 @@ class CollisionPipeline:
         Args:
             model: The simulation model.
             reduce_contacts: Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
-            body_pair_reduction: Compact contacts per body pair after the
-                narrow phase. ``None`` (default) disables it. See
+            body_pair_reduction: Reduce contacts per body pair in the narrow
+                phase. ``None`` (default) disables it. See
                 :class:`CollisionPipeline.BodyPairReductionConfig`.
             rigid_contact_max: Maximum number of rigid contacts to allocate.
                 Resolution order:
@@ -1877,6 +1869,8 @@ class CollisionPipeline:
         if using_expert_components:
             if broad_phase_instance is None or narrow_phase is None:
                 raise ValueError("Provide both broad_phase and narrow_phase for expert component construction")
+            if body_pair_reduction is not None:
+                raise ValueError("body_pair_reduction requires the pipeline to build its own narrow phase")
             if sdf_hydroelastic_config is not None:
                 raise ValueError("sdf_hydroelastic_config cannot be used when narrow_phase is provided")
             if contact_reduction_hashtable_size_factor != 0.25:
@@ -2163,6 +2157,18 @@ class CollisionPipeline:
             # the candidate-pair bound (N*(N-1)/2 per world) is orders of
             # magnitude larger than the neighbor-budget contact estimate and
             # allocating sorter scratch at that size burns multi-GB of VRAM.
+            group_reduction = None
+            if body_pair_reduction is not None:
+                if hydroelastic_sdf is not None:
+                    raise ValueError("body_pair_reduction does not support hydroelastic contacts")
+                group_reduction, group_pair_bound, group_capacity_request = build_group_reduction_config(
+                    model,
+                    body_pair_reduction.cell_size,
+                    body_pair_reduction.hashtable_headroom,
+                    body_pair_reduction.material_attributes,
+                    self.shape_pairs_filtered,
+                    rigid_contact_max,
+                )
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
@@ -2191,6 +2197,7 @@ class CollisionPipeline:
                 contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
                 speculative=self._speculative_enabled,
                 contact_writer_supports_speculative=self._speculative_enabled,
+                group_reduction=group_reduction,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 
@@ -2198,10 +2205,7 @@ class CollisionPipeline:
             if not self.narrow_phase.reduce_contacts and (
                 self.narrow_phase.has_meshes or self.narrow_phase.has_heightfields
             ):
-                # A pass after the narrow phase cannot recover contacts lost to an over-capacity triangle stream.
                 raise ValueError("body_pair_reduction requires reduce_contacts=True in mesh or heightfield scenes")
-            if self.narrow_phase.hydroelastic_sdf is not None:
-                raise ValueError("body_pair_reduction does not support hydroelastic contacts")
 
         # Marks shapes whose texture SDF queries assume the unit scale they had at construction.
         shape_unit_scale_sdf = np.zeros(shape_count if unit_scale_sdf_shapes is not None else 0, dtype=np.int32)
@@ -2395,33 +2399,8 @@ class CollisionPipeline:
             self._contact_matcher = None
 
         if body_pair_reduction is not None:
-            shape_group, group_count = build_reduction_groups(model, body_pair_reduction.material_attributes)
-            if group_count > MAX_GROUP_ID + 1:
-                raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
-            # Size the group table from the broad phase's own candidate pairs; enumerate only an explicit list.
-            if self.shape_pairs_filtered is not None or _shape_contact_pair_override(model)[0]:
-                candidate_pairs = _shape_contact_pairs_for_mask(
-                    model, np.ones(model.shape_count, dtype=bool), shape_pairs=self.shape_pairs_filtered
-                )
-                group_pair_bound = build_reduction_group_pair_bound(candidate_pairs, shape_group)
-            else:
-                topology = _shape_contact_pair_topology(model)
-                group_pair_bound = min(
-                    int(_shape_contact_pair_counts(model).sum()),
-                    build_reduction_group_pair_upper_bound(
-                        topology.shape_body, topology.shape_world, topology._active(), shape_group
-                    ),
-                )
-            self._body_pair_reducer = BodyPairContactReducer(
-                rigid_contact_max,
-                body_pair_reduction.cell_size,
-                device,
-                shape_group=shape_group,
-                up_axis=int(model.up_axis),
-                hashtable_headroom=body_pair_reduction.hashtable_headroom,
-                group_pair_bound=group_pair_bound,
-                borrowed_scratch=(self._contact_sorter.borrow_full_scratch() if self._contact_sorter else None),
-                preserve_sort_keys=deterministic and matching_enabled,
+            self._body_pair_reducer = BodyPairReduction(
+                self.narrow_phase.global_contact_reducer, rigid_contact_max, group_pair_bound, group_capacity_request
             )
         else:
             self._body_pair_reducer = None
@@ -3079,6 +3058,8 @@ class CollisionPipeline:
                 collision_update_dt=collision_update_dt,
                 max_speculative_extension=max_speculative_extension,
             )
+        if self._body_pair_reducer is not None:
+            narrow_phase_extension_kwargs.update(body_q=state.body_q, shape_body=model.shape_body)
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,
             candidate_pair_count=self.broad_phase_pair_count,
@@ -3146,14 +3127,6 @@ class CollisionPipeline:
                 damping=contacts.rigid_contact_damping,
                 friction=contacts.rigid_contact_friction,
                 device=self.device,
-            )
-
-        if self._body_pair_reducer is not None:
-            self._body_pair_reducer.reduce(
-                model,
-                state,
-                contacts,
-                sort_keys=self._contact_sorter.sorted_keys_view if self._contact_matcher is not None else None,
             )
 
         # Match the sorted stream against the previous frame: entry i belongs to
