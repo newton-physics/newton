@@ -22,7 +22,7 @@ from newton.examples.kamino.example_kamino_earworm_flowers import (
     play_song,
 )
 from newton.examples.kamino.utils.hoberman import generate_sphere
-from newton.tests.unittest_utils import make_headless_viewer_gl_or_skip
+from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
 
 
 def _box_corners(pose, extents):
@@ -157,7 +157,7 @@ class TestHobermanGeometry(unittest.TestCase):
 class TestEarwormPlayback(unittest.TestCase):
     def test_pause_resume_and_discard(self):
         """Follow real playback, pause without clock jumps, and release a discarded example."""
-        viewer = make_headless_viewer_gl_or_skip(self)
+        viewer = _make_headless_viewer_gl_or_skip(self)
         self.addCleanup(viewer.close)
         args = Example.create_parser().parse_args(
             ["--mute", "--world-count", "1", "--stage-count", "1", "--flower-resolution", "1"]
