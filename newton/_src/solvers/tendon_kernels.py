@@ -723,7 +723,6 @@ def update_tendon_attachments(
 
     seed_al = wp.transform_point(pose_l, seg_attachment_l_local[seg])
     seed_ar = wp.transform_point(pose_r, seg_attachment_r_local[seg])
-    base_al = wp.transform_point(pose_l, seg_attachment_l_local_step[seg])
     base_ar_step_seg = seg
 
     # Route transitions move the persistent right endpoint between adjacent segment slots.
@@ -745,8 +744,6 @@ def update_tendon_attachments(
             assert seg + 1 < seg_end
             base_ar_step_seg = seg + 1
 
-    base_ar = wp.transform_point(pose_r, seg_attachment_r_local_step[base_ar_step_seg])
-
     new_al, new_ar = _tendon_segment_attachment_points(
         center_l,
         center_r,
@@ -761,26 +758,35 @@ def update_tendon_attachments(
         seed_al,
         seed_ar,
     )
+    new_al_local = wp.transform_point(wp.transform_inverse(pose_l), new_al)
+    new_ar_local = wp.transform_point(wp.transform_inverse(pose_r), new_ar)
 
     if apply_rolling_transfer != 0:
+        # Compare the exact local points stored between steps so transfer
+        # telescopes. A world/local/world round trip otherwise books float32
+        # coordinate error as repeated material transfer on a stationary roller.
         if (
             type_l == int(TendonGuideType.ROLLER)
             and radius_l > 0.0
             and tendon_guide_active[guide_l] == tendon_guide_active_step[guide_l]
         ):
-            seg_rolling_delta_l[seg] = signed_arc_length(base_al, new_al, center_l, radius_l, normal_l, orient_l)
+            seg_rolling_delta_l[seg] = signed_arc_length(
+                seg_attachment_l_local_step[seg], new_al_local, offset_l, radius_l, axis_l, orient_l
+            )
 
         if (
             type_r == int(TendonGuideType.ROLLER)
             and radius_r > 0.0
             and tendon_guide_active[guide_r] == tendon_guide_active_step[guide_r]
         ):
-            seg_rolling_delta_r[seg] = -signed_arc_length(base_ar, new_ar, center_r, radius_r, normal_r, orient_r)
+            seg_rolling_delta_r[seg] = -signed_arc_length(
+                seg_attachment_r_local_step[base_ar_step_seg], new_ar_local, offset_r, radius_r, axis_r, orient_r
+            )
 
     seg_attachment_l[seg] = new_al
     seg_attachment_r[seg] = new_ar
-    seg_attachment_l_local[seg] = wp.transform_point(wp.transform_inverse(pose_l), new_al)
-    seg_attachment_r_local[seg] = wp.transform_point(wp.transform_inverse(pose_r), new_ar)
+    seg_attachment_l_local[seg] = new_al_local
+    seg_attachment_r_local[seg] = new_ar_local
     seg_length[seg] = wp.length(new_ar - new_al)
 
 
