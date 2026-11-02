@@ -34,7 +34,7 @@ from .....core.types import override
 from ...config import CollisionDetectorConfig
 from ..core.data import DataKamino
 from ..core.model import ModelKamino
-from ..geometry.contacts import ContactsKamino
+from ..geometry.contacts import ContactsKamino, apply_contact_friction_modes
 from ..geometry.primitive import CollisionPipelinePrimitive
 from ..geometry.unified import CollisionPipelineUnifiedKamino
 
@@ -471,3 +471,4 @@ class CollisionDetector:
                 self._unified_pipeline.collide(data, _contacts)
             case _:
                 raise ValueError(f"Unsupported CollisionPipelineType: {self._pipeline_type}")
+        apply_contact_friction_modes(_contacts, self._model.geoms.friction_mode)
