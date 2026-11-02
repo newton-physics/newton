@@ -395,7 +395,7 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         probe_pipe = _make_pipeline(probe_model, True)
         probe_contacts = probe_pipe.contacts()
         probe_solver = newton.solvers.SolverXPBD(probe_model, iterations=8)
-        reducer = probe_pipe.narrow_phase.global_contact_reducer
+        reducer = probe_pipe.narrow_phase.group_contact_reducer
         raw_pipe = _make_pipeline(probe_model, False)
         raw_contacts = raw_pipe.contacts()
         scan_dirs = [

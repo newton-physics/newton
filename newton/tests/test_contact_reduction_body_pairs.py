@@ -536,14 +536,6 @@ class TestBodyPairReductionCounts(unittest.TestCase):
 class TestBodyPairReductionGuarantees(unittest.TestCase):
     """Unsupported configurations are rejected at construction or solver start."""
 
-    def _mesh_model(self):
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.6), wp.quat_identity()))
-        mesh = newton.Mesh.create_box(0.25, 0.25, 0.25, duplicate_vertices=False, compute_inertia=False)
-        builder.add_shape_mesh(body, mesh=mesh)
-        builder.add_ground_plane()
-        return builder.finalize(device=wp.get_device())
-
     def _foot_model(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         _cylinder_foot(builder, (0.0, 0.0, 0.020))
@@ -562,19 +554,36 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertIsNone(plain.body_pair_reduction)
         self.assertIsNone(plain._body_pair_reducer)
 
-    def test_body_pair_stage_requires_mesh_stage_for_mesh_scenes(self):
-        """Reject a postpass that cannot protect raw mesh output from overflow."""
-        model = self._mesh_model()
-        with self.assertRaisesRegex(ValueError, "reduce_contacts=True"):
-            newton.CollisionPipeline(
+    def test_unreduced_mesh_contacts_pass_through(self):
+        """Deliver unreduced mesh contacts unchanged when mesh reduction is off."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.249), wp.quat_identity()))
+        mesh = newton.Mesh.create_box(0.25, 0.25, 0.25, duplicate_vertices=False, compute_inertia=False)
+        builder.add_shape_mesh(body, mesh=mesh)
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        state = model.state()
+        rows = []
+        for body_pair_reduction in (None, newton.CollisionPipeline.BodyPairReductionConfig()):
+            pipeline = newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
+                deterministic=True,
                 reduce_contacts=False,
-                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+                body_pair_reduction=body_pair_reduction,
             )
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            rows.append(_full_contact_rows(contacts))
+        self.assertGreater(len(rows[0]), 0)
+        self.assertEqual(rows[1], rows[0])
 
-    def test_mesh_contacts_reduce_by_group(self):
-        """Reduce a compound mesh patch's raw contacts by group, below mesh reduction's count."""
+    def test_mesh_contacts_keep_shape_pair_reduction(self):
+        """Leave mesh contacts to mesh reduction; only primitive and convex contacts reduce by group.
+
+        A body of four mesh tiles produces only mesh contacts, so body-pair
+        reduction must deliver exactly mesh reduction's rows and stage none.
+        """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, -0.0005), wp.quat_identity()),
@@ -618,64 +627,21 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
             )
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
-            return pipeline, int(contacts.rigid_contact_count.numpy()[0])
+            return pipeline, int(contacts.rigid_contact_count.numpy()[0]), _full_contact_rows(contacts)
 
-        raw, raw_count = contact_count(False)
-        mesh_only, mesh_count = contact_count(True)
-        both, both_count = contact_count(True, newton.CollisionPipeline.BodyPairReductionConfig(cell_size=1.0))
+        raw, raw_count, _ = contact_count(False)
+        mesh_only, mesh_count, mesh_rows = contact_count(True)
+        both, both_count, both_rows = contact_count(
+            True, newton.CollisionPipeline.BodyPairReductionConfig(cell_size=1.0)
+        )
         stats = both._body_pair_reducer.stats()
         self.assertFalse(raw.narrow_phase.reduce_contacts)
-        self.assertTrue(mesh_only.narrow_phase.reduce_contacts, "mesh producer reduction was not active")
+        self.assertTrue(mesh_only.narrow_phase.reduce_contacts, "mesh reduction was not active")
         self.assertTrue(both.narrow_phase.reduce_contacts)
         self.assertGreater(raw_count, mesh_count, "mesh reduction did not reduce raw mesh-plane vertex contacts")
-        self.assertEqual(stats["sum_contacts_in"], raw_count, "group reduction did not receive the raw mesh contacts")
-        self.assertEqual(stats["sum_contacts_kept"], both_count)
-        self.assertLess(both_count, mesh_count, "group reduction kept as many contacts as mesh reduction")
-        self.assertEqual(stats["input_overflow_frames"], 0)
-
-    def test_curved_mesh_patches_do_not_exhaust_default_table(self):
-        """Size the group table for mesh patches that spread over many bins and cells.
-
-        A hull sphere pressed into a triangle grid puts one shape pair's
-        contacts into dozens of (bin, cell) entries, which the pair topology
-        cannot predict. Replicated, that outgrows a topology-only table and
-        every frame would keep all contacts.
-        """
-        axis = np.linspace(-1.0, 1.0, 13, dtype=np.float32)
-        xx, yy = np.meshgrid(axis, axis, indexing="xy")
-        vertices = np.column_stack((xx.ravel(), yy.ravel(), np.zeros(xx.size, dtype=np.float32)))
-        triangles = []
-        for y in range(12):
-            for x in range(12):
-                i0 = y * 13 + x
-                triangles.extend(((i0, i0 + 1, i0 + 14), (i0, i0 + 14, i0 + 13)))
-        grid = newton.Mesh(vertices, np.asarray(triangles, dtype=np.int32), compute_inertia=False)
-        hull = newton.Mesh.create_sphere(
-            0.55, num_latitudes=24, num_longitudes=48, compute_normals=False, compute_uvs=False
-        )
-        cfg = newton.ModelBuilder.ShapeConfig(gap=0.002, margin=0.0)
-        world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        world.add_shape_mesh(body=-1, mesh=grid, cfg=cfg)
-        body = world.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.20)))
-        world.add_shape_convex_hull(body=body, mesh=hull, cfg=cfg)
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        builder.replicate(world, 48)
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        pipeline = newton.CollisionPipeline(
-            model,
-            broad_phase="explicit",
-            rigid_contact_max=512 * 48,
-            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
-        )
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
-        stats = pipeline._body_pair_reducer.stats()
-        self.assertEqual(stats["input_overflow_frames"], 0)
-        self.assertGreater(stats["max_hashtable_entries"], 1024, "the scene does not outgrow a topology-only table")
-        self.assertEqual(stats["fallback_frames"], 0)
-        self.assertLess(stats["max_contacts_kept"], stats["max_contacts_in"])
+        self.assertEqual(both_count, mesh_count)
+        self.assertEqual(both_rows, mesh_rows, "body-pair reduction changed mesh-reduced contacts")
+        self.assertEqual(stats["sum_contacts_in"], 0, "mesh contacts entered group reduction")
 
     def test_group_mode_narrow_phase_rejects_simple_launch(self):
         """Group reduction runs only through launch_custom_write, which takes the body poses."""
@@ -970,7 +936,7 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
                 )
             bound = pipeline._body_pair_reducer.describe()["group_pair_bound"]
             exact = build_reduction_group_pair_bound(
-                model.shape_contact_pairs.numpy(), pipeline._body_pair_reducer.shape_group.numpy()
+                model.shape_contact_pairs.numpy(), pipeline._body_pair_reducer.reducer.shape_group.numpy()
             )
             # Per world: foot-sphere, each body against the world's box and against the global ground.
             self.assertEqual(exact, 15)
@@ -1765,7 +1731,7 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
         model = builder.finalize(device=wp.get_device())
         state = model.state()
         pipeline = _make_pipeline(model, True, body_pair_cell_size=0.02)
-        reducer = pipeline.narrow_phase.global_contact_reducer
+        reducer = pipeline.narrow_phase.group_contact_reducer
 
         normal = np.array([0.3, 0.0, np.sqrt(1.0 - 0.3**2)], dtype=np.float32)
         margin_b = float(model.shape_margin.numpy()[shape_b])

@@ -1284,8 +1284,9 @@ To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 Bodies built from many colliders (a foot made of several spheres or capsules, a
 hand of boxes) produce one manifold per shape pair, so a single physical patch
 can reach the solver as dozens of near-redundant contacts. Optional body-pair
-reduction reduces them per body pair inside the global contact reducer, before
-they are written. Enable it with ``body_pair_reduction``:
+reduction reduces primitive and convex contacts per body pair in a group mode
+of the global contact reducer, before they are written. Enable it with
+``body_pair_reduction``:
 
 .. testcode:: body-pair-reduction
 
@@ -1305,9 +1306,9 @@ Contacts are grouped by body pair, material class, normal bin and spatial cell.
 Each group keeps one depth representative, up to six sampled footprint extremes
 over all its contacts and up to six more over its touching contacts only, so
 speculative contacts cannot displace the support polygon. Mesh and
-heightfield contacts are reduced the same way, by group instead of by shape
-pair. Only the kept contacts are written, and if a group cannot be
-registered in the table, the frame keeps every contact. It is an
+heightfield contacts keep their per-shape-pair reduction. Only the kept
+contacts are written, and if a group cannot be registered in the table, the
+frame keeps every contact. It is an
 approximation: support is sampled, not exact, and keeping
 rim points can strengthen torsional friction. Selection is memoryless, so on
 curved or mesh supports the kept set can change between steps.
@@ -1325,9 +1326,8 @@ body-pair reduction collides into a stamped buffer, and a solver accepts one onl
 if it declares :attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`;
 the others raise in ``step()``, also during CUDA graph capture.
 :class:`~solvers.SolverSteel` supports it, except with ``contact_compliance``.
-Body-pair reduction requires ``reduce_contacts=True`` in mesh or heightfield
-scenes, and it doesn't support ``contact_matching="sticky"`` or hydroelastic
-contacts. Keep it off when it doesn't reduce the end-to-end step time.
+Body-pair reduction doesn't support ``contact_matching="sticky"`` or
+hydroelastic contacts. Keep it off when it doesn't reduce the end-to-end step time.
 
 This body-pair reduction API is experimental and may change without prior notice.
 

@@ -33,15 +33,16 @@ realized load distribution.
 
 The reduction itself is the global contact reducer's group mode (see
 :class:`~newton._src.geometry.contact_reduction_global.GroupReductionConfig`):
-every narrow-phase contact is staged, grouped by ``(group0, group1, normal bin,
-spatial cell)`` where a group is a body plus an exact material signature (or a
+every primitive and convex contact is staged, grouped by ``(group0, group1,
+normal bin, spatial cell)`` where a group is a body plus an exact material signature (or a
 static shape on its own), and only the winners reach the ``Contacts`` buffer.
 Each group keeps its deepest contact, the extremes of all its contacts along
 six scan directions, and the extremes of its touching contacts (separation
 ``<= 0``) along the same directions. Contacts discarded this way are typically
 interior points whose force is a convex combination of the hull points', though
 a sparsely populated hull can also lose true vertices that fall between scan
-directions (see above). This module builds the groups and sizes the group table.
+directions (see above). Mesh and heightfield contacts keep their shape-pair
+reduction. This module builds the groups and sizes the group table.
 
 **When this pays.** Only bodies whose collision is decomposed into several
 primitives generate more candidates per pair than the slot budget. Dense
@@ -106,6 +107,7 @@ import warp as wp
 from ..sim.model import Model
 from .contact_reduction_global import (
     GROUP_STAT_CELL_CLAMP_EVENTS,
+    GROUP_STAT_COUNT,
     GROUP_STAT_FALLBACK_FRAMES,
     GROUP_STAT_INPUT_OVERFLOW_FRAMES,
     GROUP_STAT_MAX_CONTACTS_IN,
@@ -121,6 +123,7 @@ from .contact_reduction_global import (
     GlobalContactReducer,
     GroupReductionConfig,
 )
+from .types import GeoType
 
 
 def _up_axis_rotation(up_axis: int) -> tuple:
@@ -299,7 +302,6 @@ def build_group_reduction_config(
     material_attributes,
     shape_pairs,
     rigid_contact_max: int,
-    has_mesh_like: bool,
 ) -> tuple[GroupReductionConfig, int, int]:
     """Build the group-reduction settings for a pipeline.
 
@@ -310,19 +312,25 @@ def build_group_reduction_config(
         material_attributes: Per-shape attributes that split groups (see :func:`build_reduction_groups`).
         shape_pairs: The explicit broad-phase pair list, or ``None`` for the model's default pairs.
         rigid_contact_max: Staging capacity; also caps the table, since a group needs a contact.
-        has_mesh_like: Whether the scene has mesh or heightfield shapes.
 
     Returns:
-        ``(config, group_pair_bound, hashtable_capacity_request)``.
+        ``(config, group_pair_bound, hashtable_capacity_request)``; ``config`` is ``None`` when no
+        candidate pair can produce primitive or convex contacts, since mesh and heightfield
+        contacts keep their shape-pair reduction.
     """
     # Imported here: shape_contact_pairs imports the geometry package.
     from ..sim.shape_contact_pairs import (  # noqa: PLC0415
+        _shape_contact_pair_count_for_mask,
         _shape_contact_pair_counts,
         _shape_contact_pair_override,
         _shape_contact_pair_topology,
         _shape_contact_pairs_for_mask,
     )
 
+    shape_type = model.shape_type.numpy()
+    primitive_shapes = (shape_type != int(GeoType.MESH)) & (shape_type != int(GeoType.HFIELD))
+    if _shape_contact_pair_count_for_mask(model, primitive_shapes, shape_pairs=shape_pairs) == 0:
+        return None, 0, 0
     shape_group, group_count = build_reduction_groups(model, material_attributes)
     if group_count > MAX_GROUP_ID + 1:
         raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
@@ -343,10 +351,7 @@ def build_group_reduction_config(
     # A replicated scene can have one reachable pair per body, yet each pair spans
     # several bins and cells: reserve four patch entries per group at half load.
     group_budget = 8 * len(np.unique(shape_group))
-    # A curved mesh or heightfield patch spreads one pair over many bins and cells,
-    # which the topology cannot see, so also reserve one entry per eight staged contacts.
-    staged_budget = rigid_contact_max // 8 if has_mesh_like else 0
-    capacity_request = int(max(group_pair_bound, group_budget, staged_budget) * float(hashtable_headroom))
+    capacity_request = int(max(group_pair_bound, group_budget) * float(hashtable_headroom))
     capacity_request = max(1024, min(capacity_request, rigid_contact_max))
     config = GroupReductionConfig(
         shape_group=shape_group,
@@ -358,29 +363,34 @@ def build_group_reduction_config(
 
 
 class BodyPairReduction:
-    """Telemetry and group refresh for a pipeline's group-mode global reducer."""
+    """Telemetry and group refresh for a pipeline's group-mode global reducer.
+
+    ``reducer`` is ``None`` when the scene has no primitive or convex contact pairs: then
+    nothing is reduced by group and the telemetry stays zero.
+    """
 
     def __init__(
-        self, reducer: GlobalContactReducer, rigid_contact_max: int, group_pair_bound: int, capacity_request: int
+        self, reducer: GlobalContactReducer | None, rigid_contact_max: int, group_pair_bound: int, capacity_request: int
     ):
         self.reducer = reducer
         self.rigid_contact_max = rigid_contact_max
         self.group_pair_bound = group_pair_bound
         self.hashtable_capacity_request = capacity_request
 
-    @property
-    def shape_group(self) -> wp.array:
-        """Per-shape reduction-group ids on the device."""
-        return self.reducer.shape_group
+    def refresh_groups(self, shape_group):
+        """Replace the per-shape reduction-group ids."""
+        if self.reducer is not None:
+            self.reducer.shape_group.assign(shape_group)
 
     @property
     def verify(self) -> bool:
         """Count discarded contacts that out-rank a recorded winner."""
-        return self.reducer.verify
+        return self.reducer is not None and self.reducer.verify
 
     @verify.setter
     def verify(self, value: bool):
-        self.reducer.verify = bool(value)
+        if self.reducer is not None:
+            self.reducer.verify = bool(value)
 
     def stats(self) -> dict:
         """Whole-run reduction telemetry (forces a device sync; read outside capture).
@@ -401,9 +411,9 @@ class BodyPairReduction:
             ``input_overflow_frames``: frames whose contacts overflowed the staging buffer.
         """
         self._raise_if_capturing("stats()")
-        v = self.reducer.group_stats.numpy()
+        v = np.zeros(GROUP_STAT_COUNT, dtype=np.int64) if self.reducer is None else self.reducer.group_stats.numpy()
         entries = int(v[GROUP_STAT_MAX_ENTRIES])
-        capacity = self.reducer.hashtable.capacity
+        capacity = self._capacity()
         return {
             "invariant_violations": int(v[GROUP_STAT_OUTRANKED_DISCARDS]),
             "probe_failures": int(v[GROUP_STAT_PROBE_FAILURES]),
@@ -412,7 +422,7 @@ class BodyPairReduction:
             "max_contacts_kept": int(v[GROUP_STAT_MAX_CONTACTS_KEPT]),
             "max_hashtable_entries": entries,
             "hashtable_capacity": capacity,
-            "hashtable_load": entries / capacity,
+            "hashtable_load": entries / capacity if capacity else 0.0,
             "input_overflow_frames": int(v[GROUP_STAT_INPUT_OVERFLOW_FRAMES]),
             "fallback_frames": int(v[GROUP_STAT_FALLBACK_FRAMES]),
             "total_frames": int(v[GROUP_STAT_TOTAL_FRAMES]),
@@ -423,11 +433,12 @@ class BodyPairReduction:
     def clear_stats(self):
         """Zero the whole-run telemetry (host-side, outside capture)."""
         self._raise_if_capturing("clear_stats()")
-        self.reducer.group_stats.zero_()
+        if self.reducer is not None:
+            self.reducer.group_stats.zero_()
 
     def describe(self) -> dict:
         """Sizes fixed at construction."""
-        capacity = self.reducer.hashtable.capacity
+        capacity = self._capacity()
         return {
             "rigid_contact_max": self.rigid_contact_max,
             "hashtable_capacity": capacity,
@@ -437,8 +448,11 @@ class BodyPairReduction:
             "slot_value_bytes": capacity * GROUP_VALUES_PER_KEY * 8,
         }
 
+    def _capacity(self) -> int:
+        return 0 if self.reducer is None else self.reducer.hashtable.capacity
+
     def _raise_if_capturing(self, what: str):
         """Reject host-side telemetry during CUDA graph capture, where it would sync or be recorded."""
-        device = self.reducer.hashtable.keys.device
+        device = wp.get_device() if self.reducer is None else self.reducer.hashtable.keys.device
         if device.is_cuda and device.is_capturing:
             raise RuntimeError(f"{what} is host-side telemetry; call it outside CUDA graph capture")

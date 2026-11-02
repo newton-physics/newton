@@ -2288,8 +2288,8 @@ def write_contact_to_reducer(
 # =============================================================================
 # With ``group_reduction`` the reducer keys entries on per-shape reduction groups
 # instead of shapes: a dynamic shape's group is its body plus an exact material
-# signature, a static shape is its own group. All narrow-phase contacts are
-# staged, and an entry is ``(group_a, group_b, normal bin, spatial cell)`` with
+# signature, a static shape is its own group. The contacts it reduces are all
+# staged first, and an entry is ``(group_a, group_b, normal bin, spatial cell)`` with
 # one slot per scan direction over all contacts, the deepest contact, and one
 # slot per scan direction over touching contacts (separation <= 0). Slot values
 # carry no contact ID: each staged contact finds out whether it won by comparing
@@ -2315,8 +2315,10 @@ GROUP_ENTRY_UNREGISTERED = -1  # probe budget exhausted: kept by the frame fallb
 
 # ``GroupReductionData.frame_state`` fields, reset by ``prepare_group_frame_kernel``.
 GROUP_FRAME_FALLBACK = 0
-GROUP_FRAME_CONTACTS_IN = 1
-GROUP_FRAME_CONTACTS_KEPT = 2
+# Admitted contacts are the staged ones less the rejected; kept ones are what the
+# export added to the writer's count. Neither takes a per-contact atomic.
+GROUP_FRAME_REJECTED = 1
+GROUP_FRAME_OUTPUT_BASE = 2
 GROUP_FRAME_PROBE_FAILURES = 3
 GROUP_FRAME_CELL_CLAMPS = 4
 GROUP_FRAME_OUTRANKED = 5
@@ -2524,8 +2526,8 @@ def _register_group_contact(
         )
     if not admitted:
         group_data.contact_entry[contact_id] = wp.static(GROUP_ENTRY_REJECTED)
+        wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_REJECTED), 1)
         return
-    wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_CONTACTS_IN), 1)
 
     s0 = contact_data.shape_a
     s1 = contact_data.shape_b
@@ -2674,7 +2676,6 @@ def create_export_group_contacts_kernel(writer_func: Any):
                 won = _group_contact_won(contact_id, reducer_data, group_data)
                 keep = keep or won
             if keep:
-                wp.atomic_add(group_data.frame_state, wp.static(GROUP_FRAME_CONTACTS_KEPT), 1)
                 contact_data = _staged_contact_data(contact_id, reducer_data, shape_types, shape_data, shape_gap)
                 writer_func(contact_data, writer_data, -1)
 
@@ -2682,17 +2683,26 @@ def create_export_group_contacts_kernel(writer_func: Any):
 
 
 @wp.kernel(enable_backward=False)
+def record_group_output_base_kernel(group_data: GroupReductionData, output_count: wp.array[int]):
+    """Record the writer's contact count before the group export adds its winners."""
+    group_data.frame_state[wp.static(GROUP_FRAME_OUTPUT_BASE)] = output_count[0]
+
+
+@wp.kernel(enable_backward=False)
 def finish_group_frame_kernel(
     group_data: GroupReductionData,
-    ht_active_slots: wp.array[wp.int32],
-    ht_capacity: int,
-    buffer_overflows: wp.array[wp.int32],
+    reducer_data: GlobalContactReducerData,
+    output_count: wp.array[int],
 ):
     """Fold this frame's group-reduction counters into the whole-run statistics."""
     frame = group_data.frame_state
     stats = group_data.stats
-    contacts_in = wp.int64(frame[wp.static(GROUP_FRAME_CONTACTS_IN)])
-    contacts_kept = wp.int64(frame[wp.static(GROUP_FRAME_CONTACTS_KEPT)])
+    staged = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
+    contacts_in = wp.int64(staged - frame[wp.static(GROUP_FRAME_REJECTED)])
+    contacts_kept = wp.int64(output_count[0] - frame[wp.static(GROUP_FRAME_OUTPUT_BASE)])
+    ht_active_slots = reducer_data.ht_active_slots
+    ht_capacity = reducer_data.ht_capacity
+    buffer_overflows = reducer_data.buffer_overflows
     stats[wp.static(GROUP_STAT_TOTAL_FRAMES)] = stats[wp.static(GROUP_STAT_TOTAL_FRAMES)] + wp.int64(1)
     stats[wp.static(GROUP_STAT_SUM_CONTACTS_IN)] = stats[wp.static(GROUP_STAT_SUM_CONTACTS_IN)] + contacts_in
     stats[wp.static(GROUP_STAT_SUM_CONTACTS_KEPT)] = stats[wp.static(GROUP_STAT_SUM_CONTACTS_KEPT)] + contacts_kept

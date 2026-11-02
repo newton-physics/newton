@@ -341,8 +341,9 @@ def _record_reduction_overflow(
     buffer_overflows: wp.array[wp.int32],
     overflow: wp.array[wp.int32],
 ):
-    """Copy the reducer's loss counters into the contact stream's overflow flag."""
-    overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
+    """Raise the contact stream's overflow flag if the reducer lost contacts; the pass start clears it."""
+    if insert_failures[0] > 0 or buffer_overflows[0] > 0:
+        overflow[0] = 1
 
 
 @wp.kernel(enable_backward=False)
@@ -1491,21 +1492,22 @@ class CollisionPipeline:
         """Configure body-pair contact reduction.
 
         Bodies built from many colliders produce one manifold per shape pair.
-        The narrow phase then reduces all its contacts per group of
+        The narrow phase then reduces its primitive and convex contacts per group of
         ``(body or static shape, other body or static shape, normal bin,
         spatial cell)``: each group keeps one depth representative, up to six
         sampled footprint extremes over all its contacts and up to six more over
         its touching contacts (canonical separation ``<= 0``).  Shapes on one
         body share a group only when their ``shape_material_*`` values and
-        ``material_attributes`` match exactly.  Selection is memoryless.
+        ``material_attributes`` match exactly.  Selection is memoryless.  Mesh
+        and heightfield contacts keep the per-shape-pair reduction that
+        ``reduce_contacts`` selects.
 
         It is an approximation with scene-dependent support error and possible
         upward torsional-friction bias; validate tipping- and yaw-sensitive
         tasks.  Only solvers with
         :attr:`~newton.solvers.SolverBase.supports_body_pair_reduced_contacts`
-        accept the reduced buffers.  Sticky contact matching, hydroelastic
-        contacts and ``reduce_contacts=False`` in mesh or heightfield scenes are
-        rejected at construction.
+        accept the reduced buffers.  Sticky contact matching and hydroelastic
+        contacts are rejected at construction.
 
         Args:
             cell_size: Spatial cell edge [m] that keeps separated same-normal
@@ -2168,7 +2170,6 @@ class CollisionPipeline:
                     body_pair_reduction.material_attributes,
                     self.shape_pairs_filtered,
                     rigid_contact_max,
-                    has_mesh_like=has_meshes or has_heightfields,
                 )
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
@@ -2198,15 +2199,9 @@ class CollisionPipeline:
                 contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
                 speculative=self._speculative_enabled,
                 contact_writer_supports_speculative=self._speculative_enabled,
-                group_reduction=group_reduction,
+                _group_reduction=group_reduction,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
-
-        if body_pair_reduction is not None:
-            if not self.narrow_phase.reduce_contacts and (
-                self.narrow_phase.has_meshes or self.narrow_phase.has_heightfields
-            ):
-                raise ValueError("body_pair_reduction requires reduce_contacts=True in mesh or heightfield scenes")
 
         # Marks shapes whose texture SDF queries assume the unit scale they had at construction.
         shape_unit_scale_sdf = np.zeros(shape_count if unit_scale_sdf_shapes is not None else 0, dtype=np.int32)
@@ -2401,7 +2396,7 @@ class CollisionPipeline:
 
         if body_pair_reduction is not None:
             self._body_pair_reducer = BodyPairReduction(
-                self.narrow_phase.global_contact_reducer, rigid_contact_max, group_pair_bound, group_capacity_request
+                self.narrow_phase.group_contact_reducer, rigid_contact_max, group_pair_bound, group_capacity_request
             )
         else:
             self._body_pair_reducer = None
@@ -2433,7 +2428,7 @@ class CollisionPipeline:
         shape_group, group_count = build_reduction_groups(self.model, self.body_pair_reduction.material_attributes)
         if group_count > MAX_GROUP_ID + 1:
             raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
-        self._body_pair_reducer.shape_group.assign(shape_group)
+        self._body_pair_reducer.refresh_groups(shape_group)
 
     @property
     def rigid_contact_max(self) -> int:
@@ -3092,16 +3087,16 @@ class CollisionPipeline:
         if check_unit_scale_sdf:
             wp.copy(self._unit_scale_sdf_rescaled_host, self._unit_scale_sdf_rescaled)
 
-        # The reducer's counters are reused by the next pass, so latch losses on this contact stream.
-        reducer = self.narrow_phase.global_contact_reducer
-        if reducer is not None:
-            wp.launch(
-                _record_reduction_overflow,
-                dim=1,
-                inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
-                device=self.device,
-                record_tape=False,
-            )
+        # The reducers' counters are reused by the next pass, so latch losses on this contact stream.
+        for reducer in (self.narrow_phase.global_contact_reducer, self.narrow_phase.group_contact_reducer):
+            if reducer is not None:
+                wp.launch(
+                    _record_reduction_overflow,
+                    dim=1,
+                    inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
+                    device=self.device,
+                    record_tape=False,
+                )
 
         if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
             raise ValueError(
