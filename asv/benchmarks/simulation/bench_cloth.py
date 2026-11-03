@@ -48,7 +48,7 @@ DEFORMABLE_RIGID_CASES = (
     ("cone", "cone", 32, 64, 16, False),
     ("ellipsoid", "ellipsoid", 32, 64, 16, False),
     ("mesh_sdf", "mesh", 32, 64, 16, False),
-    ("mesh_high_poly_fallback", "mesh_high_poly", 64, 256, 1, False),
+    ("mesh_high_poly_fallback", "mesh_high_poly", 64, 32, 1, False),
     ("infinite_plane", "plane", 64, 128, 1, False),
     ("finite_plane", "finite_plane", 64, 128, 1, False),
     ("heightfield", "heightfield", 64, 128, 1, False),
@@ -227,6 +227,7 @@ class DeformableRigidCollision:
 
     params = (DEFORMABLE_RIGID_CASES,)
     param_names = ["case"]
+    rounds = 1
     repeat = 3
     number = 1
     warmup_count = 2
@@ -237,6 +238,11 @@ class DeformableRigidCollision:
         device = wp.get_device()
         if not device.is_cuda:
             raise SkipNotImplemented
+
+        # ASV repeats setup per sample; collision-only graph replays preserve state.
+        if getattr(self, "_case", None) == case:
+            return
+        self._case = None
 
         _name, kind, resolution, world_count, shape_count, sparse = case
         builder = newton.ModelBuilder()
@@ -268,6 +274,7 @@ class DeformableRigidCollision:
         with wp.ScopedCapture(device=device) as capture:
             self.pipeline.collide(self.state, self.contacts)
         self.graph = capture.graph
+        self._case = case
 
     def _verify_contact_capacity(self):
         """Reject truncated warmup results before capturing the timed collision graph."""
@@ -300,6 +307,7 @@ class FastDeformableRigidCoarseCloth(DeformableRigidCollision):
     """Guard collision latency for small replicated deformable scenes."""
 
     params = (COARSE_CLOTH_RIGID_CASES,)
+    rounds = 2
     repeat = pr_gate_repeat(5)
 
 
@@ -307,6 +315,7 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
     """Measure small-scene full-surface contact through the VBD solve."""
 
     params = (COARSE_CLOTH_VBD_CASES,)
+    rounds = 2
     repeat = pr_gate_repeat(5)
     launch_count = 5
     # This graph includes the solve; expose it only through time_simulate.

@@ -8,6 +8,7 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -51,6 +52,8 @@ if TYPE_CHECKING:
         MaterialManagerConfig,
         PADMMSolverConfig,
     )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -485,10 +488,21 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self.fk is not None:
                 self.fk.validate()
             self.constraints.validate()
+            if self.dynamics_solver == "lox" and self.constraints._has_recovery_settings():
+                raise ValueError(
+                    "Shared constraint recovery/compliance settings require PADMM or DVI. "
+                    "LOX retains its existing constraint and contact_compliance settings."
+                )
             self.dynamics.validate()
             self.padmm.validate()
             self.dvi.validate()
             self.lox.validate()
+            if self.dynamics_solver in {"padmm", "dvi"} and self.lox.contact_compliance:
+                raise ValueError(
+                    "lox.contact_compliance requires the LOX backend. "
+                    "Use constraints.contact_compliance for PADMM or DVI; "
+                    "that option also falls back to shape material stiffness and damping."
+                )
             self.materials.validate()
 
             supported_dynamics_solvers = {"padmm", "dvi", "lox"}
@@ -810,6 +824,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         self._config = config
+        if config.use_collision_detector and model._has_body_variants:
+            raise NotImplementedError(
+                "SolverKamino supports body variants only with Newton contacts; set use_collision_detector=False."
+            )
 
         # Validate solver-specific model compatibility after resolving the selected backend.
         self._validate_model_compatibility(model, self._config)
@@ -1347,10 +1365,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
+            # Newton contacts read shape geometry directly, and the Kamino detector rejects models
+            # with body variants at construction, so nothing caches what this flag changes.
+            | ModelFlags.SHAPE_TYPE_AND_SOURCE
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:
-            self._kamino.msg.warning(
+            logger.warning(
                 "SolverKamino.notify_model_changed: flags 0x%x not yet supported",
                 unsupported,
             )

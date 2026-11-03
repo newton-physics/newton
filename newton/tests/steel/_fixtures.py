@@ -452,7 +452,7 @@ def _build_v_jaws(tilt_deg: float, geometry: str = "box", device=None):
                 axis=newton.Axis.X,
                 limit_lower=-0.05,
                 limit_upper=0.05,
-                target_pos=-0.01 * sign,
+                target_q=-0.01 * sign,
                 target_ke=100.0,
                 target_kd=10.0,
             )
@@ -564,7 +564,7 @@ def _tree(device, links, *, branched=False, worlds=2, loop=False):
                 child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
                 target_ke=20.0 + i,
                 target_kd=1.0,
-                target_pos=0.2,
+                target_q=0.2,
                 armature=0.01,
             )
         )
@@ -626,7 +626,7 @@ def _build_contact_scene(device, *, mu=0.6, restitution=0.0, worlds=2):
                 child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.12), wp.quat_identity()),
                 target_ke=20.0,
                 target_kd=1.0,
-                target_pos=0.4,
+                target_q=0.4,
             ),
         ]
     )

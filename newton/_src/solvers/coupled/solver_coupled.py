@@ -2356,7 +2356,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         namespace = overrides.get(namespace_name)
         if namespace is None:
             parent_namespace = getattr(self.model, namespace_name)
-            namespace = _AttributeNamespaceView(parent_namespace)
+            namespace = _AttributeNamespaceView(parent_namespace, view)
             setattr(view, namespace_name, namespace)
         setattr(namespace, attr_name, value)
 

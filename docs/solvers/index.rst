@@ -81,6 +81,7 @@ Supported Features
      - Cloth
      - Soft bodies
      - Differentiable
+     - Deterministic :sup:`3`
    * - :class:`~newton.solvers.SolverFeatherstone`
      - Semi-implicit
      - ✅
@@ -89,6 +90,7 @@ Supported Features
      - 🟨 no self-collision
      - ✅
      - 🟨 basic :sup:`2`
+     - ✅
    * - :class:`~newton.solvers.SolverImplicitMPM`
      - Implicit
      - ❌
@@ -97,10 +99,12 @@ Supported Features
      - ❌
      - ❌
      - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverKamino`
      - Semi-implicit: Euler, Moreau-Jean
      - ✅ maximal coordinates
      - ✅ maximal coordinates
+     - ❌
      - ❌
      - ❌
      - ❌
@@ -113,6 +117,7 @@ Supported Features
      - ❌
      - ❌
      - ❌
+     - 🟨 CPU only
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - Semi-implicit
      - ✅
@@ -121,6 +126,7 @@ Supported Features
      - 🟨 no self-collision
      - ✅
      - 🟨 basic :sup:`2`
+     - ✅
    * - :class:`~newton.solvers.SolverSteel`
      - Semi-implicit, implicit drives
      - ✅
@@ -129,12 +135,14 @@ Supported Features
      - ❌
      - ❌
      - ❌
+     - ✅
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
      - ❌
      - ❌
      - ✅
      - ✅
+     - ❌
      - ❌
      - ❌
    * - :class:`~newton.solvers.SolverVBD`
@@ -145,6 +153,7 @@ Supported Features
      - ✅
      - ✅
      - ❌
+     - ✅
    * - :class:`~newton.solvers.SolverXPBD`
      - Implicit
      - ✅
@@ -153,11 +162,15 @@ Supported Features
      - 🟨 no self-collision
      - 🟨 experimental
      - ❌
+     - ✅
 
 | :sup:`1` Uses MuJoCo's built-in collision pipeline by default.
   Set ``use_mujoco_contacts=False`` to use Newton's collision pipeline.
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
+| :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``
+  (MuJoCo's CPU backend is deterministic regardless of that argument);
+  see :doc:`/concepts/determinism` for limitations and performance trade-offs.
 
 .. experimental::
     :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
@@ -338,6 +351,14 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |yes|
      - |no|
      - |yes|
+   * - :attr:`~newton.Model.joint_stiffness` / :attr:`~newton.Model.joint_rest_q`
+     - REVOLUTE, PRISMATIC, D6
+     - |no|
+     - REVOLUTE, PRISMATIC, D6
+     - |no|
+     - Scalar joints and isotropic BALL springs
+     - ROD ``joint_rest_q`` only
+     - |no|
    * - :attr:`~newton.Model.joint_friction`
      - |no|
      - |yes| :sup:`9`
@@ -380,6 +401,11 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
+
+SemiImplicit angular springs use principal coordinates in [-pi, pi). Crossing
+that boundary produces a force jump of ``2*pi*stiffness`` and can destabilize
+motion near it. Use Featherstone or MuJoCo for boundary-crossing or multi-turn
+motion; see :ref:`passive-joint-springs` for details.
 
 **Actuation and control**
 
@@ -471,7 +497,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 | :sup:`10` Steel enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
 | :sup:`11` Steel clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
 | :sup:`12` Steel enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``solve_mode="matrix_free"``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
-| :sup:`13` With ``solve_mode="matrix_free"``, Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``solve_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
+| :sup:`13` With ``solve_mode="matrix_free"``, Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints, and loop-closing REVOLUTE joints as point constraints plus two hinge-axis constraints. ``solve_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
 | :sup:`14` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
 

@@ -1708,28 +1708,6 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
     test.assertIsNotNone(capture.graph)
 
 
-def _rigid_contact_stick_eps_are_deprecated(test, device):
-    """Verify deprecated stick options warn and are ignored."""
-    builder = newton.ModelBuilder()
-    model = builder.finalize(device=device)
-
-    with test.assertWarnsRegex(DeprecationWarning, "deprecated and ignored") as warning:
-        solver = newton.solvers.SolverVBD(
-            model,
-            rigid_compliant_alm=True,
-            rigid_contact_stick_motion_eps=1.0e-4,
-            rigid_contact_stick_freeze_translation_eps=1.0e-5,
-            rigid_contact_stick_freeze_angular_eps=1.0e-5,
-        )
-
-    test.assertEqual(warning.filename, __file__)
-
-    # "and ignored": the solver retains no state derived from the deprecated epsilons.
-    test.assertFalse(hasattr(solver, "rigid_contact_stick_motion_eps"))
-    test.assertFalse(hasattr(solver, "rigid_contact_stick_freeze_translation_eps"))
-    test.assertFalse(hasattr(solver, "rigid_contact_stick_freeze_angular_eps"))
-
-
 def _rigid_compliant_alm_defaults_to_compliant(test, device):
     """Use compliant ALM by default, warn for legacy options, and reject a None mode."""
     builder = newton.ModelBuilder()
@@ -1740,6 +1718,8 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         solver = newton.solvers.SolverVBD(model)
+        test.assertTrue(solver.rigid_compliant_alm)
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     test.assertTrue(solver.rigid_compliant_alm)
     with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False") as warning:
         legacy_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
@@ -1766,6 +1746,15 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
             newton.solvers.SolverVBD(model, rigid_avbd_beta=-1.0)
     with test.assertRaisesRegex(TypeError, "rigid_compliant_alm"):
         newton.solvers.SolverVBD(model, rigid_compliant_alm=None)
+    with test.assertWarnsRegex(
+        newton.exceptions.NewtonDeprecationWarning, "rigid_compliant_alm=False.*rigid_avbd_beta"
+    ):
+        newton.solvers.SolverVBD(
+            model,
+            rigid_compliant_alm=False,
+            rigid_avbd_beta=0.0,
+            integrate_with_external_rigid_solver=True,
+        )
 
 
 def _rigid_contact_dual_update_computes_lambda(test, device):
@@ -3427,7 +3416,7 @@ def _rigid_compliant_drive_preserves_material_equilibrium(test, device):
         -1,
         body,
         axis=(1.0, 0.0, 0.0),
-        target_pos=0.1,
+        target_q=0.1,
         target_ke=1000.0,
         target_kd=120.0,
         limit_lower=-1.0,
@@ -3574,7 +3563,7 @@ def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(te
         -1,
         body,
         axis=(1.0, 0.0, 0.0),
-        target_vel=0.0,
+        target_qd=0.0,
         target_ke=0.0,
         target_kd=120.0,
     )
@@ -3616,7 +3605,7 @@ def _rigid_drive_ignores_disabled_limit_bounds(test, device):
         -1,
         body,
         axis=(1.0, 0.0, 0.0),
-        target_pos=0.5,
+        target_q=0.5,
         target_ke=1000.0,
         target_kd=50.0,
         limit_lower=-0.1,
@@ -6318,12 +6307,6 @@ add_function_test(
     "test_rigid_contact_history_capture_requires_preallocation",
     _rigid_contact_history_capture_requires_preallocation,
     devices=cuda_devices,
-)
-add_function_test(
-    TestSolverVBD,
-    "test_rigid_contact_stick_eps_are_deprecated",
-    _rigid_contact_stick_eps_are_deprecated,
-    devices=devices,
 )
 add_function_test(
     TestSolverVBD,
