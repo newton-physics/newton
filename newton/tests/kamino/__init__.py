@@ -8,8 +8,6 @@ from pathlib import Path
 import numpy as np
 import warp as wp
 
-import newton.utils
-
 ###
 # Module interface
 ###
@@ -67,9 +65,6 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
     np.set_printoptions(
         linewidth=999999, edgeitems=999999, threshold=999999, precision=10, suppress=True
     )  # Suppress scientific notation
-
-    # Logging configuration
-    newton.utils.setup_console_logging()
 
     # Clear cache
     if clear_cache:

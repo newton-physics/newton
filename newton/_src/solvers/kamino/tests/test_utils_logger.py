@@ -26,14 +26,18 @@ class TestUtilsLogger(unittest.TestCase):
 
     def test_00_set_and_reset_log_level(self):
         """Set the level of all Kamino loggers, then make them inherit it again."""
+        script_logger = logging.getLogger("__main__")
+
         set_log_level(logging.DEBUG)
         for name in LOGGER_NAMES:
             self.assertEqual(logging.getLogger(name).level, logging.DEBUG)
+        self.assertEqual(script_logger.level, logging.DEBUG)
         self.assertTrue(logger.isEnabledFor(logging.DEBUG))
 
         reset_log_level()
         for name in LOGGER_NAMES:
             self.assertEqual(logging.getLogger(name).level, logging.NOTSET)
+        self.assertEqual(script_logger.level, logging.getLogger("newton").getEffectiveLevel())
 
     def test_01_records_reach_newton_logger(self):
         """Propagate Kamino records at every level to the ``newton`` logger."""

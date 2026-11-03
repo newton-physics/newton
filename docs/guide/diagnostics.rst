@@ -38,21 +38,19 @@ applications and frameworks that configure logging themselves.
 Rich console output
 ^^^^^^^^^^^^^^^^^^^
 
-:func:`newton.utils.enable_rich_console` switches this default output to a
+Call :func:`newton.utils.setup_console_logging` from a script's
+``if __name__ == "__main__":`` block to switch this default output to a
 format that prefixes each record with its time, source file and line, and
-level name, colored by level when stdout is a terminal:
+level name, colored by level when printed to a terminal:
 
 .. code-block:: text
 
     [2026-11-02 10:15:42,108][import_mjcf.py:412][INFO]: Parsing MJCF file
 
-Scripts log through the ``__main__`` logger, which is outside the ``newton``
-logger tree, so their ``INFO`` records are dropped unless logging is
-configured. Call :func:`newton.utils.enable_script_logging` from the script's
-``if __name__ == "__main__":`` block to print them the same way as ``newton``
-records. :func:`newton.utils.setup_console_logging` calls both helpers. Newton
-examples run through ``newton.examples.init()`` and the Newton test runner
-already call it.
+It also prints the script's own records. Scripts log through the
+``__main__`` logger, which is outside the ``newton`` logger tree, so their
+``INFO`` records are otherwise dropped unless logging is configured. Pass
+``rich=False`` to keep the plain format.
 
 Controlling log output
 ----------------------

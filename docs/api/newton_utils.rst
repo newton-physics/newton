@@ -30,8 +30,6 @@ newton.utils
    color_srgb_to_linear
    compute_world_offsets
    download_asset
-   enable_rich_console
-   enable_script_logging
    event_scope
    load_texture
    normalize_texture

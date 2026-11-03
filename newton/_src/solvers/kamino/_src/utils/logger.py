@@ -45,7 +45,10 @@ def set_log_level(level: int):
 
 
 def reset_log_level():
-    """Make the Kamino loggers inherit their level from the ``newton`` logger again."""
+    """Make the Kamino loggers inherit their level from the ``newton`` logger again.
+
+    The script logger is set to the current level of the ``newton`` logger.
+    """
     for name in LOGGER_NAMES:
         logging.getLogger(name).setLevel(logging.NOTSET)
 

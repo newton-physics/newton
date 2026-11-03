@@ -5,9 +5,11 @@ import ast
 import contextlib
 import io
 import logging
+import os
 import pathlib
 import unittest
 import warnings
+from unittest import mock
 
 import newton
 import newton.utils
@@ -52,6 +54,11 @@ class TestWarningCategories(unittest.TestCase):
         self.assertEqual(offenders, [], "use a Newton warning category")
 
 
+class _TerminalStream(io.StringIO):
+    def isatty(self):
+        return True
+
+
 class _RecordingHandler(logging.Handler):
     def __init__(self):
         super().__init__()
@@ -69,9 +76,12 @@ class TestLoggingDefaults(unittest.TestCase):
         root.handlers.clear()
         self.addCleanup(setattr, root, "handlers", saved_handlers)
 
-        # Start from the plain console format, which the test runner may have replaced.
+        # Start from the plain console format, and restore the format and script logger afterwards.
         self.addCleanup(setattr, diagnostics, "_console_formatter", diagnostics._console_formatter)
         diagnostics._console_formatter = diagnostics._PlainFormatter()
+        main_logger = logging.getLogger("__main__")
+        self.addCleanup(setattr, main_logger, "handlers", main_logger.handlers[:])
+        self.addCleanup(main_logger.setLevel, main_logger.level)
 
         self.logger = logging.getLogger("newton.test_diagnostics")
 
@@ -143,7 +153,7 @@ class TestLoggingDefaults(unittest.TestCase):
 
     def test_rich_console_prints_time_location_and_level(self):
         """Prefix each record with its time, source location, and level name once rich output is enabled."""
-        newton.utils.enable_rich_console(color=False)
+        newton.utils.setup_console_logging(color=False)
         stdout, stderr = self._capture((logging.INFO, "loaded asset"), (logging.WARNING, "ignored option"))
 
         prefix = r"^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}\]\[test_diagnostics\.py:\d+\]"
@@ -152,12 +162,37 @@ class TestLoggingDefaults(unittest.TestCase):
 
     def test_rich_console_colors_by_level(self):
         """Wrap each line in the color of its level when coloring is requested."""
-        newton.utils.enable_rich_console(color=True)
+        newton.utils.setup_console_logging(color=True)
         stdout, stderr = self._capture((logging.INFO, "loaded asset"), (logging.ERROR, "failed"))
 
-        self.assertTrue(stdout.startswith("\x1b[32;20m["))
-        self.assertTrue(stderr.startswith("\x1b[31;20m["))
+        self.assertTrue(stdout.startswith("\x1b[32m["))
+        self.assertTrue(stderr.startswith("\x1b[31m["))
         self.assertTrue(stdout.endswith("\x1b[0m\n") and stderr.endswith("\x1b[0m\n"))
+
+    def test_rich_console_detects_color_per_stream(self):
+        """Color only the records printed to a terminal, unless ``NO_COLOR`` is set."""
+        with mock.patch.object(diagnostics, "_enable_windows_ansi_sequences", return_value=True):
+            newton.utils.setup_console_logging()
+
+        for no_color, expected_color in (("", True), ("1", False)):
+            with self.subTest(no_color=no_color), mock.patch.dict(os.environ, {"NO_COLOR": no_color}):
+                terminal, redirected = _TerminalStream(), io.StringIO()
+                with contextlib.redirect_stdout(terminal), contextlib.redirect_stderr(redirected):
+                    self.logger.info("loaded asset")
+                    self.logger.warning("ignored option")
+                self.assertEqual(terminal.getvalue().startswith("\x1b[32m["), expected_color)
+                self.assertTrue(redirected.getvalue().startswith("["))
+
+    def test_rich_console_skips_detected_color_without_terminal_support(self):
+        """Keep terminal output plain when the console cannot interpret color sequences, unless color is requested."""
+        for color, expected_color in ((None, False), (True, True)):
+            with self.subTest(color=color):
+                with mock.patch.object(diagnostics, "_enable_windows_ansi_sequences", return_value=False):
+                    newton.utils.setup_console_logging(color=color)
+                terminal = _TerminalStream()
+                with contextlib.redirect_stdout(terminal), mock.patch.dict(os.environ, {"NO_COLOR": ""}):
+                    self.logger.info("loaded asset")
+                self.assertEqual(terminal.getvalue().startswith("\x1b[32m["), expected_color)
 
     def test_setup_console_logging_switches_back_to_plain_format(self):
         """Restore the plain console format when rich output is disabled."""
@@ -168,18 +203,16 @@ class TestLoggingDefaults(unittest.TestCase):
         self.assertEqual(stdout, "loaded asset\n")
         self.assertEqual(stderr, "Warning: ignored option\n")
 
-    def test_script_logging_prints_main_records(self):
-        """Print INFO records of the ``__main__`` logger once script logging is enabled."""
+    def test_setup_console_logging_prints_main_records(self):
+        """Print INFO records of the ``__main__`` logger once console logging is set up."""
         main_logger = logging.getLogger("__main__")
-        self.addCleanup(setattr, main_logger, "handlers", main_logger.handlers[:])
-        self.addCleanup(main_logger.setLevel, main_logger.level)
         main_logger.handlers = [
             h for h in main_logger.handlers if not isinstance(h, diagnostics._ConsoleFallbackHandler)
         ]
         main_logger.setLevel(logging.NOTSET)
 
-        newton.utils.enable_script_logging()
-        newton.utils.enable_script_logging()
+        newton.utils.setup_console_logging(rich=False)
+        newton.utils.setup_console_logging(rich=False)
         self.logger = main_logger
         stdout, _ = self._capture((logging.DEBUG, "detail"), (logging.INFO, "script status"))
 

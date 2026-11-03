@@ -99,11 +99,9 @@ __all__ += [
 # logging utils
 # ==================================================================================
 
-from ._src.diagnostics import enable_rich_console, enable_script_logging, setup_console_logging  # noqa: E402
+from ._src.diagnostics import setup_console_logging  # noqa: E402
 
 __all__ += [
-    "enable_rich_console",
-    "enable_script_logging",
     "setup_console_logging",
 ]
 
