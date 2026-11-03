@@ -1797,20 +1797,20 @@ def edge_colliding_edges_detection_kernel(
                 std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
                 dist = std[2]
 
-                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-                    e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
-                    e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
-                    e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
-                    e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
-                    std_ref = wp.closest_point_edge_edge(
-                        e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
-                    )
-
-                    dist_ref = std_ref[2]
-                    if dist_ref < min_query_radius:
-                        continue
-
                 if dist < max_query_radius:
+                    if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+                        e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
+                        e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
+                        e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
+                        e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
+                        std_ref = wp.closest_point_edge_edge(
+                            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
+                        )
+
+                        dist_ref = std_ref[2]
+                        if dist_ref < min_query_radius:
+                            continue
+
                     edge_buffer_offset = edge_colliding_edges_offsets[e_index]
                     edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
 
