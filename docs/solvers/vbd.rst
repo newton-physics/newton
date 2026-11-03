@@ -531,8 +531,7 @@ Self-contact and rigid-soft contact are penalty energies, so a large step
 could jump through a surface between two detections. The Divide and Truncate
 scheme (DAT) prevents that for every pair that detection found separated and
 within the query radius. It works on the displacement each vertex has
-accumulated since the last detection and has two distinct parts
-(``_penetration_free_truncation``).
+accumulated since the last detection and has two distinct parts.
 
 **Planar truncation** acts per detected vertex-triangle or edge-edge pair
 (``apply_planar_truncation_parallel_by_collision``). At the detection-time
@@ -554,10 +553,10 @@ radius, isotropically. Two primitives farther apart than the query radius at
 detection therefore cannot meet before the next detection.
 
 **Rigid-soft DAT** (``rigid_soft_enable_dat``, off by default) applies the
-same two parts to contacts between soft geometry and shapes
-(``_rigid_penetration_free_truncation``). One thread per contact record builds
-the division plane from the detection-time configuration and truncates both
-sides against it (``apply_rigid_soft_truncation``). The soft vertices of the
+same two parts to contacts between soft geometry and shapes. One thread per
+contact record builds the division plane from the detection-time
+configuration and truncates both sides against it
+(``apply_rigid_soft_truncation``). The soft vertices of the
 record move on straight rays, as in self-contact. The vertices of the rigid
 primitive move on curved trajectories because the body rotates, so their
 crossing times are found by sampling and bisection, with an interval bound on
