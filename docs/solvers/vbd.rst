@@ -81,7 +81,8 @@ Scene-authored settings
 
 Call :meth:`~newton.solvers.SolverVBD.register_custom_attributes` on the
 :class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
-the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored in
+the ``NewtonVbdSceneAPI`` settings and ``NewtonSceneAPI.newton:maxSolverIterations``
+from a USD ``PhysicsScene``. They are stored in
 ``model.vbd`` and used as :class:`~newton.solvers.SolverVBD` defaults:
 
 .. list-table::
@@ -91,6 +92,10 @@ the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored 
      - ``model.vbd`` attribute
      - Constructor argument
      - Default
+   * - ``newton:maxSolverIterations``
+     - ``max_solver_iterations``
+     - ``iterations``
+     - ``10`` (schema fallback ``-1``)
    * - ``newton:vbd:rigid:contactHistory``
      - ``rigid_contact_history``
      - ``rigid_contact_history``
@@ -113,13 +118,20 @@ the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored 
      - ``0.0`` N·m·s/rad
 
 Precedence is explicit constructor argument, then ``model.vbd.*``, then the
-built-in default. Scene-authored stiffness and damping must be finite and
-non-negative, otherwise the constructor raises ``ValueError``. A scene-authored
-``contactHistory`` is ignored when VBD does not integrate rigid bodies (no
-bodies, or ``integrate_with_external_rigid_solver=True``). When VBD integrates
-bodies and is given a collision pipeline, the pipeline needs ``contact_matching``
-other than ``"disabled"``; pass ``rigid_contact_history=False`` to override the
-scene value.
+built-in default. A scene ``newton:maxSolverIterations`` of ``-1`` uses the
+default; ``0`` and values below ``-1`` raise ``ValueError``. Scene-authored
+stiffness and damping must be finite and non-negative, otherwise the constructor
+raises ``ValueError``. A scene-authored ``contactHistory`` is ignored when VBD
+does not integrate rigid bodies (no bodies, or
+``integrate_with_external_rigid_solver=True``). When VBD integrates bodies and
+is given a collision pipeline, the pipeline needs ``contact_matching`` other
+than ``"disabled"``; pass ``rigid_contact_history=False`` to override the scene
+value.
+
+VBD runs exactly this many iterations per step, so assets authored for
+convergence-checked solvers (for example ``newton:maxSolverIterations = 100``)
+cost proportionally more. Pass ``iterations=`` to override.
+
 Scene values apply in both constraint modes: they are not skipped when the
 deprecated ``rigid_compliant_alm=False`` path is selected, even though the
 schema scopes them to the compliant ALM path.
