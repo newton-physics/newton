@@ -14,7 +14,7 @@ import newton.actuators as actuators
 
 
 class TestActuatorDriveAPI(unittest.TestCase):
-    """Verify canonical actuator names and deprecated compatibility aliases."""
+    """Verify the canonical actuator drive API."""
 
     def test_joint_space_response_public_method_type_hints(self):
         """Keep JointSpaceResponse's public methods fully annotated."""
@@ -26,19 +26,6 @@ class TestActuatorDriveAPI(unittest.TestCase):
             typing.get_type_hints(actuators.JointSpaceResponse.refresh),
             {"state": newton.State, "return": type(None)},
         )
-
-    def test_public_base_names_and_deprecated_aliases(self):
-        """Expose Base-suffixed names and warn for deprecated aliases."""
-        aliases = {
-            "Clamping": "ClampingBase",
-        }
-
-        for old_name, new_name in aliases.items():
-            self.assertIn(new_name, actuators.__all__)
-            self.assertNotIn(old_name, actuators.__all__)
-            with self.assertWarnsRegex(DeprecationWarning, rf"{old_name}.*{new_name}"):
-                old_value = getattr(actuators, old_name)
-            self.assertIs(old_value, getattr(actuators, new_name))
 
     def test_actuator_passes_declared_inputs_without_validation(self):
         """Let drives validate or provide fallbacks for declared inputs."""

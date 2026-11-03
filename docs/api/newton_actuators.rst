@@ -51,13 +51,3 @@ construction.
 
    parse_actuator_prim
    register_actuator_component
-
-.. rubric:: Deprecated
-
-.. list-table::
-   :header-rows: 1
-
-   * - Name
-     - Guidance
-   * - ``Clamping``
-     - Deprecated in 1.6; use ClampingBase instead.
