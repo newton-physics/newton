@@ -459,16 +459,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
-    # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
-    nworld_in: int,
-    ncollision_out: wp.array[int],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
 ):
-    # nacon_out must be zeroed before this kernel is launched so that
-    # wp.atomic_add below produces the correct compacted count.
+    # nacon_out is scratch storage, initialized to zero by the solver and
+    # reset by _sync_nacon_count after each pass.
     #
     # When the contact set hasn't changed since the last full pass
     # (contact_generation == last_contact_generation), the kernel takes a
@@ -497,7 +494,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     count,
                     naconmax,
                 )
-            ncollision_out[0] = 0
 
         if count > naconmax:
             count = naconmax
@@ -729,10 +725,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # and is invariant across substeps.  The fast path is only correct
         # when collide() has not been called since the last full pass.
 
-        # _sync_nacon_count restores nacon_out from the full pass.
-        if tid == 0:
-            ncollision_out[0] = 0
-
         cid = tid_to_cid[tid]
         # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
         # previous mjw_data with larger naconmax) could otherwise produce
@@ -782,17 +774,22 @@ def convert_newton_contacts_to_mjwarp_kernel(
 @wp.kernel(enable_backward=False)
 def _sync_nacon_count(
     nacon: wp.array[wp.int32],
+    contact_count: wp.array[wp.int32],
+    ncollision: wp.array[wp.int32],
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
 ):
-    """Snapshot nacon after a full conversion pass, or restore it after a fast pass."""
+    """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
     if gen == last_contact_generation[0]:
         nacon[0] = last_nacon_count[0]
     else:
-        last_nacon_count[0] = nacon[0]
+        nacon[0] = contact_count[0]
+        last_nacon_count[0] = contact_count[0]
         last_contact_generation[0] = gen
+    contact_count[0] = 0
+    ncollision[0] = 0
 
 
 @wp.kernel
