@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sim Cloth Bending
-#
-# This simulation demonstrates cloth bending behavior using the Vertex Block
-# Descent (VBD) integrator. A cloth mesh, initially curved, is dropped on
-# the ground. The cloth maintains its curved shape due to bending stiffness,
-# controlled by edge_ke and edge_kd parameters.
-#
-###########################################################################
+"""Example Sim Cloth Bending
+
+This simulation demonstrates cloth bending behavior using the Vertex Block
+Descent (VBD) integrator. A cloth mesh, initially curved, is dropped on
+the ground. The cloth maintains its curved shape due to bending stiffness,
+controlled by edge_ke and edge_kd parameters.
+
+Success criteria:
+- A bent sheet of cloth is dropping on the floor while maintaining its overall shape.
+
+Runs:
+- `python -m newton.examples cloth_bending`
+"""
 
 import numpy as np
 import warp as wp

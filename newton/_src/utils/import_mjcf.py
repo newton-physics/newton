@@ -367,6 +367,14 @@ def parse_mjcf(
     (included in ``newton[sim]``) to resolve native defaults, and raises
     :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
+    Geom material defaults and RGBA are preserved. Meshes also retain base-color textures
+    (the ``texture`` attribute or ``rgb``/``rgba`` layers) and non-negative ``roughness``
+    and ``metallic`` values. Texture paths are retained for lazy loading by renderers.
+    RGB bindings take precedence over RGBA bindings, including inherited defaults.
+    MJCF textures default to a white tint. Without an MJCF color or base-color texture,
+    mesh-file appearance and primitive palette colors are retained for compatibility.
+    Other PBR texture layers are not imported.
+
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -474,7 +482,9 @@ def parse_mjcf(
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
             and finalize under ``model.mujoco.equality_constraint_*``.
-        convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
+        convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
+            Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
+            an identity rest orientation. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
             where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
@@ -657,6 +667,16 @@ def parse_mjcf(
     class_children = {}
     class_defaults = {"__all__": {}}
 
+    def material_attrib(element: ET.Element) -> dict:
+        attrib = element.attrib.copy()
+        # Keep base-color roles separate until defaults have been resolved.
+        for layer in element.findall("layer"):
+            if layer.get("role") == "rgb":
+                attrib["texture"] = layer.get("texture")
+            elif layer.get("role") == "rgba":
+                attrib["texture_rgba"] = layer.get("texture")
+        return attrib
+
     def parse_default(node, parent):
         nonlocal class_parent
         nonlocal class_children
@@ -676,7 +696,9 @@ def parse_mjcf(
             if child.tag == "default":
                 parse_default(child, node.get("class"))
             else:
-                class_defaults[class_name][child.tag] = child.attrib
+                class_defaults[class_name][child.tag] = (
+                    material_attrib(child) if child.tag == "material" else child.attrib
+                )
 
     for default in root.findall("default"):
         parse_default(default, None)
@@ -723,7 +745,8 @@ def parse_mjcf(
         if ambient_defaults is None:
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
-        return merge_attrib(defaults.get(tag, {}), element.attrib, tag=tag)
+        attrib = material_attrib(element) if tag == "material" else element.attrib
+        return merge_attrib(defaults.get(tag, {}), attrib, tag=tag)
 
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
@@ -855,10 +878,19 @@ def parse_mjcf(
             mat_name = material.attrib.get("name")
             if not mat_name:
                 continue
+            mat_attrib = resolve_element_attrib(material, "material")
+            texture = mat_attrib.get("texture") or mat_attrib.get("texture_rgba")
+            # Default to a neutral tint only when MJCF supplies a base-color texture.
+            default_rgba = "1 1 1 1" if texture else None
             material_assets[mat_name] = {
-                "rgba": material.attrib.get("rgba"),
-                "texture": material.attrib.get("texture"),
+                "rgba": mat_attrib.get("rgba", default_rgba),
+                "texture": texture,
             }
+            for key in ("roughness", "metallic"):
+                value = float(mat_attrib.get(key, "-1"))
+                # Negative values mean unspecified in MJCF; keep mesh-file defaults.
+                if value >= 0.0:
+                    material_assets[mat_name][key] = value
         for hfield in asset.findall("hfield"):
             hfield_name = hfield.attrib.get("name")
             if not hfield_name:
@@ -1546,6 +1578,10 @@ def parse_mjcf(
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
                 for m_mesh in m_meshes:
+                    if "roughness" in material_info:
+                        m_mesh.roughness = material_info["roughness"]
+                    if "metallic" in material_info:
+                        m_mesh.metallic = material_info["metallic"]
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
                             logger.warning("mesh %s has a texture but no UVs; texture will be ignored.", mesh_label)
@@ -2258,6 +2294,7 @@ def parse_mjcf(
             parent matches the parent_body parameter from parse_mjcf. Only root bodies respect the
             floating/base_joint parameters; nested bodies use their defined joints from the MJCF.
         """
+        nonlocal approximated_spring_rest
         # Infer if this is a root body by checking if parent matches the outer parent_body parameter
         # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
         is_mjcf_root = parent == parent_body
@@ -2344,6 +2381,7 @@ def parse_mjcf(
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
             ball_damping = default_joint_damping
+            ball_stiffness = builder.default_joint_cfg.stiffness
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_attrib = resolve_element_attrib(joint, "joint", defaults)
@@ -2371,6 +2409,8 @@ def parse_mjcf(
                         parsing_mode="mjcf",
                         context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                     )
+                    dof_attr.pop("mujoco:dof_passive_stiffness", None)
+                    dof_attr.pop("mujoco:dof_springref", None)
                     if has_solreflimit_mode:
                         # The raw vec2 cannot distinguish authored
                         # solreflimit="0 0" from the "not authored" sentinel.
@@ -2388,6 +2428,7 @@ def parse_mjcf(
                     # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
                     ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
+                    ball_stiffness = parse_float(joint_attrib, "stiffness", builder.default_joint_cfg.stiffness)
                     break
                 is_angular = joint_type_str == "hinge"
                 is_linear = joint_type_str == "slide"
@@ -2446,6 +2487,15 @@ def parse_mjcf(
                                 actuatorfrclimited,
                             )
 
+                rest_q = builder.default_joint_cfg.rest_q
+                if "springref" in joint_attrib or "ref" in joint_attrib:
+                    rest_q = parse_float(joint_attrib, "springref", 0.0) - parse_float(joint_attrib, "ref", 0.0)
+                    if is_angular:
+                        if use_degrees:
+                            rest_q = np.deg2rad(rest_q)
+                    else:
+                        rest_q *= scale
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -2455,6 +2505,8 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     damping=parse_float(joint_attrib, "damping", default_joint_damping),
+                    stiffness=parse_float(joint_attrib, "stiffness", builder.default_joint_cfg.stiffness),
+                    rest_q=rest_q,
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
@@ -2467,8 +2519,10 @@ def parse_mjcf(
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
+                dof_attr.pop("mujoco:dof_passive_stiffness", None)
+                dof_attr.pop("mujoco:dof_springref", None)
                 if is_linear:
-                    for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
+                    for attr_name in ("mujoco:dof_ref", "mujoco:limit_margin"):
                         if attr_name in dof_attr:
                             dof_attr[attr_name] *= scale
                 if has_solreflimit_mode:
@@ -2519,6 +2573,10 @@ def parse_mjcf(
                     joint_type = JointType.REVOLUTE
                 elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
                     joint_type = JointType.BALL
+                    if any(axis.stiffness != 0.0 and axis.rest_q not in (None, 0.0) for axis in angular_axes):
+                        approximated_spring_rest = True
+                    for axis in angular_axes:
+                        axis.rest_q = 0.0
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
@@ -2626,6 +2684,7 @@ def parse_mjcf(
                     armature=joint_armature[-1] if joint_armature else None,
                     friction=ball_friction,
                     damping=ball_damping,
+                    stiffness=ball_stiffness,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
@@ -3122,6 +3181,7 @@ def parse_mjcf(
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
+    approximated_spring_rest = False
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
     # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
     # Maps individual MJCF joint names to their specific DOF index.
@@ -3224,6 +3284,15 @@ def parse_mjcf(
         )
 
     # -----------------
+    # Report once outside the recursive body parser so the warning points to the caller.
+    if approximated_spring_rest:
+        warnings.warn(
+            "Converting three hinges to a ball joint uses an identity spring rest orientation; "
+            "set convert_3d_hinge_to_ball_joints=False to preserve scalar spring rest coordinates.",
+            NewtonWarning,
+            stacklevel=3,
+        )
+
     # add equality constraints
 
     if not skip_equality_constraints:

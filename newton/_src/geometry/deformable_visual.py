@@ -204,15 +204,10 @@ class DeformableVisuals:
     def update(self, state: State) -> DeformableVisuals:
         """Evaluate the current points and normals from a simulation state.
 
-        This reuses the buffers allocated at construction and performs no
-        structural allocation, so it can be captured in a CUDA graph. An eager
-        warm-up call is recommended to load kernels before capture; it is not
-        required when Warp can load them during capture. Replay the graph before
-        consuming the output. Different states can share one result when updates
-        and consumers are ordered.
-        The caller keeps the data current; the output does not track its source
-        State. Keep captured arrays alive and change their contents, not their
-        storage, between replays.
+        This reuses the buffers allocated at construction and allocates nothing,
+        so it can be captured in a CUDA graph; a warm-up call before capture is
+        recommended to load the kernels. Keep captured arrays alive and change
+        their contents, not their storage, between replays.
 
         Args:
             state: Simulation state containing current particle positions and body transforms.
@@ -320,7 +315,7 @@ class DeformableVisuals:
         return self.normals[start:end]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _skin_deformable_visual_batch_particle(
     particle_q: wp.array[wp.vec3],
     parent: wp.array[wp.int32],
@@ -331,7 +326,7 @@ def _skin_deformable_visual_batch_particle(
     out_points[dest[i]] = particle_q[parent[i]]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _skin_deformable_visual_batch_triangle(
     particle_q: wp.array[wp.vec3],
     tri_indices: wp.array[wp.int32],
@@ -350,7 +345,7 @@ def _skin_deformable_visual_batch_triangle(
     )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _skin_deformable_visual_batch_tet(
     particle_q: wp.array[wp.vec3],
     tet_indices: wp.array[wp.int32],
@@ -370,7 +365,7 @@ def _skin_deformable_visual_batch_tet(
     )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _skin_deformable_visual_batch_body(
     body_q: wp.array[wp.transform],
     parent: wp.array[wp.int32],

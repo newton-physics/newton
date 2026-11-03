@@ -664,9 +664,9 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
         # With an explicit mapping, a valid entry is a world index in
         # ``[0, world_count)``. ``DISABLE_PRESERVE`` leaves the outputs untouched;
-        # every other out-of-range value -- ``DISABLE_CLEAR``, ``-1`` (reserved
-        # for future global-world rendering), or an index ``>= world_count`` --
-        # clears the outputs, which also avoids reading past the group-root arrays.
+        # every other out-of-range value -- ``DISABLE_CLEAR``, ``-1``, or an index
+        # ``>= world_count`` -- clears the outputs, which also avoids reading past
+        # the group-root arrays.
         # Without a mapping (``world_indices is None``), each view renders its own
         # world (``world_index == view_index``).
         if wp.static(state.has_world_indices):

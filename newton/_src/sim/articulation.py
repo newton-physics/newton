@@ -560,6 +560,17 @@ def eval_articulation_fk(
     )
 
 
+def _fk_prefers_tiled(model: Model) -> bool:
+    """Whether CUDA FK uses the level-parallel kernel for the model's articulations."""
+    from .articulation_cuda import FK_TILE_MIN_LEVEL_WIDTH  # noqa: PLC0415
+
+    return (
+        model.device.is_cuda
+        and model._fk_articulation_level_start is not None
+        and model._fk_level_capacity >= FK_TILE_MIN_LEVEL_WIDTH
+    )
+
+
 def eval_fk(
     model: Model,
     joint_q: wp.array[float],
@@ -630,13 +641,7 @@ def eval_fk(
     if num_articulations == 0:
         return
 
-    # Masked chains have no intra-level parallelism. Serial FK skips unselected
-    # joints without the tiled kernel's inter-level barriers.
-    if (
-        model.device.is_cuda
-        and model._fk_articulation_level_start is not None
-        and (joint_mask is None or model._fk_level_capacity > 1)
-    ):
+    if _fk_prefers_tiled(model):
         requires_grad = (
             model.requires_grad
             or joint_q.requires_grad
@@ -1171,27 +1176,33 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start] = S_s
 
     elif joint_type_value == JointType.D6:
+        pos = wp.vec3()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 0] = S_s
+            pos += axis * joint_q[q_start + 0]
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 1] = S_s
+            pos += axis * joint_q[q_start + 1]
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
+            pos += axis * joint_q[q_start + 2]
+        # FK translates before it rotates, so the angular axes pivot about the translated origin.
+        X_pivot = X_pa_world * wp.transform(pos, wp.quat_identity())
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
         if ang_axis_count == 1:
             axis = joint_axis[iqd]
-            joint_S_s[iqd] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
+            joint_S_s[iqd] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), axis))
         if ang_axis_count == 2:
             a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
-            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 0] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a1))
         if ang_axis_count == 3:
             a0, a1, a2 = transform_3d_rotational_axes(
                 joint_axis[iqd + 0],
@@ -1200,9 +1211,9 @@ def jcalc_motion_subspace(
                 joint_q[iq + 0],
                 joint_q[iq + 1],
             )
-            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
-            joint_S_s[iqd + 2] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a2))
+            joint_S_s[iqd + 0] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 2] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a2))
 
     elif joint_type_value == JointType.BALL:
         S_0 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))

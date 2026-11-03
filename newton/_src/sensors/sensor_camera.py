@@ -200,6 +200,18 @@ class SensorCamera:
     :attr:`RenderConfig.enable_backface_culling` to ``False`` to render both
     sides with camera-facing normals.
 
+    The scene is lit by the light from :meth:`create_default_light`, if any,
+    plus hemispheric ambient light (see :meth:`set_ambient_light`) when
+    :attr:`RenderConfig.enable_ambient_lighting` is set.
+
+    .. experimental::
+
+        Rendering of lights authored on the model, and how they combine with
+        the sensor's own lights, may change without a formal deprecation
+        cycle. Future releases are expected to import lights authored in USD
+        and MJCF into the model and render them, which changes the color
+        output of scenes that author lights.
+
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
     ``SensorCamera.WorldRenderFlag``); they are not part of the top-level
@@ -683,9 +695,7 @@ class SensorCamera:
         """Device of the model this sensor renders."""
         return self._render_context.model.device
 
-    def allocate_image(
-        self, view_count: int | None = None, width: int | None = None, height: int | None = None, dtype: Any = None
-    ) -> wp.array[Any]:
+    def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
         """Allocate a zeroed output image array on the model device.
 
         Args:
@@ -699,14 +709,16 @@ class SensorCamera:
             Zeroed array of shape ``(view_count, height, width)`` and dtype
             *dtype*, on the model device.
         """
+        return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
+
+    def _image_size(self, view_count: int | None, width: int | None, height: int | None) -> tuple[int, int, int]:
+        """Fill unspecified image dimensions from a bound sensor."""
         if view_count is None or width is None or height is None:
             self._require_bound()
             view_count = self.view_count if view_count is None else view_count
             width = self.width if width is None else width
             height = self.height if height is None else height
-        if dtype is None:
-            raise TypeError("allocate_image() requires dtype")
-        return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
+        return view_count, width, height
 
     def allocate_image_color(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -715,13 +727,15 @@ class SensorCamera:
 
         Args:
             view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
 
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
         """
-        return self.allocate_image(view_count, width, height, wp.uint32)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.uint32)
 
     def allocate_image_depth(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -730,13 +744,15 @@ class SensorCamera:
 
         Args:
             view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
 
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
         """
-        return self.allocate_image(view_count, width, height, wp.float32)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.float32)
 
     def allocate_image_depth_forward(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -745,8 +761,10 @@ class SensorCamera:
 
         Args:
             view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
 
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
@@ -760,13 +778,15 @@ class SensorCamera:
 
         Args:
             view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
 
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
         """
-        return self.allocate_image(view_count, width, height, wp.uint32)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.uint32)
 
     def allocate_image_normal(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -775,13 +795,15 @@ class SensorCamera:
 
         Args:
             view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
 
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
         """
-        return self.allocate_image(view_count, width, height, wp.vec3f)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.vec3f)
 
     def allocate_image_albedo(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -790,13 +812,15 @@ class SensorCamera:
 
         Args:
             view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
 
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
         """
-        return self.allocate_image(view_count, width, height, wp.uint32)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.uint32)
 
     def allocate_image_color_hdr(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -805,13 +829,15 @@ class SensorCamera:
 
         Args:
             view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
 
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
         """
-        return self.allocate_image(view_count, width, height, wp.vec3f)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.vec3f)
 
     def allocate_image_face_index(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -822,8 +848,18 @@ class SensorCamera:
         hits and the particle index for particle hits.
 
         .. experimental::
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``int32``.
         """
-        return self.allocate_image(view_count, width, height, wp.int32)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.int32)
 
     def allocate_image_barycentric(
         self, view_count: int | None = None, width: int | None = None, height: int | None = None
@@ -831,8 +867,18 @@ class SensorCamera:
         """Allocate a barycentric-coordinate output array (``vec2f``) for triangle hits.
 
         .. experimental::
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+                Defaults to :attr:`view_count` on a sensor constructed with
+                ``cameras`` or ``sites``.
+            width: Image width [px]. Defaults to :attr:`width` on such a sensor.
+            height: Image height [px]. Defaults to :attr:`height` on such a sensor.
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``vec2f``.
         """
-        return self.allocate_image(view_count, width, height, wp.vec2f)
+        return self.allocate_image(*self._image_size(view_count, width, height), wp.vec2f)
 
     @staticmethod
     def compute_camera_rays_pinhole(
@@ -1393,6 +1439,8 @@ class SensorCamera:
     ) -> None:
         """Create a default directional light for the rendered scene.
 
+        This light replaces any light created before.
+
         On a bound sensor the light is shared with every bound sensor of the model
         that uses the same ``load_textures`` and ``deformable_surface_mode`` settings.
 
@@ -1408,6 +1456,16 @@ class SensorCamera:
             color: Linear RGB radiance of the light. If ``None``, defaults to
                 white ``(1, 1, 1)``. Changing it does not recompile the render
                 kernel.
+
+                .. experimental::
+
+                    The ``color`` argument may change, for example to separate
+                    color from intensity, without a formal deprecation cycle.
+
+        .. experimental::
+
+            How this light combines with lights authored on the model may
+            change without a formal deprecation cycle.
         """
         self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
 
@@ -1429,6 +1487,12 @@ class SensorCamera:
             sky_color: Linear RGB ambient radiance from above.
             ground_color: Linear RGB ambient radiance from below. If ``None``,
                 *sky_color* is used, which gives uniform ambient light.
+
+        .. experimental::
+
+            This method, its defaults, and how it combines with ambient light
+            authored on the model may change without a formal deprecation
+            cycle.
         """
         self._render_context.set_ambient_light(sky_color, ground_color)
 
@@ -1465,8 +1529,8 @@ class SensorCamera:
         out of the automatic sync. Scenes without simulation triangles or visual
         meshes are a no-op. Shape and particle BVHs are refit separately via
         :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
-        Deformable visual meshes are skinned from *state* in a few launches, however
-        many worlds were replicated. Supplied visual buffers are consumed as-is;
+        Deformable visual meshes are skinned from *state* in at most four launches,
+        however many worlds were replicated. Supplied visual buffers are consumed as-is;
         update or replay them before this call. Their source state and freshness
         are not checked.
 
@@ -1572,14 +1636,15 @@ class SensorCamera:
             albedo_image: Output albedo buffer (packed ``uint32``).
             hdr_color_image: Output linear HDR color buffer.
             world_indices: Optional per-view world selector, shape
-                ``(view_count,)``. Defaults to the identity mapping (view ``i``
-                renders world ``i``). A valid entry is a world index in
+                ``(view_count,)``. Defaults to :attr:`view_world` on a sensor
+                constructed with ``cameras`` or ``sites``, and otherwise to the
+                identity mapping (view ``i`` renders world ``i``). A valid entry is a world index in
                 ``[0, model.world_count)``. A
                 :class:`~newton.sensors.SensorCamera.WorldRenderFlag` sentinel
                 disables the view (``DISABLE_CLEAR`` clears the outputs,
                 ``DISABLE_PRESERVE`` leaves them unchanged). Any other value,
-                including ``-1`` (reserved for future global-world rendering) and
-                indices ``>= model.world_count``, is treated as ``DISABLE_CLEAR``.
+                including ``-1`` and indices ``>= model.world_count``, is treated
+                as ``DISABLE_CLEAR``.
             clear_data: Clear values for this call. Defaults to
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to

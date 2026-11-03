@@ -209,8 +209,8 @@ translation for free joints), matching ``joint_q``. Migration notes coming from 
 
 - Replace writes to the ``warp.sim`` target arrays with
   :attr:`Control.joint_target_q` / :attr:`Control.joint_target_qd`. Configure per-axis initial
-  targets via :attr:`ModelBuilder.JointDofConfig.target_pos` /
-  :attr:`~ModelBuilder.JointDofConfig.target_vel` before calling ``add_joint*()``, or write to
+  targets via :attr:`ModelBuilder.JointDofConfig.target_q` /
+  :attr:`~ModelBuilder.JointDofConfig.target_qd` before calling ``add_joint*()``, or write to
   :attr:`ModelBuilder.joint_target_q` / :attr:`~ModelBuilder.joint_target_qd` directly.
 - When indexing ``joint_target_q`` from user code, use :attr:`Model.joint_target_q_start` (which
   aliases :attr:`Model.joint_q_start`). Velocity targets continue to use
@@ -245,7 +245,7 @@ Analogously, the geometry types plane, capsule, cylinder, and cone now have thei
 | ``ModelBuilder.add_shape_*(..., ke=..., ka=..., ...)`` | ``ModelBuilder.add_shape_*(cfg=ShapeConfig(ke=..., ka=..., ...))``     |
 |                                                        | see :class:`newton.ModelBuilder.ShapeConfig`                           |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-| ``ModelBuilder.add_joint_*(..., target=...)``          | ``ModelBuilder.add_joint_*(..., target_pos=..., target_vel=...)``      |
+| ``ModelBuilder.add_joint_*(..., target=...)``          | ``ModelBuilder.add_joint_*(..., target_q=..., target_qd=...)``         |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder(up_vector=(0, 1, 0))``                  | ``ModelBuilder(up_axis="Y")`` or ``ModelBuilder(up_axis=Axis.Y)``      |
 +--------------------------------------------------------+------------------------------------------------------------------------+
