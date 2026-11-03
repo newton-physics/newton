@@ -28,6 +28,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
 
 .. autosummary::
    :toctree: _generated
+   :signatures: long
 
    find_deformable_visual_prims
    find_tetmesh_prims

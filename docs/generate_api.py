@@ -358,6 +358,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 [
                     ".. autosummary::",
                     f"   :toctree: {TOCTREE_DIR}",
+                    "   :signatures: long",
                     "",
                 ]
             )

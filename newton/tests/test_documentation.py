@@ -23,7 +23,10 @@ except ModuleNotFoundError as exc:
     markdown_docs = None
 
 
-@unittest.skipUnless(markdown_docs is not None, "requires a source checkout and the docs extra")
+@unittest.skipUnless(
+    sys.version_info >= (3, 11) and markdown_docs is not None,
+    "requires Python 3.11+, a source checkout, and the docs extra",
+)
 class TestMarkdownDocumentation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
