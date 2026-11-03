@@ -40,7 +40,7 @@ Rich console output
 
 :func:`newton.utils.enable_rich_console` switches this default output to a
 format that prefixes each record with its time, source file and line, and
-level name, colored by level when stdout is a terminal:
+level name, colored by level when printed to a terminal:
 
 .. code-block:: text
 

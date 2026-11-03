@@ -5,9 +5,11 @@ import ast
 import contextlib
 import io
 import logging
+import os
 import pathlib
 import unittest
 import warnings
+from unittest import mock
 
 import newton
 import newton.utils
@@ -50,6 +52,11 @@ class TestWarningCategories(unittest.TestCase):
                 if category is None or ast.unparse(category).rpartition(".")[2] not in allowed:
                     offenders.append(f"{relative}:{node.lineno}")
         self.assertEqual(offenders, [], "use a newton.exceptions warning category")
+
+
+class _TerminalStream(io.StringIO):
+    def isatty(self):
+        return True
 
 
 class _RecordingHandler(logging.Handler):
@@ -155,9 +162,34 @@ class TestLoggingDefaults(unittest.TestCase):
         newton.utils.enable_rich_console(color=True)
         stdout, stderr = self._capture((logging.INFO, "loaded asset"), (logging.ERROR, "failed"))
 
-        self.assertTrue(stdout.startswith("\x1b[32;20m["))
-        self.assertTrue(stderr.startswith("\x1b[31;20m["))
+        self.assertTrue(stdout.startswith("\x1b[32m["))
+        self.assertTrue(stderr.startswith("\x1b[31m["))
         self.assertTrue(stdout.endswith("\x1b[0m\n") and stderr.endswith("\x1b[0m\n"))
+
+    def test_rich_console_detects_color_per_stream(self):
+        """Color only the records printed to a terminal, unless ``NO_COLOR`` is set."""
+        with mock.patch.object(diagnostics, "_enable_windows_ansi_sequences", return_value=True):
+            newton.utils.enable_rich_console()
+
+        for no_color, expected_color in (("", True), ("1", False)):
+            with self.subTest(no_color=no_color), mock.patch.dict(os.environ, {"NO_COLOR": no_color}):
+                terminal, redirected = _TerminalStream(), io.StringIO()
+                with contextlib.redirect_stdout(terminal), contextlib.redirect_stderr(redirected):
+                    self.logger.info("loaded asset")
+                    self.logger.warning("ignored option")
+                self.assertEqual(terminal.getvalue().startswith("\x1b[32m["), expected_color)
+                self.assertTrue(redirected.getvalue().startswith("["))
+
+    def test_rich_console_skips_detected_color_without_terminal_support(self):
+        """Keep terminal output plain when the console cannot interpret color sequences, unless color is requested."""
+        for color, expected_color in ((None, False), (True, True)):
+            with self.subTest(color=color):
+                with mock.patch.object(diagnostics, "_enable_windows_ansi_sequences", return_value=False):
+                    newton.utils.enable_rich_console(color=color)
+                terminal = _TerminalStream()
+                with contextlib.redirect_stdout(terminal), mock.patch.dict(os.environ, {"NO_COLOR": ""}):
+                    self.logger.info("loaded asset")
+                self.assertEqual(terminal.getvalue().startswith("\x1b[32m["), expected_color)
 
     def test_setup_console_logging_switches_back_to_plain_format(self):
         """Restore the plain console format when rich output is disabled."""
