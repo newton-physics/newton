@@ -145,6 +145,7 @@ from .kernels import (
     compute_world_contact_bias,
     compute_world_contact_velocity_bias,
     copy_free_rigid_propagation_body_response,
+    copy_unarticulated_body_state,
     count_propagation_joint_split,
     crba_fill_par_dof,
     delassus_par_row_col,
@@ -1327,11 +1328,15 @@ class SolverSteel(SolverBase, CouplingInterface):
       raise ``free_body_constraint_max`` if :attr:`constraint_overflow` reports dropped rows. The rows
       need ``articulated_contact_response="immediate"``, ``row_schedule="interleaved"``,
       ``friction_mode="fixed_normal"`` and no contact compliance; otherwise free-body contacts keep
-      sliding friction, and ``ROLLING`` shapes warn as an unsupported mode. The solver decides at construction whether to build the rows, so a
-      solver built without them must be rebuilt to gain them. On a solver with the rows, construction
+      sliding friction, and ``ROLLING`` shapes warn as an unsupported mode. The solver decides at
+      construction whether to build the rows, so a solver built without them must be rebuilt to gain
+      them. On a solver with the rows, construction
       and an eager ``SHAPE_PROPERTIES`` notification raise :class:`ValueError` for a mode outside
       :class:`~newton.ShapeFrictionMode` or a negative or non-finite coefficient that a mode enables.
-    - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
+    - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds. A body
+      outside every articulation, such as a link without a joint, enters contacts, including
+      the friction-patch slide check, with its pose and zero velocity; :meth:`step` passes its
+      input ``body_q`` and ``body_qd`` through to the output.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
     - Experimental passive-island sleeping (``enable_sleeping``, ``solve_mode="matrix_free"``
       only): settled, supported islands of articulations freeze their published state and
@@ -3619,6 +3624,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._setup_size_grouping(model)
         self._setup_world_mapping(model)
         self._build_body_maps(model)
+        if self._body_to_articulation is None:
+            unarticulated = np.arange(model.body_count, dtype=np.int32)
+        else:
+            unarticulated = np.flatnonzero(self._body_to_articulation.numpy() < 0).astype(np.int32)
+        self._unarticulated_bodies = wp.array(unarticulated, dtype=wp.int32, device=model.device)
         self._classify_free_rigid_bodies(model)
         self._compact_contact_jacobian = bool(
             model.device.is_cuda
@@ -3917,6 +3927,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._connect_count = 0
         self._connect_slot = None
         self._connect_row_inv_norm = None
+        self._connect_at_midpoint = None
         loop_joint_articulation = self._model_plan.loop_joint_articulation
         loop_joints = np.flatnonzero(loop_joint_articulation >= 0)
         if loop_joints.size == 0:
@@ -3983,6 +3994,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._connect_sizes = frozenset(int(response_dof_count[a]) for a in np.unique(art_np))
         self._connect_slot = wp.full((n,), -1, dtype=wp.int32, device=device)
         self._connect_row_inv_norm = wp.zeros((n, 3), dtype=float, device=device)
+        self._connect_at_midpoint = wp.zeros(n, dtype=wp.int32, device=device)
         self._connect_count = n
 
     def _validate_connect_parent_membership(self) -> None:
@@ -4182,6 +4194,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.joint_X_p,
                         model.joint_X_c,
                         self._connect_parent_prescribed,
+                        self._kinematic_dof_mask,
                         state_in.body_q,
                         state_in.body_qd,
                         model.body_com,
@@ -4199,6 +4212,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._phi,
                         self._target_velocity,
                         self._connect_row_inv_norm,
+                        self._connect_at_midpoint,
                     ],
                     device=model.device,
                 )
@@ -6672,7 +6686,9 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         Args:
             state_in: Input state. Its maximal coordinates (``body_q``) are refreshed from
-                ``joint_q`` by forward kinematics during the step.
+                ``joint_q`` by forward kinematics during the step. Bodies outside every
+                articulation keep their ``body_q`` and ``body_qd``, which pass through to
+                ``state_out``; contacts treat their velocity as zero.
             state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``,
                 ``body_qd`` and, when requested, ``body_parent_f``.
             control: Control input; ``None`` uses the model's default control.
@@ -6716,8 +6732,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         finally:
             self._profile_stage(None)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
-            # Rows are built only for articulated models; without joints every contact reports zero.
-            inv_dt = 1.0 / dt if self.model.joint_count else 0.0
+            # Rows are built only for articulated models; without articulations every contact reports zero.
+            inv_dt = 1.0 / dt if self.model.articulation_count else 0.0
             wp.launch(
                 compute_contact_spatial_force_from_impulses,
                 dim=observables.contact_f.shape[0],
@@ -6759,8 +6775,20 @@ class SolverSteel(SolverBase, CouplingInterface):
         model = self.model
         if control is None:
             control = model.control(clone_variables=False)
-        if not model.joint_count:
-            # No body has an inbound joint, so every requested wrench is zero.
+        if self._unarticulated_bodies.size:
+            wp.launch(
+                copy_unarticulated_body_state,
+                dim=self._unarticulated_bodies.size,
+                inputs=[self._unarticulated_bodies, state_in.body_q, state_in.body_qd],
+                outputs=[state_out.body_q, state_out.body_qd],
+                device=model.device,
+            )
+        if not model.articulation_count:
+            if model.joint_count:
+                # Standalone joints keep their coordinates, as their bodies keep their state.
+                wp.copy(state_out.joint_q, state_in.joint_q)
+                wp.copy(state_out.joint_qd, state_in.joint_qd)
+            # Bodies outside every articulation carry no parent wrench.
             for target in (body_parent_f, state_out.body_parent_f):
                 if target is not None:
                     target.zero_()
@@ -7026,6 +7054,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                             state_out.body_q,
                             state_out.body_qd,
                             model.body_com,
+                            self._body_to_articulation,
                             self._contact_world,
                             self._contact_slot,
                             self._contact_path,
@@ -7340,6 +7369,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._connect_joint,
                     model.joint_X_p,
                     model.joint_X_c,
+                    self._connect_at_midpoint,
                     self._connect_row_inv_norm,
                     self._art_to_world,
                     state_in.body_q,
