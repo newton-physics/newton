@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton import StateFlags
-from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE
+from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW
 from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers import SolverMuJoCo
 
@@ -698,7 +698,7 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                     SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
 
     def test_cpu_standalone_fixed_loops_require_matching_reference_geometry(self):
-        """Standalone FREE and mocap roots need the same inferred loop-weld constants."""
+        """Verify matching inferred loop-weld constants for standalone FREE and mocap roots."""
         for root_kind in ("free", "fixed"):
             with self.subTest(root_kind=root_kind):
                 template = newton.ModelBuilder()
@@ -743,7 +743,7 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                     SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, kinematic_switchable_roots=False)
 
     def test_cpu_world_anchored_reference_geometry_retains_world_endpoint(self):
-        """Common body translations do not translate the shared world endpoint."""
+        """Preserve the shared world endpoint when body references translate."""
         for kind in ("connect", "weld"):
             for world_first in (False, True):
                 with self.subTest(kind=kind, world_first=world_first):
@@ -976,10 +976,19 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
         )
 
     def test_cpu_repeated_actuator_labels_resolve_within_each_world(self):
-        """Repeated names identify corresponding local targets, including deferred encodings."""
-        for kind, rows in (("joint", (0, 3)), ("tendon", (1, 4)), ("site", (2, 5))):
-            with self.subTest(kind=kind):
+        """Resolve repeated actuator labels to corresponding local targets."""
+        for kind, rows, label_only in (
+            ("joint", (0, 3), True),
+            ("tendon", (1, 4), True),
+            ("site", (2, 5), False),
+            ("site", (2, 5), True),
+        ):
+            with self.subTest(kind=kind, label_only=label_only):
                 model = self._reference_model()
+                if kind == "site" and label_only:
+                    targets = model.mujoco.actuator_trnid.numpy().copy()
+                    targets[list(rows), 1] = -1  # Match the no-reference-site label-only encoding.
+                    model.mujoco.actuator_trnid.assign(targets)
                 baseline = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
                 expected_types = baseline.mj_model.actuator_trntype.copy()
                 expected_targets = baseline.mj_model.actuator_trnid.copy()
@@ -993,7 +1002,7 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                 for row in rows:
                     labels[int(targets[row, 0])] = "repeated_target"
                     attrs.actuator_target_label[row] = "repeated_target"
-                    if kind != "site":
+                    if label_only:
                         targets[row] = (-1, -1)
                 attrs.actuator_trnid.assign(targets)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
@@ -1006,7 +1015,7 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                         solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
 
     def test_cpu_pair_parameters_require_shared_values(self):
-        """Each local contact pair uses the same native parameters; global pairs are separate."""
+        """Reject mismatched local pair parameters and preserve separate global pairs."""
         for name in (
             "pair_condim",
             "pair_friction",
@@ -1023,6 +1032,27 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                 values[2] += 1 if name == "pair_condim" else 0.01
                 attribute.assign(values)  # A distinct global pair is shared, not a third local row.
                 solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=True)
+                geom_shapes = solver.mjc_geom_to_newton_shape.numpy()[0]
+                native_pairs = np.sort(
+                    np.column_stack(
+                        (
+                            geom_shapes[solver.mj_model.pair_geom1],
+                            geom_shapes[solver.mj_model.pair_geom2],
+                        )
+                    ),
+                    axis=1,
+                )
+                global_shapes = np.sort(
+                    (
+                        model.mujoco.pair_geom1.numpy()[2],
+                        model.mujoco.pair_geom2.numpy()[2],
+                    )
+                )
+                native_pair = np.flatnonzero(np.all(native_pairs == global_shapes, axis=1))
+                self.assertEqual(len(native_pair), 1)
+                native_name = "pair_dim" if name == "pair_condim" else name
+                expected = 0.0 if name == "pair_margin" and solver._zero_margins_for_native_ccd else values[2]
+                np.testing.assert_allclose(getattr(solver.mj_model, native_name)[native_pair[0]], expected)
                 values[1] += 1 if name == "pair_condim" else 0.01
                 attribute.assign(values)
                 before = solver.mj_model.body_mass.copy()
@@ -1036,7 +1066,7 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                     SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=True)
 
     def test_cpu_equality_types_cannot_change_after_compilation(self):
-        """Uniform type edits also require rebuilding the native equality layout."""
+        """Reject in-place equality type edits and allow rebuilding the layout."""
         for rows in ((2,), (0, 2)):
             with self.subTest(rows=rows):
                 model = self._reference_model()
@@ -1058,6 +1088,187 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                     source_rows = rebuilt.mjc_eq_to_newton_eq.numpy()[0]
                     equality = int(np.flatnonzero(source_rows == 0)[0])
                     self.assertEqual(int(rebuilt.mj_model.eq_type[equality]), SolverMuJoCo.EqType.WELD)
+
+    def test_cpu_pair_runtime_edits_require_rebuild(self):
+        """Reject uniform local and global pair edits before publishing other flags."""
+        for name in (
+            "pair_condim",
+            "pair_friction",
+            "pair_solref",
+            "pair_solreffriction",
+            "pair_solimp",
+            "pair_margin",
+            "pair_gap",
+        ):
+            for scope in ("local", "global"):
+                with self.subTest(name=name, scope=scope):
+                    model = self._reference_model()
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=True)
+                    attribute = getattr(model.mujoco, name)
+                    original = attribute.numpy().copy()
+                    values = original.copy()
+                    values[:2] += (1 if name == "pair_condim" else 0.01) if scope == "local" else 0
+                    values[2] += (1 if name == "pair_condim" else 0.01) if scope == "global" else 0
+                    attribute.assign(values)
+                    before = solver.mj_model.body_mass.copy()
+                    model.body_mass.assign(model.body_mass.numpy() * 2)
+                    with self.assertRaisesRegex(ValueError, name):
+                        solver.notify_model_changed(
+                            newton.ModelFlags.SHAPE_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                        )
+                    np.testing.assert_array_equal(solver.mj_model.body_mass, before)
+                    attribute.assign(original)
+                    model.shape_material_mu.assign(model.shape_material_mu.numpy() + 0.1)
+                    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                    shapes = solver.mjc_geom_to_newton_shape.numpy()[0]
+                    np.testing.assert_allclose(
+                        solver.mj_model.geom_friction[:, 0], model.shape_material_mu.numpy()[shapes]
+                    )
+
+    def test_cpu_shape_material_notifications_reach_native_contacts(self):
+        """Publish shared materials to the native model and every world's contacts."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(
+            '<mujoco><worldbody><body pos="0 0 .05"><freejoint/>'
+            '<geom type="sphere" size=".1"/></body></worldbody></mujoco>'
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        model.shape_material_mu.fill_(0.7)
+        model.shape_material_mu_torsional.fill_(0.02)
+        model.shape_material_mu_rolling.fill_(0.03)
+        attrs = model.mujoco
+        attrs.solref_mode.fill_(SOLREF_MODE_RAW)
+        attrs.solref.assign(np.tile((0.04, 0.8), (model.shape_count, 1)))
+        attrs.geom_solimp.assign(np.tile((0.8, 0.9, 0.002, 0.5, 2.0), (model.shape_count, 1)))
+        attrs.geom_solmix.fill_(0.6)
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        for name in ("geom_friction", "geom_solref", "geom_solimp", "geom_solmix"):
+            np.testing.assert_allclose(getattr(solver.mj_model, name), getattr(solver.mjw_model, name).numpy()[0])
+        for data in solver.mj_data_by_world:
+            solver._mujoco.mj_forward(solver.mj_model, data)
+            self.assertGreater(data.ncon, 0)
+            for contact in data.contact:
+                np.testing.assert_allclose(contact.friction, (0.7, 0.7, 0.02, 0.03, 0.03))
+                np.testing.assert_allclose(contact.solref, (0.04, 0.8))
+                np.testing.assert_allclose(contact.solimp, (0.8, 0.9, 0.002, 0.5, 2.0))
+
+    def test_cpu_actuator_retarget_requires_rebuild(self):
+        """Reject uniform retargeting while allowing equivalent legacy encodings."""
+        for rows, column, delta in (((0, 3), 0, 1), ((1, 4), 0, 1), ((2, 5), 0, 2), ((2, 5), 1, 2)):
+            with self.subTest(rows=rows, column=column):
+                model = self._reference_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                targets = model.mujoco.actuator_trnid.numpy().copy()
+                # Rewrite a tendon target using the legacy secondary-column encoding.
+                for row in (1, 4):
+                    targets[row, 1] = targets[row, 0]
+                    targets[row, 0] = -1
+                model.mujoco.actuator_trnid.assign(targets)
+                solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+                # Return to the canonical encoding before changing the effective target.
+                for row in (1, 4):
+                    targets[row, 0] = targets[row, 1]
+                    targets[row, 1] = -1
+                targets[list(rows), column] += delta
+                model.mujoco.actuator_trnid.assign(targets)
+                before = solver.mj_model.actuator_trnid.copy()
+                mass_before = solver.mj_model.body_mass.copy()
+                model.body_mass.assign(model.body_mass.numpy() * 2)
+                with self.assertRaisesRegex(ValueError, "actuator_trnid"):
+                    solver.notify_model_changed(
+                        newton.ModelFlags.ACTUATOR_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                    )
+                np.testing.assert_array_equal(solver.mj_model.actuator_trnid, before)
+                np.testing.assert_array_equal(solver.mj_model.body_mass, mass_before)
+                rebuilt = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                self.assertFalse(np.array_equal(rebuilt.mj_model.actuator_trnid, before))
+
+    def test_cpu_standalone_static_root_frames_require_rebuild(self):
+        """Reject static root frame differences and preserve per-world mocap poses."""
+
+        def build(offset, kinematic=False):
+            builder = newton.ModelBuilder()
+            for x in (0.0, offset):
+                builder.begin_world()
+                body = builder.add_link(is_kinematic=kinematic)
+                builder.add_shape_sphere(body, radius=0.1)
+                builder.add_joint_fixed(-1, body, parent_xform=wp.transform((x, 0, 0), wp.quat_identity()))
+                builder.end_world()
+            return builder.finalize(device="cpu")
+
+        model = build(3.0)
+        with self.subTest(stage="construction"), self.assertRaisesRegex(ValueError, "standalone"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        model = build(0.0)
+        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nmocap, 0)
+        frames = model.joint_X_p.numpy().copy()
+        frames[:, 0] = 2.0
+        model.joint_X_p.assign(frames)
+        before = solver.mj_model.body_pos.copy()
+        with self.subTest(stage="notification"):
+            with self.assertRaisesRegex(ValueError, "standalone"):
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+            np.testing.assert_array_equal(solver.mj_model.body_pos, before)
+
+        model = build(3.0, kinematic=True)
+        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nmocap, 1)
+        np.testing.assert_allclose([data.xpos[1, 0] for data in solver.mj_data_by_world], (0.0, 3.0))
+        frames = model.joint_X_p.numpy().copy()
+        frames[1, 0] = 4.0
+        model.joint_X_p.assign(frames)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_allclose([data.mocap_pos[0, 0] for data in solver.mj_data_by_world], (0.0, 4.0))
+        for data in solver.mj_data_by_world:
+            solver._mujoco.mj_forward(solver.mj_model, data)
+        np.testing.assert_allclose([data.xpos[1, 0] for data in solver.mj_data_by_world], (0.0, 4.0))
+
+    def test_cpu_articulation_membership_requires_shared_compiled_layout(self):
+        """Reject mismatched articulation membership and later layout edits."""
+
+        def build(layouts):
+            builder = newton.ModelBuilder()
+            for layout in layouts:
+                builder.begin_world()
+                a, b = builder.add_link(), builder.add_link()
+                builder.add_shape_sphere(a, radius=0.1)
+                builder.add_shape_sphere(b, radius=0.1)
+                j0 = builder.add_joint_revolute(-1, a, axis=newton.Axis.X)
+                if layout:
+                    builder.add_articulation([j0])
+                j1 = builder.add_joint_revolute(a, b, axis=newton.Axis.Y)
+                if not layout:
+                    builder.add_articulation([j0, j1])
+                j2 = builder.add_joint_revolute(-1, b, axis=newton.Axis.Z)
+                if layout:
+                    builder.add_articulation([j2])
+                builder.end_world()
+            return builder.finalize(device="cpu")
+
+        with self.subTest(stage="construction"), self.assertRaisesRegex(ValueError, "joint_articulation"):
+            SolverMuJoCo(build((0, 1)), use_mujoco_cpu=True, disable_contacts=True)
+        alternative = SolverMuJoCo(build((1, 1)), use_mujoco_cpu=True, disable_contacts=True)
+        self.assertEqual(alternative.mj_model.nv, 2)
+        model = build((0, 0))
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        memberships = model.joint_articulation.numpy().copy()
+        memberships[[2, 5]] = memberships[[0, 3]]
+        model.joint_articulation.assign(memberships)
+        before = solver.mj_model.body_mass.copy()
+        model.body_mass.assign(model.body_mass.numpy() * 2)
+        with self.subTest(stage="notification"):
+            with self.assertRaisesRegex(ValueError, "joint_articulation"):
+                solver.notify_model_changed(
+                    newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                )
+            np.testing.assert_array_equal(solver.mj_model.body_mass, before)
 
     def test_cpu_tendon_force_gains_are_shared_only_when_authored(self):
         """Only force-space tendon gains are independent inputs to the native limit model."""

@@ -6028,6 +6028,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"Recreate the solver after resizing. Shapes: {changed_labels}."
             )
 
+    def _check_cpu_compiled_value(self, name: str, values: np.ndarray) -> None:
+        """Reject edits to inputs that CPU notifications cannot publish to the compiled model."""
+        snapshots = getattr(self, "_cpu_compiled_inputs", None)
+        if snapshots is None:
+            snapshots = self._cpu_compiled_inputs = {}
+        if name not in snapshots:
+            snapshots[name] = values.copy()
+        elif not np.array_equal(values, snapshots[name]):
+            raise ValueError(f"Changing {name} requires recreating the multi-world CPU solver.")
+
+    def _validate_cpu_static_root_frames(self, model: Model) -> None:
+        """Keep nonkinematic standalone fixed roots at their shared compiled frames."""
+        indices = getattr(self, "_cpu_static_root_indices", None)
+        if indices is None:
+            return
+        for name in ("joint_X_p", "joint_X_c"):
+            values = getattr(model, name).numpy()[indices]
+            if np.any(values != values[0]):
+                raise ValueError(f"Multi-world CPU mode requires matching standalone fixed-root {name} frames.")
+            self._check_cpu_compiled_value(f"standalone fixed-root {name}", values)
+
     def _validate_cpu_shared_properties(self, model: Model, flags: ModelFlags | int) -> None:
         """Validate authored inputs before any update publishes to the shared native model.
 
@@ -6057,8 +6078,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             check(model, ("body_mass", "body_inertia", "body_com"))
             check(attrs, ("gravcomp",))
         if flags & ModelFlags.JOINT_PROPERTIES:
+            membership = model.joint_articulation.numpy().reshape(nworld, -1) >= 0
+            if np.any(membership != membership[0]):
+                raise ValueError("Multi-world CPU mode requires matching joint_articulation membership.")
+            self._check_cpu_compiled_value("joint_articulation membership", membership)
+            self._validate_cpu_static_root_frames(model)
             check(model, ("joint_axis",))
-            # Free roots carry their pose in qpos; fixed roots are mocap bodies.
+            # Free roots carry their pose in qpos; articulated fixed roots are mocap bodies.
             # Their world-space frames need not match the template.
             joint_types = model.joint_type.numpy().reshape(nworld, -1)
             parents = model.joint_parent.numpy().reshape(nworld, -1)
@@ -6358,6 +6384,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             types = types.reshape(nworld, -1)
             targets = targets.reshape(nworld, -1, 2)
             equal("actuator_trnid transmission", types)
+            effective_targets = np.full_like(targets, -1)
             for kinds, domain, columns in (
                 ((trn.JOINT, trn.JOINT_IN_PARENT), "dof", (0,)),
                 ((trn.TENDON,), "tendon", (0,)),
@@ -6366,7 +6393,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ):
                 selected = np.isin(types[0], kinds)
                 for column in columns:
-                    references("actuator_trnid", targets[:, selected, column], domain)
+                    normalized = normalize("actuator_trnid", targets[:, selected, column], domain)
+                    equal("actuator_trnid", normalized)
+                    effective_targets[:, selected, column] = normalized
+            self._check_cpu_compiled_value(
+                "actuator_trnid/transmission", np.concatenate((types[..., None], effective_targets), axis=-1)
+            )
 
         if flags & ModelFlags.SHAPE_PROPERTIES and hasattr(attrs, "pair_world"):
             # Global pair rows are already shared; local rows must describe the same
@@ -6376,8 +6408,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if any(len(row) != len(rows[0]) for row in rows):
                 raise ValueError("Multi-world CPU mode requires matching pair_world counts.")
             indices = np.asarray(rows, dtype=np.int32)
+            self._check_cpu_compiled_value("pair_world", worlds)
             for name in ("pair_geom1", "pair_geom2"):
-                references(name, getattr(attrs, name).numpy()[indices], "shape")
+                values = getattr(attrs, name).numpy()
+                references(name, values[indices], "shape")
+                self._check_cpu_compiled_value(name, values)
             for name in (
                 "pair_condim",
                 "pair_friction",
@@ -6389,7 +6424,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ):
                 attribute = getattr(attrs, name, None)
                 if attribute is not None:
-                    equal(name, attribute.numpy()[indices])
+                    values = attribute.numpy()
+                    equal(name, values[indices])
+                    self._check_cpu_compiled_value(name, values)
 
         if flags & (ModelFlags.TENDON_PROPERTIES | ModelFlags.SHAPE_PROPERTIES) and hasattr(attrs, "tendon_type"):
             types = attrs.tendon_type.numpy().reshape(nworld, -1)
@@ -8050,6 +8087,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._cpu_standalone_root_indices = (
                 offsets + np.asarray(sorted(standalone_root_set), dtype=np.int32)[None, :]
             )
+            static_roots = np.asarray(
+                [j for j in joints_static_roots if not (int(body_flags[joint_child[j]]) & int(BodyFlags.KINEMATIC))],
+                dtype=np.int32,
+            )
+            self._cpu_static_root_indices = offsets + static_roots[None, :]
+            self._validate_cpu_static_root_frames(model)
             self._validate_cpu_constraint_reference_geometry(model)
 
         # Every selected body needs exactly one creation path before its shapes and state can be converted.
@@ -11342,6 +11385,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+
+        if self.use_mujoco_cpu:
+            # Contact materials do not alter compiled geometry or its bounding volumes.
+            for name in ("geom_friction", "geom_solref", "geom_solimp", "geom_solmix"):
+                getattr(self.mj_model, name)[:] = getattr(self.mjw_model, name).numpy()[0]
 
     def _update_site_properties(self) -> None:
         """Update MuJoCo site poses and sizes from Newton shape properties.

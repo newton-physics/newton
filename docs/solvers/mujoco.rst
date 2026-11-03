@@ -904,8 +904,14 @@ for every world. CONNECT and inferred WELD constraints, including loop joints,
 require matching body-local reference geometry. Translating both body endpoints
 together preserves this geometry; translating a body relative to the shared world
 endpoint does not. An explicit WELD target can still be shared by worlds with
-different initial poses. Changing an equality type requires recreating the CPU
-solver, even when every world requests the same new type.
+different initial poses. Changing an equality type, an actuator's effective
+transmission target, articulation membership, or an explicit contact pair's
+targets or parameters requires recreating the multi-world CPU solver, even when
+every world requests the same change. This includes global contact pairs.
+Equivalent actuator target encodings remain accepted.
+Standalone nonkinematic fixed roots compile as static bodies; their joint frames
+must match across worlds and cannot change after construction. Fixed roots
+compiled as mocap bodies retain independent, updatable poses.
 Joint state, controls, applied forces, gravity, equality activation, and free or
 mocap root poses remain independent. A scalar ``dof_ref`` is a model reference,
 not an independent runtime pose; it must match across CPU worlds.
