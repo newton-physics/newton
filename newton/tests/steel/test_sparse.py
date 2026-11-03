@@ -2051,7 +2051,7 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
                     child,
                     axis=newton.Axis.Y,
                     parent_xform=wp.transform(wp.vec3(x, y, -0.11), wp.quat_identity()),
-                    target_pos=0.05,
+                    target_q=0.05,
                     target_ke=15.0,
                     target_kd=1.0,
                     armature=0.05,
