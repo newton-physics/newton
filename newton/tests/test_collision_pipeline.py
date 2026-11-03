@@ -4534,23 +4534,26 @@ def test_deterministic_pipeline_500_steps(test, device):
                         test.assertTrue(False, msg)
 
 
-def test_static_empty_gjk_specialization_under_graph_capture(test, device):
+def test_static_empty_gjk_specialization_under_graph_capture(test, device, broad_phase):
     """Preserve contacts when graph capture omits a provably empty GJK stage."""
     builder = newton.ModelBuilder()
-    body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.15)))
-    builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
     builder.add_ground_plane()
+    for _ in range(2):
+        builder.begin_world()
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.15)))
+        builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
+        builder.end_world()
     model = builder.finalize(device=device)
 
     specialized = newton.CollisionPipeline(
         model,
-        broad_phase="explicit",
+        broad_phase=broad_phase,
         deterministic=True,
         rigid_contact_max=64,
     )
     reference = newton.CollisionPipeline(
         model,
-        broad_phase="explicit",
+        broad_phase=broad_phase,
         deterministic=True,
         rigid_contact_max=64,
     )
@@ -4586,13 +4589,15 @@ def test_static_empty_gjk_specialization_under_graph_capture(test, device):
         )
 
 
-add_function_test(
-    TestDeterministicPipeline,
-    "test_static_empty_gjk_specialization_under_graph_capture",
-    test_static_empty_gjk_specialization_under_graph_capture,
-    devices=get_cuda_test_devices(),
-    check_output=False,
-)
+for broad_phase in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestDeterministicPipeline,
+        f"test_static_empty_gjk_specialization_under_graph_capture_{broad_phase}",
+        test_static_empty_gjk_specialization_under_graph_capture,
+        devices=get_cuda_test_devices(),
+        check_output=False,
+        broad_phase=broad_phase,
+    )
 
 
 def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):

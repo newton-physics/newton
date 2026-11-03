@@ -1308,7 +1308,6 @@ def _compute_generic_convex_pair_stats(
         return generic_pair_count > 0, min(candidate_pair_work_estimate, generic_pair_count)
 
     colliding_mask = _shape_collide_mask(model, len(shape_types))
-    has_generic_convex_pairs = False
     generic_pair_bound = 0
     unique_types = [t for t in range(len(GeoType)) if np.any(colliding_mask & ((type_bits >> t) & 1).astype(bool))]
     for index, type_a in enumerate(unique_types):
@@ -1316,11 +1315,10 @@ def _compute_generic_convex_pair_stats(
         for type_b in unique_types[index:]:
             if not _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)):
                 continue
-            has_generic_convex_pairs = True
             second_mask = colliding_mask & ((type_bits >> type_b) & 1).astype(bool)
             generic_pair_bound += _compute_per_world_mask_pair_max(model, first_mask, second_mask)
 
-    return has_generic_convex_pairs, min(candidate_pair_work_estimate, generic_pair_bound)
+    return generic_pair_bound > 0, min(candidate_pair_work_estimate, generic_pair_bound)
 
 
 def _normalize_broad_phase_mode(mode: str) -> str:
