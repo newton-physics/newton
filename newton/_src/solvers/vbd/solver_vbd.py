@@ -394,6 +394,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and apply only to :attr:`~newton.JointType.ROD`. Only structural
         slots are named here; per-DOF drive/limit slots (slot 2+ on non-rod
         joints) are not.
+
+        These are solver constraint slots, not offsets into
+        :attr:`newton.Model.joint_target_ke` or
+        :attr:`newton.Model.joint_target_kd`. Rod material coefficients start at
+        :attr:`newton.Model.joint_qd_start` in the order
+        ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; see
+        :ref:`Rod joints`.
         """
 
         # Non-rod structural slots.
