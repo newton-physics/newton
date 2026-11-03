@@ -92,14 +92,16 @@ class SensorCamera:
     sides with camera-facing normals.
 
     The scene is lit by the light from :meth:`create_default_light`, if any,
-    plus hemispheric ambient light (see :meth:`set_ambient_light`).
+    plus hemispheric ambient light (see :meth:`set_ambient_light`) when
+    :attr:`RenderConfig.enable_ambient_lighting` is set.
 
     .. experimental::
 
-        Scene lighting may change without a formal deprecation cycle. Future
-        releases are expected to import lights authored in USD and MJCF into
-        the model and render them, which changes the color output of scenes
-        that author lights.
+        Rendering of lights authored on the model, and how they combine with
+        the sensor's own lights, may change without a formal deprecation
+        cycle. Future releases are expected to import lights authored in USD
+        and MJCF into the model and render them, which changes the color
+        output of scenes that author lights.
 
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
@@ -859,6 +861,8 @@ class SensorCamera:
     ) -> None:
         """Create a default directional light for the rendered scene.
 
+        This light replaces any light created before.
+
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are
                 only rendered when the render config also enables them, i.e.
@@ -879,9 +883,8 @@ class SensorCamera:
 
         .. experimental::
 
-            This light replaces any light created before. How it combines with
-            lights authored on the model may change without a formal
-            deprecation cycle.
+            How this light combines with lights authored on the model may
+            change without a formal deprecation cycle.
         """
         self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
 
