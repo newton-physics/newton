@@ -13,6 +13,7 @@ from newton.tests.test_contact_reduction_body_pairs import (
     DT,
     _cylinder_foot,
     _free_jointed_foot,
+    _group_pos_key_kernel,
     _make_pipeline,
     _prismatic_jointed_foot,
     _same_articulation_scissor,
@@ -41,9 +42,11 @@ def _ring_model(device, penetration):
 
 def _staged_contacts_kept(reducer, entries, pos):
     """Whether each staged contact holds a slot of its group, by its quantized position key."""
-    qx = np.clip(np.floor(pos[:, 0] * np.float32(2000.0)), -32768, 32767).astype(np.int64) + 32768
-    qy = np.clip(np.floor(pos[:, 1] * np.float32(2000.0)), -8192, 8191).astype(np.int64) + 8192
-    pos_key = (qx << 15) | (qy << 1) | 1
+    device = reducer.ht_values.device
+    points = wp.array(pos, dtype=wp.vec2, device=device)
+    keys = wp.zeros(len(pos), dtype=wp.uint64, device=device)
+    wp.launch(_group_pos_key_kernel, dim=len(pos), inputs=[points, reducer.cell_size, keys], device=device)
+    pos_key = keys.numpy()
     values = reducer.ht_values.numpy()
     slot_count = reducer.values_per_key
     kept = np.zeros(len(entries), dtype=np.int32)
