@@ -1964,6 +1964,9 @@ def test_pair_cache_selection(test, device):
     shape = {"shared_metadata": False, "has_drive_rows": True, "fuse_vel_limits": False}
     test.assertTrue(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=64, sm_count=100, **shape))
     test.assertFalse(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=100_000, sm_count=100, **shape))
+    # The cached arrays fit the opt-in limit but exceed 48 KiB of static shared memory.
+    test.assertTrue(_use_mfgs_pair_cache(1024, 1024, 200, 101376, world_count=64, sm_count=100, **shape))
+    test.assertFalse(_use_mfgs_pair_cache(3072, 1024, 200, 101376, world_count=64, sm_count=100, **shape))
     model = _build_chains_on_boxes(device)
     options = {"solve_mode": "matrix_free", "articulation_constraint_max": _ROWS, "free_body_constraint_max": _ROWS}
     test.assertTrue(SolverSteel(model, **options)._mfgs_pair_cache)

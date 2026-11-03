@@ -1001,8 +1001,12 @@ def _use_mfgs_pair_cache(
     base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
     block_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes + cache_bytes
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
-    # Row parents are cached as short.
-    return max_constraints <= 32767 and block_bytes <= max_shared_memory and world_count <= resident_worlds
+    # Row parents are cached as short, and the kernel's arrays are static shared memory.
+    return (
+        max_constraints <= 32767
+        and block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
+        and world_count <= resident_worlds
+    )
 
 
 def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
