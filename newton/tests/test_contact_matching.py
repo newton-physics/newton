@@ -4,13 +4,14 @@
 """Tests for frame-to-frame contact matching."""
 
 import unittest
+from functools import partial
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
-from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
+from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND, ContactMatcher
 from newton._src.geometry.contact_sort import ContactSorter
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -454,6 +455,61 @@ def test_contact_report_indices_correct(test, device):
         _collide_once(pipeline, state, contacts)
         test.assertEqual(contacts.rigid_contact_new_count.numpy()[0], 0)
         test.assertEqual(contacts.rigid_contact_broken_count.numpy()[0], 0)
+
+
+def test_save_empty_history_with_more_worlds_than_capacity(test, device):
+    """Clear every reset mask entry and save empty history even at zero capacity."""
+    with wp.ScopedDevice(device):
+        for capacity in (0, 1):
+            sorter = ContactSorter(capacity)
+            matcher = ContactMatcher(
+                capacity,
+                sorter=sorter,
+                shape_world=wp.zeros(1, dtype=wp.int32),
+                world_count=4,
+                shape_index_bits=1,
+                sub_key_bits=1,
+                device=device,
+            )
+            count = wp.zeros(1, dtype=wp.int32)
+            keys = wp.zeros(capacity, dtype=wp.int64)
+            generation = wp.full(1, 9, dtype=wp.int32)
+            points = wp.zeros(capacity, dtype=wp.vec3)
+            shapes = wp.zeros(capacity, dtype=wp.int32)
+            body_q = wp.zeros(0, dtype=wp.transform)
+            shape_body = wp.full(1, -1, dtype=wp.int32)
+
+            save = partial(
+                matcher.save_sorted_state,
+                keys,
+                count,
+                points,
+                points,
+                shapes,
+                shapes,
+                points,
+                body_q,
+                shape_body,
+                buffer_id=17,
+                contact_generation=generation,
+                device=device,
+            )
+
+            save()
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    save()
+            for raw_count in (0, capacity + 1):
+                count.fill_(raw_count)
+                matcher._reset_world_mask.fill_(True)
+                matcher._prev_count.fill_(7)
+                if wp.get_device(device).is_cuda:
+                    wp.capture_launch(capture.graph)
+                else:
+                    save()
+                test.assertEqual(int(matcher.prev_contact_count.numpy()[0]), min(raw_count, capacity))
+                np.testing.assert_array_equal(matcher._prev_frame.numpy(), (17, 9))
+                test.assertFalse(matcher._reset_world_mask.numpy().any())
 
 
 def test_save_resets_next_frame_report_flags(test, device):
@@ -1282,6 +1338,12 @@ add_function_test(
     "test_save_resets_next_frame_report_flags",
     test_save_resets_next_frame_report_flags,
     devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_save_empty_history_with_more_worlds_than_capacity",
+    test_save_empty_history_with_more_worlds_than_capacity,
+    devices=get_test_devices(mode="basic"),
 )
 add_function_test(
     TestContactMatching, "test_contact_report_broken_indices", test_contact_report_broken_indices, devices=devices

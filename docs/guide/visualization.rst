@@ -618,7 +618,7 @@ OpenGL Viewer
 ~~~~~~~~~~~~~
 
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
-The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
+The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed, and a graphics driver that supports OpenGL 3.3 or newer.
 
 .. code-block:: python
 
@@ -761,12 +761,13 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
 for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configuration:
+ViewerRTX has been validated with the following renderer configurations:
 
-- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency CI; Isaac Lab 3.0)
+- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420`` (locked GPU CI configuration)
 
-Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
-together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
+Only the exact pairs above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+together to one of these pairs. Mixed release pairs are unvalidated; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
 
 .. code-block:: python
 

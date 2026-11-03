@@ -617,6 +617,69 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                     positions = state0.body_q.numpy()[:, :3]
                     np.testing.assert_allclose(positions[1] - positions[0], [expected_offset, 0.0, 0.0], atol=1e-5)
 
+    def test_weld_runtime_relpose_overrides_inferred_pose(self):
+        """An explicit relpose set at runtime survives MuJoCo's constant refresh."""
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                bodies = [
+                    builder.add_body(
+                        xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()),
+                        mass=1.0,
+                        inertia=wp.mat33(np.eye(3)),
+                    )
+                    for x in (0.0, 0.5)
+                ]
+                weld = mujoco.add_equality_weld(builder, *bodies)
+                model = builder.finalize()
+                solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+
+                relpose = model.mujoco.equality_constraint_relpose.numpy()
+                relpose[weld] = wp.transform_identity()
+                model.mujoco.equality_constraint_relpose.assign(relpose)
+                solver.notify_model_changed(
+                    newton.ModelFlags.CONSTRAINT_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                )
+                solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+                state0, state1 = model.state(), model.state()
+                control = model.control()
+                for _ in range(200):
+                    solver.step(state0, state1, control, None, 0.002)
+                    state0, state1 = state1, state0
+                positions = state0.body_q.numpy()[:, :3]
+                np.testing.assert_allclose(positions[1] - positions[0], [0.0, 0.0, 0.0], atol=1e-5)
+
+    def test_weld_relpose_inference_per_world(self):
+        """Each world infers or keeps its weld pose according to its own authored relpose."""
+        blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        bodies = [
+            blueprint.add_body(
+                xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()),
+                mass=1.0,
+                inertia=wp.mat33(np.eye(3)),
+            )
+            for x in (0.0, 0.5)
+        ]
+        mujoco.add_equality_weld(blueprint, *bodies)
+        for explicit_world in (0, 1):
+            with self.subTest(explicit_world=explicit_world):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                builder.replicate(blueprint, 2)
+                model = builder.finalize()
+                relpose = model.mujoco.equality_constraint_relpose.numpy()
+                relpose[explicit_world] = wp.transform_identity()
+                model.mujoco.equality_constraint_relpose.assign(relpose)
+                solver = newton.solvers.SolverMuJoCo(
+                    model, use_mujoco_cpu=False, disable_contacts=True, kinematic_switchable_roots=False
+                )
+
+                eq_data = solver.mjw_model.eq_data.numpy()[:, 0]
+                offsets = np.linalg.norm(eq_data[:, 3:6], axis=1)
+                expected = [0.0, 0.5] if explicit_world == 0 else [0.5, 0.0]
+                np.testing.assert_allclose(offsets, expected, atol=1e-6)
+                np.testing.assert_array_equal(eq_data[:, 11], 0.0)
+
     def test_add_equality_helpers(self):
         """Create typed MuJoCo equality-constraint rows."""
         builder = newton.ModelBuilder()

@@ -49,6 +49,51 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_nonfinite_contact_materials_rejected_at_finalize(self):
+        """Reject imported non-finite contact materials while preserving finite values and shape labels."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        material = UsdShade.Material.Define(stage, "/World/Material")
+        physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        friction = physics_material.CreateDynamicFrictionAttr(0.4)
+        restitution = physics_material.CreateRestitutionAttr(0.2)
+        for path in ("/World/Valid", "/World/Invalid"):
+            cube = UsdGeom.Cube.Define(stage, path)
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+            if path == "/World/Invalid":
+                UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(material, materialPurpose="physics")
+                kh = cube.GetPrim().CreateAttribute("newton:hydroelasticStiffness", Sdf.ValueTypeNames.Float)
+                kh.Set(1.0e5)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=False)
+        shape = result["path_shape_map"]["/World/Invalid"]
+        model = builder.finalize(device="cpu")
+        self.assertAlmostEqual(model.shape_material_mu.numpy()[shape], 0.4, places=6)
+        self.assertAlmostEqual(model.shape_material_restitution.numpy()[shape], 0.2, places=6)
+        self.assertEqual(model.shape_material_kh.numpy()[shape], 1.0e5)
+
+        for usd_attr, attribute in (
+            (friction, "shape_material_mu"),
+            (restitution, "shape_material_restitution"),
+            (kh, "shape_material_kh"),
+        ):
+            original = usd_attr.Get()
+            for value in (float("nan"), float("inf")):
+                with self.subTest(attribute=attribute, value=value):
+                    usd_attr.Set(value)
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(stage, load_visual_shapes=False)
+                    shape = result["path_shape_map"]["/World/Invalid"]
+                    self.assertFalse(math.isfinite(getattr(builder, attribute)[shape]))
+                    with self.assertRaisesRegex(ValueError, rf"{attribute}.*shape {shape}.*/World/Invalid.*finite"):
+                        builder.finalize(device="cpu")
+            usd_attr.Set(original)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_binding_outside_import_root(self):
         """Import shared physics materials without importing unrelated bodies."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -4221,17 +4266,16 @@ def Xform "Articulation" (
         SolverMuJoCo.register_custom_attributes(builder)
         self.assertNotIn("mujoco:dof_passive_damping", builder.custom_attributes)
         # mjc:damping resolves through SchemaResolverMjc into joint_damping;
-        # mjc:stiffness stays a namespaced custom attribute.
+        # mjc:stiffness resolves into core joint_stiffness.
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
-        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_stiffness = model.joint_stiffness.numpy()
         joint_damping = model.joint_damping.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
@@ -5270,7 +5314,7 @@ def Xform "Articulation" (
             with self.subTest(angle_units=angle_units):
                 result = builder.add_usd(stage)
                 model = builder.finalize(device="cpu")
-                springref = model.mujoco.dof_springref.numpy()
+                rest_q = model.joint_rest_q.numpy()
                 reference = model.mujoco.dof_ref.numpy()
                 angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
                 expected_springref = 30.0 * angular_factor
@@ -5283,7 +5327,8 @@ def Xform "Articulation" (
                 ):
                     joint = result["path_joint_map"][f"/World/{path}"]
                     dof = builder.joint_qd_start[joint] + offset
-                    self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                    coord = builder.joint_q_start[joint] + offset
+                    self.assertAlmostEqual(rest_q[coord], expected_spring - expected_ref, places=5)
                     self.assertAlmostEqual(reference[dof], expected_ref, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -5370,18 +5415,18 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_springref"))
-        springref = model.mujoco.dof_springref.numpy()
-        qd_start = model.joint_qd_start.numpy()
+        rest_q = model.joint_rest_q.numpy()
+        q_start = model.joint_q_start.numpy()
 
         revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
-        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], np.deg2rad(30.0), places=4)
+        self.assertAlmostEqual(rest_q[q_start[revolute_joint_idx]], np.deg2rad(30.0), places=4)
 
         prismatic_joint_idx = model.joint_label.index("/Articulation/prismatic_joint")
-        self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
+        self.assertAlmostEqual(rest_q[q_start[prismatic_joint_idx]], 0.25, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_converter_degree_joint_angles_are_converted(self):
@@ -5473,20 +5518,25 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            model = builder.finalize()
 
         qd_start = model.joint_qd_start.numpy()
         dof_ref = model.mujoco.dof_ref.numpy()
-        springref = model.mujoco.dof_springref.numpy()
+        rest_q = model.joint_rest_q.numpy()
+        q_start = model.joint_q_start.numpy()
+        revolute_coord = q_start[model.joint_label.index("/Articulation/revolute_joint")]
+        prismatic_coord = q_start[model.joint_label.index("/Articulation/prismatic_joint")]
 
         revolute_dof = qd_start[model.joint_label.index("/Articulation/revolute_joint")]
         prismatic_dof = qd_start[model.joint_label.index("/Articulation/prismatic_joint")]
 
         for name, value, expected in (
             ("revolute dof_ref", dof_ref[revolute_dof], np.deg2rad(30.0)),
-            ("revolute dof_springref", springref[revolute_dof], np.deg2rad(45.0)),
+            ("revolute rest_q", rest_q[revolute_coord], np.deg2rad(45.0 - 30.0)),
             ("prismatic dof_ref", dof_ref[prismatic_dof], 0.5),
-            ("prismatic dof_springref", springref[prismatic_dof], 0.25),
+            ("prismatic rest_q", rest_q[prismatic_coord], 0.25 - 0.5),
         ):
             with self.subTest(name):
                 self.assertAlmostEqual(value, expected, places=5)

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core import MAXVAL
+from .bvh import BVH_SHAPE_INACTIVE
 from .types import GeoType
 
 if TYPE_CHECKING:
@@ -829,6 +830,9 @@ def raycast_kernel(
     shape_world: wp.array[int],
     world_offsets: wp.array[wp.vec3],
     visible_worlds_mask: wp.array[int],
+    # Optional: body variant rows, whose empty rows are skipped
+    shape_variant_row: wp.array[wp.bool],
+    shape_variant_shape: wp.array[wp.int32],
 ):
     """Computes the intersection of a ray with all geometries in the scene.
 
@@ -851,8 +855,14 @@ def raycast_kernel(
         shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
         world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
         visible_worlds_mask: Optional mask array (1=visible, 0=hidden per world). Can be empty to disable filtering.
+        shape_variant_row: Optional mask of body variant rows. Can be empty for models without variants.
+        shape_variant_shape: Variant shape each variant row holds, ``-1`` for an empty row, which is
+            skipped. Can be empty for models without variants.
     """
     shape_idx = wp.tid()
+
+    if shape_variant_row.shape[0] > 0 and shape_variant_row[shape_idx] and shape_variant_shape[shape_idx] < 0:
+        return
 
     # Skip shapes from non-visible worlds
     if visible_worlds_mask and shape_world.shape[0] > 0:
@@ -1014,6 +1024,8 @@ def intersect_ray(
             bvh_shape_id = wp.int32(0)
 
             while wp.bvh_query_next(query, bvh_shape_id, min_dist):
+                if bvh_shape_enabled[bvh_shape_id] == BVH_SHAPE_INACTIVE:
+                    continue
                 shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
                 geom_type = shape_type[shape_id]
 
@@ -1060,7 +1072,7 @@ def intersect_ray(
         inputs=[
             model.bvh_shapes.id,
             model.bvh_shapes_group_roots,
-            model.bvh_shape_enabled,
+            model._bvh_shape_active_leaves,
             model.bvh_shape_world_transforms,
             model.shape_type,
             model.shape_scale,

@@ -710,12 +710,12 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            thickness = _validate_hollow_thickness(
-                "capsule", thickness, (("radius", scale[0]), ("half_height", scale[1]))
-            )
+            thickness = _validate_hollow_thickness("capsule", thickness, (("radius", scale[0]),))
             if thickness == 0.0:
                 return 0.0, solid[1], wp.mat33()
-            hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1] - thickness)
+            # The inner capsule keeps the half-height: shrinking the radius alone offsets the
+            # whole surface (cylinder and both caps) inward by ``thickness``.
+            hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1])
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CYLINDER:
         # scale = (end_radius, half_height, barrel_radius)
