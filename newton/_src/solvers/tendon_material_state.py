@@ -158,6 +158,11 @@ def _project_tendon_material(
         left = cone_segment_l[guide]
         right = cone_segment_r[guide]
         if left < 0 or right < 0:
+            adjacent_right = segment_start + guide - guide_start
+            # A degenerate pinhole direction must not silently disconnect two
+            # active spans. Missing rows next to bypassed spans remain skippable.
+            if segment_active[adjacent_right - 1] != 0 and segment_active[adjacent_right] != 0:
+                return _reject_material(workspace, tendon, segment_start, int(TendonMaterialStatus.INVALID_ROUTE))
             continue
         if left < segment_start or right >= segment_end or left >= right:
             return _reject_material(workspace, tendon, segment_start, int(TendonMaterialStatus.INVALID_ROUTE))
