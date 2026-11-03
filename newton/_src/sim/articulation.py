@@ -560,6 +560,17 @@ def eval_articulation_fk(
     )
 
 
+def _fk_prefers_tiled(model: Model) -> bool:
+    """Whether CUDA FK uses the level-parallel kernel for the model's articulations."""
+    from .articulation_cuda import FK_TILE_MIN_LEVEL_WIDTH  # noqa: PLC0415
+
+    return (
+        model.device.is_cuda
+        and model._fk_articulation_level_start is not None
+        and model._fk_level_capacity >= FK_TILE_MIN_LEVEL_WIDTH
+    )
+
+
 def eval_fk(
     model: Model,
     joint_q: wp.array[float],
@@ -630,13 +641,7 @@ def eval_fk(
     if num_articulations == 0:
         return
 
-    # Masked chains have no intra-level parallelism. Serial FK skips unselected
-    # joints without the tiled kernel's inter-level barriers.
-    if (
-        model.device.is_cuda
-        and model._fk_articulation_level_start is not None
-        and (joint_mask is None or model._fk_level_capacity > 1)
-    ):
+    if _fk_prefers_tiled(model):
         requires_grad = (
             model.requires_grad
             or joint_q.requires_grad

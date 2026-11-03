@@ -436,9 +436,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Rigid body - contacts
         rigid_contact_hard: bool | None = None,  # Legacy body-body contact hard/soft mode
         rigid_contact_history: bool | None = None,  # Body-body contact numeric warm-start
-        rigid_contact_stick_motion_eps: float | None = None,  # Deprecated and ignored
-        rigid_contact_stick_freeze_translation_eps: float | None = None,  # Deprecated and ignored
-        rigid_contact_stick_freeze_angular_eps: float | None = None,  # Deprecated and ignored
         rigid_contact_k_start: float | None = None,  # Legacy AVBD contact penalty ramp seed
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
@@ -537,12 +534,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Values must be finite and representable in float32; infinity is unsupported.
 
                 Explicit non-``None`` values for deprecated beta, hard-contact, or
-                penalty-seed controls emit a :class:`DeprecationWarning`.
+                penalty-seed controls emit a :class:`~newton.exceptions.NewtonDeprecationWarning`.
 
                 .. deprecated:: 1.6
                     The legacy path selected by ``False`` will be removed in a future
-                    release. Using it emits a :class:`DeprecationWarning` when VBD
-                    integrates rigid bodies. Use the default compliant ALM path instead.
+                    release. Explicit ``False`` emits a
+                    :class:`~newton.exceptions.NewtonDeprecationWarning` for all models.
+                    Use the default compliant ALM path instead.
             rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
                 Controls both joints and body-body contacts when neither class-specific
                 override (``rigid_avbd_joint_alpha`` / ``rigid_avbd_contact_alpha``) is set.
@@ -615,20 +613,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 or run one uncaptured solver step before capture.
                 ``None`` (default) reads ``model.vbd.rigid_contact_history`` when
                 registered, otherwise uses ``False``.
-            rigid_contact_stick_motion_eps: Deprecated and ignored. SolverVBD no longer
-                classifies contacts as sticking. Use
-                ``CollisionPipeline(contact_matching="sticky",
-                contact_matching_pos_threshold=...)`` for persistent contact geometry.
-
-                .. deprecated:: 1.5
-            rigid_contact_stick_freeze_translation_eps: Deprecated and ignored. The
-                SolverVBD body-level contact deadzone was removed.
-
-                .. deprecated:: 1.5
-            rigid_contact_stick_freeze_angular_eps: Deprecated and ignored. The
-                SolverVBD body-level contact deadzone was removed.
-
-                .. deprecated:: 1.5
             rigid_contact_k_start: Body-body and body-particle contact penalty seed for
                 legacy AVBD ramping [N/m]. Used when ``rigid_avbd_linear_beta`` (or
                 ``rigid_avbd_beta`` fallback) is greater than zero. When the linear beta
@@ -836,22 +820,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
-        if (
-            rigid_contact_stick_motion_eps is not None
-            or rigid_contact_stick_freeze_translation_eps is not None
-            or rigid_contact_stick_freeze_angular_eps is not None
-        ):
-            warnings.warn(
-                "SolverVBD rigid_contact_stick_motion_eps, "
-                "rigid_contact_stick_freeze_translation_eps, and "
-                "rigid_contact_stick_freeze_angular_eps are deprecated and ignored, "
-                "and will be removed in a future release. "
-                "Use CollisionPipeline(contact_matching='sticky', "
-                "contact_matching_pos_threshold=...) for persistent contact geometry. "
-                "The SolverVBD body-level contact deadzone was removed.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
 
         # Self-contact geometry: margin/gap scheme (margin = interaction distance,
         # detection query radius = margin + gap). The legacy radius/margin pair is
@@ -1143,19 +1111,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._update_rigid_history = True
 
         # Warn after validation so warnings-as-errors do not mask invalid inputs.
-        if self._integrates_rigid_bodies and not self.rigid_compliant_alm:
+        if not self.rigid_compliant_alm:
+            legacy_controls.insert(0, "rigid_compliant_alm=False")
+        if legacy_controls:
             warnings.warn(
-                "rigid_compliant_alm=False is deprecated as of Newton 1.6 and will be removed in a future release. "
-                "Omit the argument to use compliant ALM and author finite material stiffness.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        elif legacy_controls:
-            warnings.warn(
-                f"Legacy VBD controls {', '.join(legacy_controls)} are deprecated as of Newton 1.6 "
+                f"VBD options {', '.join(legacy_controls)} are deprecated as of Newton 1.6 "
                 "and will be removed in a future release. "
-                "These controls do not affect compliant-ALM rigid constraints. "
-                "Use the default compliant ALM path and author fixed finite material stiffness.",
+                "Omit these options and author fixed finite material stiffness.",
                 NewtonDeprecationWarning,
                 stacklevel=2,
             )

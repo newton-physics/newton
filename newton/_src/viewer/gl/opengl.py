@@ -1124,6 +1124,21 @@ class RendererGL:
     # a texture that is then drawn to the window.
     MSAA_SAMPLES = 4
 
+    # The shaders target GLSL 330 core.
+    MIN_GL_VERSION = (3, 3)
+
+    @staticmethod
+    def _check_gl_version(context):
+        import pyglet
+
+        info = context.get_info()
+        if not info.have_version(*RendererGL.MIN_GL_VERSION):
+            major, minor = RendererGL.MIN_GL_VERSION
+            raise pyglet.gl.ContextException(
+                f"ViewerGL requires OpenGL {major}.{minor} or newer, but the driver provides "
+                f"OpenGL {info.get_version_string()} ({info.get_renderer()})."
+            )
+
     @classmethod
     def initialize_gl(cls):
         if cls.gl is None:  # Only import if not already imported
@@ -1207,6 +1222,11 @@ class RendererGL:
         except ImportError as e:
             raise Exception("OpenGLRenderer requires pyglet (version >= 2.0) to be installed.") from e
 
+        # pyglet's shadow context, if any, shows the driver's version before we open a
+        # window; on OpenGL 1.1 drivers, creating windows can raise spurious GL errors.
+        if gl.current_context is not None:
+            self._check_gl_version(gl.current_context)
+
         self._title = title
 
         try:
@@ -1234,6 +1254,18 @@ class RendererGL:
                 vsync=vsync,
                 visible=not headless,
             )
+
+        try:
+            self._check_gl_version(self.window.context)
+            self._setup_renderer(gl, headless, device)
+        except BaseException:
+            # pyglet would otherwise keep the window open for the rest of the process.
+            self.window.close()
+            raise
+
+    def _setup_renderer(self, gl, headless, device):
+        """Set up the GL state, resources, and event handling for the new window."""
+        import pyglet
 
         gl.glEnable(gl.GL_MULTISAMPLE)
         # remember sample count for later (e.g., resolving FBO)

@@ -12,8 +12,11 @@ import warp as wp
 
 import newton
 import newton.viewer
+from newton._src.viewer import viewer_gl
+from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+from newton.tests.unittest_utils import import_pyglet_window
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -522,6 +525,21 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 finally:
                     viewer.close()
 
+    def test_failed_viewer_setup_closes_its_window(self):
+        """Close the window when renderer or viewer setup fails after creating it."""
+        _make_headless_viewer_gl_or_skip(self).close()
+        import pyglet
+
+        open_windows = len(pyglet.app.windows)
+        for module, name in ((opengl, "ShaderShape"), (viewer_gl, "ImageLogger")):
+            with (
+                self.subTest(failure=name),
+                mock.patch.object(module, name, side_effect=RuntimeError("setup failed")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "setup failed"):
+                    ViewerGL(width=64, height=48, headless=True)
+                self.assertEqual(len(pyglet.app.windows), open_windows)
+
     def test_viewer_constructor_known_backend_error_skips(self):
         """Verify unavailable display/backend errors skip GL-dependent coverage."""
         unavailable_error = type(
@@ -734,6 +752,48 @@ class TestViewerGLGetFrame(unittest.TestCase):
             viewer.close()
 
 
+class TestViewerGLMinimumVersion(unittest.TestCase):
+    def setUp(self):
+        try:
+            pyglet = import_pyglet_window()
+        except Exception as exc:
+            if not _is_viewer_gl_unavailable_error(self, exc):
+                raise
+            self.skipTest(f"pyglet window backend not available: {exc}")
+        self.pyglet = pyglet
+
+    @staticmethod
+    def _gl_1_1_context():
+        info = mock.Mock()
+        info.have_version.return_value = False
+        info.get_version_string.return_value = "1.1.0"
+        info.get_renderer.return_value = "GDI Generic"
+        return mock.Mock(**{"get_info.return_value": info})
+
+    def test_old_driver_is_rejected_before_opening_a_window(self):
+        """Verify a driver below the minimum OpenGL version is rejected without opening a window."""
+        pyglet = self.pyglet
+        with (
+            mock.patch.object(pyglet.gl, "current_context", self._gl_1_1_context()),
+            mock.patch.object(pyglet.window, "Window") as window,
+            self.assertRaisesRegex(pyglet.gl.ContextException, r"OpenGL 3\.3 .*OpenGL 1\.1\.0 \(GDI Generic\)"),
+        ):
+            RendererGL(headless=True)
+        window.assert_not_called()
+
+    def test_old_window_context_is_rejected_and_closed(self):
+        """Verify a window whose context is below the minimum OpenGL version is closed."""
+        pyglet = self.pyglet
+        window = mock.Mock(context=self._gl_1_1_context())
+        with (
+            mock.patch.object(pyglet.gl, "current_context", None),
+            mock.patch.object(pyglet.window, "Window", return_value=window),
+            self.assertRaises(pyglet.gl.ContextException),
+        ):
+            RendererGL(headless=True)
+        window.close.assert_called_once()
+
+
 class TestViewerGLMultisampling(unittest.TestCase):
     def test_window_config_requests_the_scene_sample_count(self):
         """Verify the window config is negotiated at the scene's sample count.
@@ -758,7 +818,7 @@ class TestViewerGLMultisampling(unittest.TestCase):
     def test_scene_keeps_msaa_without_a_multisampled_window_config(self):
         """Verify the scene stays anti-aliased when the window config has no MSAA."""
         try:
-            import pyglet.window
+            pyglet = import_pyglet_window()
         except Exception as exc:
             if not _is_viewer_gl_unavailable_error(self, exc):
                 raise

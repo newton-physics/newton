@@ -372,7 +372,7 @@ class TestTendonBuilder(unittest.TestCase):
                     ):
                         model = builder.finalize(device=device)
                         expected_warning = (
-                            self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
+                            self.assertWarnsRegex(DeprecationWarning, "VBD options rigid_compliant_alm=False")
                             if options.get("rigid_compliant_alm") is False
                             else nullcontext()
                         )
@@ -486,7 +486,7 @@ class TestTendonBuilder(unittest.TestCase):
                 for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
                     options = {"rigid_compliant_alm": False} if solver_type is newton.solvers.SolverVBD else {}
                     expected_warning = (
-                        self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
+                        self.assertWarnsRegex(DeprecationWarning, "VBD options rigid_compliant_alm=False")
                         if options.get("rigid_compliant_alm") is False
                         else nullcontext()
                     )
