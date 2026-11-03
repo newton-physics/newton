@@ -810,6 +810,22 @@ def test_captured_errors_are_deferred_until_reset(test, device):
     test.assertTrue(np.isfinite(scene.pose()).all())
 
 
+def test_counts_raise_during_capture(test, device):
+    """Raise on a compliance count read during graph capture and leave the capture usable."""
+    captured, eager = (_CompliantScene(device, articulated=True) for _ in range(2))
+    with wp.ScopedCapture(device=captured.model.device) as capture:
+        captured.step()
+        for name in ("compliance_contact_count", "compliance_skipped_contact_count"):
+            with test.subTest(name=name), test.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
+                getattr(captured.solver, name)
+    for _ in range(3):
+        wp.capture_launch(capture.graph)
+        eager.step()
+    np.testing.assert_array_equal(captured.pose(), eager.pose())
+    test.assertEqual(captured.solver.compliance_contact_count, 1)
+    test.assertEqual(captured.solver.compliance_skipped_contact_count, 0)
+
+
 def _run_paired_fixture(device, *, hinv_jt_kernel, friction, friction_gap_max=None, steps=40):
     """Drop a free box onto a 23-DOF arm (one articulation/free-body pair per world) with compliant contacts."""
     with wp.ScopedDevice(device):
@@ -948,6 +964,7 @@ for _fn in (
     test_capture_interleaves_with_eager_steps_and_reset,
     test_replay_reads_edited_contact_material,
     test_captured_errors_are_deferred_until_reset,
+    test_counts_raise_during_capture,
 ):
     add_function_test(TestContactComplianceCapture, _fn.__name__, _fn, devices=devices)
 
