@@ -162,6 +162,61 @@ class TestImportMjcfBasic(unittest.TestCase):
                         atol=1e-6,
                     )
 
+    def test_camera_tracking_modes_are_recorded(self):
+        """Import tracking cameras as fixed mounts, keep their MuJoCo mode and target, and warn."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="torso">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+            <camera name="chase" mode="track" pos="0 -2 1" xyaxes="1 0 0 0 0.5 1"/>
+            <camera name="look" mode="targetbody" target="hand" pos="0 0 1"/>
+            <camera name="still" pos="0 0 0.5"/>
+            <body name="hand" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as logs:
+            builder.add_mjcf(mjcf)
+        self.assertEqual(sum("imported as a fixed mount" in line for line in logs.output), 2)
+        cameras = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.camera_label)}
+        torso = builder.body_label.index(next(label for label in builder.body_label if label.endswith("torso")))
+        hand = builder.body_label.index(next(label for label in builder.body_label if label.endswith("hand")))
+        self.assertTrue(all(builder.camera_body[index] == torso for index in cameras.values()))
+
+        model = builder.finalize(device="cpu")
+        mode = model.mujoco.camera_mode.numpy()
+        target = model.mujoco.camera_target.numpy()
+        self.assertEqual(int(mode[cameras["chase"]]), int(SolverMuJoCo.CameraMode.TRACK))
+        self.assertEqual(int(mode[cameras["look"]]), int(SolverMuJoCo.CameraMode.TARGETBODY))
+        self.assertEqual(int(mode[cameras["still"]]), int(SolverMuJoCo.CameraMode.FIXED))
+        self.assertEqual(int(target[cameras["look"]]), hand)
+        self.assertEqual(int(target[cameras["chase"]]), -1)
+
+    def test_worldbody_frame_camera_mounts_relative_to_parent_body(self):
+        """Mount cameras in worldbody frames relative to parent_body without applying its pose twice."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <frame pos="0 0 1">
+            <camera name="cam" pos="0.5 0 0"/>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        parent = builder.add_body(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.0, 0.0, 0.7)))
+        builder.add_mjcf(mjcf, parent_body=parent, xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()))
+        self.assertEqual(builder.camera_count, 1)
+        self.assertEqual(builder.camera_body[0], parent)
+        np.testing.assert_allclose(np.asarray(builder.camera_transform[0])[:3], [0.5, 0.0, 1.2], atol=1e-5)
+
     def test_nested_option_flags_match_native_mujoco(self):
         """Preserve later flag overrides and apply gravity to the Newton model."""
         mjcf = """

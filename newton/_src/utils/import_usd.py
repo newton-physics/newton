@@ -139,13 +139,19 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], s
     A product inherits unauthored values from the ``UsdRender.Settings`` that lists it in
     ``products``; values authored on the product take precedence. A resolution is never taken from
     the schema fallback, while the policy and pixel aspect ratio fall back to the USD defaults.
-    ``UsdRender`` prims live under the ``/Render`` scope by convention, so only that scope is scanned.
+    ``UsdRender`` prims are usually grouped under ``/Render``, but any location in the stage is valid,
+    so the whole stage is scanned.
     """
-    resolutions: dict[str, tuple[tuple[int, int], str, float]] = {}
-    render_scope = stage.GetPrimAtPath("/Render")
-    if not (render_scope and render_scope.IsValid()):
-        return resolutions
     from pxr import Usd, UsdRender
+
+    resolutions: dict[str, tuple[tuple[int, int], str, float]] = {}
+    render_prims = [
+        prim
+        for prim in Usd.PrimRange(stage.GetPseudoRoot())
+        if prim.IsA(UsdRender.Settings) or prim.IsA(UsdRender.Product)
+    ]
+    if not render_prims:
+        return resolutions
 
     def authored(attr):
         return attr.Get() if attr and attr.HasAuthoredValue() else None
@@ -176,7 +182,7 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], s
             resolutions.setdefault(str(target), ((int(resolution[0]), int(resolution[1])), policy, pixel_aspect))
 
     listed_products = set()
-    for prim in Usd.PrimRange(render_scope):
+    for prim in render_prims:
         if not prim.IsA(UsdRender.Settings):
             continue
         settings = UsdRender.Settings(prim)
@@ -192,7 +198,7 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], s
                 *image_format(product, settings),
             )
 
-    for prim in Usd.PrimRange(render_scope):
+    for prim in render_prims:
         if prim.IsA(UsdRender.Product) and prim.GetPath() not in listed_products:
             product = UsdRender.Product(prim)
             add(authored_cameras(product), authored_resolution(product), *image_format(product))

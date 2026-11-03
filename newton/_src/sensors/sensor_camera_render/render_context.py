@@ -471,7 +471,7 @@ class RenderContext:
         sample_count: int | None = None,
         view_ray_bundle: wp.array[wp.int32] | None = None,
         view_pinhole: wp.array[wp.vec4f] | None = None,
-        view_clip: wp.array[wp.vec2f] | None = None,
+        view_clip: wp.array[wp.vec3f] | None = None,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -522,6 +522,8 @@ class RenderContext:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid anti_aliasing mode: {config.anti_aliasing!r}") from exc
         if view_pinhole is not None:
+            if view_ray_bundle is None:
+                raise ValueError("view_pinhole requires view_ray_bundle")
             ray_mode = RayGenerationMode.PINHOLE
         elif view_ray_bundle is not None:
             ray_mode = RayGenerationMode.BUNDLE_INDEXED
@@ -596,7 +598,7 @@ class RenderContext:
                     raise ValueError(
                         f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
                     )
-            elif ray_mode == RayGenerationMode.BUNDLE_INDEXED:
+            else:
                 if (
                     camera_rays.ndim != 4
                     or camera_rays.shape[0] % height != 0
