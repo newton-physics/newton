@@ -355,6 +355,17 @@ def test_invalid_route_and_material_are_rejected(test, device):
     fixture = _MaterialFixture(device, [a, r, a])
     initial = np.array([0.01, 0.01], dtype=np.float32)
     fixture.set_extension(initial)
+    fixture.solver.tendon_guide_cone_seg_r.assign(np.array([-1, -1, -1], dtype=np.int32))
+    fixture.launch()
+    test.assertFalse(fixture.accepted.numpy()[0])
+    test.assertEqual(int(fixture.workspace.status.numpy()[0]), int(TendonMaterialStatus.INVALID_ROUTE))
+    for active in ([1, 0], [0, 1]):
+        fixture.solver.tendon_segment_active.assign(np.asarray(active, dtype=np.int32))
+        fixture.launch()
+        test.assertTrue(fixture.accepted.numpy()[0], "Missing rows next to inactive spans remain skippable")
+        np.testing.assert_array_equal(fixture.solver.tendon_segment_stretch.numpy(), initial)
+    fixture.solver.tendon_segment_active.fill_(1)
+    fixture.transfer.fill_(-77.0)
     fixture.solver.tendon_guide_cone_seg_r.assign(np.array([-1, 2, -1], dtype=np.int32))
     fixture.launch()
     test.assertFalse(fixture.accepted.numpy()[0])
@@ -373,6 +384,60 @@ def test_invalid_route_and_material_are_rejected(test, device):
     test.assertEqual(int(fixture.workspace.status.numpy()[0]), int(TendonMaterialStatus.BAD_INPUT))
     with test.assertRaisesRegex(ValueError, "compliance"):
         _create_tendon_material_workspace(fixture.model)
+
+
+def test_direct_missing_pinhole_connection_is_rejected(test, device):
+    """Reject unresolved pinhole directions instead of accepting disconnected active spans."""
+    expect_output = test.allowOutputRegex if sys.platform == "win32" else test.expectOutputRegex
+    expect_output(
+        r"^Error: direct tendon material solve rejected accepted pose "
+        r"\(tendon=0, component=0, status=-5\)\. "
+        r"Discard this trajectory and call solver\.check_tendon_material\(state\)\.\r?$",
+        stream="stdout",
+    )
+    for length in (0.0, 1.0e-6):
+        for reverse in (False, True):
+            points = [(0.0, 0.0, 0.0), (length, 0.0, 0.0), (1.0, 1.0, 0.0)]
+            rest = [0.001, 1.2]
+            if reverse:
+                points.reverse()
+                rest.reverse()
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            builder.add_tendon(
+                [
+                    newton.TendonGuide(body=-1, offset=points[0]),
+                    newton.TendonGuide(
+                        body=-1,
+                        guide_type=newton.TendonGuideType.PINHOLE,
+                        offset=points[1],
+                        mu=0.1,
+                        compliance=0.01,
+                        rest_length=rest[0],
+                    ),
+                    newton.TendonGuide(body=-1, offset=points[2], compliance=0.01, rest_length=rest[1]),
+                ]
+            )
+            model = builder.finalize(device=device)
+            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                with test.subTest(length=length, reverse=reverse, solver=solver_type.__name__):
+                    solver = solver_type(model, iterations=1, tendon_material_direct=True)
+                    state_in, state_out = model.state(), model.state()
+                    control = model.control()
+                    solver.step(state_in, state_out, control, None, 0.01)
+                    np.testing.assert_array_equal(solver.tendon_segment_active.numpy(), 1)
+                    test.assertEqual(int(solver.tendon_guide_cone_seg_l.numpy()[1]), -1)
+                    test.assertEqual(int(solver.tendon_guide_cone_seg_r.numpy()[1]), -1)
+                    with test.assertRaisesRegex(RuntimeError, "INVALID_ROUTE"):
+                        solver.check_tendon_material(state_out)
+                    np.testing.assert_array_equal(
+                        state_out.tendon_segment_rest_length.numpy(), np.asarray(rest, dtype=np.float32)
+                    )
+                    if device.is_cuda and length == 0.0 and not reverse:
+                        with wp.ScopedCapture(device=device) as capture:
+                            solver.step(state_in, state_out, control, None, 0.01)
+                        wp.capture_launch(capture.graph)
+                        with test.assertRaisesRegex(RuntimeError, "INVALID_ROUTE"):
+                            solver.check_tendon_material(state_out)
 
 
 def test_graph_replay_uses_current_trial(test, device):
@@ -852,6 +917,7 @@ for function in (
     test_inactive_slots_and_reactivation,
     test_failure_does_not_publish_partial_tendon,
     test_invalid_route_and_material_are_rejected,
+    test_direct_missing_pinhole_connection_is_rejected,
     test_graph_replay_uses_current_trial,
     test_workspace_limits_each_anchor_component,
     test_direct_steps_and_state_replay,
