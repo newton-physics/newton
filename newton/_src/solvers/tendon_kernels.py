@@ -1186,6 +1186,7 @@ def solve_tendon_material(
         seg_damping_tension[seg] = 0.0
         seg_rest_length[seg] = seg_route_rest_length[seg]
 
+    nonlocal_cone_rows = int(0)
     for i in range(1, num_guides - 1):
         guide_idx = guide_start + i
         guide_material_transfer[guide_idx] = 0.0
@@ -1320,6 +1321,12 @@ def solve_tendon_material(
                 if seg_left < 0 or seg_right < 0:
                     continue
 
+                # Reuse the loaded row indices; topology stays fixed throughout
+                # this material solve. Nonlocal rows need a final shared-span check.
+                if material_sweep == 0:
+                    if seg_left != seg_offset + i - 1 or seg_right != seg_offset + i:
+                        nonlocal_cone_rows = int(1)
+
                 cap_ratio = tendon_guide_cap_ratio[guide_idx]
 
                 len_l = seg_length[seg_left]
@@ -1399,8 +1406,9 @@ def solve_tendon_material(
                 seg_stretch[seg_right] = current_r + change
                 guide_material_transfer[guide_idx] = delta
 
-                # The preceding active guide is final once its downstream
-                # neighbor has updated their shared span (reverse on odd sweeps).
+                # For ordinary routes the preceding guide is final after its
+                # neighbor updates their shared span (reverse on odd sweeps).
+                # Use this cheap check to reject unconverged sweeps early.
                 if converged != 0 and previous_guide >= 0:
                     if not _material_sweep_guide_converged(
                         previous_guide,
@@ -1419,22 +1427,43 @@ def solve_tendon_material(
                         converged = int(0)
                 previous_guide = guide_idx
 
+            # Ordinary rows only need their last guide checked here. Skipped
+            # spans (e.g. coincident pinholes) can make more than two rows share
+            # a span, invalidating fused checks. Certify all rows in that case,
+            # but only when the fused checks would otherwise permit early-out.
             if converged != 0 and previous_guide >= 0:
-                if not _material_sweep_guide_converged(
-                    previous_guide,
-                    seg_stretch,
-                    seg_length,
-                    seg_active_compliance,
-                    seg_damping_tension,
-                    tendon_guide_cap_ratio,
-                    tendon_guide_cone_seg_l,
-                    tendon_guide_cone_seg_r,
-                    guide_material_transfer,
-                    min_rest,
-                    tendon_settle_tol,
-                    tendon_settle_atol,
-                ):
-                    converged = int(0)
+                check_start = previous_guide
+                check_end = previous_guide + 1
+                if nonlocal_cone_rows != 0:
+                    check_start = guide_start + 1
+                    check_end = guide_end - 1
+                for guide_idx in range(check_start, check_end):
+                    if nonlocal_cone_rows != 0:
+                        guide_type = tendon_guide_type[guide_idx]
+                        is_rolling = guide_type == int(TendonGuideType.ROLLER) and tendon_guide_active[guide_idx]
+                        is_pinhole = guide_type == int(TendonGuideType.PINHOLE)
+                        if not (
+                            (apply_rolling_transfer != 0 and is_rolling) or (apply_pinhole_slip != 0 and is_pinhole)
+                        ):
+                            continue
+                        if tendon_guide_cone_seg_l[guide_idx] < 0 or tendon_guide_cone_seg_r[guide_idx] < 0:
+                            continue
+                    if not _material_sweep_guide_converged(
+                        guide_idx,
+                        seg_stretch,
+                        seg_length,
+                        seg_active_compliance,
+                        seg_damping_tension,
+                        tendon_guide_cap_ratio,
+                        tendon_guide_cone_seg_l,
+                        tendon_guide_cone_seg_r,
+                        guide_material_transfer,
+                        min_rest,
+                        tendon_settle_tol,
+                        tendon_settle_atol,
+                    ):
+                        converged = int(0)
+                        break
 
         # rebuild rest lengths from the telescoped stretch state (one cancellation per call,
         # paid once instead of every sweep -- this is what keeps the capstan accurate for stiff
