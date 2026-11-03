@@ -48,7 +48,8 @@ class TestLinalgConjugate(unittest.TestCase):
             reset_log_level()
 
     def tearDown(self):
-        pass
+        if self.verbose:
+            reset_log_level()
 
     def _test_solve(self, solver_cls, problem_params, device):
         problem = RandomProblemLLT(

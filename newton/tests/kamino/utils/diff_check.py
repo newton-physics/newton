@@ -114,15 +114,11 @@ def diff_check(
     success = abs_test or rel_test
 
     if not success:
-        logger.debug("DIFF CHECK FAILED")
-        logger.debug("DERIVATIVE: ")
-        logger.debug(derivative)
-        logger.debug("DERIVATIVE_FD")
-        logger.debug(derivative_fd)
+        logger.error("Diff check failed\nDerivative:\n%s\nFinite Differences:\n%s", derivative, derivative_fd)
         if not abs_test:
-            logger.debug("Absolute test failed, error=%s, tolerance=%s", np.max(np.abs(error)), tolerance_abs)
+            logger.error("Absolute test failed, error=%s, tolerance=%s", np.max(np.abs(error)), tolerance_abs)
         if not rel_test:
-            logger.debug(
+            logger.error(
                 "Relative test failed, error=%s, tolerance=%s",
                 np.linalg.norm(error),
                 tolerance_rel * np.linalg.norm(derivative_fd),

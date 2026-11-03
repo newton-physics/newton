@@ -44,6 +44,8 @@ class TestDualProblem(unittest.TestCase):
 
     def tearDown(self):
         self.default_device = None
+        if self.verbose:
+            reset_log_level()
 
     def test_01_allocate_dual_problem(self):
         """

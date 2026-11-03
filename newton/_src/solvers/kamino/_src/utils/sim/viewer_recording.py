@@ -366,8 +366,7 @@ def _capture_frame(viewer, recording: _VideoRecording) -> bool:
     try:
         from PIL import Image
     except ImportError:
-        logger.warning("PIL not installed. Frames cannot be saved as images.")
-        logger.info("Install with: pip install pillow")
+        logger.warning("PIL not installed. Frames cannot be saved as images. Install with: pip install pillow")
         return False
 
     if recording.img_idx >= recording.num_skipped_frames:
@@ -433,21 +432,21 @@ def _generate_video(
     try:
         import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
     except ImportError:
-        logger.warning("imageio-ffmpeg not installed. Frames saved but video not generated.")
-        logger.info("Install with: pip install imageio-ffmpeg")
+        logger.warning(
+            "imageio-ffmpeg not installed. Frames saved but video not generated. Install with: pip install imageio-ffmpeg"
+        )
         return False
     try:
         from PIL import Image
     except ImportError:
-        logger.warning("PIL not installed. Frames saved but video not generated.")
-        logger.info("Install with: pip install pillow")
+        logger.warning("PIL not installed. Frames saved but video not generated. Install with: pip install pillow")
         return False
     import numpy as np  # noqa: PLC0415
 
     recording = self._recording
 
     if not recording.record_video or recording.img_idx <= recording.num_skipped_frames:
-        logger.warning("No frames recorded, cannot generate video")
+        logger.error("No frames recorded, cannot generate video")
         return False
 
     _flush_save_futures(recording)
@@ -489,7 +488,7 @@ def _generate_video(
         logger.info("Video generated successfully: %s", output_filename)
 
         if not keep_frames:
-            logger.info("Deleting png frames...")
+            logger.debug("Deleting png frames...")
             for frame_path in frame_files:
                 os.remove(frame_path)
             if recording.created_video_folder:
@@ -497,7 +496,7 @@ def _generate_video(
                     os.rmdir(recording.default_video_folder)
                 except OSError:
                     pass
-            logger.info("Frames deleted")
+            logger.debug("Frames deleted")
 
         return True
 

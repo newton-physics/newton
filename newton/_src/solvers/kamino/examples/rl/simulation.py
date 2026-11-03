@@ -815,11 +815,11 @@ class RigidBodySim:
             if not keep_frames:
                 for frame_path in frame_files:
                     os.remove(frame_path)
-                logger.info("Frames deleted")
+                logger.debug("Frames deleted")
 
             return True
         except Exception as e:
-            logger.warning("Failed to generate video: %s", e)
+            logger.error("Failed to generate video: %s", e)
             return False
 
     @property
