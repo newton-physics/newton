@@ -2366,8 +2366,8 @@ def make_group_contact_key(group_a: int, group_b: int, bin_id: int, cx: int, cy:
 def _group_pos_key(pos_2d: wp.vec2, cell_size: float) -> wp.uint64:
     """Quantize a face-plane position within its cell to a 31-bit, never-zero tie-break key.
 
-    Each axis gets 15 bits across one cell, so distinct contacts of an entry get distinct keys
-    unless they are in a clamped border cell, which ``cell_clamp_events`` counts.
+    Each axis uses 15 bits within a cell; positions closer than one quantum share a key, and
+    contacts in a clamped border cell (counted by ``cell_clamp_events``) can share one too.
     """
     ux = pos_2d[0] / cell_size
     uy = pos_2d[1] / cell_size

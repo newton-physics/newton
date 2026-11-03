@@ -312,8 +312,20 @@ def build_group_reduction_config(
         pairs = shape_pairs.numpy().reshape(-1, 2)
         if not np.any(primitive_shapes[pairs[:, 0]] & primitive_shapes[pairs[:, 1]]):
             return None, 0, 0
-    elif topology is not None and int(topology.count_pairs(primitive_shapes).sum()) == 0:
-        return None, 0, 0
+    elif topology is not None:
+        if int(topology.count_pairs(primitive_shapes).sum()) == 0:
+            return None, 0, 0
+    else:
+        # Replacing the model's pair array drops its topology summary; decide from the shape arrays.
+        active = ((model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0) & (
+            model.shape_collision_group.numpy() != 0
+        )
+        shape_body = np.maximum(model.shape_body.numpy(), -1)
+        primitive_body = shape_body[active & primitive_shapes]
+        dynamic_bodies = np.unique(primitive_body[primitive_body >= 0])
+        static_count = int(np.count_nonzero(primitive_body < 0))
+        if len(dynamic_bodies) < 2 and not (len(dynamic_bodies) == 1 and static_count > 0):
+            return None, 0, 0
     shape_group, group_count = build_reduction_groups(model, material_attributes)
     if group_count > MAX_GROUP_ID + 1:
         raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
@@ -328,12 +340,8 @@ def build_group_reduction_config(
             ),
         )
     else:
-        # Replacing the model's pair array drops its topology summary; bound from the shape arrays.
-        active = ((model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0) & (
-            model.shape_collision_group.numpy() != 0
-        )
         group_pair_bound = build_reduction_group_pair_upper_bound(
-            np.maximum(model.shape_body.numpy(), -1), model.shape_world.numpy(), active, shape_group
+            shape_body, model.shape_world.numpy(), active, shape_group
         )
     # A replicated scene can have one reachable pair per body, yet each pair spans
     # several bins and cells: reserve four patch entries per group at half load.

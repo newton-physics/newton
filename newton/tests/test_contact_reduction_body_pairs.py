@@ -723,6 +723,16 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertEqual(stats["sum_contacts_in"], 0, "mesh contacts entered group reduction")
         # Nothing is reduced by group, so the buffers stay unstamped and every solver accepts them.
         self.assertFalse(both.contacts().rigid_contacts_body_pair_reduced)
+        # Also when replacing the pair array has dropped the model's pair topology.
+        model.shape_contact_pairs = None
+        for broad_phase in ("nxn", "sap"):
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase=broad_phase,
+                rigid_contact_max=rigid_contact_max,
+                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+            )
+            self.assertFalse(pipeline.contacts().rigid_contacts_body_pair_reduced, broad_phase)
 
     def test_group_mode_narrow_phase_rejects_simple_launch(self):
         """Group reduction runs only through launch_custom_write, which takes the body poses."""
