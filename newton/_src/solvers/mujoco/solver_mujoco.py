@@ -46,7 +46,6 @@ from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
 from . import dcmotor, kernels, speculative
-from .adjoint import MuJoCoAdjoint
 from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
@@ -62,6 +61,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from .diff import DiffContextMuJoCo
 from .enums import EqType as _EqType
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import (
@@ -4988,7 +4988,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if model.requires_grad:
             with wp.ScopedDevice(model.device):
-                self._adjoint = MuJoCoAdjoint(self)
+                self._adjoint = DiffContextMuJoCo(self)
 
     def _allocate_speculative_contact_buffers(self):
         count = self.mjw_data.naconmax

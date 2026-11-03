@@ -73,7 +73,7 @@ def _accumulate_force_gradient(adjoint: wp.array2d[float], force_grad: wp.array2
     force_grad[world, dof] += adjoint[world, dof]
 
 
-class MuJoCoAdjoint:
+class DiffContextMuJoCo:
     """Own persistent per-output-state snapshots and a shared backward workspace."""
 
     def __init__(self, solver: "SolverMuJoCo"):
