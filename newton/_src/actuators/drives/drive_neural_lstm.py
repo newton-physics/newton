@@ -126,7 +126,7 @@ class DriveNeuralLSTM(DriveBase):
     ``.onnx`` checkpoints use Warp-NN. The exported ONNX model must have three
     inputs (input, initial hidden, and initial cell) and three graph outputs
     (effort, hidden output, and cell output). Metadata properties map those
-    names to drive roles.
+    names to drive roles. ONNX checkpoints currently support one LSTM layer.
 
     ONNX checkpoints support the implicit effort mode through a per-step
     linearization of the network; Torch checkpoints do not and must use the
