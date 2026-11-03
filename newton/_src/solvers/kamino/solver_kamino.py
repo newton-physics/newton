@@ -1356,6 +1356,23 @@ class SolverKamino(SolverBase, CouplingInterface):
             )
 
     @override
+    def _non_graphable_model_flags(self) -> int:
+        # Structural validation reads its violation flags on the host, and the LOX solver reallocates
+        # its joint penalty seeds.
+        flags = (
+            ModelFlags.BODY_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+            | ModelFlags.ACTUATOR_PROPERTIES
+        )
+        if self._collision_detector_kamino is not None:
+            # Material updates check for conflicting shared materials on the host.
+            flags |= ModelFlags.SHAPE_PROPERTIES
+        return int(flags)
+
+    @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Update contact geometry and optional legacy force storage from Kamino.
 
@@ -1473,6 +1490,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="fk_actuation_flag",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 assignment=Model.AttributeAssignment.MODEL,
                 frequency=Model.AttributeFrequency.JOINT,
                 dtype=wp.int32,

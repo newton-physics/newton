@@ -1623,6 +1623,22 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_rod_rest_bend_twist_cache()
 
     @override
+    def _non_graphable_model_flags(self) -> int:
+        flags = 0
+        if self.model.tendon_count > 0:
+            # The tendon refresh validates on the host and rebuilds the tendon reset state.
+            flags |= ModelFlags.TENDON_PROPERTIES
+        if self._integrates_rigid_bodies and self.model.joint_count > 0:
+            dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            if self.rigid_compliant_alm:
+                # Compliant ALM validates the joint drive and limit coefficients on the host.
+                flags |= dof_force
+            if self.model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+                # Rod material axes and rest bend/twist invariants are checked and computed on the host.
+                flags |= dof_force | ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+        return int(flags)
+
+    @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
         return True
 
@@ -2554,6 +2570,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
+                update_flags=ModelFlags.NONE,
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -2564,6 +2581,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_tau",
+                update_flags=ModelFlags.NONE,
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,

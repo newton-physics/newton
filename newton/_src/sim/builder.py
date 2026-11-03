@@ -778,10 +778,10 @@ class ModelBuilder:
         "shape_sdf_texture_format": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_padding": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "muscle_start": Model.AttributeSpec("muscle", references="muscle_point", compaction_policy="start"),
-        "muscle_params": Model.AttributeSpec("muscle"),
-        "muscle_activations": Model.AttributeSpec("muscle"),
-        "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
-        "muscle_points": Model.AttributeSpec("muscle_point"),
+        "muscle_params": Model.AttributeSpec("muscle", dtype=wp.float32),
+        "muscle_activations": Model.AttributeSpec("muscle", dtype=wp.float32),
+        "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY, dtype=wp.int32),
+        "muscle_points": Model.AttributeSpec("muscle_point", dtype=wp.vec3),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
         "_equality_constraint_world_start": Model.AttributeSpec(
             Model.AttributeFrequency.WORLD,
@@ -1405,6 +1405,18 @@ class ModelBuilder:
 
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
+
+        update_flags: int | None = None
+        """Flags announcing an edit of the attribute in a finalized :class:`~newton.Model`, or ``None``
+        when no flag covers it, for example because solvers read the attribute only at construction.
+
+        For model-assigned attributes these are :class:`~newton.ModelFlags` to pass to
+        :meth:`~newton.solvers.SolverBase.notify_model_changed`. For state-assigned attributes they are
+        :class:`~newton.StateFlags` to pass to :meth:`~newton.solvers.SolverBase.reset`.
+        :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` or :attr:`StateFlags.NONE <newton.StateFlags.NONE>`
+        declares that solvers read the attribute at every step. Solvers set it for the custom attributes
+        they register. :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>`
+        returns it."""
 
         values: dict[int, Any] | list[Any] | None = None
         """Storage for specific values (overrides).
@@ -16004,6 +16016,11 @@ class ModelBuilder:
                 m._set_attribute_spec(
                     custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
+            # Also covers attributes finalized by their own callback.
+            for key, custom_attr in self.custom_attributes.items():
+                spec = m.attribute_specs.get(key)
+                if spec is not None and custom_attr.update_flags is not None:
+                    m._set_attribute_spec(key, replace(spec, update_flags=custom_attr.update_flags))
 
             self._finalize_custom_frequency_metadata(m, device)
 
@@ -16098,101 +16115,13 @@ _ArrayBackedAttribute = tuple[np.ndarray, _ArrayBackedListDescriptor]
 
 
 _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
-    "particle_q": wp.vec3,
-    "particle_qd": wp.vec3,
-    "particle_mass": wp.float32,
-    "particle_radius": wp.float32,
-    "particle_flags": wp.int32,
-    "particle_world": wp.int32,
-    "shape_transform": wp.transform,
-    "shape_body": wp.int32,
-    "shape_material_ke": wp.float32,
-    "shape_material_kd": wp.float32,
-    "shape_material_kf": wp.float32,
-    "shape_material_ka": wp.float32,
-    "shape_material_mu": wp.float32,
-    "shape_material_restitution": wp.float32,
-    "shape_material_mu_torsional": wp.float32,
-    "shape_material_mu_rolling": wp.float32,
-    "shape_material_kh": wp.float32,
-    "shape_gap": wp.float32,
-    "shape_is_solid": wp.bool,
-    "shape_margin": wp.float32,
-    "shape_scale": wp.vec3,
-    "shape_color": wp.vec3,
-    "shape_opacity": wp.float32,
-    "shape_collision_group": wp.int32,
-    "shape_collision_radius": wp.float32,
-    "shape_world": wp.int32,
-    "spring_indices": wp.int32,
-    "spring_rest_length": wp.float32,
-    "spring_stiffness": wp.float32,
-    "spring_damping": wp.float32,
-    "spring_control": wp.float32,
-    "tri_indices": wp.int32,
-    "tri_poses": wp.mat22,
-    "tri_activations": wp.float32,
-    "tri_materials": wp.float32,
-    "tri_areas": wp.float32,
-    "tri_color": wp.vec3,
-    "tri_opacity": wp.float32,
-    "edge_indices": wp.int32,
-    "edge_rest_angle": wp.float32,
-    "edge_rest_length": wp.float32,
-    "edge_bending_properties": wp.float32,
-    "tet_indices": wp.int32,
-    "tet_poses": wp.mat33,
-    "tet_activations": wp.float32,
-    "tet_materials": wp.float32,
-    "muscle_params": wp.float32,
-    "muscle_bodies": wp.int32,
-    "muscle_points": wp.vec3,
-    "muscle_activations": wp.float32,
-    "body_q": wp.transform,
-    "body_qd": wp.spatial_vector,
-    "body_com": wp.vec3,
-    "body_inertia": wp.mat33,
-    "body_inv_inertia": wp.mat33,
-    "body_mass": wp.float32,
-    "body_inv_mass": wp.float32,
-    "body_flags": wp.int32,
-    "body_world": wp.int32,
-    "joint_q": wp.float32,
-    "joint_qd": wp.float32,
-    "joint_f": wp.float32,
-    "joint_target_q": wp.float32,
-    "joint_target_qd": wp.float32,
-    "joint_act": wp.float32,
-    "joint_articulation": wp.int32,
-    "joint_parent": wp.int32,
-    "joint_child": wp.int32,
-    "joint_X_p": wp.transform,
-    "joint_X_c": wp.transform,
-    "joint_axis": wp.vec3,
-    "joint_armature": wp.float32,
-    "joint_target_mode": wp.int32,
-    "joint_target_ke": wp.float32,
-    "joint_target_kd": wp.float32,
-    "joint_damping": wp.float32,
-    "joint_effort_limit": wp.float32,
-    "joint_velocity_limit": wp.float32,
-    "joint_friction": wp.float32,
-    "joint_enabled": wp.bool,
-    "joint_limit_lower": wp.float32,
-    "joint_limit_upper": wp.float32,
-    "joint_limit_ke": wp.float32,
-    "joint_limit_kd": wp.float32,
-    "joint_world": wp.int32,
-    "articulation_world": wp.int32,
-    "constraint_mimic_joint0": wp.int32,
-    "constraint_mimic_joint1": wp.int32,
-    "constraint_mimic_coef0": wp.float32,
-    "constraint_mimic_coef1": wp.float32,
-    "constraint_mimic_enabled": wp.bool,
-    "constraint_mimic_world": wp.int32,
+    name: spec.dtype
+    for specs in (Model._CORE_ATTRIBUTE_SPECS, ModelBuilder._BUILDER_ATTRIBUTE_SPECS)
+    for name, spec in specs.items()
+    if spec.dtype is not None
 }
-"""Builder attributes retained as NumPy arrays between replication and finalization."""
-# could be replaced by introspection if Model instance attribute annotations were moved to class level
+"""Builder attributes retained as NumPy arrays between replication and finalization: the list
+attributes whose :class:`Model.AttributeSpec` declares a dtype."""
 
 
 def _list_for_iteration(values: list[Any] | np.ndarray) -> list[Any]:

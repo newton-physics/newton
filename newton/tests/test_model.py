@@ -144,6 +144,83 @@ class TestModelAttributeSpecs(unittest.TestCase):
                     f"{attribute_frequency.name} through Model.{count_attribute}.",
                 )
 
+    def test_attribute_update_flags(self):
+        """Report the update flags of built-in, solver-registered, and user custom attributes."""
+        flags, state_flags = newton.ModelFlags, newton.StateFlags
+        assignment = newton.Model.AttributeAssignment
+        builder = ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        for name, attribute_assignment, update_flags in (
+            ("stiffness", assignment.MODEL, flags.SHAPE_PROPERTIES),
+            ("label_id", assignment.MODEL, None),
+            ("heat", assignment.STATE, state_flags.BODY_Q),
+            ("gain", assignment.CONTROL, None),
+        ):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    dtype=wp.float32,
+                    frequency=newton.Model.AttributeFrequency.SHAPE,
+                    assignment=attribute_assignment,
+                    namespace="user",
+                    update_flags=update_flags,
+                )
+            )
+        builder.add_shape_sphere(builder.add_body(), radius=0.1)
+        model = builder.finalize(device="cpu")
+
+        for name, attribute_assignment, expected in (
+            ("shape_material_mu", None, flags.SHAPE_PROPERTIES),
+            ("joint_armature", None, flags.JOINT_DOF_INERTIAL_PROPERTIES),
+            ("gravity", None, flags.MODEL_PROPERTIES),
+            ("body_q", None, flags.BODY_PROPERTIES | flags.JOINT_REFERENCE_POSE_PROPERTIES),
+            ("body_q", assignment.STATE, state_flags.BODY_Q),
+            ("body_f", None, state_flags.BODY_F),
+            ("joint_f", None, flags.NONE),
+            ("joint_f", assignment.CONTROL, state_flags.JOINT_F),
+            ("mujoco:solref", None, flags.SHAPE_PROPERTIES),
+            ("mujoco:gravcomp", None, flags.BODY_INERTIAL_PROPERTIES),
+            ("mujoco:eq_solref", None, flags.CONSTRAINT_PROPERTIES),
+            ("user:stiffness", None, flags.SHAPE_PROPERTIES),
+            ("user:heat", None, state_flags.BODY_Q),
+            # Read at every step or written by solvers: no flag needed.
+            ("joint_target_q", assignment.CONTROL, state_flags.NONE),
+            ("user:gain", None, state_flags.NONE),
+            ("body_qdd", None, state_flags.NONE),
+            # Read only at construction: no flag refreshes them.
+            ("shape_type", None, None),
+            ("mujoco:condim", None, None),
+            ("user:label_id", None, None),
+        ):
+            with self.subTest(attribute=name, assignment=attribute_assignment):
+                result = model.get_attribute_update_flags(name, attribute_assignment)
+                self.assertEqual(result, expected)
+                if expected is not None:
+                    self.assertIs(type(result), type(expected))
+        for name, attribute_assignment in (
+            ("user:missing", None),
+            ("user:heat", assignment.MODEL),
+            ("shape_type", assignment.STATE),
+        ):
+            with self.subTest(missing=name, assignment=attribute_assignment):
+                with self.assertRaises(KeyError):
+                    model.get_attribute_update_flags(name, attribute_assignment)
+
+        # Built-in flags name attributes of their objects.
+        blank, state, control = newton.Model(device="cpu"), newton.State(), newton.Control()
+        specs = newton.Model._CORE_ATTRIBUTE_SPECS
+        self.assertEqual(
+            [name for name, spec in specs.items() if spec.update_flags is not None and not hasattr(blank, name)], []
+        )
+        self.assertEqual(
+            [
+                name
+                for name, spec in specs.items()
+                if spec.state_update_flags is not None and not hasattr(state, name) and not hasattr(control, name)
+            ],
+            [],
+        )
+
     def test_core_attribute_specs_cover_entity_indexed_storage(self):
         """Require metadata for entity-indexed storage, excluding lazy implementation details."""
         model = newton.Model(device="cpu")

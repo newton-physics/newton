@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 from ...core.types import Transform, Vec3, axis_to_vec3, vec5
+from ...sim.enums import ModelFlags
 from ...sim.model import Model
 from .enums import EqType
 
@@ -96,6 +97,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_anchor",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.vec3,
@@ -106,6 +108,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_torquescale",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.float32,
@@ -116,6 +119,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_relpose",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.transform,
@@ -151,6 +155,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_polycoef",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.float32,
@@ -171,6 +176,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_enabled",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.bool,
@@ -228,6 +234,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="eq_solref",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.vec2,
@@ -240,6 +247,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="eq_solimp",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=vec5,
