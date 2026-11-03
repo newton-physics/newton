@@ -604,6 +604,7 @@ def _allocated_joint_velocity_slots(device, qd: float, *, fraction: float, qdot_
         dim=1,
         inputs=[
             wp.array([0, 1], dtype=wp.int32, device=device),
+            wp.array([1], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.array([1], dtype=wp.int32, device=device),
             wp.array([int(JointType.REVOLUTE)], dtype=wp.int32, device=device),
@@ -1136,6 +1137,7 @@ def test_count_pass_assigns_no_drive_slot_above_the_sentinel(test, device):
             dim=1,
             inputs=[
                 ints([0, 1]),
+                ints([1]),
                 ints([0]),
                 ints([1]),
                 ints([int(JointType.PRISMATIC)]),
@@ -1272,6 +1274,7 @@ def test_prescale_skips_fused_driven_dofs(test, device):
             dim=1,
             inputs=[
                 wp.array([0, 2], dtype=wp.int32, device=device),
+                wp.array([2], dtype=wp.int32, device=device),
                 wp.array([int(JointType.REVOLUTE)] * 2, dtype=wp.int32, device=device),
                 wp.array([0, 1], dtype=wp.int32, device=device),
                 wp.array([0, 1], dtype=wp.int32, device=device),
