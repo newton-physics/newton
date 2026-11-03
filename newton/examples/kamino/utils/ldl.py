@@ -44,6 +44,7 @@ def configure_ldl(config: SolverKamino.Config | None, args: argparse.Namespace |
     else:
         if requested or config.dynamics.linear_solver_type == "LDL":
             raise ValueError("The LDL example option requires DVI or dense PADMM dynamics.")
+        _reject_ignored_backends(config, args)
         return
 
     explicit_backend = getattr(args, f"{prefix}_solver_type", None)
@@ -58,3 +59,19 @@ def configure_ldl(config: SolverKamino.Config | None, args: argparse.Namespace |
             kwargs["ordering"] = ordering
         else:
             kwargs.setdefault("ordering", "meca")
+    _reject_ignored_backends(config, args)
+
+
+def _reject_ignored_backends(config: SolverKamino.Config, args: argparse.Namespace | None) -> None:
+    """Reject explicit backend options that the configured dynamics solver does not use."""
+    # LOX builds its dual problem only for metrics, without a linear solver.
+    selected = {
+        "linear": config.dynamics.linear_solver_type if config.dynamics_solver != "lox" else None,
+        "bilateral": config.dvi.bilateral_solver_type if config.dynamics_solver == "dvi" else None,
+    }
+    for prefix, backend in selected.items():
+        explicit = getattr(args, f"{prefix}_solver_type", None)
+        if explicit is not None and explicit != backend:
+            raise ValueError(
+                f"--{prefix}-solver-type {explicit} is ignored by the configured {config.dynamics_solver} dynamics."
+            )

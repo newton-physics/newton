@@ -511,6 +511,35 @@ class TestSolverKaminoConfig(unittest.TestCase):
             with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "Kamino"):
                 Example(None, Example.create_parser().parse_args(["--solver", "mujoco", *flags]))
 
+    def test_example_rejects_options_ignored_by_dynamics(self):
+        """Reject explicit example options that the selected Kamino dynamics solver never reads."""
+        from newton.examples.kamino.example_kamino_robot_dr_legs import Example as DRLegs  # noqa: PLC0415
+        from newton.examples.kamino.utils.ldl import configure_ldl  # noqa: PLC0415
+
+        parser = DRLegs.create_parser()
+        for mode in ("padmm", "lox"):
+            with self.subTest(mode=mode, option="bilateral"):
+                args = parser.parse_args(["--dynamics-solver", mode, "--bilateral-solver-type", "LDL"])
+                with self.assertRaisesRegex(ValueError, "--bilateral-solver-type"):
+                    configure_ldl(SolverKamino.Config(dynamics_solver=mode), args)
+        # DR Legs replaces the dynamics linear solver with CR for DVI; LOX uses none.
+        for mode, linear_solver in (("dvi", "CR"), ("lox", "LLTB")):
+            with self.subTest(mode=mode, option="linear"):
+                args = parser.parse_args(["--dynamics-solver", mode, "--linear-solver-type", "LLTB"])
+                config = SolverKamino.Config(dynamics_solver=mode)
+                config.dynamics.linear_solver_type = linear_solver
+                with self.assertRaisesRegex(ValueError, "--linear-solver-type"):
+                    configure_ldl(config, args)
+
+        for mode, flags, message in (
+            ("padmm", ["--unilateral-solver", "apgd"], "--unilateral-solver"),
+            ("lox", ["--use-schur-complement"], "use-schur-complement"),
+            ("padmm", ["--no-use-schur-complement"], "use-schur-complement"),
+            ("dvi", ["--no-graph-conditionals"], "--no-graph-conditionals"),
+        ):
+            with self.subTest(mode=mode, flags=flags), self.assertRaisesRegex(ValueError, message):
+                DRLegs(None, parser.parse_args(["--dynamics-solver", mode, *flags]))
+
     def test_02_lox_config_validation(self):
         """Accept supported LOX settings and reject one invalid value of each validated kind."""
         with self.assertRaises(TypeError):

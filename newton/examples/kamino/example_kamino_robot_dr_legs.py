@@ -17,6 +17,22 @@ import newton
 import newton.examples
 from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
+# Options read by only one Kamino dynamics solver, mapped to their CLI flags.
+_SOLVER_OPTIONS = {
+    "dvi": {"unilateral_solver": "--unilateral-solver", "use_schur_complement": "--[no-]use-schur-complement"},
+    "padmm": {"use_graph_conditionals": "--no-graph-conditionals"},
+}
+
+
+def _reject_ignored_options(args, dynamics_solver: str) -> None:
+    """Reject explicit options that the selected dynamics solver never reads."""
+    for solver, options in _SOLVER_OPTIONS.items():
+        if solver == dynamics_solver:
+            continue
+        for name, flag in options.items():
+            if getattr(args, name, None) is not None:
+                raise ValueError(f"{flag} requires --dynamics-solver {solver}.")
+
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
@@ -28,6 +44,7 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
+        _reject_ignored_options(args, self.dynamics_solver)
         self.linear_solver_type = getattr(args, "linear_solver_type", None) or "LLTB"
         self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
         target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "dvi" else 0.01
@@ -115,7 +132,7 @@ class Example:
         self.config.padmm.primal_tolerance = 1e-4
         self.config.padmm.dual_tolerance = 1e-4
         self.config.padmm.compl_tolerance = 1e-4
-        self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
+        self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", None) is not False
         if self.dynamics_solver == "dvi":
             self.config.use_fk_solver = False
             if self.use_kamino_contacts:
@@ -135,7 +152,7 @@ class Example:
             self.config.dvi.inequality_sweeps_per_iteration = 3
             self.config.dvi.bilateral_solve_interval = 1
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
-            self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
+            self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", None) or "pgs"
             self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
         configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
@@ -351,8 +368,8 @@ class Example:
         parser.add_argument(
             "--unilateral-solver",
             choices=("pgs", "apgd"),
-            default="pgs",
-            help="DVI unilateral subsolver; APGD uses De Saxce contact correction.",
+            default=None,
+            help="DVI unilateral subsolver (default: pgs); APGD uses De Saxce contact correction.",
         )
         parser.add_argument(
             "--use-schur-complement",
@@ -394,7 +411,7 @@ class Example:
         )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
-        parser.set_defaults(use_graph_conditionals=True)
+        parser.set_defaults(use_graph_conditionals=None)
         return parser
 
 
