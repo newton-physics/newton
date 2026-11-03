@@ -108,7 +108,11 @@ published citation when available and retain an accessible preprint link.
 
 ### 2025
 
-- **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205), [arXiv:2403.06321](https://arxiv.org/abs/2403.06321)
+- **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205)
+
+### 2024
+
+- **Vertex Block Descent**. *A. H. Chen, Z. Liu, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 43(4), July 2024. [DOI:10.1145/3658179](https://doi.org/10.1145/3658179), [arXiv:2403.06321](https://arxiv.org/abs/2403.06321)
 
 ## Newton used solely as a comparison baseline
 
