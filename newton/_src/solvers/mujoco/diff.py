@@ -67,12 +67,6 @@ def _copy_dof_parameters(
         damping_out[world, dof] = value
 
 
-@wp.kernel
-def _accumulate_force_gradient(adjoint: wp.array2d[float], force_grad: wp.array2d[float]):
-    world, dof = wp.tid()
-    force_grad[world, dof] += adjoint[world, dof]
-
-
 class DiffContextMuJoCo:
     """Own persistent per-output-state snapshots and a shared backward workspace."""
 
@@ -170,19 +164,10 @@ class DiffContextMuJoCo:
             def backward():
                 with wp.ScopedDevice(solver.device), self.mjw.backward_context(self.context):
                     inner.backward()
-                    # The adjoint branch omits qfrc_applied from its public step
-                    # VJP. For r = M*qacc - f, its VJP is the solved multiplier.
-                    # Keep this bridge here until MuJoCo Warp provides that leaf.
-                    wp.launch(
-                        _accumulate_force_gradient,
-                        data_in.qfrc_applied.shape,
-                        inputs=[self.context.solver_ctx.search],
-                        outputs=[data_in.qfrc_applied.grad],
-                    )
 
             tape.record_func(
                 backward,
-                [*inner.gradients, data_in.qfrc_applied, model.body_mass, model.dof_armature, model.dof_damping],
+                [*inner.gradients, model.body_mass, model.dof_armature, model.dof_damping],
             )
 
         solver.mjw_data = data_out
