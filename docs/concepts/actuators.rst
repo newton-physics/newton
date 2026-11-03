@@ -320,8 +320,8 @@ Neural-Network Checkpoints
 
 Neural-network drives support `ONNX <https://onnx.ai/>`__ (``.onnx``), which
 Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
-:class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
-Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
+:class:`DriveNeuralLSTM` additionally support deprecated Torch checkpoints
+through the Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
 
 For :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`, prefer ONNX exports
 with dynamic batch axes: axis 0 of the MLP input and axis 1 of the LSTM
@@ -333,8 +333,37 @@ running a different number of actuators.
 
 .. deprecated:: 1.8
    Torch checkpoints and ``allow_unsafe_torch_checkpoints`` are deprecated and
-   will be removed in a future release. Export the network to ONNX with
-   ``torch.onnx.export`` instead.
+   will be removed in a future release. Export the network to ONNX instead.
+
+To move a Torch network to ONNX, export it with dynamic batch axes and store
+the Newton metadata as one JSON ``metadata`` property of the ONNX model:
+
+.. code-block:: python
+
+   import json
+
+   import onnx
+   import torch
+
+   torch.onnx.export(
+       net,
+       example_inputs,
+       "policy.onnx",
+       input_names=["input"],
+       output_names=["effort"],
+       dynamic_axes={"input": {0: "batch"}, "effort": {0: "batch"}},
+   )
+   model = onnx.load("policy.onnx")
+   onnx.helper.set_model_props(model, {"metadata": json.dumps({"effort_scale": 2.0})})
+   onnx.save(model, "policy.onnx")
+
+For :class:`DriveNeuralLSTM`, export the input, initial hidden, and initial
+cell state as three graph inputs and the effort, hidden, and cell state as
+three graph outputs, with batch axis 1, and add their names to the metadata as
+``input_name``, ``hidden_in_name``, ``cell_in_name``, ``output_name``,
+``hidden_out_name``, and ``cell_out_name``. With an ONNX checkpoint,
+``State.hidden`` and ``State.cell`` are Warp arrays instead of Torch tensors.
+In USD, point ``newton:modelPath`` at the ``.onnx`` file.
 
 Torch checkpoints must be pt2 archives saved with ``torch.export.save``.
 Use the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
@@ -631,7 +660,8 @@ parameters, filling in defaults where needed.
 A stateful custom drive also defines a dataclass subclass of
 :class:`DriveBase.State` and implements :meth:`~DriveBase.State.reset`. The
 default :meth:`Actuator.State.assign` behavior copies direct Warp array and
-Torch tensor fields without replacing their storage. States with other field
+Torch tensor fields (deprecated with Torch checkpoints) without replacing their
+storage. States with other field
 types or nested storage implement ``assign()`` to define that copy.
 
 A drive that needs additional per-step arrays declares them through

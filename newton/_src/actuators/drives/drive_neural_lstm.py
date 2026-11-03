@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import typing
-import warnings
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import warp as wp
 
-from ...exceptions import NewtonDeprecationWarning
+from ...utils.deprecation import warn_deprecation
 from ..utils import (
     _TORCH_CHECKPOINT_DEPRECATION_MSG,
     _looks_like_torch_checkpoint,
@@ -194,7 +193,7 @@ class DriveNeuralLSTM(DriveBase):
 
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
         if self._is_torch_checkpoint:
-            warnings.warn(_TORCH_CHECKPOINT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            warn_deprecation(_TORCH_CHECKPOINT_DEPRECATION_MSG)
             import torch
 
             self._torch_device = torch.device("cpu")

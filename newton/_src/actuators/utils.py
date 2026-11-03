@@ -16,11 +16,11 @@ from ..utils.onnx import load_onnx_runtime, require_onnx
 _METADATA_FILE = "metadata.json"
 
 _TORCH_CHECKPOINT_DEPRECATION_MSG = (
-    "Torch neural-drive checkpoints (.pt2, .pt, .pth) are deprecated since Newton 1.8 and will be removed "
+    "Torch neural-drive checkpoints (.pt2, .pt, .pth) are deprecated in Newton 1.8 and will be removed "
     "in a future release; export the network to ONNX (.onnx) instead."
 )
 _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG = (
-    "allow_unsafe_torch_checkpoints is deprecated since Newton 1.8 together with Torch neural-drive checkpoints "
+    "allow_unsafe_torch_checkpoints is deprecated in Newton 1.8 together with Torch neural-drive checkpoints "
     "and will be removed in a future release; export the network to ONNX (.onnx) instead."
 )
 
