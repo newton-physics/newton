@@ -560,8 +560,9 @@ def eval_inverse_dynamics_passive(
 ) -> None:
     """Compute passive inverse-dynamics quantities for articulated systems.
 
-    Each non-``None`` output is computed independently. Omitted outputs are
-    not computed. Callers allocate the requested output arrays:
+    Only the non-``None`` outputs are written; omitted outputs are not
+    computed, although on CUDA ``gravity_force`` and ``coriolis_force`` share
+    one pass. Callers allocate the requested output arrays:
 
     * ``mass_matrix`` ← the joint-space mass matrix ``M(q)`` [kg, kg·m, or
       kg·m^2, depending on the joint types of the row/column DOFs], with
@@ -614,8 +615,9 @@ def eval_inverse_dynamics_passive(
 
     Raises:
         ValueError: If the model contains a :attr:`~newton.JointType.ROD`
-            joint, no outputs are requested, or an output or mask has an
-            unexpected shape.
+            joint, no outputs are requested, an output or mask has an
+            unexpected shape, or ``gravity_force`` and ``coriolis_force``
+            are the same array.
     """
     if model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
         raise ValueError("eval_inverse_dynamics_passive() does not support JointType.ROD joints.")
@@ -632,6 +634,13 @@ def eval_inverse_dynamics_passive(
     for name, array in (("gravity_force", gravity_force), ("coriolis_force", coriolis_force)):
         if array is not None and array.shape != expected_dof_shape:
             raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
+    if (
+        gravity_force is not None
+        and coriolis_force is not None
+        and gravity_force.size
+        and gravity_force.ptr == coriolis_force.ptr
+    ):
+        raise ValueError("gravity_force and coriolis_force must be different arrays.")
 
     expected_mask_shape = (model.articulation_count,)
     if mask is not None and mask.shape != expected_mask_shape:
