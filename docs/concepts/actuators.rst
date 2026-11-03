@@ -336,7 +336,8 @@ running a different number of actuators.
    will be removed in a future release. Export the network to ONNX instead.
 
 To move a Torch network to ONNX, export it with dynamic batch axes and store
-the Newton metadata as one JSON ``metadata`` property of the ONNX model:
+the Newton metadata as one JSON ``metadata`` property of the ONNX model. Recent
+PyTorch versions need the ``onnxscript`` package for ``torch.onnx.export``.
 
 .. code-block:: python
 
@@ -354,13 +355,14 @@ the Newton metadata as one JSON ``metadata`` property of the ONNX model:
        dynamic_axes={"input": {0: "batch"}, "effort": {0: "batch"}},
    )
    model = onnx.load("policy.onnx")
-   onnx.helper.set_model_props(model, {"metadata": json.dumps({"effort_scale": 2.0})})
+   metadata = {"model_type": "mlp", "effort_scale": 2.0}
+   onnx.helper.set_model_props(model, {"metadata": json.dumps(metadata)})
    onnx.save(model, "policy.onnx")
 
 For :class:`DriveNeuralLSTM`, export the input, initial hidden, and initial
 cell state as three graph inputs and the effort, hidden, and cell state as
-three graph outputs, with batch axis 1, and add their names to the metadata as
-``input_name``, ``hidden_in_name``, ``cell_in_name``, ``output_name``,
+three graph outputs, with batch axis 1, set ``model_type`` to ``"lstm"``, and
+add their names to the metadata as ``input_name``, ``hidden_in_name``, ``cell_in_name``, ``output_name``,
 ``hidden_out_name``, and ``cell_out_name``. With an ONNX checkpoint,
 ``State.hidden`` and ``State.cell`` are Warp arrays instead of Torch tensors.
 In USD, point ``newton:modelPath`` at the ``.onnx`` file.
@@ -377,7 +379,7 @@ extra file:
    import torch
 
    exported = torch.export.export(net, example_inputs)
-   metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
+   metadata = {"model_type": "lstm", "effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
 USD neural actuators may reference a checkpoint through ``newton:modelPath``.
@@ -660,8 +662,7 @@ parameters, filling in defaults where needed.
 A stateful custom drive also defines a dataclass subclass of
 :class:`DriveBase.State` and implements :meth:`~DriveBase.State.reset`. The
 default :meth:`Actuator.State.assign` behavior copies direct Warp array and
-Torch tensor fields (deprecated with Torch checkpoints) without replacing their
-storage. States with other field
+Torch tensor fields without replacing their storage. States with other field
 types or nested storage implement ``assign()`` to define that copy.
 
 A drive that needs additional per-step arrays declares them through
