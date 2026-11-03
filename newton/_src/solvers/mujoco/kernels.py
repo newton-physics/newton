@@ -241,23 +241,34 @@ def quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
 
 
 @wp.func
+def _quat_rotate_f64(u: wp.vec3d, w: wp.float64, v: wp.vec3) -> wp.vec3:
+    """Rotate ``v`` by the quaternion ``(u, w)`` divided by its norm, in float64."""
+    vd = wp.vec3d(v)
+    uv = wp.cross(u, vd)
+    t = w * uv + wp.cross(u, uv)
+    # v + 2 (w (u x v) + u x (u x v)) / |q|^2 needs no square root or normalized copy of q.
+    return wp.vec3(vd + (wp.float64(2.0) / (wp.dot(u, u) + w * w)) * t)
+
+
+@wp.func
 def quat_rotate_normalized(q: wp.quat, v: wp.vec3) -> wp.vec3:
-    """Rotate ``v`` by ``q / |q|``, normalizing and rotating in float64.
+    """Rotate ``v`` by ``q / |q|`` in float64.
 
     ``wp.quat_rotate`` assumes ``|q| == 1`` and otherwise returns
     ``|q|^2 R v + (|q|^2 - 1) v``. Float32 quaternions miss unit norm by up
     to ~1e-7, and float32 normalization leaves that error biased positive,
     so repeating the FREE/BALL frame changes on every :class:`SolverMuJoCo`
     step would scale velocities and anchor-relative positions geometrically.
-    Float64 keeps each push/pull round trip unbiased.
+    Float32 rounding inside the rotation repeats the same way while the state
+    changes slowly, so the rotation itself runs in float64.
     """
-    return wp.vec3(wp.quat_rotate(wp.normalize(wp.quatd(q)), wp.vec3d(v)))
+    return _quat_rotate_f64(wp.vec3d(wp.float64(q[0]), wp.float64(q[1]), wp.float64(q[2])), wp.float64(q[3]), v)
 
 
 @wp.func
 def quat_rotate_inv_normalized(q: wp.quat, v: wp.vec3) -> wp.vec3:
     """Rotate ``v`` by the inverse of ``q / |q|``; see :func:`quat_rotate_normalized`."""
-    return wp.vec3(wp.quat_rotate_inv(wp.normalize(wp.quatd(q)), wp.vec3d(v)))
+    return _quat_rotate_f64(-wp.vec3d(wp.float64(q[0]), wp.float64(q[1]), wp.float64(q[2])), wp.float64(q[3]), v)
 
 
 # Coupling kernels
