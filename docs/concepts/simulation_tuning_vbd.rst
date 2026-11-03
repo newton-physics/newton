@@ -253,8 +253,8 @@ zero slip.
 
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
-contacts. Contacting bodies may share a color, which can slow or prevent
-contact convergence. For small scenes with predictable contacts, consider splitting
+contacts. Contacting bodies may share a color, which can slow convergence.
+For small scenes with predictable contacts, consider splitting
 existing groups in ``builder.body_color_groups`` to separate frequently
 contacting bodies. Make these edits after ``builder.color()`` and before
 ``builder.finalize()``; calling ``color()`` again replaces them.
