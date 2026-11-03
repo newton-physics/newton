@@ -75,7 +75,7 @@ Building a multi-world gripper (the classes mirror Newton's Builder -> Model -> 
     ...solver step...
     state_in_prev, state_in_curr = state_in_curr, state_in_prev
 
-The scene: a fixed-base palletizer arm (assets/palletizer_arm.usda) with four suction pads on its flange,
+The scene: a fixed-base FANUC M-710iD/50M arm (fanuc_m710id_50m in newton-assets) with four suction pads on its flange,
 two pallets, and the pick boxes -- one wide panel and six crates (assets/palletizer_scene.usda).
 The panel is picked first, then each crate in turn; every crate waits out of reach until its turn
 comes, when it is teleported onto the pick pallet. Arm joint targets are interpolated from the
