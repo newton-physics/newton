@@ -9432,15 +9432,20 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
         self.assertIn("floater", str(mjc_warnings[0].message))
 
 
-class TestMuJoCoSolverVelocitySync(unittest.TestCase):
-    """SolverMuJoCo's per-step qpos/qvel sync must not bias FREE or BALL velocities."""
+class TestMuJoCoSolverStateSync(unittest.TestCase):
+    """SolverMuJoCo's per-step qpos/qvel sync must not bias FREE or BALL joint state."""
 
     # Float32 rotation whose |q|^2 - 1 is +8.1e-8, so the anchor-frame conversions
     # see a non-unit quaternion on every step.
     PARENT_XFORM = wp.transform((1.0, -0.5, 0.25), wp.quat(0.08189196, 0.0, 0.57195348, 0.81618810))
     CHILD_ROT = wp.quat_rpy(-0.3, 0.2, 0.1)
 
-    def _run_spin(self, joint_type: JointType, steps: int = 500, dt: float = 1.0e-3):
+    def _run(self, joint_type: JointType, qd, joint_pos=None, steps: int = 500, dt: float = 1.0e-3):
+        """Step a torque-free isotropic body with ``update_data_interval=1``.
+
+        Returns the initial and final ``(joint_q, joint_qd)``. ``qd`` and
+        ``joint_pos`` are in the parent anchor frame.
+        """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_link(mass=1.0, inertia=wp.mat33(0.1 * np.eye(3)))
         if joint_type == JointType.FREE:
@@ -9455,22 +9460,22 @@ class TestMuJoCoSolverVelocitySync(unittest.TestCase):
         builder.add_articulation([joint])
         model = builder.finalize()
 
-        # 3 rad/s spin (and, for FREE, 0.5 m/s drift) expressed in the parent anchor frame.
-        qd = model.joint_qd.numpy()
-        if joint_type == JointType.FREE:
-            qd[0:6] = [0.5, 0.0, 0.0, 0.0, 3.0, 0.0]
-        else:
-            qd[0:3] = [0.0, 3.0, 0.0]
-        model.joint_qd.assign(qd)
+        if joint_pos is not None:
+            q = model.joint_q.numpy()
+            q[0:3] = joint_pos
+            model.joint_q.assign(q)
+        joint_qd = model.joint_qd.numpy()
+        joint_qd[: len(qd)] = qd
+        model.joint_qd.assign(joint_qd)
 
         solver = SolverMuJoCo(model, update_data_interval=1, disable_contacts=True)
         state_0, state_1 = model.state(), model.state()
         control = model.control()
-        initial_qd = state_0.joint_qd.numpy().copy()
+        initial = (state_0.joint_q.numpy().copy(), state_0.joint_qd.numpy().copy())
         for _ in range(steps):
             solver.step(state_0, state_1, control, None, dt)
             state_0, state_1 = state_1, state_0
-        return initial_qd, state_0.joint_qd.numpy()
+        return initial, (state_0.joint_q.numpy(), state_0.joint_qd.numpy())
 
     def test_free_joint_velocity_preserved(self):
         """Keep a torque-free FREE body's spin rate and linear speed constant across synced steps.
@@ -9479,14 +9484,24 @@ class TestMuJoCoSolverVelocitySync(unittest.TestCase):
         positive, so rotating qvel with ``wp.quat_rotate`` on every push and pull
         used to grow ``|omega|`` by up to ``4 (|q|^2 - 1)`` per step.
         """
-        initial_qd, final_qd = self._run_spin(JointType.FREE)
+        (_, initial_qd), (_, final_qd) = self._run(JointType.FREE, qd=[0.5, 0.0, 0.0, 0.0, 3.0, 0.0])
         np.testing.assert_allclose(np.linalg.norm(final_qd[3:6]), np.linalg.norm(initial_qd[3:6]), rtol=1.0e-5)
         np.testing.assert_allclose(np.linalg.norm(final_qd[0:3]), np.linalg.norm(initial_qd[0:3]), rtol=1.0e-5)
 
     def test_ball_joint_spin_rate_preserved(self):
         """Keep a torque-free BALL body's spin rate constant across synced steps."""
-        initial_qd, final_qd = self._run_spin(JointType.BALL)
+        (_, initial_qd), (_, final_qd) = self._run(JointType.BALL, qd=[0.0, 3.0, 0.0])
         np.testing.assert_allclose(np.linalg.norm(final_qd[0:3]), np.linalg.norm(initial_qd[0:3]), rtol=1.0e-5)
+
+    def test_free_joint_position_preserved_at_rest(self):
+        """Keep a FREE body at rest 3 m from a rotated parent anchor in place across synced steps.
+
+        The anchor transforms are applied to the position on every push and
+        pull, so a non-unit anchor quaternion used to scale the anchor-relative
+        position by up to ``1 + 4 (|q|^2 - 1)`` per step.
+        """
+        (initial_q, _), (final_q, _) = self._run(JointType.FREE, qd=[0.0] * 6, joint_pos=(3.0, 0.0, 0.0))
+        np.testing.assert_allclose(final_q[0:3], initial_q[0:3], atol=3.0e-5)
 
 
 class TestMuJoCoSolverZeroMassBody(unittest.TestCase):

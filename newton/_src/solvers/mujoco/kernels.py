@@ -229,9 +229,9 @@ def quat_rotate_normalized(q: wp.quat, v: wp.vec3) -> wp.vec3:
     ``wp.quat_rotate`` assumes ``|q| == 1`` and otherwise returns
     ``|q|^2 R v + (|q|^2 - 1) v``. Float32 quaternions miss unit norm by up
     to ~1e-7, and float32 normalization leaves that error biased positive,
-    so repeating the qvel frame changes on every :class:`SolverMuJoCo` step
-    would scale velocities geometrically. Float64 keeps each push/pull round
-    trip unbiased.
+    so repeating the FREE/BALL frame changes on every :class:`SolverMuJoCo`
+    step would scale velocities and anchor-relative positions geometrically.
+    Float64 keeps each push/pull round trip unbiased.
     """
     return wp.vec3(wp.quat_rotate(wp.normalize(wp.quatd(q)), wp.vec3d(v)))
 
@@ -840,10 +840,14 @@ def convert_mj_coords_to_warp_kernel(
                 qpos[worldid, q_i + 6],
             )
         )
-        world_xform = wp.transform(world_pos, world_rot)
-        joint_xform = wp.transform_inverse(joint_X_p[joint_id]) * world_xform * joint_X_c[joint_id]
-        joint_pos = wp.transform_get_translation(joint_xform)
-        joint_rot = wp.transform_get_rotation(joint_xform)
+        # inv(joint_X_p) * world_xform * joint_X_c, with the translation rotated
+        # by normalized quaternions so the push/pull round trip stays unbiased.
+        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
+        joint_rot = wp.quat_inverse(q_p) * world_rot * wp.transform_get_rotation(joint_X_c[joint_id])
+        anchor_offset_world = quat_rotate_normalized(world_rot, wp.transform_get_translation(joint_X_c[joint_id]))
+        joint_pos = quat_rotate_inv_normalized(
+            q_p, world_pos - wp.transform_get_translation(joint_X_p[joint_id]) + anchor_offset_world
+        )
         joint_q[wq_i + 0] = joint_pos[0]
         joint_q[wq_i + 1] = joint_pos[1]
         joint_q[wq_i + 2] = joint_pos[2]
@@ -855,8 +859,6 @@ def convert_mj_coords_to_warp_kernel(
         # MuJoCo qvel for FREE: linear is body-origin velocity in world,
         # angular is in body frame. Convert origin→COM in world, then rotate
         # the twist into the parent joint frame.
-        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
-
         w_body = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
         w_world = quat_rotate_normalized(world_rot, w_body)
 
@@ -949,13 +951,18 @@ def convert_warp_coords_to_mj_kernel(
         # joint_qd[0:6] follows the parent-frame contract from State.joint_qd.
         # MuJoCo only allows FREE joints at the worldbody root, so the parent
         # anchor's world transform is joint_X_p.
-        joint_xform = wp.transform(
-            wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2]),
-            wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6]),
+        # joint_X_p * joint_xform * inv(joint_X_c), with the translation rotated
+        # by normalized quaternions; see convert_mj_coords_to_warp_kernel.
+        joint_pos = wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2])
+        joint_rot = wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6])
+        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
+        world_rot = q_p * joint_rot * wp.quat_inverse(wp.transform_get_rotation(joint_X_c[joint_id]))
+        anchor_offset_world = quat_rotate_normalized(world_rot, wp.transform_get_translation(joint_X_c[joint_id]))
+        world_pos = (
+            wp.transform_get_translation(joint_X_p[joint_id])
+            + quat_rotate_normalized(q_p, joint_pos)
+            - anchor_offset_world
         )
-        world_xform = joint_X_p[joint_id] * joint_xform * wp.transform_inverse(joint_X_c[joint_id])
-        world_pos = wp.transform_get_translation(world_xform)
-        world_rot = wp.transform_get_rotation(world_xform)
 
         qpos[worldid, q_i + 0] = world_pos[0]
         qpos[worldid, q_i + 1] = world_pos[1]
@@ -970,7 +977,6 @@ def convert_warp_coords_to_mj_kernel(
 
         # Velocities: rotate parent-frame twist into world, then apply CoM→origin
         # and world→body conversions to match MuJoCo qvel.
-        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
         v_com_parent = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
         w_parent = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
 
