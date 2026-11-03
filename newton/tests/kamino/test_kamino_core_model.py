@@ -5,6 +5,7 @@
 Unit tests for the :class:`ModelKamino` class, model conversion, and related functionality.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -25,7 +26,7 @@ from newton._src.solvers.kamino._src.core.joints import (
     JointActuationType,
 )
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests import get_kamino_basics_asset
 from newton.tests.kamino import setup_tests, test_context
@@ -37,6 +38,8 @@ from newton.tests.utils.basics import (
     build_boxes_nunchaku,
     make_basics_heterogeneous_builder,
 )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -52,15 +55,15 @@ class TestModel(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_single_model(self):
         # Create a model builder
@@ -68,15 +71,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, builder.body_count)
@@ -99,15 +100,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder1.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         data = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(data)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(data)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, total_nb)
@@ -124,15 +123,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, num_worlds * 2)
@@ -147,19 +144,17 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_bodies(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_joints(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_bodies(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_joints(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.info.num_worlds, num_worlds)
@@ -174,15 +169,15 @@ class TestModelConversions(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_model_conversions_consistency_fourbar_from_builder(self):
         """
@@ -1086,15 +1081,15 @@ class TestStateControlConversions(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_state_conversions(self):
         """
