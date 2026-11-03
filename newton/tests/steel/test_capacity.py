@@ -149,6 +149,24 @@ def test_status_snapshot_reports_status_at_snapshot(test, device, solve_mode="ma
         solver.check_constraint_capacity()
 
 
+def test_unchecked_status_snapshot_is_kept_by_reset(test, device):
+    """Report an unchecked snapshot's error after a reset, and retake the snapshot on a reset once it is checked."""
+    model = _box_on_ground(device)
+    solver = SolverSteel(model, free_body_constraint_max=1, warn_constraint_overflow=False)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+    solver.snapshot_constraint_status()
+    solver.reset(state_out)
+    solver.check_constraint_capacity()
+    with test.assertRaisesRegex(RuntimeError, "dropped contacts or constraint rows"):
+        solver.check_constraint_capacity(snapshot=True)
+    solver.reset(state_out)
+    solver.check_constraint_capacity(snapshot=True)
+
+
 def test_released_snapshot_solver_keeps_another_capture_valid(test, device):
     """Release a solver that took and read a snapshot while another graph is being captured."""
     model = _box_on_ground(device)
@@ -213,6 +231,14 @@ add_function_test(
     TestSteelCapacityStatus,
     "test_status_snapshot_reports_status_at_snapshot",
     test_status_snapshot_reports_status_at_snapshot,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestSteelCapacityStatus,
+    "test_unchecked_status_snapshot_is_kept_by_reset",
+    test_unchecked_status_snapshot_is_kept_by_reset,
     devices=devices,
 )
 
