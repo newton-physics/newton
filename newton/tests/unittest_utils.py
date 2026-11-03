@@ -179,6 +179,26 @@ except OSError:
     LIBC = None
 
 
+def count_initial_contacts(model):
+    """Rigid contacts in a model's initial pose from Newton's collision pipeline and from native MuJoCo.
+
+    Returns both counts and the :class:`~newton.solvers.SolverMuJoCo` built on the CPU to get
+    MuJoCo's, so a test can inspect the converted model as well.
+    """
+    import newton  # noqa: PLC0415  (deferred: keep unittest_utils import-light)
+    from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+    mujoco, _ = SolverMuJoCo.import_mujoco()
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+    mujoco.mj_forward(solver.mj_model, solver.mj_data)
+    return int(contacts.rigid_contact_count.numpy()[0]), int(solver.mj_data.ncon), solver
+
+
 def get_selected_cuda_test_devices(mode: str | None = None):
     """Returns a list of CUDA devices according the selected ``mode`` behavior.
 

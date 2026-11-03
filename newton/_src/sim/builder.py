@@ -84,7 +84,7 @@ from ..geometry.types import Heightfield, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
-from ..utils import compute_world_offsets
+from ..utils import compute_world_offsets, tree_joint_mask
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .body_variants import (
@@ -1059,7 +1059,10 @@ class ModelBuilder:
         collision_group: int = 1
         """The collision group ID for the shape. Defaults to 1 (default group). Set to 0 to disable collisions for this shape."""
         collision_filter_parent: bool = True
-        """Whether to inherit collision filtering from the parent. Defaults to True."""
+        """Whether the shape takes part in parent-child collision filtering. A filtering joint of its body
+        (``collision_filter_parent=True``) then filters the shape against the shapes of the body on the joint's
+        other side and of that body's weld group, whichever of the joint and the shape is added first.
+        ``False`` keeps the shape colliding with them. Defaults to True."""
         has_shape_collision: bool = True
         """Whether the shape can collide with other shapes. Defaults to True."""
         has_particle_collision: bool = True
@@ -10052,7 +10055,9 @@ class ModelBuilder:
                         cfg.density = 0.0  # do not add extra mass / inertia
                         cfg.gap = self.shape_gap[shape]
                         cfg.collision_group = self.shape_collision_group[shape]
-                        cfg.collision_filter_parent = False
+                        # The parts take part in parent filtering like their source shape. add_shape then
+                        # adds their direct parent-child pairs again; finalize() dedupes the pairs.
+                        cfg.collision_filter_parent = self.shape_collision_filter_parent[shape]
                         for i in range(1, len(decomposition)):
                             # add additional convex parts as convex meshes
                             extra_shape = self.add_shape_convex_hull(
@@ -16444,15 +16449,44 @@ class ModelBuilder:
                 )
             yield (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
 
+    def _equality_loop_joint_mask(self) -> np.ndarray | None:
+        """Mask of the joints that imported MuJoCo equality constraints target, ``None`` without any.
+
+        Such joints (MJCF equality welds and connects imported as loop joints) never place a body;
+        see :func:`~newton._src.utils.topology.tree_joint_mask`.
+        """
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        if target_kind_attr is None or target_attr is None or not target_attr.values:
+            return None
+        kinds = target_kind_attr.values or {}
+        if not isinstance(kinds, dict):
+            kinds = dict(enumerate(kinds))
+        targets = target_attr.values
+        if not isinstance(targets, dict):
+            targets = dict(enumerate(targets))
+        mask = np.zeros(self.joint_count, dtype=bool)
+        for eq_idx, target in targets.items():
+            try:
+                # kind 1 targets a joint (MjcEqualityTargetKind.JOINT in the MuJoCo solver)
+                if target is None or int(kinds.get(eq_idx, 0)) != 1 or not 0 <= int(target) < self.joint_count:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            mask[int(target)] = True
+        return mask
+
     def _weld_group_filter_pairs(self) -> np.ndarray:
         """Shape pairs that filtering joints add across weld groups, shape [pair_count, 2].
 
         A joint with ``collision_filter_parent=True`` filters the colliding shapes of its
         child's weld group against those of its parent's weld group. Weld groups are the
         bodies connected by FIXED or zero-DOF tree joints, so a filtering weld joint filters
-        its whole group against itself. Tree joints are the joints of articulations and the
-        first world joint of every other body, as in :class:`~newton.solvers.SolverMuJoCo`;
-        loop-closure joints (MJCF equality welds among them) neither weld nor expand, they keep
+        its whole group against itself. Tree joints come from
+        :func:`~newton._src.utils.topology.tree_joint_mask`, shared with
+        :class:`~newton.solvers.SolverMuJoCo`: the joints of articulations and the first world
+        joint of every other body, never a joint an imported MuJoCo equality constraint targets.
+        Loop-closure joints (MJCF equality welds among them) neither weld nor expand, they keep
         their direct pair. Bodies welded to the world form no group, as in MuJoCo, so a joint
         below one of them filters that body alone. Shapes whose
         :attr:`ShapeConfig.collision_filter_parent` is ``False`` take no part.
@@ -16469,43 +16503,27 @@ class ModelBuilder:
         joint_child = np.asarray(self.joint_child, dtype=np.int64)
         joint_type = np.asarray(self.joint_type, dtype=np.int64)
         dof_count = np.asarray(self.joint_dof_dim, dtype=np.int64).reshape(-1, 2).sum(axis=1)
-        articulated = np.asarray(self.joint_articulation, dtype=np.int64) >= 0
-        articulated_bodies = np.zeros(body_count, dtype=bool)
-        articulated_bodies[joint_child[articulated]] = True
-        articulated_bodies[joint_parent[articulated & (joint_parent >= 0)]] = True
-        is_tree = articulated.copy()
-        world_joints = np.flatnonzero(~articulated & (joint_parent < 0) & ~articulated_bodies[joint_child])
-        if world_joints.shape[0]:
-            # The first world joint of a body outside any articulation is its tree joint.
-            first = np.unique(joint_child[world_joints], return_index=True)[1]
-            is_tree[world_joints[first]] = True
+        is_tree = tree_joint_mask(
+            joint_parent, joint_child, self.joint_articulation, body_count, self._equality_loop_joint_mask()
+        )
         is_weld = is_tree & ((joint_type == JointType.FIXED) | (dof_count == 0))
         welded = is_weld & (joint_parent >= 0)
         if not np.any(welded):
             # Every weld group is a single body: the direct pairs already cover the rule.
             return empty
 
-        # Weld root per body: the smallest body index of its group, by label propagation
-        # with pointer jumping (a chain of welds converges in a few passes).
-        weld_a = joint_parent[welded]
-        weld_b = joint_child[welded]
+        # Weld root per body: follow the tree welds upward to the topmost body of the group, which
+        # is MuJoCo's weld id. A body has one tree joint, so at most one weld leads up from it.
         root = np.arange(body_count, dtype=np.int64)
-        while True:
-            merged = np.minimum(root[weld_a], root[weld_b])
-            new_root = root.copy()
-            np.minimum.at(new_root, weld_a, merged)
-            np.minimum.at(new_root, weld_b, merged)
-            new_root = new_root[new_root]
-            if np.array_equal(new_root, root):
-                break
-            root = new_root
+        root[joint_child[welded]] = joint_parent[welded]
+        while not np.array_equal(next_root := root[root], root):
+            root = next_root
 
-        # A group welded to the world is no group: each of its bodies stands for itself.
+        # A group welded to the world is no group: each of its bodies stands for itself. The body
+        # welded to the world is such a group's root.
         world_welded = np.zeros(body_count, dtype=bool)
         world_welded[joint_child[is_weld & (joint_parent < 0)]] = True
-        world_root = np.zeros(body_count, dtype=bool)
-        np.logical_or.at(world_root, root, world_welded)
-        side = np.where(world_root[root], np.arange(body_count, dtype=np.int64), root)
+        side = np.where(world_welded[root], np.arange(body_count, dtype=np.int64), root)
         side_body_count = np.bincount(side, minlength=body_count)
 
         shape_body = np.asarray(self.shape_body, dtype=np.int64)

@@ -4971,6 +4971,38 @@ class TestParentCollisionFilterWeldGroups(unittest.TestCase):
             }
         self.assertEqual(self._pairs(model), expected)
 
+    def test_decomposed_shapes_keep_parent_filters(self):
+        """Convex parts from approximate_meshes() filter like their source shape, whichever comes first."""
+        mesh = newton.Mesh.create_box(0.05, duplicate_vertices=False, compute_normals=False, compute_uvs=False)
+
+        def split_in_three(backend_mesh, **_kwargs):
+            vertices, faces = np.asarray(backend_mesh.vertices), np.asarray(backend_mesh.faces)
+            return [(vertices.copy(), faces.copy()) for _ in range(3)]
+
+        module_name, fake_coacd = TestModelMesh._make_fake_decomposition_backend("coacd", split_in_three)
+        for decompose_first in (False, True):
+            with self.subTest(decompose_first=decompose_first):
+                builder = newton.ModelBuilder()
+                hand, s_hand = self._link(builder, 1.0)
+                palm, _ = self._link(builder, 1.05, False)
+                finger, _ = self._link(builder, 1.1, False)
+                s_finger = builder.add_shape_mesh(finger, mesh=mesh, label="finger")
+
+                def decompose(builder=builder, s_finger=s_finger):
+                    with patch_sys_module(module_name, fake_coacd):
+                        builder.approximate_meshes(method="coacd", shape_indices=[s_finger], raise_on_failure=True)
+
+                if decompose_first:
+                    decompose()
+                joints = [builder.add_joint_free(hand), builder.add_joint_fixed(hand, palm)]
+                joints.append(builder.add_joint_revolute(palm, finger, axis=newton.Axis.Z))
+                builder.add_articulation(joints)
+                if not decompose_first:
+                    decompose()
+                parts = (s_finger, *(builder.shape_label.index(f"finger_convex_{i}") for i in (1, 2)))
+                # every part of the finger is filtered against the hand through the shapeless weld
+                self.assertEqual(self._pairs(builder.finalize(device="cpu")), {(s_hand, part) for part in parts})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

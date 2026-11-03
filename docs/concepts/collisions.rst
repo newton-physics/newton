@@ -1351,7 +1351,7 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``collision_group``
      - Collision group ID. 0 disables collisions. Default: 1.
    * - ``collision_filter_parent``
-     - Filter collisions with adjacent body (parent in articulation or connected via joint). Default: True.
+     - Whether the shape takes part in parent-child filtering: a filtering joint of its body filters it against the shapes of the body on the joint's other side and of that body's weld group, whichever is added first. ``False`` keeps it colliding with them. Default: True.
    * - ``has_shape_collision``
      - Whether shape collides with other shapes. Default: True.
    * - ``has_particle_collision``

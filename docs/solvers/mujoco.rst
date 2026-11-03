@@ -1042,11 +1042,14 @@ parent-child rule (``filterparent``) and exports the body pairs that Newton
 filters as contact excludes, or as per-slot collision masks for per-world mesh
 layouts. Since :class:`~newton.ModelBuilder` filters a joint's child weld group
 against its parent's weld group (see :doc:`/concepts/collisions`), a default
-model collides the same way in both pipelines, and a joint with
+model collides the same way in both pipelines, and a moving joint with
 ``collision_filter_parent=False``, whether authored in the builder, imported
 from MJCF or USD, or coming from a USD joint with
 ``physics:collisionEnabled=true``, lets its parent and child collide in MuJoCo
-as well.
+as well. This does not extend to welds: MuJoCo merges the bodies of a fixed or
+zero-DOF tree joint into one weld body whose geoms never collide with each
+other, whatever the joint's flag, so such a pair touches only in Newton's own
+collision pipeline.
 
 ``gravity="disable"`` sets Newton's builder gravity to zero, affecting
 all solvers and content already added to the shared builder. Inside
