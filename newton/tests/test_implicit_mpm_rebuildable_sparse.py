@@ -467,6 +467,73 @@ def test_rebuildable_sparse_cuda_graph_reports_overflow(test, device):
     solver.check_sparse_grid_rebuild_status()
 
 
+def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
+    """Carry grid collider impulses across in-place rebuilds, matching a sparse grid allocated each step.
+
+    Two separate worlds with different gravities keep their own impulses, and a masked reset clears only one.
+    """
+    spacing = 0.025
+    local = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(local)
+    local.add_particle_grid(
+        pos=wp.vec3(0.0, 0.0, 0.5 * spacing),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=8,
+        dim_y=8,
+        dim_z=12,
+        cell_x=spacing,
+        cell_y=spacing,
+        cell_z=spacing,
+        mass=spacing**3 * 1000.0,
+        jitter=0.0,
+        radius_mean=0.5 * spacing,
+        custom_attributes={"mpm:young_modulus": 1.0e5, "mpm:friction": 0.5},
+    )
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_world(local)
+    builder.add_world(local)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -20.0), world=1)
+    reset_mask = wp.array([False, True, False], dtype=wp.bool, device=device)
+
+    def settle(max_active_cell_count, capture=False):
+        # Few iterations cannot rebuild the ground's support from cold impulses.
+        config = SolverImplicitMPM.Config(
+            grid_type="sparse",
+            voxel_size=2.0 * spacing,
+            max_active_cell_count=max_active_cell_count,
+            collider_basis="S2",
+            warmstart_mode="particles",
+            max_iterations=10,
+            tolerance=0.0,
+            separate_worlds=True,
+        )
+        solver = SolverImplicitMPM(model, config, verbose=False)
+        state = model.state()
+        graph = None
+        if capture:
+            with wp.ScopedCapture(device=device) as capture_scope:
+                solver.step(state, state, None, None, 1.0 / 120.0)
+            graph = capture_scope.graph
+        for step in range(40):
+            if step == 20:
+                solver.reset(state, world_mask=reset_mask, flags=0)
+            if graph is None:
+                solver.step(state, state, None, None, 1.0 / 120.0)
+            else:
+                wp.capture_launch(graph)
+        return state.particle_q.numpy()
+
+    reference = settle(-1)
+    test.assertGreater(reference[:, 2].min(), -0.5 * spacing)
+    np.testing.assert_allclose(settle(8192), reference, atol=1.0e-6)
+    # Graphs captured before the first step keep the warm start across replays.
+    np.testing.assert_allclose(settle(8192, capture=True), reference, atol=1.0e-6)
+
+
 class TestImplicitMPMRebuildableSparse(unittest.TestCase):
     pass
 
@@ -597,6 +664,14 @@ add_function_test(
     TestImplicitMPMRebuildableSparse,
     "test_rebuildable_sparse_cuda_graph_reports_overflow",
     test_rebuildable_sparse_cuda_graph_reports_overflow,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_rebuildable_sparse_warmstarts_collider_impulses",
+    test_rebuildable_sparse_warmstarts_collider_impulses,
     devices=cuda_devices,
     check_output=False,
 )

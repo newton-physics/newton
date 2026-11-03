@@ -1579,7 +1579,7 @@ def create_mesh_capsule(
     compute_normals: bool = True,
     compute_uvs: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
-    """Create capsule geometry data with optional normals and UVs."""
+    """Create a closed capsule with shared equator rings and single pole vertices."""
     positions = []
     normals = [] if compute_normals else None
     uvs = [] if compute_uvs else None
@@ -1587,47 +1587,53 @@ def create_mesh_capsule(
 
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
+    if segments < 3:
+        raise ValueError("segments must be at least 3")
+    if radius < 0.0 or half_height < 0.0:
+        raise ValueError("radius and half_height must be nonnegative")
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
-    up_vector = np.zeros(3, dtype=np.float32)
-    up_vector[up_axis] = half_height
 
-    for i in range(segments + 1):
-        theta = i * np.pi / segments
-        sin_theta = np.sin(theta)
-        cos_theta = np.cos(theta)
+    def add_vertex(x: float, y: float, z: float, offset: float) -> None:
+        normal = np.array((x, y, z), dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        pos = radius * normal
+        pos[up_axis] += offset
+        positions.append(pos.tolist())
+        if compute_normals:
+            normals.append(normal.tolist())
+        if compute_uvs:
+            # Preserve the existing seam-free projected UV convention.
+            uvs.append([y * 0.5 + 0.5, z * 0.5 + 0.5])
 
-        for j in range(segments + 1):
-            phi = j * 2 * np.pi / segments
-            sin_phi = np.sin(phi)
-            cos_phi = np.cos(phi)
-
-            z = cos_phi * sin_theta
-            y = cos_theta
-            x = sin_phi * sin_theta
-
-            xyz = np.array((x, y, z), dtype=np.float32)
-            normal = xyz[[x_dir, y_dir, z_dir]]
-            pos = normal * radius
-            if normal[up_axis] >= 0.0:
-                pos += up_vector
-            else:
-                pos -= up_vector
-
-            positions.append(pos.tolist())
-            if compute_normals:
-                normals.append(normal.tolist())
-            if compute_uvs:
-                u = cos_theta * 0.5 + 0.5
-                v = cos_phi * sin_theta * 0.5 + 0.5
-                uvs.append([u, v])
-
-    nv = len(positions)
-    for i in range(segments):
+    add_vertex(0.0, 1.0, 0.0, half_height)
+    cap_segments = max(1, segments // 2)
+    profile = []
+    for i in range(1, cap_segments):
+        theta = i * np.pi / (2 * cap_segments)
+        profile.append((np.sin(theta), np.cos(theta), half_height))
+    profile.append((1.0, 0.0, half_height))
+    if half_height > 0.0:
+        profile.append((1.0, 0.0, -half_height))
+    for i in range(1, cap_segments):
+        theta = i * np.pi / (2 * cap_segments)
+        profile.append((np.cos(theta), -np.sin(theta), -half_height))
+    for ring_radius, y, offset in profile:
         for j in range(segments):
-            first = (i * (segments + 1) + j) % nv
-            second = (first + segments + 1) % nv
-            indices.extend([first, second, (first + 1) % nv, second, (second + 1) % nv, (first + 1) % nv])
+            phi = j * 2 * np.pi / segments
+            add_vertex(ring_radius * np.sin(phi), y, ring_radius * np.cos(phi), offset)
+    bottom = len(positions)
+    add_vertex(0.0, -1.0, 0.0, -half_height)
+
+    for j in range(segments):
+        next_j = (j + 1) % segments
+        indices.extend((0, 1 + j, 1 + next_j))
+        for ring in range(len(profile) - 1):
+            upper = 1 + ring * segments
+            lower = upper + segments
+            indices.extend((upper + j, lower + j, upper + next_j))
+            indices.extend((lower + j, lower + next_j, upper + next_j))
+        last = 1 + (len(profile) - 1) * segments
+        indices.extend((last + j, bottom, last + next_j))
 
     return (
         np.asarray(positions, dtype=np.float32),

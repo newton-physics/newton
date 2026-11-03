@@ -10,7 +10,12 @@ import warp as wp
 
 from ..core.types import vec5
 from .broad_phase_common import binary_search
-from .collision_convex import create_solve_convex_multi_contact, create_solve_convex_single_contact
+from .collision_convex import (
+    create_plane_convex_query,
+    create_solve_convex_multi_contact,
+    create_solve_convex_single_contact,
+    create_write_convex_query_result,
+)
 from .contact_data import ContactData
 from .support_function import (
     GenericShapeData,
@@ -18,12 +23,18 @@ from .support_function import (
     SupportMapDataProvider,
     pack_mesh_ptr,
     support_map,
+    support_map_lean,
+    support_map_lean_accelerated,
     unpack_mesh_ptr,
 )
 from .types import GeoType
 
 # Configuration flag for multi-contact generation
 ENABLE_MULTI_CONTACT = True
+
+# GJK/MPR see a sphere or capsule as its core (point or segment) inflated by this radius; the rest of the radius
+# is restored by the post-processors below, so a reported distance is the true surface distance.
+MINKOWSKI_CORE_RADIUS = wp.constant(1.0e-4)
 
 # Type definitions for multi-contact manifolds
 _mat53f = wp.types.matrix((5, 3), wp.float32)
@@ -156,12 +167,14 @@ def post_process_minkowski_only(
     radius_eff_b = contact_data.radius_eff_b
 
     if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center + normal * (radius_eff_a * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_a
+        restored_a = radius_eff_a - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center + normal * (restored_a * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_a
 
     if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center - normal * (radius_eff_b * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_b
+        restored_b = radius_eff_b - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center - normal * (restored_b * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_b
 
     return contact_data
 
@@ -204,13 +217,15 @@ def post_process_axial_on_discrete_contact(
     # 1. Minkowski object processing for spheres and capsules
     # Adjust contact point and distance for sphere/capsule A
     if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center + normal * (radius_eff_a * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_a
+        restored_a = radius_eff_a - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center + normal * (restored_a * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_a
 
     # Adjust contact point and distance for sphere/capsule B
     if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center - normal * (radius_eff_b * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_b
+        restored_b = radius_eff_b - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center - normal * (restored_b * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_b
 
     # 2. Axial shape rolling stabilization (cylinders and cones on discrete surfaces)
     is_discrete_a = is_discrete_shape(type_a)
@@ -336,8 +351,6 @@ def create_compute_gjk_mpr_contacts(
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
 
-        small_radius = 0.0001
-
         # Get shape types from shape data
         type_a = shape_a_data.shape_type
         type_b = shape_b_data.shape_type
@@ -345,11 +358,11 @@ def create_compute_gjk_mpr_contacts(
         # Special treatment for minkowski objects
         if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
             radius_eff_a = shape_a_data.scale[0]
-            shape_a_data.scale[0] = small_radius
+            shape_a_data.scale[0] = MINKOWSKI_CORE_RADIUS
 
         if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
             radius_eff_b = shape_b_data.scale[0]
-            shape_b_data.scale[0] = small_radius
+            shape_b_data.scale[0] = MINKOWSKI_CORE_RADIUS
 
         # Pre-pack ContactData template with static information
         contact_template = ContactData()
@@ -665,6 +678,13 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
     if post_process_contact is None:
         post_process_contact = post_process_axial_on_discrete_contact
 
+    plane_query = create_plane_convex_query(support_func)
+    # Keep the full support-map kernel's instruction footprint unchanged.
+    use_plane_convex_query = support_func in (support_map_lean, support_map_lean_accelerated)
+    write_query = create_write_convex_query_result(
+        support_func, writer_func, post_process_contact, use_precomputed_center=True
+    )
+
     @wp.func
     def find_contacts(
         pos_a: wp.vec3,
@@ -722,6 +742,36 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
             shape_data_a, pos_a_adjusted = convert_infinite_plane_to_cube(
                 shape_data_a, quat_a, pos_a, pos_b, bsphere_radius_b + rigid_gap
             )
+
+            if wp.static(use_plane_convex_query):
+                if shape_data_b.shape_type == GeoType.CONVEX_MESH:
+                    # An infinite plane has a known normal; only the hull support point is needed.
+                    result = wp.static(plane_query)(
+                        shape_data_b, quat_a, quat_b, pos_a_adjusted, pos_b, pos_a, data_provider
+                    )
+                    if result.signed_distance <= rigid_gap + margin_a + margin_b:
+                        contact = ContactData()
+                        contact.shape_a = shape_a
+                        contact.shape_b = shape_b
+                        contact.margin_a = margin_a
+                        contact.margin_b = margin_b
+                        contact.gap_sum = rigid_gap
+                        wp.static(write_query)(
+                            shape_data_a,
+                            shape_data_b,
+                            quat_a,
+                            quat_b,
+                            pos_a_adjusted,
+                            pos_b,
+                            wp.quat_inverse(quat_a) * quat_b,
+                            wp.quat_rotate_inv(quat_a, pos_b - pos_a_adjusted),
+                            result,
+                            data_provider,
+                            wp.static(not ENABLE_MULTI_CONTACT),
+                            writer_data,
+                            contact,
+                        )
+                    return
 
         pos_b_adjusted = pos_b
         if is_infinite_plane_b:

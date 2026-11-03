@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ......sim import ModelFlags
 from ....config import DVISolverConfig
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
@@ -397,6 +398,14 @@ class DVISolver:
         self._contacts = contacts
         if self._sparse_path is not None:
             self._sparse_path.contacts = contacts
+
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Accept model changes, which need no backend-specific handling."""
+        del flags
+
+    def validate_model_changed(self, flags: ModelFlags | int) -> None:
+        """Accept model changes, which need no backend-specific validation."""
+        del flags
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """
@@ -834,7 +843,7 @@ class DVISolver:
                     problem.data.bound_upper,
                     problem.data.D,
                     problem.data.P,
-                    problem.data.v_b,
+                    problem.data.v_b_friction,
                     block_iteration,
                     state.inequality_num_colors,
                     state.inequality_ids_by_color,
@@ -986,7 +995,7 @@ class DVISolver:
                     problem.data.bound_upper,
                     problem.data.D,
                     problem.data.P,
-                    problem.data.v_b,
+                    problem.data.v_b_friction,
                     block_iteration,
                     self._data.state.inequality_num_colors,
                     self._data.state.inequality_ids_by_color,
@@ -1128,7 +1137,7 @@ class DVISolver:
                 problem.data.bound_upper,
                 self._data.state.projected_D,
                 problem.data.P,
-                problem.data.v_b,
+                problem.data.v_b_friction,
                 _FUSED_BILATERAL_BLOCK,
                 self._data.state.inequality_num_colors,
                 self._data.state.inequality_ids_by_color,
