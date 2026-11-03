@@ -1,0 +1,1 @@
+Add mesh surface velocity (`Mesh.enable_surface_velocity`) support to `SolverSteel`, so a static mesh belt moves the bodies resting on it in every friction mode and articulated contact response. Persistent friction anchors follow the moving surface, and a moving surface keeps the bodies it touches awake.

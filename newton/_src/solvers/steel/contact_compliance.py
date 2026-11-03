@@ -194,7 +194,7 @@ def prepare_rows(solver, contacts, dt):
             inputs=[solver._shape_restitution, status],
             device=device,
         )
-    has_target = bool(solver._has_prescribed_response)
+    has_target = bool(solver._has_contact_target_velocity)
     wp.launch(
         _prepare_contacts,
         dim=contacts.rigid_contact_max,
