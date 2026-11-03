@@ -1477,6 +1477,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ``Model.joint_stiffness`` and ``Model.joint_rest_q`` during finalization.
         Runtime ``dof_passive_stiffness`` remains a deprecated alias to the core stiffness
         array; accessing or assigning the removed runtime ``dof_springref`` raises an error.
+
+        .. deprecated:: 1.8
+            The ``mujoco:site_size_is_display`` shape attribute is no longer populated
+            by the MJCF importer and has no effect. The importer now sets ``scale[2]``
+            of cylinder sites to zero instead, because MuJoCo ignores their third size
+            component. The attribute remains registered for compatibility and will be
+            removed in a future release.
         Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
         to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
@@ -1564,6 +1571,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # endregion custom frequencies
 
         # region geom attributes
+        # Deprecated in 1.8: no longer populated by the MJCF importer and has no effect.
+        # Kept registered so existing code that sets or reads it keeps working.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="site_size_is_display",

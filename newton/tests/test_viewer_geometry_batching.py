@@ -213,7 +213,7 @@ class TestViewerGeometryBatching(unittest.TestCase):
         self.assertAlmostEqual(float(np.max(radial_distances)), expected_equatorial_radius, places=6)
 
     def test_mjcf_cylinder_site_ignores_display_size(self):
-        """Treat an MJCF cylinder site's third size component as display metadata."""
+        """Import an MJCF cylinder site without a barrel radius."""
         builder = newton.ModelBuilder()
         builder.add_mjcf(
             """
@@ -233,7 +233,7 @@ class TestViewerGeometryBatching(unittest.TestCase):
         self.assertEqual(len(sites), 1)
 
         site = sites[0]
-        self.assertAlmostEqual(builder.shape_scale[site][2], 0.005)
+        self.assertEqual(builder.shape_scale[site][2], 0.0)
 
         viewer = _ViewerGeometryBatchingProbe()
         viewer.set_model(builder.finalize())

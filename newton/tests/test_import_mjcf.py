@@ -11502,7 +11502,7 @@ class TestSiteFromto(unittest.TestCase):
         )
         np.testing.assert_allclose(
             builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/cylinder")],
-            [0.1, 1.0, 0.3],
+            [0.1, 1.0, 0.0],
             atol=1.0e-6,
         )
         model = builder.finalize(device="cpu")
@@ -11543,6 +11543,29 @@ class TestSiteFromto(unittest.TestCase):
             atol=1.0e-6,
         )
 
+    def test_cylinder_site_ignores_third_size_component(self):
+        """Import a cylinder site without a barrel radius, as MuJoCo ignores its third size."""
+        mjcf = """
+<mujoco model="cylinder_site">
+    <worldbody>
+        <body name="body">
+            <geom type="sphere" size="0.1"/>
+            <site name="site" type="cylinder" size="0.1 0.2 0.05"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sites=True)
+
+        shape_idx = builder.shape_label.index("cylinder_site/worldbody/body/site")
+        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.1, 0.2, 0.0], atol=1.0e-6)
+
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_scale.numpy()[shape_idx], [0.1, 0.2, 0.0], atol=1.0e-6)
+        np.testing.assert_allclose(model.shape_collision_aabb_lower.numpy()[shape_idx], [-0.1, -0.1, -0.2], atol=1.0e-6)
+        np.testing.assert_allclose(model.shape_collision_aabb_upper.numpy()[shape_idx], [0.1, 0.1, 0.2], atol=1.0e-6)
+
     def test_site_fromto_inherits_defaults_inside_frame(self):
         """Compose an inherited fromto site with its containing frame."""
         mjcf = """
@@ -11565,7 +11588,7 @@ class TestSiteFromto(unittest.TestCase):
         shape_idx = builder.shape_label.index("site_fromto_frame/worldbody/site")
         shape_xform = builder.shape_transform[shape_idx]
         np.testing.assert_allclose(shape_xform[:3], [1.0, 3.0, 3.0], atol=1.0e-6)
-        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.005], atol=1.0e-6)
+        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.0], atol=1.0e-6)
 
         shape_quat = wp.quat(*shape_xform[3:])
         rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))

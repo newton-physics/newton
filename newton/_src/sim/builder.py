@@ -8891,10 +8891,7 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
-            site_size_is_display = cfg.is_site and bool(
-                custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False)
-            )
-            if type == GeoType.CYLINDER and not site_size_is_display and scale[2] != 0.0 and scale[2] < scale[1]:
+            if type == GeoType.CYLINDER and scale[2] != 0.0 and scale[2] < scale[1]:
                 raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
             if float(scale[1]) < 0.0:
@@ -15271,21 +15268,12 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
-            site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
-            for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, shape_scale_list, strict=True)
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, shape_scale_list, strict=True
             ):
-                site_size_is_display = bool(
-                    site_display_size_attr
-                    and site_display_size_attr.values.get(_shape_idx, site_display_size_attr.default)
-                )
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale))
-                elif shape_type == GeoType.CYLINDER and site_size_is_display:
-                    # MuJoCo cylinder sites may carry an unused third display-size component.
-                    # It is not Newton's barrel radius and does not affect their bounds.
-                    cache_key = (shape_type, (shape_scale[0], shape_scale[1], 0.0))
                 else:
                     cache_key = (shape_type, tuple(shape_scale))
 
@@ -15350,8 +15338,6 @@ class ModelBuilder:
                     elif shape_type == GeoType.CYLINDER:
                         # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
                         r, half_height, barrel_radius = shape_scale
-                        if site_size_is_display:
-                            barrel_radius = 0.0
                         radial_extent = r
                         if barrel_radius > 0.0:
                             radial_extent += (half_height * half_height) / (
