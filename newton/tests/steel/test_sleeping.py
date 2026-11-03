@@ -2295,8 +2295,9 @@ def test_colored_propagation_overflow_vetoes_sleep(test, device):
     launch = wp.launch
     asleep = {}
     for ignore_overflow in (False, True):
-        scene = _Heap(device, free_body_constraint_max=190, warn_constraint_overflow=False)
-        clean = wp.zeros(scene.solver._world_count, dtype=wp.bool, device=device)
+        # The settled arm and heap need more rows than this; once they sleep they need fewer.
+        scene = _Heap(device, propagation_constraint_max=300, warn_constraint_overflow=False)
+        clean = wp.zeros_like(scene.solver.constraint_overflow)
 
         def veto_without_overflow(kernel, dim, inputs=None, *args, scene=scene, clean=clean, **kwargs):
             if kernel in (module._veto_unsafe_islands, module._quiet_components):
@@ -2309,7 +2310,7 @@ def test_colored_propagation_overflow_vetoes_sleep(test, device):
         test.assertGreater(marks["propagation_overflow_world_steps"], 0, "the propagation rows must overflow")
         test.assertEqual(marks["articulation_overflow_world_steps"], 0)
         test.assertEqual(marks["free_body_overflow_world_steps"], 0)
-        test.assertTrue(scene.solver.constraint_overflow.numpy().all())
+        test.assertTrue(scene.solver.constraint_overflow.numpy()[: scene.model.world_count].all())
         asleep[ignore_overflow] = int(np.sum(scene.solver._sleeping.art_awake.numpy() == 0))
     test.assertEqual(asleep[False], 0)
     test.assertGreater(asleep[True], 0)
@@ -2348,7 +2349,7 @@ def test_colored_force_reset_and_notification_wake_islands(test, device):
 
     # Masked reset: world 2 wakes, other worlds keep their sleepers.
     before = sleeping.body_awake.numpy().copy()
-    mask = np.zeros(worlds, dtype=bool)
+    mask = np.zeros(worlds + 1, dtype=bool)
     mask[2] = True
     scene.solver.reset(scene.state_in, world_mask=wp.array(mask, dtype=wp.bool, device=device))
     after = sleeping.body_awake.numpy()
