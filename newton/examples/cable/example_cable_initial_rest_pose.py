@@ -99,7 +99,6 @@ class Example:
             bend_damping=bend_damping,
             label="straight_rest_helix_initial",
             color=(0.95, 0.35, 0.12),
-            body_frame_origin="com",
         )
 
         right_rest_points = _create_helix_points(
@@ -129,7 +128,6 @@ class Example:
             bend_damping=bend_damping,
             label="helix_rest_straight_initial",
             color=(0.15, 0.65, 1.0),
-            body_frame_origin="com",
         )
         self.cable_bodies = [left_bodies, right_bodies]
 
@@ -142,7 +140,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

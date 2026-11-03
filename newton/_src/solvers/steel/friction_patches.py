@@ -1556,29 +1556,28 @@ def seed_patch_impulses(
     dt: float,
     history: wp.array[float],
 ):
-    """Transport cached patch impulses after all contact normals have been seeded.
+    """Transport cached patch impulses and project every anchor's seed onto its patch cone.
 
-    Anchors without patch history keep whatever the contact-matched warm start
-    seeded; only carried anchors overwrite their friction rows. Carried impulses are
-    scaled by ``decay`` and by the step ratio :func:`warmstart_dt_scale`.
+    Anchors without patch history keep the contact-matched warm start, bounded by the region's load.
+    Carried impulses are scaled by ``decay`` and by the step ratio :func:`warmstart_dt_scale`.
     """
     c = wp.tid()
     if c >= count[0] or path[c] != route or slot[c] < 0 or slots_needed[c] < 3:
         return
-    source = frame.source[c]
-    if source < 0:
-        return
-    tangent = prev.tangent_impulse[source] * (decay * warmstart_dt_scale(dt, history))
-    if frame.body_a[c] >= 0:
-        tangent = wp.transform_vector(q[frame.body_a[c]], tangent)
-    n = frame.normal[c]
-    if frame.flipped[c] != 0:
-        n = -n
-        tangent = -tangent
-    t0, t1 = contact_tangent_basis(n)
-    value = wp.vec2(wp.dot(tangent, t0), wp.dot(tangent, t1))
     w = world[c]
     s = slot[c]
+    value = wp.vec2(impulses[w, s + 1], impulses[w, s + 2])
+    source = frame.source[c]
+    if source >= 0:
+        tangent = prev.tangent_impulse[source] * (decay * warmstart_dt_scale(dt, history))
+        if frame.body_a[c] >= 0:
+            tangent = wp.transform_vector(q[frame.body_a[c]], tangent)
+        n = frame.normal[c]
+        if frame.flipped[c] != 0:
+            n = -n
+            tangent = -tangent
+        t0, t1 = contact_tangent_basis(n)
+        value = wp.vec2(wp.dot(tangent, t0), wp.dot(tangent, t1))
     radius = wp.max(mu[w, s + 1] * patch_normal_load(parents, impulses, w, s), 0.0)
     magnitude = wp.length(value)
     if magnitude > radius and magnitude > 0.0:
@@ -1589,10 +1588,16 @@ def seed_patch_impulses(
 
 @wp.func
 def _point_velocity(
-    q: wp.array[wp.transform], qd: wp.array[wp.spatial_vector], com: wp.array[wp.vec3], body: int, anchor: wp.vec3
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    com: wp.array[wp.vec3],
+    body_to_articulation: wp.array[int],
+    body: int,
+    anchor: wp.vec3,
 ):
+    # Contact rows see a body outside every articulation at zero velocity, so its published velocity is ignored.
     velocity = wp.vec3(0.0)
-    if body >= 0:
+    if body >= 0 and body_to_articulation[body] >= 0:
         velocity = velocity_at_point(qd[body], wp.transform_vector(q[body], anchor - com[body]))
     return velocity
 
@@ -1605,6 +1610,7 @@ def finish_patch_impulses(
     q_out: wp.array[wp.transform],
     qd_out: wp.array[wp.spatial_vector],
     com: wp.array[wp.vec3],
+    body_to_articulation: wp.array[int],
     world: wp.array[int],
     slot: wp.array[int],
     path: wp.array[int],
@@ -1654,8 +1660,8 @@ def finish_patch_impulses(
         stored = wp.transform_vector(wp.transform_inverse(q[a]), tangent)
     frame.tangent_impulse[c] = stored
     radius = wp.max(mu[w, s + 1] * load, 0.0)
-    speed = _point_velocity(q_out, qd_out, com, a, frame.anchor_a[c]) - _point_velocity(
-        q_out, qd_out, com, b, frame.anchor_b[c]
+    speed = _point_velocity(q_out, qd_out, com, body_to_articulation, a, frame.anchor_a[c]) - _point_velocity(
+        q_out, qd_out, com, body_to_articulation, b, frame.anchor_b[c]
     )
     # Check opposing tangential motion to distinguish slipping from impending slip.
     if radius > 0.0 and wp.length(tangent) >= (1.0 - 1.0e-5) * radius:
