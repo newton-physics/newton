@@ -9849,8 +9849,8 @@ class ModelBuilder:
                 ``focal_length``. The horizontal extent then follows the image aspect
                 ratio, as with MJCF ``fovy``. Defaults to 45 degrees when no
                 intrinsics are given.
-            focal_length: Focal length [m]. Only its ratio to the aperture affects
-                the projection.
+            focal_length: Focal length [m]. Requires at least one positive
+                aperture; only its ratio to the aperture affects the projection.
             horizontal_aperture: Sensor width [m]. ``None`` or 0 derives it from the
                 vertical aperture and the image aspect ratio.
             vertical_aperture: Sensor height [m]. ``None`` or 0 derives it from the
