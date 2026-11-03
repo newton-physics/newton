@@ -597,7 +597,8 @@ class Contacts:
         """Whether this buffer holds body-pair-reduced rigid contacts.
 
         Fixed when :meth:`newton.CollisionPipeline.contacts` allocates the buffer
-        from a pipeline with body-pair reduction. Only such a pipeline can
+        from a pipeline with body-pair reduction whose scene has primitive or
+        convex contact pairs. Only such a pipeline can
         collide into it, and solvers that are not validated for reduced contacts
         reject it, eagerly or under CUDA graph capture alike.
 

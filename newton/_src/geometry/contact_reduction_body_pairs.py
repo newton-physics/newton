@@ -286,7 +286,7 @@ def build_group_reduction_config(
     hashtable_headroom: float,
     material_attributes,
     shape_pairs,
-    rigid_contact_max: int,
+    staging_capacity: int,
 ) -> tuple[GroupReductionConfig | None, int, int]:
     """Build the group-reduction settings for a pipeline.
 
@@ -296,7 +296,7 @@ def build_group_reduction_config(
         hashtable_headroom: Multiplier on the derived group-table capacity.
         material_attributes: Per-shape attributes that split groups (see :func:`build_reduction_groups`).
         shape_pairs: The explicit broad phase's pair list, or ``None`` for SAP and NXN.
-        rigid_contact_max: Staging capacity; also caps the table, since a group needs a contact.
+        staging_capacity: Raw contacts the stage holds; also caps the table, since a group needs a contact.
 
     Returns:
         ``(config, group_pair_bound, hashtable_capacity_request)``; ``config`` is ``None`` when no
@@ -339,12 +339,13 @@ def build_group_reduction_config(
     # several bins and cells: reserve four patch entries per group at half load.
     group_budget = 8 * len(np.unique(shape_group))
     # Cap in float: an extreme headroom would overflow the integer conversion.
-    capacity_request = min(float(max(group_pair_bound, group_budget)) * float(hashtable_headroom), rigid_contact_max)
+    capacity_request = min(float(max(group_pair_bound, group_budget)) * float(hashtable_headroom), staging_capacity)
     capacity_request = max(1024, int(capacity_request))
     config = GroupReductionConfig(
         shape_group=shape_group,
         cell_size=float(np.float32(cell_size)),
         hashtable_capacity=capacity_request,
+        staging_capacity=staging_capacity,
     )
     return config, group_pair_bound, capacity_request
 
@@ -428,6 +429,7 @@ class BodyPairReduction:
         capacity = self._capacity()
         return {
             "rigid_contact_max": self.rigid_contact_max,
+            "staging_capacity": 0 if self.reducer is None else self.reducer.capacity,
             "hashtable_capacity": capacity,
             "group_pair_bound": self.group_pair_bound,
             "hashtable_capacity_request": self.hashtable_capacity_request,

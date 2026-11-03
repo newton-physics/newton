@@ -622,16 +622,17 @@ class SolverBase:
             )
         if collision_pipeline is not None and collision_pipeline.model is not model:
             raise ValueError("collision_pipeline and solver must use the same model")
+        pipeline_contacts = None if collision_pipeline is None else collision_pipeline.contacts()
         if (
-            collision_pipeline is not None
-            and collision_pipeline.body_pair_reduction is not None
+            pipeline_contacts is not None
+            and pipeline_contacts.rigid_contacts_body_pair_reduced
             and not type(self).supports_body_pair_reduced_contacts
         ):
             raise ValueError(f"{type(self).__name__} cannot own a pipeline with body-pair contact reduction")
         self.collision_pipeline = collision_pipeline
         """The solver-owned collision pipeline, or ``None`` when detection is driven externally."""
         if collision_pipeline is not None:
-            self._pipeline_contacts = collision_pipeline.contacts()
+            self._pipeline_contacts = pipeline_contacts
         elif not hasattr(self, "_pipeline_contacts"):
             # Preserve contact storage assigned by existing SolverBase subclasses
             # before calling super().__init__().
@@ -1115,13 +1116,13 @@ class SolverBase:
 
     A :class:`newton.CollisionPipeline` built with ``body_pair_reduction``
     compacts rigid contacts to each patch's depth and sampled footprint
-    representatives, and stamps the buffers it allocates
-    (:attr:`Contacts.rigid_contacts_body_pair_reduced`).  A solver may only
+    representatives and, when the scene has primitive or convex contact pairs,
+    stamps the buffers it allocates (:attr:`Contacts.rigid_contacts_body_pair_reduced`).  A solver may only
     declare support after a conformance test demonstrates that it consumes
     contact depth with the reducer's signed-separation convention.  The built-in
     solvers that do not declare support raise in :meth:`step` when given a
-    stamped buffer, and :class:`SolverBase` rejects an owned pipeline with
-    body-pair reduction at construction.  A custom solver that does not declare
+    stamped buffer, and :class:`SolverBase` rejects an owned pipeline that
+    stamps its buffers at construction.  A custom solver that does not declare
     support should check the stamp itself.
 
     .. experimental::

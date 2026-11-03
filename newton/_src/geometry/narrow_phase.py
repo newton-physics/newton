@@ -2925,7 +2925,7 @@ class NarrowPhase:
         if _group_reduction is not None:
             self.export_group_contacts_kernel = create_export_group_contacts_kernel(writer_func)
             self.group_contact_reducer = GlobalContactReducer(
-                max_candidate_pairs if contact_max is None else contact_max,
+                _group_reduction.staging_capacity,
                 device=device,
                 deterministic=deterministic,
                 group_reduction=_group_reduction,

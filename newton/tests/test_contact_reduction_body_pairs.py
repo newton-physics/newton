@@ -33,6 +33,7 @@ from newton._src.geometry.contact_reduction_body_pairs import (
 )
 from newton._src.geometry.contact_reduction_global import (
     GROUP_CELL_COORD_MAX,
+    _group_pos_key,
     encode_oct,
     register_group_contacts_kernel,
 )
@@ -156,12 +157,12 @@ def _same_articulation_scissor(builder):
     return base
 
 
-def _sphere_grid_body(builder, pos, n=5, spacing=0.05, radius=0.01, mass=1.0):
+def _sphere_grid_body(builder, pos, n=5, spacing=0.05, radius=0.01, mass=1.0, center_dz=0.0):
     """One free body with an ``n x n`` grid of sphere colliders on its underside.
 
     Resting on a plane this emits ``n * n`` same-normal contacts -- one flat
     patch whose only irredundant members are the grid's outer ring (hull) and
-    the deepest point.
+    the deepest point. ``center_dz`` lowers the center sphere.
     """
     body = builder.add_body(xform=wp.transform(wp.vec3(*pos), wp.quat_identity()), mass=mass)
     for i in range(n):
@@ -169,7 +170,11 @@ def _sphere_grid_body(builder, pos, n=5, spacing=0.05, radius=0.01, mass=1.0):
             builder.add_shape_sphere(
                 body,
                 xform=wp.transform(
-                    wp.vec3((i - (n - 1) / 2.0) * spacing, (j - (n - 1) / 2.0) * spacing, 0.0),
+                    wp.vec3(
+                        (i - (n - 1) / 2.0) * spacing,
+                        (j - (n - 1) / 2.0) * spacing,
+                        center_dz if (i, j) == (n // 2, n // 2) else 0.0,
+                    ),
                     wp.quat_identity(),
                 ),
                 radius=radius,
@@ -244,6 +249,12 @@ def _max_angular_hole(points_xy, center_xy):
     ang = np.sort(np.arctan2(points_xy[:, 1] - center_xy[1], points_xy[:, 0] - center_xy[0]))
     holes = np.diff(np.concatenate([ang, [ang[0] + 2.0 * np.pi]]))
     return float(holes.max())
+
+
+@wp.kernel
+def _group_pos_key_kernel(points: wp.array[wp.vec2], cell_size: float, out: wp.array[wp.uint64]):
+    i = wp.tid()
+    out[i] = _group_pos_key(points[i], cell_size)
 
 
 @wp.kernel
@@ -392,7 +403,8 @@ class TestBodyPairReductionCounts(unittest.TestCase):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         # off-origin placement is deliberate: cells are measured from the pair's
         # own reference body, so distance from the world origin must not matter
-        _sphere_grid_body(builder, (5.13, 5.07, 0.0095))  # spheres just touching the plane
+        # spheres just touching the plane; the center one is uniquely deepest
+        _sphere_grid_body(builder, (5.13, 5.07, 0.0095), center_dz=-0.002)
         builder.add_ground_plane()
         model = builder.finalize(device=wp.get_device())
         state = model.state()
@@ -423,6 +435,9 @@ class TestBodyPairReductionCounts(unittest.TestCase):
             span_base = pts_base[:, axis].max() - pts_base[:, axis].min()
             span_red = pts_red[:, axis].max() - pts_red[:, axis].min()
             self.assertGreaterEqual(span_red, 0.7 * span_base)
+        # The center is interior to the footprint, so only the depth slot can keep it.
+        center_dist = np.linalg.norm(pts_red[:, :2] - np.array([5.13, 5.07]), axis=1)
+        self.assertLess(center_dist.min(), 1.0e-3, "deepest contact was dropped")
 
     def test_two_normal_patches_never_merge(self):
         """Keep both patches when one body touches ground and wall simultaneously.
@@ -706,6 +721,8 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertEqual(both_count, mesh_count)
         self.assertEqual(both_rows, mesh_rows, "body-pair reduction changed mesh-reduced contacts")
         self.assertEqual(stats["sum_contacts_in"], 0, "mesh contacts entered group reduction")
+        # Nothing is reduced by group, so the buffers stay unstamped and every solver accepts them.
+        self.assertFalse(both.contacts().rigid_contacts_body_pair_reduced)
 
     def test_group_mode_narrow_phase_rejects_simple_launch(self):
         """Group reduction runs only through launch_custom_write, which takes the body poses."""
@@ -936,6 +953,24 @@ class TestBodyPairReductionMultiPatch(unittest.TestCase):
             "cell coordinates should be relative to the body pair, so nothing clamps",
         )
 
+    def test_position_keys_distinct_across_the_cell_range(self):
+        """Give contacts in one cell distinct tie-break keys anywhere in the packed cell range.
+
+        Slot values tie on score whenever contacts tie on depth or projection, and then
+        the position key alone names the winner, so two contacts of one entry sharing a
+        key would both keep the slot.
+        """
+        cell_size = 0.25
+        edge = GROUP_CELL_COORD_MAX * cell_size
+        pairs = [((0.0, 5.0), (0.0, 5.05)), ((edge, 0.0), (edge - 0.05, 0.0)), ((0.0, -edge), (0.0, 0.05 - edge))]
+        points = wp.array([p for pair in pairs for p in pair], dtype=wp.vec2, device=wp.get_device())
+        keys = wp.zeros(len(points), dtype=wp.uint64, device=wp.get_device())
+        wp.launch(_group_pos_key_kernel, dim=len(points), inputs=[points, cell_size, keys], device=wp.get_device())
+        keys = keys.numpy()
+        for k, pair in enumerate(pairs):
+            self.assertNotEqual(keys[2 * k], keys[2 * k + 1], pair)
+            self.assertLess(int(max(keys[2 * k], keys[2 * k + 1])), 1 << 31)
+
 
 class TestBodyPairReductionTableSizing(unittest.TestCase):
     """The group table is sized from scene topology, not from contact capacity."""
@@ -978,10 +1013,10 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
         pipeline = _make_pipeline(model, True)
         desc = pipeline._body_pair_reducer.describe()
         self.assertGreater(desc["group_pair_bound"], 0, "topology anchor was not derived")
-        # Capped at rigid_contact_max (a group needs a contact to create it),
+        # Capped at the staging capacity (a group needs a contact to create it),
         # except that a minimum viable table always wins.
         self.assertGreaterEqual(desc["hashtable_capacity_request"], 1024)
-        self.assertLessEqual(desc["hashtable_capacity_request"], max(1024, desc["rigid_contact_max"]))
+        self.assertLessEqual(desc["hashtable_capacity_request"], max(1024, desc["staging_capacity"]))
         # Same topology, 4x the contact buffer -> identical request.
         wide = _make_pipeline(model, True, rigid_contact_max=model.rigid_contact_max * 4)
         wide_desc = wide._body_pair_reducer.describe()
@@ -1046,7 +1081,7 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
         # An extreme headroom caps at the staging capacity instead of overflowing the conversion.
         huge = _make_pipeline(model, True, body_pair_hashtable_headroom=1.0e308)
         desc = huge._body_pair_reducer.describe()
-        self.assertEqual(desc["hashtable_capacity_request"], max(1024, desc["rigid_contact_max"]))
+        self.assertEqual(desc["hashtable_capacity_request"], max(1024, desc["staging_capacity"]))
 
 
 class TestBodyPairReductionGrouping(unittest.TestCase):
@@ -1310,13 +1345,15 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         builder.add_ground_plane()
         model = builder.finalize(device=wp.get_device())
         state = model.state()
-        reduced = newton.CollisionPipeline(
-            model,
-            broad_phase="nxn",
-            deterministic=True,
-            rigid_contact_max=8,  # deliberately far below the ~25 candidates
-            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
-        )
+        # The stage holds at least the automatic estimate; shrink it far below the ~25 candidates.
+        with unittest.mock.patch("newton._src.sim.collide._estimate_rigid_contact_max", return_value=8):
+            reduced = newton.CollisionPipeline(
+                model,
+                broad_phase="nxn",
+                deterministic=True,
+                rigid_contact_max=8,
+                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+            )
         contacts = reduced.contacts()
         reduced.collide(state, contacts)
         stats = reduced._body_pair_reducer.stats()
@@ -1326,6 +1363,26 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         self.assertLess(stats["sum_contacts_kept"], stats["sum_contacts_in"])
         self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), stats["sum_contacts_kept"])
         self.assertNotEqual(int(contacts._reduction_overflow.numpy()[0]), 0)
+
+    def test_output_capacity_need_not_hold_raw_contacts(self):
+        """Stage every raw contact when ``rigid_contact_max`` holds only the reduced output."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        for k in range(10):
+            _cylinder_foot(builder, ((k % 5) * 0.5, (k // 5) * 0.5, 0.0149))
+        builder.add_ground_plane()
+        model = builder.finalize(device=wp.get_device())
+        state = model.state()
+        raw = _collide_once(model, state, False, rigid_contact_max=4096)
+        wide = _collide_once(model, state, True, rigid_contact_max=4096)
+        n_raw = int(raw.rigid_contact_count.numpy()[0])
+        n_kept = int(wide.rigid_contact_count.numpy()[0])
+        self.assertLess(n_kept + 8, n_raw)
+        pipeline = _make_pipeline(model, True, rigid_contact_max=n_kept + 8)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        self.assertEqual(pipeline._body_pair_reducer.stats()["input_overflow_frames"], 0)
+        self.assertEqual(int(contacts._reduction_overflow.numpy()[0]), 0)
+        self.assertEqual(_full_contact_rows(contacts), _full_contact_rows(wide))
 
     def test_hashtable_saturation_keeps_whole_frame(self):
         """Keep the entire unreduced set when the group table budget is exceeded.

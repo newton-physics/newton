@@ -909,11 +909,13 @@ class GroupReductionConfig:
         shape_group: Per-shape reduction-group ids, each at most ``MAX_GROUP_ID``.
         cell_size: Spatial cell edge [m] on a normal bin's face plane.
         hashtable_capacity: Requested group-table capacity (rounded up to a power of two).
+        staging_capacity: Raw primitive and convex contacts staged per frame before reduction.
     """
 
     shape_group: Any
     cell_size: float
     hashtable_capacity: int
+    staging_capacity: int
 
 
 class GlobalContactReducer:
@@ -2361,12 +2363,21 @@ def make_group_contact_key(group_a: int, group_b: int, bin_id: int, cx: int, cy:
 
 
 @wp.func
-def _group_pos_key(pos_2d: wp.vec2) -> wp.uint64:
-    """Quantize a face-plane position to a 31-bit, never-zero tie-break key (0.5 mm)."""
-    # Clamp in float before converting so extreme coordinates cannot overflow the conversion.
-    qx = wp.int32(wp.clamp(wp.floor(pos_2d[0] * 2000.0), -32768.0, 32767.0)) + 32768
-    qy = wp.int32(wp.clamp(wp.floor(pos_2d[1] * 2000.0), -8192.0, 8191.0)) + 8192
-    return (wp.uint64(qx) << wp.uint64(15)) | (wp.uint64(qy) << wp.uint64(1)) | wp.uint64(1)
+def _group_pos_key(pos_2d: wp.vec2, cell_size: float) -> wp.uint64:
+    """Quantize a face-plane position within its cell to a 31-bit, never-zero tie-break key.
+
+    Each axis gets 15 bits across one cell, so distinct contacts of an entry get distinct keys
+    unless they are in a clamped border cell, which ``cell_clamp_events`` counts.
+    """
+    ux = pos_2d[0] / cell_size
+    uy = pos_2d[1] / cell_size
+    bound = float(GROUP_CELL_COORD_MAX)
+    # Offset from the packed cell's center; clamp in float so the conversion cannot overflow.
+    lx = ux - wp.clamp(wp.floor(ux + 0.5), -bound, bound)
+    ly = uy - wp.clamp(wp.floor(uy + 0.5), -bound, bound)
+    qx = wp.int32(wp.clamp(wp.floor(lx * 32768.0), -16384.0, 16383.0)) + 16384
+    qy = wp.int32(wp.clamp(wp.floor(ly * 32768.0), -16384.0, 16383.0)) + 16384
+    return (wp.uint64(qx) << wp.uint64(16)) | (wp.uint64(qy) << wp.uint64(1)) | wp.uint64(1)
 
 
 @wp.func
@@ -2550,7 +2561,7 @@ def _register_group_contact(
     group_data.contact_pos2d[contact_id] = pos_2d
 
     values = reducer_data.ht_values
-    pos_key = _group_pos_key(pos_2d)
+    pos_key = _group_pos_key(pos_2d, group_data.cell_size)
     _group_update_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT), _group_value(-gap, pos_key), values)
     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
         value = _group_value(wp.dot(pos_2d, get_spatial_direction_2d(dir_i)), pos_key)
@@ -2611,7 +2622,7 @@ def _group_contact_won(
     values = reducer_data.ht_values
     gap = group_data.contact_gap[contact_id]
     pos_2d = group_data.contact_pos2d[contact_id]
-    pos_key = _group_pos_key(pos_2d)
+    pos_key = _group_pos_key(pos_2d, group_data.cell_size)
     deepest = values[_group_slot(entry_idx, wp.static(GROUP_DEEPEST_SLOT))]
     my_depth = _group_value(-gap, pos_key)
     won = deepest == my_depth

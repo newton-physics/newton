@@ -1321,8 +1321,10 @@ the attributes that count. Call
 them at runtime.
 
 Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
-:attr:`~Contacts.rigid_contacts_body_pair_reduced`. Only a pipeline with
-body-pair reduction collides into a stamped buffer, and a solver accepts one only
+:attr:`~Contacts.rigid_contacts_body_pair_reduced` when the scene has primitive
+or convex contact pairs; a scene of only meshes and heightfields reduces nothing
+by body pair and keeps unstamped buffers. Only a pipeline that stamps its buffers
+collides into a stamped buffer, and a solver accepts one only
 if it declares :attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`;
 the others raise in ``step()``, also during CUDA graph capture.
 :class:`~solvers.SolverSteel` supports it, except with ``contact_compliance``.

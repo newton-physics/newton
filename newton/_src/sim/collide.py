@@ -1602,6 +1602,10 @@ class CollisionPipeline:
                 worst-case bound. A warning reports automatic estimates whose base
                 rigid-contact buffers require at least 256 MiB. Pass an explicit
                 value to select the memory budget and silence the warning.
+                With ``body_pair_reduction``, this sizes the reduced output. The
+                raw primitive and convex contacts are staged in a buffer of the
+                automatic estimate or this value, whichever is larger; contacts
+                beyond it set the contact stream's reduction-overflow flag.
             max_triangle_pairs:
                 Maximum number of triangle pairs allocated by narrow phase
                 for mesh and heightfield collisions; also the capacity of the
@@ -2159,13 +2163,16 @@ class CollisionPipeline:
             if body_pair_reduction is not None:
                 if hydroelastic_sdf is not None:
                     raise ValueError("body_pair_reduction does not support hydroelastic contacts")
+                # Raw contacts are staged before reduction, so the stage holds at least what an
+                # unreduced pipeline allocates by default; rigid_contact_max sizes only the output.
+                group_staging_capacity = max(rigid_contact_max, _estimate_rigid_contact_max(model))
                 group_reduction, group_pair_bound, group_capacity_request = build_group_reduction_config(
                     model,
                     body_pair_reduction.cell_size,
                     body_pair_reduction.hashtable_headroom,
                     body_pair_reduction.material_attributes,
                     self.shape_pairs_filtered,
-                    rigid_contact_max,
+                    group_staging_capacity,
                 )
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
@@ -2396,6 +2403,10 @@ class CollisionPipeline:
             )
         else:
             self._body_pair_reducer = None
+        # A scene without primitive or convex pairs reduces nothing by group, so its buffers stay unstamped.
+        self._reduces_body_pairs = (
+            body_pair_reduction is not None and self.narrow_phase.group_contact_reducer is not None
+        )
 
         # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
         # the shared detector (re-pointed per Contacts buffer; see
@@ -2538,7 +2549,7 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
-        contacts._rigid_contacts_body_pair_reduced = self._body_pair_reducer is not None
+        contacts._rigid_contacts_body_pair_reduced = self._reduces_body_pairs
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2811,12 +2822,12 @@ class CollisionPipeline:
                 this call. Ignored when speculative contacts are disabled. See
                 :ref:`Speculative contacts <speculative-contacts>`.
         """
-        if contacts.rigid_contacts_body_pair_reduced != (self._body_pair_reducer is not None):
+        if contacts.rigid_contacts_body_pair_reduced != self._reduces_body_pairs:
             raise ValueError(
                 "body-pair-reduced Contacts buffers and pipelines with body_pair_reduction must be used together; "
                 "allocate the buffer with this pipeline's contacts()"
             )
-        if self._body_pair_reducer is not None and (
+        if self._reduces_body_pairs and (
             contacts.rigid_contact_max != self._rigid_contact_max or str(contacts.device) != str(self.device)
         ):
             raise ValueError("body_pair_reduction requires a Contacts buffer allocated by this pipeline's contacts()")
@@ -3058,7 +3069,7 @@ class CollisionPipeline:
                 collision_update_dt=collision_update_dt,
                 max_speculative_extension=max_speculative_extension,
             )
-        if self._body_pair_reducer is not None:
+        if self._reduces_body_pairs:
             narrow_phase_extension_kwargs.update(body_q=state.body_q, shape_body=model.shape_body)
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,
