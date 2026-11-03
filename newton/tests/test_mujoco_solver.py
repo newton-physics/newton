@@ -9441,7 +9441,7 @@ class TestMuJoCoSolverStateSync(unittest.TestCase):
     CHILD_ROT = wp.quat_rpy(-0.3, 0.2, 0.1)
 
     def _run(self, joint_type: JointType, qd, joint_pos=None, steps: int = 500, dt: float = 1.0e-3):
-        """Step a torque-free isotropic body with ``update_data_interval=1``.
+        """Step a torque-free isotropic body, syncing MuJoCo from the Newton state every step.
 
         Returns the initial and final ``(joint_q, joint_qd)``. ``qd`` and
         ``joint_pos`` are in the parent anchor frame.
@@ -9468,7 +9468,7 @@ class TestMuJoCoSolverStateSync(unittest.TestCase):
         joint_qd[: len(qd)] = qd
         model.joint_qd.assign(joint_qd)
 
-        solver = SolverMuJoCo(model, update_data_interval=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True)
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         initial = (state_0.joint_q.numpy().copy(), state_0.joint_qd.numpy().copy())
