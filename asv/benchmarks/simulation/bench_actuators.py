@@ -155,6 +155,8 @@ class _ActuatorBenchmark:
     def teardown(self, drive, world_count):
         if not np.all(np.isfinite(self.state_0.joint_q.numpy())):
             raise RuntimeError("Actuator benchmark produced non-finite joint positions.")
+        if self.bias_force is not None and not np.any(self.bias_force.numpy()):
+            raise RuntimeError("Actuator benchmark produced an all-zero bias force.")
 
 
 class ActuatorG1(_ActuatorBenchmark):
