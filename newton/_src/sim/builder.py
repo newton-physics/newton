@@ -197,10 +197,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
     return opacities
 
 
-_DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
-_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
-    "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
-)
 _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
@@ -3300,8 +3296,6 @@ class ModelBuilder:
         clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
-        *,
-        controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
         """Add an external actuator for a single DOF.
@@ -3325,14 +3319,8 @@ class ModelBuilder:
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
-            controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
-        if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
-            if drive_class is not None:
-                raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
-            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            drive_class = controller_class
         if drive_class is None:
             raise TypeError("add_actuator() requires 'drive_class'")
 

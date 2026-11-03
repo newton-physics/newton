@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import functools
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
 from typing import TYPE_CHECKING, Any
@@ -12,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ..exceptions import NewtonDeprecationWarning
+from ..utils.deprecation import RemovedAttribute
 from .clamping.base import ClampingBase
 from .delay import Delay
 from .drives.base import DriveBase
@@ -21,15 +20,6 @@ from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortMo
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
-
-_DEPRECATED_UNSET = object()
-_CONTROLLER_KEYWORD_DEPRECATION_MSG = (
-    "Actuator(controller=...) is deprecated in Newton 1.6; use Actuator(drive=...) instead."
-)
-_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG = "Actuator.controller is deprecated in Newton 1.6; use Actuator.drive instead."
-_CONTROLLER_STATE_DEPRECATION_MSG = (
-    "Actuator.State.controller_state is deprecated in Newton 1.6; use drive_state instead."
-)
 
 
 @wp.kernel
@@ -202,43 +192,7 @@ class Actuator:
         drive_state: DriveBase.State | None = None
         """Drive-specific state, or ``None`` if stateless."""
 
-        def __init__(
-            self,
-            delay_state: Delay.State | None = None,
-            drive_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
-            *,
-            controller_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
-        ) -> None:
-            """Initialize composed actuator state.
-
-            Args:
-                delay_state: Delay buffer state, or ``None`` if no delay is used.
-                drive_state: Drive-specific state, or ``None`` if stateless.
-                controller_state: Deprecated in Newton 1.6; use ``drive_state``.
-            """
-            if controller_state is not _DEPRECATED_UNSET:
-                if drive_state is not _DEPRECATED_UNSET:
-                    raise TypeError("Specify only one of 'drive_state' and deprecated 'controller_state'.")
-                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-                drive_state = controller_state
-
-            self.delay_state = delay_state
-            self.drive_state = None if drive_state is _DEPRECATED_UNSET else drive_state
-
-        @property
-        def controller_state(self) -> DriveBase.State | None:
-            """Deprecated alias for :attr:`drive_state`.
-
-            .. deprecated:: 1.6
-                Use :attr:`drive_state` instead.
-            """
-            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return self.drive_state
-
-        @controller_state.setter
-        def controller_state(self, value: DriveBase.State | None) -> None:
-            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            self.drive_state = value
+        controller_state = RemovedAttribute("drive_state", removed_in="1.8")
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset composed state.
@@ -296,8 +250,6 @@ class Actuator:
         control_output_attr: str = "joint_f",
         control_computed_output_attr: str | None = None,
         requires_grad: bool = False,
-        *,
-        controller: DriveBase | object | None = _DEPRECATED_UNSET,
     ):
         """Initialize actuator.
 
@@ -329,13 +281,7 @@ class Actuator:
                 effort. None to skip writing computed effort.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
-            controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
-        if controller is not _DEPRECATED_UNSET:
-            if drive is not None:
-                raise TypeError("Specify only one of 'drive' and deprecated 'controller'.")
-            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            drive = controller
         if drive is None:
             raise TypeError("Actuator() missing required argument: 'drive'")
 
@@ -450,24 +396,11 @@ class Actuator:
                 )
             )
 
-    @property
-    def controller(self) -> DriveBase:
-        """Deprecated alias for :attr:`drive`.
-
-        .. deprecated:: 1.6
-            Use :attr:`drive` instead.
-        """
-        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self.drive
-
-    @controller.setter
-    def controller(self, value: DriveBase) -> None:
-        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self.drive = value
-
     # To achieve public API Actuator.ImplicitOptions.
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
     ImplicitOptions = ImplicitOptions
+
+    controller = RemovedAttribute("drive", removed_in="1.8")
 
     def set_effort_mode_implicit(
         self,
