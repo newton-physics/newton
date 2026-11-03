@@ -4517,7 +4517,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
-                ``wp.config.deterministic``.
+                ``wp.config.deterministic``. Modes other than
+                ``NOT_GUARANTEED`` currently fail to compile MuJoCo Warp's kernels
+                with Warp 1.19; the CPU backend (``use_mujoco_cpu=True``) is
+                always deterministic. See :doc:`/concepts/determinism`.
             strict_capacity: If ``True``, raise a ``RuntimeError`` when the
                 Newton contact pipeline buffer *capacity*
                 (``contacts.rigid_contact_max``) exceeds MuJoCo Warp's buffer
