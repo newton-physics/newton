@@ -12,6 +12,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
+from newton._src.solvers.steel.friction import FRICTION_PAIR_CUDA, coupled_contact_cuda
 from newton._src.solvers.steel.friction_patches import (
     _pose_motion,
     finish_patch_impulses,
@@ -850,6 +851,131 @@ def test_split_rejects_other_modes(test, device):
     test.assertEqual(SolverSteel(model, solve_mode="split").friction_mode, "fixed_normal")
 
 
+# Coulomb Newton blocks whose finite root search ends below zero load; each exact root is a small positive
+# normal impulse. Values: u_n, u_t1, u_t2, G_nn, G_nt1, G_nt2, G_t1t1, G_t1t2, G_t2t2, mu.
+_ZERO_LOAD_BLOCKS = {
+    # Accepted by the tolerance test; the exact normal impulse is 4.3e-7.
+    "accepted": (
+        *(-1.7825292e-06, -2.6880344e-04, -4.4534505e-04),
+        *(1.0999996, 3.4405608, 4.0508217, 26.797076, 23.640803, 28.558773),
+        0.58055231,
+    ),
+    # Fast sliding against a tiny approach: the root lies past the bracket; the exact normal impulse is 6.7e-11.
+    "unbracketed": (-1.0e-10, -1.0, 0.0, 1.0, 0.5, 0.0, 1.0, 0.0, 1.0, 1.0),
+}
+
+
+@wp.func_native(
+    "#if defined(__CUDA_ARCH__)\n"
+    + FRICTION_PAIR_CUDA
+    + coupled_contact_cuda("coulomb_newton")
+    + """
+    const float* b = block.data;
+    float n, t1, t2;
+    contact_block_solve(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], 0.0f, b[9], 0.0f, 0.0f, 0.0f, n, t1, t2);
+    out.data[0] = n;
+    out.data[1] = t1;
+    out.data[2] = t2;
+#endif
+"""
+)
+def _coulomb_newton_block_native(block: wp.array[float], out: wp.array[float]): ...
+
+
+@wp.kernel
+def _coulomb_newton_block_kernel(block: wp.array[float], out: wp.array[float]):
+    _coulomb_newton_block_native(block, out)
+
+
+def _coulomb_newton_colored_block(device, block):
+    """Solve one block with the colored sweep's ``contact_block_solve`` from zero impulses."""
+    out = wp.zeros(3, dtype=float, device=device)
+    wp.launch(
+        _coulomb_newton_block_kernel, dim=1, inputs=[wp.array(block, dtype=float, device=device), out], device=device
+    )
+    return out.numpy()
+
+
+def _coulomb_newton_mf_block(device, block):
+    """Solve one free-body contact block with the matrix-free kernel's Coulomb Newton update from zero impulses.
+
+    Unit Jacobians ``J = e_i`` with responses ``M^-1 J^T = G e_i`` give the rows the Delassus block ``G``, and the
+    body's velocity is ``u``. The contact row has no diagonal, so only the coupled update moves it.
+    """
+    u, (g_nn, g_nt1, g_nt2, g_11, g_12, g_22), mu = block[:3], block[3:9], block[9]
+    delassus = np.array([[g_nn, g_nt1, g_nt2], [g_nt1, g_11, g_12], [g_nt2, g_12, g_22]], dtype=np.float32)
+    J = np.zeros((1, 4, 6), dtype=np.float32)
+    J[0, :3, :3] = np.eye(3)
+    response = np.zeros((1, 4, 6), dtype=np.float32)
+    response[0, :3, :3] = delassus
+    meta = np.zeros((1, 4, 4), dtype=np.int32)
+    meta[0, :3, 0] = 0xFFFF  # dof_a 0, no body b
+    meta[0, :3, 1] = np.array([0.0, 1.0, 1.0], dtype=np.float32).view(np.int32)
+    row_types = [PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION, PGS_CONSTRAINT_TYPE_FRICTION]
+    meta[0, :3, 3] = np.array(row_types, dtype=np.int64) | (np.array([-1, 0, 0], dtype=np.int64) << 16)
+    impulses = wp.zeros((1, 4), dtype=float, device=device)
+    velocity = np.zeros(6, dtype=np.float32)
+    velocity[:3] = u
+    kernel = _get_pgs_solve_mf_gs_kernel(
+        1,
+        4,
+        6,
+        wp.get_device(device).arch,
+        has_dense_velocity_limit_rows=False,
+        shared_metadata=True,
+        friction_mode="coulomb_newton",
+    )
+    wp.launch_tiled(
+        kernel,
+        dim=[1],
+        inputs=[
+            wp.zeros((1,), dtype=int, device=device),
+            wp.array([np.arange(6)], dtype=int, device=device),
+            *(wp.zeros((1, 1), dtype=float, device=device) for _ in range(3)),
+            *(wp.zeros((1, 1, 6), dtype=float, device=device) for _ in range(2)),
+            wp.full((1, 1), -1, dtype=int, device=device),
+            wp.full((1, 1), -1, dtype=int, device=device),
+            *(wp.zeros((1, 1), dtype=float, device=device) for _ in range(6)),
+            wp.array([3], dtype=int, device=device),
+            wp.array([3], dtype=int, device=device),
+            wp.array(meta.reshape(1, 16), dtype=int, device=device),
+            impulses,
+            wp.array(J, dtype=float, device=device),
+            wp.zeros((1, 4, 6), dtype=float, device=device),
+            wp.array(response, dtype=float, device=device),
+            wp.zeros((1, 4, 6), dtype=float, device=device),
+            wp.full((1, 4), mu, dtype=float, device=device),
+            wp.ones((1, 1), dtype=float, device=device),
+            wp.ones((1, 4), dtype=float, device=device),
+            wp.full((1, 1), -1, dtype=int, device=device),
+            wp.zeros((1, 1), dtype=float, device=device),
+            wp.zeros((1, 1), dtype=float, device=device),
+            wp.zeros((1, 4), dtype=float, device=device),
+            1,
+            1.0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        outputs=[wp.array(velocity, dtype=float, device=device)],
+        block_dim=32,
+        device=device,
+    )
+    return impulses.numpy()[0, :3]
+
+
+def test_coulomb_newton_normal_impulse_stays_nonnegative(test, device):
+    """Keep the coupled Coulomb Newton normal impulse at or above zero where the root search ends below zero load."""
+    for name, block in _ZERO_LOAD_BLOCKS.items():
+        for route, solve in (("colored", _coulomb_newton_colored_block), ("matrix_free", _coulomb_newton_mf_block)):
+            with test.subTest(block=name, route=route):
+                normal, *tangent = solve(device, np.array(block, dtype=np.float32))
+                test.assertGreaterEqual(normal, 0.0)
+                test.assertLessEqual(float(np.linalg.norm(tangent)), block[9] * normal * (1.0 + 1.0e-6))
+
+
 class TestSteelFrictionMode(unittest.TestCase):
     pass
 
@@ -863,6 +989,7 @@ for _fn in (
     test_modes_select_distinct_kernels,
     test_unsupported_combinations_raise,
     test_sparse_factors_require_the_current_mode,
+    test_coulomb_newton_normal_impulse_stays_nonnegative,
 ):
     add_function_test(TestSteelFrictionMode, _fn.__name__, _fn, devices=cuda_devices)
 
