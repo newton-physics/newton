@@ -47,6 +47,262 @@ cited by :class:`~newton.solvers.SolverVBD`:
   https://doi.org/10.1145/3731205 (feature regions of full-surface mesh
   contact, OGC)
 
+API Explanations
+----------------
+
+Construction and Stepping
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Colour the model before you finalize it. :meth:`~newton.ModelBuilder.color`
+fills :attr:`~newton.Model.particle_color_groups` and
+:attr:`~newton.Model.body_color_groups`; the solver raises at construction when
+particles are present without particle colours, or when rigid bodies are
+integrated by VBD without body colours. Pass ``include_bending=True`` when the
+model has bending edges. Then build the collision pipeline, its contacts buffer
+and the solver, in that order:
+
+.. code-block:: python
+
+   builder.color(include_bending=True)  # the model has bending edges
+   model = builder.finalize()
+
+   collision_pipeline = newton.CollisionPipeline(model)
+   contacts = collision_pipeline.contacts()
+   solver = newton.solvers.SolverVBD(model, iterations=10)
+
+   state_in, state_out = model.state(), model.state()
+   control = model.control()
+   for _ in range(num_steps):
+       collision_pipeline.collide(state_in, contacts)
+       solver.step(state_in, state_out, control, contacts, dt)
+       state_in, state_out = state_out, state_in
+
+For rigid joints the solver captures the structural rest pose from
+:attr:`~newton.Model.body_q` at construction, so the body transforms must match the joint
+angles when the solver is built; ROD rest bend and twist come from
+:attr:`~newton.Model.joint_rest_q`.
+
+With a solver-owned pipeline, ``SolverVBD(model, collision_pipeline=...)``, the
+solver allocates its own contacts buffer, seeds the pipeline's self-contact
+configuration from the ``particle_self_contact_*`` arguments, runs rigid
+detection itself on the schedule of ``collision_frequency_type``, and ``step``
+takes ``contacts=None``. Rigid-soft DAT requires this form, and so does a
+``RIGID`` slot on ``ITERATIONS``, which also needs contact matching in the
+pipeline (:ref:`below <vbd-contact-matching>`). The self-contact slot works in both
+forms; :ref:`vbd-jitter-pipeline` shows the arguments that put it on the
+``ITERATIONS`` schedule.
+
+.. _vbd-contact-matching:
+
+**Contact matching between steps and between iterations.** Each detection
+pass of the pipeline can label every body-body contact with the index of the
+same contact in the previous pass. ``contact_matching="latest"`` writes the
+labels and keeps the fresh geometry; ``"sticky"`` also replays the saved
+contact points and normal (experimental); the default ``"disabled"`` writes no
+labels (:ref:`Contact Matching`). The solver uses the labels in two places.
+Between steps, ``rigid_contact_history=True`` snapshots the solved state of
+every contact at the end of the step (multiplier, penalty stiffness, normal)
+and restores it onto the matched contacts at the next step's contact refresh:
+the normal multiplier along the new normal and, with ``"latest"`` matching,
+the tangential multiplier projected onto the friction disk. Unmatched contacts
+start cold, and so does every contact when two detection passes run between
+two steps. Between iterations, a ``RIGID`` slot on the ``ITERATIONS`` schedule
+re-detects inside the iteration loop and replaces the contact set in the
+middle of the solve; the solver snapshots the in-flight state before each pass
+and restores it onto the new set in the same way, so the multipliers built up
+in the earlier iterations survive the refresh. The first use is opt-in; the
+second is not. The constructor therefore raises ``ValueError`` when the
+``RIGID`` slot is on ``ITERATIONS`` and the pipeline has ``"disabled"``
+matching, and also when ``rigid_contact_history=True`` meets an owned pipeline
+without matching.
+
+For CUDA graph capture keep the same order, pipeline, contacts, solver, all
+before capture. Body-body contact state is pre-sized from the pipeline's
+published rigid contact maximum and body-particle contact state from the
+particle-shape pair count; both grow from :class:`~newton.Contacts` on the first step.
+During capture that growth needs Warp's stream-ordered memory pool, otherwise
+the solver raises and asks you to pre-size. ``rigid_contact_history=True``
+needs its warm-start buffers allocated before capture, on every device:
+construct the :class:`~newton.CollisionPipeline` before the solver, which
+publishes :attr:`~newton.CollisionPipeline.rigid_contact_max`, or run one uncaptured step first.
+
+Start at ``dt`` = 1/600 s with 10 iterations and adjust following
+:ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists the
+constructor arguments that matter most for particle systems, with their
+effect and cost; the signature of :class:`~newton.solvers.SolverVBD` is the
+complete list.
+
+Model Inputs
+~~~~~~~~~~~~
+
+The solver reads three systems from the :class:`~newton.Model`:
+
+- **Cloth**: particles with triangles and bending edges, from
+  :meth:`~newton.ModelBuilder.add_cloth_mesh`,
+  :meth:`~newton.ModelBuilder.add_cloth_grid`, or
+  :meth:`~newton.ModelBuilder.add_triangle` and
+  :meth:`~newton.ModelBuilder.add_edge`. Material: :attr:`tri_ke <newton.Model.tri_materials>`, :attr:`tri_ka <newton.Model.tri_materials>` and
+  :attr:`tri_kd <newton.Model.tri_materials>` per triangle, :attr:`edge_ke <newton.Model.edge_bending_properties>` and :attr:`edge_kd <newton.Model.edge_bending_properties>` per edge, and
+  :attr:`~newton.Model.particle_radius` per particle. ``validate_mesh=True`` runs the
+  element-quality checker.
+- **Soft bodies**: particles with tetrahedra, from
+  :meth:`~newton.ModelBuilder.add_soft_mesh`,
+  :meth:`~newton.ModelBuilder.add_soft_grid` or
+  :meth:`~newton.ModelBuilder.add_tetrahedron`. Material: :attr:`k_mu <newton.Model.tet_materials>`,
+  :attr:`k_lambda <newton.Model.tet_materials>` and :attr:`k_damp <newton.Model.tet_materials>` per tetrahedron. The surface triangles take part
+  in self-contact and rigid-soft contact.
+- **Rigid bodies**: :meth:`~newton.ModelBuilder.add_body` with shapes, and
+  joints of type BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6 and ROD
+  (:meth:`~newton.ModelBuilder.add_joint_rod` for cables). DISTANCE joints are
+  not supported. Shape materials :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` and :attr:`~newton.ModelBuilder.ShapeConfig.margin` come
+  from :class:`~newton.ModelBuilder.ShapeConfig`. Drives and limits read
+  :attr:`~newton.Model.joint_target_ke`, :attr:`~newton.Model.joint_target_kd`, :attr:`~newton.Model.joint_limit_lower`,
+  :attr:`~newton.Model.joint_limit_upper`, :attr:`~newton.Model.joint_limit_ke` and :attr:`~newton.Model.joint_limit_kd`.
+
+Springs (:meth:`~newton.ModelBuilder.add_spring`) and particle-body
+attachments (:meth:`~newton.ModelBuilder.add_attachment_particle_body`) connect
+the systems. The contact material between particles and shapes mixes
+:attr:`~newton.Model.soft_contact_ke`, :attr:`~newton.Model.soft_contact_kd` and :attr:`~newton.Model.soft_contact_mu` on the Model
+with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
+:ref:`Tuning VBD` gives the effect and typical values of each of these.
+
+Rigid constraint rows use the compliant ALM formulation by default
+(``rigid_compliant_alm=True``): the authored stiffness is the physical
+stiffness of the row and the solver picks the metric :math:`\rho` itself
+(:ref:`vbd-rigid-joints`). The legacy AVBD path (``rigid_compliant_alm=False``)
+is deprecated since 1.6, together with its controls: the per-joint
+``vbd:joint_is_hard`` custom attribute (``model.vbd.joint_is_hard``, declared
+by :meth:`~newton.solvers.SolverVBD.register_custom_attributes`) and
+:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode`. Under compliant
+ALM they have no solver-mode effect.
+
+Scene-authored settings
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Call :meth:`~newton.solvers.SolverVBD.register_custom_attributes` on the
+:class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
+the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored in
+``model.vbd`` and used as :class:`~newton.solvers.SolverVBD` defaults:
+
+.. list-table::
+   :header-rows: 1
+
+   * - USD attribute
+     - ``model.vbd`` attribute
+     - Constructor argument
+     - Default
+   * - ``newton:vbd:rigid:contactHistory``
+     - ``rigid_contact_history``
+     - ``rigid_contact_history``
+     - ``False``
+   * - ``newton:vbd:rigid:jointLinearStiffness``
+     - ``rigid_joint_linear_ke``
+     - ``rigid_joint_linear_ke``
+     - ``1.0e5`` N/m
+   * - ``newton:vbd:rigid:jointAngularStiffness``
+     - ``rigid_joint_angular_ke``
+     - ``rigid_joint_angular_ke``
+     - ``1.0e5`` N·m/rad
+   * - ``newton:vbd:rigid:jointLinearDamping``
+     - ``rigid_joint_linear_kd``
+     - ``rigid_joint_linear_kd``
+     - ``0.0`` N·s/m
+   * - ``newton:vbd:rigid:jointAngularDamping``
+     - ``rigid_joint_angular_kd``
+     - ``rigid_joint_angular_kd``
+     - ``0.0`` N·m·s/rad
+
+Precedence is explicit constructor argument, then ``model.vbd.*``, then the
+built-in default. Scene-authored stiffness and damping must be finite and
+non-negative, otherwise the constructor raises ``ValueError``. A scene-authored
+``contactHistory`` is ignored when VBD does not integrate rigid bodies (no
+bodies, or ``integrate_with_external_rigid_solver=True``). When VBD integrates
+bodies and is given a collision pipeline, the pipeline needs ``contact_matching``
+other than ``"disabled"``; pass ``rigid_contact_history=False`` to override the
+scene value.
+Scene values apply in both constraint modes: they are not skipped when the
+deprecated ``rigid_compliant_alm=False`` path is selected, even though the
+schema scopes them to the compliant ALM path.
+
+Coupling Modes
+~~~~~~~~~~~~~~
+
+Inside one solver no coupling setup is needed. Rigid blocks and particle
+blocks are solved in the same iteration loop, rigid blocks first, and
+rigid-soft contacts, attachments and springs connect them as ordinary energy
+terms (:ref:`vbd-how-solved`). Cloth between the fingers of a VBD-integrated
+gripper is the plain case.
+
+With ``integrate_with_external_rigid_solver=True`` the rigid bodies belong to
+another solver. SolverVBD then skips the rigid solve, reads the body poses the
+external solver wrote into the output state, and applies rigid-soft contact to
+the particles only (one-way coupling). Attachments are not supported in this
+mode. For two-way coupling through proxies, including contact forces reported
+back to the source body, see :doc:`Coupled Solvers </concepts/coupling>`.
+
+Contact Handling
+~~~~~~~~~~~~~~~~
+
+The contact stack has three layers.
+
+**Detection.** Self-contact pairs come from the triangle-mesh self-contact
+detector: vertex-triangle and edge-edge candidates within
+``particle_self_contact_margin + particle_self_contact_gap``, stored in fixed
+buffers of ``particle_vertex_contact_buffer_size`` and
+``particle_edge_contact_buffer_size`` entries, and filtered by topological
+distance (``particle_topological_contact_filter_threshold``) and rest-shape
+distance (``particle_rest_shape_contact_exclusion_radius``). It runs on the
+schedule of the ``SOFT_SELF_CONTACT`` collision slot, by default before and
+after the inertial step of every substep. Rigid-soft records (particles, and
+with ``enable_rigid_soft_full_surface_contact`` also soft edges and faces) and
+body-body records come from the :class:`~newton.CollisionPipeline`, which
+detects out to its ``soft_contact_gap`` beyond :attr:`~newton.Model.particle_radius` plus the
+shape :attr:`~newton.ModelBuilder.ShapeConfig.margin` and carries the shape thicknesses of body-body pairs. With a
+solver-owned pipeline the rigid slot follows ``collision_frequency_type`` as
+well.
+
+**Forces.** Each contact kind has its own law with friction and damping;
+self-contact, rigid-soft contact and body-body contact are given in
+:ref:`vbd-energy-terms`. Full-surface mesh records normally produce force only
+when they pass the feature-region test of Offset Geometric Contact
+(``mesh_contact_valid``); recovery records and rows stored after an overflow
+bypass the test, and every stored record is kept for truncation.
+
+**Truncation.** Divide and Truncate keeps self-contact, and with
+``rigid_soft_enable_dat`` also rigid-soft contact, free of new penetrations
+between detections, through the planar and the radius truncation of
+:ref:`vbd-dat`. The guarantee holds for pairs that were separated at
+detection and found within the query radius; the rigid trajectory check is
+sampled unless ``rigid_soft_dat_use_interval_arithmetic`` is on.
+
+How to set the distances, and what they cost, is on the tuning page:
+:ref:`vbd-contact-handling` and :ref:`vbd-margin-gap-guide`. The contact
+methods are described in:
+
+- Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
+  and Truncate: A Penetration and Inversion Free Framework for Coupled
+  Multi-physics System. In *ACM SIGGRAPH 2026 Conference Papers*.
+  https://doi.org/10.1145/3799902.3811143
+- Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem
+  Yuksel. 2025. Offset Geometric Contact. *ACM Trans. Graph.* 44, 4.
+  https://doi.org/10.1145/3731205
+
+Key Constructor Parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
+``dat_conservative_bound_relaxation``,
+``integrate_with_external_rigid_solver``, and ``collision_pipeline`` with
+``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
+self-contact on or off, margin and gap, the candidate buffer sizes, the
+topological and rest-shape filters, and the tile solve. ``rigid_*``: the
+compliant ALM switch with its stabilization and retention factors, body-body
+contact history, the per-body contact list capacities, the rigid-soft barrier
+law and DAT, and the structural joint stiffness and damping. Defaults and exact
+semantics are in :class:`~newton.solvers.SolverVBD`; effects, symptoms and
+recommended values for particle systems are in the :ref:`Tuning VBD`
+parameter table.
+
 .. _vbd-how-it-works:
 
 How VBD Works
@@ -520,7 +776,7 @@ The underlying methods are described in the references cited by
 :class:`~newton.solvers.SolverVBD`: VBD for the particle blocks, AVBD for the
 rigid rows, Divide and Truncate (DAT) for penetration-free contact and Offset
 Geometric Contact (OGC) for the feature regions of mesh contact. The two
-contact papers are also listed under Contact Handling below.
+contact papers are also listed under Contact Handling above.
 
 .. _vbd-dat:
 
@@ -584,262 +840,6 @@ The guarantee has a price: a vertex cannot move faster than about one motion
 budget per detection cycle. The motion that the truncation removes is called
 **DAT damping** here and in :ref:`Tuning VBD`. It is not related to any ``kd``
 damping coefficient.
-
-API Explanations
-----------------
-
-Construction and Stepping
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Colour the model before you finalize it. :meth:`~newton.ModelBuilder.color`
-fills :attr:`~newton.Model.particle_color_groups` and
-:attr:`~newton.Model.body_color_groups`; the solver raises at construction when
-particles are present without particle colours, or when rigid bodies are
-integrated by VBD without body colours. Pass ``include_bending=True`` when the
-model has bending edges. Then build the collision pipeline, its contacts buffer
-and the solver, in that order:
-
-.. code-block:: python
-
-   builder.color(include_bending=True)  # the model has bending edges
-   model = builder.finalize()
-
-   collision_pipeline = newton.CollisionPipeline(model)
-   contacts = collision_pipeline.contacts()
-   solver = newton.solvers.SolverVBD(model, iterations=10)
-
-   state_in, state_out = model.state(), model.state()
-   control = model.control()
-   for _ in range(num_steps):
-       collision_pipeline.collide(state_in, contacts)
-       solver.step(state_in, state_out, control, contacts, dt)
-       state_in, state_out = state_out, state_in
-
-For rigid joints the solver captures the structural rest pose from
-:attr:`~newton.Model.body_q` at construction, so the body transforms must match the joint
-angles when the solver is built; ROD rest bend and twist come from
-:attr:`~newton.Model.joint_rest_q`.
-
-With a solver-owned pipeline, ``SolverVBD(model, collision_pipeline=...)``, the
-solver allocates its own contacts buffer, seeds the pipeline's self-contact
-configuration from the ``particle_self_contact_*`` arguments, runs rigid
-detection itself on the schedule of ``collision_frequency_type``, and ``step``
-takes ``contacts=None``. Rigid-soft DAT requires this form, and so does a
-``RIGID`` slot on ``ITERATIONS``, which also needs contact matching in the
-pipeline (:ref:`below <vbd-contact-matching>`). The self-contact slot works in both
-forms; :ref:`vbd-jitter-pipeline` shows the arguments that put it on the
-``ITERATIONS`` schedule.
-
-.. _vbd-contact-matching:
-
-**Contact matching between steps and between iterations.** Each detection
-pass of the pipeline can label every body-body contact with the index of the
-same contact in the previous pass. ``contact_matching="latest"`` writes the
-labels and keeps the fresh geometry; ``"sticky"`` also replays the saved
-contact points and normal (experimental); the default ``"disabled"`` writes no
-labels (:ref:`Contact Matching`). The solver uses the labels in two places.
-Between steps, ``rigid_contact_history=True`` snapshots the solved state of
-every contact at the end of the step (multiplier, penalty stiffness, normal)
-and restores it onto the matched contacts at the next step's contact refresh:
-the normal multiplier along the new normal and, with ``"latest"`` matching,
-the tangential multiplier projected onto the friction disk. Unmatched contacts
-start cold, and so does every contact when two detection passes run between
-two steps. Between iterations, a ``RIGID`` slot on the ``ITERATIONS`` schedule
-re-detects inside the iteration loop and replaces the contact set in the
-middle of the solve; the solver snapshots the in-flight state before each pass
-and restores it onto the new set in the same way, so the multipliers built up
-in the earlier iterations survive the refresh. The first use is opt-in; the
-second is not. The constructor therefore raises ``ValueError`` when the
-``RIGID`` slot is on ``ITERATIONS`` and the pipeline has ``"disabled"``
-matching, and also when ``rigid_contact_history=True`` meets an owned pipeline
-without matching.
-
-For CUDA graph capture keep the same order, pipeline, contacts, solver, all
-before capture. Body-body contact state is pre-sized from the pipeline's
-published rigid contact maximum and body-particle contact state from the
-particle-shape pair count; both grow from :class:`~newton.Contacts` on the first step.
-During capture that growth needs Warp's stream-ordered memory pool, otherwise
-the solver raises and asks you to pre-size. ``rigid_contact_history=True``
-needs its warm-start buffers allocated before capture, on every device:
-construct the :class:`~newton.CollisionPipeline` before the solver, which
-publishes :attr:`~newton.CollisionPipeline.rigid_contact_max`, or run one uncaptured step first.
-
-Start at ``dt`` = 1/600 s with 10 iterations and adjust following
-:ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists the
-constructor arguments that matter most for particle systems, with their
-effect and cost; the signature of :class:`~newton.solvers.SolverVBD` is the
-complete list.
-
-Model Inputs
-~~~~~~~~~~~~
-
-The solver reads three systems from the :class:`~newton.Model`:
-
-- **Cloth**: particles with triangles and bending edges, from
-  :meth:`~newton.ModelBuilder.add_cloth_mesh`,
-  :meth:`~newton.ModelBuilder.add_cloth_grid`, or
-  :meth:`~newton.ModelBuilder.add_triangle` and
-  :meth:`~newton.ModelBuilder.add_edge`. Material: :attr:`tri_ke <newton.Model.tri_materials>`, :attr:`tri_ka <newton.Model.tri_materials>` and
-  :attr:`tri_kd <newton.Model.tri_materials>` per triangle, :attr:`edge_ke <newton.Model.edge_bending_properties>` and :attr:`edge_kd <newton.Model.edge_bending_properties>` per edge, and
-  :attr:`~newton.Model.particle_radius` per particle. ``validate_mesh=True`` runs the
-  element-quality checker.
-- **Soft bodies**: particles with tetrahedra, from
-  :meth:`~newton.ModelBuilder.add_soft_mesh`,
-  :meth:`~newton.ModelBuilder.add_soft_grid` or
-  :meth:`~newton.ModelBuilder.add_tetrahedron`. Material: :attr:`k_mu <newton.Model.tet_materials>`,
-  :attr:`k_lambda <newton.Model.tet_materials>` and :attr:`k_damp <newton.Model.tet_materials>` per tetrahedron. The surface triangles take part
-  in self-contact and rigid-soft contact.
-- **Rigid bodies**: :meth:`~newton.ModelBuilder.add_body` with shapes, and
-  joints of type BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6 and ROD
-  (:meth:`~newton.ModelBuilder.add_joint_rod` for cables). DISTANCE joints are
-  not supported. Shape materials :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` and :attr:`~newton.ModelBuilder.ShapeConfig.margin` come
-  from :class:`~newton.ModelBuilder.ShapeConfig`. Drives and limits read
-  :attr:`~newton.Model.joint_target_ke`, :attr:`~newton.Model.joint_target_kd`, :attr:`~newton.Model.joint_limit_lower`,
-  :attr:`~newton.Model.joint_limit_upper`, :attr:`~newton.Model.joint_limit_ke` and :attr:`~newton.Model.joint_limit_kd`.
-
-Springs (:meth:`~newton.ModelBuilder.add_spring`) and particle-body
-attachments (:meth:`~newton.ModelBuilder.add_attachment_particle_body`) connect
-the systems. The contact material between particles and shapes mixes
-:attr:`~newton.Model.soft_contact_ke`, :attr:`~newton.Model.soft_contact_kd` and :attr:`~newton.Model.soft_contact_mu` on the Model
-with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
-:ref:`Tuning VBD` gives the effect and typical values of each of these.
-
-Rigid constraint rows use the compliant ALM formulation by default
-(``rigid_compliant_alm=True``): the authored stiffness is the physical
-stiffness of the row and the solver picks the metric :math:`\rho` itself
-(:ref:`vbd-rigid-joints`). The legacy AVBD path (``rigid_compliant_alm=False``)
-is deprecated since 1.6, together with its controls: the per-joint
-``vbd:joint_is_hard`` custom attribute (``model.vbd.joint_is_hard``, declared
-by :meth:`~newton.solvers.SolverVBD.register_custom_attributes`) and
-:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode`. Under compliant
-ALM they have no solver-mode effect.
-
-Scene-authored settings
-^^^^^^^^^^^^^^^^^^^^^^^
-
-Call :meth:`~newton.solvers.SolverVBD.register_custom_attributes` on the
-:class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
-the ``NewtonVbdSceneAPI`` settings from a USD ``PhysicsScene``. They are stored in
-``model.vbd`` and used as :class:`~newton.solvers.SolverVBD` defaults:
-
-.. list-table::
-   :header-rows: 1
-
-   * - USD attribute
-     - ``model.vbd`` attribute
-     - Constructor argument
-     - Default
-   * - ``newton:vbd:rigid:contactHistory``
-     - ``rigid_contact_history``
-     - ``rigid_contact_history``
-     - ``False``
-   * - ``newton:vbd:rigid:jointLinearStiffness``
-     - ``rigid_joint_linear_ke``
-     - ``rigid_joint_linear_ke``
-     - ``1.0e5`` N/m
-   * - ``newton:vbd:rigid:jointAngularStiffness``
-     - ``rigid_joint_angular_ke``
-     - ``rigid_joint_angular_ke``
-     - ``1.0e5`` N·m/rad
-   * - ``newton:vbd:rigid:jointLinearDamping``
-     - ``rigid_joint_linear_kd``
-     - ``rigid_joint_linear_kd``
-     - ``0.0`` N·s/m
-   * - ``newton:vbd:rigid:jointAngularDamping``
-     - ``rigid_joint_angular_kd``
-     - ``rigid_joint_angular_kd``
-     - ``0.0`` N·m·s/rad
-
-Precedence is explicit constructor argument, then ``model.vbd.*``, then the
-built-in default. Scene-authored stiffness and damping must be finite and
-non-negative, otherwise the constructor raises ``ValueError``. A scene-authored
-``contactHistory`` is ignored when VBD does not integrate rigid bodies (no
-bodies, or ``integrate_with_external_rigid_solver=True``). When VBD integrates
-bodies and is given a collision pipeline, the pipeline needs ``contact_matching``
-other than ``"disabled"``; pass ``rigid_contact_history=False`` to override the
-scene value.
-Scene values apply in both constraint modes: they are not skipped when the
-deprecated ``rigid_compliant_alm=False`` path is selected, even though the
-schema scopes them to the compliant ALM path.
-
-Coupling Modes
-~~~~~~~~~~~~~~
-
-Inside one solver no coupling setup is needed. Rigid blocks and particle
-blocks are solved in the same iteration loop, rigid blocks first, and
-rigid-soft contacts, attachments and springs connect them as ordinary energy
-terms (:ref:`vbd-how-solved`). Cloth between the fingers of a VBD-integrated
-gripper is the plain case.
-
-With ``integrate_with_external_rigid_solver=True`` the rigid bodies belong to
-another solver. SolverVBD then skips the rigid solve, reads the body poses the
-external solver wrote into the output state, and applies rigid-soft contact to
-the particles only (one-way coupling). Attachments are not supported in this
-mode. For two-way coupling through proxies, including contact forces reported
-back to the source body, see :doc:`Coupled Solvers </concepts/coupling>`.
-
-Contact Handling
-~~~~~~~~~~~~~~~~
-
-The contact stack has three layers.
-
-**Detection.** Self-contact pairs come from the triangle-mesh self-contact
-detector: vertex-triangle and edge-edge candidates within
-``particle_self_contact_margin + particle_self_contact_gap``, stored in fixed
-buffers of ``particle_vertex_contact_buffer_size`` and
-``particle_edge_contact_buffer_size`` entries, and filtered by topological
-distance (``particle_topological_contact_filter_threshold``) and rest-shape
-distance (``particle_rest_shape_contact_exclusion_radius``). It runs on the
-schedule of the ``SOFT_SELF_CONTACT`` collision slot, by default before and
-after the inertial step of every substep. Rigid-soft records (particles, and
-with ``enable_rigid_soft_full_surface_contact`` also soft edges and faces) and
-body-body records come from the :class:`~newton.CollisionPipeline`, which
-detects out to its ``soft_contact_gap`` beyond :attr:`~newton.Model.particle_radius` plus the
-shape :attr:`~newton.ModelBuilder.ShapeConfig.margin` and carries the shape thicknesses of body-body pairs. With a
-solver-owned pipeline the rigid slot follows ``collision_frequency_type`` as
-well.
-
-**Forces.** Each contact kind has its own law with friction and damping;
-self-contact, rigid-soft contact and body-body contact are given in
-:ref:`vbd-energy-terms`. Full-surface mesh records normally produce force only
-when they pass the feature-region test of Offset Geometric Contact
-(``mesh_contact_valid``); recovery records and rows stored after an overflow
-bypass the test, and every stored record is kept for truncation.
-
-**Truncation.** Divide and Truncate keeps self-contact, and with
-``rigid_soft_enable_dat`` also rigid-soft contact, free of new penetrations
-between detections, through the planar and the radius truncation of
-:ref:`vbd-dat`. The guarantee holds for pairs that were separated at
-detection and found within the query radius; the rigid trajectory check is
-sampled unless ``rigid_soft_dat_use_interval_arithmetic`` is on.
-
-How to set the distances, and what they cost, is on the tuning page:
-:ref:`vbd-contact-handling` and :ref:`vbd-margin-gap-guide`. The contact
-methods are described in:
-
-- Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
-  and Truncate: A Penetration and Inversion Free Framework for Coupled
-  Multi-physics System. In *ACM SIGGRAPH 2026 Conference Papers*.
-  https://doi.org/10.1145/3799902.3811143
-- Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem
-  Yuksel. 2025. Offset Geometric Contact. *ACM Trans. Graph.* 44, 4.
-  https://doi.org/10.1145/3731205
-
-Key Constructor Parameters
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
-``dat_conservative_bound_relaxation``,
-``integrate_with_external_rigid_solver``, and ``collision_pipeline`` with
-``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
-self-contact on or off, margin and gap, the candidate buffer sizes, the
-topological and rest-shape filters, and the tile solve. ``rigid_*``: the
-compliant ALM switch with its stabilization and retention factors, body-body
-contact history, the per-body contact list capacities, the rigid-soft barrier
-law and DAT, and the structural joint stiffness and damping. Defaults and exact
-semantics are in :class:`~newton.solvers.SolverVBD`; effects, symptoms and
-recommended values for particle systems are in the :ref:`Tuning VBD`
-parameter table.
 
 Examples
 --------
