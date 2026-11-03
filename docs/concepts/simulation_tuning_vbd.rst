@@ -29,8 +29,11 @@ Mental Model
 ------------
 
 VBD treats every time step as one minimization and solves it one block at a
-time: a particle block has 3 degrees of freedom and a 3x3 local solve, a rigid
-body block has 6 and a 6x6 solve. The material parameters on this page enter
+time. A block is one particle (3 degrees of freedom) or one rigid body (6).
+Each block solves a small local problem: with every other block held fixed, it
+takes one Newton step that balances its inertia against the forces acting on
+it. One pass over all blocks is one iteration, and the solver runs a fixed
+number of iterations per step. The material parameters on this page enter
 through the energy terms of that minimization, and contacts are energy terms
 too; the other parameters control detection, truncation and the iteration.
 :ref:`vbd-how-it-works` on the backend page gives the step objective, the
@@ -38,19 +41,34 @@ block solve and its call tree, the formula of every energy term, and the
 Divide and Truncate scheme (DAT) that keeps contacts penetration-free. The
 consequences for tuning are:
 
-- Stiff terms dominate :math:`\mathbf{H}_i`. One term far stiffer than the
-  others that share its vertices makes the local step serve that term and
-  neglect the rest. See :ref:`vbd-stiffness-ratio`.
-- Information moves about one ring per iteration. A fine mesh needs more
-  iterations to reach the same state. See :ref:`vbd-fail-resolution`.
-- An unfinished solve becomes velocity. Corrections that did not settle inside
-  the step come back as motion in the next step.
-- Truncation removes motion. A small query radius means a small budget and
-  visible DAT damping. See :ref:`vbd-fail-dat-damping`.
-- Float32 sets a floor on the time step. See :ref:`vbd-fail-small-dt`.
+- **Stiff terms win the local solve.** One term far stiffer than the others
+  that share its vertices makes the local step serve that term and neglect the
+  rest. See :ref:`vbd-stiffness-ratio`.
+- **Information moves one ring per iteration.** A vertex sees only the
+  vertices it shares an element with, its one ring, so a change travels one
+  ring of neighbours per iteration. A fine mesh needs more iterations to reach
+  the same state. See :ref:`vbd-fail-resolution`.
+- **An unfinished solve becomes velocity.** Corrections that did not settle
+  inside the step come back as motion in the next step.
+- **DAT caps motion between detections.** DAT keeps contacts penetration-free
+  by limiting how far a vertex may move between two contact detections. That
+  limit, the motion budget, is a fraction of the distance out to which contact
+  pairs are detected, the query radius. A small query radius means a small
+  budget and visible DAT damping. See :ref:`vbd-fail-dat-damping`.
+- **Float32 sets a floor on the time step.** See :ref:`vbd-fail-small-dt`.
 
 Parameter Effects
 -----------------
+
+Four contact distances appear in the tables below; :ref:`vbd-contact-handling`
+has the figure, the sums per contact type and the arguments that set them. The
+**interaction distance** is where the contact force starts to act: the
+self-contact margin, or the particle radius plus the shape margin for contact
+with shapes. The **detection slack** is the extra reach of detection beyond
+it, the gap, so that pairs are known before they interact. The **query
+radius** is their sum. The **motion budget** is how far one side of a pair may
+move between two detections under DAT: half of
+``dat_conservative_bound_relaxation`` times the query radius.
 
 .. _vbd-solver-parameters:
 
