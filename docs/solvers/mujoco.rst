@@ -180,11 +180,10 @@ Joint-limit stiffness and damping
 
 Revolute, prismatic, and D6 axes use MuJoCo's soft joint-limit constraints.
 Equal finite lower and upper limits constrain the coordinate to the specified
-value with the stiffness and damping described below. MuJoCo's compiler
-requires a non-empty range, so Newton warns and temporarily widens each side
-by ``1e-6 * max(1, abs(limit))`` [m or rad]. The runtime model uses the exact
-authored limits. Reversed limits raise a ``ValueError`` identifying the Newton
-joint, axis, and limit values.
+value with the stiffness and damping described below. Newton temporarily
+widens the range for compilation and restores the exact authored limits for
+simulation. At construction, reversed limits in any world raise a
+``ValueError`` identifying the Newton joint, axis, and limit values.
 
 :attr:`~newton.Model.joint_limit_ke` and
 :attr:`~newton.Model.joint_limit_kd` are force-space gains (for example,
@@ -243,7 +242,7 @@ authored native value such as ``solreflimit="0 0"`` or USD
 
 .. note::
 
-   ``SolverMuJoCo(..., save_to_mjcf=path)`` retains the widened range for
+   ``SolverMuJoCo(..., save_to_mjcf=path)`` warns and retains a narrow range for
    equal joint limits. For ``SOLREF_MODE_FORCE_SPACE`` joints, it is not a
    fully semantic round-trip: MJCF only stores ``solreflimit``; it has no
    field for "use Newton force-space scaling with these gains". The exporter
@@ -387,12 +386,15 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 
 :attr:`~newton.Model.joint_effort_limit` clamps the total actuator force via
 ``actfrcrange`` on prismatic, revolute, and D6 joints. A zero limit suppresses
-actuator force; negative limits raise a ``ValueError`` naming the joint and
-value. Actuators are retained so that changing the effort limit and calling
+actuator force; at construction, negative limits in any world raise a
+``ValueError`` naming the joint and value. Actuators are retained so that
+changing the effort limit and calling
 :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed`
 with :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` can enable them again.
 MJCF cannot represent a zero joint actuator-force range, so ``save_to_mjcf``
-raises an actionable error for these joints; omit that option to simulate them.
+raises an actionable error when such a joint has an actuator; omit that option
+to simulate it. Joints without actuators can be exported with the unused clamp
+disabled. :attr:`~newton.Control.joint_f` bypasses the actuator force clamp.
 
 For ball joints, effort limits are forwarded as ``forcerange`` on each actuator.
 

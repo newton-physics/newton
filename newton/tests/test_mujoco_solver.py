@@ -938,6 +938,144 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
             os.unlink(xml_path)
 
 
+class TestMuJoCoDegenerateJointLimits(unittest.TestCase):
+    def _make_model(self, *, device="cpu", world_count=1, direct_actuator=False, **axis_kwargs):
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverMuJoCo.register_custom_attributes(template)
+        body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        axis = newton.ModelBuilder.JointDofConfig(**axis_kwargs)
+        joint = template.add_joint_d6(-1, body, linear_axes=[axis], angular_axes=[axis], label="d6")
+        template.add_articulation([joint])
+        if direct_actuator:
+            template.add_custom_values(
+                **{
+                    "mujoco:actuator_trnid": wp.vec2i(0, -1),
+                    "mujoco:ctrl_source": int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
+                }
+            )
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.replicate(template, world_count)
+        return builder.finalize(device=device)
+
+    def _backends(self):
+        yield "cpu", True
+        yield "cuda:0" if wp.is_cuda_available() else "cpu", False
+
+    def test_equal_joint_limits(self):
+        """Restore equal slide and hinge limits and resist forces in both directions."""
+        for device, use_cpu in self._backends():
+            with self.subTest(device=device, use_cpu=use_cpu):
+                model = self._make_model(
+                    device=device, limit_lower=0.25, limit_upper=0.25, limit_ke=1.0e4, limit_kd=200.0
+                )
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu)
+                np.testing.assert_array_equal(model.joint_limit_lower.numpy(), [0.25, 0.25])
+                np.testing.assert_array_equal(model.joint_limit_upper.numpy(), [0.25, 0.25])
+                np.testing.assert_array_equal(solver.mjw_model.jnt_range.numpy()[0], np.full((2, 2), 0.25))
+                model.joint_q.fill_(0.25)
+                state, next_state = model.state(), model.state()
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                control = model.control()
+                for force in (1.0, -1.0):
+                    control.joint_f.fill_(force)
+                    for _ in range(20):
+                        solver.step(state, next_state, control, None, 0.002)
+                        state, next_state = next_state, state
+                    np.testing.assert_allclose(state.joint_q.numpy(), [0.25, 0.25], atol=1e-3)
+
+    def test_equal_joint_limits_mjcf_export(self):
+        """Export a narrow range around equal limits with a reference offset."""
+        import mujoco
+
+        model = self._make_model(limit_lower=0.25, limit_upper=0.25)
+        model.mujoco.dof_ref.fill_(0.5)
+        with tempfile.TemporaryDirectory() as tmp:
+            filename = os.path.join(tmp, "model.xml")
+            with self.assertWarnsRegex(UserWarning, r"d6.*equal.*limits"):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, save_to_mjcf=filename)
+            np.testing.assert_allclose(solver.mj_model.jnt_range, np.full((2, 2), 0.75), atol=1e-7)
+            saved = mujoco.MjModel.from_xml_path(filename)
+            self.assertTrue(np.all(saved.jnt_range[:, 0] < 0.75))
+            self.assertTrue(np.all(saved.jnt_range[:, 1] > 0.75))
+            np.testing.assert_allclose(saved.jnt_range, np.full((2, 2), 0.75), atol=1e-5)
+
+    def test_zero_drive_force(self):
+        """Suppress both actuators at zero effort and allow runtime effort updates."""
+        for device, use_cpu in self._backends():
+            with self.subTest(device=device, use_cpu=use_cpu):
+                model = self._make_model(
+                    device=device,
+                    effort_limit=0.0,
+                    actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
+                    target_ke=100.0,
+                    target_kd=10.0,
+                )
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu)
+                state, next_state = model.state(), model.state()
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                control = model.control()
+                control.joint_target_q.fill_(1.0)
+                control.joint_target_qd.fill_(1.0)
+                for _ in range(10):
+                    solver.step(state, next_state, control, None, 0.002)
+                    state, next_state = next_state, state
+                np.testing.assert_array_equal(state.joint_q.numpy(), [0.0, 0.0])
+                np.testing.assert_array_equal(state.joint_qd.numpy(), [0.0, 0.0])
+
+                model.joint_effort_limit.fill_(2.0)
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                solver.step(state, next_state, control, None, 0.002)
+                self.assertTrue(np.all(next_state.joint_qd.numpy() > 0.0))
+
+                model.joint_effort_limit.zero_()
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                solver.step(next_state, state, control, None, 0.002)
+                np.testing.assert_allclose(state.joint_qd.numpy(), next_state.joint_qd.numpy(), atol=1e-7)
+
+    def test_zero_drive_force_mjcf_export(self):
+        """Allow passive zero-effort axes in MJCF, but reject zero-force actuators."""
+        import mujoco
+
+        model = self._make_model(effort_limit=0.0)
+        model.joint_target_mode.assign([newton.JointTargetMode.NONE, newton.JointTargetMode.EFFORT])
+        with tempfile.TemporaryDirectory() as tmp:
+            filename = os.path.join(tmp, "model.xml")
+            SolverMuJoCo(model, use_mujoco_cpu=True, save_to_mjcf=filename)
+            saved = mujoco.MjModel.from_xml_path(filename)
+            self.assertEqual(saved.nu, 0)
+            np.testing.assert_array_equal(saved.jnt_actfrclimited, [False, False])
+            os.unlink(filename)
+
+            model.joint_target_mode.fill_(int(newton.JointTargetMode.POSITION_VELOCITY))
+            with self.assertRaisesRegex(ValueError, r"d6.*joint_effort_limit=0.*save_to_mjcf"):
+                SolverMuJoCo(model, use_mujoco_cpu=True, save_to_mjcf=filename)
+            self.assertFalse(os.path.exists(filename))
+
+            model = self._make_model(effort_limit=0.0, direct_actuator=True)
+            with self.assertRaisesRegex(ValueError, r"d6.*joint_effort_limit=0.*save_to_mjcf"):
+                SolverMuJoCo(model, use_mujoco_cpu=True, save_to_mjcf=filename)
+            self.assertFalse(os.path.exists(filename))
+
+    def test_invalid_joint_limits_per_world(self):
+        """Identify invalid scalar limits in both template and non-template worlds."""
+        model = self._make_model(world_count=2, limit_lower=-1.0, limit_upper=1.0)
+        model.joint_label[:] = ["first", "second"]
+        for world in range(2):
+            for attribute, axis, value, error in (
+                ("joint_limit_lower", 0, 2.0, "limit_lower.*limit_upper"),
+                ("joint_effort_limit", 1, -1.0, "effort_limit.*-1"),
+            ):
+                with self.subTest(world=world, attribute=attribute):
+                    array = getattr(model, attribute)
+                    original = array.numpy().copy()
+                    invalid = original.copy()
+                    invalid[2 * world + axis] = value
+                    array.assign(invalid)
+                    with self.assertRaisesRegex(ValueError, rf"{model.joint_label[world]}.*axis {axis}.*{error}"):
+                        SolverMuJoCo(model, separate_worlds=True)
+                    array.assign(original)
+
+
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_attributes_registration_and_updates(self):
         """

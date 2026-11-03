@@ -6847,12 +6847,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 kwargs["forcerange"] = info["forcerange"]
             return kwargs
 
-        def scalar_joint_limits(j: int, dof: int) -> tuple[float, float, float]:
-            """Provide non-empty compile-time ranges, restored by the initial model update."""
+        # Validate all worlds before compiling the template. Loop joints do not
+        # become MuJoCo joints, so their unused ranges are excluded.
+        invalid_dofs = np.flatnonzero(
+            (joint_limit_lower > joint_limit_upper)
+            | (joint_effort_limit < 0.0)
+            | ((joint_limit_lower == joint_limit_upper) & ~np.isfinite(joint_limit_lower))
+        )
+        for dof in invalid_dofs:
+            j = int(np.searchsorted(joint_qd_start, dof, side="right") - 1)
+            template_joint = j % (model.joint_count // model.world_count) if separate_worlds else j
+            if joint_type[j] not in (JointType.PRISMATIC, JointType.REVOLUTE, JointType.D6):
+                continue
+            if template_joint in joints_loop:
+                continue
             lower, upper = float(joint_limit_lower[dof]), float(joint_limit_upper[dof])
             effort = float(joint_effort_limit[dof])
             label = model.joint_label[j]
-            axis = dof - int(joint_qd_start[j])
+            axis = int(dof - joint_qd_start[j])
             if lower > upper:
                 raise ValueError(
                     f"Joint '{label}' axis {axis} has joint_limit_lower={lower} greater than "
@@ -6863,27 +6875,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"Joint '{label}' axis {axis} has joint_effort_limit={effort}. "
                     "Set the effort limit (USD drive maxForce) to a non-negative value."
                 )
+            raise ValueError(f"Joint '{label}' axis {axis} has non-finite equal joint limits: {lower}.")
+
+        def scalar_joint_limits(j: int, dof: int) -> tuple[float, float, float]:
+            """Provide non-empty compile-time ranges, restored by the initial model update."""
+            lower, upper = float(joint_limit_lower[dof]), float(joint_limit_upper[dof])
+            effort = float(joint_effort_limit[dof])
             if lower == upper:
-                if not math.isfinite(lower):
-                    raise ValueError(f"Joint '{label}' axis {axis} has non-finite equal joint limits: {lower}.")
                 # MuJoCo rejects equal ranges only during compilation. Its runtime
                 # limit constraints support them, as do Newton's model updates.
                 padding = 1.0e-6 * max(1.0, abs(lower))
-                warnings.warn(
-                    f"Joint '{label}' axis {axis} has equal joint limits ({lower}). "
-                    f"Widening the MJCF range by {padding} on each side for compilation; "
-                    "simulation retains the authored limits with MuJoCo's soft limit constraints.",
-                    UserWarning,
-                    stacklevel=3,
-                )
+                if target_filename:
+                    axis = dof - int(joint_qd_start[j])
+                    warnings.warn(
+                        f"Joint '{model.joint_label[j]}' axis {axis} has equal joint limits ({lower}). "
+                        "Saving a narrow MJCF range; simulation retains the authored limits.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
                 lower -= padding
                 upper += padding
             if effort == 0.0:
-                if target_filename:
-                    raise ValueError(
-                        f"Joint '{label}' axis {axis} has joint_effort_limit=0, which MJCF cannot represent. "
-                        "Omit save_to_mjcf to simulate this joint with zero actuator force."
-                    )
                 # Keep actuators and force limiting enabled so runtime effort-limit
                 # updates work. notify_model_changed(ALL) restores the exact zero clamp.
                 effort = 1.0
@@ -8274,6 +8286,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # ``joint_limit_ke``/``kd`` (and the FORCE_SPACE mode) on
                 # the rebuilt model.
                 jnt_to_newton_dof = self.mjc_jnt_to_newton_dof.numpy()[0]
+                joint_actuators = np.isin(
+                    self.mj_model.actuator_trntype,
+                    (mujoco.mjtTrn.mjTRN_JOINT, mujoco.mjtTrn.mjTRN_JOINTINPARENT),
+                )
+                actuated_joints = set(self.mj_model.actuator_trnid[joint_actuators, 0])
                 # ``joint_solref_limit_mode`` is the per-DOF
                 # ``mujoco.solreflimit_mode`` array fetched at the start of
                 # ``_convert_to_mjc`` (see the ``get_custom_attribute`` block).
@@ -8281,10 +8298,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # registered, in which case every joint defaults to the
                 # FORCE_SPACE branch below.
                 for mjc_jnt, solref in enumerate(self.mj_model.jnt_solref):
-                    if not self.mj_model.jnt_limited[mjc_jnt]:
-                        continue
                     newton_dof = int(jnt_to_newton_dof[mjc_jnt])
                     if newton_dof < 0:
+                        continue
+                    if (
+                        int(self.mj_model.jnt_type[mjc_jnt])
+                        in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE)
+                        and joint_effort_limit[newton_dof] == 0.0
+                    ):
+                        if mjc_jnt in actuated_joints:
+                            j = int(np.searchsorted(joint_qd_start, newton_dof, side="right") - 1)
+                            axis = int(newton_dof - joint_qd_start[j])
+                            raise ValueError(
+                                f"Joint '{model.joint_label[j]}' axis {axis} has joint_effort_limit=0, "
+                                "which MJCF cannot represent for an actuated joint. "
+                                "Omit save_to_mjcf to simulate this joint with zero actuator force."
+                            )
+                        # Without a joint actuator the clamp has no effect. Do not
+                        # persist the temporary nonzero compilation range.
+                        spec.joints[mjc_jnt].actfrclimited = False
+                        spec.joints[mjc_jnt].actfrcrange = (0.0, 0.0)
+                    if not self.mj_model.jnt_limited[mjc_jnt]:
                         continue
                     mode = (
                         int(joint_solref_limit_mode[newton_dof])
