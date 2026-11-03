@@ -25,12 +25,6 @@ KP = 1000.0
 KD = 5.0
 
 
-@wp.kernel
-def _sum_kernel(a: wp.array[float], b: wp.array[float], out: wp.array[float]):
-    i = wp.tid()
-    out[i] = a[i] + b[i]
-
-
 def _build_g1(world_count: int) -> tuple[newton.Model, int]:
     g1 = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(g1)
@@ -136,12 +130,7 @@ class _ActuatorBenchmark:
             newton.eval_inverse_dynamics_passive(
                 self.model, state_in, gravity_force=self.gravity_force, coriolis_force=self.coriolis_force
             )
-            wp.launch(
-                _sum_kernel,
-                dim=self.bias_force.shape[0],
-                inputs=[self.gravity_force, self.coriolis_force],
-                outputs=[self.bias_force],
-            )
+            wp.map(wp.add, self.gravity_force, self.coriolis_force, out=self.bias_force)
         self.control.joint_f.zero_()
         self.actuator.step(state_in, self.control, dt=self.DT, bias_force=self.bias_force)
         self.solver.step(state_in, state_out, self.control, None, self.DT)
