@@ -4855,6 +4855,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._mjw_qfrc_frictionloss: wp.array2d[wp.float32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        # Reset by the conversion finalizer, avoiding a memset before each pass.
+        self._contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
         self._zero_contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Track the Contacts instance and its capacity.  Any change to these
@@ -5656,6 +5658,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to size for the worst case."
             )
         launch_dim = min(contacts.rigid_contact_max, naconmax)
+        # Small blocks distribute short contact lists across more SMs. For
+        # large capacities, retain the default block size to avoid excessive
+        # scheduling work when most reserved contact slots are empty. Limit
+        # small-block grids to eight blocks per SM.
+        block_dim = 32 if model.device.is_cuda and launch_dim <= model.device.sm_count * 256 else 256
 
         # Invalidate the cached tid_to_cid mapping whenever any of the
         # invariants it depends on change.  _contact_tid_to_cid is allocated
@@ -5672,10 +5679,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._invalidate_contact_fast_path()
             self._last_contacts_id = contacts_id
             self._last_rigid_contact_max = contacts.rigid_contact_max
-
-        # Zero nacon before the kernel — the full path uses atomic_add to count
-        # contacts; on the fast path _sync_nacon_count restores the count.
-        self.mjw_data.nacon.zero_()
 
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -5725,7 +5728,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.newton_shape_to_mjc_geom,
                 # Mujoco warp contacts
                 self.mjw_data.naconmax,
-                self.mjw_data.nacon,
+                self._contact_count,
                 self.mjw_data.contact.dist,
                 self.mjw_data.contact.pos,
                 self.mjw_data.contact.frame,
@@ -5738,21 +5741,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_data.contact.geom,
                 self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
-                # Data to clear
-                self.mjw_data.nworld,
-                self.mjw_data.ncollision,
                 # Fast-path generation tracking
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
             ],
             device=model.device,
+            block_dim=block_dim,
         )
 
         # Runs as a separate dim=1 kernel AFTER the main kernel completes so that:
-        #  - nacon has its final value from the full path's atomic_add, and
-        #    the main kernel never writes nacon directly (deterministic mode
-        #    rejects mixing direct writes with atomic updates)
+        #  - the compacted count is complete before publishing it and resetting
+        #    the scratch counter, avoiding a separate pre-conversion memset
         #  - last_contact_generation is only updated after ALL threads in the
         #    main kernel have read it (avoids a cross-block race)
         wp.launch(
@@ -5760,6 +5760,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dim=1,
             inputs=[
                 self.mjw_data.nacon,
+                self._contact_count,
+                self.mjw_data.ncollision,
                 self._last_nacon_count,
                 contacts.contact_generation,
                 self._last_contact_generation,

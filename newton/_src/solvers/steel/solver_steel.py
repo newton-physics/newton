@@ -14943,6 +14943,13 @@ def _get_pgs_solve_mf_gs_kernel(
         "pre_dY_{k} = Y_world.data[next_jy_base + {d}]; }"
     )
     dense_dot = lanes("            if ({d} < " + str(D) + ") my_sum += cur_dJ_{k} * s_v[{d}];")
+    # A friction pair's sibling J v and cross term J_i Y_sib, with row i's J from the prefetch registers.
+    dense_pair_dot = lanes(
+        "                    if ({d} < "
+        + str(D)
+        + ") { sibling_residual += J_world.data[sib_row_base + {d}] * s_v[{d}]; "
+        "cross += cur_dJ_{k} * Y_world.data[sib_row_base + {d}]; }"
+    )
     dense_v_update = lanes("                if ({d} < " + str(D) + ") s_v[{d}] += cur_dY_{k} * delta_impulse;")
 
     dense_velocity_limit_pass = (
@@ -15090,10 +15097,7 @@ def _get_pgs_solve_mf_gs_kernel(
                     float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
                     float sibling_residual = 0.0f;
                     float cross = 0.0f;
-                    for (int d = lane; d < {D}; d += 32) {{
-                        sibling_residual += J_world.data[sib_row_base + d] * s_v[d];
-                        cross += J_world.data[jy_world_base + i * {D} + d] * Y_world.data[sib_row_base + d];
-                    }}
+{dense_pair_dot}
                     sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
                     cross = warp_sum(cross);
                     float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
@@ -15177,6 +15181,13 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_friction_radius = ""
         dense_friction_denominator_guard = ""
         mf_friction_denominator_guard = ""
+
+    # The pair solve at a contact's first friction row also writes the second, so the sweep skips that row.
+    dense_second_friction_skip = (
+        f"            if (row_type == {friction_type} && i != ((s_meta_dense[i] >> {type_bits}) - 1) + 1) continue;"
+        if friction_mode not in ("bisection", "bisection_desaxce")
+        else ""
+    )
 
     local_internal_skip = (
         f"""
@@ -15267,6 +15278,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 __syncwarp();
                 continue;
             }}
+{dense_second_friction_skip}
             float denom = s_diag_dense[i];
             if (denom <= 0.0f{dense_friction_denominator_guard}) continue;
 
@@ -15315,15 +15327,18 @@ def _get_pgs_solve_mf_gs_kernel(
                 pre_MiJtb = mf_MiJt_b.data[mf6_base + lane - 6];
             }}
         }}
-        for (int i = 0; i < mf_main_end; i++) {{
+        for (int i = 0, next_i = 0; i < mf_main_end; i = next_i) {{
             int4 meta = pre_meta;
             float cur_Ja = pre_Ja;
             float cur_Jb = pre_Jb;
             float cur_MiJta = pre_MiJta;
             float cur_MiJtb = pre_MiJtb;
-            if (i + 1 < mf_main_end) {{
-                int next_mf6 = mf6_base + (i + 1) * 6;
-                pre_meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + (i + 1) * 4]);
+            // The first row of a friction pair also solves the second, so the sweep steps over it.
+            next_i = i + 1;
+            if ((meta.w & 0xFFFF) == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i == (meta.w >> 16) + 1) next_i = i + 2;
+            if (next_i < mf_main_end) {{
+                int next_mf6 = mf6_base + next_i * 6;
+                pre_meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + next_i * 4]);
                 if (lane < 6) {{
                     pre_Ja = mf_J_a.data[next_mf6 + lane];
                     pre_MiJta = mf_MiJt_a.data[next_mf6 + lane];
@@ -15342,6 +15357,7 @@ def _get_pgs_solve_mf_gs_kernel(
             int mf_par = packed_tp >> 16;
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && global_iter < friction_start_iteration) {{
                 s_lam_mf[i] = 0.0f;
+                if (next_i == i + 2) s_lam_mf[i + 1] = 0.0f;
                 __syncwarp();
                 continue;
             }}
