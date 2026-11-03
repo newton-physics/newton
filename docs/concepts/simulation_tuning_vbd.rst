@@ -35,7 +35,8 @@ through the energy terms of that minimization, and contacts are energy terms
 too; the other parameters control detection, truncation and the iteration.
 :ref:`vbd-how-it-works` on the backend page gives the step objective, the
 block solve and its call tree, the formula of every energy term, and the
-penetration-free truncation (DAT). The consequences for tuning are:
+Divide and Truncate scheme (DAT) that keeps contacts penetration-free. The
+consequences for tuning are:
 
 - Stiff terms dominate :math:`\mathbf{H}_i`. One term far stiffer than the
   others that share its vertices makes the local step serve that term and
@@ -50,6 +51,8 @@ penetration-free truncation (DAT). The consequences for tuning are:
 
 Parameter Effects
 -----------------
+
+.. _vbd-solver-parameters:
 
 VBD-Specific Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -273,10 +276,12 @@ Contact Handling
 Four distances govern a contact. The **interaction distance** is where the
 contact energy starts to act. The **detection slack** is the extra reach of
 detection, so pairs are known before they interact. The **query radius** is
-their sum. The **motion budget** is the DAT limit between two detections, and it
-scales with the query radius. Self-contact pairs are vertex-triangle and
-edge-edge pairs of the same particle system; rigid-soft pairs are particles,
-edges or faces against a body or static shape.
+their sum. The **motion budget** is how far one side of a pair may move
+between two detections under the Divide and Truncate scheme (DAT), the
+solver's penetration-free truncation (:ref:`vbd-dat`); it scales with the
+query radius. Self-contact pairs are vertex-triangle and edge-edge pairs of
+the same particle system; rigid-soft pairs are particles, edges or faces
+against a body or static shape.
 
 .. figure:: ../images/vbd_tuning_contact_distances.svg
    :alt: Interaction distance, detection slack, query radius and motion budget for self-contact and rigid-soft contact
@@ -291,16 +296,47 @@ edges or faces against a body or static shape.
    interaction distance :attr:`~newton.Model.particle_radius` plus the shape :attr:`~newton.ModelBuilder.ShapeConfig.margin`; the
    pipeline's ``soft_contact_gap`` is a detection band beyond that.
 
-For self-contact the solver reads the two values from its constructor and
-queries at ``particle_self_contact_margin + particle_self_contact_gap``. For
-rigid-soft contact the force kernel uses ``particle_radius + margin`` of the
-shape as the interaction distance, and the collision pipeline detects out to
-``soft_contact_gap`` beyond that. The default self-contact schedule detects
-before and after the inertial step of every substep, so the motion budget is
-refreshed twice per substep.
+In the names of the :class:`~newton.solvers.SolverVBD` constructor arguments,
+the :class:`~newton.CollisionPipeline` constructor arguments and the model
+arrays, the four distances are:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+   :class: wrap-literals
+
+   * - Distance
+     - Self-contact
+     - Rigid-soft contact
+   * - Interaction distance
+     - ``particle_self_contact_margin`` (solver)
+     - :attr:`~newton.Model.particle_radius` + shape
+       :attr:`~newton.ModelBuilder.ShapeConfig.margin`
+   * - Detection slack
+     - ``particle_self_contact_gap`` (solver)
+     - ``soft_contact_gap`` (pipeline)
+   * - Query radius
+     - ``particle_self_contact_margin`` + ``particle_self_contact_gap``
+     - ``particle_radius`` + ``margin`` + ``soft_contact_gap``
+   * - Motion budget per side
+     - 0.5 x ``dat_conservative_bound_relaxation`` x query radius
+     - 0.5 x ``dat_conservative_bound_relaxation`` x the smallest rigid-soft
+       query radius in the model, with ``rigid_soft_enable_dat``
+
+The force kernels act below the interaction distance; detection finds pairs
+out to the query radius. The default self-contact schedule detects before and
+after the inertial step of every substep, so the motion budget is refreshed
+twice per substep.
 
 **What DAT does to motion.** DAT works on the displacement each vertex has
-accumulated since the last detection, and it has two distinct parts.
+accumulated since the last detection, and it has two distinct parts. Its knobs
+are :class:`~newton.solvers.SolverVBD` constructor arguments
+(:ref:`vbd-solver-parameters`): ``dat_conservative_bound_relaxation`` is the
+relaxation factor used below (default 0.85), ``particle_self_contact_margin``
+and ``particle_self_contact_gap`` set the self-contact query radius,
+``rigid_soft_enable_dat`` turns on the rigid-soft part, and
+``collision_frequency_type`` with ``collision_frequency`` sets how often
+detection refreshes the budget.
 
 *Planar truncation* acts per detected pair. At the detection-time positions
 DAT places a division plane between the two primitives. The plane splits the
@@ -312,8 +348,9 @@ untouched. A pair whose primitives already intersect at detection time has no
 plane and is left unconstrained in that pass.
 
 *Radius truncation* acts on every particle, pair or no pair. The length of the
-accumulated displacement is capped at half of the relaxation factor times the
-query radius. It is isotropic: a vertex that wants to move further is slowed
+accumulated displacement is capped at half of the relaxation factor
+(``dat_conservative_bound_relaxation``) times the query radius. It is
+isotropic: a vertex that wants to move further is slowed
 down in every direction, not only along a contact normal. This cap is what
 makes the scheme safe between detections: two primitives farther apart than the
 query radius at detection cannot meet before the next detection, because each
