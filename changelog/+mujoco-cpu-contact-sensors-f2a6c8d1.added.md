@@ -1,0 +1,1 @@
+Add contact geometry and force observables to `SolverMuJoCo` with `use_mujoco_cpu=True` and `use_mujoco_contacts=True`. CPU contact export uses the resolved `nconmax` capacity, rejects undersized observable storage, and warns when excess runtime contacts are omitted.

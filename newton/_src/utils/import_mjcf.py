@@ -22,6 +22,7 @@ from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
+from ..solvers.mujoco import dcmotor
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -29,7 +30,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from ..solvers.mujoco.enums import EqType
+from ..solvers.mujoco.enums import EqType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
@@ -79,6 +80,42 @@ def _parse_actuator_parameters(value: str) -> vec10:
     # Actuator parameters use zero-padding, unlike parse_vec's shorthand rules.
     values = [float(component) for component in value.split()[:10]]
     return vec10(*values, *([0.0] * (10 - len(values))))
+
+
+def _load_mujoco_msh(filename: str) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Read vertices, faces, normals, and UVs from a MuJoCo binary mesh.
+
+    The file holds four int32 counts (vertices, normals, texture coordinates, faces) followed by
+    float32 vertex positions, normals, and texture coordinates, and int32 triangle indices.
+    """
+    data = np.fromfile(filename, dtype=np.uint8)
+    if data.size < 16:
+        raise ValueError(f"MuJoCo mesh file is too short: {filename}")
+    nvert, nnormal, ntexcoord, nface = (int(v) for v in data[:16].view(np.int32))
+    sizes = (3 * nvert * 4, 3 * nnormal * 4, 2 * ntexcoord * 4, 3 * nface * 4)
+    if (
+        nvert < 4
+        or nnormal not in (0, nvert)
+        or ntexcoord not in (0, nvert)
+        or nface < 0
+        or data.size != 16 + sum(sizes)
+    ):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
+    offset = 16
+    arrays = []
+    for size, dtype in zip(sizes, (np.float32, np.float32, np.float32, np.int32), strict=True):
+        arrays.append(data[offset : offset + size].view(dtype))
+        offset += size
+    vertices = arrays[0].reshape(-1, 3)
+    faces = arrays[3].reshape(-1, 3)
+    if np.any(faces < 0) or np.any(faces >= nvert):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
+    normals = arrays[1].reshape(-1, 3) if nnormal else None
+    texcoords = arrays[2].reshape(-1, 2) if ntexcoord else None
+    if texcoords is not None:
+        # MuJoCo uploads image rows unchanged; Newton viewers use bottom-origin UVs.
+        texcoords[:, 1] = 1.0 - texcoords[:, 1]
+    return vertices, faces if nface else None, normals, texcoords
 
 
 def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
@@ -325,6 +362,17 @@ def parse_mjcf(
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
     MuJoCo-specific custom attributes are registered on the builder automatically.
+    Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+    (included in ``newton[sim]``) to resolve native defaults, and raises
+    :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
+
+    Geom material defaults and RGBA are preserved. Meshes also retain base-color textures
+    (the ``texture`` attribute or ``rgb``/``rgba`` layers) and non-negative ``roughness``
+    and ``metallic`` values. Texture paths are retained for lazy loading by renderers.
+    RGB bindings take precedence over RGBA bindings, including inherited defaults.
+    MJCF textures default to a white tint. Without an MJCF color or base-color texture,
+    mesh-file appearance and primitive palette colors are retained for compatibility.
+    Other PBR texture layers are not imported.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -430,7 +478,9 @@ def parse_mjcf(
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
             and finalize under ``model.mujoco.equality_constraint_*``.
-        convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
+        convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
+            Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
+            an identity rest orientation. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
             where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
@@ -468,6 +518,7 @@ def parse_mjcf(
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
 
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
+    dcmotor_parameters = dcmotor.resolve_mjcf_parameters(root)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     contact_sections = root.findall("contact")
@@ -612,6 +663,16 @@ def parse_mjcf(
     class_children = {}
     class_defaults = {"__all__": {}}
 
+    def material_attrib(element: ET.Element) -> dict:
+        attrib = element.attrib.copy()
+        # Keep base-color roles separate until defaults have been resolved.
+        for layer in element.findall("layer"):
+            if layer.get("role") == "rgb":
+                attrib["texture"] = layer.get("texture")
+            elif layer.get("role") == "rgba":
+                attrib["texture_rgba"] = layer.get("texture")
+        return attrib
+
     def parse_default(node, parent):
         nonlocal class_parent
         nonlocal class_children
@@ -631,17 +692,26 @@ def parse_mjcf(
             if child.tag == "default":
                 parse_default(child, node.get("class"))
             else:
-                class_defaults[class_name][child.tag] = child.attrib
+                class_defaults[class_name][child.tag] = (
+                    material_attrib(child) if child.tag == "material" else child.attrib
+                )
 
     for default in root.findall("default"):
         parse_default(default, None)
 
-    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
+    def merge_attrib(default_attrib: dict, incoming_attrib: dict, *, tag: str | None = None) -> dict:
         attrib = default_attrib.copy()
         for key, value in incoming_attrib.items():
             if key in attrib:
                 if isinstance(attrib[key], dict):
-                    attrib[key] = merge_attrib(attrib[key], value)
+                    attrib[key] = merge_attrib(attrib[key], value, tag=key)
+                elif (
+                    tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "muscle", "dcmotor"}
+                    and key == "damping"
+                ):
+                    # MuJoCo overrides only the supplied prefix of these vectors.
+                    values = value.split()
+                    attrib[key] = " ".join(values + attrib[key].split()[len(values) :])
                 else:
                     attrib[key] = value
             else:
@@ -671,7 +741,8 @@ def parse_mjcf(
         if ambient_defaults is None:
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
-        return merge_attrib(defaults.get(tag, {}), element.attrib)
+        attrib = material_attrib(element) if tag == "material" else element.attrib
+        return merge_attrib(defaults.get(tag, {}), attrib, tag=tag)
 
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
@@ -702,6 +773,7 @@ def parse_mjcf(
                 refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"MJCF mesh {name!r}")
                 mesh_assets[name] = {
                     "file": fname,
+                    "content_type": mesh_attrib.get("content_type"),
                     "scale": mesh_scale,
                     "refpos": refpos,
                     "refquat": refquat,
@@ -802,10 +874,19 @@ def parse_mjcf(
             mat_name = material.attrib.get("name")
             if not mat_name:
                 continue
+            mat_attrib = resolve_element_attrib(material, "material")
+            texture = mat_attrib.get("texture") or mat_attrib.get("texture_rgba")
+            # Default to a neutral tint only when MJCF supplies a base-color texture.
+            default_rgba = "1 1 1 1" if texture else None
             material_assets[mat_name] = {
-                "rgba": material.attrib.get("rgba"),
-                "texture": material.attrib.get("texture"),
+                "rgba": mat_attrib.get("rgba", default_rgba),
+                "texture": texture,
             }
+            for key in ("roughness", "metallic"):
+                value = float(mat_attrib.get(key, "-1"))
+                # Negative values mean unspecified in MJCF; keep mesh-file defaults.
+                if value >= 0.0:
+                    material_assets[mat_name][key] = value
         for hfield in asset.findall("hfield"):
             hfield_name = hfield.attrib.get("name")
             if not hfield_name:
@@ -865,7 +946,13 @@ def parse_mjcf(
         override_texture: str | None = None,
     ) -> list[Mesh]:
         mesh_asset = mesh_assets[mesh_name]
-        if "file" in mesh_asset:
+        mesh_file = mesh_asset.get("file")
+        content_type = mesh_asset.get("content_type")
+        if mesh_file and (
+            content_type == "model/vnd.mujoco.msh" or (not content_type and mesh_file.lower().endswith(".msh"))
+        ):
+            vertices, faces, normals, texcoords = _load_mujoco_msh(mesh_file)
+        elif mesh_file:
             refpos = mesh_asset["refpos"]
             refquat = mesh_asset["refquat"]
             has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
@@ -914,27 +1001,31 @@ def parse_mjcf(
                     )
                 )
             return transformed_meshes
+        else:
+            vertices = mesh_asset["vertices"]
+            faces = mesh_asset["faces"]
+            normals = mesh_asset["normals"]
+            texcoords = mesh_asset["texcoords"]
 
         vertices, normals = _apply_mesh_ref_pose(
-            mesh_asset["vertices"], mesh_asset["normals"], mesh_asset["refpos"], mesh_asset["refquat"], scaling
+            vertices, normals, mesh_asset["refpos"], mesh_asset["refquat"], scaling
         )
-        faces = mesh_asset["faces"]
-        texcoords = mesh_asset["texcoords"]
 
         if faces is None:
             hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
-            source_index_by_vertex = {}
-            for index, vertex in enumerate(vertices):
-                source_index_by_vertex.setdefault(tuple(vertex), index)
-            source_indices = np.array(
-                [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
-                dtype=np.int32,
-            )
+            if normals is not None or texcoords is not None:
+                source_index_by_vertex = {}
+                for index, vertex in enumerate(vertices):
+                    source_index_by_vertex.setdefault(tuple(vertex), index)
+                source_indices = np.array(
+                    [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
+                    dtype=np.int32,
+                )
+                if normals is not None:
+                    normals = normals[source_indices]
+                if texcoords is not None:
+                    texcoords = texcoords[source_indices]
             vertices = hull_vertices
-            if normals is not None:
-                normals = normals[source_indices]
-            if texcoords is not None:
-                texcoords = texcoords[source_indices]
 
         return [
             Mesh(
@@ -999,6 +1090,21 @@ def parse_mjcf(
             return wp.types.vector(len(default), wp.float32)(*([float(out[0])] * len(default)))
 
         return wp.types.vector(length, wp.float32)(out)
+
+    autolimits = compiler_attribs.get("autolimits", "true").lower() == "true"
+
+    def is_limited(attrib: dict[str, Any], limited_key: str, range_key: str) -> bool:
+        """Resolve a tri-state ``*limited`` attribute the way MuJoCo's compiler does."""
+        limited = attrib.get(limited_key, "auto").lower()
+        if limited in ("true", "false"):
+            return limited == "true"
+        has_range = range_key in attrib and any(parse_vec(attrib, range_key, None))
+        if has_range and not autolimits:
+            raise ValueError(
+                f"MJCF element '{attrib.get('name', 'unnamed')}' has '{range_key}' but no '{limited_key}' "
+                f'while compiler autolimits is false; set {limited_key}="true" or "false" explicitly.'
+            )
+        return has_range
 
     def warn_invalid_joint_solreflimit(joint_attrib: dict[str, Any]) -> None:
         if "solreflimit" not in joint_attrib:
@@ -1483,6 +1589,10 @@ def parse_mjcf(
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
                 for m_mesh in m_meshes:
+                    if "roughness" in material_info:
+                        m_mesh.roughness = material_info["roughness"]
+                    if "metallic" in material_info:
+                        m_mesh.metallic = material_info["metallic"]
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
                             logger.warning("mesh %s has a texture but no UVs; texture will be ignored.", mesh_label)
@@ -2078,6 +2188,7 @@ def parse_mjcf(
             parent matches the parent_body parameter from parse_mjcf. Only root bodies respect the
             floating/base_joint parameters; nested bodies use their defined joints from the MJCF.
         """
+        nonlocal approximated_spring_rest
         # Infer if this is a root body by checking if parent matches the outer parent_body parameter
         # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
         is_mjcf_root = parent == parent_body
@@ -2158,12 +2269,13 @@ def parse_mjcf(
             # linear_axes/angular_axes) and only assigned DOF indices after the loop.
             linear_dof_attrs: list[dict[str, Any]] = []
             angular_dof_attrs: list[dict[str, Any]] = []
-            # MJCF joint name -> (is_linear, index into linear_dof_attrs/angular_dof_attrs)
-            mjcf_joint_dof_slots: list[tuple[str, bool, int]] = []
+            # (MJCF joint name, is_linear, index into linear/angular_dof_attrs, inert range)
+            mjcf_joint_dof_slots: list[tuple[str, bool, int, tuple[float, float] | None]] = []
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
             ball_damping = default_joint_damping
+            ball_stiffness = builder.default_joint_cfg.stiffness
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_attrib = resolve_element_attrib(joint, "joint", defaults)
@@ -2191,6 +2303,8 @@ def parse_mjcf(
                         parsing_mode="mjcf",
                         context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                     )
+                    dof_attr.pop("mujoco:dof_passive_stiffness", None)
+                    dof_attr.pop("mujoco:dof_springref", None)
                     if has_solreflimit_mode:
                         # The raw vec2 cannot distinguish authored
                         # solreflimit="0 0" from the "not authored" sentinel.
@@ -2202,12 +2316,13 @@ def parse_mjcf(
                             default_joint_limit_ke, default_joint_limit_kd
                         )
                     # ball joint has 3 angular DOFs; replicate attribute values across all of them
-                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs)))
+                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs), None))
                     angular_dof_attrs.extend(dof_attr for _ in range(3))
                     # Lift frictionloss and damping into the builder's per-DOF arrays
                     # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
                     ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
+                    ball_stiffness = parse_float(joint_attrib, "stiffness", builder.default_joint_cfg.stiffness)
                     break
                 is_angular = joint_type_str == "hinge"
                 is_linear = joint_type_str == "slide"
@@ -2232,6 +2347,14 @@ def parse_mjcf(
                         joint_ref_value *= scale
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
+                inert_range = None
+                if has_range and not is_limited(joint_attrib, "limited", "range"):
+                    limit_lower, limit_upper = default_joint_limit_lower, default_joint_limit_upper
+                    # Native inheritrange still reads the inert range, without degree conversion.
+                    inert_range = (
+                        joint_range[0] * scale if is_linear else joint_range[0],
+                        joint_range[1] * scale if is_linear else joint_range[1],
+                    )
 
                 # ``solreflimit`` is a native MuJoCo solver parameter, not a
                 # force-space gain. Preserve it through the custom attribute and
@@ -2242,29 +2365,20 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                if "actuatorfrcrange" in joint_attrib:
+                if "actuatorfrcrange" in joint_attrib and is_limited(
+                    joint_attrib, "actuatorfrclimited", "actuatorfrcrange"
+                ):
                     actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
-                    if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
-                        actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
-                        autolimits_attr = builder.custom_attributes.get("mujoco:autolimits")
-                        autolimits_val = True
-                        if autolimits_attr is not None:
-                            autolimits_values = autolimits_attr.values
-                            autolimits_raw = (
-                                autolimits_values.get(0, autolimits_attr.default)
-                                if isinstance(autolimits_values, dict)
-                                else autolimits_attr.default
-                            )
-                            autolimits_val = bool(autolimits_raw)
-                        if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
-                            effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
-                        elif verbose:
-                            logger.warning(
-                                "Joint '%s' has actuatorfrcrange but actuatorfrclimited='%s'. Force clamping "
-                                "will be disabled.",
-                                joint_attrib.get("name", "unnamed"),
-                                actuatorfrclimited,
-                            )
+                    effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
+
+                rest_q = builder.default_joint_cfg.rest_q
+                if "springref" in joint_attrib or "ref" in joint_attrib:
+                    rest_q = parse_float(joint_attrib, "springref", 0.0) - parse_float(joint_attrib, "ref", 0.0)
+                    if is_angular:
+                        if use_degrees:
+                            rest_q = np.deg2rad(rest_q)
+                    else:
+                        rest_q *= scale
 
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
@@ -2275,6 +2389,8 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     damping=parse_float(joint_attrib, "damping", default_joint_damping),
+                    stiffness=parse_float(joint_attrib, "stiffness", builder.default_joint_cfg.stiffness),
+                    rest_q=rest_q,
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
@@ -2287,8 +2403,10 @@ def parse_mjcf(
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
+                dof_attr.pop("mujoco:dof_passive_stiffness", None)
+                dof_attr.pop("mujoco:dof_springref", None)
                 if is_linear:
-                    for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
+                    for attr_name in ("mujoco:dof_ref", "mujoco:limit_margin"):
                         if attr_name in dof_attr:
                             dof_attr[attr_name] *= scale
                 if has_solreflimit_mode:
@@ -2304,11 +2422,11 @@ def parse_mjcf(
 
                 # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
                 if is_angular:
-                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs)))
+                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs), inert_range))
                     angular_axes.append(ax)
                     angular_dof_attrs.append(dof_attr)
                 else:
-                    mjcf_joint_dof_slots.append((joint_name[-1], True, len(linear_dof_attrs)))
+                    mjcf_joint_dof_slots.append((joint_name[-1], True, len(linear_dof_attrs), inert_range))
                     linear_axes.append(ax)
                     linear_dof_attrs.append(dof_attr)
 
@@ -2318,8 +2436,8 @@ def parse_mjcf(
                     dof_custom_attributes.setdefault(key, {})[dof_index] = value
             num_linear_dofs = len(linear_dof_attrs)
             mjcf_joint_dof_offsets = [
-                (name, slot if is_linear_slot else num_linear_dofs + slot)
-                for name, is_linear_slot, slot in mjcf_joint_dof_slots
+                (name, slot if is_linear_slot else num_linear_dofs + slot, inert_range)
+                for name, is_linear_slot, slot, inert_range in mjcf_joint_dof_slots
             ]
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
@@ -2339,6 +2457,10 @@ def parse_mjcf(
                     joint_type = JointType.REVOLUTE
                 elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
                     joint_type = JointType.BALL
+                    if any(axis.stiffness != 0.0 and axis.rest_q not in (None, 0.0) for axis in angular_axes):
+                        approximated_spring_rest = True
+                    for axis in angular_axes:
+                        axis.rest_q = 0.0
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
@@ -2446,6 +2568,7 @@ def parse_mjcf(
                     armature=joint_armature[-1] if joint_armature else None,
                     friction=ball_friction,
                     damping=ball_damping,
+                    stiffness=ball_stiffness,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
@@ -2478,8 +2601,10 @@ def parse_mjcf(
                 # This allows actuators to target specific DOFs when multiple MJCF joints are combined
                 if mjcf_joint_dof_offsets:
                     qd_start = builder.joint_qd_start[joint_idx]
-                    for mjcf_name, dof_offset in mjcf_joint_dof_offsets:
+                    for mjcf_name, dof_offset, inert_range in mjcf_joint_dof_offsets:
                         mjcf_joint_name_to_dof[mjcf_name] = qd_start + dof_offset
+                        if inert_range is not None:
+                            disabled_joint_ranges[qd_start + dof_offset] = inert_range
 
                 # Map raw MJCF joint names to Newton joint index for tendon/actuator resolution
                 for jn in joint_name:
@@ -2937,11 +3062,14 @@ def parse_mjcf(
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
+    approximated_spring_rest = False
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
     # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
     # Maps individual MJCF joint names to their specific DOF index.
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
+    # Keyed by DOF so inheritrange reads the same joint that actuator DOF resolution picked.
+    disabled_joint_ranges: dict[int, tuple[float, float]] = {}
     mjcf_slide_joint_names: set[str] = set()
     # Maps tendon names to their index in the tendon custom attributes.
     # Used to resolve actuators targeting tendons.
@@ -3029,6 +3157,15 @@ def parse_mjcf(
         )
 
     # -----------------
+    # Report once outside the recursive body parser so the warning points to the caller.
+    if approximated_spring_rest:
+        warnings.warn(
+            "Converting three hinges to a ball joint uses an identity spring rest orientation; "
+            "set convert_3d_hinge_to_ball_joints=False to preserve scalar spring rest coordinates.",
+            NewtonWarning,
+            stacklevel=3,
+        )
+
     # add equality constraints
 
     if not skip_equality_constraints:
@@ -3385,6 +3522,8 @@ def parse_mjcf(
             dof_ref = float(ref_attr.values.get(dof, ref_attr.default))
         lower = builder.joint_limit_lower[dof] + dof_ref
         upper = builder.joint_limit_upper[dof] + dof_ref
+        if dof in disabled_joint_ranges:
+            lower, upper = disabled_joint_ranges[dof]
         if lower < upper:
             mean = (upper + lower) / 2.0
             radius = (upper - lower) / 2.0 * inheritrange
@@ -3401,6 +3540,8 @@ def parse_mjcf(
             # Merge class defaults for this actuator element
             # This handles MJCF class inheritance (e.g., <general class="size3" .../>)
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
+            if actuator_type == "dcmotor":
+                merged_attrib.update(dcmotor_parameters[actuator_elem])
 
             joint_name = merged_attrib.get("joint")
             joint_in_parent_name = merged_attrib.get("jointinparent")
@@ -3628,7 +3769,7 @@ def parse_mjcf(
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-            elif actuator_type == "general":
+            elif actuator_type in {"general", "dcmotor"}:
                 gainprm = _parse_actuator_parameters(merged_attrib.get("gainprm", "1"))
                 biasprm = _parse_actuator_parameters(merged_attrib.get("biasprm", "0"))
             else:
@@ -3647,8 +3788,18 @@ def parse_mjcf(
                 parsed_attrs["mujoco:actuator_dynprm"] = vec10(
                     float(timeconst[0]), float(timeconst[1]), tausmooth, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
                 )
+            is_dcmotor = actuator_type == "dcmotor" or (
+                actuator_type == "general" and parsed_attrs.get("mujoco:actuator_gaintype") == _ActuatorGainType.DCMOTOR
+            )
+            if is_dcmotor:
+                # MuJoCo writes compiled DC motors as <general input="...">.
+                # Preserve their signature without allocating high-level parameters.
+                parsed_attrs["mujoco:actuator_ctrlspec"] = dcmotor.parse_input(merged_attrib.get("input", "voltage"))
+            ctrlrange_uses_joint_units = actuator_type in {"position", "velocity", "intvelocity"} or (
+                is_dcmotor and parsed_attrs["mujoco:actuator_ctrlspec"] in (1, 2)
+            )
             if (
-                actuator_type in {"position", "velocity", "intvelocity"}
+                ctrlrange_uses_joint_units
                 and target_joint_name in mjcf_slide_joint_names
                 and not ctrlrange_is_derived
                 and "mujoco:actuator_ctrlrange" in parsed_attrs
@@ -3672,6 +3823,8 @@ def parse_mjcf(
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
             elif actuator_type == "velocity":
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)
+            elif actuator_type == "dcmotor":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.DCMOTOR)
             else:
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.GENERAL)
 

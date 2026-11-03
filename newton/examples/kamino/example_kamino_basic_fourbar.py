@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example for basic four-bar mechanism
-#
-# Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_basic_fourbar --world-count 16
-#
-###########################################################################
+"""Example for basic four-bar mechanism
+
+Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
+
+Success criteria:
+- Each setup consists of a table with a four-bar linkage sitting on top.
+- The user can grasp the four bar linkage, move it, and the four bar system react to external forces
+  while maintaining its integrity.
+
+Runs:
+- `python -m newton.examples kamino_basic_fourbar`
+- `python -m newton.examples kamino_basic_fourbar --world-count 16`
+"""
 
 import argparse
 

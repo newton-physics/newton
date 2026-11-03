@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
@@ -478,6 +479,13 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
+def _mjc_angle_scale(physics_scene_prim: Usd.Prim | None) -> float:
+    """Convert MuJoCo USD angles to radians, defaulting unauthored compiler units to degrees."""
+    if not physics_scene_prim or usd.get_attribute(physics_scene_prim, "mjc:compiler:angle", "degree") == "degree":
+        return math.pi / 180.0
+    return 1.0
+
+
 def _mjc_joint_effort_limit(prim: Usd.Prim) -> float | None:
     """Read a joint effort limit [N or N·m] from MuJoCo ``mjc:actuatorfrcrange``.
 
@@ -515,6 +523,9 @@ class SchemaResolverMjc(SchemaResolver):
             # DOFs), unlike the USD per-degree convention behind the plain
             # "damping" key, so it resolves through the _per_rad variant.
             "damping_per_rad": SchemaAttribute("mjc:damping", None),
+            "stiffness": SchemaAttribute("mjc:stiffness", None),
+            "springref": SchemaAttribute("mjc:springref", None),
+            "ref": SchemaAttribute("mjc:ref", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             "effort_limit": SchemaAttribute(
                 "mjc:actuatorfrcrange:min",
