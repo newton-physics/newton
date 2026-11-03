@@ -21,6 +21,7 @@ It currently supports:
 - A large set of common and advanced bilateral joint constraints
 - Unilateral joint-limit, and contact constraints with spatial friction and restitutive impacts
 - Joint Coulomb friction
+- Bounded joint effort for explicit commands and implicit PD drives
 - Fully configurable constraint stabilization that can be specified per constraint subset
 - Hard joint-limit and contact constraints enforced via an advanced Proximal-ADMM forward dynamics solver
 

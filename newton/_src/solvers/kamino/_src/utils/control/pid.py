@@ -79,8 +79,7 @@ class PIDControllerData:
 @wp.kernel
 def _reset_jointspace_pid_references(
     # Inputs
-    model_joints_wid: wp.array[wp.int32],
-    model_joints_act_type: wp.array[wp.int32],
+    model_joints_dof_act_types: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_actuated_dofs_offset: wp.array[wp.int32],
     state_joints_q_j: wp.array[wp.float32],
@@ -95,14 +94,6 @@ def _reset_jointspace_pid_references(
     # Retrieve the the joint index from the thread indices
     jid = wp.tid()
 
-    # Retrieve the joint actuation type
-    act_type = model_joints_act_type[jid]
-
-    # Only proceed for force actuated joints and at
-    # simulation steps matching the control decimation
-    if act_type != JointActuationType.FORCE:
-        return
-
     # Retrieve the number of DoFs and offsets of the joint
     dofs_offset = model_joints_dofs_offset[jid]
     num_dofs = model_joints_dofs_offset[jid + 1] - dofs_offset
@@ -112,6 +103,10 @@ def _reset_jointspace_pid_references(
     for dof in range(num_dofs):
         # Compute the DoF index in the global DoF vector
         dof_index = dofs_offset + dof
+
+        # Only proceed for force-actuated DoFs
+        if model_joints_dof_act_types[dof_index] != JointActuationType.FORCE:
+            continue
 
         # Compute the actuator index in the controller vectors
         actuator_dof_index = actuated_dofs_offset + dof
@@ -129,7 +124,7 @@ def _reset_jointspace_pid_references(
 def _compute_jointspace_pid_control(
     # Inputs
     model_joints_wid: wp.array[wp.int32],
-    model_joints_act_type: wp.array[wp.int32],
+    model_joints_dof_act_types: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_actuated_dofs_offset: wp.array[wp.int32],
     model_joints_tau_j_max: wp.array[wp.float32],
@@ -154,9 +149,6 @@ def _compute_jointspace_pid_control(
     # Retrieve the the joint index from the thread indices
     jid = wp.tid()
 
-    # Retrieve the joint actuation type
-    act_type = model_joints_act_type[jid]
-
     # Retrieve the world index from the thread indices
     wid = model_joints_wid[jid]
 
@@ -166,9 +158,8 @@ def _compute_jointspace_pid_control(
     # Retrieve the control decimation for the world
     decimation = controller_decimation[wid]
 
-    # Only proceed for force actuated joints and at
-    # simulation steps matching the control decimation
-    if act_type != JointActuationType.FORCE or step % decimation != 0:
+    # Only proceed at simulation steps matching the control decimation.
+    if step % decimation != 0:
         return
 
     # Retrieve the time step and current time
@@ -187,6 +178,10 @@ def _compute_jointspace_pid_control(
     for dof in range(num_dofs):
         # Compute the DoF index in the global DoF vector
         joint_dof_index = dofs_offset + dof
+
+        # Only proceed for force-actuated DoFs
+        if model_joints_dof_act_types[joint_dof_index] != JointActuationType.FORCE:
+            continue
 
         # Compute the actuator index in the controller vectors
         actuator_dof_index = actuated_dofs_offset + dof
@@ -252,8 +247,7 @@ def reset_jointspace_pid_references(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs
-            model.joints.wid,
-            model.joints.act_type,
+            model.joints.dof_act_types,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             state.q_j,
@@ -284,7 +278,7 @@ def compute_jointspace_pid_control(
         inputs=[
             # Inputs
             model.joints.wid,
-            model.joints.act_type,
+            model.joints.dof_act_types,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             model.joints.tau_j_max,

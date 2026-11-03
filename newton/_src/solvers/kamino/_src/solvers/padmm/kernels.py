@@ -213,7 +213,7 @@ def make_initialize_solver_kernel(use_acceleration: bool = False):
         The kernel function to initialize the PADMM solver.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _initialize_solver(
         # Inputs:
         solver_config: wp.array[PADMMConfigStruct],
@@ -282,7 +282,7 @@ def make_initialize_solver_kernel(use_acceleration: bool = False):
 
 
 def make_update_proximal_regularization_kernel(method: PADMMPenaltyUpdate):
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _update_proximal_regularization(
         # Inputs:
         solver_config: wp.array[PADMMConfigStruct],
@@ -708,7 +708,7 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         The kernel function to update dual variables and compute residuals.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _update_dual_variables_and_compute_primal_dual_residuals(
         # Inputs:
         problem_dim: wp.array[wp.int32],
@@ -936,8 +936,9 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                     x = solver_state_x[thread_offset]
                     z_p = solver_state_z_hat_in[thread_offset]
                     y = x - inv_rho * z_p
-                    if nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc:
-                        bio = problem_bcio[wid] + local_id - bcgo
+                    is_bounded = nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc
+                    bio = problem_bcio[wid] + local_id - bcgo
+                    if is_bounded:
                         y = wp.clamp(
                             y,
                             problem_bound_lower[bio],
@@ -967,8 +968,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                     r_dy_local += r_dy * r_dy
                     r_dz_local += r_dz * r_dz
 
-                    if nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc:
-                        bio = problem_bcio[wid] + local_id - bcgo
+                    if is_bounded:
                         r_box = compute_box_complementarity_residual(
                             x,
                             z,
@@ -1028,7 +1028,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                 status.converged = 1
 
             if status.converged or status.iterations >= config.max_iterations:
-                solver_state_done[0] -= 1
+                wp.atomic_sub(solver_state_done, 0, 1)
 
             if status.converged:
                 status.restart = 0
@@ -1359,7 +1359,7 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_com
 
             # If converged or reached max iterations, decrement the number of active worlds
             if status.converged or status.iterations >= maxiters:
-                solver_state_done[0] -= 1
+                wp.atomic_sub(solver_state_done, 0, 1)
 
             # Store the updated status
             solver_status[wid] = status
@@ -1383,7 +1383,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         The kernel function to collect solver convergence information.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _collect_solver_convergence_info(
         # Inputs:
         problem_nbc: wp.array[wp.int32],
@@ -1619,7 +1619,7 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         The kernel function to collect solver convergence information.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _collect_solver_convergence_info_sparse(
         # Inputs:
         problem_nbc: wp.array[wp.int32],

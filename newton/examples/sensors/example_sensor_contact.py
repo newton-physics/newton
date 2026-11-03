@@ -1,34 +1,39 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Contact Sensor
-#
-# Shows how to use the SensorContact class to evaluate contact forces,
-# including per-counterpart breakdowns.
-# The flap has a contact sensor registering the total contact force of
-# the objects on top. The plates' sensors register per-counterpart forces
-# for the cube and the ball to detect which object touched which plate. Each
-# plate will light up when touched by the matching object.
-#
-#
-# Command: python -m newton.examples sensor_contact
-#
-###########################################################################
+"""Example Contact Sensor
+
+Shows how to use the SensorContact class to evaluate contact forces,
+including per-counterpart breakdowns.
+The flap has a contact sensor registering the total contact force of
+the objects on top. The plates' sensors register per-counterpart forces
+for the cube and the ball to detect which object touched which plate. Each
+plate will light up when touched by the matching object.
+
+Success criteria:
+- An orange sphere and blue box start on a flap that rotates downward; the objects fall and roll
+  over inclined plates toward the ground.
+- The first inclined plate turns blue when touched by the matching box; the second turns orange when
+  touched by the matching sphere.
+- The scene resets and repeats, clearing previous contact indicators.
+- The Flap Contact Force plot updates while the objects contact the flap and returns to zero after
+  they leave it.
+
+Runs:
+- `python -m newton.examples sensor_contact`
+"""
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
-from newton import Contacts
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
@@ -37,17 +42,23 @@ class Example:
         self.reset_interval = 8.0
 
         self.viewer = viewer
+        self.solver_type = getattr(args, "solver", "mujoco")
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
+        else:
+            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(newton.examples.get_asset("sensor_contact_scene.usda"))
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_ground_plane()
 
         # finalize model
         self.model = builder.finalize()
 
-        self.flap_contact_sensor = SensorContact(self.model, sensing_shapes="*Flap", verbose=True)
+        self.flap_contact_sensor = SensorContact(
+            self.model, sensing_shapes="*Flap", verbose=True, request_contact_attributes=False
+        )
 
         # String patterns return matches in ascending shape index order.
         # Plate1 has a lower index than Plate2 (added first), so row 0 → Plate1, row 1 → Plate2.
@@ -59,20 +70,35 @@ class Example:
             counterpart_shapes=counterpart_labels,
             measure_total=False,
             verbose=True,
+            request_contact_attributes=False,
         )
-        self.solver = newton.solvers.SolverMuJoCo(
-            self.model,
-            njmax=100,
-            nconmax=100,
-            cone="pyramidal",
-            impratio=1,
-        )
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.use_collision_detector = True
+            solver_config.integrator = "moreau"
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.use_schur_complement = True
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(
+                self.model,
+                njmax=100,
+                nconmax=100,
+                cone="pyramidal",
+                impratio=1,
+            )
 
         # used for storing contact info required by contact sensor
-        self.contacts = Contacts(
-            self.solver.get_max_contact_count(),
-            0,
-            requested_attributes=self.model.get_requested_contact_attributes(),
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
+            soft_contact_max=0,
+        )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds=self.plate_contact_sensor.solver_observable_kinds
         )
 
         self.viewer.set_model(self.model)
@@ -96,6 +122,10 @@ class Example:
         }
 
         self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+        self.contact_state = newton.State()
+        self.contact_state.body_q = wp.clone(self.state_0.body_q)
+        self.contact_state.body_qd = wp.clone(self.state_0.body_qd)
 
         self.control = self.model.control()
         hinge_joint_idx = self.model.joint_label.index("/env/Hinge")
@@ -116,7 +146,9 @@ class Example:
     def capture(self):
         self.graph = None
 
-        if not wp.get_device().is_cuda:
+        # Kamino's solver caches are reset periodically, which is not compatible
+        # with replaying a graph captured before the reset.
+        if not wp.get_device().is_cuda or self.solver_type == "kamino":
             return
 
         with wp.ScopedCapture() as capture:
@@ -126,8 +158,13 @@ class Example:
     def simulate(self):
         self.state_0.clear_forces()
         self.viewer.apply_forces(self.state_0)
-        self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
-        self.solver.update_contacts(self.contacts, self.state_0)
+        wp.copy(self.contact_state.body_q, self.state_0.body_q)
+        wp.copy(self.contact_state.body_qd, self.state_0.body_qd)
+        self.solver.step(
+            self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, observables=self.solver_observables
+        )
+        # Keep state identities stable for graph replay while retaining input poses.
+        self.state_0.assign(self.state_1)
 
     def step(self):
         if self.sim_time >= self.next_reset:
@@ -141,7 +178,7 @@ class Example:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-        self.plate_contact_sensor.update(self.state_0, self.contacts)
+        self.plate_contact_sensor.update(self.contact_state, self.contacts, observables=self.solver_observables)
 
         # Check if any object touched the matching plate by looking up per-counterpart forces.
         net_force = self.plate_contact_sensor.force_matrix.numpy()
@@ -158,7 +195,7 @@ class Example:
             print(f"Plate {plate_label} was touched by counterpart {counterpart_label}")
             self._set_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
 
-        self.flap_contact_sensor.update(self.state_0, self.contacts)
+        self.flap_contact_sensor.update(self.contact_state, self.contacts, observables=self.solver_observables)
         self.viewer.log_scalar(
             "Flap Contact Force",
             np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]),
@@ -179,11 +216,16 @@ class Example:
         self.state_0.joint_qd.assign(self.initial_joint_qd)
         # Recompute forward kinematics to refresh derived state.
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        if self.solver_type == "kamino":
+            # Synchronize joint history and clear solver caches without requiring
+            # Kamino's optional iterative FK solver.
+            reset_config = newton.solvers.SolverKamino.ResetConfig.preserve()
+            self.solver.reset(self.state_0, config=reset_config)
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.contact_state, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_post_step(self):
@@ -214,6 +256,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
 
     viewer, args = newton.examples.init(parser)
 

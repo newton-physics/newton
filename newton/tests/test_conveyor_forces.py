@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 from newton.examples.basic.example_basic_conveyor_forces import ConveyorForceModel
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, add_function_test, get_test_devices
 
 BELT_HALF_X = 1.5
 BELT_HALF_Y = 6.0
@@ -35,7 +35,14 @@ def _make_solver(solver_name, model):
         )
     if solver_name == "mujoco":
         # MuJoCo configuration for Newton-generated contacts.
-        return newton.solvers.SolverMuJoCo(model, cone="elliptic", use_mujoco_contacts=False, njmax=200, nconmax=100)
+        return newton.solvers.SolverMuJoCo(
+            model,
+            cone="elliptic",
+            use_mujoco_contacts=False,
+            njmax=200,
+            nconmax=100,
+            ls_iterations=100,
+        )
     return newton.solvers.SolverXPBD(model)
 
 
@@ -95,13 +102,17 @@ def run_conveyor(
     builder.color()
 
     model = builder.finalize(device=device)
-    model.request_contact_attributes("force")
 
     solver = _make_solver(solver_name, model)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
+    collision_pipeline = newton.CollisionPipeline(
+        model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
+    )
     contacts = collision_pipeline.contacts()
+    solver_observables = solver.observables(
+        contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+    )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -118,7 +129,7 @@ def run_conveyor(
             velocity=velocity if velocity is not None else wp.vec3(0.0, 0.0, 0.0),
             friction=BELT_FRICTION,
         )
-    conveyor.finalize(contacts)
+    conveyor.finalize(contacts, solver_observables)
 
     sim_dt = 1.0 / fps / substeps
     positions = np.zeros((frames + 1, 3), dtype=np.float32)
@@ -133,10 +144,9 @@ def run_conveyor(
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, sim_dt)
-            conveyor.update(solver, contacts, state_1, sim_dt)
+            solver.step(state_0, state_1, control, contacts, sim_dt, observables=solver_observables)
+            conveyor.update(contacts, solver_observables, state_1, sim_dt)
             if collect_diagnostics:
                 belt_contact_counts[sample] = conveyor.body_contact_count.numpy()[box_body]
                 conveyor_force_norms[sample] = np.linalg.norm(conveyor.conveyor_body_f.numpy()[box_body][:3])
@@ -214,19 +224,23 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
     builder.color()
 
     model = builder.finalize(device=device)
-    model.request_contact_attributes("force")
 
     solver = _make_solver(solver_name, model)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
+    collision_pipeline = newton.CollisionPipeline(
+        model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
+    )
     contacts = collision_pipeline.contacts()
+    solver_observables = solver.observables(
+        contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+    )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
     for shape, (_center, _half, vel) in zip(belt_shapes, belts, strict=True):
         conveyor.add_constant_belt(shape, velocity=wp.vec3(*vel))
-    conveyor.finalize(contacts)
+    conveyor.finalize(contacts, solver_observables)
 
     sim_dt = 1.0 / fps / substeps
     positions = np.zeros((frames + 1, 3), dtype=np.float32)
@@ -238,10 +252,9 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, sim_dt)
-            conveyor.update(solver, contacts, state_1, sim_dt)
+            solver.step(state_0, state_1, control, contacts, sim_dt, observables=solver_observables)
+            conveyor.update(contacts, solver_observables, state_1, sim_dt)
             state_0, state_1 = state_1, state_0
         q = state_0.body_q.numpy()[box_body]
         positions[f + 1], quats[f + 1] = q[:3], q[3:7]
@@ -445,8 +458,13 @@ def test_backend_parity(test, device, _solver_name):
     test.assertLess(spread, 0.6, f"backends disagree on transport distance: {ys}")
 
 
-class TestConveyorForces(unittest.TestCase):
+class TestConveyorForces(NewtonTestCase):
     """Scenario matrix for the force-based conveyor model."""
+
+    def setUp(self):
+        """Allow the lazy module-load messages these scenes emit."""
+        super().setUp()
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
 
 _devices = get_test_devices()

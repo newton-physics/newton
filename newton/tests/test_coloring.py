@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 import warp.examples
 
-from newton import ModelBuilder
+from newton import ModelBuilder, Rod
 from newton._src.sim.graph_coloring import (
     ColoringAlgorithm,
     color_graph,
@@ -341,11 +341,10 @@ def test_coloring_rigid_body_cable_chain(test, device):
         # Create orientation (align capsule +Z with +X direction)
         rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
         edge_q = [rot_z_to_x] * num_elements
+        rod = Rod(points, quaternions=edge_q, radius=0.05)
 
         _rod_bodies, _rod_joints = builder.add_rod(
-            positions=points,
-            quaternions=edge_q,
-            radius=0.05,
+            rod=rod,
             bend_stiffness=1.0e2,
             bend_damping=1.0e-2,
             stretch_stiffness=1.0e6,
@@ -414,12 +413,11 @@ def test_coloring_rigid_body_color_algorithms(test, device):
 
         rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
         edge_q = [rot_z_to_x] * num_elements
+        rod = Rod(points, quaternions=edge_q, radius=0.05)
 
         for b in (builder_mcs, builder_greedy):
             b.add_rod(
-                positions=points,
-                quaternions=edge_q,
-                radius=0.05,
+                rod=rod,
                 bend_stiffness=1.0e2,
                 bend_damping=1.0e-2,
                 stretch_stiffness=1.0e6,
@@ -481,6 +479,78 @@ def test_coloring_rigid_body_no_joints(test, device):
         test.assertEqual(model.body_color_groups[0].size, 5, "All 5 bodies should be in same color group")
 
 
+def count_unseparated_elements(builder, element_indices, vertices_per_element):
+    """Count elements with two or more vertices sharing a color group."""
+    element_colors = np.full(builder.particle_count, -1, dtype=np.int64)
+    for color, group in enumerate(builder.particle_color_groups):
+        element_colors[np.asarray(group)] = color
+
+    elements = np.array(element_indices).reshape(-1, vertices_per_element)
+    return sum(1 for element in elements if len({element_colors[int(v)] for v in element}) < vertices_per_element)
+
+
+def test_coloring_membrane_with_one_zero_lame_parameter(test, device):
+    """Color every membrane triangle SolverVBD evaluates, including those with one zero Lame parameter."""
+    # SolverVBD evaluates a triangle when either Lame parameter is non-zero -- tri_ke and tri_ka
+    # here, columns 0 and 1 of Model.tri_materials -- so both of these meshes are simulated. The
+    # USD cloth importer always sets tri_ka to 0, so the first case is what every cloth imported
+    # from USD gets.
+    for tri_ke, tri_ka in ((1.0e3, 0.0), (0.0, 1.0e3)):
+        builder = ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=20,
+            dim_y=20,
+            cell_x=0.05,
+            cell_y=0.05,
+            mass=0.1,
+            tri_ke=tri_ke,
+            tri_ka=tri_ka,
+            tri_kd=0.0,
+            edge_ke=0.0,
+            edge_kd=0.0,
+        )
+        builder.color()
+
+        unseparated = count_unseparated_elements(builder, builder.tri_indices, 3)
+        test.assertEqual(
+            unseparated,
+            0,
+            f"tri_ke={tri_ke}, tri_ka={tri_ka}: {unseparated} triangles have two vertices sharing a color group",
+        )
+
+
+def test_coloring_tets_with_one_zero_lame_parameter(test, device):
+    """Color every tetrahedron SolverVBD evaluates, including those with one zero Lame parameter."""
+    for k_mu, k_lambda in ((1.0e3, 0.0), (0.0, 1.0e3)):
+        builder = ModelBuilder()
+        builder.add_soft_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=4,
+            dim_y=4,
+            dim_z=4,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=100.0,
+            k_mu=k_mu,
+            k_lambda=k_lambda,
+            k_damp=0.0,
+        )
+        builder.color()
+
+        unseparated = count_unseparated_elements(builder, builder.tet_indices, 4)
+        test.assertEqual(
+            unseparated,
+            0,
+            f"k_mu={k_mu}, k_lambda={k_lambda}: {unseparated} tets have two vertices sharing a color group",
+        )
+
+
 devices = get_test_devices()
 
 
@@ -509,6 +579,20 @@ add_function_test(
 )
 add_function_test(
     TestColoring, "test_coloring_rigid_body_no_joints", test_coloring_rigid_body_no_joints, devices=devices
+)
+
+# Element activity coloring tests. ModelBuilder.color() runs entirely on the CPU.
+add_function_test(
+    TestColoring,
+    "test_coloring_membrane_with_one_zero_lame_parameter",
+    test_coloring_membrane_with_one_zero_lame_parameter,
+    devices=["cpu"],
+)
+add_function_test(
+    TestColoring,
+    "test_coloring_tets_with_one_zero_lame_parameter",
+    test_coloring_tets_with_one_zero_lame_parameter,
+    devices=["cpu"],
 )
 
 if __name__ == "__main__":

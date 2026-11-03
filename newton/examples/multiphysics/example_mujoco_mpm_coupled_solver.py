@@ -1,16 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid-MPM Coupled Solver
-#
-# Rigid boxes driven by MuJoCo or Kamino fall into a granular MPM bed.  The rigid bodies
-# are exposed to MPM as proxy colliders in the same shared model, and MPM
-# grid impulses are harvested back into rigid-body wrenches.
-#
-# Command: python -m newton.examples mujoco_mpm_coupled_solver
-#
-###########################################################################
+"""Example Rigid-MPM Coupled Solver
+
+Rigid boxes driven by MuJoCo or Kamino fall into a granular MPM bed.  The rigid bodies
+are exposed to MPM as proxy colliders in the same shared model, and MPM
+grid impulses are harvested back into rigid-body wrenches.
+
+Success criteria:
+- A granular MPM bed appears with several rigid boxes above it.
+- The rigid boxes fall into the granular bed.
+- The granular bed deforms and reacts to the rigid boxes through proxy coupling.
+- The boxes should remain above the sand/ground instead of falling through.
+- The MPM particles should remain bounded and above the ground.
+
+Runs:
+- `python -m newton.examples mujoco_mpm_coupled_solver`
+"""
 
 from __future__ import annotations
 
@@ -91,7 +97,6 @@ def _launch_frame_graph(model: newton.Model, graph) -> bool:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 100
@@ -172,7 +177,7 @@ class Example:
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
         self.viewer.show_particles = True
         self.show_impulses = False

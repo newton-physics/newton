@@ -1,22 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot control via keyboard
-#
-# Shows how to control robots pretrained in IsaacLab with RL. Policies are
-# loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
-# is not required for policy inference.
-#
-# Press "p" to reset the robot.
-# Press "i", "j", "k", "l", "u", "o" to move the robot.
-# Run this example with:
-# python -m newton.examples robot_policy --robot g1_29dof
-# python -m newton.examples robot_policy --robot g1_23dof
-# python -m newton.examples robot_policy --robot go2
-# python -m newton.examples robot_policy --robot anymal
-# python -m newton.examples robot_policy --robot anymal --physx
-###########################################################################
+"""Example Robot control via keyboard
+
+Shows how to control robots pretrained in IsaacLab with RL. Policies are
+loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
+is not required for policy inference.
+
+Press "p" to reset the robot.
+Press "i", "j", "k", "l", "u", "o" to move the robot.
+
+Success criteria:
+- The selected robot appears on the ground and responds to forward/back, lateral, and turning
+  keyboard commands.
+- For ordinary commands the robot moves without falling; pressing P resets it.
+
+Runs:
+- `python -m newton.examples robot_policy --robot anymal`
+- `python -m newton.examples robot_policy --robot go2`
+- `python -m newton.examples robot_policy --robot go2 --physx`
+- `python -m newton.examples robot_policy --robot g1_23dof`
+- `python -m newton.examples robot_policy --robot g1_23dof --physx`
+- `python -m newton.examples robot_policy --robot g1_29dof`
+- `python -m newton.examples robot_policy --robot anymal --physx`
+"""
 
 from dataclasses import dataclass
 from typing import Any
@@ -134,8 +141,8 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     """Load ONNX policy and setup device buffers for the policy step."""
     print("[INFO] Loading policy from:", policy_path)
     example.policy = OnnxRuntime(policy_path, device=example.device)
-    example.policy_input_name = example.policy.input_names[0]
-    example.policy_output_name = example.policy.output_names[0]
+    example.policy_input_name = example.policy.inputs[0].name
+    example.policy_output_name = example.policy.outputs[0].name
 
     if example.state_0.joint_q is not None:
         example._joint_pos_initial_wp = wp.clone(example.state_0.joint_q[joint_pos_slice])
@@ -159,6 +166,7 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     )
     example._obs_wp = wp.zeros((1, obs_dim), dtype=wp.float32, device=example.device)
     example._prev_act_wp = wp.zeros((1, num_dofs), dtype=wp.float32, device=example.device)
+    example.policy.prepare({example.policy_input_name: example._obs_wp})
 
     example._physx_to_mjc_wp = wp.array(
         np.asarray(example.physx_to_mjc_indices, dtype=np.int32), dtype=wp.int32, device=example.device
@@ -185,7 +193,6 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         if args.robot not in ROBOT_CONFIGS:
             raise ValueError(f"Unknown robot: {args.robot}. Available: {list(ROBOT_CONFIGS.keys())}")
         robot_config = ROBOT_CONFIGS[args.robot]
@@ -293,7 +300,13 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+        )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         self.viewer.set_model(self.model)
         self.viewer.vsync = True
@@ -343,14 +356,19 @@ class Example:
 
             self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if i == self.sim_substeps - 1 else None,
+            )
 
             if need_state_copy and i == self.sim_substeps - 1:
                 self.state_0.assign(self.state_1)
             else:
                 self.state_0, self.state_1 = self.state_1, self.state_0
-
-        self.solver.update_contacts(self.contacts, self.state_0)
 
     def reset(self):
         print("[INFO] Resetting example")
@@ -364,15 +382,14 @@ class Example:
             self._prev_act_wp.zero_()
 
     def step(self):
-        if hasattr(self.viewer, "is_key_down"):
-            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
-            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
-            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
-            self._command = wp.vec3(float(fwd), float(lat), float(rot))
-            reset_down = bool(self.viewer.is_key_down("p"))
-            if reset_down and not self._reset_key_prev:
-                self.reset()
-            self._reset_key_prev = reset_down
+        fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+        lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+        rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+        self._command = wp.vec3(float(fwd), float(lat), float(rot))
+        reset_down = bool(self.viewer.is_key_down("p"))
+        if reset_down and not self._reset_key_prev:
+            self.reset()
+        self._reset_key_prev = reset_down
 
         wp.launch(
             _compute_obs_kernel,
@@ -420,7 +437,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):

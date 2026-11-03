@@ -1,1 +1,0 @@
-Deprecate `HydroelasticSDF.Config.margin_contact_area` without replacement; remove this setting from hydroelastic configurations. Its speculative-contact stiffness behavior remains during the deprecation period.

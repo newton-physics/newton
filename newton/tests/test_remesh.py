@@ -466,7 +466,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         grid = VoxelHashGrid(capacity=1000, voxel_size=0.1)
 
         # Accumulate a single point using the kernel
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_test_point(
             point: wp.vec3,
             normal: wp.vec3,
@@ -552,7 +552,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],
@@ -653,7 +653,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],
@@ -717,7 +717,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         grid = VoxelHashGrid(capacity=1000, voxel_size=0.1)
 
         # Add a point
-        @wp.kernel
+        @wp.kernel(module="unique")
         def add_point(
             inv_voxel_size: float,
             keys: wp.array[wp.uint64],
@@ -780,7 +780,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],
@@ -882,7 +882,7 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def accumulate_points(
             points: wp.array[wp.vec3],
             normals: wp.array[wp.vec3],

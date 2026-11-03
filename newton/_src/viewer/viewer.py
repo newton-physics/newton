@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import copy
 import enum
+import hashlib
 import math
 import os
+import re
 import sys
+import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -17,15 +22,25 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
+from ..core.host_transform import transform_add_translation, transform_from_array, transform_multiply
 from ..core.types import MAXVAL, Axis
+from ..exceptions import NewtonWarning
 from .kernels import (
     build_active_particle_mask,
     compact,
     compute_hydro_contact_surface_lines,
     estimate_world_extents,
+    flag_changed_floats,
+    flag_changed_vec3s,
     repack_shape_colors,
+    repack_shape_opacities,
     transform_points,
 )
+from .utils import OPAQUE_OPACITY_THRESHOLD
+
+MAX_TRIANGLE_OPACITY_GROUPS = 32
+MAX_TRIANGLE_APPEARANCE_GROUPS = MAX_TRIANGLE_OPACITY_GROUPS
+_DEFAULT_TRIANGLE_COLOR = (0.7, 0.5, 0.3)
 
 #: Sentinel layer id used when no user-defined layer has been activated.
 #: Preserves the legacy behavior of unprefixed object names so that existing
@@ -34,6 +49,24 @@ _DEFAULT_LAYER_ID = "__default__"
 
 #: Fields that configure a layer itself rather than model/runtime state.
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
+
+_VIEWER_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def _viewer_path_component(value: object) -> str:
+    """Return a stable viewer path component that is also valid in USD."""
+    component = _VIEWER_PATH_COMPONENT_RE.sub("_", str(value)).strip("_")
+    return component or "unnamed"
+
+
+def _mesh_texture_uvs(mesh: newton.Mesh) -> np.ndarray | None:
+    """Return authored UVs with the mesh's affine texture transform applied."""
+    uvs = mesh._uvs
+    texture_transform = mesh.texture_transform
+    if uvs is None or mesh.texture is None or texture_transform == ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+        return uvs
+    transform = np.asarray(texture_transform, dtype=uvs.dtype)
+    return uvs @ transform[:, :2].T + transform[:, 2]
 
 
 class Layer:
@@ -102,12 +135,19 @@ class ViewerBase(ABC):
         MARGIN_GAP = 2
         """Wireframe at ``shape_margin`` + ``shape_gap`` (outer contact threshold), not gap alone."""
 
+    _supports_deformable_visual_meshes = False
+
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
         self.device = wp.get_device()
         self.picking_enabled = True
         self._camera_speed = 4.0
+        self._rendering_paused = False
+        # Built-in display controls record explicit edits for example switching.
+        # Constructor defaults must not become preferences for later examples.
+        # Contact force scale is stored as a gain relative to model calibration.
+        self._display_options_user: dict[str, Any] = {}
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -141,6 +181,106 @@ class ViewerBase(ABC):
         active_layer_id = self.__dict__.get("_active_layer_id")
         if layers is not None and active_layer_id in layers:
             setattr(layers[active_layer_id], name, value)
+
+    @staticmethod
+    def _apply_attrs(target: Any, values: dict[str, Any]) -> None:
+        """Apply a saved set of display attributes to its owner."""
+        for name, value in values.items():
+            setattr(target, name, value)
+
+    def _edit_display_option(self, target: Any, name: str, widget: Callable, label: str, *args) -> None:
+        """Apply a widget's value and remember only explicit user edits."""
+        changed, value = widget(label, getattr(target, name), *args)
+        setattr(target, name, value)
+        if changed:
+            self._display_options_user[name] = value
+
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Restore reset state, or explicit display choices when entering a new example."""
+        user_options = self._display_options_user
+        option_names = {
+            "visible",
+            "sdf_margin_mode",
+            "contact_mode_eps_force",
+            "contact_mode_eps_velocity",
+            "contact_viz_scale",
+            "gaussians_max_points",
+        }
+        saved = {
+            layer_id: {
+                name: value
+                for name, value in vars(layer).items()
+                if name.startswith("show_") or name in option_names or name in user_options
+            }
+            for layer_id, layer in self.layers.items()
+        }
+        force_gains = {
+            layer_id: layer.contact_force_scale / layer._contact_force_scale_default
+            for layer_id, layer in self.layers.items()
+        }
+        active_id = self.layer.layer_id
+        defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
+        globals_saved = {
+            name: user_options[name] if switching else getattr(self, name)
+            for name in ("show_ui", "vsync", "_paused", "camera_speed")
+            if hasattr(self, name) and (not switching or name in user_options)
+        }
+        camera = getattr(self, "camera", None)
+        # Reset keeps the navigated view in every interactive backend. A new
+        # scene chooses its own framing, projection, and navigation speed.
+        camera_saved = {
+            name: copy.deepcopy(getattr(camera, name))
+            for name in ("fov", "near", "far", "pos", "pitch", "yaw", "pivot")
+            if not switching and hasattr(camera, name)
+        }
+        renderer = getattr(self, "renderer", None)
+        # Include recorded names directly so new controls need no switch allowlist.
+        render_saved = {
+            name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
+            for name in (
+                "draw_sky",
+                "draw_shadows",
+                "draw_wireframe",
+                "draw_edges",
+                "wireframe_line_width",
+                "_light_color",
+                "sky_upper",
+                "sky_lower",
+                "arrow_scale",
+                "joint_scale",
+                "com_scale",
+                *user_options,
+            )
+            if hasattr(renderer, name) and (not switching or name in user_options)
+        }
+        try:
+            yield
+        finally:
+            for layer_id, layer in self.layers.items():
+                if switching:
+                    options = {name: value for name, value in user_options.items() if hasattr(layer, name)}
+                    if "contact_force_scale" in user_options:
+                        options["contact_force_scale"] = (
+                            layer._contact_force_scale_default * user_options["contact_force_scale"]
+                        )
+                else:
+                    options = dict(saved.get(layer_id, defaults))
+                    options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
+                        layer_id, force_gains.get(active_id, 1.0)
+                    )
+                for name, value in options.items():
+                    setattr(layer, name, value)
+                    if layer is self.layer and name != "visible":
+                        setattr(self, name, value)
+                layer.model_changed = True
+                if layer is self.layer:
+                    self.model_changed = True
+            self._apply_attrs(self, globals_saved)
+            camera = getattr(self, "camera", None)
+            if camera is not None:
+                self._apply_attrs(camera, camera_saved)
+            self._apply_attrs(getattr(self, "renderer", None), render_saved)
 
     @staticmethod
     def _snapshot_layer_runtime_fields(layer: Layer) -> frozenset[str]:
@@ -338,7 +478,7 @@ class ViewerBase(ABC):
 
         The transform is applied to every drawn position/orientation in the
         layer (shapes, contacts, joints, COM markers, inertia boxes,
-        hydroelastic contact surfaces, gaussians, SDF margin wireframes).
+        hydroelastic contact surfaces, visual meshes, gaussians, SDF margin wireframes).
         It is independent of the per-world spacing controlled by
         :meth:`set_world_offsets`: layer transforms reposition a whole
         layer (e.g. an entire solver's view in a multi-solver comparison)
@@ -461,6 +601,37 @@ class ViewerBase(ABC):
         """
         return not self.is_paused()
 
+    def is_rendering_paused(self) -> bool:
+        """Report whether updates to the displayed image are paused.
+
+        This is independent of simulation pause (:meth:`is_paused`). Backends
+        without rendering-pause support always return ``False``.
+
+        Returns:
+            bool: True when updates to the displayed image are paused.
+        """
+        return self._rendering_paused
+
+    def set_rendering_paused(self, paused: bool) -> None:
+        """Freeze or resume the displayed image without changing simulation pause.
+
+        Supported by :class:`~newton.viewer.ViewerGL` and
+        :class:`~newton.viewer.ViewerRTX`, including headless mode.
+        Continue calling :meth:`begin_frame`, logging state,
+        and :meth:`end_frame` while paused to process events and UI. Resume
+        displays the latest state, without replaying intermediate updates.
+
+        Paused capture returns the frozen image; before an image exists it
+        raises ``RuntimeError``. Frame budgets still count viewer-loop frames.
+        Clearing the model invalidates the image but preserves rendering pause.
+
+        Backends without rendering-pause support ignore this method.
+
+        Args:
+            paused: Whether to pause rendering.
+        """
+        return None
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
@@ -524,6 +695,14 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         layer._shape_instances = {}
+        layer._triangle_appearance_groups: (
+            list[tuple[str, wp.array[wp.int32], tuple[float, float, float], float]] | None
+        ) = None
+        layer._triangle_appearance_signature: tuple[int, str] | None = None
+        layer._triangle_color_cached: wp.array[wp.vec3] | None = None
+        layer._triangle_opacity_cached: wp.array[wp.float32] | None = None
+        layer._triangle_color_change_flag: wp.array[wp.int32] | None = None
+        layer._triangle_opacity_change_flag: wp.array[wp.int32] | None = None
         # Inertia box wireframe line vertices (12 lines per body)
         layer._inertia_box_points0 = None
         layer._inertia_box_points1 = None
@@ -557,6 +736,12 @@ class ViewerBase(ABC):
 
         # World offset support
         layer.world_offsets = None
+        # Deformable visual data and transformed viewer buffers.
+        layer._deformable_visuals: newton.geometry.DeformableVisuals | None = None
+        layer._deformable_visuals_explicit = False
+        layer._deformable_visual_mesh_names: dict[int, str] = {}
+        layer._deformable_visual_textures: dict[str, np.ndarray | None] = {}
+        layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
         layer._visible_worlds_mask: wp.array | None = None
@@ -573,10 +758,11 @@ class ViewerBase(ABC):
         layer.show_particles = False
         layer.show_contacts = False
         layer.show_contact_normals = True
-        layer.show_contact_disks = True  # Note: requires the ``"force"`` extended contact attribute.
-        layer.show_contact_forces = True  # Note: requires the ``"force"`` extended contact attribute.
+        layer.show_contact_disks = True  # Contact modes use CONTACT_F solver observable when available.
+        layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
+        layer.show_deformable_visual_meshes = self._supports_deformable_visual_meshes
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
@@ -591,8 +777,8 @@ class ViewerBase(ABC):
         layer.contact_mode_eps_velocity = 1e-3
 
         # Scaling parameters for the contact visualization
-        # Note: these are auto-set in :meth:`set_model`, below are fallback defaults.
-        layer.contact_viz_scale = 1.0  # Length of contact normal arrows (contact disks/forces scale relatively)
+        # Note: contact_viz_scale is relative to the smaller shape in each contact pair.
+        layer.contact_viz_scale = 1.0
         layer.contact_force_scale = 0.5  # Length of contact force arrows, w.r.t. contact normal arrows
         layer._contact_viz_scale_default = layer.contact_viz_scale
         layer._contact_force_scale_default = layer.contact_force_scale
@@ -606,10 +792,21 @@ class ViewerBase(ABC):
 
         # Per-shape color buffer and indexing
         layer.model_shape_color: wp.array[wp.vec3] = None
+        layer.model_shape_opacity: wp.array[wp.float32] = None
         layer._shape_to_slot: np.ndarray | None = None
         layer._slot_to_shape: np.ndarray | None = None
         layer._slot_to_shape_wp: wp.array | None = None
         layer._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+        # Render geometry of each variant shape and the variant rows, cached for variant selections.
+        layer._variant_shape_render: dict[int, tuple[int, str, int, wp.vec4, bool]] | None = None
+        layer._variant_shape_render_args: tuple[np.ndarray, ...] = ()
+        layer._variant_shape_types: np.ndarray | None = None
+        layer._variant_row_shapes: np.ndarray | None = None
+        layer._variant_row_body: np.ndarray | None = None
+        layer._variant_row_world: np.ndarray | None = None
+        layer._texture_sdf_host: np.ndarray | None = None
+        layer._shape_transparent_mask: np.ndarray | None = None
+        layer._shape_batches_have_transparency: bool = False
 
         # Isomesh cache for SDF collision visualization
         layer._isomesh_cache: dict[int, newton.Mesh | None] = {}
@@ -668,6 +865,40 @@ class ViewerBase(ABC):
             # Adapt contact-visualization scales to the model.
             self._auto_compute_contact_scales()
 
+    def set_deformable_visuals(self, visuals: newton.geometry.DeformableVisuals | None) -> None:
+        """Use precomputed deformable visuals when logging model states.
+
+        Passing shared visual data lets the viewer reuse the same evaluated
+        points and normals as other viewers or external renderers. Pass
+        ``None`` to restore automatic evaluation during :meth:`log_state`.
+        Update or replay before logging the corresponding state. The viewer waits
+        for the output but does not check which State produced it or its freshness.
+        Backends that do not draw skinned meshes keep the reference and never
+        read it.
+
+        Args:
+            visuals: Updated visual data for the current model, or ``None``.
+
+        Raises:
+            RuntimeError: If no model has been set.
+            TypeError: If ``visuals`` is not :class:`newton.geometry.DeformableVisuals`.
+            ValueError: If ``visuals`` belongs to another model.
+
+        .. experimental::
+        """
+        if visuals is None:
+            self._deformable_visuals = None
+            self._deformable_visuals_explicit = False
+            return
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_deformable_visuals()")
+        if not isinstance(visuals, newton.geometry.DeformableVisuals):
+            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
+        if visuals.model is not self.model:
+            raise ValueError("DeformableVisuals was created for another model.")
+        self._deformable_visuals = visuals
+        self._deformable_visuals_explicit = True
+
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""
         if world_idx == -1:  # Global entities always rendered
@@ -709,24 +940,70 @@ class ViewerBase(ABC):
         else:
             self._visible_worlds = None
         self._build_visible_worlds_mask()
-
-        # Clear shape instance batches but preserve geometry cache
-        self._shape_instances = {}
-        self._gaussian_instances = []
-        self._sdf_isomesh_instances = {}
-        self._sdf_isomesh_populated = False
-        self.model_shape_color = None
-        self._shape_to_slot = None
-        self._slot_to_shape = None
-        self._slot_to_shape_wp = None
-        self._shape_to_batch = None
-
-        self._populate_shapes()
+        self._rebuild_shapes()
         if self._user_spacing is not None:
             self.set_world_offsets(self._user_spacing)
         else:
             self._auto_compute_world_offsets()
         self.model_changed = True
+
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        """Notify the viewer that parts of its :class:`~newton.Model` were modified.
+
+        The viewer refreshes the cached data affected by ``flags``. It currently handles only
+        :attr:`ModelFlags.SHAPE_TYPE_AND_SOURCE <newton.ModelFlags.SHAPE_TYPE_AND_SOURCE>`, such as a body variant
+        selection by :meth:`~newton.Model.select_body_variants`, by regrouping the variant rows by
+        the variant shape they hold, without recompiling geometry. Other flags are ignored; call
+        :meth:`set_model` again after changing shape data such as transforms, scales, or sources.
+
+        .. experimental::
+
+            Viewer model-change notification may change without a deprecation period.
+
+        Args:
+            flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
+        """
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            return
+        if self.model._shape_sdf_index is not None:
+            self._shape_sdf_index_host = self.model._shape_sdf_index.numpy()
+        self._select_shape_instances()
+        if self._sdf_isomesh_populated:
+            self._select_isomesh_instances()
+        # Margin wireframes are cached per shape; hide them before they are rebuilt for the new geometry.
+        for mode, edges in self._sdf_margin_edge_caches.items():
+            for s in edges:
+                self.log_wireframe_shape(
+                    self._qualify(f"/model/sdf_margin_wf/{mode.value}/{s}"), None, None, hidden=True
+                )
+        self._sdf_margin_edge_caches.clear()
+        self.model_changed = True
+
+    def _shape_geometry_changed(self) -> bool:
+        """Whether the model's shapes may differ from their finalized geometry, i.e. it has variant rows."""
+        return self.model is not None and self.model._has_variant_rows
+
+    def _rebuild_shapes(self) -> None:
+        """Regroup the model shapes into instance batches, preserving the geometry cache."""
+        self._shape_instances = {}
+        self._gaussian_instances = []
+        self._sdf_isomesh_instances = {}
+        self._sdf_isomesh_populated = False
+        self.model_shape_color = None
+        self.model_shape_opacity = None
+        self._shape_to_slot = None
+        self._slot_to_shape = None
+        self._slot_to_shape_wp = None
+        self._shape_to_batch = None
+        self._shape_transparent_mask = None
+        self._triangle_appearance_groups = None
+        self._triangle_appearance_signature = None
+        self._triangle_color_cached = None
+        self._triangle_opacity_cached = None
+        self._triangle_color_change_flag = None
+        self._triangle_opacity_change_flag = None
+
+        self._populate_shapes()
 
     def _build_visible_worlds_mask(self) -> None:
         """Build a GPU mask array from :attr:`_visible_worlds`."""
@@ -742,23 +1019,19 @@ class ViewerBase(ABC):
                 mask[w] = 1
         self._visible_worlds_mask = wp.array(mask, dtype=int, device=self.device)
 
-    def _get_shape_isomesh(self, shape_idx: int) -> newton.Mesh | None:
-        """Get the isomesh for a collision shape with a texture SDF.
+    def _get_sdf_isomesh(self, sdf_idx: int) -> newton.Mesh | None:
+        """Get the isomesh of a texture SDF.
 
         Computes the marching-cubes isosurface from the texture SDF and caches it
         by SDF table index.
 
         Args:
-            shape_idx: Index of the shape.
+            sdf_idx: Index into the model's texture SDF table.
 
         Returns:
-            Mesh object for the isomesh, or ``None`` if shape has no texture SDF.
+            Mesh object for the isomesh, or ``None`` if there is no texture SDF.
         """
-        if self.model is None:
-            return None
-
-        sdf_idx = int(self._shape_sdf_index_host[shape_idx]) if self._shape_sdf_index_host is not None else -1
-        if sdf_idx < 0 or self.model._texture_sdf_data is None:
+        if self.model is None or sdf_idx < 0 or self.model._texture_sdf_data is None:
             return None
 
         if sdf_idx in self._isomesh_cache:
@@ -795,13 +1068,13 @@ class ViewerBase(ABC):
             raise ValueError("camera_speed must be finite and nonnegative")
         self._camera_speed = value
 
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """Set the camera position and orientation.
 
         Args:
-            pos: The position of the camera.
-            pitch: The pitch of the camera.
-            yaw: The yaw of the camera.
+            pos: The position of the camera [m].
+            pitch: The pitch of the camera [deg]. If None, the current pitch is kept.
+            yaw: The yaw of the camera [deg]. If None, the current yaw is kept.
         """
         return
 
@@ -915,9 +1188,13 @@ class ViewerBase(ABC):
         bounds_min_np = world_bounds_min.numpy()
         bounds_max_np = world_bounds_max.numpy()
 
-        # Find maximum extents across all worlds
-        # Mask out invalid bounds (inf values)
-        valid_mask = ~np.isinf(bounds_min_np[:, 0])
+        # Find maximum extents across all worlds. Empty worlds retain the
+        # finite MAXVAL/-MAXVAL sentinels used to initialize the buffers.
+        valid_mask = (
+            np.all(np.isfinite(bounds_min_np), axis=1)
+            & np.all(np.isfinite(bounds_max_np), axis=1)
+            & np.all(bounds_min_np <= bounds_max_np, axis=1)
+        )
 
         if not valid_mask.any():
             # No valid worlds found
@@ -950,26 +1227,20 @@ class ViewerBase(ABC):
     def _auto_compute_contact_scales(self):
         """Adapt contact-visualization scales to the current model.
 
-        Sets ``contact_viz_scale`` and ``contact_force_scale``, based on
-        aggregate model dimensions.
+        Sets the relative ``contact_viz_scale`` default and adapts
+        ``contact_force_scale`` to the mean dynamic mass of populated local
+        worlds plus shared global dynamic mass, multiplied by the first
+        gravity vector's magnitude.
 
-        Falls back to the literal defaults if the relevant model data is
-        unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
+        Uses nominal gravity when gravity is zero or unavailable, and a unit
+        characteristic force when no dynamic mass is available.
         """
         # Save the previous defaults so we can detect user overrides set
         # before the model was attached (rare but possible).
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
 
-        # Characteristic length L_char: 10% of the maximal extent.
-        L_char = 0.0
-        max_extents = self._get_world_extents()
-        if max_extents is not None:
-            L_char = float(0.1 * np.linalg.norm(max_extents))
-        if not np.isfinite(L_char) or L_char <= 0.0:
-            L_char = 1.0
-
-        # Characteristic force F_char = sum(dynamic body mass) * |gravity|.
+        # Replicating identical worlds must not change force-arrow lengths.
         F_char = 0.0
         if (
             self.model is not None
@@ -980,7 +1251,14 @@ class ViewerBase(ABC):
             mass_np = self.model.body_mass.numpy()
             inv_mass_np = self.model.body_inv_mass.numpy()
             dyn_mask = np.isfinite(mass_np) & (inv_mass_np > 0.0)
-            total_mass = float(mass_np[dyn_mask].sum()) if dyn_mask.any() else 0.0
+            dynamic_mass = mass_np[dyn_mask]
+            mean_mass = float(dynamic_mass.sum())
+            if self.model.body_world is not None:
+                worlds = self.model.body_world.numpy()[dyn_mask]
+                local_mask = worlds >= 0
+                # Global bodies are shared by local worlds, not another replica.
+                mean_mass = float(dynamic_mass[~local_mask].sum())
+                mean_mass += float(dynamic_mass[local_mask].sum()) / max(1, len(np.unique(worlds[local_mask])))
             g_mag = 9.81
             if self.model.gravity is not None:
                 g_np = self.model.gravity.numpy()
@@ -989,12 +1267,13 @@ class ViewerBase(ABC):
                     g_mag = float(np.linalg.norm(g0))
                     if not np.isfinite(g_mag) or g_mag <= 0.0:
                         g_mag = 9.81
-            F_char = total_mass * g_mag
+            F_char = mean_mass * g_mag
         if not np.isfinite(F_char) or F_char <= 0.0:
             F_char = 1.0
 
-        # Set contact scales based on L_char and F_char
-        self._contact_viz_scale_default = 1.0 * L_char
+        # Normal arrows use half the smaller shape's collision radius when
+        # contact_viz_scale is at its default value of 1.0.
+        self._contact_viz_scale_default = 1.0
         self._contact_force_scale_default = 5.0 / F_char if F_char > 0.0 else 0.5
 
         # Reset live attributes to new defaults, if values were still default
@@ -1018,6 +1297,31 @@ class ViewerBase(ABC):
         """
         pass
 
+    def get_frame(self, *, output: wp.array3d[wp.uint8] | None = None, render_ui: bool = False) -> wp.array3d[wp.uint8]:
+        """Retrieve the last rendered frame as RGB image data.
+
+        Call after :meth:`end_frame`. Supported by :class:`ViewerGL` and
+        :class:`ViewerRTX` in both headless and windowed modes. Call
+        ``.numpy()`` on the result to obtain a NumPy array.
+
+        Args:
+            output: Optional pre-allocated Warp array on the viewer
+                device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
+                If ``None``, a new array is created.
+            render_ui: Whether to include UI overlays. Support depends on
+                the viewer backend.
+
+        Returns:
+            RGB image data on the viewer device with shape
+            ``(height, width, 3)``, dtype ``wp.uint8``, and a top-left origin.
+            If supplied, returns ``output``.
+
+        Raises:
+            NotImplementedError: The viewer backend does not support frame
+                capture or the requested UI capture option.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support frame capture")
+
     def log_state(self, state: newton.State):
         """Update the viewer with the given state of the simulation.
 
@@ -1029,21 +1333,27 @@ class ViewerBase(ABC):
             return
 
         self._sync_shape_colors_from_model()
+        self._sync_shape_opacities_from_model()
 
         layer_hidden = self._layer_force_hidden()
 
         # compute shape transforms and render
         for shapes in self._shape_instances.values():
-            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+            visible = (
+                self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                and not layer_hidden
+                and len(shapes.model_shapes) > 0
+            )
 
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets, layer_xform=self.layer.xform)
 
             colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+            opacities = shapes.opacities if self.model_changed or shapes.opacities_changed else None
             materials = shapes.materials if self.model_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
-            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # (e.g., deforming a shared capsule prototype to batch different dimensions).
             # The base implementation of log_capsules() falls back to log_instances().
             if shapes.geo_type == newton.GeoType.CAPSULE:
                 self.log_capsules(
@@ -1053,6 +1363,7 @@ class ViewerBase(ABC):
                     shapes.scales,
                     colors,
                     materials,
+                    opacities=opacities,
                     hidden=not visible,
                 )
             else:
@@ -1063,10 +1374,12 @@ class ViewerBase(ABC):
                     shapes.scales,  # Always pass scales - needed for transform matrix calculation
                     colors,
                     materials,
+                    opacities=opacities,
                     hidden=not visible,
                 )
 
             shapes.colors_changed = False
+            shapes.opacities_changed = False
 
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
@@ -1098,6 +1411,27 @@ class ViewerBase(ABC):
         for batch_ref in self._shape_instances.values():
             batch_ref.colors_changed = True
 
+    def _sync_shape_opacities_from_model(self):
+        """Propagate model-owned shape opacities into viewer batches."""
+        if (
+            self.model is None
+            or self.model.shape_opacity is None
+            or self.model_shape_opacity is None
+            or self._slot_to_shape_wp is None
+        ):
+            return
+
+        wp.launch(
+            kernel=repack_shape_opacities,
+            dim=len(self.model_shape_opacity),
+            inputs=[self.model.shape_opacity, self._slot_to_shape_wp],
+            outputs=[self.model_shape_opacity],
+            device=self.device,
+            record_tape=False,
+        )
+        for batch_ref in self._shape_instances.values():
+            batch_ref.opacities_changed = True
+
     def _log_gaussian_shapes(self, state: newton.State):
         """Render Gaussian shapes as point clouds with current body transforms."""
         if not self._gaussian_instances:
@@ -1118,8 +1452,8 @@ class ViewerBase(ABC):
                 if body_q_np is None:
                     body_q_np = state.body_q.numpy()
 
-                body_xform = wp.transform_expand(body_q_np[parent])
-                world_xform = wp.transform_multiply(body_xform, shape_xform)
+                body_xform = transform_from_array(body_q_np[parent])
+                world_xform = transform_multiply(body_xform, shape_xform)
             else:
                 world_xform = shape_xform
 
@@ -1127,11 +1461,8 @@ class ViewerBase(ABC):
                 if offsets_np is None:
                     offsets_np = self.world_offsets.numpy()
                 offset = offsets_np[world_idx]
-                world_xform = wp.transformf(
-                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
-                    world_xform.q,
-                )
-            world_xform = wp.transform_multiply(self.layer.xform, world_xform)
+                world_xform = transform_add_translation(world_xform, offset)
+            world_xform = transform_multiply(self.layer.xform, world_xform)
             self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
@@ -1146,7 +1477,7 @@ class ViewerBase(ABC):
         layer_hidden = self._layer_force_hidden()
 
         for shapes in self._sdf_isomesh_instances.values():
-            visible = self.show_collision and not layer_hidden
+            visible = self.show_collision and not layer_hidden and len(shapes.model_shapes) > 0
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets, layer_xform=self.layer.xform)
             send_appearance = self.model_changed or sdf_isomesh_just_populated
@@ -1157,18 +1488,26 @@ class ViewerBase(ABC):
                 shapes.scales,
                 shapes.colors if send_appearance else None,
                 shapes.materials if send_appearance else None,
+                opacities=shapes.opacities if send_appearance else None,
                 hidden=not visible,
             )
 
         self._log_inertia_boxes(state)
         self._log_sdf_margin_wireframes(state)
 
+        self._log_deformable_visual_meshes(state)
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
         self._log_com(state)
 
-    def log_contacts(self, contacts: newton.Contacts, state: newton.State):
+    def log_contacts(
+        self,
+        contacts: newton.Contacts,
+        state: newton.State,
+        *,
+        observables: newton.solvers.SolverBase.Observables | None = None,
+    ):
         """Render contact visualizations.
 
         The visualization is split into three layers, each of which can be
@@ -1177,12 +1516,12 @@ class ViewerBase(ABC):
         * ``"/contacts/normals"`` — arrows along ``rigid_contact_normal``
           (gated on :attr:`show_contact_normals`).
         * ``"/contacts/modes"`` — thin oriented disks at each contact, color
-          coded by inferred contact mode (open / stick / slip) when
-          ``contacts.force`` is allocated, else by a uniform default color
+          coded by inferred contact mode (open / stick / slip) when contact
+          force output is available, else amber to indicate an unknown mode
           (gated on :attr:`show_contact_disks`).
         * ``"/contacts/forces"`` — arrows along the linear part of
-          ``contacts.force`` (gated on :attr:`show_contact_forces`; hidden if
-          ``contacts.force is None``).
+          the contact-force output (gated on :attr:`show_contact_forces`;
+          hidden if no output is available).
 
         Sub-toggles are themselves gated by the master :attr:`show_contacts`
         flag; setting it to ``False`` hides everything.  When sub-toggles are
@@ -1191,9 +1530,19 @@ class ViewerBase(ABC):
 
         Args:
             contacts: The contacts to render.
-            state: The current state of the simulation.  Required to compute
+            state: The state in whose body frames the contact points are expressed.
+                For contacts detected before a solver step, pass its input state.
+                Required to compute
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
+            observables: Optional solver observables containing ``contact_f``. If
+                omitted, the deprecated ``contacts.force`` array is used.
+                ``contacts`` must be the buffer that produced ``contact_f``
+                (``observables.contacts``); newly allocated forces are zero until the
+                solver updates them. See :ref:`solver_observables`.
+
+                .. experimental::
+                    The solver observable API may change without prior notice.
         """
 
         if not self.show_contacts or self._layer_force_hidden():
@@ -1204,6 +1553,16 @@ class ViewerBase(ABC):
                 )
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
+
+        contact_f = observables.contact_f if observables is not None else contacts.force
+        if observables is not None:
+            if observables.model is not self.model:
+                raise ValueError("Solver observables must belong to the viewer's model.")
+            if contact_f is not None and observables.contacts is not contacts:
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
@@ -1217,6 +1576,10 @@ class ViewerBase(ABC):
                 )
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
+
+        # Base glyph size as a multiplier of the smaller shape's collision
+        # radius. Disks and force arrows preserve their existing proportions.
+        contact_scale = 0.5 * float(self.contact_viz_scale)
 
         # ---- Contact-normal arrows -------------------------------
         if self.show_contact_normals:
@@ -1233,6 +1596,7 @@ class ViewerBase(ABC):
                     state.body_q,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
@@ -1242,7 +1606,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
-                    float(self.contact_viz_scale),
+                    contact_scale,
                 ],
                 outputs=[
                     self._contact_points0,  # line start points
@@ -1288,7 +1652,9 @@ class ViewerBase(ABC):
                     self.model.body_com,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
@@ -1296,15 +1662,17 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
                     contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
-                    contacts.force,  # may be None — kernel falls back to default color
-                    float(self.contact_viz_scale * 0.2),
-                    float(self.contact_viz_scale * 0.004),  # cylinder half-height
+                    contact_f,  # may be None — kernel uses the unknown-mode color
+                    contact_scale * 0.2,
+                    contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
                     float(self.contact_mode_eps_velocity),
                     wp.vec3(0.1, 0.1, 0.1),  # open: black
                     wp.vec3(0.6, 0.6, 0.6),  # stick: light gray
                     wp.vec3(0.2, 0.2, 0.9),  # slip: blue
+                    wp.vec3(0.95, 0.7, 0.3),  # unknown: amber
                 ],
                 outputs=[self._contact_disk_xforms, self._contact_disk_scales, self._contact_disk_colors],
                 device=self.device,
@@ -1325,7 +1693,7 @@ class ViewerBase(ABC):
             )
 
         # ---- Layer C: contact force arrows --------------------------------
-        if self.show_contact_forces and contacts.force is not None:
+        if self.show_contact_forces and contact_f is not None:
             if self._contact_force_starts is None or len(self._contact_force_starts) < max_contacts:
                 self._contact_force_starts = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
                 self._contact_force_ends = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
@@ -1339,15 +1707,17 @@ class ViewerBase(ABC):
                     state.body_q,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
-                    contacts.force,
-                    float(self.contact_viz_scale * self.contact_force_scale),
+                    contact_f,
+                    contact_scale * float(self.contact_force_scale),
                 ],
                 outputs=[self._contact_force_starts, self._contact_force_ends],
                 device=self.device,
@@ -1450,9 +1820,10 @@ class ViewerBase(ABC):
         geo_is_solid: bool = True,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
-        Convenience helper to create/cache a mesh of a given geometry and
+        Convenience helper to create/cache a prototype of a given geometry and
         render a batch of instances with the provided transforms/colors/materials.
 
         Args:
@@ -1472,6 +1843,7 @@ class ViewerBase(ABC):
             geo_src: Source geometry to use only when ``geo_type`` is
                 :attr:`newton.GeoType.MESH`.
             hidden: If True, the shape will not be rendered
+            opacities: wp.array[wp.float32] or None (broadcasted if length 1)
         """
 
         # normalize geo_scale to a list for hashing + mesh creation
@@ -1519,9 +1891,18 @@ class ViewerBase(ABC):
                 return wp.array([val] * num_instances, dtype=wp.vec4, device=self.device)
             return arr
 
+        def _ensure_float_array(arr, default):
+            if arr is None:
+                return wp.array([default] * num_instances, dtype=wp.float32, device=self.device)
+            if len(arr) == 1 and num_instances > 1:
+                val = float(arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.float32, device=self.device)
+            return arr
+
         # defaults
         default_color = wp.vec3(0.3, 0.8, 0.9)
         default_material = wp.vec4(0.5, 0.0, 0.0, 0.0)
+        default_opacity = 1.0
 
         # planes default to checkerboard and mid-gray if not overridden
         if geo_type == newton.GeoType.PLANE:
@@ -1530,9 +1911,10 @@ class ViewerBase(ABC):
 
         colors = _ensure_vec3_array(colors, default_color)
         materials = _ensure_vec4_array(materials, default_material)
+        opacities = _ensure_float_array(opacities, default_opacity)
 
         # finally, log the instances
-        self.log_instances(name, mesh_path, xforms, scales, colors, materials, hidden=hidden)
+        self.log_instances(name, mesh_path, xforms, scales, colors, materials, opacities=opacities, hidden=hidden)
 
     def log_geo(
         self,
@@ -1618,8 +2000,9 @@ class ViewerBase(ABC):
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
 
-            if geo_src._uvs is not None:
-                uvs = wp.array(geo_src._uvs, dtype=wp.vec2, device=self.device)
+            transformed_uvs = _mesh_texture_uvs(geo_src)
+            if transformed_uvs is not None:
+                uvs = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
             if hasattr(geo_src, "texture"):
                 texture = geo_src.texture
@@ -1702,14 +2085,16 @@ class ViewerBase(ABC):
 
         Args:
             name: The name of the gizmo.
-            transform: The transform of the gizmo.
+            transform: Gizmo transform with translation [m] and a unitless
+                rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         return
@@ -1729,6 +2114,7 @@ class ViewerBase(ABC):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        opacity: float | None = None,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1754,6 +2140,7 @@ class ViewerBase(ABC):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         pass
 
@@ -1767,6 +2154,7 @@ class ViewerBase(ABC):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log a batch of mesh instances.
@@ -1783,6 +2171,7 @@ class ViewerBase(ABC):
             colors: Optional per-instance colors as a Warp vec3 array.
             materials: Optional per-instance material parameters as a Warp vec4 array.
             hidden: Whether the instance batch should be hidden.
+            opacities: Optional per-instance opacity values as a Warp float array.
         """
         pass
 
@@ -1795,6 +2184,7 @@ class ViewerBase(ABC):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log capsules as instances. This is a specialized path for rendering capsules.
@@ -1810,8 +2200,18 @@ class ViewerBase(ABC):
             colors: Optional per-capsule colors as a Warp vec3 array.
             materials: Optional per-capsule material parameters as a Warp vec4 array.
             hidden: Whether the capsule batch should be hidden.
+            opacities: Optional per-capsule opacity values as a Warp float array.
         """
-        self.log_instances(self._qualify(name), mesh, xforms, scales, colors, materials, hidden=hidden)
+        self.log_instances(
+            self._qualify(name),
+            mesh,
+            xforms,
+            scales,
+            colors,
+            materials,
+            opacities=opacities,
+            hidden=hidden,
+        )
 
     @abstractmethod
     def log_lines(
@@ -1855,6 +2255,7 @@ class ViewerBase(ABC):
 
         The GL viewer renders these with a dedicated arrow shader that draws
         a screen-space quad line body plus a triangular arrowhead per segment.
+        The RTX viewer renders cylinder shafts with cone heads in world space.
         Other backends fall back to :meth:`log_lines`.
 
         Args:
@@ -1862,9 +2263,9 @@ class ViewerBase(ABC):
             starts: Optional arrow start points as a Warp vec3 array.
             ends: Optional arrow end points (arrowhead tip) as a Warp vec3 array.
             colors: Per-arrow colors as a Warp array, or a single RGB triplet.
-            width: Reserved for future use (world-space line width).
-                Currently ignored; arrow size is set in screen-space pixels
-                via the renderer (e.g. ``RendererGL.arrow_scale``).
+            width: Shaft radius [m] in the RTX viewer. Ignored by the GL viewer,
+                where arrow size is set in screen-space pixels via
+                ``RendererGL.arrow_scale``.
             hidden: Whether the arrow batch should be hidden.
         """
         self.log_lines(self._qualify(name), starts, ends, colors, width=width, hidden=hidden)
@@ -1945,7 +2346,8 @@ class ViewerBase(ABC):
 
         Args:
             name: Stable identifier. Subsequent calls with the same *name*
-                update in place. In :class:`ViewerGL`, each name gets one
+                update in place. In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, each name gets one
                 dockable window.
             image: Image array. Accepted shapes:
 
@@ -1957,12 +2359,14 @@ class ViewerBase(ABC):
                 Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
-            fullscreen: In :class:`~newton.viewer.ViewerGL`, display the image
-                as the main viewer surface for the current frame instead of
+            fullscreen: In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, display the image as the
+                main viewer surface for the current frame instead of
                 rendering the 3D scene. Other backends ignore this option.
 
-        The base implementation is a no-op. Backends that render images
-        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
+        The base implementation is a no-op. Backends that render images,
+        including :class:`~newton.viewer.ViewerGL`, :class:`~newton.viewer.ViewerRTX`,
+        and :class:`~newton.viewer.ViewerViser`, override this method.
         """
         return
 
@@ -2040,6 +2444,10 @@ class ViewerBase(ABC):
             self.scales = []
             self.colors = []
             """Color (vec3f) per instance."""
+            self.opacities = []
+            """Opacity (float) per instance."""
+            self.transparent: bool = False
+            """Whether this render batch belongs to the transparent pass."""
             self.materials = []
             self.worlds = []  # World index for each shape
 
@@ -2052,6 +2460,11 @@ class ViewerBase(ABC):
             should be included in
             :meth:`~newton.viewer.ViewerBase.log_instances`.
             """
+            self.opacities_changed: bool = False
+            """Indicates that finalized
+            ``ShapeInstances.opacities`` changed and should be included in
+            :meth:`~newton.viewer.ViewerBase.log_instances`.
+            """
 
         def add(
             self,
@@ -2062,6 +2475,7 @@ class ViewerBase(ABC):
             material: wp.vec4,
             shape_index: int,
             world: int = -1,
+            opacity: float = 1.0,
         ):
             """
             Add an instance of the geometry to the batch.
@@ -2074,21 +2488,47 @@ class ViewerBase(ABC):
                 material: The material of the instance.
                 shape_index: The shape index.
                 world: The world index.
+                opacity: The opacity of the instance.
             """
             self.parents.append(parent)
             self.xforms.append(xform)
             self.scales.append(scale)
             self.colors.append(color)
+            self.opacities.append(float(opacity))
             self.materials.append(material)
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
 
-        def finalize(self, shape_colors: wp.array[wp.vec3] | None = None):
+        def _freeze_populated(self):
+            """Store the instances added at population; variant rows are added to them on every selection."""
+            self._populated = {
+                "parents": np.asarray(self.parents, dtype=np.int32),
+                "xforms": np.asarray(self.xforms, dtype=np.float32).reshape(-1, 7),
+                "scales": np.asarray(self.scales, dtype=np.float32).reshape(-1, 3),
+                "colors": np.asarray(self.colors, dtype=np.float32).reshape(-1, 3),
+                "opacities": np.asarray(self.opacities, dtype=np.float32),
+                "materials": np.asarray(self.materials, dtype=np.float32).reshape(-1, 4),
+                "worlds": np.asarray(self.worlds, dtype=np.int32),
+                "model_shapes": np.asarray(self.model_shapes, dtype=np.int32),
+            }
+            self.model_shapes = self._populated["model_shapes"]
+
+        @property
+        def _populated_count(self) -> int:
+            """Number of instances added at population."""
+            return len(self._populated["model_shapes"])
+
+        def finalize(
+            self,
+            shape_colors: wp.array[wp.vec3] | None = None,
+            shape_opacities: wp.array[wp.float32] | None = None,
+        ):
             """
             Allocates the batch of shape instances as Warp arrays.
 
             Args:
                 shape_colors: The colors of the shapes.
+                shape_opacities: The opacities of the shapes.
             """
             self.parents = wp.array(self.parents, dtype=int, device=self.device)
             self.xforms = wp.array(self.xforms, dtype=wp.transform, device=self.device)
@@ -2098,6 +2538,11 @@ class ViewerBase(ABC):
                 self.colors = shape_colors
             else:
                 self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
+            if shape_opacities is not None:
+                assert len(shape_opacities) == len(self.scales), "shape_opacities length mismatch"
+                self.opacities = shape_opacities
+            else:
+                self.opacities = wp.array(self.opacities, dtype=wp.float32, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
             self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
 
@@ -2139,10 +2584,14 @@ class ViewerBase(ABC):
     def _hash_geometry(
         self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
     ) -> int:
-        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        source_hash = geo_src._get_render_hash() if isinstance(geo_src, newton.Mesh) else geo_src
+        geometry_hash = hash((int(geo_type), source_hash, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        if isinstance(geo_src, newton.Mesh) and geo_src.texture is not None:
+            geometry_hash = hash((geometry_hash, geo_src.texture_transform))
+        return geometry_hash
 
-    def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
-        return hash((geo_hash, shape_static, shape_flags))
+    def _hash_shape(self, geo_hash, shape_static, shape_flags, shape_transparent: bool = False) -> int:
+        return hash((geo_hash, shape_static, shape_flags, bool(shape_transparent)))
 
     def _should_show_shape(self, flags: int, is_static: bool, geo_type: int | None = None) -> bool:
         """Determine if a shape should be visible based on current settings."""
@@ -2268,8 +2717,9 @@ class ViewerBase(ABC):
             normals_wp = wp.array(-np.asarray(src._normals, dtype=np.float32), dtype=wp.vec3, device=self.device)
 
         uvs_wp = None
-        if src._uvs is not None:
-            uvs_wp = wp.array(src._uvs, dtype=wp.vec2, device=self.device)
+        transformed_uvs = _mesh_texture_uvs(src)
+        if transformed_uvs is not None:
+            uvs_wp = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
         self.log_mesh(
             name,
@@ -2280,6 +2730,108 @@ class ViewerBase(ABC):
             hidden=hidden,
             texture=getattr(src, "texture", None),
         )
+
+    def _shape_render_geometry(
+        self,
+        geo_type: int,
+        geo_scale: list[float],
+        geo_thickness: float,
+        geo_is_solid: bool,
+        geo_src,
+        flags: int,
+        sdf_idx: int,
+    ) -> tuple[int, str, int, wp.vec4, bool]:
+        """Render geometry of a shape: geometry hash, mesh name, batch flags, material, and whether
+        instances carry the shape scale (mesh-class shapes) instead of baking it into the geometry."""
+        # Mesh-class shapes can carry signed scale. When det(scale) < 0 the GPU
+        # mirrors the geometry, which reverses screen-space triangle winding;
+        # cache a single winding-flipped variant per source mesh so back-face
+        # culling stays consistent. The signed scale is still applied to the
+        # instance so the shader's normal transform mirrors normals correctly.
+        mirror = (
+            geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH)
+            and geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
+        )
+
+        # check whether we can instance an already created shape with the same geometry.
+        # For the mirrored variant of a mesh-class shape, the cached geometry is
+        # independent of the actual scale magnitude (scale is applied at instance
+        # time), so we collapse the magnitude in the cache key. Combined with the
+        # ``mirror`` bit this guarantees at most one extra cached entry per source
+        # mesh, irrespective of how many distinct signed scales share that source.
+        hash_scale = (1.0, 1.0, 1.0) if mirror else tuple(geo_scale)
+        geo_hash = self._hash_geometry(
+            int(geo_type),
+            hash_scale,
+            float(geo_thickness),
+            bool(geo_is_solid),
+            geo_src,
+            mirror,
+        )
+
+        # ensure geometry exists and get mesh path
+        if geo_hash not in self._geometry_cache:
+            mesh_name = self._populate_geometry(
+                int(geo_type),
+                hash_scale,
+                float(geo_thickness),
+                bool(geo_is_solid),
+                geo_src=geo_src
+                if geo_type
+                in (
+                    newton.GeoType.MESH,
+                    newton.GeoType.CONVEX_MESH,
+                    newton.GeoType.HFIELD,
+                )
+                else None,
+                mirror=mirror,
+            )
+        else:
+            mesh_name = self._geometry_cache[geo_hash]
+
+        # For collision shapes that ALSO have the VISIBLE flag AND have SDF volumes,
+        # treat the original mesh as visual geometry (the SDF isomesh will be rendered
+        # separately for collision visualization).
+        #
+        # Shapes that only have COLLIDE_SHAPES (no VISIBLE) should remain as collision
+        # shapes - these are typically convex hull approximations where a separate
+        # visual-only copy exists.
+        is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
+        is_visible = flags & int(newton.ShapeFlags.VISIBLE)
+        # Check for texture SDF existence without computing the isomesh (lazy evaluation)
+        has_sdf = sdf_idx >= 0 and self.model._texture_sdf_data is not None
+        if is_collision_shape and is_visible and has_sdf:
+            # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
+            flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
+
+        material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
+        uses_scale = geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH)
+        if uses_scale:
+            if getattr(geo_src, "roughness", None) is not None:
+                material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
+            if getattr(geo_src, "metallic", None) is not None:
+                material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
+            if geo_src is not None and geo_src._uvs is not None:
+                has_texture = getattr(geo_src, "texture", None) is not None
+                if has_texture:
+                    material = wp.vec4(material.x, material.y, material.z, 1.0)
+        # Planes keep their checkerboard material even when model.shape_color
+        # is populated with resolved default colors.
+        if geo_type == newton.GeoType.PLANE:
+            material = wp.vec4(0.5, 0.0, 1.0, 0.0)
+        return geo_hash, mesh_name, int(flags), material, uses_scale
+
+    def _shape_batch(self, geo_hash: int, mesh_name: str, geo_type: int, static: bool, flags: int, transparent: bool):
+        """The shape batch of a geometry and render options, created on first use."""
+        shape_hash = self._hash_shape(geo_hash, static, flags, transparent)
+        batch = self._shape_instances.get(shape_hash)
+        if batch is None:
+            shape_name = self._qualify(f"/model/shapes/shape_{len(self._shape_instances)}")
+            batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+            batch.geo_type = geo_type
+            batch.transparent = transparent
+            self._shape_instances[shape_hash] = batch
+        return batch
 
     # creates meshes and instances for each shape in the Model
     def _populate_shapes(self):
@@ -2298,115 +2850,61 @@ class ViewerBase(ABC):
             site_size_is_display = site_size_is_display.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
+        shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
+        shape_transparent_mask = np.zeros(shape_count, dtype=bool)
+        # Variant rows are instanced per notify from the variant shape they hold, see _variant_instances().
+        variant_row = (
+            self.model._shape_variant_row.numpy() if self.model._has_variant_rows else np.zeros(shape_count, bool)
+        )
 
         # loop over shapes
         for s in range(shape_count):
-            # skip shapes from non-visible worlds
-            if not self._should_render_world(shape_world[s]):
+            # skip shapes from non-visible worlds and variant rows
+            if not self._should_render_world(shape_world[s]) or variant_row[s]:
                 continue
 
             geo_type = shape_geo_type[s]
             geo_scale = [float(v) for v in shape_geo_scale[s]]
-            geo_thickness = float(shape_geo_thickness[s])
-            geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
 
             if geo_type == newton.GeoType.CYLINDER and site_size_is_display is not None and site_size_is_display[s]:
                 geo_scale[2] = 0.0
 
-            # Mesh-class shapes can carry signed scale. When det(scale) < 0 the GPU
-            # mirrors the geometry, which reverses screen-space triangle winding;
-            # cache a single winding-flipped variant per source mesh so back-face
-            # culling stays consistent. The signed scale is still applied to the
-            # instance so the shader's normal transform mirrors normals correctly.
-            mirror = (
-                geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH)
-                and geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
-            )
-
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
-                    xform = wp.transform_expand(shape_transform[s])
+                    xform = transform_from_array(shape_transform[s])
                     gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
                     )
                 continue
 
-            # check whether we can instance an already created shape with the same geometry.
-            # For the mirrored variant of a mesh-class shape, the cached geometry is
-            # independent of the actual scale magnitude (scale is applied at instance
-            # time), so we collapse the magnitude in the cache key. Combined with the
-            # ``mirror`` bit this guarantees at most one extra cached entry per source
-            # mesh, irrespective of how many distinct signed scales share that source.
-            hash_scale = (1.0, 1.0, 1.0) if mirror else tuple(geo_scale)
-            geo_hash = self._hash_geometry(
-                int(geo_type),
-                hash_scale,
-                float(geo_thickness),
-                bool(geo_is_solid),
+            sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
+            geo_hash, mesh_name, flags, material, uses_scale = self._shape_render_geometry(
+                geo_type,
+                geo_scale,
+                float(shape_geo_thickness[s]),
+                bool(shape_geo_is_solid[s]),
                 geo_src,
-                mirror,
+                int(shape_flags[s]),
+                sdf_idx,
             )
 
-            # ensure geometry exists and get mesh path
-            if geo_hash not in self._geometry_cache:
-                mesh_name = self._populate_geometry(
-                    int(geo_type),
-                    hash_scale,
-                    float(geo_thickness),
-                    bool(geo_is_solid),
-                    geo_src=geo_src
-                    if geo_type
-                    in (
-                        newton.GeoType.MESH,
-                        newton.GeoType.CONVEX_MESH,
-                        newton.GeoType.HFIELD,
-                    )
-                    else None,
-                    mirror=mirror,
-                )
-            else:
-                mesh_name = self._geometry_cache[geo_hash]
-
             # shape options
-            flags = shape_flags[s]
             parent = shape_body[s]
             static = parent == -1
+            opacity = float(shape_display_opacity[s]) if shape_display_opacity is not None else 1.0
+            opacity = max(0.0, min(1.0, opacity))
+            transparent = opacity < OPAQUE_OPACITY_THRESHOLD
+            shape_transparent_mask[s] = transparent
+            batch = self._shape_batch(geo_hash, mesh_name, geo_type, static, flags, transparent)
 
-            # For collision shapes that ALSO have the VISIBLE flag AND have SDF volumes,
-            # treat the original mesh as visual geometry (the SDF isomesh will be rendered
-            # separately for collision visualization).
-            #
-            # Shapes that only have COLLIDE_SHAPES (no VISIBLE) should remain as collision
-            # shapes - these are typically convex hull approximations where a separate
-            # visual-only copy exists.
-            is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
-            is_visible = flags & int(newton.ShapeFlags.VISIBLE)
-            # Check for texture SDF existence without computing the isomesh (lazy evaluation)
-            sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            has_sdf = sdf_idx >= 0 and self.model._texture_sdf_data is not None
-            if is_collision_shape and is_visible and has_sdf:
-                # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
-                flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
-
-            shape_hash = self._hash_shape(geo_hash, static, flags)
-
-            # ensure batch exists
-            if shape_hash not in self._shape_instances:
-                shape_name = self._qualify(f"/model/shapes/shape_{len(self._shape_instances)}")
-                batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
-                batch.geo_type = geo_type
-                self._shape_instances[shape_hash] = batch
-            else:
-                batch = self._shape_instances[shape_hash]
-
-            xform = wp.transform_expand(shape_transform[s])
-            scale = np.array([1.0, 1.0, 1.0])
+            xform = transform_from_array(shape_transform[s])
+            scale = np.asarray(geo_scale, dtype=np.float32) if uses_scale else np.array([1.0, 1.0, 1.0])
 
             if shape_display_color is not None:
                 color = wp.vec3(shape_display_color[s])
@@ -2415,29 +2913,10 @@ class ViewerBase(ABC):
             else:
                 # Use shape index for color to ensure each collision shape has a different color
                 color = wp.vec3(self._shape_color_map(s))
-
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
-
-            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
-                scale = np.asarray(geo_scale, dtype=np.float32)
-
-                if shape_display_color is None and geo_src.color is not None:
-                    color = wp.vec3(geo_src.color[0:3])
-                if getattr(geo_src, "roughness", None) is not None:
-                    material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
-                if getattr(geo_src, "metallic", None) is not None:
-                    material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
-                if geo_src is not None and geo_src._uvs is not None:
-                    has_texture = getattr(geo_src, "texture", None) is not None
-                    if has_texture:
-                        material = wp.vec4(material.x, material.y, material.z, 1.0)
-
-            # Planes keep their checkerboard material even when model.shape_color
-            # is populated with resolved default colors.
-            if geo_type == newton.GeoType.PLANE:
-                if shape_display_color is None:
-                    color = wp.vec3(0.125, 0.125, 0.15)
-                material = wp.vec4(0.5, 0.0, 1.0, 0.0)
+            if uses_scale and shape_display_color is None and geo_src.color is not None:
+                color = wp.vec3(geo_src.color[0:3])
+            if geo_type == newton.GeoType.PLANE and shape_display_color is None:
+                color = wp.vec3(0.125, 0.125, 0.15)
 
             # add render instance
             batch.add(
@@ -2446,51 +2925,215 @@ class ViewerBase(ABC):
                 scale=scale,
                 color=color,
                 material=material,
+                opacity=opacity,
                 shape_index=s,
                 world=shape_world[s],
             )
 
-        # each shape instance object (batch) is associated with one slice
+        self._shape_transparent_mask = shape_transparent_mask
+        self._shape_batches_have_transparency = bool(np.any(shape_transparent_mask))
+
+        # Build shape -> batch reference mapping for change signalling
+        shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
+        for batch in self._shape_instances.values():
+            batch._freeze_populated()
+            for s_idx in batch.model_shapes:
+                shape_to_batch[s_idx] = batch
+        self._shape_to_batch = shape_to_batch
+        self._variant_shape_render = None
+        self._select_shape_instances()
+
+    def _variant_shape_render_geometry(self, q: int) -> tuple[int, str, int, wp.vec4, bool]:
+        """Render geometry of variant shape ``q``, created on first use."""
+        if q not in self._variant_shape_render:
+            types, scales, margins, solids, flags, sdf_index = self._variant_shape_render_args
+            self._variant_shape_render[q] = self._shape_render_geometry(
+                types[q],
+                [float(v) for v in scales[q]],
+                float(margins[q]),
+                bool(solids[q]),
+                self.model._variant_shape_source[q],
+                int(flags[q]),
+                int(sdf_index[q]),
+            )
+        return self._variant_shape_render[q]
+
+    def _variant_instances(self) -> tuple[dict[str, np.ndarray], np.ndarray] | None:
+        """Instances of the variant rows that hold a variant shape, and the batch ordinal of each.
+
+        A variant shape gets its render geometry the first time a row holds it; every call groups
+        the rows by the variant shape they hold, creating batches on first use, so its cost does not
+        depend on the number of variants.
+        """
+        model = self.model
+        if not model._has_variant_rows:
+            return None
+        if self._variant_shape_render is None:
+            geometry = model._variant_shape_geometry
+            types = geometry["shape_type"].numpy()
+            scales = geometry["shape_scale"].numpy()
+            margins = geometry["shape_margin"].numpy()
+            solids = geometry["shape_is_solid"].numpy()
+            flags = geometry["shape_flags"].numpy()
+            sdf_index = geometry["_shape_sdf_index"].numpy()
+            site_size = model._variant_shape_custom.get("mujoco:site_size_is_display")
+            site_size = site_size[0].numpy() if site_size is not None else np.zeros(len(types), dtype=bool)
+            # Display-sized cylinder sites render without their half-height, as regular shapes do.
+            scales = np.where(
+                ((types == newton.GeoType.CYLINDER) & site_size.astype(bool))[:, None], scales * (1.0, 1.0, 0.0), scales
+            )
+            self._variant_shape_render = {}
+            self._variant_shape_render_args = (types, scales, margins, solids, flags, sdf_index)
+            self._variant_shape_types = types
+            rows = model._variant_row_shapes.numpy()
+            self._variant_row_shapes = rows
+            self._variant_row_body = model.shape_body.numpy()[rows]
+            self._variant_row_world = model.shape_world.numpy()[rows]
+        rows = self._variant_row_shapes
+        held = model._shape_variant_shape.numpy()[rows]
+        opacity = np.clip(model.shape_opacity.numpy()[rows], 0.0, 1.0)
+        keep = held >= 0
+        if self._visible_worlds is not None:
+            visible = np.zeros(model.world_count + 1, dtype=bool)
+            visible[[w for w in self._visible_worlds if 0 <= w < model.world_count]] = True
+            visible[-1] = True
+            keep &= visible[self._variant_row_world]
+        rows, held, opacity = rows[keep], held[keep], opacity[keep]
+        static = self._variant_row_body[keep] < 0
+        transparent = opacity < OPAQUE_OPACITY_THRESHOLD
+
+        # One batch per held variant shape and render pass.
+        combos, inverse = np.unique(held * 4 + static * 2 + transparent, return_inverse=True)
+        batch_index = {id(b): i for i, b in enumerate(self._shape_instances.values())}
+        ordinals = np.empty(len(combos), dtype=np.int64)
+        materials = np.empty((len(combos), 4), dtype=np.float32)
+        uses_scale = np.empty(len(combos), dtype=bool)
+        for c, combo in enumerate(combos.tolist()):
+            q = combo // 4
+            geo_hash, mesh_name, flags, material, scaled = self._variant_shape_render_geometry(q)
+            batch = self._shape_batch(
+                geo_hash, mesh_name, self._variant_shape_types[q], bool(combo & 2), flags, bool(combo & 1)
+            )
+            ordinals[c] = batch_index.setdefault(id(batch), len(batch_index))
+            materials[c] = np.asarray(material, dtype=np.float32)
+            uses_scale[c] = scaled
+        scales = np.where(
+            uses_scale[inverse][:, None], model.shape_scale.numpy()[rows], np.ones((len(rows), 3), dtype=np.float32)
+        )
+        self._shape_transparent_mask[rows] = transparent
+        instances = {
+            "parents": self._variant_row_body[keep].astype(np.int32),
+            "xforms": model.shape_transform.numpy()[rows],
+            "scales": scales.astype(np.float32),
+            "colors": model.shape_color.numpy()[rows],
+            "opacities": opacity.astype(np.float32),
+            "materials": materials[inverse],
+            "worlds": self._variant_row_world[keep].astype(np.int32),
+            "model_shapes": rows.astype(np.int32),
+        }
+        return instances, ordinals[inverse]
+
+    def _select_shape_instances(self) -> None:
+        """Upload the instances of every batch and rebuild the instance maps.
+
+        Regular shapes keep the instances added at population. Variant rows are grouped by the
+        variant shape they hold on every call, without recompiling geometry. All batches are
+        uploaded together with one transfer per attribute; each batch views its slice of the
+        packed arrays.
+        """
+        variant_instances = self._variant_instances()
         batches = list(self._shape_instances.values())
-        offsets = np.cumsum(np.array([0, *[len(b.scales) for b in batches]], dtype=np.int32)).tolist()
+        for batch in batches:
+            if getattr(batch, "_populated", None) is None:
+                # Created for variant rows after population.
+                batch._freeze_populated()
+        if not batches:
+            self.model_shape_color = None
+            self.model_shape_opacity = None
+            self._shape_to_slot = np.full(len(self._shape_to_batch), -1, dtype=np.int32)
+            self._slot_to_shape = np.empty(0, dtype=np.int32)
+            self._slot_to_shape_wp = None
+            return
+        all_instances = {
+            name: np.concatenate([batch._populated[name] for batch in batches]) for name in batches[0]._populated
+        }
+        ordinals = np.repeat(np.arange(len(batches)), [batch._populated_count for batch in batches])
+        if variant_instances is not None:
+            instances, instance_ordinals = variant_instances
+            all_instances = {name: np.concatenate((values, instances[name])) for name, values in all_instances.items()}
+            ordinals = np.concatenate((ordinals, instance_ordinals))
+            order = np.argsort(ordinals, kind="stable")
+            all_instances = {name: values[order] for name, values in all_instances.items()}
+        counts = np.bincount(ordinals, minlength=len(batches))
+        offsets = np.cumsum([0, *counts]).tolist()
         total_instances = int(offsets[-1])
 
-        # Allocate single contiguous color buffer and copy initial per-batch colors
-        if total_instances:
-            self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
+        def upload(name, dtype):
+            return wp.array(all_instances[name], dtype=dtype, device=self.device)
+
+        empty = {
+            name: wp.empty(0, dtype=dtype, device=self.device)
+            for name, dtype in (("int", int), ("transform", wp.transform), ("vec3", wp.vec3), ("vec4", wp.vec4))
+        }
+        empty["float32"] = wp.empty(0, dtype=wp.float32, device=self.device)
+        packed = {
+            "parents": (upload("parents", int), "int"),
+            "xforms": (upload("xforms", wp.transform), "transform"),
+            "scales": (upload("scales", wp.vec3), "vec3"),
+            "colors": (upload("colors", wp.vec3), "vec3"),
+            "opacities": (upload("opacities", wp.float32), "float32"),
+            "materials": (upload("materials", wp.vec4), "vec4"),
+            "worlds": (upload("worlds", int), "int"),
+            "world_xforms": (wp.zeros(total_instances, dtype=wp.transform, device=self.device), "transform"),
+        }
+        self.model_shape_color = packed["colors"][0] if total_instances else None
+        self.model_shape_opacity = packed["opacities"][0] if total_instances else None
 
         for b_idx, batch in enumerate(batches):
-            if total_instances:
-                color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
-                color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
-                batch.finalize(shape_colors=color_array)
-            else:
-                batch.finalize()
+            lo, hi = offsets[b_idx], offsets[b_idx + 1]
+            for name, (values, kind) in packed.items():
+                setattr(batch, name, values[lo:hi] if hi > lo else empty[kind])
+            batch.model_shapes = all_instances["model_shapes"][lo:hi]
 
-        shape_to_slot = np.full(shape_count, -1, dtype=np.int32)
-        for b_idx, batch in enumerate(batches):
-            start = offsets[b_idx]
-            for local_idx, s_idx in enumerate(batch.model_shapes):
-                shape_to_slot[s_idx] = start + local_idx
+        slot_to_shape = all_instances["model_shapes"].astype(np.int32)
+        shape_to_slot = np.full(len(self._shape_to_batch), -1, dtype=np.int32)
+        shape_to_slot[slot_to_shape] = np.arange(total_instances, dtype=np.int32)
         self._shape_to_slot = shape_to_slot
-        slot_to_shape = np.empty(total_instances, dtype=np.int32)
-        for s_idx, slot in enumerate(shape_to_slot):
-            if slot >= 0:
-                slot_to_shape[slot] = s_idx
         self._slot_to_shape = slot_to_shape
         self._slot_to_shape_wp = (
             wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
         )
-
-        # Build shape -> batch reference mapping for change signalling
-        shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
-        for batch in batches:
-            for s_idx in batch.model_shapes:
-                shape_to_batch[s_idx] = batch
-        self._shape_to_batch = shape_to_batch
+        self._shape_batches_have_transparency = bool(np.any(self._shape_transparent_mask))
 
         # Note: SDF isomesh instances are populated lazily when show_collision is True
         # to avoid GPU memory allocation until actually needed for visualization
+
+    def _isomesh_batch(self, sdf_idx: int, static: bool, flags: int):
+        """The SDF isomesh batch of a texture SDF and whether it carries the shape scale, or ``None``."""
+        isomesh = self._get_sdf_isomesh(sdf_idx)
+        if isomesh is None:
+            return None, False
+        # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
+        geo_type = newton.GeoType.MESH
+        geo_scale = (1.0, 1.0, 1.0)
+        geo_hash = self._hash_geometry(int(geo_type), geo_scale, 0.0, True, isomesh)
+        # Ensure geometry exists and get mesh path
+        if geo_hash not in self._geometry_cache:
+            mesh_name = self._populate_geometry(int(geo_type), geo_scale, 0.0, True, geo_src=isomesh)
+        else:
+            mesh_name = self._geometry_cache[geo_hash]
+        # Use the geo_hash as the batch key for SDF isomesh instances
+        batch = self._sdf_isomesh_instances.get(geo_hash)
+        if batch is None:
+            shape_name = self._qualify(f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}")
+            batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+            batch.geo_type = geo_type
+            self._sdf_isomesh_instances[geo_hash] = batch
+        # Apply shape scale if not baked into SDF
+        scale_baked = (
+            bool(self._texture_sdf_host[sdf_idx]["scale_baked"]) if self._texture_sdf_host is not None else True
+        )
+        return batch, not scale_baked
 
     def _populate_sdf_isomesh_instances(self):
         """Create shape instances for SDF isomeshes (marching cubes visualization).
@@ -2506,92 +3149,89 @@ class ViewerBase(ABC):
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        tex_sdf_np = self.model._texture_sdf_data.numpy() if self.model._texture_sdf_data is not None else None
+        self._texture_sdf_host = (
+            self.model._texture_sdf_data.numpy() if self.model._texture_sdf_data is not None else None
+        )
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
+        variant_row = (
+            self.model._shape_variant_row.numpy() if self.model._has_variant_rows else np.zeros(shape_count, bool)
+        )
 
         for s in range(shape_count):
-            # skip shapes from non-visible worlds
-            if not self._should_render_world(shape_world[s]):
+            # skip shapes from non-visible worlds; variant rows follow their variant shapes
+            if not self._should_render_world(shape_world[s]) or variant_row[s]:
                 continue
 
             # Only process collision shapes with texture SDFs
-            is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
-            if not is_collision_shape:
+            if not shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES):
                 continue
-
-            isomesh = self._get_shape_isomesh(s)
-            if isomesh is None:
-                continue
-
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            scale_baked = (
-                bool(tex_sdf_np[sdf_idx]["scale_baked"]) if (tex_sdf_np is not None and sdf_idx >= 0) else True
-            )
-
-            # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
-            geo_type = newton.GeoType.MESH
-            geo_scale = (1.0, 1.0, 1.0)
-            geo_thickness = 0.0
-            geo_is_solid = True
-
-            geo_hash = self._hash_geometry(
-                int(geo_type),
-                geo_scale,
-                geo_thickness,
-                geo_is_solid,
-                isomesh,
-            )
-
-            # Ensure geometry exists and get mesh path
-            if geo_hash not in self._geometry_cache:
-                mesh_name = self._populate_geometry(
-                    int(geo_type),
-                    geo_scale,
-                    geo_thickness,
-                    geo_is_solid,
-                    geo_src=isomesh,
-                )
-            else:
-                mesh_name = self._geometry_cache[geo_hash]
-
-            # Shape options
-            flags = shape_flags[s]
-            parent = shape_body[s]
-            static = parent == -1
-
-            # Use the geo_hash as the batch key for SDF isomesh instances
-            if geo_hash not in self._sdf_isomesh_instances:
-                shape_name = self._qualify(f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}")
-                batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
-                batch.geo_type = geo_type
-                self._sdf_isomesh_instances[geo_hash] = batch
-            else:
-                batch = self._sdf_isomesh_instances[geo_hash]
-
-            xform = wp.transform_expand(shape_transform[s])
-            # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
-            if scale_baked:
-                scale = np.array([1.0, 1.0, 1.0])
-            else:
-                scale = np.asarray(shape_geo_scale[s], dtype=np.float32)
-
-            # Use distinct collision color palette (different from visual shapes)
-            color = wp.vec3(self._collision_color_map(s))
-            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
+            batch, uses_scale = self._isomesh_batch(sdf_idx, shape_body[s] == -1, int(shape_flags[s]))
+            if batch is None:
+                continue
 
             batch.add(
-                parent=parent,
-                xform=xform,
-                scale=scale,
-                color=color,
-                material=material,
+                parent=shape_body[s],
+                xform=transform_from_array(shape_transform[s]),
+                scale=np.asarray(shape_geo_scale[s], dtype=np.float32) if uses_scale else np.array([1.0, 1.0, 1.0]),
+                # Use distinct collision color palette (different from visual shapes)
+                color=wp.vec3(self._collision_color_map(s)),
+                material=wp.vec4(0.3, 0.0, 0.0, 0.0),  # roughness, metallic, checker, texture_enable
+                opacity=1.0,
                 shape_index=s,
                 world=shape_world[s],
             )
 
-        # Finalize all SDF isomesh batches
         for batch in self._sdf_isomesh_instances.values():
+            batch._freeze_populated()
+        self._select_isomesh_instances()
+
+    def _select_isomesh_instances(self) -> None:
+        """Set the instances of every SDF isomesh batch: its regular shapes plus the variant rows that
+        hold a colliding variant shape with a texture SDF."""
+        row_instances: dict[int, list[int]] = {}
+        uses_scale: dict[int, bool] = {}
+        if self.model._has_variant_rows:
+            rows = self.model._variant_row_shapes.numpy()
+            held = self.model._shape_variant_shape.numpy()
+            flags = self.model.shape_flags.numpy()
+            sdf_index = self.model._shape_sdf_index.numpy()
+            body = self.model.shape_body.numpy()
+            world = self.model.shape_world.numpy()
+            for s in rows[held[rows] >= 0].tolist():
+                if not self._should_render_world(world[s]) or not flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES):
+                    continue
+                batch, scaled = self._isomesh_batch(int(sdf_index[s]), body[s] == -1, int(flags[s]))
+                if batch is not None:
+                    row_instances.setdefault(id(batch), []).append(s)
+                    uses_scale[id(batch)] = scaled
+        if row_instances:
+            shape_body = self.model.shape_body.numpy()
+            shape_world = self.model.shape_world.numpy()
+            shape_transform = self.model.shape_transform.numpy()
+            shape_scale = self.model.shape_scale.numpy()
+        for batch in self._sdf_isomesh_instances.values():
+            if getattr(batch, "_populated", None) is None:
+                # Created for variant rows after population.
+                batch._freeze_populated()
+            arrays = dict(batch._populated)
+            shapes = row_instances.get(id(batch))
+            if shapes:
+                shapes = np.asarray(shapes, dtype=np.int32)
+                extra = {
+                    "parents": shape_body[shapes].astype(np.int32),
+                    "xforms": shape_transform[shapes],
+                    "scales": shape_scale[shapes] if uses_scale[id(batch)] else np.ones((len(shapes), 3), np.float32),
+                    "colors": np.asarray([self._collision_color_map(s) for s in shapes.tolist()], dtype=np.float32),
+                    "opacities": np.ones(len(shapes), dtype=np.float32),
+                    "materials": np.tile(np.array([0.3, 0.0, 0.0, 0.0], dtype=np.float32), (len(shapes), 1)),
+                    "worlds": shape_world[shapes].astype(np.int32),
+                    "model_shapes": shapes,
+                }
+                arrays = {name: np.concatenate((values, extra[name])) for name, values in arrays.items()}
+            for name, values in arrays.items():
+                setattr(batch, name, values)
             batch.finalize()
 
     def _log_inertia_boxes(self, state: newton.State):
@@ -2651,6 +3291,7 @@ class ViewerBase(ABC):
         gap_np: np.ndarray,
         type_np: np.ndarray,
         scale_np: np.ndarray,
+        sources: list[Any] | None = None,
     ) -> newton.Mesh | None:
         """Compute the offset isosurface mesh for a collision shape.
 
@@ -2661,6 +3302,7 @@ class ViewerBase(ABC):
             gap_np: Pre-snapshotted ``shape_gap`` host array.
             type_np: Pre-snapshotted ``shape_type`` host array.
             scale_np: Pre-snapshotted ``shape_scale`` host array.
+            sources: Current shape sources; defaults to :attr:`Model.shape_source <newton.Model.shape_source>`.
 
         Returns:
             Mesh for the offset surface, or ``None`` if unavailable.
@@ -2680,7 +3322,7 @@ class ViewerBase(ABC):
 
         geo_type = int(type_np[shape_idx])
         geo_scale = [float(v) for v in scale_np[shape_idx]]
-        geo_src = self.model.shape_source[shape_idx]
+        geo_src = (self.model.shape_source if sources is None else sources)[shape_idx]
 
         # Replicated meshes share the same SDF object via Mesh.__deepcopy__,
         # so keying on id(sdf) deduplicates across worlds.
@@ -2742,7 +3384,7 @@ class ViewerBase(ABC):
     ):
         """Compute offset meshes and extract wireframe edge data for every collision shape.
 
-        Results are written into *target* (keyed by shape index).
+        Wireframe edge data are written into *target* (keyed by shape index).
         """
         if self.model is None:
             return
@@ -2762,13 +3404,20 @@ class ViewerBase(ABC):
         scale_np = self.model.shape_scale.numpy()
         shape_count = len(shape_body)
 
+        variant_rows = self.model._shape_variant_row.numpy() if self.model._has_variant_rows else None
+        held = self.model._shape_variant_shape.numpy() if variant_rows is not None else None
+        sources = self.model._shape_current_sources() if variant_rows is not None else None
         for s in range(shape_count):
             if not self._should_render_world(shape_world[s]):
                 continue
             if not (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)):
                 continue
+            if variant_rows is not None and variant_rows[s] and held[s] < 0:
+                continue
 
-            offset_mesh = self._compute_shape_offset_mesh(s, mode, margin_np, gap_np, type_np, scale_np)
+            offset_mesh = self._compute_shape_offset_mesh(
+                s, mode, margin_np, gap_np, type_np, scale_np, sources=sources
+            )
             if offset_mesh is None:
                 continue
 
@@ -2951,14 +3600,331 @@ class ViewerBase(ABC):
             hidden=not self.show_com or self._layer_force_hidden(),
         )
 
+    def _triangle_opacities_changed(self) -> bool:
+        """Detect ``Model.tri_opacity`` mutations without downloading the full array on CUDA."""
+        current = self.model.tri_opacity
+        cached = self._triangle_opacity_cached
+        if cached is None or len(cached) != len(current):
+            return True
+        if not current.device.is_cuda:
+            return not np.array_equal(current.numpy(), cached.numpy())
+        if self._triangle_opacity_change_flag is None:
+            self._triangle_opacity_change_flag = wp.zeros(1, dtype=wp.int32, device=current.device)
+        else:
+            self._triangle_opacity_change_flag.zero_()
+        wp.launch(
+            flag_changed_floats,
+            dim=len(current),
+            inputs=[current, cached, self._triangle_opacity_change_flag],
+            device=current.device,
+            record_tape=False,
+        )
+        return bool(self._triangle_opacity_change_flag.numpy()[0])
+
+    def _triangle_colors_changed(self) -> bool:
+        """Detect ``Model.tri_color`` mutations without downloading the full array on CUDA."""
+        current = self.model.tri_color
+        cached = self._triangle_color_cached
+        if cached is None or len(cached) != len(current):
+            return True
+        if not current.device.is_cuda:
+            return not np.array_equal(current.numpy(), cached.numpy())
+        if self._triangle_color_change_flag is None:
+            self._triangle_color_change_flag = wp.zeros(1, dtype=wp.int32, device=current.device)
+        else:
+            self._triangle_color_change_flag.zero_()
+        wp.launch(
+            flag_changed_vec3s,
+            dim=len(current),
+            inputs=[current, cached, self._triangle_color_change_flag],
+            device=current.device,
+            record_tape=False,
+        )
+        return bool(self._triangle_color_change_flag.numpy()[0])
+
+    def _get_triangle_appearance_groups(
+        self,
+    ) -> tuple[
+        list[tuple[str, wp.array[wp.int32], tuple[float, float, float], float]],
+        list[tuple[str, wp.array[wp.int32], tuple[float, float, float], float]],
+    ]:
+        """Return cached triangle index groups split by display color and opacity."""
+        if self.model is None or not self.model.tri_count:
+            stale_groups = self._triangle_appearance_groups or []
+            self._triangle_appearance_groups = []
+            self._triangle_appearance_signature = None
+            self._triangle_color_cached = None
+            self._triangle_opacity_cached = None
+            return [], stale_groups
+
+        # Fast path: reuse cached groups unless an appearance array was mutated.
+        # The change checks run on device, avoiding per-frame downloads and hashes.
+        if self._triangle_appearance_groups is not None and self._triangle_appearance_signature is not None:
+            if self.model.tri_color is None:
+                color_cache_valid = self._triangle_color_cached is None
+            else:
+                color_cache_valid = self._triangle_color_cached is not None and not self._triangle_colors_changed()
+            if self.model.tri_opacity is None:
+                opacity_cache_valid = self._triangle_opacity_cached is None
+            else:
+                opacity_cache_valid = (
+                    self._triangle_opacity_cached is not None and not self._triangle_opacities_changed()
+                )
+            if color_cache_valid and opacity_cache_valid:
+                return self._triangle_appearance_groups, []
+
+        tri_count = self.model.tri_count
+        default_color = np.array(_DEFAULT_TRIANGLE_COLOR, dtype=np.float32)
+        if self.model.tri_color is None:
+            colors = np.broadcast_to(default_color, (tri_count, 3)).copy()
+        else:
+            colors = self.model.tri_color.numpy().astype(np.float32).reshape(-1, 3)
+            if len(colors) == 1:
+                colors = np.broadcast_to(colors[0], (tri_count, 3)).copy()
+            elif len(colors) != tri_count:
+                warnings.warn(
+                    f"Model.tri_color has {len(colors)} values for {tri_count} triangles; "
+                    "rendering all triangles with the default color.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                colors = np.broadcast_to(default_color, (tri_count, 3)).copy()
+            elif not np.all(np.isfinite(colors)):
+                warnings.warn(
+                    "Model.tri_color contains non-finite values; replacing them with display-safe values.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                colors = np.nan_to_num(colors, nan=0.0, posinf=1.0, neginf=0.0)
+            colors = np.clip(colors, 0.0, 1.0)
+
+        if self.model.tri_opacity is None:
+            opacities = np.ones(tri_count, dtype=np.float32)
+        else:
+            opacities = np.clip(self.model.tri_opacity.numpy().astype(np.float32).reshape(-1), 0.0, 1.0)
+            if len(opacities) == 1:
+                opacities = np.full(tri_count, float(opacities[0]), dtype=np.float32)
+            elif len(opacities) != tri_count:
+                warnings.warn(
+                    f"Model.tri_opacity has {len(opacities)} values for {tri_count} triangles; "
+                    "rendering all triangles as opaque.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                opacities = np.ones(tri_count, dtype=np.float32)
+            elif not np.all(np.isfinite(opacities)):
+                warnings.warn(
+                    "Model.tri_opacity contains non-finite values; replacing them with display-safe values.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                opacities = np.nan_to_num(opacities, nan=1.0, posinf=1.0, neginf=0.0)
+
+        unique_opacities = np.unique(opacities)
+        if len(unique_opacities) > MAX_TRIANGLE_OPACITY_GROUPS:
+            warnings.warn(
+                f"Model.tri_opacity contains {len(unique_opacities)} unique values; quantizing to at most "
+                f"{MAX_TRIANGLE_OPACITY_GROUPS} display-opacity groups.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+            opacities = (
+                np.rint(opacities * (MAX_TRIANGLE_OPACITY_GROUPS - 1)) / (MAX_TRIANGLE_OPACITY_GROUPS - 1)
+            ).astype(np.float32)
+
+        appearances = np.column_stack((colors, opacities))
+        unique_appearance_count = len(np.unique(appearances, axis=0))
+        if unique_appearance_count > MAX_TRIANGLE_APPEARANCE_GROUPS:
+            warnings.warn(
+                f"Model triangle appearance contains {unique_appearance_count} unique values; quantizing to at most "
+                f"{MAX_TRIANGLE_APPEARANCE_GROUPS} display groups.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+            active_channels = np.flatnonzero(np.ptp(appearances, axis=0) > 0.0)
+            levels = max(2, int(MAX_TRIANGLE_APPEARANCE_GROUPS ** (1.0 / len(active_channels))))
+            for channel in active_channels:
+                channel_min = float(np.min(appearances[:, channel]))
+                channel_range = float(np.max(appearances[:, channel]) - channel_min)
+                normalized = (appearances[:, channel] - channel_min) / channel_range
+                appearances[:, channel] = channel_min + (
+                    np.rint(normalized * (levels - 1)) / (levels - 1) * channel_range
+                )
+        signature = (
+            tri_count,
+            hashlib.blake2s(np.ascontiguousarray(appearances, dtype=np.float32).tobytes(), digest_size=8).hexdigest(),
+        )
+        if signature == self._triangle_appearance_signature and self._triangle_appearance_groups is not None:
+            return self._triangle_appearance_groups, []
+
+        stale_groups = self._triangle_appearance_groups or []
+        tri_indices_np = self.model.tri_indices.numpy().astype(np.int32).reshape(-1, 3)
+
+        unique_appearances, appearance_ids = np.unique(appearances, axis=0, return_inverse=True)
+        if len(unique_appearances) == 1:
+            appearance = unique_appearances[0]
+            groups = [
+                (
+                    "/model/triangles",
+                    self.model.tri_indices.flatten(),
+                    (float(appearance[0]), float(appearance[1]), float(appearance[2])),
+                    float(appearance[3]),
+                )
+            ]
+        else:
+            groups = []
+            for group_idx, appearance in enumerate(unique_appearances):
+                tri_ids = np.flatnonzero(appearance_ids == group_idx)
+                group_indices_np = tri_indices_np[tri_ids].reshape(-1)
+                digest = hashlib.blake2s(group_indices_np.tobytes(), digest_size=4).hexdigest()
+                group_indices = wp.array(group_indices_np, dtype=wp.int32, device=self.device)
+                color = (float(appearance[0]), float(appearance[1]), float(appearance[2]))
+                groups.append(
+                    (f"/model/triangles/appearance_{group_idx}_{digest}", group_indices, color, float(appearance[3]))
+                )
+
+        self._triangle_appearance_groups = groups
+        self._triangle_appearance_signature = signature
+        self._triangle_color_cached = wp.clone(self.model.tri_color) if self.model.tri_color is not None else None
+        self._triangle_opacity_cached = wp.clone(self.model.tri_opacity) if self.model.tri_opacity is not None else None
+        return groups, stale_groups
+
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
+            groups, stale_groups = self._get_triangle_appearance_groups()
+            visible_paths = {name for name, _, _, _ in groups}
             points = self._apply_layer_transform_to_points(state.particle_q)
-            self.log_mesh(
-                self._qualify("/model/triangles"),
+            hidden = not self.show_triangles or self._layer_force_hidden()
+
+            for name, indices, color, opacity in groups:
+                self.log_mesh(
+                    self._qualify(name),
+                    points,
+                    indices,
+                    hidden=hidden,
+                    backface_culling=False,
+                    color=color,
+                    opacity=opacity,
+                )
+
+            for name, indices, color, opacity in stale_groups:
+                if name not in visible_paths:
+                    self.log_mesh(
+                        self._qualify(name),
+                        points,
+                        indices,
+                        hidden=True,
+                        backface_culling=False,
+                        color=color,
+                        opacity=opacity,
+                    )
+
+    def _deformable_visual_texture(self, texture):
+        """Decode an immutable path texture once per model layer; image arrays pass through."""
+        if not isinstance(texture, str):
+            return texture
+        if texture not in self._deformable_visual_textures:
+            from .utils import prepare_viewer_texture  # noqa: PLC0415
+
+            self._deformable_visual_textures[texture] = prepare_viewer_texture(texture)
+        return self._deformable_visual_textures[texture]
+
+    def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
+        """Send evaluated geometry to the selected backend."""
+        self.log_mesh(name, points, indices, **kwargs)
+
+    def _log_deformable_visual_meshes(self, state: newton.State):
+        """Skin and draw the visual meshes embedded in deformables.
+
+        Skinning and normal recomputation run on-device through
+        :meth:`newton.geometry.DeformableVisuals.update`; backends receive the
+        deformed geometry through the visual-mesh hook.
+        Skinned meshes draw in
+        addition to the raw simulation triangles; toggle ``show_triangles`` and
+        ``show_deformable_visual_meshes`` independently from regular visual
+        shapes.
+        """
+        meshes = self.model.deformable_visual_meshes
+        if not meshes:
+            return
+        show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
+        visible = show and any(self._should_render_world(mesh.world) for mesh in meshes)
+        if not self._supports_deformable_visual_meshes:
+            # Rendering backends without skin support reject the option instead of
+            # silently showing nothing; non-rendering backends override this hook.
+            if visible:
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not draw deformable visual meshes yet; set "
+                    "show_deformable_visual_meshes to False to display the simulation geometry."
+                )
+            return
+
+        from .kernels import apply_world_offset_and_layer_transform_normals  # noqa: PLC0415
+
+        visuals = self._deformable_visuals
+        if visible:
+            if visuals is None:
+                visuals = newton.geometry.DeformableVisuals(self.model)
+                self._deformable_visuals = visuals
+            if not self._deformable_visuals_explicit:
+                visuals.update(state)
+            visuals.wait()
+
+        for rm in meshes:
+            name = self._deformable_visual_mesh_names.get(rm.index)
+            if name is None:
+                # The invariant index keeps replicated worlds' duplicate labels distinct, and the
+                # name is fixed at first use so a later label edit does not strand a stale object.
+                # Prefix the component with "mesh" so USD-backed viewers do not receive prim
+                # names that start with a digit.
+                suffix = f"_{_viewer_path_component(rm.label)}" if rm.label else ""
+                name = self._qualify(f"/model/deformable_visual_meshes/mesh_{rm.index}{suffix}")
+                self._deformable_visual_mesh_names[rm.index] = name
+            if not (show and self._should_render_world(rm.world)):
+                # Keep valid geometry registered so visibility can toggle back on.
+                self._log_deformable_visual_mesh(
+                    name,
+                    rm.rest_vertices,
+                    rm.indices,
+                    uvs=rm.uvs,
+                    texture=rm.texture,
+                    hidden=True,
+                    backface_culling=False,
+                )
+                continue
+
+            n = rm.vertex_count
+            scratch = self._deformable_visual_mesh_scratch.get(rm.index)
+            if scratch is None or len(scratch[0]) != n:
+                scratch = (
+                    wp.empty(n, dtype=wp.vec3, device=self.device),
+                    wp.zeros(n, dtype=wp.vec3, device=self.device),
+                )
+                self._deformable_visual_mesh_scratch[rm.index] = scratch
+            points, normals = scratch
+
+            # Without world offsets the kernel receives a null array and skips the add.
+            wp.launch(
+                apply_world_offset_and_layer_transform_normals,
+                dim=n,
+                inputs=[
+                    visuals.get_points(rm),
+                    visuals.get_normals(rm),
+                    self.world_offsets,
+                    rm.world,
+                    self.layer.xform,
+                ],
+                outputs=[points, normals],
+                device=self.device,
+            )
+            self._log_deformable_visual_mesh(
+                name,
                 points,
-                self.model.tri_indices.flatten(),
-                hidden=not self.show_triangles or self._layer_force_hidden(),
+                rm.indices,
+                normals=normals,
+                uvs=rm.uvs,
+                texture=rm.texture,
+                hidden=False,
                 backface_culling=False,
             )
 

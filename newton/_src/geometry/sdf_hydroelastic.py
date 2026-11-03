@@ -39,8 +39,10 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
+from ..sim.shape_contact_pairs import _shape_contact_pairs_for_mask
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
@@ -66,13 +68,15 @@ from .sdf_mc import (
 )
 from .sdf_texture import (
     TextureSDFData,
+    _texture_read_voxel_corners_paired,
+    _texture_read_voxel_corners_scalar,
     _texture_sample_sdf_at_voxel_paired,
     _texture_sample_sdf_at_voxel_scalar,
     _texture_sample_sdf_paired,
     _texture_sample_sdf_scalar,
     _texture_sample_sdf_zfiltered,
 )
-from .utils import scan_with_total
+from .utils import _scan_scratch_size, scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
 PRE_PRUNE_MAX_PENETRATING = 2
@@ -535,7 +539,7 @@ class HydroelasticSDF:
             else:
                 warnings.warn(
                     "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
-                    DeprecationWarning,
+                    NewtonDeprecationWarning,
                     stacklevel=2,
                 )
             # NaN fails both bounds (NaN comparisons return False) and lands here too.
@@ -634,8 +638,6 @@ class HydroelasticSDF:
         self.input_sizes = (self.max_num_blocks_broad, *self.iso_max_dims[:3])
 
         with wp.ScopedDevice(device):
-            self.num_shape_pairs_array = wp.full((1,), self.max_num_shape_pairs, dtype=wp.int32)
-
             # Allocate buffers for octree traversal (broadphase + 4 refinement levels)
             self.iso_buffer_counts = [wp.zeros((1,), dtype=wp.int32) for _ in range(5)]
             # Scratch buffers are per-level to avoid scanning the worst-case
@@ -643,6 +645,12 @@ class HydroelasticSDF:
             self.iso_buffer_prefix_scratch = [wp.zeros(level_input, dtype=wp.int32) for level_input in self.input_sizes]
             self.iso_buffer_num_scratch = [wp.zeros(level_input, dtype=wp.int32) for level_input in self.input_sizes]
             self.iso_subblock_idx_scratch = [wp.zeros(level_input, dtype=wp.uint8) for level_input in self.input_sizes]
+            # Chunk scratch for the count-aware prefix scans, so each scan only
+            # touches the active records instead of the full worst-case buffer.
+            self.iso_scan_scratch = [
+                wp.zeros(_scan_scratch_size(level_input, device), dtype=wp.int32) for level_input in self.input_sizes
+            ]
+            self.broad_scan_scratch = wp.zeros(_scan_scratch_size(self.max_num_shape_pairs, device), dtype=wp.int32)
             self.iso_buffer_records = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec3ui)] + [
                 wp.empty((self.iso_max_dims[i],), dtype=wp.vec3ui) for i in range(4)
             ]
@@ -802,6 +810,8 @@ class HydroelasticSDF:
         config: HydroelasticSDF.Config | None = None,
         writer_func: Any = None,
         deterministic: bool = False,
+        *,
+        shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
     ) -> HydroelasticSDF | None:
         """Create HydroelasticSDF from a model.
 
@@ -810,6 +820,7 @@ class HydroelasticSDF:
             config: Optional configuration for hydroelastic collision handling.
             writer_func: Optional writer function for decoding contacts.
             deterministic: Whether to enable deterministic hydroelastic kernels.
+            shape_pairs_filtered: Explicit candidate pairs, when provided by the pipeline.
 
         Returns:
             HydroelasticSDF instance, or None if no hydroelastic shape pairs exist.
@@ -818,13 +829,11 @@ class HydroelasticSDF:
 
         # Check if any shapes have hydroelastic flag.
         is_hydroelastic = (shape_flags & int(ShapeFlags.HYDROELASTIC)) != 0
-        if not is_hydroelastic.any():
+        if np.count_nonzero(is_hydroelastic) < 2:
             return None
 
-        shape_pairs = model.shape_contact_pairs.numpy().reshape(-1, 2)
-        num_hydroelastic_pairs = int(
-            np.count_nonzero(is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]])
-        )
+        hydroelastic_pairs = _shape_contact_pairs_for_mask(model, is_hydroelastic, shape_pairs=shape_pairs_filtered)
+        num_hydroelastic_pairs = len(hydroelastic_pairs)
 
         if num_hydroelastic_pairs == 0:
             return None
@@ -862,10 +871,13 @@ class HydroelasticSDF:
         # walks only its finer SDF and samples the other SDF at those points.
         total_num_tiles = 0
         total_num_active_tiles = 0
-        hydroelastic_pairs = shape_pairs[is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]]]
+        shape_types = model.shape_type.numpy()
         for shape_a, shape_b in hydroelastic_pairs:
             sdf_idx_a = int(shape_sdf_index[shape_a])
             sdf_idx_b = int(shape_sdf_index[shape_b])
+            # NarrowPhase sorts by type before routing pairs to hydroelastic.
+            if shape_types[shape_a] > shape_types[shape_b]:
+                sdf_idx_a, sdf_idx_b = sdf_idx_b, sdf_idx_a
             # Match broadphase_collision_pairs_count(): equal-resolution pairs
             # retain shape B as the traversal grid.
             sdf_idx = sdf_idx_b
@@ -1022,7 +1034,7 @@ class HydroelasticSDF:
                     "Hydroelastic reduction dropped contacts due to hashtable insert "
                     f"failures ({hashtable_failures}). Increase rigid_contact_max "
                     "and/or HydroelasticSDF.Config.contact_reduction_hashtable_size_factor.",
-                    RuntimeWarning,
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1054,8 +1066,9 @@ class HydroelasticSDF:
         scan_with_total(
             self.num_blocks_per_pair,
             self.block_start_prefix,
-            self.num_shape_pairs_array,
+            shape_pairs_sdf_sdf_count,
             self.block_broad_collide_count,
+            scratch=self.broad_scan_scratch,
         )
 
         wp.launch(
@@ -1151,6 +1164,7 @@ class HydroelasticSDF:
                 self.iso_buffer_prefix_scratch[i],
                 self.iso_buffer_counts[i],
                 self.iso_buffer_counts[i + 1],
+                scratch=self.iso_scan_scratch[i],
             )
 
             wp.launch(
@@ -1464,7 +1478,7 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any, integer_center: boo
     sample_sdf = _texture_sample_sdf_zfiltered if paired_samples else _texture_sample_sdf_scalar
     sample_sdf_at_voxel = _texture_sample_sdf_at_voxel_paired if paired_samples else _texture_sample_sdf_at_voxel_scalar
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def count_iso_voxels_block(
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
@@ -1582,7 +1596,7 @@ def create_count_iso_voxel_children_kernel(pressure_func: Any, integer_center: b
     sample_sdf = _texture_sample_sdf_zfiltered if paired_samples else _texture_sample_sdf_scalar
     sample_sdf_at_voxel = _texture_sample_sdf_at_voxel_paired if paired_samples else _texture_sample_sdf_at_voxel_scalar
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def count_iso_voxel_children(
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
@@ -1713,7 +1727,7 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
         The specialized voxel-iteration function.
     """
     sample_sdf = _texture_sample_sdf_paired if paired_samples else _texture_sample_sdf_scalar
-    sample_sdf_at_voxel = _texture_sample_sdf_at_voxel_paired if paired_samples else _texture_sample_sdf_at_voxel_scalar
+    read_voxel_corners = _texture_read_voxel_corners_paired if paired_samples else _texture_read_voxel_corners_scalar
 
     @wp.func
     def mc_iterate_voxel_vertices(
@@ -1734,6 +1748,7 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
         """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
         cube_idx = wp.uint8(0)
         any_verts_inside_gap = False
+        all_valid = True
         corner_vals = vec8f()
         corner_sdf_self = vec8f()
         corner_sdf_other = vec8f()
@@ -1747,12 +1762,11 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
         point_b_step_x = wp.transform_vector(X_a_to_b, wp.vec3(sdf_data.voxel_size[0], 0.0, 0.0))
         point_b_step_y = wp.transform_vector(X_a_to_b, wp.vec3(0.0, sdf_data.voxel_size[1], 0.0))
         point_b_step_z = wp.transform_vector(X_a_to_b, wp.vec3(0.0, 0.0, sdf_data.voxel_size[2]))
+        # Batch interior reads while preserving the per-vertex rule at block boundaries.
+        corner_vals_self = wp.static(read_voxel_corners)(sdf_data, x_id, y_id, z_id)
 
         for i in range(8):
             corner_offset = _mc_corner_offset(i)
-            x = x_id + corner_offset.x
-            y = y_id + corner_offset.y
-            z = z_id + corner_offset.z
 
             point_b = (
                 point_b_base
@@ -1760,12 +1774,13 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
                 + float(corner_offset.y) * point_b_step_y
                 + float(corner_offset.z) * point_b_step_z
             )
-            valA = wp.static(sample_sdf_at_voxel)(sdf_data, x, y, z)
+            valA = corner_vals_self[i]
             valB = wp.static(sample_sdf)(sdf_other_data, point_b)
 
-            is_valid = not (wp.isnan(valA) or wp.isnan(valB))
-            if not is_valid:
-                return wp.uint8(0), corner_vals, corner_sdf_self, corner_sdf_other, False, False
+            # Defer the NaN exit until after the loop so the eight corner
+            # samples are not separated by control flow.
+            if wp.isnan(valA) or wp.isnan(valB):
+                all_valid = False
 
             effective_sdf_self = valA - margin_self
             effective_sdf_other = valB - margin_other
@@ -1793,6 +1808,8 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
             if effective_sdf_self + effective_sdf_other <= gap_sum:
                 any_verts_inside_gap = True
 
+        if not all_valid:
+            return wp.uint8(0), corner_vals, corner_sdf_self, corner_sdf_other, False, False
         return cube_idx, corner_vals, corner_sdf_self, corner_sdf_other, any_verts_inside_gap, True
 
     return mc_iterate_voxel_vertices
@@ -1822,7 +1839,7 @@ def get_decode_contacts_kernel(
         A warp kernel that can be launched to decode all contacts.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def decode_contacts_kernel(
         grid_size: int,
         contact_count: wp.array[int],
@@ -1983,7 +2000,7 @@ def get_generate_contacts_kernel(
     edge_clamp_min = float(mc_edge_clamp_min)
     edge_clamp_max = float(1.0 - mc_edge_clamp_min)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def generate_contacts_kernel(
         grid_size: int,
         iso_voxel_count: wp.array[wp.int32],

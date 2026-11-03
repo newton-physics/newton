@@ -1,15 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot ANYmal C Walk
-#
-# Shows how to simulate ANYmal C using SolverMuJoCo and control it with a
-# PhysX-trained policy exported to ONNX and run with Warp-NN.
-#
-# Command: python -m newton.examples robot_anymal_c_walk
-#
-###########################################################################
+"""Example Robot ANYmal C Walk
+
+Shows how to simulate ANYmal C using SolverMuJoCo and control it with a
+PhysX-trained policy exported to ONNX and run with Warp-NN.
+The default scene uses a flat ground plane.
+
+Success criteria:
+- An ANYmal C robot walks forward on a flat ground plane.
+
+Runs:
+- `python -m newton.examples robot_anymal_c_walk`
+"""
 
 import numpy as np
 import warp as wp
@@ -84,7 +87,6 @@ def _compute_obs_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -109,6 +111,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
+            joint_damping_mode="passive",
         )
 
         builder.add_ground_plane()
@@ -164,7 +167,7 @@ class Example:
 
         self.follow_cam = True
 
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
+        if hasattr(self.viewer, "register_ui_callback"):
 
             def toggle_follow_cam(imgui):
                 changed, follow_cam = imgui.checkbox("Follow Camera", self.follow_cam)
@@ -179,6 +182,11 @@ class Example:
 
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+            base_pos = wp.vec3(*self.state_0.joint_q.numpy()[:3])
+            self.viewer.set_camera(pos=base_pos + wp.vec3(10.0, 0.0, 2.0))
+            self.viewer.camera.look_at(base_pos)
+
         if use_mujoco_contacts:
             self.contacts = None
         else:
@@ -187,8 +195,8 @@ class Example:
 
         policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
         self.policy = OnnxRuntime(policy_path, device=self.device)
-        self._policy_input_name = self.policy.input_names[0]
-        self._policy_output_name = self.policy.output_names[0]
+        self._policy_input_name = self.policy.inputs[0].name
+        self._policy_output_name = self.policy.outputs[0].name
         validate_policy_io_shapes(
             policy_path,
             self._policy_input_name,
@@ -304,9 +312,11 @@ class Example:
 
     def render(self):
         if self.follow_cam:
-            self.viewer.set_camera(
-                pos=wp.vec3(*self.state_0.joint_q.numpy()[:3]) + wp.vec3(10.0, 0.0, 2.0), pitch=0.0, yaw=-180.0
-            )
+            base_pos = self.state_0.joint_q.numpy()[:3]
+            if isinstance(self.viewer, newton.viewer.ViewerGL):
+                self.viewer.camera.follow(base_pos)
+            else:
+                self.viewer.set_camera(pos=wp.vec3(*base_pos) + wp.vec3(10.0, 0.0, 2.0), pitch=0.0, yaw=-180.0)
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)

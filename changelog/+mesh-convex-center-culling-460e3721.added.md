@@ -1,0 +1,1 @@
+Add optional `shape_interior_point`, `mesh_boundary_flags`, and `shape_mesh_boundary_start` arguments to `NarrowPhase.launch()` and `NarrowPhase.launch_custom_write()` for precomputed convex interior points and open mesh boundaries.
