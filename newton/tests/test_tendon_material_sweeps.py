@@ -28,7 +28,7 @@ def solve_material_case(
     segment_lengths=None,
     capture=True,
 ):
-    """Hold geometry fixed and exercise the production material-transfer kernel."""
+    """Check material projection and stored-force precision while holding geometry fixed."""
     count = len(tensions)
     length = (
         np.ones(count, dtype=np.float32) if segment_lengths is None else np.asarray(segment_lengths, dtype=np.float32)
@@ -115,7 +115,14 @@ def solve_material_case(
         np.testing.assert_array_equal(rest_gpu.numpy(), eager_rest)
     stretch_np = stretch.numpy()
     result = np.maximum(stretch_np / compliance + damping.numpy(), 0.0)
-    return result, rest_gpu.numpy(), rest, int(sweep_count.numpy()[0])
+    stored_rest = rest_gpu.numpy()
+    stored_force = np.maximum((length - stored_rest) / compliance + damping.numpy(), 0.0)
+    # Cover writeback and the production len-rest force evaluation, not just
+    # scratch stretch. Allow length-scale roundoff, including a clamped rest floor.
+    force_resolution = (np.abs(np.spacing(length)) + np.abs(np.spacing(stored_rest))) / compliance
+    force_resolution += 2.0 * np.abs(np.spacing(result))
+    np.testing.assert_array_less(np.abs(stored_force - result), force_resolution)
+    return result, stored_rest, rest, int(sweep_count.numpy()[0])
 
 
 def test_adaptive_sweeps_exhausted_span(test, device):
@@ -269,6 +276,24 @@ def test_adaptive_sweeps_preserve_small_corrections(test, device):
                 test.assertLessEqual(error, 1.0e-6 + 1.0e-6 * max(left, right))
             test.assertLess(count, 256)
             np.testing.assert_allclose(rest.sum(), initial_rest.sum(), atol=3.0e-7, rtol=0)
+            stored_tension = np.maximum((np.float32(1.0) - rest) / np.float32(1.0e-8), 0.0)
+            force_resolution = 0.5 * np.abs(np.spacing(rest)) / np.float32(1.0e-8)
+            force_resolution += 2.0 * np.abs(np.spacing(tension))
+            np.testing.assert_array_less(np.abs(stored_tension - tension), force_resolution)
+            for i, rho in enumerate(ratios):
+                left, right = stored_tension[i : i + 2]
+                error = max(left - rho * right, right - rho * left, 0.0)
+                rounding = max(
+                    force_resolution[i] + rho * force_resolution[i + 1],
+                    force_resolution[i + 1] + rho * force_resolution[i],
+                )
+                test.assertLessEqual(error, 1.0e-6 + 1.0e-6 * max(tension[i : i + 2]) + rounding)
+            # Spending the full sweep budget cannot recover precision lost on writeback.
+            _, full_rest, _, full_count = solve_material_case(
+                device, initial, ratios, tol=0.0, segment_compliance=1.0e-8, capture=False
+            )
+            test.assertEqual(full_count, 256)
+            np.testing.assert_array_equal(rest, full_rest)
 
 
 def test_adaptive_sweeps_stop_at_satisfied_projection(test, device):

@@ -184,9 +184,10 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
                 positional solve. Defaults to ``False``.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per solver iteration.
-            tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
+            tendon_settle_tol: Relative projected capstan-force residual tolerance [dimensionless].
+                Checked before float32 rest-length writeback; stored forces may differ by rounding.
                 Zero disables early-out; must be finite and nonnegative.
-            tendon_settle_atol: Absolute final capstan-force residual tolerance [N].
+            tendon_settle_atol: Absolute projected capstan-force residual tolerance [N].
                 Combined with the relative tolerance; must be finite and nonnegative.
                 Ignored when ``tendon_settle_tol`` is zero.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.

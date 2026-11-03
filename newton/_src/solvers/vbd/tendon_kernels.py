@@ -223,8 +223,9 @@ def _rolling_spin_axis_component(
         return wp.vec3(0.0)
 
     spin_scale = float(0.0)
-    # The two local contact radii rotate together during a body update, so the
-    # cached cone angle stays valid until the route is retangented.
+    # Contact points stay fixed in the roller's local frame across all colors,
+    # so their angle stays valid for this frozen route. Retangent next iteration
+    # and at the accepted pose; forces below still use current body trial poses.
     cap_ratio = tendon_guide_cap_ratio[guide]
     if cap_ratio > 1.0:
         # The caller already evaluated this span at the same trial poses.

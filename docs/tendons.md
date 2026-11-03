@@ -127,9 +127,9 @@ Both tendon-capable solvers expose these controls:
 - `tendon_max_sweeps`: maximum capstan material-relaxation sweeps per solver
   iteration (default `256`). It accepts positive 32-bit integers; long routes
   may require a larger budget.
-- `tendon_settle_tol`: relative final capstan-force residual tolerance for
+- `tendon_settle_tol`: relative projected capstan-force residual tolerance for
   stopping sweeps early. Zero disables early-out, including the absolute tolerance.
-- `tendon_settle_atol`: absolute final capstan-force residual tolerance in
+- `tendon_settle_atol`: absolute projected capstan-force residual tolerance in
   newtons (default `1.0e-6`). Each guide must satisfy
   `error <= atol + tol * max(T_left, T_right)`. Slipping guides must reach
   the appropriate friction boundary; sticking guides must stay inside it.
@@ -137,6 +137,14 @@ Both tendon-capable solvers expose these controls:
   a depleted span cannot supply more material, but it can receive material again.
 - `tendon_activation_tol`: radius-relative activation gap for dynamic
   rollers. The default is `2.0e-3`.
+
+The sweep tolerances apply to the projected stretch before writing rest lengths
+back to float32 storage. Forces recomputed from those rest lengths can differ
+by roughly half a rest-length ULP (one representable float32 increment) divided
+by compliance, plus arithmetic rounding. For stiff spans this can exceed the
+requested tolerance; more material sweeps cannot recover that lost precision.
+Check stored segment tensions when assessing force accuracy, not just the
+material iteration count. Direct mode has the same float32 history limitation.
 
 XPBD solves tendon stretch and rolling slip as constraint rows. VBD evaluates
 the same routed material state as body force and positive-semidefinite local
@@ -158,6 +166,14 @@ Rolling slip bounds the accumulated spin reaction and applies its change,
 including retraction when tension falls. As with other parallel XPBD
 constraints, relaxation may need adjustment for strongly coupled routes.
 
+VBD holds the roller-local tangent points and their capstan ratios fixed during
+each body-color sweep, while evaluating span forces at the current trial poses.
+It refreshes the route before the next iteration and at the accepted final pose.
+Both solvers finish with a material/diagnostic refresh, not another body solve.
+At finite body-iteration counts, the applied body reactions can therefore differ
+from those implied by the refreshed tensions. Material convergence does not
+guarantee convergence of the coupled body and cable state.
+
 ### Direct material projection (experimental)
 
 Both solvers accept `tendon_material_direct=True` to replace material sweeps
@@ -172,6 +188,10 @@ effective compliance floor. The mode does not support differentiation or VBD's
 external rigid-body integration. Reconstruct the solver to change modes;
 `tendon_max_sweeps`, `tendon_settle_tol`, and `tendon_settle_atol` do not control
 the direct solve.
+
+An unresolved guide connection between two active spans is rejected rather than
+treated as two independent components. In particular, a zero or very short span
+at a pinhole can leave its routing direction undefined.
 
 Call `solver.check_tendon_material(state)` after stepping or replaying a CUDA
 graph, outside capture and before using that trajectory's results. This check

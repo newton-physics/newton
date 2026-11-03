@@ -87,6 +87,8 @@ def _make_tendon_vbd_solver(test, model, **overrides):
 @wp.kernel
 def _evaluate_roller_spin(
     poses: wp.array[wp.transform],
+    previous_poses: wp.array[wp.transform],
+    tensions: wp.array[float],
     guide_body: wp.array[int],
     guide_type: wp.array[int],
     offsets: wp.array[wp.vec3],
@@ -105,11 +107,10 @@ def _evaluate_roller_spin(
     result: wp.array[wp.vec3],
 ):
     seg = wp.tid()
-    tension = wp.max((1.0 - rest[seg]) / compliance[seg], 0.0)
     result[seg] = _rolling_spin_axis_component(
         1.0 / 60.0,
         poses,
-        poses,
+        previous_poses,
         offsets,
         guide_body,
         guide_type,
@@ -128,7 +129,7 @@ def _evaluate_roller_spin(
         guide_r,
         1,
         seg,
-        tension,
+        tensions[seg],
         wp.vec3(0.5, 1.0, 0.0),
         wp.vec3(1.0, 0.0, 0.0),
     )
@@ -136,16 +137,29 @@ def _evaluate_roller_spin(
 
 def test_vbd_spin_reaction_matches_capstan_projection(test, device):
     """Transmit the full sticking moment and limit only an out-of-cone trial."""
-    for rho, tensions in ((1.0, [4, 3]), (2.0, [4, 3]), (2.0, [9, 1]), (2.0, [1, 9]), (2.0, [9, 0])):
-        with test.subTest(rho=rho, tensions=tensions):
-            rest = 1.0 - 0.01 * np.array(tensions, dtype=np.float32)
+    cases = [
+        (rho, material, [0, 0], [0, 0])
+        for rho, material in ((1.0, [4, 3]), (2.0, [4, 3]), (2.0, [9, 1]), (2.0, [1, 9]), (2.0, [9, 0]))
+    ]
+    # Neighbor damping changes whether the trial sticks or slips, in either direction.
+    cases.extend([(2.0, [9, 1], [0, 4], [0, 1]), (2.0, [1, 9], [4, 0], [1, 0]), (2.0, [9, 5], [0, 4], [0, -1])])
+    for rho, material, damping, length_rates in cases:
+        with test.subTest(rho=rho, material=material, damping=damping, length_rates=length_rates):
+            rest = 1.0 - 0.01 * np.array(material, dtype=np.float32)
+            tensions = np.maximum(np.array(material) + np.array(damping) * length_rates, 0.0)
+            previous_poses = np.array([wp.transform_identity()] * 3, dtype=np.float32)
+            previous_poses[0, 0] = length_rates[0] / 60.0
+            previous_poses[2, 1] = length_rates[1] / 60.0
+            guide_bodies = [0, 1, 2] if any(damping) else [-1, 1, -1]
             output = wp.zeros(2, dtype=wp.vec3, device=device)
             wp.launch(
                 _evaluate_roller_spin,
                 dim=2,
                 inputs=[
                     wp.array([wp.transform_identity()] * 3, dtype=wp.transform, device=device),
-                    wp.array([-1, 1, -1], dtype=int, device=device),
+                    wp.array(previous_poses, dtype=wp.transform, device=device),
+                    wp.array(tensions, dtype=float, device=device),
+                    wp.array(guide_bodies, dtype=int, device=device),
                     wp.array(
                         [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
                         dtype=int,
@@ -160,7 +174,7 @@ def test_vbd_spin_reaction_matches_capstan_projection(test, device):
                     wp.array([[-0.5, 1, 0], [1.5, 0, 0]], dtype=wp.vec3, device=device),
                     wp.array([[0.5, 1, 0], [1.5, -1, 0]], dtype=wp.vec3, device=device),
                     wp.full(2, 0.01, device=device),
-                    wp.zeros(2, device=device),
+                    wp.array(damping, dtype=float, device=device),
                     wp.ones(2, dtype=int, device=device),
                     wp.array([0, 1], dtype=int, device=device),
                     wp.array([1, 2], dtype=int, device=device),
