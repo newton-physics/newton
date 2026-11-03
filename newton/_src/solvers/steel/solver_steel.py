@@ -2983,8 +2983,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         (kinematic flags) and inertial changes request a mass-matrix refresh of every
         articulation on the next step, independent of ``update_mass_matrix_interval``. Body
         flags (kinematic membership), armature, joint damping (joint DOF or DOF force changes)
-        and shape friction and restitution coefficients are re-read. Other model data, such
-        as gravity, limits and shape transforms, is read every step. A kinematic free
+        and shape friction and restitution coefficients are re-read. Shape type and source
+        changes, as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes
+        device contact torsion supports. Other model data, such as gravity, limits and shape
+        transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
@@ -3060,6 +3062,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._mass_update_requested.fill_(1)
         if self._friction_anchors_enabled and flags & ModelFlags.SHAPE_PROPERTIES:
             self._friction_patches.update_geometry(self.model)
+        if self._device_torsion is not None and flags & ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            self._device_torsion.update_shape_types(self.model)
         if (
             self._sparse_mass_matrix_size is not None
             and flags & ModelFlags.SHAPE_PROPERTIES

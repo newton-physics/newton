@@ -746,6 +746,16 @@ def _jacobians(
     jacobian[group, row, dof] = value
 
 
+@wp.kernel
+def _mark_supported_types(shape_type: wp.array[int], supported_types: wp.array[int], supported: wp.array[int]):
+    shape = wp.tid()
+    flag = int(0)
+    for k in range(supported_types.shape[0]):
+        if shape_type[shape] == supported_types[k]:
+            flag = 1
+    supported[shape] = flag
+
+
 class DeviceTorsionPreparation:
     """Own fixed-capacity preparation buffers and explicit error readback."""
 
@@ -797,9 +807,9 @@ class DeviceTorsionPreparation:
         w.patch_indices = wp.empty(2 * self.capacity, dtype=int, device=device)
         w.rejected = wp.empty(self.capacity, dtype=int, device=device)
         w.spin_row.fill_(-1)
-        self.supported = wp.array(
-            np.isin(solver.model.shape_type.numpy(), _SUPPORTED_TYPES).astype(np.int32), dtype=int, device=device
-        )
+        self._supported_types = wp.array([int(t) for t in _SUPPORTED_TYPES], dtype=int, device=device)
+        self.supported = wp.empty(solver.model.shape_count, dtype=int, device=device)
+        self.update_shape_types(solver.model)
         self._dummy_stiffness = wp.zeros(1, dtype=float, device=device)
         self._dummy_owner = wp.full(1, -1, dtype=int, device=device)
         self._dummy_mf_count = wp.zeros(solver._world_count, dtype=int, device=device)
@@ -809,6 +819,16 @@ class DeviceTorsionPreparation:
         self._dummy_head = wp.full(1, -1, dtype=int, device=device)
         self._saved_state = None
         self._saved_names = ()
+
+    def update_shape_types(self, model):
+        """Mark the shapes whose current type supports torsion, on the device, so it also works in CUDA graphs."""
+        wp.launch(
+            _mark_supported_types,
+            dim=model.shape_count,
+            inputs=[model.shape_type, self._supported_types],
+            outputs=[self.supported],
+            device=model.device,
+        )
 
     def allocate_snapshots(self, model):
         """Allocate the rollback snapshots from the model's counts, so capture needs no eager warm-up."""
