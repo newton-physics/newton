@@ -26,6 +26,18 @@ class TestDocumentationInfo(unittest.TestCase):
             [sys.executable, "-m", "newton.docs", "--path"], capture_output=True, text=True, check=True
         )
         self.assertEqual(Path(result.stdout.strip()), root)
+        if mode == "bundled snapshot":
+            module_help = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import newton; newton.info(newton.solvers.experimental.coupled)",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertIn("newton_solvers_experimental_coupled.md", module_help.stdout)
 
     def test_object_and_symbol_help(self):
         """Describe actual objects and resolve public names without simulation."""
@@ -44,11 +56,22 @@ class TestDocumentationInfo(unittest.TestCase):
 
     def test_qualified_members_and_aliases(self):
         """Resolve members and constants without choosing an arbitrary alias."""
-        for name in ("newton.ModelBuilder.finalize", "ModelBuilder.finalize", "__version__"):
+        for name in (
+            "newton.ModelBuilder.finalize",
+            "ModelBuilder.finalize",
+            "__version__",
+            "newton.solvers.experimental.coupled.SolverCoupled",
+            "SolverCoupled",
+            "add_actuator_dcmotor",
+        ):
             with self.subTest(name=name):
                 output = StringIO()
                 newton.info(name, output=output)
                 self.assertTrue(output.getvalue())
+        with self.assertRaisesRegex(ValueError, "Ambiguous documentation name") as ambiguous:
+            newton.info("add_cloth_grid", output=StringIO())
+        self.assertIn("newton.ModelBuilder.add_cloth_grid", str(ambiguous.exception))
+        self.assertIn("newton.solvers.style3d.add_cloth_grid", str(ambiguous.exception))
         output = StringIO()
         method = newton.selection.DeformableVolumeView.set_mask_from_indices
         newton.info(method, output=output)

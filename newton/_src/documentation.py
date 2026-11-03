@@ -5,7 +5,6 @@
 
 import inspect
 import json
-import pkgutil
 import re
 import sys
 from pathlib import Path
@@ -42,9 +41,8 @@ def _identity(value: object) -> str | None:
 
 
 def _matching_names(query: str, names) -> list[str]:
-    for candidate in (query, f"newton.{query}"):
-        if candidate in names:
-            return [candidate]
+    if query in names:
+        return [query]
     return sorted(name for name in names if name.endswith(f".{query}"))
 
 
@@ -58,41 +56,47 @@ def _resolve_name(query: str, names) -> str:
 
 
 def _source_lookup(query: str) -> tuple[str, object]:
-    """Resolve public declarations and members without loading unrelated backends."""
+    """Resolve public declarations and members without starting a simulation."""
     import newton  # noqa: PLC0415
 
-    modules = [newton, *(vars(newton)[name] for name in newton.__all__ if inspect.ismodule(vars(newton).get(name)))]
-    names = {f"{module.__name__}.{name}" for module in modules for name in getattr(module, "__all__", ())}
-    if _matching_names(query, names):
-        name = _resolve_name(query, names)
-        return name, pkgutil.resolve_name(name)
-    candidates = {}
-    for name in names:
+    modules = [("newton", newton)]
+    seen = set()
+    names = {}
+    for prefix, module in modules:
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        for exported in getattr(module, "__all__", ()):
+            value = getattr(module, exported)
+            name = f"{prefix}.{exported}"
+            names[name] = value
+            if inspect.ismodule(value):
+                modules.append((name, value))
+    candidates = {name: names[name] for name in _matching_names(query, names)}
+    for name, value in names.items():
         for alias in (name, name.removeprefix("newton."), name.rsplit(".", 1)[-1]):
             if not query.startswith(alias + "."):
                 continue
             suffix = query[len(alias) + 1 :]
             if any(part.startswith("_") and part != "__init__" for part in suffix.split(".")):
                 continue
-            value = pkgutil.resolve_name(name)
             try:
+                member = value
                 for part in suffix.split("."):
-                    if inspect.ismodule(value) and part not in getattr(value, "__all__", ()):
+                    if inspect.ismodule(member) and part not in getattr(member, "__all__", ()):
                         raise AttributeError(part)
-                    value = getattr(value, part)
+                    member = getattr(member, part)
             except AttributeError:
                 continue
-            candidates[f"{name}.{suffix}"] = value
-    if not candidates and "." not in query:
-        for module in modules:
-            for exported in getattr(module, "__all__", ()):
-                value = vars(module).get(exported)
-                if inspect.isclass(value) and not query.startswith("_"):
-                    try:
-                        member = inspect.getattr_static(value, query)
-                    except AttributeError:
-                        continue
-                    candidates[f"{module.__name__}.{exported}.{query}"] = member
+            candidates[f"{name}.{suffix}"] = member
+    if "." not in query and not query.startswith("_"):
+        for name, value in names.items():
+            if inspect.isclass(value):
+                try:
+                    member = inspect.getattr_static(value, query)
+                except AttributeError:
+                    continue
+                candidates[f"{name}.{query}"] = member
     name = _resolve_name(query, candidates)
     return name, candidates[name]
 
@@ -100,7 +104,10 @@ def _source_lookup(query: str) -> tuple[str, object]:
 def _object_lines(value, inventory, root, mode, *, resolved_name=None):
     identity = _identity(value) or _identity(type(value))
     names = sorted(
-        name for name, entry in inventory.items() if identity is not None and entry.get("identity") == identity
+        name
+        for name, entry in inventory.items()
+        if identity is not None
+        and (entry.get("identity") == identity or (inspect.ismodule(value) and name == identity))
     )
     name = resolved_name or (names[0] if len(names) == 1 else getattr(value, "__name__", type(value).__qualname__))
     try:
