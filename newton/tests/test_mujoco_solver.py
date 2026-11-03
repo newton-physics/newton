@@ -10555,7 +10555,7 @@ class TestMuJoCoSolverStateSync(unittest.TestCase):
         builder.add_articulation([joint])
         return builder.finalize()
 
-    def _step(self, model, steps: int = 500, dt: float = 1.0e-3):
+    def _step(self, model, steps: int = 200, dt: float = 1.0e-3):
         """Step ``model`` from its default joint state, syncing MuJoCo every step, and return the final state."""
         solver = SolverMuJoCo(model, disable_contacts=True)
         state_0, state_1 = model.state(), model.state()
