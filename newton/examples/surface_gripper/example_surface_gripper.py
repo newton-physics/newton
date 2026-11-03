@@ -121,8 +121,13 @@ from newton.viewer import ViewerBase
 
 # Asset paths (global constants). All assets live in the shared newton/examples/assets/ directory.
 ASSETS = Path(__file__).parent.parent / "assets"
-# robot arm USD, downloaded (and cached) from the newton-assets repository.
-ROBOT_USD = newton.utils.download_asset("fanuc_m710id_50m/usd") / "fanuc_arm.usd"
+
+
+def get_robot_usd() -> Path:
+    """Return the robot arm USD path, downloading (and caching) it from newton-assets on first use."""
+    return newton.utils.download_asset("fanuc_m710id_50m/usd") / "fanuc_arm.usd"
+
+
 # World placement of the robot arm. The asset no longer carries this placement, so it loads at the origin.
 ROBOT_BASE_POSITION = wp.vec3(-0.9548298500297838, 0.2817000725962616, 0.7495161294937144)  # [m]
 ROBOT_BASE_YAW = -math.pi / 2  # [rad] about +Z
@@ -197,7 +202,7 @@ CRATE_GRIP_POSES = (
     ),
 )
 
-# Each pad is represented with a thin cylinder in ROBOT_USD.
+# Each pad is represented with a thin cylinder in the robot arm USD.
 # The paths to the pads are used to extract the geometry of
 # each pad from USD.
 PAD_PRIMS = (
@@ -767,12 +772,12 @@ class Example:
         env = newton.ModelBuilder()
 
         # Register MuJoCo's custom USD attributes (mjc:gainPrm, mjc:biasPrm, mjc:target, ...) up front so
-        # add_usd() recognizes the position actuators authored on the arm joints in ROBOT_USD; parse_usd()
+        # add_usd() recognizes the position actuators authored on the arm joints in the robot arm USD; parse_usd()
         # only registers the narrower equality-constraint subset on its own.
         newton.solvers.SolverMuJoCo.register_custom_attributes(env)
 
         # Load the robot arm.
-        robot = env.add_usd(str(ROBOT_USD), xform=ROBOT_BASE_XFORM, floating=False, collapse_fixed_joints=True)
+        robot = env.add_usd(str(get_robot_usd()), xform=ROBOT_BASE_XFORM, floating=False, collapse_fixed_joints=True)
         ee_body_local = env.body_count - 1  # last arm link (J6_link), the flange, within one env
         # The pad geometry lives in the robot arm USD: four visual cylinders under J6_link/GripperPads (see the
         # asset). Read each pad's placement transform and its radius/half-height.
