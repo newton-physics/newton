@@ -63,28 +63,13 @@ __all__ = [
 
 if TYPE_CHECKING:
     Clamping = ClampingBase
-    Controller = DriveBase
-    ControllerNeuralLSTM = DriveNeuralLSTM
-    ControllerNeuralMLP = DriveNeuralMLP
-    ControllerPD = DrivePD
-    ControllerPID = DrivePID
 
 _DEPRECATED_SYMBOLS = {
     "Clamping": ClampingBase,
-    "Controller": DriveBase,
-    "ControllerNeuralLSTM": DriveNeuralLSTM,
-    "ControllerNeuralMLP": DriveNeuralMLP,
-    "ControllerPD": DrivePD,
-    "ControllerPID": DrivePID,
 }
 
 __deprecated_symbols__ = {
     "Clamping": "Deprecated in 1.6; use ClampingBase instead.",
-    "Controller": "Deprecated in 1.6; use DriveBase instead.",
-    "ControllerNeuralLSTM": "Deprecated in 1.6; use DriveNeuralLSTM instead.",
-    "ControllerNeuralMLP": "Deprecated in 1.6; use DriveNeuralMLP instead.",
-    "ControllerPD": "Deprecated in 1.6; use DrivePD instead.",
-    "ControllerPID": "Deprecated in 1.6; use DrivePID instead.",
 }
 
 
