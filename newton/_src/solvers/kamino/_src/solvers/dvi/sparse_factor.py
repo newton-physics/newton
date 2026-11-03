@@ -230,64 +230,87 @@ def _prepare_response(
     dense: bool,
     source_mio: wp.array[wp.int32],
     compact: bool,
+    origins: wp.array[wp.int32],
     strides: wp.array[wp.int32],
     columns: wp.array[wp.int32],
+    full_columns: wp.array[wp.int32],
+    whitened_columns: wp.array[wp.int32],
     result: wp.array[wp.float32],
 ):
-    """Scale bilateral coupling columns and select each world's dense or compact RHS layout."""
+    """Scale bilateral coupling columns and select the columns each response pass must solve.
+
+    Dense responses start at the first unilateral column of the projected operator.
+    Worlds using compact Schur keep only the whitened forward columns, so they skip
+    the full-response diagonal and backward passes.
+    """
     world, row, column = wp.tid()
     n, nu = njc[world], dim[world] - njc[world]
     stride = capacity[world]
+    origin = offsets[world]
+    whitened = False
     if dense:
         stride = dim[world]
+        origin += n
     elif compact and _compact_schur_fits(n, nu, stride):
         stride = nu
+        whitened = True
     if row == 0 and column == 0:
+        origins[world] = origin
         strides[world] = stride
-        columns[world] = dim[world] if dense else nu
+        columns[world] = nu
+        full_columns[world] = 0 if whitened else nu
+        whitened_columns[world] = nu if whitened else 0
     if row >= n or column >= nu:
         return
-    target_column = column
-    if dense:
-        target_column = n + column
     value = wp.float32(0.0)
     if dense:
-        value = source[source_mio[world] + row * stride + target_column]
+        value = source[source_mio[world] + row * stride + n + column]
     else:
-        value = source[offsets[world] + row * stride + column]
-    result[offsets[world] + row * stride + target_column] = scale[vio[world] + row] * value
+        value = source[origin + row * stride + column]
+    result[origin + row * stride + column] = scale[vio[world] + row] * value
 
 
 @wp.kernel
 def _finish_response(
-    dim: wp.array[wp.int32],
     njc: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    capacity: wp.array[wp.int32],
+    origins: wp.array[wp.int32],
+    strides: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    whitened_columns: wp.array[wp.int32],
     scale: wp.array[wp.float32],
-    compact: bool,
     forward: wp.array[wp.float32],
     full: wp.array[wp.float32],
 ):
     """Store whitened compact responses or undo normalization on full inverse responses."""
     world, row, column = wp.tid()
-    n, nu = njc[world], dim[world] - njc[world]
-    if row >= n or column >= nu:
+    if row >= njc[world] or column >= columns[world]:
         return
-    stride = capacity[world]
-    if compact and _compact_schur_fits(n, nu, stride):
-        index = offsets[world] + row * nu + column
+    index = origins[world] + row * strides[world] + column
+    if whitened_columns[world] > 0:
         full[index] = forward[index]
     else:
-        index = offsets[world] + row * stride + column
         full[index] *= scale[vio[world] + row]
 
 
 def allocate_response(state, world_count, device):
     """Allocate per-world response layout arrays before graph capture."""
-    state.bilateral_response_active_stride = wp.zeros(world_count, dtype=wp.int32, device=device)
-    state.bilateral_response_columns = wp.zeros_like(state.bilateral_response_active_stride)
+    state.bilateral_response_origin = wp.zeros(world_count, dtype=wp.int32, device=device)
+    state.bilateral_response_active_stride = wp.zeros_like(state.bilateral_response_origin)
+    state.bilateral_response_columns = wp.zeros_like(state.bilateral_response_origin)
+    state.bilateral_response_full_columns = wp.zeros_like(state.bilateral_response_origin)
+    state.bilateral_response_whitened_columns = wp.zeros_like(state.bilateral_response_origin)
+
+
+def _response_layout(state, problem, columns, max_columns):
+    """Return the shared response RHS layout for one column selection."""
+    return {
+        "offsets": state.bilateral_response_origin,
+        "strides": state.bilateral_response_active_stride,
+        "columns": columns,
+        "max_columns": max_columns,
+        "active_dim": problem.data.njc,
+    }
 
 
 def response_sparse(path, problem, compact):
@@ -309,39 +332,44 @@ def response_sparse(path, problem, compact):
             False,
             problem.data.mio,
             compact,
+            state.bilateral_response_origin,
             state.bilateral_response_active_stride,
             state.bilateral_response_columns,
+            state.bilateral_response_full_columns,
+            state.bilateral_response_whitened_columns,
             state.bilateral_response_factor,
         ],
         device=path.device,
     )
-    layout = {
-        "offsets": state.bilateral_response_mio,
-        "strides": state.bilateral_response_active_stride,
-        "columns": state.bilateral_response_columns,
-        "max_columns": max_columns,
-        "active_dim": problem.data.njc,
-    }
     # Keep forward-only columns separately because some worlds may exceed compact capacity.
-    solver.solve_triangular(state.bilateral_response_factor, state.bilateral_response_factor, forward=True, **layout)
-    solver.solve_diagonal(state.bilateral_response_factor, state.bilateral_response, **layout)
-    solver.solve_triangular(state.bilateral_response, state.bilateral_response, forward=False, **layout)
+    solver.solve_triangular(
+        state.bilateral_response_factor,
+        state.bilateral_response_factor,
+        forward=True,
+        **_response_layout(state, problem, state.bilateral_response_columns, max_columns),
+    )
+    full = _response_layout(state, problem, state.bilateral_response_full_columns, max_columns)
+    solver.solve_diagonal(state.bilateral_response_factor, state.bilateral_response, **full)
+    solver.solve_triangular(state.bilateral_response, state.bilateral_response, forward=False, **full)
     if compact:
         # Z = D^-1/2 L^-1 B gives Z^T Z = B^T A^-1 B for the compact Schur product.
         solver.solve_diagonal(
-            state.bilateral_response_factor, state.bilateral_response_factor, inverse_sqrt=True, **layout
+            state.bilateral_response_factor,
+            state.bilateral_response_factor,
+            inverse_sqrt=True,
+            **_response_layout(state, problem, state.bilateral_response_whitened_columns, max_columns),
         )
     wp.launch(
         _finish_response,
         dim=dims,
         inputs=[
-            problem.data.dim,
             problem.data.njc,
             solver.operator.info.vio,
-            state.bilateral_response_mio,
-            state.bilateral_response_stride,
+            state.bilateral_response_origin,
+            state.bilateral_response_active_stride,
+            state.bilateral_response_columns,
+            state.bilateral_response_whitened_columns,
             state.bilateral_preconditioner,
-            compact,
             state.bilateral_response_factor,
             state.bilateral_response,
         ],
@@ -350,15 +378,12 @@ def response_sparse(path, problem, compact):
 
 
 def response_dense(owner, problem):
-    """Write full normalized responses in the dense projected-operator layout."""
+    """Write full normalized responses for the unilateral columns of the dense projected operator."""
     solver, state = owner._bilateral_solver, owner.data.state
+    max_columns = owner._max_unilateral_rows
     wp.launch(
         _prepare_response,
-        dim=(
-            owner.size.num_worlds,
-            max(1, owner.size.max_of_num_bilateral_joint_cts),
-            max(1, owner._max_unilateral_rows),
-        ),
+        dim=(owner.size.num_worlds, max(1, owner.size.max_of_num_bilateral_joint_cts), max(1, max_columns)),
         inputs=[
             problem.data.dim,
             problem.data.njc,
@@ -370,8 +395,11 @@ def response_dense(owner, problem):
             True,
             problem.data.mio,
             False,
+            state.bilateral_response_origin,
             state.bilateral_response_active_stride,
             state.bilateral_response_columns,
+            state.bilateral_response_full_columns,
+            state.bilateral_response_whitened_columns,
             state.projected_D,
         ],
         device=owner.device,
@@ -379,9 +407,5 @@ def response_dense(owner, problem):
     solver.solve_matrix(
         state.projected_D,
         state.projected_D,
-        offsets=state.projected_mio,
-        strides=state.bilateral_response_active_stride,
-        columns=state.bilateral_response_columns,
-        max_columns=owner.size.max_of_max_total_cts,
-        active_dim=problem.data.njc,
+        **_response_layout(state, problem, state.bilateral_response_full_columns, max_columns),
     )

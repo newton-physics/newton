@@ -24,7 +24,7 @@ from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constr
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
 from newton._src.solvers.kamino._src.linalg import LDLBlockSparseSolver, LLTBlockedRCMSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
-from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
+from newton._src.solvers.kamino._src.solvers.dvi import DVISolver, sparse_factor
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
     BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
@@ -2029,6 +2029,106 @@ class TestDVISolver(NewtonTestCase):
                 np.testing.assert_array_equal(status["iterations"], first_status["iterations"])
                 for residual in ("r_p", "r_d", "r_c", "r_b"):
                     np.testing.assert_allclose(status[residual], first_status[residual], rtol=1e-5, atol=1e-8)
+
+    def test_03i2_dense_ldl_response_solves_only_coupling_columns(self):
+        """Solve only the bilateral-unilateral coupling columns read by the dense projected operator."""
+        test = TestSetup(
+            builder_fn=basics.build_boxes_hinged,
+            max_world_contacts=8,
+            gravity=True,
+            perturb=True,
+            device=self.device,
+            sparse=False,
+        )
+        test.build()
+        calls = []
+        solve_matrix = LDLBlockSparseSolver.solve_matrix
+
+        def record(solver, b, x, **layout):
+            calls.append(
+                (b, {key: value.numpy().copy() for key, value in layout.items() if isinstance(value, wp.array)})
+            )
+            solve_matrix(solver, b, x, **layout)
+
+        config = kamino_config.DVISolverConfig(
+            max_alternating_iterations=4, bilateral_solver_type="LDL", use_schur_complement=True
+        )
+        with mock.patch.object(LDLBlockSparseSolver, "solve_matrix", autospec=True, side_effect=record):
+            solver = _solve_dvi(test.model, test.problem, config=config, setup=test)
+
+        state = solver.data.state
+        response_calls = [layout for b, layout in calls if b is state.projected_D]
+        self.assertEqual(len(response_calls), 1)
+        layout = response_calls[0]
+        dim, njc = test.problem.data.dim.numpy(), test.problem.data.njc.numpy()
+        self.assertTrue(np.any((njc > 0) & (dim > njc)))
+        np.testing.assert_array_equal(layout["offsets"], state.projected_mio.numpy() + njc)
+        np.testing.assert_array_equal(layout["strides"], dim)
+        np.testing.assert_array_equal(layout["columns"], dim - njc)
+
+    def test_03i3_sparse_ldl_response_skips_discarded_passes(self):
+        """Run full-response passes only for worlds whose full response is kept."""
+        device = self.device
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=device)
+
+        # World 0 fits compact Schur, world 1 does not, world 2 is empty.
+        njc, nu, capacity = [4, 1, 0], [2, 3, 0], [2, 3, 0]
+        mio = [0, 8, 11]
+        rows = [0, 4, 5]
+        size = mio[-1] + 1
+        state = SimpleNamespace(
+            bilateral_response_mio=i32(mio),
+            bilateral_response_stride=i32(capacity),
+            bilateral_preconditioner=wp.ones(sum(njc), dtype=wp.float32, device=device),
+            bilateral_coupling=wp.ones(size, dtype=wp.float32, device=device),
+            bilateral_response_factor=wp.zeros(size, dtype=wp.float32, device=device),
+            bilateral_response=wp.zeros(size, dtype=wp.float32, device=device),
+        )
+        sparse_factor.allocate_response(state, 3, device)
+        calls = []
+
+        def solve(name):
+            def record(b, x, **layout):
+                pass_name = "whiten" if layout.get("inverse_sqrt") else name
+                if name == "triangular":
+                    pass_name = "forward" if layout["forward"] else "backward"
+                calls.append((pass_name, layout["columns"].numpy().copy()))
+
+            return record
+
+        bilateral_solver = SimpleNamespace(
+            operator=SimpleNamespace(info=SimpleNamespace(vio=i32(rows))),
+            solve_triangular=solve("triangular"),
+            solve_diagonal=solve("diagonal"),
+        )
+        path = SimpleNamespace(
+            bilateral_solver=bilateral_solver,
+            data=SimpleNamespace(state=state),
+            size=SimpleNamespace(num_worlds=3, max_of_num_bilateral_joint_cts=max(njc)),
+            unilateral_strides_host=capacity,
+            device=device,
+        )
+        problem = SimpleNamespace(
+            data=SimpleNamespace(
+                dim=i32([a + b for a, b in zip(njc, nu, strict=True)]),
+                njc=i32(njc),
+                mio=i32([0, 36, 52]),
+            )
+        )
+
+        for compact in (False, True):
+            with self.subTest(compact=compact):
+                calls.clear()
+                sparse_factor.response_sparse(path, problem, compact)
+                full = [2, 3, 0] if not compact else [0, 3, 0]
+                expected = [("forward", [2, 3, 0]), ("diagonal", full), ("backward", full)]
+                if compact:
+                    expected.append(("whiten", [2, 0, 0]))
+                self.assertEqual([name for name, _ in calls], [name for name, _ in expected])
+                for (name, columns), (_, expected_columns) in zip(calls, expected, strict=True):
+                    np.testing.assert_array_equal(columns, expected_columns, err_msg=name)
 
     def test_04_dvi_solve_active_joint_limit(self):
         """Resolve an active joint limit through the inequality solver."""

@@ -134,8 +134,11 @@ class DVIState:
         self.bilateral_coupling: wp.array[float32] | None = None
         self.bilateral_response_mio: wp.array[int32] | None = None
         self.bilateral_response_stride: wp.array[int32] | None = None
+        self.bilateral_response_origin: wp.array[int32] | None = None
         self.bilateral_response_active_stride: wp.array[int32] | None = None
         self.bilateral_response_columns: wp.array[int32] | None = None
+        self.bilateral_response_full_columns: wp.array[int32] | None = None
+        self.bilateral_response_whitened_columns: wp.array[int32] | None = None
         self.bilateral_response_factor: wp.array[float32] | None = None
         self.bilateral_response: wp.array[float32] | None = None
         self.bilateral_factor_row_start: wp.array[int32] | None = None
