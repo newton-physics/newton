@@ -170,13 +170,12 @@ class Example:
         # Only check velocities on CUDA, where example tests run enough frames to settle.
         # Short CPU smoke runs may still be falling when they finish.
         if self.device.is_cuda:
+            # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
                 "body velocities are small",
-                lambda q, qd: (
-                    max(abs(qd)) < 0.25
-                ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
+                lambda q, qd: max(abs(qd)) < 0.25,
             )
 
     @staticmethod
