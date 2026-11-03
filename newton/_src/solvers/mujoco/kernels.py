@@ -35,7 +35,7 @@ def _import_contact_force_fn():
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
-vec11 = wp.types.vector(length=11, dtype=wp.float32)
+vec12 = wp.types.vector(length=12, dtype=wp.float32)
 
 
 # Utility functions
@@ -1097,9 +1097,10 @@ def sync_qpos0_kernel(
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
     joint_child: wp.array[wp.int32],
+    joint_X_c: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
     dof_ref: wp.array[wp.float32],
-    dof_springref: wp.array[wp.float32],
+    joint_rest_q: wp.array[wp.float32],
     mj_q_start: wp.array[wp.int32],
     # outputs
     qpos0: wp.array2d[wp.float32],
@@ -1107,9 +1108,9 @@ def sync_qpos0_kernel(
 ):
     """Sync MuJoCo qpos0 and qpos_spring from Newton model data.
 
-    For hinge/slide: qpos0 = ref, qpos_spring = springref.
+    For hinge/slide: qpos0 = ref, qpos_spring = joint_rest_q + ref.
     For free: qpos0 from body_q (pos + quat in wxyz order).
-    For ball: qpos0 = [1, 0, 0, 0] (identity quaternion in wxyz).
+    For ball: qpos0 = [1, 0, 0, 0] (identity quaternion in wxyz), qpos_spring from joint_rest_q.
     """
     worldid, jntid = wp.tid()
 
@@ -1120,6 +1121,7 @@ def sync_qpos0_kernel(
 
     type = joint_type[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    wq_i = joint_q_start[joints_per_world * worldid + jntid]
 
     if type == JointType.FREE:
         child = joint_child[jntid]
@@ -1144,10 +1146,9 @@ def sync_qpos0_kernel(
         qpos0[worldid, q_i + 1] = 0.0
         qpos0[worldid, q_i + 2] = 0.0
         qpos0[worldid, q_i + 3] = 0.0
-        qpos_spring[worldid, q_i + 0] = 1.0
-        qpos_spring[worldid, q_i + 1] = 0.0
-        qpos_spring[worldid, q_i + 2] = 0.0
-        qpos_spring[worldid, q_i + 3] = 0.0
+        rest_wxyz = ball_spring_rest_wxyz(joint_X_c[joints_per_world * worldid + jntid], joint_rest_q, wq_i)
+        for i in range(4):
+            qpos_spring[worldid, q_i + i] = rest_wxyz[i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
@@ -1155,10 +1156,40 @@ def sync_qpos0_kernel(
             springref = float(0.0)
             if dof_ref:
                 ref = dof_ref[wqd_i + i]
-            if dof_springref:
-                springref = dof_springref[wqd_i + i]
+            springref = joint_rest_q[wq_i + i] + ref
             qpos0[worldid, q_i + i] = ref
             qpos_spring[worldid, q_i + i] = springref
+
+
+@wp.kernel
+def sync_ball_qpos_spring_kernel(
+    joints_per_world: int,
+    joint_type: wp.array[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_X_c: wp.array[wp.transform],
+    joint_rest_q: wp.array[wp.float32],
+    mj_q_start: wp.array[wp.int32],
+    # outputs
+    qpos_spring: wp.array2d[wp.float32],
+):
+    """Refresh BALL qpos_spring after a child joint frame change."""
+    worldid, jntid = wp.tid()
+    q_i = mj_q_start[jntid]
+    if q_i < 0 or joint_type[jntid] != JointType.BALL:
+        return
+    wj = joints_per_world * worldid + jntid
+    rest_wxyz = ball_spring_rest_wxyz(joint_X_c[wj], joint_rest_q, joint_q_start[wj])
+    for i in range(4):
+        qpos_spring[worldid, q_i + i] = rest_wxyz[i]
+
+
+@wp.func
+def ball_spring_rest_wxyz(X_c: wp.transform, joint_rest_q: wp.array[wp.float32], wq_i: int) -> wp.quat:
+    """Express a BALL rest quaternion in MuJoCo's wxyz child-frame coordinates."""
+    # Same child-frame conjugation as convert_warp_coords_to_mj_kernel applies to joint_q.
+    q_cj = X_c.q
+    rest = wp.quat(joint_rest_q[wq_i + 0], joint_rest_q[wq_i + 1], joint_rest_q[wq_i + 2], joint_rest_q[wq_i + 3])
+    return quat_xyzw_to_wxyz(q_cj * rest * wp.quat_inverse(q_cj))
 
 
 @wp.kernel
@@ -1248,8 +1279,11 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     eq_constraint_type: wp.array[wp.int32],
     eq_constraint_body1: wp.array[wp.int32],
     eq_constraint_body2: wp.array[wp.int32],
+    joint_type: wp.array[wp.int32],
     joint_parent: wp.array[wp.int32],
     joint_child: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
     ref_body_q: wp.array[wp.transform],
     # output
     X_rel_out: wp.array2d[wp.transform],
@@ -1272,6 +1306,9 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     body1 = int(-1)
     body2 = int(-1)
     if newton_jnt >= 0:
+        if joint_type[newton_jnt] == JointType.BALL:
+            X_rel_out[world, mjc_eq] = joint_X_c[newton_jnt] * wp.transform_inverse(joint_X_p[newton_jnt])
+            return
         body1 = joint_parent[newton_jnt]
         body2 = joint_child[newton_jnt]
     elif newton_eq >= 0:
@@ -1300,7 +1337,7 @@ def update_connect_constraint_anchors_kernel(
     joint_qd_start: wp.array[wp.int32],
     connect_X_rel: wp.array2d[wp.transform],
     # output
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
 ):
     """Write ``anchor1`` and ``anchor2 = transform_point(X_rel, anchor1)`` into ``eq_data[0:6]`` of CONNECT rows.
 
@@ -2163,18 +2200,11 @@ def mass_matrix_diagonal_kernel(
     M: wp.array2d[float],
     # outputs
     diagonal: wp.array2d[float],
-    meaninertia: wp.array[float],
 ):
-    """Extract the diagonal of MuJoCo Warp's CSR mass matrix, the last entry of each row, and its mean."""
+    """Extract the diagonal of MuJoCo Warp's CSR mass matrix, the last entry of each row."""
     world = wp.tid()
-    nv = diagonal.shape[1]
-    total = float(0.0)
-    for dof in range(nv):
-        value = M[world, M_rowadr[dof] + M_rownnz[dof] - 1]
-        diagonal[world, dof] = value
-        total += value
-    if world < meaninertia.shape[0]:
-        meaninertia[world] = total / float(wp.max(nv, 1))
+    for dof in range(diagonal.shape[1]):
+        diagonal[world, dof] = M[world, M_rowadr[dof] + M_rownnz[dof] - 1]
 
 
 @wp.kernel
@@ -2207,7 +2237,7 @@ def update_kinematic_weld_reference_kernel(
     qpos0: wp.array2d[float],
     qpos: wp.array2d[float],
     # outputs
-    eq_data: wp.array2d[vec11],
+    eq_data: wp.array2d[vec12],
 ):
     """Re-center each active kinematic weld on its root's current MuJoCo pose.
 
@@ -2777,6 +2807,107 @@ def update_jnt_solref_from_invweight0_kernel(
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
 
 
+@wp.kernel
+def copy_actuator_moment_kernel(
+    actuator: int,
+    moment_rownnz: wp.array2d[int],
+    moment_rowadr: wp.array2d[int],
+    moment_colind: wp.array2d[int],
+    actuator_moment: wp.array2d[float],
+    moment_out: wp.array2d[float],
+):
+    """Scatter one row of MuJoCo Warp's sparse actuator moment into a dense ``[world, nv]`` array."""
+    world = wp.tid()
+    for i in range(moment_out.shape[1]):
+        moment_out[world, i] = 0.0
+    adr = moment_rowadr[world, actuator]
+    for i in range(moment_rownnz[world, actuator]):
+        moment_out[world, moment_colind[world, adr + i]] = actuator_moment[world, adr + i]
+
+
+@wp.kernel
+def capture_actuator_dampratio_kernel(
+    actuators: wp.array[wp.int32],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_biasprm: wp.array2d[vec10],
+    # outputs
+    dampratio_out: wp.array2d[float],
+):
+    """Store each position-like actuator's ``dampratio`` placeholder (a positive ``biasprm[2]``), or zero."""
+    world, i = wp.tid()
+    actuator = actuators[i]
+    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
+    bias = actuator_biasprm[world, actuator]
+    ratio = float(0.0)
+    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= MJ_MINVAL:
+        ratio = bias[2]
+    dampratio_out[world, actuator] = ratio
+
+
+@wp.func
+def _dampratio_damping(ratio: float, kp: float, inv_weight: float):
+    """Return the damping for a ``dampratio`` given the inverse reflected inertia ``J M^-1 J^T``, as MuJoCo's compiler."""
+    inertia = float(0.0)
+    if inv_weight > MJ_MINVAL:
+        inertia = 1.0 / inv_weight
+    return ratio * 2.0 * wp.sqrt(kp * inertia)
+
+
+@wp.kernel
+def resolve_actuator_dampratio_invweight_kernel(
+    actuators: wp.array[wp.int32],
+    actuator_dofs: wp.array[wp.int32],
+    actuator_tendons: wp.array[wp.int32],
+    dampratio: wp.array2d[float],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    dof_invweight0: wp.array2d[float],
+    tendon_invweight0: wp.array2d[float],
+    # outputs
+    actuator_biasprm: wp.array2d[vec10],
+):
+    """Resolve ``dampratio`` on scalar-joint and tendon actuators from ``set_const_0``'s exact inverse weights."""
+    world, i = wp.tid()
+    actuator = actuators[i]
+    ratio = dampratio[world, actuator]
+    if ratio <= 0.0:
+        return
+    inv_weight = float(0.0)
+    if actuator_dofs[i] >= 0:
+        inv_weight = dof_invweight0[world % dof_invweight0.shape[0], actuator_dofs[i]]
+    else:
+        inv_weight = tendon_invweight0[world % tendon_invweight0.shape[0], actuator_tendons[i]]
+    gear = actuator_gear[world % actuator_gear.shape[0], actuator][0]
+    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
+    bias = actuator_biasprm[world, actuator]
+    bias[2] = -_dampratio_damping(ratio, kp, gear * gear * inv_weight)
+    actuator_biasprm[world, actuator] = bias
+
+
+@wp.kernel
+def resolve_actuator_dampratio_kernel(
+    actuator: int,
+    dampratio: wp.array2d[float],
+    actuator_gainprm: wp.array2d[vec10],
+    moment: wp.array2d[float],
+    inv_mass_moment: wp.array2d[float],
+    # outputs
+    actuator_biasprm: wp.array2d[vec10],
+):
+    """Convert a ``dampratio`` to damping using the reflected inertia ``1 / (J M^-1 J^T)``, as MuJoCo's compiler."""
+    world = wp.tid()
+    ratio = dampratio[world, actuator]
+    if ratio <= 0.0:
+        return
+    inv_weight = float(0.0)
+    for i in range(moment.shape[1]):
+        inv_weight += moment[world, i] * inv_mass_moment[world, i]
+    bias = actuator_biasprm[world, actuator]
+    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
+    bias[2] = -_dampratio_damping(ratio, kp, inv_weight)
+    actuator_biasprm[world, actuator] = bias
+
+
 @wp.kernel(enable_backward=False)
 def update_tendon_limit_gains_kernel(
     tendon_mapping: wp.array2d[wp.int32],
@@ -2957,9 +3088,8 @@ def update_eq_data_and_active_kernel(
     eq_constraint_polycoef: wp.array2d[wp.float32],
     eq_constraint_torquescale: wp.array[wp.float32],
     eq_constraint_enabled: wp.array[wp.bool],
-    preserve_inferred_poses: bool,
     # outputs
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
     eq_active_out: wp.array2d[wp.bool],
 ):
     """Update MuJoCo equality constraint data and active status from Newton properties.
@@ -3001,11 +3131,10 @@ def update_eq_data_and_active_kernel(
         data[1] = anchor[1]
         data[2] = anchor[2]
 
-        # A zero quaternion leaves relpose to the MuJoCo compiler. Preserve
-        # that compiled pose when synchronizing the authored equality row.
+        # A zero quaternion keeps the relpose MuJoCo inferred at construction.
         relpose = eq_constraint_relpose[newton_eq]
         quat = quat_xyzw_to_wxyz(wp.transform_get_rotation(relpose))
-        if not preserve_inferred_poses or wp.dot(quat, quat) > 0.0:
+        if wp.dot(quat, quat) > 0.0:
             pos = wp.transform_get_translation(relpose)
             data[3] = pos[0]
             data[4] = pos[1]
@@ -3028,7 +3157,7 @@ def update_mimic_eq_data_and_active_kernel(
     constraint_mimic_coef1: wp.array[wp.float32],
     constraint_mimic_enabled: wp.array[wp.bool],
     # outputs
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
     eq_active_out: wp.array2d[wp.bool],
 ):
     """Update MuJoCo equality constraint data and active status from Newton mimic constraint properties.
@@ -3061,7 +3190,7 @@ def update_joint_mimic_eq_data_kernel(
     mjc_eq_to_newton_joint_mimic: wp.array2d[wp.int32],
     joint_mimic_coeffs: wp.array[wp.vec2],
     # outputs
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
 ):
     """Update MuJoCo equality data from joint-owned mimic coefficients."""
     world, mjc_eq = wp.tid()

@@ -589,8 +589,8 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
             ("shape_transform", flags.SHAPE_PROPERTIES),
             ("mujoco.gravcomp", flags.BODY_INERTIAL_PROPERTIES),
             ("mujoco.dof_ref", flags.JOINT_REFERENCE_POSE_PROPERTIES),
-            ("mujoco.dof_springref", flags.JOINT_DOF_PROPERTIES),
-            ("mujoco.dof_passive_stiffness", flags.JOINT_DOF_FORCE_PROPERTIES),
+            ("joint_rest_q", flags.JOINT_DOF_PROPERTIES),
+            ("joint_stiffness", flags.JOINT_DOF_FORCE_PROPERTIES),
             ("mujoco.actuator_gear", flags.ACTUATOR_PROPERTIES),
         )
         for name, flag in cases:
