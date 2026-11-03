@@ -1336,6 +1336,21 @@ add_diffsim_example_test(
 )
 
 
+add_diffsim_example_test(
+    name="diffsim.example_diffsim_g1",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={
+        "world-count": 2,
+        "sim-steps": 16,
+        "eval-steps": 16,
+        "render-every": 1,
+        "num-frames": 27,
+        "mujoco_adjoint_required": True,
+    },
+)
+
+
 class TestSensorExamples(unittest.TestCase):
     pass
 
