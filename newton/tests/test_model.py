@@ -2926,13 +2926,18 @@ class TestModelJoints(unittest.TestCase):
         # b0 is fixed to the world -> collapsed away (its body and joint are removed).
         b0 = builder.add_link()
         builder.add_shape_box(body=b0, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
-        j_fixed = builder.add_joint_fixed(parent=-1, child=b0)
+        j_world = builder.add_joint_fixed(parent=-1, child=b0)
 
         # b1 has a revolute joint -> survives; its body and joint indices shift down by one.
         b1 = builder.add_link()
         builder.add_shape_box(body=b1, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
         j_rev = builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 1.0, 0.0))
-        builder.add_articulation([j_fixed, j_rev])
+
+        # b2 is fixed to b1 -> merged into b1 (its joint is removed).
+        b2 = builder.add_link()
+        builder.add_shape_box(body=b2, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        j_fixed = builder.add_joint_fixed(parent=b1, child=b2)
+        builder.add_articulation([j_world, j_rev, j_fixed])
 
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="thing", namespace="test"))
         builder.add_custom_attribute(
@@ -2955,14 +2960,16 @@ class TestModelJoints(unittest.TestCase):
                 default=-1,
             )
         )
-        # Row 0 references the survivors; row 1 references the collapsed-away body and joint.
+        # Row 0 references the survivors; row 1 references the merged body and the removed joint.
         builder.add_custom_values(**{"test:ref_body": b1, "test:ref_joint": j_rev})
-        builder.add_custom_values(**{"test:ref_body": b0, "test:ref_joint": j_fixed})
+        builder.add_custom_values(**{"test:ref_body": b2, "test:ref_joint": j_fixed})
 
         builder.collapse_fixed_joints()
 
-        # Survivors remap to their new indices; references to removed entities collapse to -1.
-        self.assertEqual(builder.custom_attributes["test:ref_body"].values, [0, -1])
+        # Survivors remap to their new indices, merged bodies resolve to the body they were merged
+        # into, and references to removed joints collapse to -1.
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.custom_attributes["test:ref_body"].values, [0, 0])
         self.assertEqual(builder.custom_attributes["test:ref_joint"].values, [0, -1])
 
     def test_collapse_fixed_joints_with_locked_inertia(self):

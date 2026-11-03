@@ -1024,6 +1024,109 @@ Supported reference types:
   replaced with the destination builder's ``current_world`` during merging
 * Custom frequency keys (e.g., ``"mujoco:pair"``) — offset by that frequency's count
 
+Merge and Collapse Handlers
+---------------------------
+
+``references`` covers values that always point at one entity type. Some rows store
+data that depends on other columns of the same row or on body frames, such as a
+target whose entity type is selected by a ``kind`` column, or a point expressed in
+a body's local frame. A custom frequency can register two callbacks for these
+cases:
+
+* :attr:`~newton.ModelBuilder.CustomFrequency.merge_handler` runs once per copy made by
+  :meth:`~newton.ModelBuilder.add_builder`, :meth:`~newton.ModelBuilder.add_world`, or
+  :meth:`~newton.ModelBuilder.replicate` when the source builder has rows of the
+  frequency. It runs after the generic copy and ``references`` remapping and receives
+  the destination builder, the source builder, and a context with the copy's
+  ``entity_offsets``, ``custom_frequency_offsets``, ``row_start``, ``row_count``,
+  ``world``, and ``label_prefix``. Source row ``i`` is stored at destination row
+  ``row_start + i``.
+* :attr:`~newton.ModelBuilder.CustomFrequency.collapse_fixed_joints_handler` runs once
+  per :meth:`~newton.ModelBuilder.collapse_fixed_joints` call. It runs before attributes
+  declaring ``references="body"`` or ``references="joint"`` are remapped, so it still
+  sees the original indices, and receives a context with ``body_remap``,
+  ``joint_remap``, ``articulation_remap``, ``body_merged_parent``,
+  ``body_merged_transform``, and ``verbose``.
+
+Handlers are part of the frequency registration. Re-registering a frequency with
+different handlers raises an error, and merging copies the source builder's
+registration into a destination that lacks it.
+
+.. testcode:: custom-handlers
+
+   import newton
+   import warp as wp
+
+   def merge_targets(destination, source, context):
+       # kind 0 targets a body, kind 1 targets a joint.
+       offsets = {0: context["entity_offsets"]["body"], 1: context["entity_offsets"]["joint"]}
+       kinds = source.custom_attributes["demo:link_kind"].values
+       targets = destination.custom_attributes["demo:link_target"].values
+       for row, target in enumerate(source.custom_attributes["demo:link_target"].values):
+           if target is not None and target >= 0:
+               targets[context["row_start"] + row] = target + offsets[kinds[row]]
+
+   def collapse_points(builder, context):
+       # Re-express each point in the frame of the body its body was merged into.
+       points = builder.custom_attributes["demo:link_point"].values
+       for row, body in enumerate(builder.custom_attributes["demo:link_body"].values):
+           if body in context["body_merged_parent"]:
+               points[row] = wp.transform_point(context["body_merged_transform"][body], points[row])
+
+   def make_robot():
+       builder = newton.ModelBuilder()
+       builder.add_custom_frequency(
+           newton.ModelBuilder.CustomFrequency(
+               name="link",
+               namespace="demo",
+               merge_handler=merge_targets,
+               collapse_fixed_joints_handler=collapse_points,
+           )
+       )
+       for name, dtype, references in (
+           ("link_kind", wp.int32, None),
+           ("link_target", wp.int32, None),
+           ("link_body", wp.int32, "body"),
+           ("link_point", wp.vec3, None),
+       ):
+           builder.add_custom_attribute(
+               newton.ModelBuilder.CustomAttribute(
+                   name=name, namespace="demo", frequency="demo:link", dtype=dtype, references=references
+               )
+           )
+       base = builder.add_link(mass=1.0)
+       tip = builder.add_link(xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+       hinge = builder.add_joint_revolute(parent=-1, child=base, axis=(0.0, 0.0, 1.0))
+       weld = builder.add_joint_fixed(
+           parent=base, child=tip, parent_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity())
+       )
+       builder.add_articulation([hinge, weld])
+       builder.add_custom_values(**{
+           "demo:link_kind": 1,
+           "demo:link_target": hinge,
+           "demo:link_body": tip,
+           "demo:link_point": wp.vec3(0.1, 0.0, 0.0),
+       })
+       return builder
+
+   robot = make_robot()
+   robot.collapse_fixed_joints()
+   point = robot.custom_attributes["demo:link_point"].values[0]
+   print(robot.custom_attributes["demo:link_body"].values, [round(float(x), 3) for x in point])
+
+   scene = newton.ModelBuilder()
+   scene.replicate(make_robot(), 2)
+   print(scene.custom_attributes["demo:link_target"].values)
+
+.. testoutput:: custom-handlers
+
+   [0] [0.6, 0.0, 0.0]
+   [0, 2]
+
+Bodies referenced by any attribute declaring ``references="body"`` are never merged
+into the world by :meth:`~newton.ModelBuilder.collapse_fixed_joints`, so such
+references keep a body frame instead of becoming ``-1``.
+
 Querying Counts
 ---------------
 

@@ -1810,8 +1810,84 @@ class ModelBuilder:
         these values like other entity labels.
         """
 
+        merge_handler: Callable[[ModelBuilder, ModelBuilder, dict[str, Any]], None] | None = None
+        """Optional callback that fixes up rows copied by :meth:`ModelBuilder.add_builder`.
+
+        Use this when a row stores values that :attr:`CustomAttribute.references`
+        cannot remap, for example an index whose entity type depends on another
+        column of the same row. The callback is invoked as
+        ``merge_handler(destination_builder, source_builder, context)`` once per
+        copy whose source builder contributes at least one row of this frequency,
+        including every copy made by :meth:`ModelBuilder.add_world` and
+        :meth:`ModelBuilder.replicate`. It runs after all custom attributes of the
+        copy were merged and their ``references`` remapped, so the destination rows
+        already hold the copied values. ``context`` contains these keys:
+
+        - ``"entity_offsets"`` (``dict[str, int]``): Index offsets for this copy's
+          built-in entities, keyed like the ``entity_offsets`` passed to
+          :attr:`CustomAttribute.reference_value_transformer` (for example,
+          ``"body"``, ``"joint"``, or ``"constraint_mimic"``).
+        - ``"custom_frequency_offsets"`` (``dict[str, int]``): Destination row
+          counts before this copy was merged, keyed by full frequency name.
+          Missing keys have offset zero.
+        - ``"row_start"`` (``int``): Destination index of this copy's first row
+          of this frequency. Source row ``i`` is stored at destination row
+          ``row_start + i``.
+        - ``"row_count"`` (``int``): Number of rows of this frequency copied
+          from the source builder.
+        - ``"world"`` (``int``): Destination world for this copy, or ``-1`` for
+          global entities.
+        - ``"label_prefix"`` (``str | None``): Optional label prefix for this copy.
+
+        Read original values from the source builder and write fixed-up values to
+        the destination rows ``[row_start, row_start + row_count)``. Custom
+        attribute value lists may be shorter than the row count or contain
+        ``None`` for rows that use the attribute default. Treat the source builder
+        as read-only. Replication invokes the callback separately for each copy
+        with its own offsets.
+        """
+
+        collapse_fixed_joints_handler: Callable[[ModelBuilder, dict[str, Any]], None] | None = None
+        """Optional callback that fixes up rows when fixed joints are collapsed.
+
+        Use this when rows store data that depends on body frames or on the
+        existence of joints, for example a point expressed in a body's local
+        frame. :meth:`ModelBuilder.collapse_fixed_joints` invokes it as
+        ``collapse_fixed_joints_handler(builder, context)`` once for every
+        registered frequency that defines it. The callback runs after bodies,
+        joints, and built-in-frequency custom attributes were rebuilt, but
+        before custom attribute values declaring ``references="body"`` or
+        ``references="joint"`` are rewritten, so those values still hold the
+        original indices. ``context`` contains these keys:
+
+        - ``"body_remap"`` (``dict[int, int]``): New index of every retained
+          original body. ``-1`` maps to ``-1``.
+        - ``"joint_remap"`` (``dict[int, int]``): New index of every retained
+          original joint. Removed joints are absent.
+        - ``"articulation_remap"`` (``dict[int, int]``): New index of every
+          retained original articulation.
+        - ``"body_merged_parent"`` (``dict[int, int]``): For every removed
+          original body, the original index of the retained body it was merged
+          into, or ``-1`` for the world. Look up its new index in ``body_remap``.
+        - ``"body_merged_transform"`` (``dict[int, wp.transform]``): For every
+          removed original body, the transform from its frame to the frame of
+          the body it was merged into.
+        - ``"verbose"`` (``bool``): The ``verbose`` argument passed to
+          :meth:`ModelBuilder.collapse_fixed_joints`; log additional information
+          when ``True``.
+
+        After the callback returns, references to bodies follow merges to the
+        surviving body and references to removed joints become ``-1``. Bodies
+        referenced by any ``references="body"`` attribute are never merged into
+        the world.
+        """
+
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
+            for field_name in ("merge_handler", "collapse_fixed_joints_handler"):
+                handler = getattr(self, field_name)
+                if handler is not None and not callable(handler):
+                    raise TypeError(f"{field_name} must be callable or None, got {type(handler).__name__}")
             if not self.name or ":" in self.name:
                 raise ValueError(f"name must be non-empty and colon-free, got '{self.name}'")
             if self.namespace is not None and (not self.namespace or ":" in self.namespace):
@@ -2641,6 +2717,8 @@ class ModelBuilder:
             and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
             and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
             and existing.label_attribute == incoming.label_attribute
+            and existing.merge_handler is incoming.merge_handler
+            and existing.collapse_fixed_joints_handler is incoming.collapse_fixed_joints_handler
         )
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
@@ -5520,7 +5598,6 @@ class ModelBuilder:
 
             use_current_world = reference == Model.AttributeFrequency.WORLD
             value_offset = 0 if use_current_world else get_offset(reference)
-            is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             source_values = attr.values
             if attr.reference_value_transformer is not None:
@@ -5555,38 +5632,9 @@ class ModelBuilder:
                     source_values = list(transformed)
                 needs_remap = False
             else:
-                needs_remap = (
-                    value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
-                )
+                needs_remap = value_offset != 0 or use_current_world or is_collision_mask_domain_attr
 
             if needs_remap:
-
-                def transform_equality_target_value(entity_idx: int, value: Any) -> Any:
-                    try:
-                        target = int(value)
-                    except (TypeError, ValueError):
-                        return value
-                    if target < 0:
-                        return value
-
-                    target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
-                    target_kind = 0
-                    if (
-                        target_kind_attr is not None
-                        and target_kind_attr.values
-                        and entity_idx < len(target_kind_attr.values)
-                        and target_kind_attr.values[entity_idx] is not None
-                    ):
-                        try:
-                            target_kind = int(target_kind_attr.values[entity_idx])
-                        except (TypeError, ValueError):
-                            target_kind = 0
-
-                    if target_kind == 1:
-                        return target + entity_offsets["joint"]
-                    if target_kind == 2:
-                        return target + entity_offsets["constraint_mimic"]
-                    return value
 
                 def transform_value(
                     value: Any,
@@ -5620,11 +5668,8 @@ class ModelBuilder:
                 def transform_enum_value(
                     entity_idx: int,
                     value: Any,
-                    is_equality_target: bool = is_equality_target_attr,
                     is_collision_mask_domain: bool = is_collision_mask_domain_attr,
                 ) -> Any:
-                    if is_equality_target:
-                        return transform_equality_target_value(entity_idx, value)
                     if is_collision_mask_domain:
                         return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
@@ -5743,6 +5788,26 @@ class ModelBuilder:
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
+
+        # Frequency-specific fixups run last so they observe fully merged destination rows.
+        for freq_key, frequency in builder.custom_frequencies.items():
+            if frequency.merge_handler is None:
+                continue
+            row_count = builder._custom_frequency_counts.get(freq_key, 0)
+            if row_count == 0:
+                continue
+            frequency.merge_handler(
+                self,
+                builder,
+                {
+                    "entity_offsets": entity_offsets,
+                    "custom_frequency_offsets": custom_frequency_offsets,
+                    "row_start": custom_frequency_offsets.get(freq_key, 0),
+                    "row_count": row_count,
+                    "world": world,
+                    "label_prefix": label_prefix,
+                },
+            )
 
     def _merge_builder_actuators(
         self,
@@ -7797,6 +7862,59 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
+    def _custom_attribute_referenced_bodies(self, counts: dict[str, int]) -> set[int]:
+        """Return the bodies referenced by any custom attribute declaring ``references="body"``.
+
+        Args:
+            counts: Row counts of the built-in frequencies, keyed like :meth:`_builder_merge_counts`.
+        """
+
+        def collect(value: Any, bodies: set[int]) -> None:
+            if value is None or isinstance(value, (bool, str)):
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    collect(item, bodies)
+                return
+            if isinstance(value, np.ndarray):
+                if np.issubdtype(value.dtype, np.integer):
+                    bodies.update(int(item) for item in value.ravel() if item >= 0)
+                return
+            value_type = type(value)
+            if wp.types.type_is_vector(value_type):
+                if wp.types.type_is_int(value_type._wp_scalar_type_):
+                    bodies.update(int(item) for item in value if item >= 0)
+                return
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                return
+            if index >= 0:
+                bodies.add(index)
+
+        bodies: set[int] = set()
+        for custom_attr in self.custom_attributes.values():
+            if Model._normalize_attribute_reference(custom_attr.references) != Model.AttributeFrequency.BODY:
+                continue
+            default_bodies: set[int] = set()
+            collect(custom_attr.default, default_bodies)
+            if default_bodies:
+                # Rows without an explicit value reference the default body.
+                frequency = custom_attr.frequency
+                count = (
+                    self._custom_frequency_counts.get(frequency, 0)
+                    if isinstance(frequency, str)
+                    else counts.get(self._builder_frequency_key(frequency), 0)
+                )
+                values = custom_attr._values_with_defaults(count)
+            else:
+                values = custom_attr.values
+            if not values:
+                continue
+            for value in values.values() if isinstance(values, dict) else values:
+                collect(value, bodies)
+        return bodies
+
     def collapse_fixed_joints(
         self,
         verbose: bool = False,
@@ -7808,6 +7926,12 @@ class ModelBuilder:
             verbose: If True, log additional information about the collapsed joints.
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
+
+        Note:
+            Bodies referenced by a custom attribute declaring ``references="body"`` or by a
+            particle-body attachment are not merged into the world, so the reference keeps a
+            body frame. Custom frequencies can fix up their rows through
+            :attr:`CustomFrequency.collapse_fixed_joints_handler`.
 
         Note:
             Deformable labels do not change which fixed joints are collapsed. A curve's
@@ -7916,17 +8040,9 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Preserve body frames still required by constraints when collapsing into world.
-        bodies_requiring_body_frame = set()
-        for body1, body2 in zip(
-            self._eq_list("equality_constraint_body1"),
-            self._eq_list("equality_constraint_body2"),
-            strict=False,
-        ):
-            if body1 >= 0:
-                bodies_requiring_body_frame.add(body1)
-            if body2 >= 0:
-                bodies_requiring_body_frame.add(body2)
+        # Bodies referenced by custom attributes (e.g. constraint endpoints) keep their own frame
+        # instead of being merged into the world, where the reference would become -1.
+        bodies_requiring_body_frame = self._custom_attribute_referenced_bodies(original_counts)
 
         # A particle-body attachment needs a surviving body to anchor to and to receive the
         # reaction force, so its body must not be merged into the world.
@@ -7988,7 +8104,7 @@ class ModelBuilder:
                     child_lbl = self.body_label[child_body]
                     logger.info(
                         "Skipping collapse of fixed joint %s between %s and %s: %s is referenced by a "
-                        "constraint and cannot be merged into world",
+                        "constraint or custom attribute and cannot be merged into world",
                         joint["label"],
                         parent_lbl,
                         child_lbl,
@@ -8532,97 +8648,6 @@ class ModelBuilder:
                 merge_xform, axis_to_vec3(self.tendon_guide_axis[guide_idx])
             )
 
-        # Remap equality constraint body/joint indices and transform anchors for merged bodies.
-        # Import locally to avoid a cycle while the public simulation package initializes.
-        from ..solvers.mujoco.enums import EqType  # noqa: PLC0415
-
-        # Each ``*_values`` is the ``list`` backing the string-frequency CustomAttribute. These
-        # lists are sparse: ``add_custom_values`` only populates the fields that were supplied,
-        # so an omitted optional field can be ``None``, shorter than the row count, or absent
-        # entirely. Reads go through ``_at`` (default fallback), and writes pad the list to the
-        # row index before assignment.
-        body1_attr = self._eq_attr("equality_constraint_body1")
-        body2_attr = self._eq_attr("equality_constraint_body2")
-        type_attr = self._eq_attr("equality_constraint_type")
-        anchor_attr = self._eq_attr("equality_constraint_anchor")
-        relpose_attr = self._eq_attr("equality_constraint_relpose")
-        joint1_attr = self._eq_attr("equality_constraint_joint1")
-        joint2_attr = self._eq_attr("equality_constraint_joint2")
-        enabled_attr = self._eq_attr("equality_constraint_enabled")
-        body1_values = body1_attr.values or []
-        body2_values = body2_attr.values or []
-        type_values = type_attr.values or []
-        if anchor_attr.values is None:
-            anchor_attr.values = []
-        anchor_values = anchor_attr.values
-        if relpose_attr.values is None:
-            relpose_attr.values = []
-        relpose_values = relpose_attr.values
-        joint1_values = joint1_attr.values or []
-        joint2_values = joint2_attr.values or []
-        if enabled_attr.values is None:
-            enabled_attr.values = []
-        enabled_values = enabled_attr.values
-
-        def _at(values: list, idx: int, default: Any) -> Any:
-            if idx >= len(values):
-                return default
-            return default if values[idx] is None else values[idx]
-
-        # Body/joint index remapping for body1/body2/joint1/joint2 is handled generically below
-        # via the ``references`` field. Here we only apply the MuJoCo-specific fixups that depend
-        # on the original indices: anchor/relpose frame transforms when a referenced body was
-        # merged into its parent, and disabling rows whose joint reference was removed.
-        for i in range(self._equality_constraint_count):
-            old_body1 = _at(body1_values, i, body1_attr.default)
-            old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = old_body1 in body_merged_parent
-            body2_was_merged = old_body2 in body_merged_parent
-
-            constraint_type = _at(type_values, i, type_attr.default)
-
-            # Transform anchor/relpose from merged body's frame to parent body's frame
-            if body1_was_merged:
-                merge_xform = body_merged_transform[old_body1]
-                if constraint_type == EqType.CONNECT:
-                    anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
-                    while len(anchor_values) <= i:
-                        anchor_values.append(None)
-                    anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                if constraint_type == EqType.WELD:
-                    relpose = _at(relpose_values, i, relpose_attr.default)
-                    while len(relpose_values) <= i:
-                        relpose_values.append(None)
-                    relpose_values[i] = merge_xform * relpose
-
-            if body2_was_merged and constraint_type == EqType.WELD:
-                merge_xform = body_merged_transform[old_body2]
-                anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
-                relpose = _at(relpose_values, i, relpose_attr.default)
-                while len(anchor_values) <= i:
-                    anchor_values.append(None)
-                while len(relpose_values) <= i:
-                    relpose_values.append(None)
-                anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
-
-            old_joint1 = _at(joint1_values, i, joint1_attr.default)
-            old_joint2 = _at(joint2_values, i, joint2_attr.default)
-
-            if old_joint1 != -1 and old_joint1 not in joint_remap:
-                if verbose:
-                    logger.warning("Equality constraint references removed joint %s, disabling constraint", old_joint1)
-                while len(enabled_values) <= i:
-                    enabled_values.append(None)
-                enabled_values[i] = False
-
-            if old_joint2 != -1 and old_joint2 not in joint_remap:
-                if verbose:
-                    logger.warning("Equality constraint references removed joint %s, disabling constraint", old_joint2)
-                while len(enabled_values) <= i:
-                    enabled_values.append(None)
-                enabled_values[i] = False
-
         # Remap mimic constraint joint indices
         for i in range(len(self.constraint_mimic_joint0)):
             old_joint0 = self.constraint_mimic_joint0[i]
@@ -8642,35 +8667,6 @@ class ModelBuilder:
                     logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint1)
                 self.constraint_mimic_enabled[i] = False
 
-        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
-        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
-        if target_kind_attr is not None and target_attr is not None and target_attr.values:
-            for eq_idx in range(len(target_attr.values)):
-                target = target_attr.values[eq_idx]
-                if target is None:
-                    continue
-                target_kind_value = (
-                    target_kind_attr.values[eq_idx]
-                    if target_kind_attr.values and eq_idx < len(target_kind_attr.values)
-                    else None
-                )
-                try:
-                    target_kind = int(target_kind_value) if target_kind_value is not None else 0
-                    old_target = int(target)
-                except (TypeError, ValueError):
-                    continue
-                if old_target < 0:
-                    continue
-                if target_kind == 1:
-                    if old_target in joint_remap:
-                        target_attr.values[eq_idx] = joint_remap[old_target]
-                    else:
-                        target_attr.values[eq_idx] = -1
-                        target_kind_attr.values[eq_idx] = 0
-                elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
-                    target_attr.values[eq_idx] = -1
-                    target_kind_attr.values[eq_idx] = 0
-
         # Remap particle-body attachments onto the reindexed bodies. When the anchored body was
         # merged into its parent, the local anchor must be re-expressed in the surviving parent's
         # frame so the attachment keeps its world-space position.
@@ -8685,11 +8681,26 @@ class ModelBuilder:
             else:
                 self.attachment_particle_body_body[i] = body_remap[old_body]
 
-        # Generic entity-reference remap for any custom attribute that points at bodies or joints
-        # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
+        # Frequency-specific fixups need the original body/joint indices, so they run before the
+        # generic reference rewrite below.
+        handler_context = None
+        for frequency in self.custom_frequencies.values():
+            if frequency.collapse_fixed_joints_handler is None:
+                continue
+            if handler_context is None:
+                handler_context = {
+                    "body_remap": body_remap,
+                    "joint_remap": joint_remap,
+                    "articulation_remap": articulation_remap,
+                    "body_merged_parent": body_merged_parent,
+                    "body_merged_transform": body_merged_transform,
+                    "verbose": verbose,
+                }
+            frequency.collapse_fixed_joints_handler(self, handler_context)
+
+        # Generic entity-reference remap for any custom attribute that points at bodies or joints.
         # Body references follow merges: a reference to a body that was merged into its parent
         # resolves to the surviving parent. Joint references to removed joints collapse to -1.
-        # Domain-specific fixups that need the original indices run above, before this rewrite.
         def _remap_body_reference(value: Any) -> Any:
             if value is None:
                 return value

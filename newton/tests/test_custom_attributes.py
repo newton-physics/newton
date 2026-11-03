@@ -2592,6 +2592,176 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(len(arr), model.body_count)
         self.assertTrue(all(v == 7 for v in arr))
 
+    @staticmethod
+    def _add_link_frequency(builder, merge_handler=None, collapse_fixed_joints_handler=None):
+        """Register a ``test:link`` frequency whose target index depends on the row's kind."""
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="link",
+                namespace="test",
+                merge_handler=merge_handler,
+                collapse_fixed_joints_handler=collapse_fixed_joints_handler,
+            )
+        )
+        for name, dtype, default, references in (
+            ("link_kind", wp.int32, 0, None),
+            ("link_target", wp.int32, -1, None),
+            ("link_body", wp.int32, -1, "body"),
+            ("link_joint", wp.int32, -1, "joint"),
+            ("link_point", wp.vec3, wp.vec3(), None),
+        ):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency="test:link",
+                    dtype=dtype,
+                    default=default,
+                    namespace="test",
+                    references=references,
+                )
+            )
+
+    def test_custom_frequency_handlers_validation(self):
+        """Reject non-callable handlers and re-registration with different handlers."""
+        with self.assertRaisesRegex(TypeError, "merge_handler"):
+            ModelBuilder.CustomFrequency(name="link", namespace="test", merge_handler=1)
+        with self.assertRaisesRegex(TypeError, "collapse_fixed_joints_handler"):
+            ModelBuilder.CustomFrequency(name="link", namespace="test", collapse_fixed_joints_handler="x")
+
+        builder = ModelBuilder()
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(name="link", namespace="test", merge_handler=lambda *_args: None)
+        )
+        with self.assertRaisesRegex(ValueError, "different callbacks"):
+            builder.add_custom_frequency(
+                ModelBuilder.CustomFrequency(name="link", namespace="test", merge_handler=lambda *_args: None)
+            )
+
+    def test_custom_frequency_merge_handler(self):
+        """Fix up kind-dependent indices with the merge handler across add_builder and replicate."""
+        calls = []
+
+        def merge(destination, source, context):
+            calls.append((destination, source, dict(context)))
+            kinds = source.custom_attributes["test:link_kind"].values
+            offsets = {0: context["entity_offsets"]["body"], 1: context["entity_offsets"]["joint"]}
+            destination_targets = destination.custom_attributes["test:link_target"].values
+            for row, target in enumerate(source.custom_attributes["test:link_target"].values):
+                if target is not None and target >= 0:
+                    destination_targets[context["row_start"] + row] = target + offsets[kinds[row]]
+
+        sub = ModelBuilder()
+        self._add_link_frequency(sub, merge_handler=merge)
+        sub.add_body(mass=1.0)
+        body1 = sub.add_body(mass=1.0)
+        sub.add_custom_values(**{"test:link_kind": 0, "test:link_target": body1})
+        sub.add_custom_values(**{"test:link_kind": 1, "test:link_target": 0})
+        # Sparse row: the target list stays shorter than the row count or holds None.
+        sub.add_custom_values(**{"test:link_kind": 1})
+        source_targets = list(sub.custom_attributes["test:link_target"].values)
+
+        # Neither destination registers the frequency; the handler comes from the source.
+        scene = ModelBuilder()
+        self.assertNotIn("test:link", scene.custom_frequencies)
+        scene.add_body(mass=1.0)
+        scene.add_builder(sub)
+
+        # A source without rows does not invoke the handler.
+        empty = ModelBuilder()
+        self._add_link_frequency(empty, merge_handler=merge)
+        scene.add_builder(empty)
+        self.assertEqual(len(calls), 1)
+
+        scene.replicate(sub, 2)
+
+        self.assertEqual(len(calls), 3)
+        for destination, source, _context in calls:
+            self.assertIs(destination, scene)
+            self.assertIs(source, sub)
+        contexts = [context for _destination, _source, context in calls]
+        self.assertEqual([context["row_start"] for context in contexts], [0, 3, 6])
+        self.assertEqual([context["row_count"] for context in contexts], [3, 3, 3])
+        self.assertEqual([context["entity_offsets"]["body"] for context in contexts], [1, 3, 5])
+        self.assertEqual([context["entity_offsets"]["joint"] for context in contexts], [1, 3, 5])
+        self.assertEqual([context["world"] for context in contexts], [-1, 0, 1])
+        self.assertEqual(contexts[1]["custom_frequency_offsets"]["test:link"], 3)
+        self.assertEqual(sub.custom_attributes["test:link_target"].values, source_targets)
+        targets = list(scene.custom_attributes["test:link_target"].values)
+        targets += [None] * (9 - len(targets))
+        self.assertEqual(targets, [2, 1, None, 4, 3, None, 6, 5, None])
+
+    def test_custom_frequency_collapse_fixed_joints_handler(self):
+        """Pass original indices and merge transforms to the collapse handler before references are rewritten."""
+        seen = []
+
+        def collapse(builder, context):
+            bodies = builder.custom_attributes["test:link_body"].values
+            joints = builder.custom_attributes["test:link_joint"].values
+            seen.append((list(bodies), list(joints), dict(context)))
+            points = builder.custom_attributes["test:link_point"].values
+            for row, body in enumerate(bodies):
+                if body in context["body_merged_parent"]:
+                    points[row] = wp.transform_point(context["body_merged_transform"][body], points[row])
+
+        builder = ModelBuilder()
+        self._add_link_frequency(builder, collapse_fixed_joints_handler=collapse)
+        root = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0)
+        child = builder.add_link(xform=wp.transform((1.0, 0.0, 1.0), wp.quat_identity()), mass=1.0)
+        hinge = builder.add_joint_revolute(parent=-1, child=root, axis=wp.vec3(0.0, 0.0, 1.0))
+        weld = builder.add_joint_fixed(
+            parent=root, child=child, parent_xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity())
+        )
+        builder.add_articulation([hinge, weld])
+        builder.add_custom_values(
+            **{"test:link_body": child, "test:link_joint": weld, "test:link_point": wp.vec3(0.0, 0.0, 0.5)}
+        )
+
+        builder.collapse_fixed_joints(verbose=False)
+
+        self.assertEqual(len(seen), 1)
+        bodies, joints, context = seen[0]
+        self.assertEqual((bodies, joints), ([child], [weld]))
+        self.assertEqual(context["body_merged_parent"], {child: root})
+        self.assertEqual(context["body_remap"], {-1: -1, root: 0})
+        self.assertEqual(context["joint_remap"], {hinge: 0})
+        self.assertFalse(context["verbose"])
+        self.assertIn("articulation_remap", context)
+        np.testing.assert_allclose(
+            wp.transform_get_translation(context["body_merged_transform"][child]), [1.0, 0.0, 0.0]
+        )
+
+        self.assertEqual(builder.custom_attributes["test:link_body"].values, [0])
+        self.assertEqual(builder.custom_attributes["test:link_joint"].values, [-1])
+        np.testing.assert_allclose(builder.custom_attributes["test:link_point"].values[0], [1.0, 0.0, 0.5])
+
+    def test_collapse_fixed_joints_keeps_custom_referenced_bodies(self):
+        """Keep bodies referenced by any references="body" attribute from merging into the world."""
+        builder = ModelBuilder()
+        self._add_link_frequency(builder)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="shape_anchor",
+                frequency=AttributeFrequency.SHAPE,
+                dtype=wp.int32,
+                default=-1,
+                namespace="test",
+                references="body",
+            )
+        )
+        bodies = []
+        for label in ("unreferenced", "frequency_ref", "shape_ref"):
+            body = builder.add_link(mass=1.0, label=label)
+            builder.add_articulation([builder.add_joint_fixed(parent=-1, child=body)])
+            bodies.append(body)
+        builder.add_shape_sphere(bodies[0], radius=0.1, custom_attributes={"test:shape_anchor": bodies[2]})
+        builder.add_custom_values(**{"test:link_body": bodies[1]})
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_label, ["frequency_ref", "shape_ref"])
+        self.assertEqual(builder.custom_attributes["test:link_body"].values, [0])
+        self.assertEqual(builder.custom_attributes["test:shape_anchor"].values, {0: 1})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

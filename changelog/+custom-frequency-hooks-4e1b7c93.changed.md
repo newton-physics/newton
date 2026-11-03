@@ -1,0 +1,1 @@
+Keep bodies referenced by any custom attribute declaring `references="body"` from being merged into the world by `ModelBuilder.collapse_fixed_joints()`, so the reference keeps a body frame instead of becoming `-1`. Previously only MuJoCo equality-constraint bodies were kept; set the reference to `-1` before collapsing to let such a body merge into the world.
