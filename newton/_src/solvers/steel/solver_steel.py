@@ -16,7 +16,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected
-from ...core.types import override
+from ...core.types import MAXVAL, override
 from ...exceptions import NewtonWarning
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
@@ -1266,13 +1266,21 @@ class SolverSteel(SolverBase, CouplingInterface):
       mimic constraints) within one articulation: one bilateral row per follower
       coordinate enforces ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The
       coefficients are read every step.
-    - Loop-closing BALL joints (joints outside the articulation tree whose child belongs
-      to an articulation): three bilateral rows pin the joint's parent and child anchors
-      together. The parent is in the child's articulation, a kinematic body, or the
-      world. The closure rows read :attr:`~newton.Model.joint_enabled` and the
-      translations of :attr:`~newton.Model.joint_X_p` / :attr:`~newton.Model.joint_X_c`
-      every step, so a closure is released, engaged or re-anchored by editing those
-      arrays in place, also from a kernel between CUDA graph replays. An eager step reads
+    - Loop-closing BALL and REVOLUTE joints (joints outside the articulation tree whose
+      child belongs to an articulation): three bilateral rows pin the joint's parent and
+      child anchors together, and a REVOLUTE closure adds two rows that keep the child's
+      hinge axis on the parent's hinge line. A closure has no joint coordinate, so the
+      limits, drive gains, damping, armature, velocity limit and
+      :attr:`~newton.Control.joint_f` of a loop-closing REVOLUTE joint's DOF are ignored.
+      The solver warns at construction, and on an eager joint or joint DOF notification,
+      if limits, drive gains, damping or armature are set, or if the hinge axis is zero or
+      non-finite.
+      The parent is in the child's articulation, a kinematic body, or the world. The closure
+      rows read :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_X_p` /
+      :attr:`~newton.Model.joint_X_c` and, for a REVOLUTE closure,
+      :attr:`~newton.Model.joint_axis` every step, so a closure is released, engaged,
+      re-anchored or re-aimed by editing those arrays in place, also from a kernel between
+      CUDA graph replays. An eager step reads
       a replaced array; a captured graph keeps the arrays it was captured with, so
       recapture after replacing one. With
       ``enable_bilateral_preelimination`` the mimic and connect rows are eliminated
@@ -2983,8 +2991,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         (kinematic flags) and inertial changes request a mass-matrix refresh of every
         articulation on the next step, independent of ``update_mass_matrix_interval``. Body
         flags (kinematic membership), armature, joint damping (joint DOF or DOF force changes)
-        and shape friction and restitution coefficients are re-read. Other model data, such
-        as gravity, limits and shape transforms, is read every step. A kinematic free
+        and shape friction and restitution coefficients are re-read. Shape type and source
+        changes, as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes
+        device contact torsion supports. Other model data, such as gravity, limits and shape
+        transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
@@ -3006,7 +3016,10 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
-        raises :class:`ValueError` for invalid values, after applying every other update. A captured notification skips this check.
+        raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
+        REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
+        DOF inputs and axes on the host to warn about the ones a closure ignores. A captured notification
+        skips both checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3060,6 +3073,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._mass_update_requested.fill_(1)
         if self._friction_anchors_enabled and flags & ModelFlags.SHAPE_PROPERTIES:
             self._friction_patches.update_geometry(self.model)
+        if self._device_torsion is not None and flags & ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            self._device_torsion.update_shape_types(self.model)
         if (
             self._sparse_mass_matrix_size is not None
             and flags & ModelFlags.SHAPE_PROPERTIES
@@ -3078,6 +3093,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._clear_warmstart_history(world_mask)
         if self._enable_joint_friction and flags & dof_force and not wp.get_stream(self.model.device).is_capturing:
             self._validate_joint_friction()
+        joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
+        if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
+            self._warn_ignored_revolute_loop_inputs(stacklevel=3)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
@@ -3840,10 +3858,10 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _build_connect_plan(self, model) -> None:
         """Build the static lookup tables of the connect (loop-closure) rows.
 
-        Loop-closing BALL joints are kept out of the articulation tree by
+        Loop-closing BALL and REVOLUTE joints are kept out of the articulation tree by
         :meth:`_SteelModelPlan.build` and enforced as three rows pinning the joint's
-        parent and child anchors together. A closure belongs to its child body's
-        articulation. Its parent is either in that articulation or prescribed: a kinematic
+        parent and child anchors together, plus two hinge-axis rows for a REVOLUTE
+        closure. A closure belongs to its child body's articulation. Its parent is either in that articulation or prescribed: a kinematic
         body (:attr:`~newton.BodyFlags.KINEMATIC`) or the world. A prescribed parent
         contributes no DOFs; its anchor velocity enters the row target. Other loop-closing
         joints raise :class:`NotImplementedError`. The rows read the joint's enabled flag and
@@ -3855,10 +3873,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._connect_at_midpoint = None
         loop_joint_articulation = self._model_plan.loop_joint_articulation
         loop_joints = np.flatnonzero(loop_joint_articulation >= 0)
+        self._revolute_loop_joints = np.zeros(0, dtype=np.int32)
         if loop_joints.size == 0:
             return
 
         joint_type = model.joint_type.numpy()
+        self._revolute_loop_joints = loop_joints[joint_type[loop_joints] == int(JointType.REVOLUTE)]
+        self._warn_ignored_revolute_loop_inputs(stacklevel=4)
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
         body_articulation = self._body_to_articulation.numpy()
@@ -3867,13 +3888,17 @@ class SolverSteel(SolverBase, CouplingInterface):
         articulation_world = self._model_plan.articulation_world
 
         art_l, body_p, body_c, prescribed_l = [], [], [], []
-        joint_l, foreign_l = [], []
+        joint_l, foreign_l, rows_l = [], [], []
         for j in loop_joints.tolist():
             art = int(loop_joint_articulation[j])
-            if int(joint_type[j]) != int(JointType.BALL):
+            if int(joint_type[j]) == int(JointType.BALL):
+                rows = 3
+            elif int(joint_type[j]) == int(JointType.REVOLUTE):
+                rows = 5
+            else:
                 raise NotImplementedError(
                     f"SolverSteel: loop-closing joint {j} is a {JointType(joint_type[j]).name} joint; "
-                    "only BALL loop-closing joints are supported."
+                    "only BALL and REVOLUTE loop-closing joints are supported."
                 )
             parent = int(joint_parent[j])
             prescribed = 0
@@ -3897,6 +3922,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             prescribed_l.append(prescribed)
             joint_l.append(j)
             foreign_l.append(foreign)
+            rows_l.append(rows)
 
         n = len(art_l)
         if n == 0:
@@ -3918,9 +3944,45 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._connect_parent_prescribed = wp.array(self._connect_parent_prescribed_np, dtype=wp.int32, device=device)
         self._connect_sizes = frozenset(int(response_dof_count[a]) for a in np.unique(art_np))
         self._connect_slot = wp.full((n,), -1, dtype=wp.int32, device=device)
-        self._connect_row_inv_norm = wp.zeros((n, 3), dtype=float, device=device)
+        self._connect_rows_np = np.asarray(rows_l, dtype=np.int32)
+        self._connect_rows = wp.array(self._connect_rows_np, dtype=wp.int32, device=device)
+        # Three point rows, then the two hinge rows of a REVOLUTE closure.
+        self._connect_row_inv_norm = wp.zeros((n, 5), dtype=float, device=device)
         self._connect_at_midpoint = wp.zeros(n, dtype=wp.int32, device=device)
         self._connect_count = n
+
+    def _warn_ignored_revolute_loop_inputs(self, stacklevel: int) -> None:
+        """Warn about the DOF inputs of loop-closing REVOLUTE joints that a closure ignores, and about a degenerate axis."""
+        if self._revolute_loop_joints.size == 0:
+            return
+        model = self.model
+        dofs = model.joint_qd_start.numpy()[self._revolute_loop_joints]
+        lower, upper = model.joint_limit_lower.numpy()[dofs], model.joint_limit_upper.numpy()[dofs]
+        # The builder's +/-MAXVAL default and +/-inf mean unlimited; any other bound is set.
+        unlimited = lower.dtype.type(MAXVAL)
+        inputs = {
+            "limits": (np.isfinite(lower) & (lower != -unlimited)) | (np.isfinite(upper) & (upper != unlimited)),
+            "drive gains": (model.joint_target_ke.numpy()[dofs] != 0.0) | (model.joint_target_kd.numpy()[dofs] != 0.0),
+            "damping": model.joint_damping.numpy()[dofs] != 0.0,
+            "armature": model.joint_armature.numpy()[dofs] != 0.0,
+        }
+        axis = model.joint_axis.numpy()[dofs]
+        degenerate_axis = ~np.any(axis, axis=1) | ~np.all(np.isfinite(axis), axis=1)
+        for i, j in enumerate(self._revolute_loop_joints.tolist()):
+            ignored = [name for name, flagged in inputs.items() if flagged[i]]
+            if ignored:
+                warnings.warn(
+                    f"SolverSteel: loop-closing REVOLUTE joint {j} has {', '.join(ignored)}, which a loop closure ignores.",
+                    NewtonWarning,
+                    stacklevel=stacklevel,
+                )
+            if degenerate_axis[i]:
+                warnings.warn(
+                    f"SolverSteel: loop-closing REVOLUTE joint {j} has a zero or non-finite axis, so it closes the loop "
+                    "like a BALL joint.",
+                    NewtonWarning,
+                    stacklevel=stacklevel,
+                )
 
     def _validate_connect_parent_membership(self) -> None:
         """Reject a body-flag change that would invalidate the prescribed-parent closures.
@@ -3993,8 +4055,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             for art, count in enumerate(np.diff(self._mimic_art_start_np)):
                 if count:
                     counts[art] = int(count)
-        for art in self._connect_art_np.tolist() if self._connect_count else ():
-            counts[art] = counts.get(art, 0) + 3
+        if self._connect_count:
+            for art, row_count in zip(self._connect_art_np.tolist(), self._connect_rows_np.tolist(), strict=True):
+                counts[art] = counts.get(art, 0) + row_count
         if not counts:
             return
         rows = max(counts.values())
@@ -4089,7 +4152,13 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.launch(
                     allocate_connect_slots,
                     dim=self._connect_count,
-                    inputs=[self._connect_joint, model.joint_enabled, self._connect_world, max_constraints],
+                    inputs=[
+                        self._connect_joint,
+                        self._connect_rows,
+                        model.joint_enabled,
+                        self._connect_world,
+                        max_constraints,
+                    ],
                     outputs=[
                         self._connect_slot,
                         self._slot_counter,
@@ -4116,6 +4185,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._connect_joint,
                         self._connect_body_p,
                         self._connect_body_c,
+                        self._connect_rows,
+                        model.joint_axis,
                         model.joint_X_p,
                         model.joint_X_c,
                         self._connect_parent_prescribed,
@@ -4162,6 +4233,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._mimic_count if self._bilateral_preelimination_include_mimics else 0,
                     self._connect_slot if self._connect_count else self._dummy_is_free_rigid,
                     self._connect_art if self._connect_count else self._dummy_is_free_rigid,
+                    self._connect_rows if self._connect_count else self._dummy_is_free_rigid,
                     self._connect_count,
                     self._J_by_size[size],
                     self._Y_by_size[size],
@@ -7278,6 +7350,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._connect_body_p,
                     self._connect_body_c,
                     self._connect_joint,
+                    self._connect_rows,
+                    model.joint_axis,
+                    model.joint_qd_start,
                     model.joint_X_p,
                     model.joint_X_c,
                     self._connect_at_midpoint,
@@ -8268,6 +8343,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 dim=model.articulation_count,
                 inputs=[
                     model.articulation_start,
+                    self._articulation_joint_end,
                     model.joint_type,
                     model.joint_child,
                     model.joint_qd_start,
@@ -8405,6 +8481,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_H_rows,
                         model.joint_type,
                         model.joint_qd_start,
@@ -9364,6 +9441,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         self._articulation_H_rows,
                         model.joint_type,
@@ -9438,6 +9516,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=self._n_arts_by_size[size],
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         model.joint_type,
                         model.joint_q_start,
@@ -9653,6 +9732,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         self._articulation_H_rows,
                         model.joint_type,
@@ -9684,6 +9764,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=self._n_arts_by_size[size],
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         model.joint_type,
                         model.joint_qd_start,
@@ -14862,6 +14943,13 @@ def _get_pgs_solve_mf_gs_kernel(
         "pre_dY_{k} = Y_world.data[next_jy_base + {d}]; }"
     )
     dense_dot = lanes("            if ({d} < " + str(D) + ") my_sum += cur_dJ_{k} * s_v[{d}];")
+    # A friction pair's sibling J v and cross term J_i Y_sib, with row i's J from the prefetch registers.
+    dense_pair_dot = lanes(
+        "                    if ({d} < "
+        + str(D)
+        + ") { sibling_residual += J_world.data[sib_row_base + {d}] * s_v[{d}]; "
+        "cross += cur_dJ_{k} * Y_world.data[sib_row_base + {d}]; }"
+    )
     dense_v_update = lanes("                if ({d} < " + str(D) + ") s_v[{d}] += cur_dY_{k} * delta_impulse;")
 
     dense_velocity_limit_pass = (
@@ -15009,10 +15097,7 @@ def _get_pgs_solve_mf_gs_kernel(
                     float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
                     float sibling_residual = 0.0f;
                     float cross = 0.0f;
-                    for (int d = lane; d < {D}; d += 32) {{
-                        sibling_residual += J_world.data[sib_row_base + d] * s_v[d];
-                        cross += J_world.data[jy_world_base + i * {D} + d] * Y_world.data[sib_row_base + d];
-                    }}
+{dense_pair_dot}
                     sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
                     cross = warp_sum(cross);
                     float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
@@ -15096,6 +15181,13 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_friction_radius = ""
         dense_friction_denominator_guard = ""
         mf_friction_denominator_guard = ""
+
+    # The pair solve at a contact's first friction row also writes the second, so the sweep skips that row.
+    dense_second_friction_skip = (
+        f"            if (row_type == {friction_type} && i != ((s_meta_dense[i] >> {type_bits}) - 1) + 1) continue;"
+        if friction_mode not in ("bisection", "bisection_desaxce")
+        else ""
+    )
 
     local_internal_skip = (
         f"""
@@ -15186,6 +15278,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 __syncwarp();
                 continue;
             }}
+{dense_second_friction_skip}
             float denom = s_diag_dense[i];
             if (denom <= 0.0f{dense_friction_denominator_guard}) continue;
 
@@ -15234,15 +15327,18 @@ def _get_pgs_solve_mf_gs_kernel(
                 pre_MiJtb = mf_MiJt_b.data[mf6_base + lane - 6];
             }}
         }}
-        for (int i = 0; i < mf_main_end; i++) {{
+        for (int i = 0, next_i = 0; i < mf_main_end; i = next_i) {{
             int4 meta = pre_meta;
             float cur_Ja = pre_Ja;
             float cur_Jb = pre_Jb;
             float cur_MiJta = pre_MiJta;
             float cur_MiJtb = pre_MiJtb;
-            if (i + 1 < mf_main_end) {{
-                int next_mf6 = mf6_base + (i + 1) * 6;
-                pre_meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + (i + 1) * 4]);
+            // The first row of a friction pair also solves the second, so the sweep steps over it.
+            next_i = i + 1;
+            if ((meta.w & 0xFFFF) == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i == (meta.w >> 16) + 1) next_i = i + 2;
+            if (next_i < mf_main_end) {{
+                int next_mf6 = mf6_base + next_i * 6;
+                pre_meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + next_i * 4]);
                 if (lane < 6) {{
                     pre_Ja = mf_J_a.data[next_mf6 + lane];
                     pre_MiJta = mf_MiJt_a.data[next_mf6 + lane];
@@ -15261,6 +15357,7 @@ def _get_pgs_solve_mf_gs_kernel(
             int mf_par = packed_tp >> 16;
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && global_iter < friction_start_iteration) {{
                 s_lam_mf[i] = 0.0f;
+                if (next_i == i + 2) s_lam_mf[i + 1] = 0.0f;
                 __syncwarp();
                 continue;
             }}

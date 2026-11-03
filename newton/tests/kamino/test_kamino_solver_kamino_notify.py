@@ -213,33 +213,25 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             newton.ModelFlags.TENDON_PROPERTIES,
         )
 
-        with mock.patch.object(solver._kamino.msg, "warning") as warning:
-            for flag in noop_flags:
-                with self.subTest(flag=flag.name):
-                    warning.reset_mock()
+        for flag in noop_flags:
+            with self.subTest(flag=flag.name):
+                with self.assertNoLogs("newton", level="WARNING"):
                     solver.notify_model_changed(flag)
-                    warning.assert_not_called()
-                    _assert_model_arrays_unchanged(model, snapshot)
+                _assert_model_arrays_unchanged(model, snapshot)
 
     def test_unknown_flags_warn_without_raising(self):
         """Unknown flags warn while leaving Newton arrays untouched."""
         model = _build_revolute(limited=True)
         solver = SolverKamino(model)
         snapshot = _snapshot_model_arrays(model)
-        warning_message = "SolverKamino.notify_model_changed: flags 0x%x not yet supported"
         custom_flag = 1 << 20
+        warning_message = f"SolverKamino.notify_model_changed: flags 0x{custom_flag:x} not yet supported"
 
-        with mock.patch.object(solver._kamino.msg, "warning") as warning:
+        with self.assertLogs("newton", level="WARNING") as logs:
             solver.notify_model_changed(custom_flag)
             solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | custom_flag)
 
-        warning.assert_has_calls(
-            [
-                mock.call(warning_message, custom_flag),
-                mock.call(warning_message, custom_flag),
-            ]
-        )
-        self.assertEqual(warning.call_count, 2)
+        self.assertEqual([record.getMessage() for record in logs.records], [warning_message, warning_message])
         _assert_model_arrays_unchanged(model, snapshot)
 
     def test_lox_negative_joint_effort_limit_raises(self):

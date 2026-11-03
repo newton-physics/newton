@@ -4709,6 +4709,30 @@ class TestMuJoCoSolverFixedTendonProperties(unittest.TestCase):
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
+    def test_zero_capacity_contacts_clear_collision_counts(self):
+        """Clear collision counts when converting empty contact storage."""
+        model = self._build_grounded_spheres(1)
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        self.assertGreater(int(solver.mjw_data.nacon.numpy()[0]), 0)
+
+        empty = newton.Contacts(0, 0, device=model.device)
+        for _ in range(2):
+            solver.mjw_data.ncollision.fill_(7)
+            solver._convert_contacts_to_mjwarp(model, state, empty)
+            self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 0)
+            self.assertEqual(int(solver.mjw_data.ncollision.numpy()[0]), 0)
+
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), int(contacts.rigid_contact_count.numpy()[0]))
+
     @staticmethod
     def _build_grounded_spheres(sphere_count):
         """Build a single-world model with separated spheres touching the ground."""

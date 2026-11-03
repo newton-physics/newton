@@ -106,6 +106,51 @@ def _run_incline(steps: int, dt: float, **solver_kwargs):
     return float(np.dot(v, down_slope)), float(np.linalg.norm(v - np.dot(v, down_slope) * down_slope)), solver, contacts
 
 
+def _mesh_incline_model(mus):
+    """Boxes released on 15-degree static mesh slabs, one world per friction coefficient.
+
+    Each slab's top face is two triangles whose shared diagonal runs under the box, so the box's footprint
+    gets redundant contacts. Returns the model and the down-slope direction.
+    """
+    rot = wp.quat_from_axis_angle(wp.vec3(0.0, -1.0, 0.0), float(np.radians(15.0)))
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    for mu in mus:
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        world.add_shape_mesh(
+            -1,
+            mesh=newton.Mesh.create_box(1.0, 0.1, 0.025, compute_inertia=False),
+            xform=wp.transform(wp.vec3(0.0), rot),
+            cfg=newton.ModelBuilder.ShapeConfig(mu=mu, restitution=0.0),
+        )
+        start = wp.quat_rotate(rot, wp.vec3(-0.3, 0.0, 0.025 + 0.04 + 0.0005))
+        box = world.add_body(xform=wp.transform(start, rot))
+        world.add_shape_box(box, hx=0.05, hy=0.05, hz=0.04, cfg=newton.ModelBuilder.ShapeConfig(mu=mu, density=500.0))
+        builder.add_world(world)
+    return builder.finalize(), -np.array(wp.quat_rotate(rot, wp.vec3(1.0, 0.0, 0.0)))
+
+
+def _run_mesh_incline(model, seconds: float, dt: float, iterations: int):
+    """Step the inclines with friction patches; return per-step body poses and velocities, and the solver."""
+    solver = newton.solvers.SolverSteel(
+        model, solve_mode="matrix_free", iterations=iterations, friction_anchor_beta=0.2
+    )
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    contacts = pipeline.contacts()
+    s0, s1 = model.state(), model.state()
+    control = model.control()
+    steps, bodies = round(seconds / dt), model.body_count
+    poses = wp.empty(steps * bodies, dtype=wp.transform)
+    velocities = wp.empty(steps * bodies, dtype=wp.spatial_vector)
+    for step in range(steps):
+        pipeline.collide(s0, contacts)
+        s0.clear_forces()
+        solver.step(s0, s1, control, contacts, dt)
+        s0, s1 = s1, s0
+        wp.copy(poses, s0.body_q, dest_offset=step * bodies, count=bodies)
+        wp.copy(velocities, s0.body_qd, dest_offset=step * bodies, count=bodies)
+    return poses.numpy().reshape(steps, bodies, 7), velocities.numpy().reshape(steps, bodies, 6), solver
+
+
 @unittest.skipUnless(wp.is_cuda_available(), "SolverSteel requires CUDA")
 class TestSteelFrictionAnchors(unittest.TestCase):
     def test_explicit_opt_out_keeps_friction_rows_velocity_only(self):
@@ -200,6 +245,52 @@ class TestSteelFrictionAnchors(unittest.TestCase):
         n = int(contacts.rigid_contact_count.numpy()[0])
         if n > 0:
             self.assertEqual(int(solver._friction_patches.current.valid.numpy()[:n].sum()), 0)
+
+    def test_anchors_release_on_a_sliding_mesh_footprint(self):
+        """Slide down a mesh incline at the Coulomb acceleration when the footprint has redundant contacts."""
+        dt, mu = 1.0 / 120.0, 0.25
+        model, down_slope = _mesh_incline_model([mu])
+        _, velocities, _ = _run_mesh_incline(model, 2.0, dt, iterations=32)
+        speed = velocities[:, 0, :3] @ down_slope
+        t = dt * np.arange(1, len(speed) + 1)
+        window = t > 0.5
+        accel = np.polyfit(t[window], speed[window], 1)[0]
+        theta = np.radians(15.0)
+        expected = 9.81 * (np.sin(theta) - mu * np.cos(theta))
+        self.assertAlmostEqual(accel, expected, delta=0.01 * expected)
+
+    def test_anchors_hold_near_the_cone_on_a_mesh_incline(self):
+        """Hold boxes that need 95 to 99% of their Coulomb budget on a mesh incline, within bounded creep.
+
+        At 8 and 12 iterations and 240 Hz the boxes hold and carry their anchors. A coarser step can release a
+        near-cone anchor during the landing; the accepted creep there is bounded.
+        """
+        demands = (0.95, 0.97, 0.99)
+        model, down_slope = _mesh_incline_model([np.tan(np.radians(15.0)) / demand for demand in demands])
+        # (iterations, rate [Hz], measured window after 0.5 s [s], creep bound [m])
+        for iterations, rate, window, bound in (
+            (8, 240, 0.5, 1.0e-5),
+            (12, 240, 0.5, 1.0e-5),
+            (8, 120, 1.0, 6.0e-4),
+        ):
+            dt = 1.0 / rate
+            poses, _, solver = _run_mesh_incline(model, 0.5 + window, dt, iterations)
+            creep = (poses[-1, :, :3] - poses[round(0.5 / dt) - 1, :, :3]) @ down_slope
+            for demand, distance in zip(demands, creep, strict=True):
+                with self.subTest(iterations=iterations, rate=rate, demand=demand):
+                    self.assertLess(abs(distance), bound)
+            if bound > 1.0e-5:
+                continue
+            anchors = solver._friction_patches.view.weight.numpy() > 0.0
+            boxes = solver._friction_patches.current.body_a.numpy()
+            sources = solver._friction_patches.current.source.numpy()
+            valid = solver._friction_patches.current.valid.numpy()
+            for box, demand in enumerate(demands):
+                with self.subTest(iterations=iterations, rate=rate, demand=demand):
+                    held = anchors & (boxes == box)
+                    self.assertTrue(held.any())
+                    self.assertTrue((sources[held] >= 0).all())
+                    self.assertTrue((valid[held] != 0).all())
 
     def test_row_builders_store_anchor_separation_per_route(self):
         """Store raw separation in dense rows and gain-scaled separation in free-body rows."""
@@ -1413,7 +1504,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         np.testing.assert_allclose(patches.view.weight.numpy()[:2], [0.5, 0.5])
 
     def test_saturation_only_releases_an_anchor_with_sliding_motion(self):
-        """Keep history under impending slip, and release it under motion against saturated friction."""
+        """Keep history under impending slip; release it under motion against friction at or just inside the cone."""
         _, state, contacts, patches = _patch_fixture([[0, 0, 0]])
         zeros = wp.zeros(1, dtype=int, device=_DEVICE)
         lengths = wp.array([3], dtype=int, device=_DEVICE)
@@ -1450,8 +1541,17 @@ class TestFrictionPatchHistory(unittest.TestCase):
         velocity.assign([[0, -0.1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]])
         wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
         self.assertEqual(patches.current.valid.numpy()[0], 0)
+        # Normal impulse 2 and mu 0.5 give a radius of 1. A slipping anchor a few percent inside it is
+        # released; one well inside it keeps its history.
+        for tangent, retained in ((0.97, 0), (0.5, 1)):
+            with self.subTest(tangent=tangent):
+                patches.current.valid.fill_(1)
+                impulses.assign([[2, tangent, 0]])
+                wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
+                self.assertEqual(patches.current.valid.numpy()[0], retained)
         # Contact rows see a body outside every articulation at rest, so its passed-through velocity is not sliding.
         patches.current.valid.fill_(1)
+        impulses.assign([[2, 1, 0]])
         articulation.fill_(-1)
         wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
         self.assertEqual(patches.current.valid.numpy()[0], 1)

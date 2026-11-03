@@ -3823,7 +3823,7 @@ f 4 5 8
         )
 
     def test_autolimits_false_joint_effort_limit(self):
-        """Test that autolimits=false prevents auto-applying effort_limit from actuatorfrcrange."""
+        """Test that actuatorfrcrange sets effort_limit only when actuatorfrclimited resolves to true."""
         mjcf_autolimits_true = """<?xml version="1.0" ?>
 <mujoco>
   <worldbody>
@@ -3847,7 +3847,7 @@ f 4 5 8
       <geom type="box" size="0.1 0.1 0.1"/>
       <body name="link1" pos="0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-1 1" limited="true"
-               actuatorfrcrange="-100 100"/>
+               actuatorfrclimited="false" actuatorfrcrange="-100 100"/>
         <geom type="cylinder" size="0.05 0.025"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
@@ -3864,7 +3864,7 @@ f 4 5 8
         effort_limit_true = model_true.joint_effort_limit.numpy()[0]
         self.assertAlmostEqual(effort_limit_true, 100.0, places=4)
 
-        # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
+        # With explicit actuatorfrclimited="false", the force range is inert
         builder_false = newton.ModelBuilder()
         builder_false.add_mjcf(mjcf_autolimits_false)
         model_false = newton.ModelBuilder()
@@ -9151,6 +9151,70 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         # actlimited should be auto (2) — MuJoCo resolves it during compilation
         actlimited = model.mujoco.actuator_actlimited.numpy()
         self.assertEqual(actlimited[0], 2)
+
+
+class TestMjcfJointLimited(unittest.TestCase):
+    """Compare MJCF joint ``limited`` resolution against native MuJoCo."""
+
+    @staticmethod
+    def _xml(joint_attrs, actuator="", compiler=""):
+        return f"""<mujoco><compiler {compiler}/><worldbody><body>
+            <joint name="j" {joint_attrs}/><geom type="sphere" size="0.1" mass="1"/>
+        </body></worldbody><actuator>{actuator}</actuator></mujoco>"""
+
+    def _compare(self, joint_attrs, actuator="", compiler=""):
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        xml = self._xml(joint_attrs, actuator, compiler)
+        native = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+        np.testing.assert_array_equal(solver.mj_model.jnt_limited, native.jnt_limited)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
+
+    def test_disabled_joint_limits_are_not_enforced(self):
+        """Import ``limited="false"`` ranges as unlimited joints."""
+        for joint_type in ("hinge", "slide"):
+            with self.subTest(joint_type=joint_type):
+                self._compare(f'type="{joint_type}" limited="false" range="-1 2"')
+
+    def test_auto_zero_ranges_are_unlimited(self):
+        """Treat all-zero auto ranges as unlimited, for joint and actuator force ranges."""
+        self._compare('type="hinge" range="0 0"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self._xml('type="hinge" actuatorfrcrange="0 0"'))
+        self.assertEqual(builder.joint_effort_limit[0], builder.default_joint_cfg.effort_limit)
+
+    def test_inheritrange_uses_disabled_joint_range(self):
+        """Inherit actuator ranges from disabled joint ranges like native MuJoCo."""
+        for joint_type in ("hinge", "slide"):
+            for angle in ("degree", "radian"):
+                with self.subTest(joint_type=joint_type, angle=angle):
+                    self._compare(
+                        f'type="{joint_type}" limited="false" range="-1 2" ref="0.5"',
+                        '<position joint="j" inheritrange="0.5"/>',
+                        f'angle="{angle}"',
+                    )
+
+    def test_inheritrange_disabled_range_follows_resolved_dof(self):
+        """Read the inert range of the DOF the actuator resolved to, not a sanitized-name alias."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        xml = """<mujoco><worldbody>
+            <body name="b1"><joint name="a-b" limited="false" range="0 1"/><geom size="0.1" mass="1"/></body>
+            <body name="b2"><joint name="a_b" range="-1 1"/><geom size="0.1" mass="1"/></body>
+        </worldbody><actuator><position joint="a_b" inheritrange="1"/></actuator></mujoco>"""
+        native = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
+
+    def test_autolimits_false_rejects_range_without_limited(self):
+        """Reject ranges without an explicit limited flag under ``autolimits="false"``, like MuJoCo."""
+        for attrs in ('range="-1 2"', 'actuatorfrcrange="-1 2"'):
+            with self.subTest(attrs=attrs):
+                with self.assertRaisesRegex(ValueError, "autolimits"):
+                    newton.ModelBuilder().add_mjcf(self._xml(f'type="hinge" {attrs}', compiler='autolimits="false"'))
 
 
 class TestMjcfDefaultCustomAttributes(unittest.TestCase):

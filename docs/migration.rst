@@ -110,7 +110,7 @@ offsets ``[0, 1, 2, 3]`` to ``[2, (0, 1), (3, 4), 5]``, and use
 :attr:`newton.Model.joint_q_start` and
 :attr:`newton.Model.joint_qd_start` to locate each Rod slice.
 
-Rod angular rest is stored in :attr:`newton.Model.joint_target_q`; after
+Rod angular rest is stored in :attr:`newton.Model.joint_rest_q`; after
 editing it, call :meth:`newton.solvers.SolverVBD.notify_model_changed` with
 :attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`. Editing
 :attr:`newton.Model.body_q` no longer changes angular rest.
@@ -222,7 +222,7 @@ translation for free joints), matching ``joint_q``. Migration notes coming from 
 Newton 1.8 removes ``newton.use_coord_layout_targets`` and the legacy DOF-shaped position-target
 layout, deprecated in 1.5. Remove assignments to the flag and reads of
 ``Model.use_coord_layout_targets``. Replace DOF-based position-target indices with coordinate
-indices, and replace raw Euler-angle targets for ball/free/distance/rod joints with unit
+indices, and replace raw Euler-angle targets for ball/free/distance joints with unit
 quaternions. ``Model.joint_target_q_start`` remains an alias for ``Model.joint_q_start``.
 
 
