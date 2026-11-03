@@ -46,6 +46,10 @@ class ActuatorParsed:
     controller_class = RemovedAttribute("drive_class", removed_in="1.8")
     controller_kwargs = RemovedAttribute("drive_kwargs", removed_in="1.8")
 
+    def __post_init__(self) -> None:
+        if self.component_specs is None:
+            self.component_specs = []
+
 
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
 
