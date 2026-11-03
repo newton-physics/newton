@@ -154,7 +154,6 @@ jobs:
     env:
       HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
-      OVRTX_SHADER_CACHE: /actions-runner/.cache/ovrtx-nv-shadercache
       # Enable crash uploads for CI investigations.
       OMNI_CRASH_REPORTER_DEV_INTERNAL: "1"
       OMNI_CRASHREPORTER_URL: "https://services.nvidia.com/submit"
@@ -201,18 +200,38 @@ jobs:
         run: df -h
 
       # The first OVRTX renderer otherwise spends minutes compiling Vulkan shaders
-      # in the driver. OVRTX keeps that driver cache inside its installed package.
-      - name: Link OVRTX shader cache
+      # in the driver. OVRTX 0.6 moved the writable cache out of its installed package.
+      - name: Locate OVRTX shader cache
         id: ovrtx-shader-cache
+        env:
+          GPU_ARCH: ${{ steps.gpu-arch.outputs.sm }}
+          GPU_DRIVER: ${{ steps.gpu-arch.outputs.driver }}
         run: |
-          ovrtx_info=$(uv run --extra dev --extra torch-cu13 --extra rtx python -c \
-            "import importlib.metadata as m, os, ovrtx; print(os.path.dirname(ovrtx.__file__), m.version('ovrtx'))")
-          ovrtx_dir=${ovrtx_info% *}
-          test -d "$ovrtx_dir/bin/cache"
-          mkdir -p "$OVRTX_SHADER_CACHE"
-          rm -rf "$ovrtx_dir/bin/cache/nv_shadercache"
-          ln -s "$OVRTX_SHADER_CACHE" "$ovrtx_dir/bin/cache/nv_shadercache"
-          echo "key=ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-${ovrtx_info##* }" >> "$GITHUB_OUTPUT"
+          uv run --extra dev --extra torch-cu13 --extra rtx python - <<'PY'
+          import os
+          from importlib.metadata import version
+          from pathlib import Path
+
+          import ovrtx
+
+          renderer_version = version("ovrtx")
+          if renderer_version.startswith("0.5."):
+              shader_cache = Path(ovrtx.__file__).parent / "bin/cache/nv_shadercache"
+          else:
+              cache_root = Path(os.environ.get("XDG_CACHE_HOME", ""))
+              if not cache_root.is_absolute():
+                  cache_root = Path.home() / ".cache"
+              release = ".".join(renderer_version.split(".")[:3])
+              shader_cache = cache_root / "ovrtx" / release / "nv_shadercache"
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              print(f"OVRTX_SHADER_CACHE={shader_cache}", file=output)
+
+          gpu_arch = os.environ["GPU_ARCH"]
+          gpu_driver = os.environ["GPU_DRIVER"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"key=ovrtx-nv-shadercache-v2-{gpu_arch}-{gpu_driver}-{renderer_version}", file=output)
+          PY
 
       # Compiled shaders are specific to the GPU and driver. Unlike the Warp cache,
       # post-submit runs restore it too: the driver validates its own entries.
@@ -222,8 +241,6 @@ jobs:
         with:
           path: ${{ env.OVRTX_SHADER_CACHE }}
           key: ${{ steps.ovrtx-shader-cache.outputs.key }}
-          restore-keys: |
-            ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-
 
       # Concurrent CUDA graph workloads can hit driver Xid 31 / GPCCLIENT_GCC
       # faults on Ada (see NVIDIA/TensorRT#3633 and newton-physics/newton#2831).
