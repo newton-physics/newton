@@ -1,1 +1,0 @@
-Fix `SolverMuJoCo` free- and ball-joint state drifting when it is synced every step (the default `update_data_interval=1`). The frame conversions rotated by float32 quaternions that are not exactly unit length, which grew a steady 3 rad/s spin by about 0.01 rad/s over 15360 steps and moved a free body at rest away from a rotated parent anchor.
