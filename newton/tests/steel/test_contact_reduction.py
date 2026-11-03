@@ -23,6 +23,7 @@ from newton.tests.test_contact_reduction_body_pairs import (
 )
 
 STEEL_PROPAGATION_PATH = 2
+RUN_TO_RUN = wp.DeterministicMode.RUN_TO_RUN
 
 
 def _foot_model(pos=(0.0, 0.0, 0.020)):
@@ -645,12 +646,15 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
             control = model.control()
             pipe_red = _make_pipeline(model, True, body_pair_verify=True)
-            pipe_raw = newton.CollisionPipeline(model, broad_phase="nxn")
+            pipe_raw = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
             c_red, c_raw = pipe_red.contacts(), pipe_raw.contacts()
             # Seven colliders per body generate thousands of speculative rows.
             # Both consumers must retain them for this to test reduction stability.
             mf_capacity = 3 * max(c_red.rigid_contact_max, c_raw.rigid_contact_max)
-            solver = newton.solvers.SolverSteel(model, solve_mode="split", free_body_constraint_max=mf_capacity)
+            # Both piles are chaotic; run-to-run determinism keeps their peak speeds comparable between runs.
+            solver = newton.solvers.SolverSteel(
+                model, solve_mode="split", free_body_constraint_max=mf_capacity, deterministic=RUN_TO_RUN
+            )
             solver._rigid_body_angular_damping.zero_()
             raw_not_less, strict_reduction_frames, peak_red = 0, 0, 0.0
             for _ in range(150):
@@ -671,9 +675,11 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             raw_state_0, raw_state_1 = model.state(), model.state()
             newton.eval_fk(model, raw_state_0.joint_q, raw_state_0.joint_qd, raw_state_0)
             raw_control = model.control()
-            raw_dynamics_pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+            raw_dynamics_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
             raw_dynamics_contacts = raw_dynamics_pipeline.contacts()
-            raw_solver = newton.solvers.SolverSteel(model, solve_mode="split", free_body_constraint_max=mf_capacity)
+            raw_solver = newton.solvers.SolverSteel(
+                model, solve_mode="split", free_body_constraint_max=mf_capacity, deterministic=RUN_TO_RUN
+            )
             raw_solver._rigid_body_angular_damping.zero_()
             peak_raw = 0.0
             for _ in range(150):
