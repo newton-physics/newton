@@ -1652,6 +1652,58 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(parsed.drive_class, DriveNeuralGRU)
         self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
 
+    def test_gru_implicit_linearized(self):
+        """The GRU enters the implicit solve as a per-step linearization."""
+        device = self.device
+        h = self.SAMPLE_DT
+        q0, qd0, target, target_vel = 0.2, 0.3, 1.0, -0.4
+        features = self.ALL_FEATURES[:-1]
+
+        model = _build_pendulum(device)
+        state = model.state()
+        state.joint_q.assign(np.array([q0], dtype=np.float32))
+        state.joint_qd.assign(np.array([qd0], dtype=np.float32))
+        control = model.control()
+        control.joint_target_q.assign(np.array([target], dtype=np.float32))
+        control.joint_target_qd.assign(np.array([target_vel], dtype=np.float32))
+
+        drive = DriveNeuralGRU(self._save_gru("implicit_gru.onnx", metadata=self._metadata(features)))
+        response = JointSpaceResponse(model)
+        actuator = Actuator(indices=wp.array([0], dtype=wp.uint32, device=device), drive=drive)
+
+        actuator.set_effort_mode_implicit(response=response)
+        response.refresh(state)
+        sa, sb = actuator.state(), actuator.state()
+        control.joint_f.zero_()
+        actuator.step(state, control, sa, sb, dt=h)
+
+        tau0, a, b, pq0, pqd0 = (float(v) for v in drive._lin_params.numpy()[0])
+        self.assertAlmostEqual(pq0, q0, delta=1e-6)
+        self.assertAlmostEqual(pqd0, qd0, delta=1e-6)
+        self.assertGreater(abs(a) + abs(b), 0.0)
+
+        alpha = _response_at_state(model, state)[0, 0]
+        expected = (tau0 + a * h * pqd0) / (1.0 - alpha * h * (a * h + b))
+        tau = float(control.joint_f.numpy()[0])
+        self.assertAlmostEqual(tau, expected, delta=abs(expected) * 1e-3 + 1e-6)
+        self.assertTrue(np.any(sb.drive_state.hidden.numpy() != 0.0))
+
+        actuator.set_effort_mode_explicit()
+
+        def explicit_tau(q_val: float, qd_val: float) -> float:
+            state.joint_q.assign(np.array([q_val], dtype=np.float32))
+            state.joint_qd.assign(np.array([qd_val], dtype=np.float32))
+            control.joint_f.zero_()
+            actuator.step(state, control, actuator.state(), actuator.state(), dt=h)
+            return float(control.joint_f.numpy()[0])
+
+        self.assertAlmostEqual(float(drive._tau0.numpy()[0]), explicit_tau(q0, qd0), delta=1e-5)
+        eps = 1e-3
+        fd_dq = (explicit_tau(q0 + eps, qd0) - explicit_tau(q0 - eps, qd0)) / (2.0 * eps)
+        fd_dqd = (explicit_tau(q0, qd0 + eps) - explicit_tau(q0, qd0 - eps)) / (2.0 * eps)
+        self.assertAlmostEqual(float(drive._dtau_dq.numpy()[0]), fd_dq, delta=abs(fd_dq) * 0.02 + 1e-3)
+        self.assertAlmostEqual(float(drive._dtau_dqd.numpy()[0]), fd_dqd, delta=abs(fd_dqd) * 0.02 + 1e-3)
+
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
 class TestDriveNeuralMLP(unittest.TestCase):
