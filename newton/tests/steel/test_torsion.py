@@ -2592,7 +2592,7 @@ def test_propagation_budget_holds_after_every_sweep(test, device):
     for patches in ({}, PATCH_OPTIONS):
         for case, options in (("center", _CENTER_SPIN), ("corners", _CORNER_SPIN)):
             with test.subTest(patches=bool(patches), case=case):
-                sweeps = _record_propagation_sweeps(device, 0.01, **options, **patches)
+                sweeps, _ = _record_propagation_sweeps(device, 0.01, **options, **patches)
                 saturated, sliding_saturated = _assert_torsion_budgets(test, sweeps)
                 if case == "center":
                     test.assertTrue(saturated, "No torsion row reached its residual budget")
@@ -2984,7 +2984,9 @@ def test_colored_budget_holds_after_every_sweep(test, device):
     for variant in _COLORED_VARIANTS:
         for case, options in (("center", _CENTER_SPIN), ("corners", _CORNER_SPIN)):
             with test.subTest(variant=variant, case=case):
-                sweeps = _record_propagation_sweeps(device, 0.01, response=_COLORED_TORSION, variant=variant, **options)
+                sweeps, _ = _record_propagation_sweeps(
+                    device, 0.01, response=_COLORED_TORSION, variant=variant, **options
+                )
                 saturated, sliding_saturated = _assert_torsion_budgets(test, sweeps)
                 if case == "center":
                     test.assertTrue(saturated, "No torsion row reached its residual budget")
@@ -3017,12 +3019,48 @@ def test_colored_sweeps_built_without_torsion_leave_it_unsolved(test, device):
                             without_torsion(block_kernel),
                         )
                     )
-                sweeps = _record_propagation_sweeps(
+                sweeps, _ = _record_propagation_sweeps(
                     device, 0.01, response=_COLORED_TORSION, variant=variant, **_CENTER_SPIN
                 )
                 test.assertTrue(sweeps)
                 moved[build] = any(sweep["after"][spin] != 0.0 for sweep in sweeps for spin in sweep["rows"])
         test.assertEqual(moved, {"torsion": True, "torsion off": False}, variant)
+
+
+def test_colored_longest_first_hosts_the_group_in_its_last_unit(test, device):
+    """Host a patch group whose highest-index member carries the friction rows in the member colored last."""
+
+    def far_end_carrier(contacts):
+        # The axial extremes of this footprint are contacts 0 and 3, which carry the patch's friction rows.
+        for name in ("rigid_contact_point0", "rigid_contact_point1"):
+            points = getattr(contacts, name).numpy()
+            points[:4, :2] = [(-0.02, -0.015), (-0.02, 0.015), (0.01, 0.0), (0.02, 0.0)]
+            getattr(contacts, name).assign(points)
+
+    for order in ("contact", "longest_first"):
+        with test.subTest(order=order):
+            sweeps, solver = _record_propagation_sweeps(
+                device,
+                0.01,
+                response=_COLORED_TORSION,
+                edit_contacts=far_end_carrier,
+                spin=1.0,
+                propagation_color_order=order,
+                **PATCH_OPTIONS,
+            )
+            needed = solver._contact_slots_needed.numpy()[:4]
+            np.testing.assert_array_equal(needed, [4, 2, 2, 4])
+            slots = solver._contact_slot.numpy()[:4]
+            colors = _contact_colors(solver)
+            ((spin, members),) = _propagation_torsion_rows(solver).items()
+            test.assertEqual(sorted(members), sorted(int(slot) for slot in slots))
+            host = int(np.argmax(slots))
+            test.assertEqual(spin, int(slots[host] + needed[host] - 1))
+            test.assertEqual(colors[host], max(colors.values()))
+            if order == "longest_first":
+                # The friction-carrying members color first, so the highest-index member is not the last unit.
+                test.assertLess(colors[3], colors[host])
+            _assert_torsion_budgets(test, sweeps)
 
 
 def test_colored_spin_decelerates_at_the_coulomb_rate_and_sticks(test, device):
@@ -3339,6 +3377,7 @@ for _fn in (
     test_colored_rows_host_in_the_last_members_unit_at_its_highest_color,
     test_colored_budget_holds_after_every_sweep,
     test_colored_sweeps_built_without_torsion_leave_it_unsolved,
+    test_colored_longest_first_hosts_the_group_in_its_last_unit,
     test_colored_spin_decelerates_at_the_coulomb_rate_and_sticks,
     test_colored_variants_track_plain_and_converge_to_immediate,
     test_colored_patch_impulse_matches_immediate,
@@ -3431,14 +3470,19 @@ def _spare_rows(solver, count):
     return {c: int(slots[c] + needed[c] - 1) for c in range(count) if slots[c] >= 0 and needed[c] in (2, 4)}
 
 
-def _record_propagation_sweeps(device, radius, response=_PROPAGATION_TORSION, variant=None, **options):
+def _record_propagation_sweeps(
+    device, radius, response=_PROPAGATION_TORSION, variant=None, edit_contacts=None, **options
+):
     """Record world 0's propagation impulses after every sweep of one pad-fixture step.
 
-    ``variant`` selects a colored sweep variant (see :func:`_colored_variant`).
+    ``variant`` selects a colored sweep variant (see :func:`_colored_variant`); ``edit_contacts`` gets the
+    contacts before the step. Also returns the solver.
     """
     sweeps = []
     with _colored_variant(variant):
         _, solver, model, state, contacts = fixture(radius, device=device, step=False, **options, **response)
+    if edit_contacts is not None:
+        edit_contacts(contacts)
     sweep_kernels = {
         solver._pgs_solve_propagation_kernel,
         solver._pgs_solve_propagation_colored_warp_kernel,
@@ -3475,7 +3519,7 @@ def _record_propagation_sweeps(device, radius, response=_PROPAGATION_TORSION, va
 
     with patch.object(solver_steel.wp, "launch_tiled", record):
         solver.step(state, model.state(), model.control(), contacts, 0.0025)
-    return sweeps
+    return sweeps, solver
 
 
 def _assert_torsion_budgets(test, sweeps):
