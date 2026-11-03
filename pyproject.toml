@@ -7,7 +7,7 @@ backend-path = ["."]
 name = "newton"
 version = "1.8.0.dev0"
 license = "Apache-2.0"
-license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
+license-files = ["LICENSE.md", "newton/licenses/*.txt", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
