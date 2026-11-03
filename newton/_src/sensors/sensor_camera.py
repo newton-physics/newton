@@ -177,6 +177,18 @@ class SensorCamera:
     :attr:`RenderConfig.enable_backface_culling` to ``False`` to render both
     sides with camera-facing normals.
 
+    The scene is lit by the light from :meth:`create_default_light`, if any,
+    plus hemispheric ambient light (see :meth:`set_ambient_light`) when
+    :attr:`RenderConfig.enable_ambient_lighting` is set.
+
+    .. experimental::
+
+        Rendering of lights authored on the model, and how they combine with
+        the sensor's own lights, may change without a formal deprecation
+        cycle. Future releases are expected to import lights authored in USD
+        and MJCF into the model and render them, which changes the color
+        output of scenes that author lights.
+
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
     ``SensorCamera.WorldRenderFlag``); they are not part of the top-level
@@ -1289,6 +1301,8 @@ class SensorCamera:
     ) -> None:
         """Create a default directional light for the rendered scene.
 
+        This light replaces any light created before.
+
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are
                 only rendered when the render config also enables them, i.e.
@@ -1301,6 +1315,16 @@ class SensorCamera:
             color: Linear RGB radiance of the light. If ``None``, defaults to
                 white ``(1, 1, 1)``. Changing it does not recompile the render
                 kernel.
+
+                .. experimental::
+
+                    The ``color`` argument may change, for example to separate
+                    color from intensity, without a formal deprecation cycle.
+
+        .. experimental::
+
+            How this light combines with lights authored on the model may
+            change without a formal deprecation cycle.
         """
         self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
 
@@ -1320,6 +1344,12 @@ class SensorCamera:
             sky_color: Linear RGB ambient radiance from above.
             ground_color: Linear RGB ambient radiance from below. If ``None``,
                 *sky_color* is used, which gives uniform ambient light.
+
+        .. experimental::
+
+            This method, its defaults, and how it combines with ambient light
+            authored on the model may change without a formal deprecation
+            cycle.
         """
         self._render_context.set_ambient_light(sky_color, ground_color)
 
@@ -1353,8 +1383,8 @@ class SensorCamera:
         out of the automatic sync. Scenes without simulation triangles or visual
         meshes are a no-op. Shape and particle BVHs are refit separately via
         :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
-        Deformable visual meshes are skinned from *state* in a few launches, however
-        many worlds were replicated. Supplied visual buffers are consumed as-is;
+        Deformable visual meshes are skinned from *state* in at most four launches,
+        however many worlds were replicated. Supplied visual buffers are consumed as-is;
         update or replay them before this call. Their source state and freshness
         are not checked.
 
