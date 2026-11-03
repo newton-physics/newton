@@ -619,7 +619,7 @@ and the solver, in that order:
 For rigid joints the solver captures the structural rest pose from
 :attr:`~newton.Model.body_q` at construction, so the body transforms must match the joint
 angles when the solver is built; ROD rest bend and twist come from
-:attr:`~newton.Model.joint_target_q`.
+:attr:`~newton.Model.joint_rest_q`.
 
 With a solver-owned pipeline, ``SolverVBD(model, collision_pipeline=...)``, the
 solver allocates its own contacts buffer, seeds the pipeline's self-contact
