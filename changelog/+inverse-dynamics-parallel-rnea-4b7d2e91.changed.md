@@ -1,0 +1,1 @@
+Speed up the `gravity_force` and `coriolis_force` outputs of `newton.eval_inverse_dynamics_passive()` on CUDA by evaluating RNEA with one thread per joint instead of one thread per articulation, for example about 5x to 10x for G1. CPU evaluation and models that need gradients keep the per-articulation kernels.

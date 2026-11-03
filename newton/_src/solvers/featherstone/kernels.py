@@ -1519,6 +1519,192 @@ def eval_rigid_tau(
             body_ft_s[parent] = body_ft_s[parent] + f_s
 
 
+@wp.kernel(enable_backward=False)
+def eval_rigid_id_joint_motion(
+    articulation_mask: wp.array[bool],
+    joint_articulation: wp.array[wp.int32],
+    articulation_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_qdd: wp.array[float],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_q: wp.array[wp.transform],
+    body_q_com: wp.array[wp.transform],
+    joint_X_p: wp.array[wp.transform],
+    # outputs
+    joint_S_s: wp.array[wp.spatial_vector],
+    joint_v_s: wp.array[wp.spatial_vector],
+    joint_a_s: wp.array[wp.spatial_vector],
+    body_solve_origin: wp.array[wp.vec3],
+):
+    """Per-joint part of :func:`eval_rigid_id`, one thread per joint.
+
+    Writes the joint's motion subspace, its velocity ``S qd`` and the part of
+    the child acceleration that does not depend on the parent velocity,
+    ``c_app + S qdd``, all in the articulation's solve frame.
+    """
+    i = wp.tid()
+    art_idx = joint_articulation[i]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    root = articulation_start[art_idx]
+    solve_origin = wp.vec3()
+    root_type = joint_type[root]
+    if root_type == JointType.FREE or root_type == JointType.DISTANCE:
+        solve_origin = wp.transform_get_translation(body_q_com[joint_child[root]])
+
+    parent = joint_parent[i]
+    X_wpj = joint_X_p[i]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
+    X_wpj_s = wp.transform(wp.transform_get_translation(X_wpj) - solve_origin, wp.transform_get_rotation(X_wpj))
+
+    qd_start = joint_qd_start[i]
+    v_j_s, c_app_s = jcalc_motion(
+        joint_type[i],
+        joint_axis,
+        joint_q,
+        joint_dof_dim[i, 0],
+        joint_dof_dim[i, 1],
+        X_wpj_s,
+        joint_qd,
+        joint_q_start[i],
+        qd_start,
+        joint_S_s,
+    )
+    if joint_qdd:
+        for j in range(qd_start, joint_qd_start[i + 1]):
+            c_app_s = c_app_s + joint_S_s[j] * joint_qdd[j]
+
+    joint_v_s[i] = v_j_s
+    joint_a_s[i] = c_app_s
+    body_solve_origin[joint_child[i]] = solve_origin
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_id_body_force(
+    articulation_mask: wp.array[bool],
+    joint_articulation: wp.array[wp.int32],
+    joint_ancestor: wp.array[int],
+    joint_child: wp.array[int],
+    joint_v_s: wp.array[wp.spatial_vector],
+    joint_a_s: wp.array[wp.spatial_vector],
+    body_I_m: wp.array[wp.spatial_matrix],
+    body_q_com: wp.array[wp.transform],
+    body_solve_origin: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    # outputs
+    body_f_s: wp.array[wp.spatial_vector],
+):
+    """Body bias wrench of :func:`eval_rigid_id`, one thread per joint.
+
+    Sums the child body's velocity and acceleration over the joint's ancestor
+    chain instead of reading the parent's, so joints need no ordering.
+    """
+    i = wp.tid()
+    art_idx = joint_articulation[i]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    v_s = wp.spatial_vector()
+    a = i
+    while a != -1:
+        v_s = v_s + joint_v_s[a]
+        a = joint_ancestor[a]
+
+    a_s = wp.spatial_vector()
+    v_a = v_s
+    a = i
+    while a != -1:
+        v_j_s = joint_v_s[a]
+        a_s = a_s + spatial_cross(v_a, v_j_s) + joint_a_s[a]
+        v_a = v_a - v_j_s
+        a = joint_ancestor[a]
+
+    child = joint_child[i]
+    X_sm = body_q_com[child]
+    x_com_s = wp.transform_get_translation(X_sm) - body_solve_origin[child]
+    I_m = body_I_m[child]
+    f_g = I_m[0, 0] * gravity[body_world[child]]
+    f_g_s = wp.spatial_vector(f_g, wp.cross(x_com_s, f_g))
+    I_s = transform_spatial_inertia(wp.transform(x_com_s, wp.transform_get_rotation(X_sm)), I_m)
+    body_f_s[child] = I_s * a_s + spatial_cross_dual(v_s, I_s * v_s) - f_g_s
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_subtree_force(
+    articulation_level_start: wp.array[wp.int32],
+    level_joint_start: wp.array[wp.int32],
+    level_joints: wp.array[wp.int32],
+    articulation_mask: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    # outputs
+    body_f_s: wp.array2d[float],
+):
+    """Add each body's wrench into its parent's, deepest tree level first, one thread per (articulation, component).
+
+    On return ``body_f_s[b]`` is the total wrench of the subtree rooted at ``b``.
+    """
+    art_idx, component = wp.tid()
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    level_begin = articulation_level_start[art_idx]
+    level_end = articulation_level_start[art_idx + 1]
+    # Level 0 holds the roots, whose parents are outside the articulation.
+    for k in range(level_end - 1 - level_begin):
+        level = level_end - 1 - k
+        for n in range(level_joint_start[level], level_joint_start[level + 1]):
+            j = level_joints[n]
+            parent = joint_parent[j]
+            body_f_s[parent, component] = body_f_s[parent, component] + body_f_s[joint_child[j], component]
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_joint_bias_tau(
+    articulation_mask: wp.array[bool],
+    joint_articulation: wp.array[wp.int32],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_f_s: wp.array[wp.spatial_vector],
+    # outputs
+    tau: wp.array[float],
+):
+    """Joint force ``-S^T f`` from the subtree wrench, one thread per joint.
+
+    Matches :func:`eval_rigid_tau` with zero gains, applied forces and external
+    body forces.
+    """
+    i = wp.tid()
+    art_idx = joint_articulation[i]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    f_s = body_f_s[joint_child[i]]
+    for j in range(joint_qd_start[i], joint_qd_start[i + 1]):
+        tau[j] = -wp.dot(joint_S_s[j], f_s)
+
+
 # builds spatial Jacobian J which is an (joint_count*6)x(dof_count) matrix
 @wp.kernel
 def eval_rigid_jacobian(
