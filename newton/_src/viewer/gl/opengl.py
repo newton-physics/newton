@@ -183,6 +183,8 @@ def fill_line_vertex_data(
 class MeshGL:
     """Encapsulates mesh data and OpenGL buffers for a shape."""
 
+    _DEFAULT_COLOR = (0.7, 0.5, 0.3)
+
     def __init__(
         self,
         num_points,
@@ -212,6 +214,7 @@ class MeshGL:
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
+        self._texture_source = None
         self.opacity = 1.0
         self._capsule_instancing = False
 
@@ -272,7 +275,8 @@ class MeshGL:
         gl.glBindVertexArray(0)
 
         # Per-mesh albedo and material (applied in render()).
-        self.color = (0.7, 0.5, 0.3)
+        self.color = self._DEFAULT_COLOR
+        self._color_is_default = True
         self.material = (0.5, 0.0, 0.0, 0.0)
 
         self.vertex_cuda_buffer = None
@@ -304,7 +308,7 @@ class MeshGL:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs, texture=None, opacity=None):
+    def update(self, points, indices, normals, uvs, texture=None, opacity=None, *, reuse_texture=False):
         """Update vertex positions in the VBO.
 
         Args:
@@ -379,7 +383,7 @@ class MeshGL:
             else:
                 gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
-        self.update_texture(texture)
+        self.update_texture(texture, reuse_texture=reuse_texture)
 
     def recompute_normals(self):
         if self._points is None or self.indices is None:
@@ -393,7 +397,11 @@ class MeshGL:
             device=self.device,
         )
 
-    def update_texture(self, texture=None):
+    def update_texture(self, texture=None, *, reuse_texture=False):
+        # Only immutable model visuals opt in; ordinary log_mesh calls can
+        # mutate an image in place and must upload it again.
+        if reuse_texture and texture is self._texture_source:
+            return
         gl = RendererGL.gl
         texture_image = None
         if texture is not None:
@@ -408,6 +416,7 @@ class MeshGL:
                 except Exception:
                     pass
                 self.texture_id = None
+            self._texture_source = texture
             return
 
         if self.texture_id is not None:
@@ -417,10 +426,12 @@ class MeshGL:
                 pass
             self.texture_id = None
 
+        self._texture_source = None
         texture_id = _upload_texture_from_file(gl, texture_image)
-        if not texture_id:
-            return
-        self.texture_id = texture_id
+        if texture_id:
+            self.texture_id = texture_id
+        # Cache deterministic rejection, but leave exceptions retryable.
+        self._texture_source = texture
 
     def render(self):
         if not self.hidden:
@@ -1107,6 +1118,27 @@ class RendererGL:
     gl = None  # Class-level variable to hold the imported module
     _fallback_texture = None  # 1x1 white texture bound when no albedo is set (suppresses macOS GL warning)
 
+    # Sample count of the multi-sampled framebuffer the scene is rendered into
+    # (see _setup_frame_buffer). The window config asks for the same count so the
+    # two agree, but the scene does not depend on it: it is always resolved into
+    # a texture that is then drawn to the window.
+    MSAA_SAMPLES = 4
+
+    # The shaders target GLSL 330 core.
+    MIN_GL_VERSION = (3, 3)
+
+    @staticmethod
+    def _check_gl_version(context):
+        import pyglet
+
+        info = context.get_info()
+        if not info.have_version(*RendererGL.MIN_GL_VERSION):
+            major, minor = RendererGL.MIN_GL_VERSION
+            raise pyglet.gl.ContextException(
+                f"ViewerGL requires OpenGL {major}.{minor} or newer, but the driver provides "
+                f"OpenGL {info.get_version_string()} ({info.get_renderer()})."
+            )
+
     @classmethod
     def initialize_gl(cls):
         if cls.gl is None:  # Only import if not already imported
@@ -1190,11 +1222,16 @@ class RendererGL:
         except ImportError as e:
             raise Exception("OpenGLRenderer requires pyglet (version >= 2.0) to be installed.") from e
 
+        # pyglet's shadow context, if any, shows the driver's version before we open a
+        # window; on OpenGL 1.1 drivers, creating windows can raise spurious GL errors.
+        if gl.current_context is not None:
+            self._check_gl_version(gl.current_context)
+
         self._title = title
 
         try:
             # try to enable MSAA
-            config = pyglet.gl.Config(sample_buffers=1, samples=8, double_buffer=True)
+            config = pyglet.gl.Config(sample_buffers=1, samples=RendererGL.MSAA_SAMPLES, double_buffer=True)
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1204,11 +1241,11 @@ class RendererGL:
                 visible=not headless,
                 config=config,
             )
-            gl.glEnable(gl.GL_MULTISAMPLE)
-            # remember sample count for later (e.g., resolving FBO)
-            self.msaa_samples = 4
         except pyglet.window.NoSuchConfigException:
-            logger.warning("Could not get MSAA config, falling back to non-AA.")
+            # Only the window's own buffer loses multi-sampling here, so the
+            # scene keeps its MSAA framebuffer. _setup_frame_buffer still turns
+            # MSAA off if that framebuffer comes back incomplete.
+            logger.warning("Could not get an MSAA window config.")
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1217,7 +1254,22 @@ class RendererGL:
                 vsync=vsync,
                 visible=not headless,
             )
-            self.msaa_samples = 0
+
+        try:
+            self._check_gl_version(self.window.context)
+            self._setup_renderer(gl, headless, device)
+        except BaseException:
+            # pyglet would otherwise keep the window open for the rest of the process.
+            self.window.close()
+            raise
+
+    def _setup_renderer(self, gl, headless, device):
+        """Set up the GL state, resources, and event handling for the new window."""
+        import pyglet
+
+        gl.glEnable(gl.GL_MULTISAMPLE)
+        # remember sample count for later (e.g., resolving FBO)
+        self.msaa_samples = RendererGL.MSAA_SAMPLES
 
         set_window_icon(self.window)
 

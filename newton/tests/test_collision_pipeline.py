@@ -13,7 +13,6 @@ from unittest import mock
 import numpy as np
 import warp as wp
 import warp.examples
-from packaging.version import Version
 
 import newton
 from newton import GeoType
@@ -68,11 +67,12 @@ from newton.tests.unittest_utils import (
     configure_sdf_for_collision_shapes,
     get_cuda_test_devices,
     get_test_devices,
+    warp_version_at_least,
 )
 from newton.tests.utils.soft_contacts import evaluate_soft_contact_force_mask
 
 # Older Warp destroys textures immediately during CUDA capture (NVIDIA/warp#2066).
-_WARP_NEEDS_CAPTURE_GC_GUARD = Version(wp.__version__) < Version("1.19.0.dev20261020")
+_WARP_NEEDS_CAPTURE_GC_GUARD = not warp_version_at_least("1.19.0.dev20261020")
 
 
 class TestLevel(IntFlag):
@@ -1928,9 +1928,11 @@ class TestRigidContactNormal(unittest.TestCase):
     pass
 
 
+_ROUNDED_PROBE_RADIUS = 0.01
+
+
 def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
-    """Collide each probe kind against each target at known gaps; return (probe, target, placement, gap, separation)
-    per contact and the list of cases.
+    """Collide probes at known gaps; return (probe, target, placement, gap, separation, normal_z) per contact and cases.
 
     The box, convex hull and triangle mesh targets share one box shape. A ``("face", gap)`` placement puts the probe
     ``gap`` from its +y face; an ``("edge", gap)`` placement puts it ``gap`` from its +x/+y edge along the diagonal,
@@ -1950,7 +1952,7 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
         cases = []
         for i, (probe, target, (placement, gap)) in enumerate(itertools.product(probes, targets, placements)):
             x = 0.25 * i
-            radius = 0.01
+            radius = _ROUNDED_PROBE_RADIUS
             on_heightfield = target == "heightfield"
             rotation = lying if on_heightfield else wp.quat_identity()
             body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0), rotation))
@@ -1996,9 +1998,10 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
         n = int(contacts.rigid_contact_count.numpy()[0])
         shape0 = contacts.rigid_contact_shape0.numpy()[:n]
         shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+        normal_z = contacts.rigid_contact_normal.numpy()[:n, 2]
         # each case adds exactly two shapes, the probe then its target, so shape // 2 is the case index
         rows = [
-            (*cases[min(shape0[k], shape1[k]) // 2], float(separation))
+            (*cases[min(shape0[k], shape1[k]) // 2], float(separation), float(normal_z[k]))
             for k, separation in enumerate(distance.numpy()[:n])
         ]
         return rows, cases
@@ -2031,7 +2034,7 @@ def test_rounded_convex_contact_separation(test, device):
     for probes, (targets, at) in itertools.product((("sphere",), ("sphere", "capsule")), (solids, surface)):
         with test.subTest(probes=probes, targets=targets):
             rows, cases = _rounded_convex_separations(probes, at, device, rigid_gap, targets)
-            for probe, target, placement, gap, separation in rows:
+            for probe, target, placement, gap, separation, _normal_z in rows:
                 msg = f"{probe} vs {target} {placement} at gap {gap}"
                 test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
                 # MPR's own error reaches about 2 um (a sphere deep in the hull): a tenth of the inflation radius
@@ -2050,24 +2053,25 @@ add_function_test(
 
 
 def test_rounded_heightfield_contact_separation(test, device):
-    """Report the true surface separation for spheres and capsules on heightfield triangles.
+    """Recover the vertical surface gap from rounded-probe contacts on heightfield triangle faces and edges.
 
     The same GJK/MPR radius restore as against convex shapes: a sphere and a capsule lying flat sit penetrating,
     touching, and separated within and beyond the summed contact gap above a flat heightfield.
-    Every admitted contact must report the geometric gap to well below the inflation radius, and the probe beyond
-    the summed gap must be rejected.
+    Project each contact's core distance onto Z to account for inclined triangle-edge normals. The resulting gap
+    must match the placement to well below the inflation radius, and the probe beyond the summed gap must be rejected.
     """
     rigid_gap = 0.002
     summed_gap = 2.0 * rigid_gap
     outside = ("face", summed_gap + 5.0e-5)
     placements = (("face", -2.0e-4), ("face", 0.0), ("face", 3.0e-4), ("face", summed_gap - 1.0e-4), outside)
     rows, cases = _rounded_convex_separations(("sphere", "capsule"), placements, device, rigid_gap, ("heightfield",))
-    for probe, target, placement, gap, separation in rows:
+    for probe, target, placement, gap, separation, normal_z in rows:
         msg = f"{probe} vs {target} at gap {gap}"
         test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
-        # MPR lands about 13 um short on one penetrating capsule-triangle pair (with or without this fix); still a
-        # fifth of the inflation radius
-        test.assertAlmostEqual(separation, gap, delta=2.0e-5, msg=msg)
+        # Edge contacts need not have vertical normals. The sphere center and flat capsule axis are radius + gap
+        # above the terrain, so projecting the core distance (separation + radius) onto Z recovers that height.
+        vertical_gap = abs(normal_z) * (separation + _ROUNDED_PROBE_RADIUS) - _ROUNDED_PROBE_RADIUS
+        test.assertAlmostEqual(vertical_gap, gap, delta=2.0e-5, msg=msg)
     seen = {row[:4] for row in rows}
     test.assertEqual(seen, {case for case in cases if case[2:] != outside}, "every admitted probe must contact")
 

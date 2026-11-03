@@ -953,6 +953,9 @@ class SolverCoupledADMM(SolverCoupled):
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         return set(self._admm_joint_proxy_joint_keep.get(name, ()))
 
+    def _iteration_restarts_possible(self) -> bool:
+        return int(self._coupling.iterations) > 1
+
     def _after_entries_constructed(self) -> None:
         self._refresh_admm_joint_proxy_view_maps()
         self._cache_admm_joint_proxy_effective_masses()
@@ -1012,7 +1015,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     def notify_model_changed(self, flags: int) -> None:
         super().notify_model_changed(flags)
-        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
+        if int(flags) & self._effective_mass_refresh_flags():
             self._refresh_admm_body_effective_mass_buffers()
             self._cache_admm_joint_proxy_effective_masses()
             self._apply_cached_admm_joint_proxy_effective_masses()
@@ -2280,6 +2283,9 @@ class SolverCoupledADMM(SolverCoupled):
     def _discover_rigid_particle_contact_specs(self) -> list[_AdmmRigidParticleContactSpec]:
         shape_body = self.model.shape_body.numpy() if self.model.shape_body is not None else []
         shape_flags = self.model.shape_flags.numpy() if getattr(self.model, "shape_flags", None) is not None else None
+        if shape_flags is not None and self.model._has_variant_rows:
+            # A body variant row can hold a particle-colliding shape after construction.
+            shape_flags = self.model._shape_option_flags()
         shapes_by_owner: dict[str, list[int]] = {}
         for shape in range(self.model.shape_count):
             if not self._shape_flagged(shape_flags, shape, ShapeFlags.COLLIDE_PARTICLES):

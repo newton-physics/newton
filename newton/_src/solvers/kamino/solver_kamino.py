@@ -156,17 +156,20 @@ class SolverKamino(SolverBase, CouplingInterface):
     ----------
     Kamino treats a rigid body as *immovable* when either its Newton inertia is
     zero (``body_inv_mass == 0`` and ``body_inv_inertia == 0``) or its
-    ``body_flags`` include :attr:`~newton.BodyFlags.KINEMATIC` or
-    :attr:`~newton.BodyFlags.PROXY`. This decision is baked once at construction,
-    and flipping a body's immovability at runtime (whether by toggling its
-    KINEMATIC/PROXY flag, by making a massive body massless, or by giving a
-    massless body finite inertia) will raise a :class:`RuntimeError` from
-    :meth:`notify_model_changed`.
+    ``body_flags`` include :attr:`~newton.BodyFlags.KINEMATIC`. This decision is
+    baked once at construction, and flipping a body's immovability at runtime
+    (whether by toggling its KINEMATIC flag, by making a massive body massless, or
+    by giving a massless body finite inertia) will raise a :class:`RuntimeError`
+    from :meth:`notify_model_changed`.
 
-    The LOX backend treats only KINEMATIC bodies as immovable. It simulates PROXY
-    bodies as dynamic, so their flag may change at runtime, and raises a
-    :class:`RuntimeError` from :meth:`notify_model_changed` when a body becomes
-    massless or a massless body gains mass.
+    Bodies flagged :attr:`~newton.BodyFlags.PROXY` are simulated like any other
+    body by every backend, with their mass and inertia, and their flag may change
+    at runtime.
+
+    The LOX backend treats only KINEMATIC bodies as immovable. It also simulates
+    massless bodies, and raises a :class:`RuntimeError` from
+    :meth:`notify_model_changed` when a body becomes massless or a massless body
+    gains mass.
 
     With the PADMM and DVI backends, Kamino's integrator does not advance an
     immovable body's pose from its velocity. To animate such a body along a
@@ -807,6 +810,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         self._config = config
+        if config.use_collision_detector and model._has_body_variants:
+            raise NotImplementedError(
+                "SolverKamino supports body variants only with Newton contacts; set use_collision_detector=False."
+            )
 
         # Validate solver-specific model compatibility after resolving the selected backend.
         self._validate_model_compatibility(model, self._config)
@@ -818,7 +825,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             or collision_config.pipeline == "primitive"
             or collision_config.broadphase == "explicit"
         )
-        # LOX simulates massless and PROXY bodies, so only kinematic bodies are immovable for it
+        # LOX simulates massless bodies, so only kinematic bodies are immovable for it
         self._model_kamino = self._kamino.ModelKamino.from_newton(
             model,
             include_shape_contact_pairs=include_shape_contact_pairs,
@@ -1303,7 +1310,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._update_body_initial_pose()
             # Kamino-owned masked inv-mass/inertia must track Newton's values.
             # BODY_PROPERTIES is included because Newton's body_flags aren't
-            # allowed to flip KINEMATIC/PROXY (rejected in the structural check
+            # allowed to flip KINEMATIC (rejected in the structural check
             # above), but other body properties may change alongside inertia
             # and callers commonly bundle these flags together.
             self._refresh_masked_inertia()
@@ -1344,6 +1351,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
+            # Newton contacts read shape geometry directly, and the Kamino detector rejects models
+            # with body variants at construction, so nothing caches what this flag changes.
+            | ModelFlags.SHAPE_TYPE_AND_SOURCE
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:
@@ -1755,7 +1765,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise RuntimeError(
                 f"Changing the immovability status of body {body} ({label!r}) is not supported; "
                 "recreate SolverKamino to apply the change. More specifically, toggling the "
-                "KINEMATIC/PROXY flag of a body, making a massive body massless or giving a "
+                "KINEMATIC flag of a body, making a massive body massless or giving a "
                 "massless body finite inertia are not supported."
             )
 

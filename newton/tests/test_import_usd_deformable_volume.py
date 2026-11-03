@@ -1087,9 +1087,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         from pxr import Gf, UsdGeom
 
         stage = _deformable_stage()
-        tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-        tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+        tet = _author_unit_tet(stage, "/World/Soft")
         UsdGeom.Xformable(tet).AddScaleOp().Set(Gf.Vec3d(-1.0, 1.0, 1.0))
 
         builder = newton.ModelBuilder()

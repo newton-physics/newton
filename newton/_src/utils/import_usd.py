@@ -69,6 +69,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _scout_deformable_prims,
 )
+from .import_usd_deformable_visual import _deformable_import_visual
 from .import_usd_deformable_volume import _deformable_import_volume
 
 logger = logging.getLogger(__name__)
@@ -266,6 +267,7 @@ def parse_usd(
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+            Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
         load_static_visual_shapes: If True, supported visual-only geometry outside
             rigid-body hierarchies is loaded as static shapes when
             ``load_visual_shapes`` is also True. Default is True.
@@ -304,7 +306,7 @@ def parse_usd(
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
         return_deformable_results: If True, include the experimental deformable entries in the
-            returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+            returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
             default return shape carries no deformable additions.
         allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
@@ -394,6 +396,8 @@ def parse_usd(
               - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
             * - ``"path_soft_map"``
               - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+            * - ``"path_deformable_visual_map"``
+              - Mapping from graphics Mesh prim path (str) to its index in :attr:`Model.deformable_visual_meshes`. Includes only successfully imported visual meshes. Present only with ``return_deformable_results=True``. The indices describe this import, not copies created by later builder composition or replication.
             * - ``"path_cable_attrs"``
               - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
             * - ``"path_cloth_attrs"``
@@ -858,11 +862,18 @@ def parse_usd(
                 _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, False)
             return
 
+        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
+        if not is_site and path_name in deformable_visual_exclude_paths:
+            if recurse:
+                _load_visual_shape_children(
+                    parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes
+                )
+            return
+
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
 
-        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
         if is_site and not load_sites:
             return
         if not is_site and not allow_visual_shapes:
@@ -1648,6 +1659,9 @@ def parse_usd(
         get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
         get_first_target=_get_first_target,
         get_tetmesh_cached=_get_tetmesh_cached,
+        is_viewport_drawn=visuals.is_viewport_drawn,
+        load_visual_shapes=load_visual_shapes,
+        hide_collision_shapes=hide_collision_shapes,
         incoming_world_xform=incoming_world_xform,
         linear_unit=linear_unit,
         ignore_paths=ignore_paths,
@@ -1666,6 +1680,11 @@ def parse_usd(
         path_attachment_attrs=path_attachment_attrs,
         articulation_has_self_collision=articulation_has_self_collision,
         prims=_deformable_prims,
+        cable_visual_sim_paths={
+            sim_path
+            for body_path, sim_path in _deformable_prims.body_owner.items()
+            if any(visuals.is_viewport_drawn(prim) for prim in _deformable_prims.visual_meshes.get(body_path, ()))
+        },
     )
 
     def import_attached_cables(body_paths) -> None:
@@ -2267,6 +2286,12 @@ def parse_usd(
             _deformable_import_cloth(_deformable_ctx)
         if _deformable_prims.tetmeshes:
             _deformable_import_volume(_deformable_ctx)
+
+        # Proposal graphics geometry: untagged Meshes under each imported deformable body
+        # become visual meshes skinned from that body's simulation elements. Runs after the
+        # family passes so ownership (tet/tri ranges, cable body lists) is realized.
+        if load_visual_shapes and _deformable_prims.body_owner:
+            _deformable_import_visual(_deformable_ctx)
 
         # PhysicsAttachment prims from the AOUSD deformables proposal. The current
         # builder can faithfully lower the cable/rod subset because imported cables
@@ -3061,6 +3086,7 @@ def parse_usd(
                 "path_cable_map": path_cable_map,
                 "path_cloth_map": path_cloth_map,
                 "path_soft_map": path_soft_map,
+                "path_deformable_visual_map": _deformable_ctx.path_deformable_visual_map,
                 "path_cable_attrs": path_cable_attrs,
                 "path_cloth_attrs": path_cloth_attrs,
                 "path_soft_attrs": path_soft_attrs,

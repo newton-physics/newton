@@ -679,9 +679,12 @@ class ViewerViser(ViewerBase):
         previous_up_axis = self._camera_up_axis
         super().set_model(model)
         self._build_packed_shape_arrays()
-        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
+        self.picking = (
+            Picking(model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask)
+            if model is not None
+            else None
+        )
         if self.picking is not None:
-            self.picking.visible_worlds_mask = self._visible_worlds_mask
             try:
                 self.picking._load_kernels()
             except Exception:
@@ -690,6 +693,24 @@ class ViewerViser(ViewerBase):
         up_axis = self._get_camera_up_axis()
         if model is None or up_axis != previous_up_axis:
             self._reset_camera_to_default(up_axis)
+
+    @override
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            return
+        # The picked point was on geometry that changed, as on clear_model().
+        self._remove_picking_control(self.layer.layer_id, release=True)
+        # Batches change their instance counts, so drop the previous batch handles.
+        for shapes in self._shape_instances.values():
+            name = self._qualify(shapes.name)
+            self._remove_plane_handles(name)
+            self._instances.pop(name, None)
+            handle = self._scene_handles.pop(name, None)
+            if handle is not None:
+                self._detach_picking_callback(handle)
+                handle.remove()
+        super().notify_model_changed(flags)
+        self._build_packed_shape_arrays()
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
@@ -727,7 +748,10 @@ class ViewerViser(ViewerBase):
         offset = 0
         for batch in batches:
             count = len(batch.xforms)
-            batch.world_xforms = packed[offset : offset + count]
+            # A variant batch can lose all its instances; Warp rejects empty slices.
+            batch.world_xforms = (
+                packed[offset : offset + count] if count else wp.empty(0, dtype=wp.transform, device=self.device)
+            )
             self._packed_shape_groups.append((batch, offset, count))
             offset += count
         self._packed_shape_world_xforms = packed
@@ -1273,7 +1297,7 @@ class ViewerViser(ViewerBase):
     def _picking_world_offset(layer, picking: Picking) -> np.ndarray:
         """Return the visual world offset for the currently picked body."""
         offset = np.zeros(3, dtype=np.float32)
-        body_idx = int(picking.pick_body.numpy()[0])
+        body_idx = picking.pick_body
         if body_idx < 0 or layer.world_offsets is None or layer.world_offsets.shape[0] == 0:
             return offset
         if layer.model is None or layer.model.body_world is None:
@@ -1324,8 +1348,7 @@ class ViewerViser(ViewerBase):
         """
         layer = self._layers[layer_id]
         picking = layer.picking
-        pick_state = picking.pick_state.numpy()
-        target = self._picking_point_to_visual(layer, picking, pick_state[0]["picking_target_world"])
+        target = self._picking_point_to_visual(layer, picking, picking.pick_target)
         self._remove_picking_control(layer_id, release=False)
         handle = self._server.scene.add_transform_controls(
             name=self._picking_control_path(layer_id),
@@ -1381,9 +1404,7 @@ class ViewerViser(ViewerBase):
         )
         offset = self._picking_world_offset(layer, layer.picking)
         target = np.asarray(point_with_offset).copy() - offset
-        pick_state = layer.picking.pick_state.numpy()
-        pick_state[0]["picking_target_world"] = target
-        layer.picking.pick_state.assign(pick_state)
+        layer.picking.pick_target = wp.vec3(*target)
 
     def _process_interaction_events(self) -> None:
         """Apply browser callbacks on the simulation thread between frames."""
@@ -2338,8 +2359,8 @@ class ViewerViser(ViewerBase):
         self._sync_shape_colors_from_model()
         self._sync_shape_opacities_from_model()
 
-        from .kernels import update_model_shape_xforms  # noqa: PLC0415
-        from .viewer_viser_kernels import detect_shape_color_changes, detect_shape_opacity_changes  # noqa: PLC0415
+        from .kernels import detect_shape_color_changes, update_model_shape_xforms  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_opacity_changes  # noqa: PLC0415
 
         wp.launch(
             kernel=update_model_shape_xforms,
@@ -2414,7 +2435,11 @@ class ViewerViser(ViewerBase):
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
-            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+            visible = (
+                self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                and not layer_hidden
+                and len(shapes.model_shapes) > 0
+            )
             xforms = packed_xforms[offset : offset + count]
             handle = self._scene_handles.get(self._qualify(shapes.name))
             # A newly shown batch may have missed earlier color updates.
@@ -2466,14 +2491,8 @@ class ViewerViser(ViewerBase):
         if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
             self.log_lines("picking_line", None, None, None)
             return
-        body_idx = int(self.picking.pick_body.numpy()[0])
-        if body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
-        pick_state = self.picking.pick_state.numpy()
-        anchor = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picked_point_world"])
-        target = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picking_target_world"])
+        anchor = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_point)
+        target = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_target)
         self.log_lines(
             "picking_line",
             np.asarray([anchor], dtype=np.float32),
@@ -2641,7 +2660,7 @@ class ViewerViser(ViewerBase):
         # pick-body sentinel controls whether graph replay applies a force.
         # Disabling picking releases that sentinel, including captured graphs.
         if self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
     def save_recording(self):
         """

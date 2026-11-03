@@ -1,0 +1,1 @@
+Fix viewer gizmo interaction tracking across translation and rotation handles, choose mouse ownership from the current press, and preserve transforms when no handle modifies them. Cancelling a drag by removing its handle, hiding the UI, pausing rendering, or losing window focus keeps the current pose and releases input ownership.

@@ -1660,16 +1660,21 @@ and body positions, including during CUDA graph replay. Selection can change
 without another collision detection; it does not change the contact count,
 row order, or detected geometry. Coupling copies ownership and mesh provenance;
 the consuming solver evaluates eligibility. If the source contact buffer
-has overflowed, VBD accepts all stored rows, including through coupling.
+has overflowed, VBD bypasses geometric selection for stored mesh rows, including
+through coupling. A mesh row still needs a resolved inside/outside sign and at
+least one active soft participant to contribute forces.
 Rigid-soft division-plane constraints consume the detected rows independently
 of force selection.
 
 Reverse rigid-vertex/soft-triangle contacts test the soft target's neighbors
 and retain one eligible owner for a shared soft edge or vertex. They remain
 separate force contributions from soft-vertex/rigid-triangle queries.
-Preserving returned rows does not guarantee complete contact topology:
-mesh detection may use SDF-selected rigid edges, and edge penetration-recovery
-records are not ordinary edge-edge quadrature samples.
+Full-surface mesh detection includes all rigid triangle edges, independently of
+SDF-selected edges. If the narrow vertex sign query fails, an expanded query
+supplies the sign for nearby vertex-triangle rows and, for an interior point, a
+recovery contact. Pairs whose sign remains unresolved are retained for DAT but
+do not contribute VBD forces until a subsequent detection resolves their sign.
+Edge penetration-recovery records are not ordinary edge-edge quadrature samples.
 
 .. _full-surface-mesh-contact-costs:
 
@@ -1845,6 +1850,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Total number of soft contacts (single element). With full-surface contact off, this equals the per-particle contact count and is unchanged from earlier releases.
    * - ``soft_contact_indices``
      - Soft-side particle ids per contact, a ``vec3i`` with ``-1`` padding: ``(p, -1, -1)`` particle, ``(v0, v1, -1)`` edge, ``(v0, v1, v2)`` face. The number of non-negative slots gives the feature kind; pair with ``soft_contact_barycentric`` to recover the contact point.
+   * - ``soft_contact_rigid_indices``
+     - Rigid mesh primitive corners per contact, a ``vec3i`` of offsets into the
+       rigid mesh's triangle index buffer: ``(i0, i1, i2)`` for a triangle (VT),
+       ``(i0, -1, -1)`` for a vertex (TV), and ``(i0, i1, -1)`` for an edge (EE).
+       The shape is identified by ``soft_contact_shape``; ``-1`` pads unused
+       slots. Analytic, particle-only, and penetration-recovery point records
+       use ``(-1, -1, -1)``.
    * - ``soft_contact_particle``
      - Particle id for particle contacts (``-1`` for edge/face records) — the particle-only view of ``soft_contact_indices``, for solvers that consume particle contacts exclusively.
    * - ``soft_contact_barycentric``
