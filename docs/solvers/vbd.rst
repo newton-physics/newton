@@ -317,6 +317,9 @@ made of a centre of mass :math:`\mathbf{c}_b` and a rotation
 :math:`\mathbf{R}_b`, with a mass :math:`m_b` and an inertia tensor
 :math:`\mathbf{I}_b`. The notation follows the VBD paper cited above:
 :math:`h` is the time step and :math:`\mathbf{y}` the inertial prediction.
+The kernels named on this page live in ``newton/_src/solvers/vbd/``
+(``solver_vbd.py``, ``particle_vbd_kernels.py``, ``rigid_vbd_kernels.py``);
+they are internal and can change without notice.
 
 .. _vbd-step-objective:
 
@@ -449,7 +452,7 @@ contacts, attachments, tendons) adds its force, its torque and the three
 :math:`6 \times 6` system by :math:`LDL^{\mathsf T}` (``ldlt6_solve``) and
 applies the increments (``solve_rigid_body``; the rotation increment acts in
 world space and is applied as a normalised small-angle quaternion, which
-approximates the exponential map, ``_USE_SMALL_ANGLE_APPROX``):
+approximates the exponential map):
 
 .. math::
 
@@ -514,11 +517,10 @@ angular rows; PRISMATIC two linear rows and the three angular rows; FIXED all
 six; D6 whatever its free axes leave; FREE adds no row. The material stiffness
 is ``rigid_joint_linear_ke`` or ``rigid_joint_angular_ke``, and the metric is
 :math:`\rho = \max(\text{support}, 9k)`, chosen so that :math:`k_{\text{eff}}
-\ge 0.9\,k` in every local solve (``_bilateral_auto_rho``);
+\ge 0.9\,k` in every local solve;
 ``rigid_joint_linear_kd`` and ``rigid_joint_angular_kd`` add absolute damping.
 Drives are bilateral rows on the free axes of REVOLUTE, PRISMATIC and D6
-joints, with the spring and the damper folded into one row
-(``_spring_damper_step``, ``_evaluate_drive_axis``):
+joints, with the spring and the damper folded into one row:
 
 .. math::
 
@@ -532,8 +534,7 @@ with :math:`k_t = \mathtt{joint\_target\_ke}`, :math:`d_t =
 \mathtt{joint\_target\_kd}`, and :math:`K_{\text{eff}}, s` formed from
 :math:`K` and the axis metric as above. Limits are unilateral rows at the
 nearer bound with :attr:`~newton.Model.joint_limit_ke` and :attr:`~newton.Model.joint_limit_kd`; only forces into
-the bound are kept, and the multiplier is projected onto its half-line
-(``_evaluate_limit_axis``, ``_update_limit_lambda``). ROD joints use four rows,
+the bound are kept, and the multiplier is projected onto its half-line. ROD joints use four rows,
 stretch, shear, bend and twist, with :attr:`~newton.Model.joint_target_ke` and
 :attr:`~newton.Model.joint_target_kd` as their stiffness and damping. DISTANCE joints are not
 supported.
@@ -587,13 +588,12 @@ Each energy term depends on a few blocks and on model parameters:
      - :attr:`~newton.Model.soft_contact_ke`, :attr:`~newton.Model.soft_contact_kd`, :attr:`~newton.Model.soft_contact_mu` averaged
        with the shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu`; :attr:`~newton.Model.particle_radius` and the shape
        :attr:`~newton.ModelBuilder.ShapeConfig.margin`
-     - ``_compute_body_particle_contact_force``,
-       ``compute_projected_isotropic_friction``
+     - ``compute_projected_isotropic_friction``
    * - Body-body contact, with friction and damping
      - two shapes, on two rigid bodies or on a rigid body and a static shape
      - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` averaged over the pair; shape radius and
        :attr:`~newton.ModelBuilder.ShapeConfig.margin`
-     - ``evaluate_rigid_contact_from_collision``, ``_compliant_contact_dual_step``
+     - ``evaluate_rigid_contact_from_collision``, ``update_duals_body_body_contacts``
    * - Particle-body attachments
      - a particle and a point fixed on a body
      - attachment stiffness (finite: compliant; infinite: hard limit, damping
@@ -711,12 +711,11 @@ per contact from the two sides (``init_body_particle_contacts``):
 :math:`k = \tfrac{1}{2}(\mathtt{soft\_contact\_ke} + \mathtt{ke}_{\text{shape}})`,
 :math:`k_d = \tfrac{1}{2}(\mathtt{soft\_contact\_kd} + \mathtt{kd}_{\text{shape}})`
 and :math:`\mu = \sqrt{\mathtt{soft\_contact\_mu}\;\mathtt{mu}_{\text{shape}}}`.
-The normal law (``_evaluate_rigid_soft_contact_force_norm``) is the plain
+The normal law is the plain
 quadratic penalty :math:`E = \tfrac{k}{2}(r - d)^2` for :math:`d < r`;
 ``rigid_soft_contact_use_log_barrier=True`` switches it to the self-contact
 barrier law. Damping and friction have the same form as for self-contact,
-written in world space (``_compute_body_particle_contact_force``,
-``compute_projected_isotropic_friction``): the damping force
+written in world space (``compute_projected_isotropic_friction``): the damping force
 :math:`-k_d\,\dot d\,\mathbf{n}` acts only while the point approaches the
 shape, and the friction force is :math:`-\mu\, f_n\,
 f_1(\lVert\mathbf{u}_t\rVert)\,\hat{\mathbf{u}}_t`, with :math:`\mathbf{u}_t`
@@ -727,8 +726,7 @@ the equal and opposite force with its torque acts on the body
 contact, every stored edge and face record is kept for DAT, but normally only
 the records that pass the feature-region test of Offset Geometric Contact
 produce force (``mesh_contact_valid``); penetration-recovery records and rows
-stored after a buffer overflow bypass the test
-(``_soft_contact_force_enabled``).
+stored after a buffer overflow bypass the test.
 
 *Body-body contact* acts between two shapes, on two rigid bodies or on a
 rigid body and a static shape. It is a constraint row of the rigid solve, not
@@ -756,14 +754,13 @@ ALM path (``rigid_compliant_alm=True``) the normal force is
 
 where :math:`\lambda_n` is the multiplier of the row and :math:`\rho_n` is an
 internal metric that the solver sets every step from the pair's inverse
-Delassus support over :math:`h^2` plus structural stiffness
-(``_contact_conditioning_scale``); the user does not set :math:`\rho_n`. The
+Delassus support over :math:`h^2` plus structural stiffness; the user does not set :math:`\rho_n`. The
 force acts along :math:`\mathbf{n}` at the support points with the matching
 torques, and the row adds :math:`k_{\text{eff}}\,\mathbf{n}\mathbf{n}^{\mathsf T}`
 to the body Hessians (``evaluate_rigid_contact_from_collision``). After every
 iteration the multiplier is advanced by the relaxed ascent
 :math:`\lambda_n \leftarrow \max\big(s\,(\lambda_n + \rho_n C),\ 0\big)`
-(``update_duals_body_body_contacts``, ``_compliant_contact_dual_step``). At
+(``update_duals_body_body_contacts``). At
 the fixed point :math:`\lambda_n = k\,C` and :math:`f_n = k\,C`: a converged
 resting contact carries its load like a penalty of the material stiffness
 :math:`k`, with the penetration :math:`f_n/k`, while each single iteration
@@ -772,7 +769,7 @@ conditioned. Friction is a Coulomb bound, not a smooth law: the tangential
 force :math:`\rho_t\,\mathbf{u}_t + \boldsymbol{\lambda}_t`, with
 :math:`\mathbf{u}_t` the tangential offset between the two anchored surface
 points and :math:`\rho_t` the tangent metric, is projected onto the disk
-:math:`\lVert\mathbf{f}_t\rVert \le \mu f_n` (``_project_coulomb_tangent``),
+:math:`\lVert\mathbf{f}_t\rVert \le \mu f_n`,
 and :math:`\boldsymbol{\lambda}_t` is advanced and projected onto the disk of
 radius :math:`\mu\lambda_n` in the same dual step. Damping is
 :math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the
@@ -783,7 +780,7 @@ matched contacts of the previous step. The legacy AVBD path
 penalty by default (``rigid_avbd_beta`` is zero). With a positive beta
 (``rigid_avbd_linear_beta``, falling back to ``rigid_avbd_beta``) the penalty
 starts at ``rigid_contact_k_start`` and grows by beta times the penetration
-per iteration, capped at the pair stiffness (``_ramp_penalty_k``). Its soft
+per iteration, capped at the pair stiffness. Its soft
 mode uses the IPC friction law instead of the Coulomb projection.
 
 The underlying methods are described in the references cited by
