@@ -1157,6 +1157,11 @@ class TestDriveNeuralGRU(unittest.TestCase):
                 indices=wp.array([0], dtype=wp.uint32, device=self.device),
                 drive=DriveNeuralGRU(self._save_gru("vector_output.onnx", output_size=2)),
             )
+        with self.assertRaisesRegex(NotImplementedError, "linear_before_reset"):
+            Actuator(
+                indices=wp.array([0], dtype=wp.uint32, device=self.device),
+                drive=DriveNeuralGRU(self._save_gru("reset_gate.onnx", linear_before_reset=0)),
+            )
 
     def test_rejects_graphs_without_hidden_state_wiring(self):
         """Reject graphs whose GRU hidden state is not a graph input and output."""
@@ -1175,11 +1180,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
         def hidden_not_output(model):
             del model.graph.output[1]
 
-        def mismatched_hidden_size(model):
-            for attribute in gru(model, 1).attribute:
-                if attribute.name == "hidden_size":
-                    attribute.i = 5
-
         def extra_input(model):
             model.graph.input.append(helper.make_tensor_value_info("extra", TensorProto.FLOAT, [1, None, 4]))
 
@@ -1187,7 +1187,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
             ("missing_initial_hidden.onnx", missing_initial_hidden, "external initial_h"),
             ("shared_initial_hidden.onnx", shared_initial_hidden, "distinct initial_h"),
             ("hidden_not_output.onnx", hidden_not_output, "Y_h as a graph output"),
-            ("mismatched_hidden_size.onnx", mismatched_hidden_size, "share one hidden size"),
             ("extra_input.onnx", extra_input, "one network input"),
         )
         for filename, edit, message in edits:

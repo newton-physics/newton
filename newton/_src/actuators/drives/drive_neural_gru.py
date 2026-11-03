@@ -206,7 +206,7 @@ def _read_graph_interface(model_path: str) -> _GRUGraphInterface:
 
     onnx = require_onnx()
     graph = onnx.load(model_path, load_external_data=False).graph
-    initializers = {item.name for item in graph.initializer}
+    initializers = {item.name: tuple(item.dims) for item in graph.initializer}
     graph_inputs = [value for value in graph.input if value.name not in initializers]
     graph_input_names = {value.name for value in graph_inputs}
     graph_output_names = [value.name for value in graph.output]
@@ -227,9 +227,11 @@ def _read_graph_interface(model_path: str) -> _GRUGraphInterface:
             raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' requires every GRU Y_h as a graph output")
         hidden_in_names.append(hidden_in)
         hidden_out_names.append(hidden_out)
-        for attribute in node.attribute:
-            if attribute.name == "hidden_size":
-                hidden_sizes.add(int(attribute.i))
+        recurrence_dims = initializers.get(node.input[2])
+        if recurrence_dims:
+            hidden_sizes.add(int(recurrence_dims[-1]))
+        else:
+            hidden_sizes.update(int(attribute.i) for attribute in node.attribute if attribute.name == "hidden_size")
     if len(set(hidden_in_names)) != len(hidden_in_names):
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' requires a distinct initial_h for every GRU")
     if len(hidden_sizes) != 1:
