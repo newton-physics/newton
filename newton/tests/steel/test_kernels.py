@@ -842,10 +842,14 @@ def test_propagation_rejects_unsupported_options(test, device):
             with test.assertRaisesRegex(NotImplementedError, "contact torsion.*articulated_contact_response"):
                 SolverSteel(model, articulated_contact_response=response)
         set_torsion_radius(model, 0.0)
-        options = (
-            ({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance"),
-            ({"enable_sleeping": True}, "enable_sleeping"),
-        )
+        options = [({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance")]
+        if response == "propagation":
+            options.append(({"enable_sleeping": True}, "enable_sleeping"))
+        else:
+            with test.subTest(response=response, option="enable_sleeping"):
+                test.assertIsNotNone(
+                    SolverSteel(model, articulated_contact_response=response, enable_sleeping=True)._sleeping
+                )
         for kwargs, name in options:
             with test.subTest(response=response, option=name):
                 with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
