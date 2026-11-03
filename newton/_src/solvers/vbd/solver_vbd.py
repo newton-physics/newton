@@ -61,6 +61,7 @@ from .particle_vbd_kernels import (
     reset_particle_state,
     scatter_particle_body_contact_force_and_hessian,
     solve_elasticity,
+    step_particle_body_attachment_lambda_rho,
     update_velocity,
 )
 from .rigid_vbd_kernels import (
@@ -90,6 +91,7 @@ from .rigid_vbd_kernels import (
     init_rod_rest_bend_twist,
     refresh_body_structural_k,
     refresh_joint_material_params,
+    reset_particle_body_attachment_state,
     reset_rigid_state,
     select_variant_bounding_radius,
     snapshot_body_body_contact_history,
@@ -99,6 +101,7 @@ from .rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_body_particle_contacts,
     update_duals_joint,
+    update_duals_particle_body_attachments,
     update_rod_dahl_state,
 )
 from .tendon_kernels import (
@@ -214,7 +217,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
         - Coupled particle-rigid body systems
-        - Compliant rigid-body-to-particle attachments
+        - Compliant and hard rigid-body-to-particle attachments
 
     For rigid bodies, two paths are supported:
 
@@ -282,8 +285,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     Particle-body attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
-        - The constraint is compliant: ``stiffness`` and ``damping`` enter a quadratic
-          penalty, so a loaded attachment keeps a small offset. There is no rigid mode.
+        - Attachments are compliant-ALM rows with a limit-row penalty: a finite
+          ``stiffness`` keeps its physical spring offset under load, while infinite
+          stiffness is the hard limit of the same row and ignores ``damping``.
+          Multipliers are retained across steps with ``rigid_avbd_gamma``. Finite
+          iterations can leave residual error, especially for conflicting constraints.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.
 
@@ -582,9 +588,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
                     default behavior) and author fixed material stiffness instead.
             rigid_avbd_gamma: Per-step decay factor for penalty k and persisted lambda.
-                Compliant ALM joints and validated contacts retain lambda by ``gamma``;
-                the legacy path retains lambda by ``alpha * gamma``. Lower values
-                discard history faster.
+                Compliant ALM joints, particle-body attachments, and validated contacts
+                retain lambda by ``gamma``; the legacy path retains joint and contact
+                lambda by ``alpha * gamma``. Lower values discard history faster.
             rigid_contact_hard: Legacy body-body contact hard/soft mode. With
                 ``rigid_compliant_alm=True``, contacts use the ALM path. With
                 ``rigid_compliant_alm=False``, ``True`` selects legacy hard AVBD contact
@@ -1094,6 +1100,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_joint_linear_kd,
             rigid_joint_angular_kd,
         )
+
+        attachment_count = model.attachment_particle_body_count
+        self._attachment_particle_body_lambda = wp.zeros(attachment_count, dtype=wp.vec3, device=self.device)
+        self._attachment_particle_body_rho = wp.zeros(attachment_count, dtype=float, device=self.device)
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._mimic_body_deltas = None
@@ -2663,6 +2673,45 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     # Main Solver Methods
     # =====================================================
 
+    def _initialize_particle_body_attachments(self, state: State, dt: float) -> None:
+        """Refresh attachment ALM metrics and retain multipliers once per step."""
+        model = self.model
+        wp.launch(
+            kernel=step_particle_body_attachment_lambda_rho,
+            dim=model.attachment_particle_body_count,
+            inputs=[
+                dt,
+                self.rigid_avbd_gamma,
+                model.attachment_particle_body_body,
+                model.attachment_particle_body_particle,
+                model.attachment_particle_body_stiffness,
+                model.attachment_particle_body_enabled,
+                state.particle_q,
+                self.particle_q_prev,
+                model.particle_inv_mass,
+                model.particle_flags,
+                self.body_inv_mass_effective,
+                self.particle_adjacency,
+                model.tri_indices,
+                model.tri_poses,
+                model.tri_areas,
+                model.tri_materials,
+                model.edge_indices,
+                model.edge_rest_angle,
+                model.edge_rest_length,
+                model.edge_bending_properties,
+                model.tet_indices,
+                model.tet_poses,
+                model.tet_materials,
+                model.spring_indices,
+                model.spring_rest_length,
+                model.spring_stiffness,
+                model.spring_damping,
+            ],
+            outputs=[self._attachment_particle_body_rho, self._attachment_particle_body_lambda],
+            device=self.device,
+        )
+
     def set_rigid_history_update(self, update: bool):
         """Set whether the next step() should update rigid solver history.
 
@@ -2865,6 +2914,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid)
         self._initialize_particles(state_in, state_out, contacts, dt)
+        if self.model.attachment_particle_body_count > 0:
+            self._initialize_particle_body_attachments(state_in, dt)
 
         rigid_due, soft_due = self._collision_detection_due((_Frequency.PRE_POST_INIT,))
         # With contact history, the post-initialization pass carries the state just
@@ -2891,6 +2942,23 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._update_tendon_routing(state_in, dt, False)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
+            if self.model.attachment_particle_body_count > 0:
+                wp.launch(
+                    kernel=update_duals_particle_body_attachments,
+                    dim=self.model.attachment_particle_body_count,
+                    inputs=[
+                        self.model.attachment_particle_body_body,
+                        self.model.attachment_particle_body_particle,
+                        self.model.attachment_particle_body_body_point,
+                        self.model.attachment_particle_body_stiffness,
+                        self.model.attachment_particle_body_enabled,
+                        state_in.particle_q,
+                        state_in.body_q,
+                        self._attachment_particle_body_rho,
+                    ],
+                    outputs=[self._attachment_particle_body_lambda],
+                    device=self.device,
+                )
 
         update_tendon_diagnostics = (
             self.iterations > 0
@@ -2962,7 +3030,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         volumetric (tet) soft bodies, and it runs even when an external solver
         integrates the bodies or the model has none. A requested particle field is
         skipped if its *state* array is ``None``. Particle and body-particle solver
-        history is intentionally left untouched: ``particle_q_prev`` is rebaselined
+        history is intentionally left untouched except for retained attachment
+        multipliers, which are cleared in selected worlds.
+        ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
         and body-particle contacts rebuild per step, and tet/cloth elasticity is
         stateless, so no particle history cold-start is required. Reset does not
@@ -3067,6 +3137,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
 
         self._reset_tendon_state(state, world_mask)
+
+        if model.attachment_particle_body_count > 0:
+            wp.launch(
+                kernel=reset_particle_body_attachment_state,
+                dim=model.attachment_particle_body_count,
+                inputs=[world_mask, world_mask is None, model.world_count, model.attachment_particle_body_world],
+                outputs=[self._attachment_particle_body_lambda],
+                device=self.device,
+            )
 
         if not self._integrates_rigid_bodies:
             return
@@ -4190,6 +4269,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
@@ -4618,6 +4699,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                         self.body_particle_attachment_offsets,
                         self.body_particle_attachment_indices,
                     ],
