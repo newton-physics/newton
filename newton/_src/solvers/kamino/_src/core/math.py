@@ -229,10 +229,27 @@ def unit_quat_conj_apply(q: wp.quatf, v: wp.vec3f) -> wp.vec3f:
 
 
 @wp.func
+def unit_quat_to_rotation_matrix(q: wp.quatf) -> wp.mat33f:
+    """
+    Converts a unit quaternion to a rotation matrix (making use of the unit norm assumption to simplify the result)
+    """
+    xx = 2.0 * q.x * q.x
+    xy = 2.0 * q.x * q.y
+    xz = 2.0 * q.x * q.z
+    wx = 2.0 * q.w * q.x
+    yy = 2.0 * q.y * q.y
+    yz = 2.0 * q.y * q.z
+    wy = 2.0 * q.w * q.y
+    zz = 2.0 * q.z * q.z
+    wz = 2.0 * q.w * q.z
+    return wp.mat33f(1.0 - yy - zz, xy - wz, xz + wy, xy + wz, 1.0 - xx - zz, yz - wx, xz - wy, yz + wx, 1.0 - xx - yy)
+
+
+@wp.func
 def unit_quat_conj_to_rotation_matrix(q: wp.quatf) -> wp.mat33f:
     """
     Converts the conjugate of a unit quaternion to a rotation matrix (making use of the unit norm assumption
-    to simplify the result); this is the matrix form of unit_quat_conj_apply(q, v)
+    to simplify the result); this is simply the transpose of unit_quat_to_rotation_matrix(q)
     """
     xx = 2.0 * q.x * q.x
     xy = 2.0 * q.x * q.y
