@@ -104,7 +104,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.utils.download_assets import download_git_folder
 from newton.examples.surface_gripper.robot_playback import RobotPlayback, recording_duration
 from newton.examples.surface_gripper.surface_gripper import (
     SurfaceGripper,
@@ -122,16 +121,8 @@ from newton.viewer import ViewerBase
 
 # Asset paths (global constants). All assets live in the shared newton/examples/assets/ directory.
 ASSETS = Path(__file__).parent.parent / "assets"
-# robot arm USD, downloaded (and cached) from a branch of the newton-assets fork.
-# TODO: switch to newton.utils.download_asset("fanuc_m710id_50m/usd") once the asset is merged upstream.
-ROBOT_USD = (
-    download_git_folder(
-        "https://github.com/gyeomannvidia/newton-assets.git",
-        "fanuc_m710id_50m/usd",
-        ref="dev/gyeoman/fanuc_palletizer",
-    )
-    / "fanuc_arm.usd"
-)
+# robot arm USD, downloaded (and cached) from the newton-assets repository.
+ROBOT_USD = newton.utils.download_asset("fanuc_m710id_50m/usd") / "fanuc_arm.usd"
 # World placement of the robot arm. The asset no longer carries this placement, so it loads at the origin.
 ROBOT_BASE_POSITION = wp.vec3(-0.9548298500297838, 0.2817000725962616, 0.7495161294937144)  # [m]
 ROBOT_BASE_YAW = -math.pi / 2  # [rad] about +Z
