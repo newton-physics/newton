@@ -3,6 +3,7 @@
 
 import importlib.util
 import inspect
+import sys
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
@@ -17,7 +18,7 @@ from newton._src.viewer.gl.gui import UI
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
-from newton.tests.unittest_utils import patch_sys_module
+from newton.tests.unittest_utils import import_pyglet_window, patch_sys_module
 
 _Vec3 = namedtuple("_Vec3", ("x", "y", "z"))
 
@@ -390,14 +391,9 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui._camera_orbit_sensitivity = 0.1
         self.gui._camera_dolly_drag_sensitivity = 0.01
         # Import input constants without creating Pyglet's shadow GL window.
-        import pyglet
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import mouse
 
-        shadow_window = pyglet.options["shadow_window"]
-        pyglet.options["shadow_window"] = False
-        try:
-            from pyglet.window import mouse
-        finally:
-            pyglet.options["shadow_window"] = shadow_window
         self.mouse = mouse
         self.gui._gizmo_active = {}
         self.gui._gizmo_hovered = False
@@ -584,6 +580,23 @@ class TestViewerGizmos(unittest.TestCase):
         self.viewer._gizmo_log["target"] = target
         self.frame(0.0, 0.0, False)
         np.testing.assert_array_equal(target, original)
+
+    def test_mouse_input_without_pyglet_window_mouse_attribute(self) -> None:
+        """Route mouse input when ``pyglet.window`` lacks its ``mouse`` attribute.
+
+        A failed ``import pyglet.window`` (e.g. without a display) keeps
+        ``pyglet.window.mouse`` in ``sys.modules``, and a later re-import of
+        ``pyglet.window`` does not bind it as a package attribute again.
+        """
+        window = sys.modules["pyglet.window"]
+        with mock.patch.dict(vars(window)):
+            vars(window).pop("mouse", None)
+            yaw = self.viewer.camera.yaw
+            self.frame(700.0, 300.0, True)
+            self.frame(720.0, 300.0, True)
+            self.assertNotEqual(self.viewer.camera.yaw, yaw)
+            self.frame(720.0, 300.0, False)
+        self.assertEqual(self.gui._camera_drag_buttons, 0)
 
 
 if __name__ == "__main__":

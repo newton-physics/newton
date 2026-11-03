@@ -941,6 +941,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 free_root_joints=None if index_lists is None else index_lists.free_root_joints,
             )
 
+        restarts = self._iteration_restarts_possible()
+        for entry in self._entries.values():
+            entry.solver.coupling_notify_iteration_restarts(restarts)
+
         self._after_entries_constructed()
 
         for entry in self._entries.values():
@@ -2030,6 +2034,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view._fk_level_parent_pos = None
         view._fk_level_capacity = 0
 
+        # Rebuild serial traversal from local topology, including synthetic FREE
+        # roots that have no corresponding joint in the parent model.
+        from ...sim.builder import _build_fk_joint_order  # noqa: PLC0415
+
+        fk_joint_order = _build_fk_joint_order(
+            view.joint_parent.numpy(),
+            view.joint_child.numpy(),
+            view.joint_articulation.numpy(),
+            view.joint_ancestor.numpy(),
+            articulation_starts,
+            view.articulation_end.numpy(),
+        )
+        view._fk_joint_order = (
+            None if fk_joint_order is None else wp.array(fk_joint_order, dtype=wp.int32, device=device)
+        )
+
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
@@ -2335,7 +2355,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         namespace = overrides.get(namespace_name)
         if namespace is None:
             parent_namespace = getattr(self.model, namespace_name)
-            namespace = _AttributeNamespaceView(parent_namespace)
+            namespace = _AttributeNamespaceView(parent_namespace, view)
             setattr(view, namespace_name, namespace)
         setattr(namespace, attr_name, value)
 
@@ -2683,6 +2703,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _after_entries_constructed(self) -> None:
         """Hook called after sub-solvers are constructed and before state allocation."""
 
+    def _iteration_restarts_possible(self) -> bool:
+        """Return whether :meth:`step` may re-solve an entry within one step."""
+        return False
+
     def _after_entry_states_created(self) -> None:
         """Hook called after per-entry states and scratch buffers are allocated."""
         self._refresh_gravity_accelerations()
@@ -2690,6 +2714,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _entry_needs_gravity_acceleration(self, entry: SolverEntry) -> bool:
         del entry
         return False
+
+    def _effective_mass_refresh_flags(self) -> int:
+        """Return the model flags after which entry effective masses are evaluated again."""
+        flags = int(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        for entry in self._entries.values():
+            flags |= int(entry.solver.coupling_effective_mass_refresh_flags())
+        return flags
 
     def _gravity_acceleration_refresh_flags(self) -> int:
         return int(ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
@@ -3838,15 +3869,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             if frequency == model_frequency.BODY:
                 return True
-        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
+        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name in (
-                "joint_axis",
-                "joint_target_q",
-            ):
+            if (
+                frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) and attribute.name != "joint_rest_q"
+            ) or attribute.name in ("joint_axis", "joint_target_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
+            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
             if (
@@ -3856,7 +3886,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
             "joint_target_q",
             "mujoco:dof_ref",
-            "mujoco:dof_springref",
+            "joint_rest_q",
         ):
             return True
         if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":

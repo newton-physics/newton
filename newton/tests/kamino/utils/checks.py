@@ -194,10 +194,10 @@ def _assert_model_bodies_conversion_consistency(
         )
 
     # Inverse transformation: mass, inertia, and their inverses are near-identical
-    # copies, except for bodies flagged KINEMATIC or PROXY.
+    # copies, except for bodies flagged KINEMATIC.
     if "m_i" not in excluded or "inv_m_i" not in excluded or "i_I_i" not in excluded or "inv_i_I_i" not in excluded:
         body_flags = model_newton.body_flags.numpy()
-        is_kinematic = body_flags != BodyFlags.DYNAMIC
+        is_kinematic = (body_flags & int(BodyFlags.KINEMATIC)) != 0
         if "m_i" not in excluded:
             m_i_expected = model_newton.body_mass.numpy()
             m_i_expected[is_kinematic] = 0.0

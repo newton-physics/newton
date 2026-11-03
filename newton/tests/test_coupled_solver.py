@@ -352,6 +352,23 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _EffectiveMassCountingSolver(_StepCountingCopySolver):
+    """Copy solver that counts effective-mass evaluations and keeps the default refresh flags."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.effective_mass_evals = 0
+
+    def coupling_eval_effective_mass_block(self, *args, **kwargs):
+        self.effective_mass_evals += 1
+        super().coupling_eval_effective_mass_block(*args, **kwargs)
+
+
+class _JointEffectiveMassCountingSolver(_EffectiveMassCountingSolver):
+    def coupling_effective_mass_refresh_flags(self) -> int:
+        return int(newton.ModelFlags.JOINT_PROPERTIES)
+
+
 class _BodyObservableCopySolver(_StepCountingCopySolver):
     """Copy solver that fills body-indexed solver observables."""
 
@@ -1585,6 +1602,12 @@ class TestSolverCoupledBasic(unittest.TestCase):
         the remaining revolute subtree, so the reduced-coordinate arm falls
         with the base instead of staying welded in place.
         """
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                self._check_split_articulation_free_root(device)
+
+    def _check_split_articulation_free_root(self, device):
+        """Evaluate and step synthetic roots beside an unrelated child-first articulation."""
         world_count = 2
         template = newton.ModelBuilder()
         inertia = wp.mat33(np.eye(3) * 0.01)
@@ -1603,9 +1626,16 @@ class TestSolverCoupledBasic(unittest.TestCase):
             upper, lower, axis=(0.0, 1.0, 0.0), parent_xform=half, child_xform=half_back
         )
         template.add_articulation([root, shoulder, elbow])
+        unrelated_parent = template.add_link(mass=1.0, inertia=inertia)
+        unrelated_child = template.add_link(mass=1.0, inertia=inertia)
+        unrelated_joints = [
+            template.add_joint_fixed(unrelated_parent, unrelated_child),
+            template.add_joint_fixed(-1, unrelated_parent),
+        ]
+        template.add_articulation(unrelated_joints)
         builder = newton.ModelBuilder()
         builder.replicate(template, world_count)
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device=device)
 
         bpw, jpw = template.body_count, template.joint_count
 
@@ -1643,6 +1673,39 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(entry.joint_coord_local_to_global.numpy()[:7], [-1] * 7)
         self.assertEqual(entry.joint_dynamics_disabled_local_indices.shape[0], 0)
 
+        # An unrelated articulation's order must not omit the view's synthetic roots.
+        state = view.state()
+        q, qd = state.joint_q.numpy().copy(), state.joint_qd.numpy().copy()
+        expected_q, expected_qd = state.body_q.numpy().copy(), state.body_qd.numpy().copy()
+        for world in range(world_count):
+            position = np.array([1.0 + 10.0 * world, 2.0, 3.0])
+            velocity = np.array([1.0 + world, 2.0, 3.0])
+            q[8 * world : 8 * world + 3] = position
+            qd[7 * world : 7 * world + 3] = velocity
+            expected_q[2 * world, :3] = position
+            expected_q[2 * world + 1, :3] = position + np.array([0.3, 0.0, 0.0])
+            expected_qd[2 * world : 2 * world + 2, :3] = velocity
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        before_q, before_qd = state.body_q.numpy().copy(), state.body_qd.numpy().copy()
+        for selection in (
+            {"indices": wp.array([0], dtype=int, device=device)},
+            {},
+            {"joint_mask": wp.array([True] * view.joint_count, dtype=bool, device=device)},
+        ):
+            state.body_q.assign(before_q)
+            state.body_qd.assign(before_qd)
+            newton.eval_fk(view, state.joint_q, state.joint_qd, state, **selection)
+            selected_bodies = 2 if "indices" in selection else view.body_count
+            np.testing.assert_allclose(
+                state.body_q.numpy()[:selected_bodies], expected_q[:selected_bodies], atol=1.0e-6
+            )
+            np.testing.assert_allclose(
+                state.body_qd.numpy()[:selected_bodies], expected_qd[:selected_bodies], atol=1.0e-6
+            )
+            np.testing.assert_array_equal(state.body_q.numpy()[selected_bodies:], before_q[selected_bodies:])
+            np.testing.assert_array_equal(state.body_qd.numpy()[selected_bodies:], before_qd[selected_bodies:])
+
         state_0, state_1 = model.state(), model.state()
         for _ in range(10):
             coupled.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
@@ -1650,7 +1713,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         body_z = state_0.body_q.numpy()[:, 2].reshape(world_count, bpw)
         self.assertLess(body_z[0, base], -0.01)
-        np.testing.assert_allclose(body_z, np.full_like(body_z, body_z[0, base]), atol=1.0e-5)
+        np.testing.assert_allclose(body_z[:, :3], np.full((world_count, 3), body_z[0, base]), atol=1.0e-5)
 
     def test_split_articulation_free_roots_head_separate_articulations(self):
         """Keep one root per view articulation when a split leaves the original root in the view.
@@ -2137,22 +2200,36 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(solver_b.joint_target_q[0], np.array([13.0], dtype=np.float32))
 
     def test_compacted_joint_targets_use_local_layout(self):
-        """Joint targets and their derived starts should use compact layout."""
+        """Keep joint targets and FK traversal in the compact joint layout."""
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                self._check_compacted_joint_layout(device)
+
+    def _check_compacted_joint_layout(self, device):
+        """Check compact properties and FK using a child-first articulation."""
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         free_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         free_joint = builder.add_joint_free(child=free_body)
-        builder.add_articulation([free_joint])
+        fixed_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        fixed_joint = builder.add_joint_fixed(parent=free_body, child=fixed_body)
+        builder.add_articulation([free_joint, fixed_joint])
         first_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        first_joint = builder.add_joint_revolute(parent=-1, child=first_body, axis=(0.0, 0.0, 1.0))
         second_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         second_joint = builder.add_joint_revolute(
             parent=first_body,
             child=second_body,
             axis=(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([first_joint, second_joint])
-        model = builder.finalize(device="cpu")
+        first_joint = builder.add_joint_revolute(
+            parent=-1,
+            child=first_body,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([second_joint, first_joint])
+        model = builder.finalize(device=device)
         model.joint_target_q.assign(np.arange(model.joint_coord_count, dtype=np.float32))
 
         coupled = SolverCoupled(
@@ -2168,7 +2245,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         view = coupled.view("revolute")
 
-        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
+        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [1, -1])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
         self.assertIsNotNone(model._fk_articulation_level_start)
@@ -2179,6 +2256,19 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertIsNone(view._fk_level_parent_pos)
         self.assertEqual(view._fk_level_capacity, 0)
 
+        state = view.state()
+        state.joint_q.zero_()
+        state.joint_qd.assign([2.0, 1.0])
+        expected_q = [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0]]
+        expected_qd = [[0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [-2.0, 0.0, 0.0, 0.0, 2.0, 1.0]]
+        for joint_mask in (None, wp.array([True, True], dtype=wp.bool, device=device)):
+            with self.subTest(masked=joint_mask is not None):
+                state.body_q.assign(view.body_q)
+                state.body_qd.zero_()
+                newton.eval_fk(view, state.joint_q, state.joint_qd, state, joint_mask=joint_mask)
+                np.testing.assert_allclose(state.body_q.numpy(), expected_q, atol=1.0e-6)
+                np.testing.assert_allclose(state.body_qd.numpy(), expected_qd, atol=1.0e-6)
+
         model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
@@ -2187,7 +2277,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         model.joint_armature.fill_(3.0)
         model.mujoco.dof_ref.fill_(0.2)
-        model.mujoco.dof_springref.fill_(0.3)
+        rest_q = model.joint_rest_q.numpy()
+        rest_q[-2:] = 0.1
+        model.joint_rest_q.assign(rest_q)
         model.joint_damping.fill_(0.8)
         model.joint_target_ke.fill_(25.0)
         model.joint_friction.fill_(0.4)
@@ -2211,9 +2303,10 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        np.testing.assert_allclose(view.joint_rest_q.numpy(), 0.0)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
-        np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
+        np.testing.assert_allclose(view.joint_rest_q.numpy(), 0.1)
 
     def test_joint_properties_refresh_compacted_targets(self):
         """Refresh position targets in a compact model view."""
@@ -3101,6 +3194,48 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         np.testing.assert_allclose(effective_mass.numpy(), model.body_mass.numpy(), rtol=1.0e-5)
         np.testing.assert_allclose(effective_inertia.numpy(), model.body_inertia.numpy(), rtol=1.0e-5)
 
+    def test_proxy_effective_mass_follows_armature(self):
+        """Refresh a MuJoCo source's proxy mass after an armature change."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=body,
+            axis=newton.Axis.Z,
+            child_xform=wp.transform((-1.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=lambda view: SolverMuJoCo(view, disable_contacts=True),
+                    bodies=[body],
+                    joints=[joint],
+                ),
+                SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[SolverCoupledProxy.Proxy(source="src", destination="dst", bodies=[body])]
+            ),
+        )
+        proxy = int(coupled._proxy_mappings[0].proxy_ids_local.numpy()[0])
+
+        def proxy_mass():
+            return float(coupled.view("dst").body_mass.numpy()[proxy])
+
+        before = proxy_mass()
+        model.joint_armature.fill_(100.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        self.assertGreater(proxy_mass(), 10.0 * before)
+
     def test_gravity_acceleration_hook_uses_body_gravcomp(self):
         try:
             SolverMuJoCo.import_mujoco()
@@ -3761,6 +3896,49 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
 
         mapping = coupled._proxy_mappings[0]
         _assert_proxy_reset_buffers(self, model, coupled, mapping, model.body_world)
+
+    def test_effective_mass_refresh_follows_source_flags(self):
+        """Evaluate proxy effective masses again only after a notification that an entry names."""
+        flags = newton.ModelFlags
+        default_refreshing = {
+            flags.BODY_INERTIAL_PROPERTIES,
+            flags.BODY_PROPERTIES,
+            flags.JOINT_DOF_PROPERTIES,
+            flags.JOINT_DOF_INERTIAL_PROPERTIES,
+            flags.JOINT_REFERENCE_POSE_PROPERTIES,
+        }
+        for source, refreshing in (
+            (_EffectiveMassCountingSolver, default_refreshing),
+            # The destination keeps the default flags, and the coupler refreshes on the union.
+            (_JointEffectiveMassCountingSolver, default_refreshing | {flags.JOINT_PROPERTIES}),
+        ):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            model = builder.finalize(device="cpu")
+            coupled = SolverCoupledProxy(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=source, bodies=[body]),
+                    SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[SolverCoupledProxy.Proxy(source="src", destination="dst", bodies=[body])]
+                ),
+            )
+            solver = _StepCountingCopySolver.instances["src"]
+            for flag in (
+                flags.JOINT_PROPERTIES,
+                flags.JOINT_DOF_PROPERTIES,
+                flags.JOINT_DOF_INERTIAL_PROPERTIES,
+                flags.JOINT_REFERENCE_POSE_PROPERTIES,
+                flags.BODY_PROPERTIES,
+                flags.BODY_INERTIAL_PROPERTIES,
+                flags.SHAPE_PROPERTIES,
+            ):
+                before = solver.effective_mass_evals
+                coupled.notify_model_changed(flag)
+                expected = 1 if flag in refreshing else 0
+                self.assertEqual(solver.effective_mass_evals - before, expected, msg=f"{source.__name__} {flag!r}")
 
     def test_body_proxy_aitken_relaxation_converges_affine_fixed_point(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
