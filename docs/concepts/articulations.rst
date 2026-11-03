@@ -116,15 +116,19 @@ At structural rest, parent and child anchor points coincide. The rod's
 :attr:`newton.Model.joint_rest_q` therefore has zero translation and stores
 the relative rest rotation as a unit quaternion. For individual joints, specify
 ``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
-the initial relative anchor rotation.
+the initial relative anchor rotation. :class:`newton.solvers.SolverVBD` reads
+only the quaternion entries; direct edits to the three translation entries
+have no effect.
 
 Rod stiffness and damping use :attr:`newton.Model.joint_target_ke` and
 :attr:`newton.Model.joint_target_kd` in canonical XYZ linear/angular order:
 ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. Each anchor's local
 ``+Z`` is the material tangent; X/Y shear and X/Y bend coefficients must match.
 Every material axis uses :attr:`~newton.JointTargetMode.NONE`.
-These rod material coefficients are separate from the passive joint springs
-configured through :attr:`newton.Model.joint_stiffness`.
+Rods share :attr:`newton.Model.joint_rest_q` with passive joint springs.
+:class:`newton.solvers.SolverVBD` uses the material coefficients above for rod
+response; :attr:`newton.Model.joint_stiffness` and
+:attr:`newton.Model.joint_damping` do not affect rods in VBD.
 
 :attr:`newton.Control.joint_target_q` and
 :attr:`newton.Control.joint_target_qd` neither actuate a rod nor change its

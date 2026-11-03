@@ -339,8 +339,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         ``model.joint_rest_q`` when constructed. After changing these Model-owned
         rest rotations, call :meth:`notify_model_changed` with
         :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`; the broader
-        :attr:`~newton.ModelFlags.JOINT_PROPERTIES` and
-        :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` also refresh it.
+        :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` also refreshes it.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -1579,9 +1578,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_joint_material_params()
         if refresh_structural_k:
             self._refresh_structural_k()
-        if flags & (
-            ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
-        ):
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
             self._refresh_rod_rest_bend_twist_cache()
 
     @override

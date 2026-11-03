@@ -4069,8 +4069,8 @@ def _rod_control_target_q_does_not_override_structural_rest_impl(test: unittest.
     test.assertGreater(float(np.linalg.norm(body_qd[3:])), 1.0e-5)
 
 
-def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.TestCase, device):
-    """Refresh Rod rest through reference-pose and compatible broad flags."""
+def _rod_notify_reference_pose_refreshes_structural_rest_impl(test: unittest.TestCase, device):
+    """Publish Rod rest only through reference-pose or broad DOF notifications."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     joint = builder.add_joint_rod(-1, child, bend_stiffness=20.0, twist_stiffness=10.0)
@@ -4079,10 +4079,14 @@ def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.T
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     q_start = int(model.joint_q_start.numpy()[joint])
+    state_in, state_out = model.state(), model.state()
+    control = model.control()
+    dt = 1.0 / 600.0
+    solver.step(state_in, state_out, control, None, dt)
+    np.testing.assert_allclose(state_out.body_qd.numpy(), 0.0, atol=1.0e-6)
 
     for i, flags in enumerate(
         (
-            newton.ModelFlags.JOINT_PROPERTIES,
             newton.ModelFlags.JOINT_DOF_PROPERTIES,
             newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
         )
@@ -4095,11 +4099,18 @@ def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.T
         rest = model.joint_rest_q.numpy()
         rest[q_start + 3 : q_start + 7] = np.asarray(rest_rotation)
         model.joint_rest_q.assign(rest)
-        if flags == newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES:
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
-            np.testing.assert_array_equal(solver.joint_rod_rest_kb_local.numpy(), bend_before)
-            np.testing.assert_array_equal(solver.joint_rod_rest_twist.numpy(), twist_before)
+        for unrelated_flags in (
+            newton.ModelFlags.JOINT_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES,
+        ):
+            solver.notify_model_changed(unrelated_flags)
+            np.testing.assert_array_equal(
+                solver.joint_rod_rest_kb_local.numpy(), bend_before, err_msg=unrelated_flags.name
+            )
+            np.testing.assert_array_equal(
+                solver.joint_rod_rest_twist.numpy(), twist_before, err_msg=unrelated_flags.name
+            )
         solver.notify_model_changed(flags)
 
         bend_after = solver.joint_rod_rest_kb_local.numpy()
@@ -4117,6 +4128,8 @@ def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.T
     rebuilt_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     np.testing.assert_allclose(bend_after, rebuilt_solver.joint_rod_rest_kb_local.numpy(), atol=1.0e-6)
     np.testing.assert_allclose(twist_after, rebuilt_solver.joint_rod_rest_twist.numpy(), atol=1.0e-6)
+    solver.step(state_in, state_out, control, None, dt)
+    test.assertGreater(float(np.linalg.norm(state_out.body_qd.numpy()[child, 3:])), 1.0e-5)
 
 
 def _cable_generic_rest_pose_is_structural_rest_impl(test: unittest.TestCase, device):
@@ -7936,8 +7949,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_rod_notify_joint_properties_refreshes_structural_rest",
-    _rod_notify_joint_properties_refreshes_structural_rest_impl,
+    "test_rod_notify_reference_pose_refreshes_structural_rest",
+    _rod_notify_reference_pose_refreshes_structural_rest_impl,
     devices=devices,
 )
 add_function_test(
