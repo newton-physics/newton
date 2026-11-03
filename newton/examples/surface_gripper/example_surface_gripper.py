@@ -720,7 +720,9 @@ class ExampleState:
 
     def __init__(self, n_grippers: int):
         self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)  # engagement command (gripper_close)
-        self.gripper_command_preparing_wp = wp.zeros(n_grippers, dtype=wp.bool)  # preparing-to-engage flag (prepare_to_engage)
+        self.gripper_command_preparing_wp = wp.zeros(
+            n_grippers, dtype=wp.bool
+        )  # preparing-to-engage flag (prepare_to_engage)
         self.gripper_curr_box_wp = wp.zeros(n_grippers, dtype=wp.int32)  # current box index
 
 
