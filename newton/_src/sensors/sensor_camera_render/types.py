@@ -48,10 +48,15 @@ class GaussianRenderMode(enum.IntEnum):
     """Gaussian Render Mode"""
 
     FAST = 0
-    """Fast Render Mode"""
+    """Blend only the nearest :attr:`RenderConfig.gaussians_max_num_hits` splats along each ray.
+
+    The light that passes them shows whatever lies behind, the nearest shape or
+    the clear color, even where more splats lie farther along the ray.
+    """
 
     QUALITY = 1
-    """Quality Render Mode, collect hits until minimum transmittance is reached"""
+    """Blend splats in batches of :attr:`RenderConfig.gaussians_max_num_hits` until the ray reaches
+    :attr:`RenderConfig.gaussians_min_transmittance` or passes the last splat."""
 
 
 class AntiAliasing(enum.IntEnum):
@@ -190,11 +195,26 @@ class RenderConfig:
     gaussians_mode: GaussianRenderMode = GaussianRenderMode.FAST
     """Gaussian splatting render mode (see :class:`GaussianRenderMode`)."""
 
-    gaussians_min_transmittance: float = 0.49
-    """Minimum transmittance before early-out during Gaussian rendering."""
+    gaussians_min_transmittance: float = 1.0e-4
+    """Transmittance at which a ray stops blending Gaussian splats.
+
+    The renderer blends splats front to back over whatever lies behind them, a
+    shape or the clear color. Once the share of light that passes the splats
+    blended so far falls to this value, the ray treats the splats as opaque and
+    skips the remaining ones. In :attr:`GaussianRenderMode.FAST`,
+    :attr:`gaussians_max_num_hits` can stop the ray first. The default matches
+    the 3D Gaussian splatting rasterizer.
+    """
 
     gaussians_max_num_hits: int = 20
-    """Maximum Gaussian hits accumulated per ray."""
+    """Number of nearest Gaussian splats a ray gathers and blends in one batch.
+
+    :attr:`GaussianRenderMode.FAST` blends one batch, so a ray stops after this
+    many splats even if its transmittance is still above
+    :attr:`gaussians_min_transmittance`. :attr:`GaussianRenderMode.QUALITY`
+    gathers further batches until the ray reaches
+    :attr:`gaussians_min_transmittance`.
+    """
 
 
 @dataclass(unsafe_hash=True)

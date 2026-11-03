@@ -18,6 +18,9 @@ from .types import GaussianRenderMode, RenderConfig
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
+# Index of an empty hit slot; it sorts after every splat at the same distance.
+NO_SPLAT_INDEX = wp.constant(wp.int32(2147483647))
+
 
 @wp.func
 def compute_gaussian_bounds(gaussians_data: Gaussian.Data, tid: wp.int32) -> tuple[wp.vec3f, wp.vec3f]:
@@ -113,7 +116,7 @@ def ray_gsplat_hit_response(
     else:
         hit_distance = sorting_mode_ray_hit_distance(ray_origin_local, ray_direction_local)
 
-    if hit_distance > 0.0 and hit_distance < max_distance:
+    if hit_distance > 0.0 and hit_distance <= max_distance:
         max_response = canonical_ray_max_kernel_response(ray_origin_local, wp.normalize(ray_direction_local))
 
         alpha = wp.min(wp.float32(1.0), max_response * opacity)
@@ -132,32 +135,35 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
         camera_forward: wp.vec3f,
         gaussian_data: Gaussian.Data,
         max_distance: wp.float32,
-    ) -> tuple[wp.float32, wp.vec3f, wp.vec3f]:
-        tracked_distance = max_distance
-        result_normal = wp.vec3f(0.0)
+    ) -> tuple[wp.float32, wp.float32, wp.float32, wp.vec3f]:
+        nearest_distance = wp.float32(-1.0)
+        median_distance = wp.float32(-1.0)
         result_color = wp.vec3f(0.0)
 
         ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction, scale)
 
         hit_index = wp.int32(0)
         min_distance = wp.float32(0.0)
+        min_index = wp.int32(-1)
         ray_transmittance = wp.float32(1.0)
 
         hit_distances = wp.vector(max_distance, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
         hit_indices = wp.vector(-1, length=wp.static(config.gaussians_max_num_hits), dtype=wp.int32)
         hit_alphas = wp.vector(0.0, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
 
-        while ray_transmittance > 0.003:
+        while ray_transmittance > wp.static(config.gaussians_min_transmittance):
             num_hits = wp.int32(0)
 
             for i in range(wp.static(config.gaussians_max_num_hits)):
-                hit_distances[i] = max_distance - min_distance
+                hit_distances[i] = max_distance
+                hit_indices[i] = NO_SPLAT_INDEX
 
             query = wp.bvh_query_ray(
                 gaussian_data.bvh_id, ray_origin_local + ray_direction_local * min_distance, ray_direction_local
             )
 
-            while wp.bvh_query_next(query, hit_index, hit_distances[-1]):
+            # The query ray starts at min_distance, while hit distances count from the ray origin.
+            while wp.bvh_query_next(query, hit_index, hit_distances[-1] - min_distance):
                 hit_alpha, hit_distance = ray_gsplat_hit_response(
                     gaussian_data.transforms[hit_index],
                     gaussian_data.scales[hit_index],
@@ -170,12 +176,15 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                     hit_distances[-1],
                 )
 
-                if hit_distance > -1:
+                # Splats sort by distance, then by index, so passes neither repeat nor skip splats at equal distances.
+                if hit_distance > min_distance or (hit_distance == min_distance and hit_index > min_index):
                     if num_hits < wp.static(config.gaussians_max_num_hits):
                         num_hits += 1
 
                     for h in range(num_hits):
-                        if hit_distance < hit_distances[h]:
+                        if hit_distance < hit_distances[h] or (
+                            hit_distance == hit_distances[h] and hit_index < hit_indices[h]
+                        ):
                             for hh in range(num_hits - 1, h, -1):
                                 hit_distances[hh] = hit_distances[hh - 1]
                                 hit_indices[hh] = hit_indices[hh - 1]
@@ -187,6 +196,8 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
 
             if num_hits == 0:
                 break
+            if nearest_distance < 0.0:
+                nearest_distance = hit_distances[0]
 
             for hit in range(num_hits):
                 hit_index = hit_indices[hit]
@@ -202,22 +213,24 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                 opacity = hit_alphas[hit]
                 result_color += color * opacity * ray_transmittance
                 ray_transmittance *= 1.0 - opacity
+                if ray_transmittance <= wp.static(config.gaussians_min_transmittance):
+                    # The light left is negligible, so the splats count as opaque.
+                    ray_transmittance = wp.float32(0.0)
 
-                if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-                    tracked_distance = wp.min(hit_distances[hit], tracked_distance)
+                if median_distance < 0.0 and ray_transmittance < 0.5:
+                    median_distance = hit_distances[hit]
+                if ray_transmittance == 0.0:
+                    break
 
-            min_distance = hit_distances[-1] + wp.float32(1e-06)
+            min_distance = hit_distances[-1]
+            min_index = hit_indices[-1]
 
             if wp.static(config.gaussians_mode) == GaussianRenderMode.FAST:
                 break
 
-        result_distance = wp.float32(-1.0)
-        if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-            result_distance = tracked_distance
-            result_color /= 1.0 - ray_transmittance
-            if gaussian_data.sh_color_space == ColorSpace.SRGB:
-                result_color = srgb_to_linear_wp(result_color)
+        if gaussian_data.sh_color_space == ColorSpace.SRGB:
+            result_color = srgb_to_linear_wp(result_color)
 
-        return result_distance, result_normal, result_color
+        return nearest_distance, median_distance, ray_transmittance, result_color
 
     return shade

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...geometry import Gaussian, GeoType
+from ...geometry import Gaussian
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
 from .types import AntiAliasing, ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
@@ -30,6 +30,8 @@ class RenderSample:
     normal: wp.vec3f
     albedo: wp.vec3f
     color: wp.vec3f
+    # Share of the clear color that reaches the camera: 1 on a miss, 0 when the ray hits a shape.
+    transmittance: wp.float32
 
 
 @wp.struct
@@ -38,11 +40,18 @@ class TraceResult:
 
     ``MSAA`` traces every subsample first and shades distinct surfaces afterwards, so the
     full :class:`~newton._src.sensors.sensor_camera_render.raytrace.ClosestHit` and the
-    world-space ray are kept to shade later.
+    world-space ray are kept to shade later. ``distance``, ``normal`` and ``shape_index``
+    describe the reported surface: the Gaussian splats once their accumulated opacity
+    exceeds one half, otherwise the nearest shape. ``transmittance`` is the share of the
+    clear color that reaches the camera.
     """
 
     hit: wp.bool
+    distance: wp.float32
     forward_depth: wp.float32
+    shape_index: wp.uint32
+    normal: wp.vec3f
+    transmittance: wp.float32
     ray_origin_world: wp.vec3f
     ray_dir_world: wp.vec3f
     closest_hit: raytrace.ClosestHit
@@ -162,7 +171,11 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
     ) -> TraceResult:
         result = TraceResult()
         result.hit = wp.bool(False)
+        result.distance = wp.float32(0.0)
         result.forward_depth = wp.float32(0.0)
+        result.shape_index = raytrace.NO_HIT_SHAPE_ID
+        result.normal = wp.vec3f(0.0)
+        result.transmittance = wp.float32(1.0)
 
         ray_origin_world = wp.transform_point(camera_transform, camera_ray_origin)
         ray_dir_world = wp.transform_vector(camera_transform, camera_ray_direction)
@@ -199,12 +212,24 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         )
         result.closest_hit = closest_hit
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
+            result.transmittance = closest_hit.gaussian_transmittance
+        else:
+            result.transmittance = wp.float32(0.0)
+
+        if closest_hit.gaussian_median_distance >= 0.0:
+            result.distance = closest_hit.gaussian_median_distance
+            result.shape_index = closest_hit.gaussian_shape_index
+        elif closest_hit.shape_index != raytrace.NO_HIT_SHAPE_ID:
+            result.distance = closest_hit.distance
+            result.shape_index = closest_hit.shape_index
+            result.normal = closest_hit.normal
+        else:
             return result
 
         result.hit = wp.bool(True)
         if wp.static(state.render_forward_depth):
             ray_origin_offset_world = wp.transform_vector(camera_transform, camera_ray_origin)
-            result.forward_depth = wp.dot(ray_origin_offset_world, forward_axis) + closest_hit.distance * wp.dot(
+            result.forward_depth = wp.dot(ray_origin_offset_world, forward_axis) + result.distance * wp.dot(
                 ray_dir_world, forward_axis
             )
         return result
@@ -251,103 +276,94 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         result.color = wp.vec3f(0.0)
 
         closest_hit = trace.closest_hit
-        is_gaussian = wp.bool(False)
-        if wp.static(state.num_gaussians > 0):
-            if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
-                    is_gaussian = wp.bool(True)
-
-        albedo_color = wp.vec3f(0.0)
         hit_point = trace.ray_origin_world + trace.ray_dir_world * closest_hit.distance
-        if not is_gaussian:
-            albedo_color = wp.vec3f(1.0)
-            if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
-            elif closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
-                if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_colors.shape[0]:
-                    albedo_color = srgb_to_linear_wp(triangle_colors[closest_hit.face_idx])
+        albedo_color = wp.vec3f(1.0)
+        if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
+            albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
+        elif closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+            if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_colors.shape[0]:
+                albedo_color = srgb_to_linear_wp(triangle_colors[closest_hit.face_idx])
 
-            if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                texture_index = shape_texture_ids[closest_hit.shape_index]
-                if texture_index > -1:
-                    tex_color = sample_texture(
-                        shape_types[closest_hit.shape_index],
-                        shape_transforms[closest_hit.shape_index],
-                        texture_data,
-                        texture_index,
-                        shape_source_ptr[closest_hit.shape_index],
-                        mesh_data,
-                        shape_mesh_data_ids[closest_hit.shape_index],
-                        hit_point,
-                        closest_hit.normal,
+        if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
+            texture_index = shape_texture_ids[closest_hit.shape_index]
+            if texture_index > -1:
+                tex_color = sample_texture(
+                    shape_types[closest_hit.shape_index],
+                    shape_transforms[closest_hit.shape_index],
+                    texture_data,
+                    texture_index,
+                    shape_source_ptr[closest_hit.shape_index],
+                    mesh_data,
+                    shape_mesh_data_ids[closest_hit.shape_index],
+                    hit_point,
+                    closest_hit.normal,
+                    closest_hit.bary_u,
+                    closest_hit.bary_v,
+                    closest_hit.face_idx,
+                )
+                albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
+        elif (
+            wp.static(config.enable_textures and state.has_triangle_mesh_textures)
+            and closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID
+        ):
+            if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_mesh_texture_ids.shape[0]:
+                texture_index = triangle_mesh_texture_ids[closest_hit.face_idx]
+                if texture_index >= 0 and texture_index < texture_data.shape[0] and triangle_mesh_uvs.shape[0] > 0:
+                    tex_color = textures.sample_texture_mesh_uvs(
                         closest_hit.bary_u,
                         closest_hit.bary_v,
                         closest_hit.face_idx,
+                        triangle_mesh_id,
+                        triangle_mesh_uvs,
+                        texture_data[texture_index],
                     )
                     albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
-            elif (
-                wp.static(config.enable_textures and state.has_triangle_mesh_textures)
-                and closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID
-            ):
-                if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_mesh_texture_ids.shape[0]:
-                    texture_index = triangle_mesh_texture_ids[closest_hit.face_idx]
-                    if texture_index >= 0 and texture_index < texture_data.shape[0] and triangle_mesh_uvs.shape[0] > 0:
-                        tex_color = textures.sample_texture_mesh_uvs(
-                            closest_hit.bary_u,
-                            closest_hit.bary_v,
-                            closest_hit.face_idx,
-                            triangle_mesh_id,
-                            triangle_mesh_uvs,
-                            texture_data[texture_index],
-                        )
-                        albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
 
         result.albedo = albedo_color
         if not wp.static(state.render_color) and not wp.static(state.render_hdr_color):
             return result
 
-        shaded_color = closest_hit.color
-        if not is_gaussian:
-            if wp.static(config.enable_ambient_lighting):
-                # ambient_lighting holds (sky radiance, ground radiance, up vector).
-                sky = ambient_lighting[0]
-                ground = ambient_lighting[1]
-                up = ambient_lighting[2]
-                len_n = wp.length(closest_hit.normal)
-                n = closest_hit.normal if len_n > 0.0 else up
-                n = wp.normalize(n)
-                hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-                ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-                shaded_color = wp.cw_mul(albedo_color, ambient_color)
+        shaded_color = wp.vec3f(0.0)
+        if wp.static(config.enable_ambient_lighting):
+            # ambient_lighting holds (sky radiance, ground radiance, up vector).
+            sky = ambient_lighting[0]
+            ground = ambient_lighting[1]
+            up = ambient_lighting[2]
+            len_n = wp.length(closest_hit.normal)
+            n = closest_hit.normal if len_n > 0.0 else up
+            n = wp.normalize(n)
+            hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
+            ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
+            shaded_color = wp.cw_mul(albedo_color, ambient_color)
 
-            for light_index in range(light_count):
-                light_contribution = compute_lighting(
-                    world_index,
-                    bvh_shapes_size,
-                    bvh_shapes_id,
-                    bvh_shapes_group_roots,
-                    bvh_particles_size,
-                    bvh_particles_id,
-                    bvh_particles_group_roots,
-                    shape_enabled,
-                    shape_types,
-                    shape_sizes,
-                    shape_transforms,
-                    shape_source_ptr,
-                    light_active[light_index],
-                    light_type[light_index],
-                    light_cast_shadow[light_index],
-                    light_positions[light_index],
-                    light_orientations[light_index],
-                    particles_position,
-                    particles_radius,
-                    topology_particle_mask,
-                    triangle_mesh_id,
-                    triangle_mesh_group_roots,
-                    closest_hit.normal,
-                    hit_point,
-                )
-                shaded_color = shaded_color + wp.cw_mul(albedo_color, light_colors[light_index]) * light_contribution
+        for light_index in range(light_count):
+            light_contribution = compute_lighting(
+                world_index,
+                bvh_shapes_size,
+                bvh_shapes_id,
+                bvh_shapes_group_roots,
+                bvh_particles_size,
+                bvh_particles_id,
+                bvh_particles_group_roots,
+                shape_enabled,
+                shape_types,
+                shape_sizes,
+                shape_transforms,
+                shape_source_ptr,
+                light_active[light_index],
+                light_type[light_index],
+                light_cast_shadow[light_index],
+                light_positions[light_index],
+                light_orientations[light_index],
+                particles_position,
+                particles_radius,
+                topology_particle_mask,
+                triangle_mesh_id,
+                triangle_mesh_group_roots,
+                closest_hit.normal,
+                hit_point,
+            )
+            shaded_color = shaded_color + wp.cw_mul(albedo_color, light_colors[light_index]) * light_contribution
 
         result.color = shaded_color
         return result
@@ -395,11 +411,6 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         ambient_lighting: wp.array[wp.vec3f],
     ) -> RenderSample:
         result = RenderSample()
-        result.hit = wp.bool(False)
-        result.distance = wp.float32(0.0)
-        result.forward_depth = wp.float32(0.0)
-        result.shape_index = raytrace.NO_HIT_SHAPE_ID
-        result.normal = wp.vec3f(0.0)
         result.albedo = wp.vec3f(0.0)
         result.color = wp.vec3f(0.0)
 
@@ -430,21 +441,26 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             mesh_data,
             gaussians_data,
         )
-        if not trace.hit:
-            return result
-
-        closest_hit = trace.closest_hit
-        result.hit = wp.bool(True)
-        result.distance = closest_hit.distance
-        result.shape_index = closest_hit.shape_index
-        result.normal = closest_hit.normal
+        result.hit = trace.hit
+        result.distance = trace.distance
+        result.shape_index = trace.shape_index
+        result.normal = trace.normal
         result.forward_depth = trace.forward_depth
+        result.transmittance = trace.transmittance
+
+        if trace.transmittance >= 1.0:
+            return result
 
         if (
             not wp.static(state.render_color)
             and not wp.static(state.render_albedo)
             and not wp.static(state.render_hdr_color)
         ):
+            return result
+
+        closest_hit = trace.closest_hit
+        if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID or closest_hit.gaussian_transmittance <= 0.0:
+            result.color = closest_hit.gaussian_color
             return result
 
         shade = shade_trace(
@@ -483,8 +499,9 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             light_colors,
             ambient_lighting,
         )
-        result.albedo = shade.albedo
-        result.color = shade.color
+        if closest_hit.gaussian_median_distance < 0.0:
+            result.albedo = shade.albedo
+        result.color = closest_hit.gaussian_color + closest_hit.gaussian_transmittance * shade.color
         return result
 
     @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
@@ -603,6 +620,13 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         if wp.static(state.render_forward_depth):
             forward_axis = wp.normalize(wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0)))
 
+        clear_color = wp.vec4f(0.0)
+        if wp.static(state.render_color):
+            clear_color = _unpack_rgba(wp.uint32(wp.static(clear_data.clear_color)))
+            if wp.static(config.output_color_space == ColorSpace.SRGB):
+                clear_color_rgb = srgb_to_linear_wp(wp.vec3f(clear_color[0], clear_color[1], clear_color[2]))
+                clear_color = wp.vec4f(clear_color_rgb[0], clear_color_rgb[1], clear_color_rgb[2], clear_color[3])
+
         if wp.static(config.anti_aliasing == AntiAliasing.NONE):
             sample = render_sample(
                 light_count,
@@ -645,7 +669,21 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 light_colors,
                 ambient_lighting,
             )
-            if not sample.hit:
+            if sample.hit:
+                if wp.static(state.render_depth):
+                    out_depth[out_index] = sample.distance
+                if wp.static(state.render_forward_depth):
+                    out_forward_depth[out_index] = sample.forward_depth
+                if wp.static(state.render_normal):
+                    out_normal[out_index] = sample.normal
+                if wp.static(state.render_shape_index):
+                    out_shape_index[out_index] = sample.shape_index
+                if wp.static(state.render_albedo):
+                    albedo = sample.albedo
+                    if wp.static(config.output_color_space == ColorSpace.SRGB):
+                        albedo = linear_to_srgb_wp(albedo)
+                    out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo, 1.0)
+            else:
                 write_clear_outputs(
                     out_index,
                     out_color,
@@ -656,36 +694,18 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     out_albedo,
                     out_hdr_color,
                 )
-                return
+                if sample.transmittance >= 1.0:
+                    return
 
-            if wp.static(state.render_depth):
-                out_depth[out_index] = sample.distance
-            if wp.static(state.render_forward_depth):
-                out_forward_depth[out_index] = sample.forward_depth
-            if wp.static(state.render_normal):
-                out_normal[out_index] = sample.normal
-            if wp.static(state.render_shape_index):
-                out_shape_index[out_index] = sample.shape_index
             if wp.static(state.render_hdr_color):
                 out_hdr_color[out_index] = sample.color
-            if wp.static(state.render_albedo):
-                albedo = sample.albedo
-                if wp.static(config.output_color_space == ColorSpace.SRGB):
-                    albedo = linear_to_srgb_wp(albedo)
-                out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo, 1.0)
             if wp.static(state.render_color):
-                color = sample.color
+                color = sample.color + sample.transmittance * wp.vec3f(clear_color[0], clear_color[1], clear_color[2])
                 if wp.static(config.output_color_space == ColorSpace.SRGB):
                     color = linear_to_srgb_wp(color)
-                out_color[out_index] = tiling.pack_rgba_to_uint32(color, 1.0)
+                alpha = (1.0 - sample.transmittance) + sample.transmittance * clear_color[3]
+                out_color[out_index] = tiling.pack_rgba_to_uint32(color, alpha)
             return
-
-        clear_color = wp.vec4f(0.0)
-        if wp.static(state.render_color):
-            clear_color = _unpack_rgba(wp.uint32(wp.static(clear_data.clear_color)))
-            if wp.static(config.output_color_space == ColorSpace.SRGB):
-                clear_color_rgb = srgb_to_linear_wp(wp.vec3f(clear_color[0], clear_color[1], clear_color[2]))
-                clear_color = wp.vec4f(clear_color_rgb[0], clear_color_rgb[1], clear_color_rgb[2], clear_color[3])
 
         clear_albedo = wp.vec4f(0.0)
         if wp.static(state.render_albedo):
@@ -705,6 +725,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             nearest_normal = wp.vec3f(0.0)
             nearest_shape_index = wp.uint32(raytrace.NO_HIT_SHAPE_ID)
             has_hit = wp.bool(False)
+            has_coverage = wp.bool(False)
 
             for sample_index in range(sample_count):
                 sample = render_sample(
@@ -748,31 +769,53 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     light_colors,
                     ambient_lighting,
                 )
-                if not sample.hit:
-                    if wp.static(state.render_color):
-                        color_sum += clear_color
+                if sample.hit:
+                    has_hit = wp.bool(True)
+                    if sample.distance < nearest_distance:
+                        nearest_distance = sample.distance
+                        if wp.static(state.render_forward_depth):
+                            nearest_forward_depth = sample.forward_depth
+                        if wp.static(state.render_normal):
+                            nearest_normal = sample.normal
+                        if wp.static(state.render_shape_index):
+                            nearest_shape_index = sample.shape_index
+                    if wp.static(state.render_albedo):
+                        albedo_sum += wp.vec4f(sample.albedo[0], sample.albedo[1], sample.albedo[2], 1.0)
+                else:
                     if wp.static(state.render_albedo):
                         albedo_sum += clear_albedo
-                    continue
+                    if sample.transmittance >= 1.0:
+                        if wp.static(state.render_color):
+                            color_sum += clear_color
+                        continue
 
-                has_hit = wp.bool(True)
-                if sample.distance < nearest_distance:
-                    nearest_distance = sample.distance
-                    if wp.static(state.render_forward_depth):
-                        nearest_forward_depth = sample.forward_depth
-                    if wp.static(state.render_normal):
-                        nearest_normal = sample.normal
-                    if wp.static(state.render_shape_index):
-                        nearest_shape_index = sample.shape_index
-
-                if wp.static(state.render_albedo):
-                    albedo_sum += wp.vec4f(sample.albedo[0], sample.albedo[1], sample.albedo[2], 1.0)
+                has_coverage = wp.bool(True)
                 if wp.static(state.render_color):
-                    color_sum += wp.vec4f(sample.color[0], sample.color[1], sample.color[2], 1.0)
+                    color = sample.color + sample.transmittance * wp.vec3f(
+                        clear_color[0], clear_color[1], clear_color[2]
+                    )
+                    alpha = (1.0 - sample.transmittance) + sample.transmittance * clear_color[3]
+                    color_sum += wp.vec4f(color[0], color[1], color[2], alpha)
                 if wp.static(state.render_hdr_color):
                     hdr_color_sum += sample.color
 
-            if not has_hit:
+            sample_scale = 1.0 / float(sample_count)
+            if has_hit:
+                if wp.static(state.render_depth):
+                    out_depth[out_index] = nearest_distance
+                if wp.static(state.render_forward_depth):
+                    out_forward_depth[out_index] = nearest_forward_depth
+                if wp.static(state.render_normal):
+                    out_normal[out_index] = nearest_normal
+                if wp.static(state.render_shape_index):
+                    out_shape_index[out_index] = nearest_shape_index
+                if wp.static(state.render_albedo):
+                    averaged_albedo = albedo_sum * sample_scale
+                    albedo_rgb = wp.vec3f(averaged_albedo[0], averaged_albedo[1], averaged_albedo[2])
+                    if wp.static(config.output_color_space == ColorSpace.SRGB):
+                        albedo_rgb = linear_to_srgb_wp(albedo_rgb)
+                    out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_rgb, averaged_albedo[3])
+            else:
                 write_clear_outputs(
                     out_index,
                     out_color,
@@ -783,26 +826,11 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     out_albedo,
                     out_hdr_color,
                 )
-                return
+                if not has_coverage:
+                    return
 
-            if wp.static(state.render_depth):
-                out_depth[out_index] = nearest_distance
-            if wp.static(state.render_forward_depth):
-                out_forward_depth[out_index] = nearest_forward_depth
-            if wp.static(state.render_normal):
-                out_normal[out_index] = nearest_normal
-            if wp.static(state.render_shape_index):
-                out_shape_index[out_index] = nearest_shape_index
-
-            sample_scale = 1.0 / float(sample_count)
             if wp.static(state.render_hdr_color):
                 out_hdr_color[out_index] = hdr_color_sum * sample_scale
-            if wp.static(state.render_albedo):
-                averaged_albedo = albedo_sum * sample_scale
-                albedo_rgb = wp.vec3f(averaged_albedo[0], averaged_albedo[1], averaged_albedo[2])
-                if wp.static(config.output_color_space == ColorSpace.SRGB):
-                    albedo_rgb = linear_to_srgb_wp(albedo_rgb)
-                out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_rgb, averaged_albedo[3])
             if wp.static(state.render_color):
                 averaged_color = color_sum * sample_scale
                 color_rgb = wp.vec3f(averaged_color[0], averaged_color[1], averaged_color[2])
@@ -818,6 +846,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             nearest_shape_index = wp.uint32(raytrace.NO_HIT_SHAPE_ID)
             hit_count = wp.int32(0)
             miss_count = wp.int32(0)
+            background_weight = wp.float32(0.0)
+            has_coverage = wp.bool(False)
 
             shaded_sum = wp.vec3f(0.0)
             albedo_accum = wp.vec3f(0.0)
@@ -859,19 +889,22 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     mesh_data,
                     gaussians_data,
                 )
-                if not trace.hit:
+                if trace.hit:
+                    hit_count += 1
+                    if trace.distance < nearest_distance:
+                        nearest_distance = trace.distance
+                        if wp.static(state.render_forward_depth):
+                            nearest_forward_depth = trace.forward_depth
+                        if wp.static(state.render_normal):
+                            nearest_normal = trace.normal
+                        if wp.static(state.render_shape_index):
+                            nearest_shape_index = trace.shape_index
+                else:
                     miss_count += 1
+                background_weight += trace.transmittance
+                if trace.transmittance >= 1.0:
                     continue
-
-                hit_count += 1
-                if trace.closest_hit.distance < nearest_distance:
-                    nearest_distance = trace.closest_hit.distance
-                    if wp.static(state.render_forward_depth):
-                        nearest_forward_depth = trace.forward_depth
-                    if wp.static(state.render_normal):
-                        nearest_normal = trace.closest_hit.normal
-                    if wp.static(state.render_shape_index):
-                        nearest_shape_index = trace.closest_hit.shape_index
+                has_coverage = wp.bool(True)
 
                 if wp.static(state.render_color or state.render_albedo or state.render_hdr_color):
                     surface_id = trace.closest_hit.shape_index
@@ -895,7 +928,11 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                                 )
                                 found = wp.bool(True)
 
-                    if not found:
+                    if (
+                        not found
+                        and surface_id != raytrace.NO_HIT_SHAPE_ID
+                        and trace.closest_hit.gaussian_transmittance > 0.0
+                    ):
                         shade = shade_trace(
                             trace,
                             world_index,
@@ -949,11 +986,33 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                                     inserted = wp.bool(True)
 
                     if wp.static(state.render_color or state.render_hdr_color):
-                        shaded_sum += sample_color
+                        shaded_sum += (
+                            trace.closest_hit.gaussian_color + trace.closest_hit.gaussian_transmittance * sample_color
+                        )
                     if wp.static(state.render_albedo):
-                        albedo_accum += sample_albedo
+                        if trace.closest_hit.gaussian_median_distance < 0.0:
+                            albedo_accum += sample_albedo
 
-            if hit_count == 0:
+            sample_scale = 1.0 / float(sample_count)
+            miss_weight = float(miss_count)
+            if hit_count > 0:
+                if wp.static(state.render_depth):
+                    out_depth[out_index] = nearest_distance
+                if wp.static(state.render_forward_depth):
+                    out_forward_depth[out_index] = nearest_forward_depth
+                if wp.static(state.render_normal):
+                    out_normal[out_index] = nearest_normal
+                if wp.static(state.render_shape_index):
+                    out_shape_index[out_index] = nearest_shape_index
+                if wp.static(state.render_albedo):
+                    albedo_rgb = (
+                        albedo_accum + wp.vec3f(clear_albedo[0], clear_albedo[1], clear_albedo[2]) * miss_weight
+                    ) * sample_scale
+                    albedo_alpha = (float(hit_count) + clear_albedo[3] * miss_weight) * sample_scale
+                    if wp.static(config.output_color_space == ColorSpace.SRGB):
+                        albedo_rgb = linear_to_srgb_wp(albedo_rgb)
+                    out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_rgb, albedo_alpha)
+            else:
                 write_clear_outputs(
                     out_index,
                     out_color,
@@ -964,34 +1023,18 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     out_albedo,
                     out_hdr_color,
                 )
-                return
+                if not has_coverage:
+                    return
 
-            if wp.static(state.render_depth):
-                out_depth[out_index] = nearest_distance
-            if wp.static(state.render_forward_depth):
-                out_forward_depth[out_index] = nearest_forward_depth
-            if wp.static(state.render_normal):
-                out_normal[out_index] = nearest_normal
-            if wp.static(state.render_shape_index):
-                out_shape_index[out_index] = nearest_shape_index
-
-            sample_scale = 1.0 / float(sample_count)
-            miss_weight = float(miss_count)
             if wp.static(state.render_hdr_color):
                 out_hdr_color[out_index] = shaded_sum * sample_scale
-            if wp.static(state.render_albedo):
-                albedo_rgb = (
-                    albedo_accum + wp.vec3f(clear_albedo[0], clear_albedo[1], clear_albedo[2]) * miss_weight
-                ) * sample_scale
-                albedo_alpha = (float(hit_count) + clear_albedo[3] * miss_weight) * sample_scale
-                if wp.static(config.output_color_space == ColorSpace.SRGB):
-                    albedo_rgb = linear_to_srgb_wp(albedo_rgb)
-                out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_rgb, albedo_alpha)
             if wp.static(state.render_color):
                 color_rgb = (
-                    shaded_sum + wp.vec3f(clear_color[0], clear_color[1], clear_color[2]) * miss_weight
+                    shaded_sum + wp.vec3f(clear_color[0], clear_color[1], clear_color[2]) * background_weight
                 ) * sample_scale
-                color_alpha = (float(hit_count) + clear_color[3] * miss_weight) * sample_scale
+                color_alpha = (
+                    float(sample_count) - background_weight + clear_color[3] * background_weight
+                ) * sample_scale
                 if wp.static(config.output_color_space == ColorSpace.SRGB):
                     color_rgb = linear_to_srgb_wp(color_rgb)
                 out_color[out_index] = tiling.pack_rgba_to_uint32(color_rgb, color_alpha)
