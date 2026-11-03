@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import warp as wp
 
+import newton.utils
+
 ###
 # Module interface
 ###
@@ -54,6 +56,9 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
     wp.config.enable_backward = False
     wp.config.verify_fp = False
     wp.config.verify_cuda = False
+
+    # Logging configuration
+    newton.utils.setup_console_logging()
 
     # Clear cache
     if clear_cache:

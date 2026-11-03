@@ -29,6 +29,9 @@ __all__ = [
 LOGGER_NAMES = ("newton._src.solvers.kamino", "newton.tests.kamino")
 """Parent loggers of the Kamino solver and its tests."""
 
+_SCRIPT_LOGGER_NAME = "__main__"
+"""Logger of the module run as a script, such as a test file run directly."""
+
 
 ###
 # Configurations
@@ -36,11 +39,15 @@ LOGGER_NAMES = ("newton._src.solvers.kamino", "newton.tests.kamino")
 
 
 def set_log_level(level: int):
-    """Set the level of the Kamino loggers."""
-    for name in LOGGER_NAMES:
+    """Set the level of the Kamino loggers and of the script logger."""
+    for name in (*LOGGER_NAMES, _SCRIPT_LOGGER_NAME):
         logging.getLogger(name).setLevel(level)
 
 
 def reset_log_level():
     """Make the Kamino loggers inherit their level from the ``newton`` logger again."""
-    set_log_level(logging.NOTSET)
+    for name in LOGGER_NAMES:
+        logging.getLogger(name).setLevel(logging.NOTSET)
+
+    # The script logger sits outside the ``newton`` tree, so give it the ``newton`` level instead
+    logging.getLogger(_SCRIPT_LOGGER_NAME).setLevel(logging.getLogger("newton").getEffectiveLevel())

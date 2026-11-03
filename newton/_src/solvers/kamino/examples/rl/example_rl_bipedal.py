@@ -383,6 +383,7 @@ if __name__ == "__main__":
         help="Target render FPS for async mode (default: 30)",
     )
     args = parser.parse_args()
+    newton.utils.setup_console_logging()
 
     np.set_printoptions(linewidth=20000, precision=6, threshold=10000, suppress=True)
 

@@ -108,6 +108,13 @@ def _read_deprecation_allowlist(path):
         return tuple(entries)
 
 
+def _setup_console_logging():
+    """Print log records in Newton's rich console format, in the main process and every worker."""
+    import newton.utils  # noqa: PLC0415
+
+    newton.utils.setup_console_logging()
+
+
 def _enable_strict_warnings(allowed_deprecation_warnings=()):
     """Escalate actionable and caller-attributed cleaned-test warnings to errors.
 
@@ -342,6 +349,7 @@ def main(argv=None):
         # the serial-fallback path, which runs here.
         if args.strict_warnings:
             _enable_strict_warnings(args.allowed_deprecation_warnings)
+        _setup_console_logging()
 
         # Discover tests
         with _coverage(args, temp_dir):
@@ -834,6 +842,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
     # unpickle, before run_tests).
     if args.strict_warnings:
         _enable_strict_warnings(args.allowed_deprecation_warnings)
+    _setup_console_logging()
 
     with lock:
         shared_index.value += 1
