@@ -30,6 +30,8 @@ newton.utils
    color_srgb_to_linear
    compute_world_offsets
    download_asset
+   enable_rich_console
+   enable_script_logging
    event_scope
    load_texture
    normalize_texture
@@ -37,6 +39,7 @@ newton.utils
    rasterize_mesh_to_heightfield
    remesh_mesh
    run_benchmark
+   setup_console_logging
    solidify_mesh
    string_to_warp
    validate_tet_mesh

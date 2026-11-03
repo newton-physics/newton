@@ -822,7 +822,7 @@ class TestViewerViserBindHost(unittest.TestCase):
 
     # Newton prints its own URL after viser has spoken, so anything asserted
     # against the whole buffer can match Newton's line instead of viser's.
-    _NEWTON_URL_LINE = re.compile(r"^Viser server running at:.*$", re.MULTILINE)
+    _NEWTON_URL_LINE = re.compile(r"^.*Viser server running at:.*$", re.MULTILINE)
 
     def _viewer(self, **kwargs):
         kwargs.setdefault("verbose", False)

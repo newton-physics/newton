@@ -516,6 +516,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["sync", "async"], default="sync", help="Simulation loop mode")
     parser.add_argument("--render-fps", type=float, default=30.0, help="Target render rate in async mode")
     args = parser.parse_args()
+    newton.utils.setup_console_logging()
 
     device = wp.get_device(args.device) if args.device else wp.get_preferred_device()
     wp.set_device(device)

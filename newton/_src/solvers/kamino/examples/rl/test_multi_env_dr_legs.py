@@ -101,6 +101,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-worlds", type=int, nargs="+", default=[2048])
     parser.add_argument("--num-steps", type=int, default=10)
     args = parser.parse_args()
+    newton.utils.setup_console_logging()
 
     if args.device:
         device = wp.get_device(args.device)

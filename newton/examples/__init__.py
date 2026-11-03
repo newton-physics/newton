@@ -975,9 +975,11 @@ def init(parser=None):
     """
     import warp as wp  # noqa: PLC0415
 
+    import newton.utils  # noqa: PLC0415
     import newton.viewer  # noqa: PLC0415
 
     _enable_example_deprecation_warnings()
+    newton.utils.setup_console_logging()
 
     # parse args
     if parser is None:

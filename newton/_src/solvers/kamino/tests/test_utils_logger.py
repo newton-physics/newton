@@ -38,11 +38,12 @@ class TestUtilsLogger(unittest.TestCase):
     def test_01_records_reach_newton_logger(self):
         """Propagate Kamino records at every level to the ``newton`` logger."""
         set_log_level(logging.DEBUG)
+        kamino_logger = logging.getLogger(f"{LOGGER_NAMES[0]}.tests.test_utils_logger")
         with self.assertLogs("newton", level=logging.DEBUG) as logs:
-            logger.debug("This is a debug message.")
-            logger.info("This is an info message.")
-            logger.warning("This is a warning message.")
-            logger.error("This is an error message.")
+            kamino_logger.debug("This is a debug message.")
+            kamino_logger.info("This is an info message.")
+            kamino_logger.warning("This is a warning message.")
+            kamino_logger.error("This is an error message.")
         self.assertEqual(
             [record.levelno for record in logs.records],
             [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR],

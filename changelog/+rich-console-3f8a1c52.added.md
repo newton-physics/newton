@@ -1,0 +1,1 @@
+Add `newton.utils.enable_rich_console()` to print Newton's default console log output with the time, source location, and level of each record, colored by level, `newton.utils.enable_script_logging()` to print `INFO` records logged by scripts, and `newton.utils.setup_console_logging()` to enable both. Newton examples and the test runner now print log records in this rich format.
