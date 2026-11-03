@@ -4,14 +4,15 @@
 """Unit tests for Kamino's rigid body flag support (KINEMATIC / PROXY).
 
 Kamino treats a body as immovable when either its inverse mass and inverse
-inertia are both zero, or when its flags include KINEMATIC or PROXY. This
-module exercises the resulting behavior end-to-end:
+inertia are both zero, or when its flags include KINEMATIC. It simulates PROXY
+bodies like any other body. This module exercises the resulting behavior end-to-end:
 
 - masking of Kamino-owned ``inv_m_i`` / ``inv_i_I_i`` arrays,
 - joint and contact constraint culling between two immovable endpoints,
 - integrator/PADMM stability with kinematic bodies (isolated and connected),
-- ``notify_model_changed`` propagation and rejection of runtime flag flips,
-- non-mutation of the underlying Newton model arrays.
+- ``notify_model_changed`` propagation and rejection of runtime KINEMATIC flips,
+- non-mutation of the underlying Newton model arrays,
+- piles resting on PROXY bodies coupled from MuJoCo, with the DVI and LOX backends.
 """
 
 from __future__ import annotations
@@ -22,10 +23,13 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton._src.solvers.kamino.config as kamino_config
 from newton._src.sim import BodyFlags
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
+from newton.solvers import SolverMuJoCo
+from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.kamino import setup_tests, test_context
 
 ###
@@ -51,8 +55,8 @@ def _build_two_body_articulation(
 
     Newton's builder requires that only *root* bodies (parent == -1) may carry
     the KINEMATIC flag, so only the parent side accepts ``is_kinematic=True``.
-    Two-endpoint immovability at the joint level is exercised elsewhere via
-    :class:`ModelView` and ``mark_proxy_bodies``.
+    Two-endpoint immovability at the joint level is exercised elsewhere by
+    overriding ``body_flags`` on a :class:`ModelView`.
 
     Returns ``(builder, parent, child, revolute_joint)``. If ``add_fixed_root``
     is True, ``parent`` is anchored to the world via a fixed joint before the
@@ -112,6 +116,15 @@ def _build_two_body_articulation(
     joints.append(revolute)
     builder.add_articulation(joints)
     return builder, parent, child, revolute
+
+
+def _mark_kinematic(model, indices: list[int], name: str = "test") -> ModelView:
+    """Return a :class:`ModelView` with the given body indices flagged KINEMATIC."""
+    view = ModelView(model, name)
+    flags = model.body_flags.numpy()
+    flags[indices] = int(BodyFlags.KINEMATIC)
+    view.body_flags = wp.array(flags, dtype=wp.int32, device=model.device)
+    return view
 
 
 def _mark_proxy(model, indices: list[int], name: str = "test") -> ModelView:
@@ -231,15 +244,15 @@ class TestKaminoBodyFlags(unittest.TestCase):
         np.testing.assert_array_equal(joints.num_bounded_cts.numpy(), [0])
 
     def test_two_kinematic_bodies_joint_culled(self):
-        """Joint between two flag-immovable bodies (both PROXY) is fully culled.
+        """Joint between two flag-immovable bodies (both KINEMATIC) is fully culled.
 
         Newton's builder only allows KINEMATIC on root bodies, so exercising the
-        two-endpoint case requires marking both bodies as PROXY on a
+        two-endpoint case requires flagging both bodies KINEMATIC on a
         :class:`ModelView` after finalization.
         """
         builder, parent, child, _ = _build_two_body_articulation(add_fixed_root=False)
         model = builder.finalize(device=self.default_device)
-        view = _mark_proxy(model, [parent, child])
+        view = _mark_kinematic(model, [parent, child])
         solver = SolverKamino(view, config=SolverKamino.Config(use_collision_detector=False))
         kamino_model = solver._model_kamino
 
@@ -261,7 +274,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
     def test_kinematic_middle_of_chain(self):
         """dyn - immovable - dyn chain preserves both incident joints.
 
-        The middle body is marked PROXY via :class:`ModelView` because Newton's
+        The middle body is flagged KINEMATIC via :class:`ModelView` because Newton's
         builder disallows KINEMATIC on non-root bodies.
         """
         builder = _make_builder()
@@ -296,7 +309,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         builder.add_articulation([j_ab, j_bc])
         model = builder.finalize(device=self.default_device)
 
-        view = _mark_proxy(model, [b])
+        view = _mark_kinematic(model, [b])
         solver = SolverKamino(view, config=SolverKamino.Config(use_collision_detector=False))
         kamino_model = solver._model_kamino
         num_kin = kamino_model.joints.num_kinematic_cts.numpy()
@@ -317,7 +330,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         """Body-level culling ignores joint-DoF armature."""
         builder, parent, child, _ = _build_two_body_articulation(add_fixed_root=False, joint_kwargs={"armature": 0.1})
         model = builder.finalize(device=self.default_device)
-        view = _mark_proxy(model, [parent, child])
+        view = _mark_kinematic(model, [parent, child])
         joints = ModelKamino.from_newton(view).joints
         np.testing.assert_array_equal(joints.num_kinematic_cts.numpy(), [0, 0])
         np.testing.assert_array_equal(joints.num_dynamic_cts.numpy(), [0, 0])
@@ -326,7 +339,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         """Body-level culling ignores joint-DoF damping."""
         builder, parent, child, _ = _build_two_body_articulation(add_fixed_root=False, joint_kwargs={"damping": 1.0})
         model = builder.finalize(device=self.default_device)
-        view = _mark_proxy(model, [parent, child])
+        view = _mark_kinematic(model, [parent, child])
         joints = ModelKamino.from_newton(view).joints
         np.testing.assert_array_equal(joints.num_kinematic_cts.numpy(), [0, 0])
         np.testing.assert_array_equal(joints.num_dynamic_cts.numpy(), [0, 0])
@@ -348,12 +361,12 @@ class TestKaminoBodyFlags(unittest.TestCase):
         solver_ctrl = SolverKamino(model_ctrl, config=SolverKamino.Config(use_collision_detector=False))
         self.assertEqual(solver_ctrl._solver_kamino._limits.model_max_limits_host, 1)
 
-        # Both endpoints immovable via PROXY: no slot should be reserved.
+        # Both endpoints immovable via KINEMATIC: no slot should be reserved.
         builder, parent, child, _ = _build_two_body_articulation(
             add_fixed_root=False, joint_kwargs={"limit_lower": -1.0, "limit_upper": 1.0}
         )
         model = builder.finalize(device=self.default_device)
-        view = _mark_proxy(model, [parent, child])
+        view = _mark_kinematic(model, [parent, child])
         solver = SolverKamino(view, config=SolverKamino.Config(use_collision_detector=False))
         self.assertEqual(solver._solver_kamino._limits.model_max_limits_host, 0)
 
@@ -484,18 +497,97 @@ class TestKaminoBodyFlags(unittest.TestCase):
         np.testing.assert_array_equal(state_out.body_q.numpy(), state_in.body_q.numpy())
         np.testing.assert_array_equal(state_out.body_qd.numpy(), state_in.body_qd.numpy())
 
-    def test_proxy_body_treated_as_kinematic(self):
-        """A PROXY body (via ModelView) masks inv-mass and culls incident joints."""
+    def test_proxy_body_is_simulated(self):
+        """Keep the inverse mass and incident joints of PROXY bodies (via ModelView)."""
         builder, parent, child, _ = _build_two_body_articulation(add_fixed_root=False)
         model = builder.finalize(device=self.default_device)
         view = _mark_proxy(model, [parent, child])
         solver = SolverKamino(view, config=SolverKamino.Config(use_collision_detector=False))
         kamino_model = solver._model_kamino
-        np.testing.assert_array_equal(kamino_model.bodies.inv_m_i.numpy(), np.zeros(model.body_count, dtype=np.float32))
-        np.testing.assert_array_equal(kamino_model.joints.num_kinematic_cts.numpy(), [0, 0])
-        # Base Newton model is unmodified.
-        self.assertGreater(float(model.body_inv_mass.numpy().max()), 0.0)
-        self.assertEqual(int((model.body_flags.numpy() & int(BodyFlags.PROXY)).sum()), 0)
+        np.testing.assert_array_equal(kamino_model.bodies.inv_m_i.numpy(), model.body_inv_mass.numpy())
+        np.testing.assert_array_equal(kamino_model.bodies.is_immovable.numpy(), [0, 0])
+        self.assertGreater(int(kamino_model.joints.num_kinematic_cts.numpy().sum()), 0)
+
+    def test_piles_rest_on_mujoco_proxies(self):
+        """Keep piles of MuJoCo and Kamino cubes at rest when Kamino is the proxy destination.
+
+        One pile has the MuJoCo cube at the bottom and the other has it at the top. Kamino simulates the
+        MuJoCo proxies as dynamic bodies, and the proxy collision pipeline passes the contacts between the
+        proxies and the ground to Kamino with negative shape indices. The coupled solver sets the proxy mass
+        and inertia after Kamino is built, and Kamino reads them from the view.
+        """
+        configs = {
+            "dvi": SolverKamino.Config(dynamics_solver="dvi"),
+            "lox": SolverKamino.Config(
+                dynamics_solver="lox",
+                lox=kamino_config.LOXSolverConfig(max_iterations=25, projection_sweeps_per_iteration=5),
+            ),
+        }
+        half, time_step = 0.1, 1.0 / 240.0
+        for dynamics_solver, config in configs.items():
+            with self.subTest(dynamics_solver=dynamics_solver):
+                builder = newton.ModelBuilder()
+                SolverKamino.register_custom_attributes(builder)
+                builder.add_ground_plane()
+                bodies = {"mjc": [], "kamino": []}
+                for pile, owners in enumerate((("mjc", "kamino"), ("kamino", "mjc"))):
+                    for level, owner in enumerate(owners):
+                        position = wp.vec3(float(pile), 0.0, half * (2.0 * level + 1.0))
+                        body = builder.add_body(xform=wp.transform(position, wp.quat_identity()))
+                        builder.add_shape_box(body, hx=half, hy=half, hz=half)
+                        bodies[owner].append(body)
+                model = builder.finalize(device=self.default_device)
+                joint_child = model.joint_child.numpy()
+                config.use_collision_detector = False
+                config.use_fk_solver = False
+                solver = SolverCoupledProxy(
+                    model=model,
+                    entries=[
+                        SolverCoupledProxy.Entry(
+                            name="mjc",
+                            solver=lambda view: SolverMuJoCo(model=view, use_mujoco_contacts=False),
+                            bodies=bodies["mjc"],
+                            joints=[j for j, child in enumerate(joint_child) if child in bodies["mjc"]],
+                        ),
+                        SolverCoupledProxy.Entry(
+                            name="kamino",
+                            solver=lambda view, config=config: SolverKamino(view, config=config),
+                            bodies=bodies["kamino"],
+                            joints=[j for j, child in enumerate(joint_child) if child in bodies["kamino"]],
+                        ),
+                    ],
+                    coupling=SolverCoupledProxy.Config(
+                        proxies=[
+                            SolverCoupledProxy.Proxy(
+                                source="mjc",
+                                destination="kamino",
+                                bodies=bodies["mjc"],
+                                mass_scale=0.5,
+                                collision_pipeline=newton.CollisionPipeline,
+                            )
+                        ],
+                        iterations=2,
+                    ),
+                )
+                view = solver.view("kamino")
+                kamino_bodies = solver.solver("kamino")._model_kamino.bodies
+                np.testing.assert_array_equal(kamino_bodies.m_i.numpy(), view.body_mass.numpy())
+                np.testing.assert_array_equal(kamino_bodies.i_I_i.numpy(), view.body_inertia.numpy())
+                np.testing.assert_array_equal(kamino_bodies.inv_m_i.numpy(), view.body_inv_mass.numpy())
+                np.testing.assert_array_equal(kamino_bodies.inv_i_I_i.numpy(), view.body_inv_inertia.numpy())
+
+                pipeline = newton.CollisionPipeline(model)
+                contacts = pipeline.contacts()
+                state_in, state_out, control = model.state(), model.state(), model.control()
+                start = state_in.body_q.numpy().copy()
+
+                for _ in range(30):
+                    pipeline.collide(state_in, contacts)
+                    solver.step(state_in, state_out, control, contacts, time_step)
+                    state_in, state_out = state_out, state_in
+
+                np.testing.assert_allclose(state_in.body_q.numpy(), start, rtol=0.0, atol=1.0e-3)
+                self.assertLess(float(np.max(np.linalg.norm(state_in.body_qd.numpy(), axis=1))), 1.0e-3)
 
     def test_newton_arrays_not_mutated(self):
         """SolverKamino must not mutate Newton's body_inv_mass / body_inv_inertia."""

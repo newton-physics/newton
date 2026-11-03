@@ -386,6 +386,8 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
             float("inf"),
             _point_friction(device),
             0,
+            wp.zeros((1,), dtype=wp.float32, device=device),
+            0,
         ],
         outputs=[
             wp.zeros((capacity,), dtype=wp.int32, device=device),
@@ -530,6 +532,8 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity, propagat
             float("inf"),
             float("inf"),
             _point_friction(device),
+            0,
+            wp.zeros((1,), dtype=wp.float32, device=device),
             0,
         ],
         outputs=[
@@ -835,11 +839,15 @@ def _build_model(world_link_counts: list[int], device, root_height: float = 1.0,
     return scene.finalize(device=device)
 
 
-def _final_joint_q(model, steps=60, solve_mode="matrix_free", response="immediate", from_fk=False):
+def _final_joint_q(model, steps=60, solve_mode="matrix_free", response="immediate", from_fk=False, deterministic=False):
     solver = SolverSteel(
-        model, solve_mode=solve_mode, articulation_constraint_max=64, articulated_contact_response=response
+        model,
+        solve_mode=solve_mode,
+        articulation_constraint_max=64,
+        articulated_contact_response=response,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else None,
     )
-    pipeline = newton.CollisionPipeline(model)
+    pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
     if from_fk:
@@ -891,7 +899,7 @@ def test_hetero_worlds_match_isolated_worlds(test, device, solve_mode="matrix_fr
 def test_homogeneous_propagation_constructs(test, device):
     """Construct both propagation responses on worlds with identical DOF counts."""
     model = _build_model([3, 3, 3, 3], device)
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
             solver = SolverSteel(model, articulated_contact_response=response)
             test.assertEqual(solver.articulated_contact_response, response)
@@ -906,20 +914,21 @@ def test_hetero_propagation_matches_isolated_worlds(test, device):
 
     def run(link_counts, free_box, response):
         model = _build_model(link_counts, device, 0.35, free_box)
-        return _final_joint_q(model, response=response, from_fk=True)
+        # Without a deterministic mode these chains can reach a different contact outcome from run to run.
+        return _final_joint_q(model, response=response, from_fk=True, deterministic=True)
 
     for response in ("propagation", "propagation_colored"):
-        combined = run([1, 3], None, response)
-        single = run([1], None, response)
-        triple = run([3], None, response)
-        # The cached response sizes its reductions by the model's body capacity, so the sums reassociate.
-        np.testing.assert_allclose(combined, np.concatenate([single, triple]), rtol=0.0, atol=1.0e-4)
-
-    # The fused response needs one articulation size, but a free box still makes world DOF counts differ.
-    combined = run([3, 3], [False, True], "propagation_fused")
-    plain = run([3], [False], "propagation_fused")
-    boxed = run([3], [True], "propagation_fused")
-    np.testing.assert_allclose(combined, np.concatenate([plain, boxed]), rtol=0.0, atol=1.0e-5)
+        with test.subTest(response=response):
+            combined = run([1, 3], None, response)
+            single = run([1], None, response)
+            triple = run([3], None, response)
+            # The cached response sizes its reductions by the model's body capacity, so the sums reassociate.
+            np.testing.assert_allclose(combined, np.concatenate([single, triple]), rtol=0.0, atol=1.0e-4)
+            # One articulation size, with a free box that still makes the world DOF counts differ.
+            combined = run([3, 3], [False, True], response)
+            plain = run([3], [False], response)
+            boxed = run([3], [True], response)
+            np.testing.assert_allclose(combined, np.concatenate([plain, boxed]), rtol=0.0, atol=1.0e-4)
 
 
 class TestSteelHeteroGuard(unittest.TestCase):
@@ -982,6 +991,74 @@ add_function_test(
     "test_hetero_propagation_matches_isolated_worlds",
     test_hetero_propagation_matches_isolated_worlds,
     devices=devices,
+)
+
+
+def test_propagation_constraint_max_sizes_the_propagation_family(test, device):
+    """Size the propagation rows from ``propagation_constraint_max`` instead of the summed budgets."""
+    model = _box_on_ground(device)
+    options = {"solve_mode": "matrix_free", "articulated_contact_response": "propagation_colored"}
+    summed = SolverSteel(model, articulation_constraint_max=32, free_body_constraint_max=256, **options)
+    test.assertIsNone(summed.propagation_constraint_max)
+    test.assertEqual(summed._propagation_max_constraints, 256 + 32)
+    decoupled = SolverSteel(
+        model, articulation_constraint_max=32, free_body_constraint_max=16, propagation_constraint_max=288, **options
+    )
+    test.assertEqual(decoupled.propagation_constraint_max, 288)
+    test.assertEqual(decoupled._propagation_max_constraints, 288)
+    test.assertEqual(decoupled.free_body_constraint_max, 16)
+    with test.assertRaisesRegex(ValueError, "propagation_constraint_max must be >= 1"):
+        SolverSteel(model, propagation_constraint_max=0, **options)
+    with test.assertRaisesRegex(ValueError, "propagation_constraint_max requires"):
+        SolverSteel(model, solve_mode="matrix_free", propagation_constraint_max=64)
+
+
+def test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_budget(test, device):
+    """Keep every contact row when the propagation family is sized for them and the free-body budget is small."""
+    model = _box_on_ground(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    pipeline.collide(state_in, contacts)
+
+    def step(response, free_body_constraint_max=1, **options):
+        # A summed capacity of 1 + 1 rows is far below the rows of one resting box.
+        solver = SolverSteel(
+            model,
+            solve_mode="matrix_free",
+            articulated_contact_response=response,
+            free_body_constraint_max=free_body_constraint_max,
+            articulation_constraint_max=1,
+            row_watermark=True,
+            warn_constraint_overflow=False,
+            **options,
+        )
+        solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+        return solver.constraint_row_watermarks(), state_out.body_qd.numpy()
+
+    for response in ("propagation", "propagation_colored"):
+        with test.subTest(response=response):
+            summed, _ = step(response)
+            test.assertGreater(summed["propagation_dropped_contact_rows_high_water"], 0)
+            sized, sized_qd = step(response, propagation_constraint_max=16)
+            test.assertEqual(sized["propagation_dropped_contact_rows_high_water"], 0)
+            test.assertEqual(sized["propagation_high_water"], summed["propagation_raw_high_water"])
+            # The retained rows reach the solve: it matches a summed budget large enough for them.
+            _, ample_qd = step(response, free_body_constraint_max=15)
+            np.testing.assert_allclose(sized_qd, ample_qd, atol=1e-6)
+
+
+add_function_test(
+    TestSteelRowAllocation,
+    "test_propagation_constraint_max_sizes_the_propagation_family",
+    test_propagation_constraint_max_sizes_the_propagation_family,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSteelRowAllocation,
+    "test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_budget",
+    test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_budget,
+    devices=get_cuda_test_devices(),
 )
 
 

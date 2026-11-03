@@ -410,6 +410,22 @@ class Contacts:
             Particle contact ``(p, -1, -1)``, edge contact ``(v0, v1, -1)``, face contact
             ``(v0, v1, v2)``. Pair with :attr:`soft_contact_barycentric` to recover the contact
             point over the non-negative slots."""
+            self.soft_contact_rigid_indices = wp.full(soft_contact_max, wp.vec3i(-1, -1, -1), dtype=wp.vec3i)
+            """Rigid mesh primitive corners per contact [dimensionless], shape (soft_contact_max,), dtype :class:`vec3i`.
+
+            Entries are offsets into the rigid mesh's triangle index buffer, as
+            accepted by ``warp.mesh_get_point``, for the shape identified by
+            :attr:`soft_contact_shape`. ``(i0, i1, i2)`` identifies a triangle,
+            ``(i0, i1, -1)`` an edge, and ``(i0, -1, -1)`` a vertex. These describe
+            the complete primitive, including corners with zero contact weight.
+            Analytic, particle-only, and penetration-recovery point records use
+            ``(-1, -1, -1)``. Preserve this geometry when copying contact records,
+            independently of contact force eligibility.
+
+            .. experimental::
+
+                Full-surface mesh primitive metadata may change without prior notice.
+            """
             # Detected mesh feature IDs are discrete and unchanged through backward replay.
             # Records use the final contact slots, never an intermediate candidate pool. The
             # parameter holds a detection-time soft-edge parameter for penetration recovery.
@@ -565,6 +581,7 @@ class Contacts:
                 self.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
             self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
+            self.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
