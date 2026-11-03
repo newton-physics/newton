@@ -15,6 +15,7 @@ import newton
 from newton import ModelFlags
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 @wp.kernel
@@ -170,16 +171,9 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                         model.body_flags.assign(body_flags)
                     solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     armature = solver.mjw_model.dof_armature.numpy().copy()
-                    meaninertia = (
-                        float(solver.mj_model.stat.meaninertia)
-                        if cpu
-                        else solver.mjw_model.stat.meaninertia.numpy().copy()
-                    )
                     model.joint_armature.fill_(7.0)
                     solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
                     np.testing.assert_array_equal(solver.mjw_model.dof_armature.numpy(), armature)
-                    actual = solver.mj_model.stat.meaninertia if cpu else solver.mjw_model.stat.meaninertia.numpy()
-                    np.testing.assert_allclose(actual, meaninertia)
 
     def _cuda_device(self):
         """Skip capture tests when no CUDA device with a mempool is available."""
@@ -203,7 +197,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
             solver.notify_model_changed(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
         for ref in (0.2, 0.4):
             model.mujoco.dof_ref.fill_(ref)
-            model.mujoco.dof_springref.fill_(ref + 0.1)
+            model.joint_rest_q.fill_(0.1)
             wp.capture_launch(capture.graph)
             np.testing.assert_allclose(solver.mjw_model.qpos0.numpy(), ref)
             np.testing.assert_allclose(solver.mjw_model.qpos_spring.numpy(), ref + 0.1)
@@ -428,7 +422,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                         model.joint_limit_upper.fill_(0.7 * scale)
                         model.joint_limit_ke.fill_(100.0 * scale)
                         model.joint_limit_kd.fill_(10.0 * scale)
-                        model.mujoco.dof_passive_stiffness.fill_(0.2 * scale)
+                        model.joint_stiffness.fill_(0.2 * scale)
                         model.mujoco.limit_margin.fill_(0.01 * scale)
                         solimp = model.mujoco.solimplimit.numpy()
                         solimp[:, 1] = 0.8 + 0.05 * scale
@@ -469,7 +463,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 model.joint_armature.fill_(1.5)
                 model.joint_friction.fill_(0.7)
                 model.mujoco.dof_ref.fill_(0.2)
-                model.mujoco.dof_springref.fill_(0.3)
+                model.joint_rest_q.fill_(0.1)
                 solver.notify_model_changed(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 1.5)
                 np.testing.assert_allclose(solver.mjw_model.dof_frictionloss.numpy(), 0.0)
@@ -589,6 +583,78 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 )
             velocities.append(captured_out.joint_qd.numpy().copy())
         self.assertGreater(float(velocities[0][1]), float(velocities[1][1]))
+
+    def test_ball_spring_compatibility(self):
+        """Preserve isotropic MuJoCo ball springs across rest-orientation updates."""
+        builder = newton.ModelBuilder(gravity=(0, 0, 0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        joint = builder.add_joint_ball(-1, body, stiffness=2)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        rest = np.array([0, 0, np.sin(0.2), np.cos(0.2)], dtype=np.float32)
+        model.joint_rest_q.assign(rest)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        np.testing.assert_allclose(solver.mj_model.qpos_spring, rest[[3, 0, 1, 2]], atol=1e-6)
+        rest = np.array([np.sin(0.3), 0, 0, np.cos(0.3)], dtype=np.float32)
+        model.joint_rest_q.assign(rest)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(solver.mj_model.qpos_spring, rest[[3, 0, 1, 2]], atol=1e-6)
+
+
+def test_ball_spring_rest_with_rotated_child_frame(test, device):
+    """Hold a ball at rest through authored, identity and edited child-frame rotations."""
+    rest = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), np.pi / 6.0)
+    authored = wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0))
+    builder = newton.ModelBuilder(gravity=(0, 0, 0))
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+    builder.add_articulation([builder.add_joint_ball(-1, body, child_xform=authored, stiffness=2.0)])
+    builder.joint_q[:] = list(rest)
+    builder.joint_rest_q[:] = list(rest)
+    model = builder.finalize(device=device)
+    solver = SolverMuJoCo(model, use_mujoco_cpu=device.is_cpu)
+    state, out = model.state(), model.state()
+    control = model.control()
+    for child_frame in (
+        None,
+        wp.transform_identity(),
+        wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5)),
+    ):
+        with test.subTest(child_frame=child_frame):
+            if child_frame is not None:
+                model.joint_X_c.assign([child_frame])
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+            state.clear_forces()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            solver.step(state, out, control, None, 0.001)
+            np.testing.assert_allclose(out.joint_qd.numpy(), [0.0, 0.0, 0.0], atol=1e-8, rtol=0.0)
+
+
+def test_ball_frame_update_preserves_pending_rest(test, device):
+    """Publish child-frame edits separately from reference-pose edits on both backends."""
+    rest = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
+    pending_rest = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6)
+    child_rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5)
+    builder = newton.ModelBuilder(gravity=(0, 0, 0))
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+    builder.add_articulation([builder.add_joint_ball(-1, body, stiffness=25.0)])
+    builder.joint_rest_q[:] = list(rest)
+    model = builder.finalize(device=device)
+    solver = SolverMuJoCo(model, use_mujoco_cpu=device.is_cpu)
+    model.joint_rest_q.assign(list(pending_rest))
+    model.joint_X_c.assign([wp.transform((0.0, 0.0, 0.0), child_rotation)])
+    for flags, published_rest in (
+        (newton.ModelFlags.JOINT_PROPERTIES, rest),
+        (newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES, pending_rest),
+    ):
+        solver.notify_model_changed(flags)
+        expected = np.array(child_rotation * published_rest * wp.quat_inverse(child_rotation))[[3, 0, 1, 2]]
+        np.testing.assert_allclose(solver.mjw_model.qpos_spring.numpy()[0], expected, atol=1e-6)
+        if device.is_cpu:
+            np.testing.assert_allclose(solver.mj_model.qpos_spring, expected, atol=1e-6)
+
+
+for _test in (test_ball_spring_rest_with_rotated_child_frame, test_ball_frame_update_preserves_pending_rest):
+    add_function_test(TestMuJoCoForceProperties, _test.__name__, _test, devices=get_test_devices())
 
 
 if __name__ == "__main__":

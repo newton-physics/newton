@@ -2355,7 +2355,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         namespace = overrides.get(namespace_name)
         if namespace is None:
             parent_namespace = getattr(self.model, namespace_name)
-            namespace = _AttributeNamespaceView(parent_namespace)
+            namespace = _AttributeNamespaceView(parent_namespace, view)
             setattr(view, namespace_name, namespace)
         setattr(namespace, attr_name, value)
 
@@ -3869,15 +3869,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             if frequency == model_frequency.BODY:
                 return True
-        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
+        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name in (
-                "joint_axis",
-                "joint_target_q",
-            ):
+            if (
+                frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) and attribute.name != "joint_rest_q"
+            ) or attribute.name in ("joint_axis", "joint_target_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
+            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
             if (
@@ -3887,7 +3886,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
             "joint_target_q",
             "mujoco:dof_ref",
-            "mujoco:dof_springref",
+            "joint_rest_q",
         ):
             return True
         if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":

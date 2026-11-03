@@ -102,6 +102,123 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
+Constraint recovery and material compliance
+-------------------------------------------
+
+PADMM and DVI share the constraint settings in ``config.constraints``. Each
+constraint group has a global recovery time and speed cap. Bilateral joints
+remain rigid; contacts and joint limits can opt into an implicit spring-damper
+law using model stiffness and damping.
+
+.. code-block:: python
+
+   config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
+   config.constraints.joint_recovery_time = 0.01
+   config.constraints.joint_recovery_speed = 0.05
+
+   config.constraints.contact_compliance = True
+   config.constraints.contact_recovery_time = None  # Derive c / k per contact.
+   config.constraints.contact_recovery_speed = 0.5
+
+   config.constraints.limit_compliance = True
+   config.constraints.limit_recovery_time = None  # Derive c / k per joint DoF.
+   config.constraints.limit_recovery_speed = 0.5
+   solver = newton.solvers.SolverKamino(model, config=config)
+
+Recovery times are in seconds. ``joint_recovery_speed`` supplies one numerical
+cap for all bilateral rows; ``limit_recovery_speed`` does the same for all
+limit rows. Each cap is in m/s for linear rows and rad/s for angular rows.
+The contact cap is in m/s. Caps apply independently to each constraint row. Their default is
+infinity (unlimited); zero disables positional recovery while retaining the
+velocity constraint and any physical compliance. They do not cap restitution,
+motor targets, or body velocities. These settings are configured before solver
+construction.
+
+For step size :math:`h`, positive stiffness :math:`k`, damping :math:`c`, and
+signed constraint violation :math:`\phi`, backward Euler gives
+
+.. math::
+
+   \tau = c/k, \qquad b = \frac{\phi}{h+\tau}, \qquad
+   E = \frac{1}{k h(h+\tau)}.
+
+With ``integrator="moreau"``, constraints are evaluated at the midpoint and the
+remaining pose update spans :math:`h/2`. For compliant rows the coefficients are
+
+.. math::
+
+   b = \frac{\phi_{\mathrm{mid}}}{h/2+\tau}, \qquad
+   E = \frac{1}{k h(h/2+\tau)}.
+
+The impulse still spans the full timestep :math:`h`. These coefficients enforce
+the spring-damper law at the end of the step using the linearized constraint
+position. Moreau requires ``use_collision_detector=True`` so contacts are
+evaluated at the midpoint. The existing fallback to Euler for external contacts
+also uses Euler compliance coefficients. Hard-row recovery retains its existing
+full-step coefficients under either integrator.
+
+The solver adds :math:`E` to the physical constraint operator and adds the
+capped bias :math:`b` to the constraint velocity. A global
+``contact_recovery_time`` or ``limit_recovery_time`` overrides :math:`\tau`
+and therefore sets the effective damping to :math:`k\tau` in **both** terms.
+With no override, the solver uses the model damping. Once the recovery cap is
+active, the law differs from the uncapped linear spring-damper. Numerical
+regularization and ADMM proximal penalties remain separate from :math:`E`.
+
+Contact stiffness/damping come from positive
+:attr:`~newton.Contacts.rigid_contact_stiffness` and the corresponding
+:attr:`~newton.Contacts.rigid_contact_damping` when supplied. Otherwise, they
+are the arithmetic means of :attr:`~newton.Model.shape_material_ke` and
+:attr:`~newton.Model.shape_material_kd` of the two shapes. This fallback also
+works with Kamino's internal collision pipeline. Only the contact normal
+receives compliance; tangential rows retain the Coulomb friction law.
+The normal spring impulse contributes fully to the friction load, including in
+DVI's PGS solver. Its hard-contact stabilization exclusion does not apply to
+physical spring forces.
+Compliant contacts obtain bounce from their spring-damper and ignore the
+material restitution coefficient.
+
+Limits use :attr:`~newton.Model.joint_limit_ke` and
+:attr:`~newton.Model.joint_limit_kd` of their joint DoF. Limit detection is
+unchanged. Non-positive or infinite stiffness retains the hard law for either family;
+this interface does not represent a pure damper with zero stiffness. The
+per-DOF drive gains and passive damping are independent of structural joint
+recovery and are not reused for it.
+
+The speed cap and recovery time apply to penetration or violated limits.
+Speculative contacts retain the positive-gap closing allowance
+:math:`\max(\phi,0)/h`; the cap does not slow approach before contact. Contact
+dead zones and the existing hard-contact restitution rules remain in effect.
+
+Compatibility
+^^^^^^^^^^^^^
+
+By default, compliance is disabled, recovery times are ``None``, and caps are
+unlimited. Existing configurations retain their dimensionless ``alpha``
+(joints), ``beta`` (limits), and ``gamma`` (contacts) recovery fractions. Hard
+rows without a recovery-time override continue to use :math:`s\phi/h` for
+their corresponding legacy fraction :math:`s`. An explicit recovery time
+takes precedence. At a given timestep, the equivalent time is
+:math:`\tau=h(1/s-1)` for :math:`s>0`; this conversion changes with timestep.
+For example, a fraction of 0.01 at 240 Hz corresponds to 0.4125 s.
+For a zero fraction, set the corresponding recovery time and recovery-speed
+cap to zero.
+This conversion preserves rigid-row recovery. Enabling finite stiffness can
+introduce elastic deflection or bounce, so material gains must suit the intended
+motion rather than reproduce rigid-contact trajectories exactly.
+
+The new settings are configured through Python. USD schema and importer
+extensions for these settings are deferred to a separate change.
+
+The shared recovery/compliance settings currently support PADMM and DVI.
+LOX rejects non-default values for these new settings and retains its existing
+``config.lox.contact_compliance`` option and recovery controls.
+LOX's option uses only positive per-contact stiffness; it does not fall back to
+shape materials, and its internal-pipeline contacts remain hard. PADMM and DVI
+reject ``config.lox.contact_compliance=True`` with guidance to use the shared
+option. Switching between these options can therefore change which contacts
+are compliant even when the model materials are unchanged.
+
 LOX prescribed bodies and shared settings
 -----------------------------------------
 
