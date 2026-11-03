@@ -354,8 +354,8 @@ def _eval_pad_force_linear_kernel(
     body_inv_inertia: wp.array[wp.mat33],
     dt: float,
     # outputs (mutated in place)
-    pad_seal_load: wp.array[wp.vec4],  # out: (normal, shear, peel, torsion) after the caps
-    pad_seal_load_unclamped: wp.array[wp.vec4],  # out: same four groups before the caps
+    pad_seal_load: wp.array[wp.vec4],  # out: (normal, shear, peel, torsion) after the caps (normal: spring only)
+    pad_seal_load_unclamped: wp.array[wp.vec4],  # out: same four groups before the caps (normal: spring only)
     body_f: wp.array[wp.spatial_vector],
 ):
     """Per-pad linear spring-damper seal wrench with fixed magnitude caps (see the section header).
@@ -420,7 +420,6 @@ def _eval_pad_force_linear_kernel(
     if fz_elastic > f_vac:
         fz_elastic = f_vac
     fz = fz_elastic + d_normal_eff * vz
-    fz_unclamped = fz_elastic_raw + d_normal_eff * vz
 
     # shear (x, y): spring-damper per axis, combined magnitude capped at f_shear_max
     fx_raw = gripper_k_shear_x[gripper_id] * px + d_shear_x_eff * vx
@@ -449,8 +448,12 @@ def _eval_pad_force_linear_kernel(
     shear_mag_raw = wp.sqrt(fx_raw * fx_raw + fy_raw * fy_raw)
     peel_mag_raw = wp.sqrt(m_peel_x_raw * m_peel_x_raw + m_peel_y_raw * m_peel_y_raw)
 
-    pad_seal_load[pad] = wp.vec4(fz, shear_mag, peel_mag, m_twist)
-    pad_seal_load_unclamped[pad] = wp.vec4(fz_unclamped, shear_mag_raw, peel_mag_raw, m_twist_raw)
+    # The normal entries report only the spring part (capped / uncapped). The normal damping is added after
+    # the cap and is never capped, so leaving it out keeps the demanded / supplied ratio equal to
+    # spring / f_vac when the cap is active. With damping included, the supplied value could cancel
+    # to near zero and the ratio would blow up.
+    pad_seal_load[pad] = wp.vec4(fz_elastic, shear_mag, peel_mag, m_twist)
+    pad_seal_load_unclamped[pad] = wp.vec4(fz_elastic_raw, shear_mag_raw, peel_mag_raw, m_twist_raw)
 
 
 @wp.func
@@ -1036,7 +1039,9 @@ class SurfaceGripperStateOutput:
     #   peel    = |(mx, my)|, the out-of-plane moment magnitude [N.m]
     #   torsion = mz, the twist about the seal axis [N.m] (signed)
     # Shear and peel are magnitudes because their caps are direction-independent disks.
-    pad_seal_load: wp.array[wp.vec4]  # after the per-group caps: what was applied to the bodies
+    # after the per-group caps. Normal is the capped spring part only; the uncapped normal damping, which is
+    # added on top of the cap, is not included.
+    pad_seal_load: wp.array[wp.vec4]
     pad_seal_load_unclamped: wp.array[
         wp.vec4
     ]  # before the caps; feeds the break metric (clamped values can never exceed their cap)
