@@ -1350,6 +1350,27 @@ add_diffsim_example_test(
     },
 )
 
+add_diffsim_example_test(
+    name="diffsim.example_diffsim_go2",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={
+        "world-count": 1,
+        "sim-steps": 40,
+        "num-frames": 40,
+        "usd_required": True,
+        "mujoco_adjoint_required": True,
+    },
+    allow_output_regexes=[
+        (
+            r"Warning: in BindingsAtPrim at line \d+ of [^\n]*usdShade/materialBindingAPI.cpp -- "
+            r"Found material bindings on prim at path \(/go2_description/[^\n]+\) "
+            r"but MaterialBindingAPI is not applied on the prim\n?",
+            "stderr",
+        ),
+    ],
+)
+
 
 class TestSensorExamples(unittest.TestCase):
     pass
