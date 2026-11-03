@@ -1260,6 +1260,27 @@ class TestSensorCamera(unittest.TestCase):
                         self.assertAlmostEqual(float(depth_np[view][center]), expected, delta=0.05, msg=f"view {view}")
                         self.assertEqual(float(depth_np[view][corner]), 0.0)
 
+    def test_site_sensor_without_cameras(self) -> None:
+        """Verify a site-bound sensor renders on a model without cameras in the default ray mode."""
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        world.add_site(-1, label="site")
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, 1)
+        width = height = 8
+        for device in get_test_devices():
+            with self.subTest(device=str(device)):
+                model = builder.finalize(device=device)
+                self.assertEqual(model.camera_count, 0)
+                camera = SensorCamera(model, sites="site", width=width, height=height)
+                camera.set_camera_rays(
+                    SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, device=device)
+                )
+                depth = camera.allocate_image_depth()
+                camera.update(model.state(), depth_image=depth)
+                self.assertAlmostEqual(float(depth.numpy()[0, height // 2, width // 2]), 2.0, delta=0.05)
+
     def test_camera_aperture_follows_image_aspect(self) -> None:
         """Verify apertures keep the camera's pixel aspect ratio at any image aspect ratio."""
         world = newton.ModelBuilder()

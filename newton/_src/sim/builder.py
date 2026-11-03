@@ -5259,8 +5259,11 @@ class ModelBuilder:
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
             parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
-                :meth:`~newton.ModelBuilder.add_camera`). Tracking modes and targets are imported as fixed
-                mounts; orthographic cameras are skipped and logged. Default is True.
+                :meth:`~newton.ModelBuilder.add_camera`). Tracking cameras (``track``, ``trackcom``,
+                ``targetbody``, ``targetbodycom``) are imported as fixed mounts on their body, which match
+                MuJoCo only at the initial pose; their ``mode`` and ``target`` are kept in the
+                ``mujoco:camera_mode`` and ``mujoco:camera_target`` custom attributes. Orthographic cameras
+                are skipped and logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.

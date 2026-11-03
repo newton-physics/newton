@@ -163,7 +163,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                     )
 
     def test_camera_tracking_modes_are_recorded(self):
-        """Import tracking cameras as fixed mounts, keep their MuJoCo mode and target, and warn."""
+        """Import tracking cameras as fixed mounts and keep their MuJoCo mode and target."""
         mjcf = """
 <mujoco>
     <worldbody>
@@ -182,7 +182,7 @@ class TestImportMjcfBasic(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        with self.assertLogs("newton", level="WARNING") as logs:
+        with self.assertLogs("newton", level="DEBUG") as logs:
             builder.add_mjcf(mjcf)
         self.assertEqual(sum("imported as a fixed mount" in line for line in logs.output), 2)
         cameras = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.camera_label)}
