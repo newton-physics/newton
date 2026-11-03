@@ -1600,7 +1600,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         # Record which add_mjcf() call supplied each shape's masks. This is not
         # another mask: it prevents equal bit numbers from separate files from
-        # being treated as if they were authored together.
+        # being treated as if they were authored together. The importer uses
+        # the index of the first shape it adds as the domain ID, so declaring
+        # a shape reference lets builder merges offset domains like any other
+        # shape index and keeps copies from separate builders distinct.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="collision_mask_domain",
@@ -1609,6 +1612,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int64,
                 default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
                 namespace="mujoco",
+                references="shape",
             )
         )
         builder.add_custom_attribute(
