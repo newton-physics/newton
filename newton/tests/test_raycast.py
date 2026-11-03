@@ -167,6 +167,47 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
                 test.assertAlmostEqual(float(out_t.numpy()[0]), 1.0, delta=1e-6)
                 np.testing.assert_allclose(out_n.numpy()[0], np.abs(ray_direction) / np.sqrt(count), atol=1e-6)
 
+    # Near ties use the slab-distance tolerance, even when a reconstructed
+    # face point would round just outside the other slab.
+    for offset, expected_normal in ((5e-7, [2**-0.5, 2**-0.5, 0.0]), (2e-6, [0.0, 1.0, 0.0])):
+        with test.subTest(near_tie_offset=offset):
+            wp.launch(
+                kernel_test_geom,
+                dim=1,
+                inputs=[
+                    out_t,
+                    out_n,
+                    identity,
+                    size,
+                    GeoType.BOX,
+                    wp.vec3(2.0, 2.0 + offset, 0.0),
+                    wp.vec3(-1.0, -1.0, 0.0),
+                    0,
+                ],
+                device=device,
+            )
+            test.assertAlmostEqual(float(out_t.numpy()[0]), 1.0 + offset, delta=2e-7)
+            np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
+
+    with test.subTest(small_direction=True):
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[
+                out_t,
+                out_n,
+                identity,
+                size,
+                GeoType.BOX,
+                wp.vec3(1.0 + 2**-23, 0.0, 0.0),
+                wp.vec3(-(2**-22), 1.0, 0.0),
+                0,
+            ],
+            device=device,
+        )
+        test.assertAlmostEqual(float(out_t.numpy()[0]), 0.5, delta=1e-6)
+        np.testing.assert_allclose(out_n.numpy()[0], [1.0, 0.0, 0.0], atol=1e-6)
+
 
 def test_ray_intersect_capsule(test: TestRaycast, device: str):
     out_t = wp.zeros(1, dtype=float, device=device)

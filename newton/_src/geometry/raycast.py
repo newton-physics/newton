@@ -239,8 +239,8 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
     normal = wp.vec3(0.0)
     t_near = -1.0e10
     t_far = 1.0e10
-    near_axis = -1
-    far_axis = -1
+    entry = wp.vec3(0.0)
+    exit = wp.vec3(0.0)
     hit = 1
 
     for i in range(3):
@@ -257,10 +257,8 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
                 t1 = t2
                 t2 = temp
 
-            if t1 > t_near:
-                near_axis = i
-            if t2 < t_far:
-                far_axis = i
+            entry[i] = t1
+            exit[i] = t2
             t_near = wp.max(t_near, t1)
             t_far = wp.min(t_far, t2)
 
@@ -271,27 +269,15 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
             t_hit = t_far
 
     if t_hit >= 0.0:
-        # Identify the hit face by matching the solved face distance to t_hit.
+        # Reuse the slab distances: recomputing face intersections can reject
+        # every face at rounded edge hits. Preserve averaging for tied faces.
         normal_local = wp.vec3(0.0)
         for i in range(3):
-            if wp.abs(ray_direction[i]) > EPSILON:
-                for side in range(-1, 2, 2):
-                    sol = (float(side) * size[i] - ray_origin[i]) / ray_direction[i]
-                    if sol >= 0.0:
-                        id0 = _IFACE[i][0]
-                        id1 = _IFACE[i][1]
-                        p0 = ray_origin[id0] + sol * ray_direction[id0]
-                        p1 = ray_origin[id1] + sol * ray_direction[id1]
-                        if wp.abs(p0) <= size[id0] and wp.abs(p1) <= size[id1]:
-                            if wp.abs(sol - t_hit) < EPSILON:
-                                normal_local[i] = -1.0 if side < 0 else 1.0
-        # Rounding at edges can reject every reconstructed face. The slab
-        # that selected the hit still provides a valid outward face normal.
-        if wp.dot(normal_local, normal_local) == 0.0:
-            axis = near_axis if t_near >= 0.0 else far_axis
-            if axis >= 0:
-                sign = -1.0 if ray_direction[axis] > 0.0 else 1.0
-                normal_local[axis] = sign if t_near >= 0.0 else -sign
+            if wp.abs(ray_direction[i]) >= MINVAL:
+                face_t = entry[i] if t_near >= 0.0 else exit[i]
+                if wp.abs(face_t - t_hit) < EPSILON:
+                    sign = -1.0 if ray_direction[i] > 0.0 else 1.0
+                    normal_local[i] = sign if t_near >= 0.0 else -sign
         normal = wp.normalize(normal_local)
 
     return t_hit, normal
