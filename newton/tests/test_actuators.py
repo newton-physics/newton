@@ -5798,6 +5798,10 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
             "Actuator prim '/World/Robot/NeuralActuator': "
             "NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute"
         )
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "allow_unsafe_torch_checkpoints") as cm:
+            with self.assertRaisesRegex(ValueError, message):
+                parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=True)
+        self.assertEqual(cm.filename, __file__)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", "allow_unsafe_torch_checkpoints", NewtonDeprecationWarning)
             for allow_unsafe in (False, True):

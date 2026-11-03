@@ -326,8 +326,11 @@ running a different number of actuators.
    will be removed in a future release. Export the network to ONNX instead.
 
 To move a Torch network to ONNX, export it with dynamic batch axes and store
-the Newton metadata as one JSON ``metadata`` property of the ONNX model. Recent
-PyTorch versions need the ``onnxscript`` package for ``torch.onnx.export``.
+the Newton metadata as one JSON ``metadata`` property of the ONNX model. Copy
+every metadata key from the Torch checkpoint, such as ``input_order``,
+``input_idx``, ``pos_scale``, and ``vel_scale``; missing keys fall back to their
+defaults without an error. Recent PyTorch versions need the ``onnxscript``
+package for ``torch.onnx.export``.
 
 .. code-block:: python
 
