@@ -2243,7 +2243,6 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     lanes export the seven surviving slots concurrently in fast mode; CPU and
     deterministic paths stream them serially from lane zero.
     """
-    exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
     _module = f"export_reduced_contacts_{writer_func.__name__}"
 
     @wp.func
@@ -2361,9 +2360,6 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                                 writer_data,
                             )
             elif lane == 0:
-                exported_ids = exported_ids_vec()
-                num_exported = int(0)
-
                 for slot in range(wp.static(VALUES_PER_KEY)):
                     if duplicate_mask & (1 << slot) != 0:
                         continue
@@ -2374,11 +2370,8 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                     contact_id = unpack_contact_id(value, deterministic)
                     if contact_id == 0:
                         continue
-                    if is_contact_already_exported(contact_id, exported_ids, num_exported):
-                        continue
-                    exported_ids[num_exported] = contact_id
-                    num_exported = num_exported + 1
-
+                    # The global flag also suppresses repeated winners within
+                    # this entry, so no per-entry ID list is needed.
                     export_contact_id(
                         contact_id,
                         position_depth,
