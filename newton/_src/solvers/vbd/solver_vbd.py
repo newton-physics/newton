@@ -217,7 +217,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
         - Coupled particle-rigid body systems
-        - Compliant rigid-body-to-particle attachments
+        - Compliant and hard rigid-body-to-particle attachments
 
     For rigid bodies, two paths are supported:
 
@@ -285,7 +285,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     Particle-body attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
-        - Attachments are compliant-ALM rows, like joint rows: a finite
+        - Attachments are compliant-ALM rows with a limit-row penalty: a finite
           ``stiffness`` keeps its physical spring offset under load, while infinite
           stiffness is the hard limit of the same row and ignores ``damping``.
           Multipliers are retained across steps with ``rigid_avbd_gamma``. Finite
@@ -1102,8 +1102,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
 
         attachment_count = model.attachment_particle_body_count
-        self.attachment_particle_body_lambda = wp.zeros(attachment_count, dtype=wp.vec3, device=self.device)
-        self.attachment_particle_body_rho = wp.zeros(attachment_count, dtype=float, device=self.device)
+        self._attachment_particle_body_lambda = wp.zeros(attachment_count, dtype=wp.vec3, device=self.device)
+        self._attachment_particle_body_rho = wp.zeros(attachment_count, dtype=float, device=self.device)
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._mimic_body_deltas = None
@@ -2708,7 +2708,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.spring_stiffness,
                 model.spring_damping,
             ],
-            outputs=[self.attachment_particle_body_rho, self.attachment_particle_body_lambda],
+            outputs=[self._attachment_particle_body_rho, self._attachment_particle_body_lambda],
             device=self.device,
         )
 
@@ -2954,9 +2954,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.model.attachment_particle_body_enabled,
                         state_in.particle_q,
                         state_in.body_q,
-                        self.attachment_particle_body_rho,
+                        self._attachment_particle_body_rho,
                     ],
-                    outputs=[self.attachment_particle_body_lambda],
+                    outputs=[self._attachment_particle_body_lambda],
                     device=self.device,
                 )
 
@@ -3143,7 +3143,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 kernel=reset_particle_body_attachment_state,
                 dim=model.attachment_particle_body_count,
                 inputs=[world_mask, world_mask is None, model.world_count, model.attachment_particle_body_world],
-                outputs=[self.attachment_particle_body_lambda],
+                outputs=[self._attachment_particle_body_lambda],
                 device=self.device,
             )
 
@@ -4269,8 +4269,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
-                        self.attachment_particle_body_rho,
-                        self.attachment_particle_body_lambda,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
@@ -4699,8 +4699,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
-                        self.attachment_particle_body_rho,
-                        self.attachment_particle_body_lambda,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                         self.body_particle_attachment_offsets,
                         self.body_particle_attachment_indices,
                     ],

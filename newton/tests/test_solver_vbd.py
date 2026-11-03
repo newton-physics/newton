@@ -5189,11 +5189,11 @@ def _body_particle_attachment_composes_with_worlds(test, device):
     state_in, state_out = model.state(), model.state()
     solver.step(state_in, state_out, None, None, 2.0e-3)
     np.testing.assert_allclose(state_out.particle_q.numpy(), model.particle_q.numpy(), atol=2.0e-6)
-    reactions = solver.attachment_particle_body_lambda.numpy().copy()
+    reactions = solver._attachment_particle_body_lambda.numpy().copy()
     test.assertGreater(np.linalg.norm(reactions[0]), 1.0)
     test.assertGreater(np.linalg.norm(reactions[1]), 1.0)
     solver.reset(state_out, world_mask=wp.array([True, False, False], dtype=wp.bool, device=device), flags=0)
-    reset_reactions = solver.attachment_particle_body_lambda.numpy()
+    reset_reactions = solver._attachment_particle_body_lambda.numpy()
     np.testing.assert_array_equal(reset_reactions[0], np.zeros(3))
     np.testing.assert_array_equal(reset_reactions[1], reactions[1])
 
@@ -5205,7 +5205,7 @@ def _body_particle_attachment_composes_with_worlds(test, device):
     state_out.clear_forces()
     solver.step(state_out, state_in, None, None, 2.0e-3)
     np.testing.assert_allclose(state_in.particle_q.numpy()[1], [1.002, 0.0, 0.0], atol=2.0e-6)
-    np.testing.assert_array_equal(solver.attachment_particle_body_lambda.numpy()[1], np.zeros(3))
+    np.testing.assert_array_equal(solver._attachment_particle_body_lambda.numpy()[1], np.zeros(3))
     model.attachment_particle_body_enabled.fill_(True)
     state_in.clear_forces()
     solver.step(state_in, state_out, None, None, 2.0e-3)
@@ -5267,7 +5267,7 @@ def _hard_particle_body_attachment_supports_load(test, device):
     np.testing.assert_allclose(positions[0], [0.0, 0.0, 0.0], atol=2.0e-6)
     test.assertAlmostEqual(float(positions[1, 2]), -1.0e-2, delta=2.0e-5)
     # Lambda is the body-side reaction: the particle receives its opposite.
-    np.testing.assert_allclose(solver.attachment_particle_body_lambda.numpy()[0], [0.0, 0.0, -100.0], atol=1.0e-2)
+    np.testing.assert_allclose(solver._attachment_particle_body_lambda.numpy()[0], [0.0, 0.0, -100.0], atol=1.0e-2)
 
 
 def _hard_particle_body_attachment_preserves_elastic_motion(test, device):
@@ -5399,7 +5399,7 @@ def _body_particle_attachment_accumulates_body_csr(test, device):
             model.attachment_particle_body_damping,
             model.attachment_particle_body_enabled,
             wp.full(model.attachment_particle_body_count, math.inf, dtype=float, device=device),
-            solver.attachment_particle_body_lambda,
+            solver._attachment_particle_body_lambda,
             solver.body_particle_attachment_offsets,
             solver.body_particle_attachment_indices,
         ],

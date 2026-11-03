@@ -500,10 +500,11 @@ rigid body's local frame. Author attachments with
 
 :class:`~newton.solvers.SolverVBD` applies an attachment whenever it integrates
 both endpoints. It solves every attachment as a compliant augmented-Lagrangian
-(ALM) row, like the structural joint rows of VBD: a reaction
+(ALM) row, with the same formulation as the VBD joint rows: a reaction
 multiplier carries the attachment force, and a numerical penalty chosen from the
 endpoint masses and the particle's surrounding material helps the iterations
-converge. The penalty affects convergence only, not physical compliance.
+converge. The penalty is chosen like the joint limit rows, so a finite
+attachment reaches its spring over several iterations. The penalty affects convergence only, not physical compliance.
 A finite ``stiffness`` [N/m] converges to a spring with ``damping`` [N·s/m], so a
 loaded attachment keeps a physical offset. Set ``stiffness=math.inf`` to request
 a hard point constraint; damping is ignored for hard attachments. Multipliers are
