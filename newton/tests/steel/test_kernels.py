@@ -803,10 +803,8 @@ def test_articulated_contact_response_validation(test, device):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, f"articulated_contact_response must be .*got '{response}'"):
                 SolverSteel(model, articulated_contact_response=response)
-    for response in ("immediate", "propagation_colored"):
-        with test.subTest(response=response):
-            with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
-                SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
+    with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
+        SolverSteel(model, articulated_contact_response="immediate", propagation_same_articulation_rows=True)
 
     # The propagation responses solve trees of different articulation sizes in one model.
     mixed = newton.ModelBuilder()

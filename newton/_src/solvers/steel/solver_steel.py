@@ -2162,8 +2162,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ``update_mass_matrix_interval``.
             propagation_same_articulation_rows: Solve contacts between two links of the same
                 articulation as propagation rows, with the exact cross response of the two
-                links, instead of dense rows. Requires
-                ``articulated_contact_response="propagation"``.
+                links, instead of dense rows. Requires ``articulated_contact_response``
+                ``"propagation"`` or ``"propagation_colored"``.
             propagation_cached_response: With ``articulated_contact_response="propagation"`` or
                 ``"propagation_colored"``, replace the per-iteration tree walk by cached
                 responses: the setup extracts, for each contact-active body, its joint-space
@@ -2459,10 +2459,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 f"propagation_color_order must be 'contact' or 'longest_first', got {propagation_color_order!r}"
             )
         self._propagation_color_order = propagation_color_order
-        if self._propagation_same_articulation_rows and articulated_contact_response != "propagation":
+        if self._propagation_same_articulation_rows and articulated_contact_response == "immediate":
             raise ValueError(
-                "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
-                f"got {articulated_contact_response!r}"
+                "propagation_same_articulation_rows requires articulated_contact_response 'propagation' or "
+                f"'propagation_colored', got {articulated_contact_response!r}"
             )
         # The propagation responses route contact rows, free bodies included, to the propagation
         # family, so by default its capacity absorbs both contact budgets.

@@ -1731,26 +1731,29 @@ def _routed_slots(solver, contact_count, path):
     return {c: int(slots[c]) for c in range(contact_count) if paths[c] == path and slots[c] >= 0 and worlds[c] == 0}
 
 
+SAME_ARTICULATION_RESPONSES = ("propagation", "propagation_colored")
+
+
 def test_default_routing_keeps_same_articulation_rows_dense(test, device):
-    """Keep same-articulation contacts on the dense rows under the default propagation response."""
+    """Keep same-articulation contacts on the dense rows by default on both propagation responses."""
     model = _build_scissor_model(device)
-    solver = SolverSteel(model, iterations=0, cfm=PGS_CFM, articulated_contact_response="propagation")
-    _, contact_count = _step_once(model, solver)
-    test.assertGreater(len(_routed_slots(solver, contact_count, DENSE_PATH)), 0)
-    test.assertEqual(int(solver._propagation_constraint_count.numpy()[0]), 0)
+    for response in SAME_ARTICULATION_RESPONSES:
+        with test.subTest(response=response):
+            solver = SolverSteel(model, iterations=0, cfm=PGS_CFM, articulated_contact_response=response)
+            _, contact_count = _step_once(model, solver)
+            test.assertGreater(len(_routed_slots(solver, contact_count, DENSE_PATH)), 0)
+            test.assertEqual(int(solver._propagation_constraint_count.numpy()[0]), 0)
 
 
 def test_flag_requires_propagation_mode(test, device):
-    """Reject same-articulation propagation rows without the response that solves them."""
+    """Reject same-articulation propagation rows on the immediate response, which has no propagation rows."""
     model = _build_scissor_model(device)
-    for response in ("immediate", "propagation_colored"):
-        with test.subTest(response=response):
-            with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
-                SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
+    with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
+        SolverSteel(model, articulated_contact_response="immediate", propagation_same_articulation_rows=True)
 
 
 def test_cross_response_effective_mass_matches_reference_operator(test, device):
-    """Match each same-articulation propagation row's ``J M^-1 J^T`` to the analytic operator.
+    """Match each same-articulation propagation row's ``J M^-1 J^T`` to the analytic operator, on both responses.
 
     The generalized row Jacobian is ``g = X_a^T j_a + X_b^T j_b`` from the solver's own
     body-space rows; the reference effective mass is ``g^T H^-1 g``. Per-link responses
@@ -1762,51 +1765,115 @@ def test_cross_response_effective_mass_matches_reference_operator(test, device):
     dense_slots = _routed_slots(reference, contact_count, DENSE_PATH)
     test.assertGreater(len(dense_slots), 0)
 
-    solver = SolverSteel(
-        model,
-        iterations=0,
-        cfm=PGS_CFM,
-        articulated_contact_response="propagation",
-        propagation_same_articulation_rows=True,
-    )
-    state, routed_count = _step_once(model, solver)
-    test.assertEqual(routed_count, contact_count)
-    rows = _routed_slots(solver, contact_count, PROPAGATION_PATH)
-    test.assertEqual(set(rows), set(dense_slots), "same-articulation contacts were not routed to propagation rows")
+    for response in SAME_ARTICULATION_RESPONSES:
+        with test.subTest(response=response):
+            solver = SolverSteel(
+                model,
+                iterations=0,
+                cfm=PGS_CFM,
+                articulated_contact_response=response,
+                propagation_same_articulation_rows=True,
+            )
+            state, routed_count = _step_once(model, solver)
+            test.assertEqual(routed_count, contact_count)
+            rows = _routed_slots(solver, contact_count, PROPAGATION_PATH)
+            test.assertEqual(
+                set(rows), set(dense_slots), "same-articulation contacts were not routed to propagation rows"
+            )
 
-    count = int(solver._propagation_constraint_count.numpy()[0])
-    J_a = solver._propagation_J_a.numpy()[0, :count].astype(np.float64)
-    J_b = solver._propagation_J_b.numpy()[0, :count].astype(np.float64)
-    MiJt_a = solver._propagation_MiJt_a.numpy()[0, :count].astype(np.float64)
-    MiJt_b = solver._propagation_MiJt_b.numpy()[0, :count].astype(np.float64)
-    body_a = solver._propagation_body_a.numpy()[0, :count]
-    body_b = solver._propagation_body_b.numpy()[0, :count]
-    eff_mass_inv = solver._propagation_eff_mass_inv.numpy()[0, :count].astype(np.float64)
-    H, X = _analytic_H_and_X(model, state)
-    width = int(reference._world_dof_count.numpy()[0])
-    Y = reference._Y_world.numpy()[0].astype(np.float64)
+            count = int(solver._propagation_constraint_count.numpy()[0])
+            J_a = solver._propagation_J_a.numpy()[0, :count].astype(np.float64)
+            J_b = solver._propagation_J_b.numpy()[0, :count].astype(np.float64)
+            MiJt_a = solver._propagation_MiJt_a.numpy()[0, :count].astype(np.float64)
+            MiJt_b = solver._propagation_MiJt_b.numpy()[0, :count].astype(np.float64)
+            body_a = solver._propagation_body_a.numpy()[0, :count]
+            body_b = solver._propagation_body_b.numpy()[0, :count]
+            eff_mass_inv = solver._propagation_eff_mass_inv.numpy()[0, :count].astype(np.float64)
+            H, X = _analytic_H_and_X(model, state)
+            width = int(reference._world_dof_count.numpy()[0])
+            Y = reference._Y_world.numpy()[0].astype(np.float64)
 
-    checked = 0
-    for contact, row in sorted(rows.items()):
-        test.assertGreaterEqual(int(body_a[row]), 0)
-        test.assertGreaterEqual(int(body_b[row]), 0)
-        g = X[body_a[row]].T @ J_a[row] + X[body_b[row]].T @ J_b[row]
-        y_ref = np.linalg.solve(H, g)
-        # Pin frames and ordering first: the dense row response is H^-1 g up to the row sign.
-        y_got = Y[dense_slots[contact], :width]
-        err = min(np.linalg.norm(y_got - y_ref), np.linalg.norm(y_got + y_ref))
-        test.assertLess(err / max(np.linalg.norm(y_ref), 1.0e-12), 1.0e-3)
+            checked = 0
+            for contact, row in sorted(rows.items()):
+                test.assertGreaterEqual(int(body_a[row]), 0)
+                test.assertGreaterEqual(int(body_b[row]), 0)
+                g = X[body_a[row]].T @ J_a[row] + X[body_b[row]].T @ J_b[row]
+                y_ref = np.linalg.solve(H, g)
+                # Pin frames and ordering first: the dense row response is H^-1 g up to the row sign.
+                y_got = Y[dense_slots[contact], :width]
+                err = min(np.linalg.norm(y_got - y_ref), np.linalg.norm(y_got + y_ref))
+                test.assertLess(err / max(np.linalg.norm(y_ref), 1.0e-12), 1.0e-3)
 
-        expected = float(g @ y_ref)
-        diagonal = float(J_a[row] @ MiJt_a[row] + J_b[row] @ MiJt_b[row])
-        test.assertAlmostEqual(1.0 / eff_mass_inv[row], diagonal + PGS_CFM, delta=1.0e-6 * (diagonal + 1.0))
-        if expected < 1.0e-6:
-            # Kinematically locked direction: the true diagonal is zero.
-            test.assertLess(abs(diagonal), 1.0e-6)
-            continue
-        checked += 1
-        test.assertLess(abs(diagonal - expected) / expected, 1.0e-3, f"contact {contact}: cross response term missing")
-    test.assertGreater(checked, 0, "no non-degenerate same-articulation rows were checked")
+                expected = float(g @ y_ref)
+                diagonal = float(J_a[row] @ MiJt_a[row] + J_b[row] @ MiJt_b[row])
+                test.assertAlmostEqual(1.0 / eff_mass_inv[row], diagonal + PGS_CFM, delta=1.0e-6 * (diagonal + 1.0))
+                if expected < 1.0e-6:
+                    # Kinematically locked direction: the true diagonal is zero.
+                    test.assertLess(abs(diagonal), 1.0e-6)
+                    continue
+                checked += 1
+                test.assertLess(
+                    abs(diagonal - expected) / expected, 1.0e-3, f"contact {contact}: cross response term missing"
+                )
+            test.assertGreater(checked, 0, "no non-degenerate same-articulation rows were checked")
+
+
+def test_closing_gripper_stops_at_finger_contact(test, device):
+    """Stop squeezed fingers at contact in one sweep, which needs the cross response between the two links."""
+    model = _closing_gripper_model(device, world_count=3)
+    for response in SAME_ARTICULATION_RESPONSES:
+        with test.subTest(response=response):
+            solver = SolverSteel(
+                model,
+                solve_mode="matrix_free",
+                articulated_contact_response=response,
+                propagation_same_articulation_rows=True,
+                iterations=1,
+                articulation_constraint_max=64,
+            )
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            states, control = [model.state(), model.state()], model.control()
+            control.joint_f.assign(np.tile(np.array([0.0, -2.0, 2.0], dtype=np.float32), 3))
+            newton.eval_fk(model, states[0].joint_q, states[0].joint_qd, states[0])
+            gaps = []
+            for _ in range(100):
+                pipeline.collide(states[0], contacts)
+                solver.step(states[0], states[1], control, contacts, 1.0 / 200.0)
+                states.reverse()
+                q = states[0].joint_q.numpy().reshape(3, 3)
+                gaps.append(0.16 + q[:, 1] - q[:, 2])
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            np.testing.assert_array_equal(solver._contact_path.numpy()[:count], PROPAGATION_PATH)
+            test.assertGreater(float(np.min(gaps)), -1.0e-5)
+            np.testing.assert_allclose(q[:, 1:], [[-0.08, 0.08]] * 3, atol=1.0e-5)
+            np.testing.assert_allclose(q[:, 0], 0.0, atol=1.0e-5)
+            np.testing.assert_allclose(states[0].joint_qd.numpy(), 0.0, atol=1.0e-5)
+
+
+def _closing_gripper_model(device, world_count):
+    """Two prismatic fingers on a sliding base, pushed together by equal and opposite joint forces."""
+    gripper = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    base = gripper.add_link(mass=1.0, inertia=inertia)
+    joints = [gripper.add_joint_prismatic(-1, base, axis=(0.0, 1.0, 0.0), armature=0.0)]
+    for side in (1.0, -1.0):
+        finger = gripper.add_link(mass=0.5, inertia=inertia)
+        gripper.add_shape_box(finger, hx=0.03, hy=0.02, hz=0.03, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+        joints.append(
+            gripper.add_joint_prismatic(
+                base,
+                finger,
+                axis=(0.0, 1.0, 0.0),
+                parent_xform=wp.transform((0.0, 0.1 * side, 0.0), wp.quat_identity()),
+                armature=0.0,
+            )
+        )
+    gripper.add_articulation(joints)
+    scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    scene.replicate(gripper, world_count)
+    return scene.finalize(device=device)
 
 
 class TestPropagationSameArticulation(unittest.TestCase):
@@ -1819,6 +1886,7 @@ for _name in (
     "test_default_routing_keeps_same_articulation_rows_dense",
     "test_flag_requires_propagation_mode",
     "test_cross_response_effective_mass_matches_reference_operator",
+    "test_closing_gripper_stops_at_finger_contact",
 ):
     add_function_test(TestPropagationSameArticulation, _name, globals()[_name], devices=devices)
 
