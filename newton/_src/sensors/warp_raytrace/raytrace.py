@@ -99,7 +99,9 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
         if bvh_shapes_size:
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            # int() makes the bound dynamic in Warp, preventing loop unrolling
+            # that duplicates BVH traversal state and increases register pressure.
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -211,7 +213,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
         if bvh_particles_size:
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -247,7 +249,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
         if triangle_mesh_id:
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -368,7 +370,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
         if bvh_shapes_size:
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -452,7 +454,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
         if bvh_particles_size:
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -489,7 +491,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         if triangle_mesh_id:
             # Triangle mesh is in world space; its local frame is the world frame (see
             # closest_hit_triangle_mesh).
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -599,7 +601,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         max_dist: wp.float32,
     ) -> wp.bool:
         if bvh_shapes_size:
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -653,7 +655,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         max_dist: wp.float32,
     ) -> wp.bool:
         if bvh_particles_size:
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
                 if group_root < 0:
                     continue
@@ -689,7 +691,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         if triangle_mesh_id:
             # Triangle mesh is in world space; its local frame is the world frame (see
             # closest_hit_triangle_mesh). Shadow rays only need any hit within ``max_dist``.
-            for i in range(wp.static(2 if config.enable_global_world else 1)):
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
                 if group_root < 0:
                     continue
