@@ -1,0 +1,1 @@
+Keep near-axis contact normals in stable reduction bins for every supported polyhedron by balancing bin-boundary clearance across X, Y, and Z. Rotate the octahedral, dodecahedral, and icosahedral tables without favoring one up axis. This changes which contacts mesh and hydroelastic reduction retain.

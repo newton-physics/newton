@@ -2609,7 +2609,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
 
     def test_ball_free_per_axis_target_pos_preserved(self):
-        """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
+        """``JointDofConfig.target_q`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
         interpreted as extrinsic ZYX Euler angles and converted to a unit
         quaternion via :meth:`ModelBuilder._quat_from_axis_targets`.
@@ -2619,18 +2619,18 @@ class TestModelJoints(unittest.TestCase):
 
         def _make_axes():
             return [
-                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=ang_targets[0]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=ang_targets[1]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=ang_targets[2]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_q=ang_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_q=ang_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_q=ang_targets[2]),
             ]
 
         lin_targets = (1.5, -2.5, 3.5)
 
         def _make_linear_axes():
             return [
-                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=lin_targets[0]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=lin_targets[1]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=lin_targets[2]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_q=lin_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_q=lin_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_q=lin_targets[2]),
             ]
 
         expected_quat = ModelBuilder._quat_from_axis_targets(*ang_targets)

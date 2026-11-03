@@ -8493,3 +8493,19 @@ def apply_body_truncation_ts(
             half_w = axis * (ta * 0.5)
             q_new = wp.normalize(wp.quat(half_w[0], half_w[1], half_w[2], 1.0) * q_rot)
         body_q[b] = wp.transform(c_new - wp.quat_rotate(q_new, com), q_new)
+
+
+@wp.kernel(enable_backward=False)
+def select_variant_bounding_radius(
+    body_variant: wp.array[wp.int32],
+    variant_radius_start: wp.array[wp.int32],
+    variant_radius: wp.array[float],
+    # outputs
+    rigid_dat_body_bounding_radius: wp.array[float],
+):
+    """Set each body's DAT bounding radius to that of its selected variant."""
+    b = wp.tid()
+    variant = body_variant[b]
+    start = variant_radius_start[b]
+    if variant >= 0 and start >= 0:
+        rigid_dat_body_bounding_radius[b] = variant_radius[start + variant]

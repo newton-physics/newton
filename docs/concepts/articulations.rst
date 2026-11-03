@@ -123,6 +123,8 @@ Rod stiffness and damping use :attr:`newton.Model.joint_target_ke` and
 ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. Each anchor's local
 ``+Z`` is the material tangent; X/Y shear and X/Y bend coefficients must match.
 Every material axis uses :attr:`~newton.JointTargetMode.NONE`.
+These rod material coefficients are separate from the passive joint springs
+configured through :attr:`newton.Model.joint_stiffness`.
 
 :attr:`newton.Control.joint_target_q` and
 :attr:`newton.Control.joint_target_qd` neither actuate a rod nor change its
@@ -1258,3 +1260,78 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
    features (drive, limits, armature, friction). See
    :ref:`mujoco-loop-closures` for the supported types and MuJoCo-specific
    behavior.
+
+
+.. _passive-joint-springs:
+
+Passive joint springs
+---------------------
+
+:attr:`newton.Model.joint_stiffness` and :attr:`newton.Model.joint_rest_q`
+describe a passive joint spring. For each scalar coordinate, its generalized
+force is ``stiffness * (rest_q - q)``. Passive damping adds
+``-joint_damping * qd``. These forces act independently of the drive targets
+and remain active when a joint limit is violated. The rest coordinate may
+lie outside the limits to model preload.
+
+Author scalar springs with :class:`newton.ModelBuilder.JointDofConfig` or
+the scalar joint helpers::
+
+    builder.add_joint_revolute(
+        parent=-1, child=body, stiffness=2.0, rest_q=0.25,
+        target_q=0.0, target_qd=0.0,
+    )
+
+``stiffness`` defaults to zero and has units N/m for linear axes and
+N·m/rad for angular axes. The effective scalar rest coordinate defaults to zero
+and is in meters or radians. ``JointDofConfig.rest_q=None`` leaves the coordinate
+unspecified; finalization resolves it to zero unless a legacy spring input
+supplies it. An explicitly configured zero takes precedence over a legacy
+default and conflicts with an explicitly authored, different legacy rest.
+``target_q`` and ``target_qd`` configure drives;
+``target_pos`` and ``target_vel`` are deprecated aliases since Newton 1.8.
+
+The stiffness array is DOF-sized. The rest array always has the same
+coordinate layout as :attr:`newton.Model.joint_q`, including identity
+quaternions (xyzw) for default rotational rest configurations. Index it
+with :attr:`newton.Model.joint_q_start`. Scalar ``JointDofConfig.rest_q`` values cannot specify a
+quaternion; edit the joint's four entries in ``joint_rest_q`` instead.
+
+Featherstone and SemiImplicit apply springs only to REVOLUTE, PRISMATIC, and D6
+coordinates. MuJoCo
+also supports isotropic BALL springs and quaternion rest orientations.
+Other solvers do not consume these properties yet. As with other model
+features, unsupported springs do not produce automatic warnings; consult the
+:doc:`solver feature matrix </solvers/index>` when choosing a solver.
+Steel adoption remains a follow-up tracked in
+`issue #4516 <https://github.com/newton-physics/newton/issues/4516>`_.
+
+SemiImplicit derives angular coordinates from body orientations and does not
+track multi-turn winding. Its scalar angular springs use a principal angle in
+[-pi, pi), independent of quaternion sign. The displacement ``rest_q - q`` is
+not wrapped, so rest coordinates outside that interval still produce preload.
+However, crossing the -pi/pi boundary makes the coordinate jump by 2*pi and
+the spring force jump by ``2*pi*stiffness``. This can destabilize motion even
+near an equilibrium close to that boundary. Use Featherstone or MuJoCo, which
+store unwrapped scalar joint coordinates, for boundary-crossing or multi-turn
+motion. SemiImplicit winding support is tracked in
+`issue #4547 <https://github.com/newton-physics/newton/issues/4547>`_.
+
+MJCF ``stiffness`` and ``springref`` import into the core fields without explicit
+solver custom-attribute registration.
+
+For USD, reuse the existing MjcJointAPI ``mjc:stiffness``,
+``mjc:springref``, and ``mjc:ref`` properties with
+:class:`newton.usd.SchemaResolverMjc` enabled. This import path does not
+require MuJoCo solver registration. NewtonJointAPI spring authoring
+properties are tracked separately in `issue #4516 <https://github.com/newton-physics/newton/issues/4516>`_; no unregistered
+Newton USD attributes are introduced here.
+
+See :ref:`mujoco-joint-spring-migration` for reference-coordinate conversion,
+legacy attribute compatibility, and migration of runtime spring edits.
+
+After runtime spring edits, call ``solver.notify_model_changed`` with
+:attr:`newton.ModelFlags.JOINT_DOF_PROPERTIES`, or use
+:attr:`newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` for stiffness and
+:attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` for rest coordinates.
+Modify existing arrays in place when reusing captured simulation graphs.
