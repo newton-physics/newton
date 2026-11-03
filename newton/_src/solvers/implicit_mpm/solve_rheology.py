@@ -357,8 +357,10 @@ def _copy_converged_environment_state(
 
 
 _NESTEROV_RESIDUAL_INIT = wp.constant(1.0e38)
-_NESTEROV_RESTART_INTERVAL = 5
-"""Number of iterations between momentum restart checks."""
+_GRAPH_SOLVE_GRANULARITY = 5
+"""Number of iterations between residual evaluations of graph-captured solves."""
+_NESTEROV_RESTART_INTERVAL = _GRAPH_SOLVE_GRANULARITY
+"""Number of iterations between momentum restart checks, matching graph-captured residual evaluations."""
 
 
 @wp.kernel
@@ -2064,7 +2066,7 @@ def _run_solver_loop(
 
     if use_graph:
         # Momentum restart checks reuse the convergence residual
-        solve_granularity = _NESTEROV_RESTART_INTERVAL
+        solve_granularity = _GRAPH_SOLVE_GRANULARITY
 
         iteration_and_condition = fem.borrow_temporary(temporary_store, shape=(2,), dtype=int)
         iteration_and_condition.fill_(1)
