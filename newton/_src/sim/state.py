@@ -128,6 +128,9 @@ class State:
         # Initialization/reset bookkeeping is copied by assign() along with physical history.
         self._tendon_initialized: wp.array[wp.bool] | None = None
         self._tendon_rebaseline: wp.array[wp.bool] | None = None
+        # First rejected accepted-pose material solve: (status, component segment).
+        # Travels with the trajectory; cleared only by a tendon-history reset.
+        self._tendon_material_failure: wp.array[wp.vec2i] | None = None
 
         self.body_q: wp.array | None = None
         """Rigid body transforms (7-DOF) [m, unitless quaternion], shape (body_count,), dtype :class:`transform`."""

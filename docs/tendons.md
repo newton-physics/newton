@@ -158,6 +158,37 @@ Rolling slip bounds the accumulated spin reaction and applies its change,
 including retraction when tension falls. As with other parallel XPBD
 constraints, relaxation may need adjustment for strongly coupled routes.
 
+### Direct material projection (experimental)
+
+Both solvers accept `tendon_material_direct=True` to replace material sweeps
+with a coupled finite-friction solve of each anchor-separated tendon component.
+It supports the existing linear compliance and damping law, full rolling
+transport, and dynamic circular guides. Sweeps remain the default.
+
+The direct mode currently requires finite authored compliance of at least
+`1e-25 m/N`, at most 32 authored spans between anchors, and an effective
+capstan tension ratio between 1 and 4 at every connection. VBD still uses its
+effective compliance floor. The mode does not support differentiation or VBD's
+external rigid-body integration. Reconstruct the solver to change modes;
+`tendon_max_sweeps`, `tendon_settle_tol`, and `tendon_settle_atol` do not control
+the direct solve.
+
+Call `solver.check_tendon_material(state)` after stepping or replaying a CUDA
+graph, outside capture and before using that trajectory's results. This check
+synchronizes with the device and raises if a material projection failed at an
+accepted pose. Intermediate body iterates can be retried without latching a
+failure. An accepted failure remains in the State through subsequent steps and
+`State.assign()`; a later successful solve does not clear it. Discard the affected
+trajectory, correct its input, and reset its tendon history before retrying.
+There is no silent fallback to sweeps.
+
+This option does not change the authored per-span material data. USD selection
+is separate: the [tendon schema proposal](https://github.com/newton-physics/newton-usd-schemas/pull/107)
+currently allows only `sweeps` for its scene-level `materialSolver` property.
+Adding `direct` and its importer mapping remains part of the
+[tendon USD work](https://github.com/newton-physics/newton/issues/4910); this mode
+is currently selected through Python only. Nonlinear material laws are not included.
+
 ### Reading tension (experimental diagnostics)
 
 The solver-owned arrays `tendon_segment_material_tension` and

@@ -13,7 +13,7 @@ from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
-from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
+from ..tendon_kernels import update_tendon_attachments
 from ..tendon_state import TendonStateMixin
 from . import kernels, restitution_kernels, tendon_kernels
 from .kernels import (
@@ -152,6 +152,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         tendon_settle_tol: float = 1.0e-3,
         tendon_settle_atol: float = 1.0e-6,
         tendon_activation_tol: float = 2.0e-3,
+        tendon_material_direct: bool = False,
         deterministic: wp.DeterministicMode | None = None,
     ):
         """Initialize the XPBD solver.
@@ -189,6 +190,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Combined with the relative tolerance; must be finite and nonnegative.
                 Ignored when ``tendon_settle_tol`` is zero.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
+            tendon_material_direct: Experimental linear finite-friction material projection instead of sweeps.
+                Requires compliance >= 1e-25 m/N and at most 32 authored spans between anchors;
+                effective capstan ratios must be in [1, 4].
+                Call :meth:`check_tendon_material` on the output State after stepping or CUDA graph replay.
+                The sweep count and stopping tolerances do not control this mode. Not differentiable.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel module. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
@@ -212,6 +218,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.tendon_settle_tol = tendon_settle_tol
         self.tendon_settle_atol = tendon_settle_atol
         self.tendon_activation_tol = tendon_activation_tol
+        self.tendon_material_direct = tendon_material_direct
 
         self.soft_body_relaxation = soft_body_relaxation
         self.soft_contact_relaxation = soft_contact_relaxation
@@ -476,6 +483,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._ensure_restitution_module_options()
         self._apply_module_options()
         self.validate_observables(observables, contacts)
+        self._validate_tendon_material_states(state_in, state_out)
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
@@ -1020,55 +1028,13 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
                         self._update_tendon_cone_rows(model, body_q, False)
 
-                        wp.launch(
-                            kernel=solve_tendon_material,
-                            dim=model.tendon_count,
-                            inputs=[
-                                body_q,
-                                body_qd,
-                                body_q,
-                                model.body_com,
-                                model.tendon_start,
-                                model.tendon_guide_body,
-                                model.tendon_guide_type,
-                                model.tendon_guide_radius,
-                                model.tendon_guide_offset,
-                                model.tendon_guide_axis,
-                                self.tendon_segment_rest_length,
-                                self.tendon_segment_rest_length_step,
-                                self.tendon_segment_route_rest_length,
-                                self.tendon_segment_stretch,
-                                self.tendon_segment_damping_tension,
-                                self.tendon_segment_active,
-                                self.tendon_segment_active_guide_l,
-                                self.tendon_segment_active_guide_r,
-                                self.tendon_segment_active_compliance,
-                                self.tendon_segment_active_damping,
-                                self.tendon_guide_active,
-                                self.tendon_guide_active_step,
-                                self.tendon_guide_route_rest_length,
-                                self.tendon_segment_attachment_l,
-                                self.tendon_segment_attachment_r,
-                                self.tendon_segment_length,
-                                self.tendon_segment_attachment_l_local,
-                                self.tendon_segment_attachment_r_local,
-                                self.tendon_segment_rolling_delta_l,
-                                self.tendon_segment_rolling_delta_r,
-                                self.tendon_guide_cone_seg_l,
-                                self.tendon_guide_cone_seg_r,
-                                self.tendon_guide_cap_ratio,
-                                self.tendon_cone_sweep_count,
-                                0,
-                                dt,
-                                1,
-                                1,
-                                1,
-                                self.tendon_max_sweeps,
-                                self.tendon_settle_tol,
-                                self.tendon_settle_atol,
-                                self._tendon_guide_material_transfer,
-                            ],
-                            device=model.device,
+                        self._solve_tendon_material(
+                            body_q,
+                            body_qd,
+                            body_q,
+                            dt,
+                            damping_from_pose_delta=False,
+                            accepted_pose=False,
                         )
 
                         if model.body_count:
@@ -1185,55 +1151,13 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=model.device,
                 )
                 self._update_tendon_cone_rows(model, body_q, True)
-                wp.launch(
-                    kernel=solve_tendon_material,
-                    dim=model.tendon_count,
-                    inputs=[
-                        body_q,
-                        body_qd,
-                        body_q,
-                        model.body_com,
-                        model.tendon_start,
-                        model.tendon_guide_body,
-                        model.tendon_guide_type,
-                        model.tendon_guide_radius,
-                        model.tendon_guide_offset,
-                        model.tendon_guide_axis,
-                        self.tendon_segment_rest_length,
-                        self.tendon_segment_rest_length_step,
-                        self.tendon_segment_route_rest_length,
-                        self.tendon_segment_stretch,
-                        self.tendon_segment_damping_tension,
-                        self.tendon_segment_active,
-                        self.tendon_segment_active_guide_l,
-                        self.tendon_segment_active_guide_r,
-                        self.tendon_segment_active_compliance,
-                        self.tendon_segment_active_damping,
-                        self.tendon_guide_active,
-                        self.tendon_guide_active_step,
-                        self.tendon_guide_route_rest_length,
-                        self.tendon_segment_attachment_l,
-                        self.tendon_segment_attachment_r,
-                        self.tendon_segment_length,
-                        self.tendon_segment_attachment_l_local,
-                        self.tendon_segment_attachment_r_local,
-                        self.tendon_segment_rolling_delta_l,
-                        self.tendon_segment_rolling_delta_r,
-                        self.tendon_guide_cone_seg_l,
-                        self.tendon_guide_cone_seg_r,
-                        self.tendon_guide_cap_ratio,
-                        self.tendon_cone_sweep_count,
-                        0,
-                        dt,
-                        1,
-                        1,
-                        1,
-                        self.tendon_max_sweeps,
-                        self.tendon_settle_tol,
-                        self.tendon_settle_atol,
-                        self._tendon_guide_material_transfer,
-                    ],
-                    device=model.device,
+                self._solve_tendon_material(
+                    body_q,
+                    body_qd,
+                    body_q,
+                    dt,
+                    damping_from_pose_delta=False,
+                    accepted_pose=True,
                 )
                 wp.launch(
                     kernel=update_tendon_diagnostics,

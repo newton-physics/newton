@@ -208,20 +208,25 @@ def load_tendon_history(
     left: wp.array[wp.vec3],
     right: wp.array[wp.vec3],
     active: wp.array[wp.bool],
+    failure: wp.array[wp.vec2i],
     initial_rest: wp.array[float],
     initial_left: wp.array[wp.vec3],
     initial_right: wp.array[wp.vec3],
     initial_active: wp.array[wp.bool],
+    initial_failure: wp.array[wp.vec2i],
     out_rest: wp.array[float],
     out_left: wp.array[wp.vec3],
     out_right: wp.array[wp.vec3],
     out_active: wp.array[wp.bool],
+    out_failure: wp.array[wp.vec2i],
 ):
     """Load a trajectory's history, seeding newly created states from the authored route."""
     guide = wp.tid()
     tendon = guide_tendon[guide]
     ready = initialized[tendon]
     out_active[guide] = active[guide] if ready else initial_active[guide]
+    if guide == tendon_start[tendon]:
+        out_failure[tendon] = failure[tendon] if ready else initial_failure[tendon]
     if guide < tendon_start[tendon + 1] - 1:
         seg = guide - tendon
         out_rest[seg] = rest[seg] if ready else initial_rest[seg]
@@ -237,10 +242,12 @@ def save_tendon_history(
     left: wp.array[wp.vec3],
     right: wp.array[wp.vec3],
     active: wp.array[wp.bool],
+    failure: wp.array[wp.vec2i],
     out_rest: wp.array[float],
     out_left: wp.array[wp.vec3],
     out_right: wp.array[wp.vec3],
     out_active: wp.array[wp.bool],
+    out_failure: wp.array[wp.vec2i],
     initialized: wp.array[wp.bool],
 ):
     """Store accepted material and routing history without exporting solver scratch."""
@@ -249,6 +256,7 @@ def save_tendon_history(
     out_active[guide] = active[guide]
     if guide == tendon_start[tendon]:
         initialized[tendon] = True
+        out_failure[tendon] = failure[tendon]
     if guide < tendon_start[tendon + 1] - 1:
         seg = guide - tendon
         out_rest[seg] = rest[seg]
@@ -1109,8 +1117,9 @@ def update_tendon_cone_rows(
     tendon_guide_cap_ratio[guide_idx] = wp.max(cap_ratio, 1.0)
 
 
-@wp.kernel
-def solve_tendon_material(
+@wp.func
+def _initialize_tendon_material(
+    tendon_id: int,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_q_prev: wp.array[wp.transform],
@@ -1129,7 +1138,6 @@ def solve_tendon_material(
     seg_active: wp.array[int],
     seg_active_guide_l: wp.array[int],
     seg_active_guide_r: wp.array[int],
-    seg_active_compliance: wp.array[float],
     seg_active_damping: wp.array[float],
     tendon_guide_active: wp.array[bool],
     tendon_guide_active_step: wp.array[bool],
@@ -1139,34 +1147,14 @@ def solve_tendon_material(
     seg_length: wp.array[float],
     seg_attachment_l_local: wp.array[wp.vec3],
     seg_attachment_r_local: wp.array[wp.vec3],
-    seg_rolling_delta_l: wp.array[float],
-    seg_rolling_delta_r: wp.array[float],
-    tendon_guide_cone_seg_l: wp.array[int],
-    tendon_guide_cone_seg_r: wp.array[int],
-    tendon_guide_cap_ratio: wp.array[float],
     tendon_cone_sweep_count: wp.array[int],
     damping_from_pose_delta: int,
     dt: float,
     apply_rolling_transfer: int,
     apply_pinhole_slip: int,
-    adaptive_cone_sweeps: int,
-    tendon_max_sweeps: int,
-    tendon_settle_tol: float,
-    tendon_settle_atol: float,
     guide_material_transfer: wp.array[float],
 ):
-    """Update free-span rest-length transfer for one tendon.
-
-    With adaptive sweeps enabled, the capstan cone is relaxed by up to ``tendon_max_sweeps``
-    Gauss-Seidel passes. Early-out checks every final contact's force residual
-    against ``tendon_settle_atol + tendon_settle_tol * max(T_left, T_right)``.
-    Zero relative tolerance disables early-out. Without adaptive sweeps,
-    the established fixed 4/32-sweep policy is used.
-
-    XPBD derives damping from body velocities. VBD sets ``damping_from_pose_delta``
-    to use the current and previous accepted poses, matching its force evaluation.
-    """
-    tendon_id = wp.tid()
+    """Rebase a material trial and freeze signed damping for either solve."""
     guide_start = tendon_start[tendon_id]
     guide_end = tendon_start[tendon_id + 1]
     num_guides = guide_end - guide_start
@@ -1186,7 +1174,6 @@ def solve_tendon_material(
         seg_damping_tension[seg] = 0.0
         seg_rest_length[seg] = seg_route_rest_length[seg]
 
-    nonlocal_cone_rows = int(0)
     for i in range(1, num_guides - 1):
         guide_idx = guide_start + i
         guide_material_transfer[guide_idx] = 0.0
@@ -1267,6 +1254,117 @@ def solve_tendon_material(
                             seg_attachment_r[seg],
                         )
 
+
+@wp.kernel
+def solve_tendon_material(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    tendon_start: wp.array[int],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
+    seg_rest_length: wp.array[float],
+    seg_rest_length_step: wp.array[float],
+    seg_route_rest_length: wp.array[float],
+    seg_stretch: wp.array[float],
+    seg_damping_tension: wp.array[float],
+    seg_active: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
+    seg_active_compliance: wp.array[float],
+    seg_active_damping: wp.array[float],
+    tendon_guide_active: wp.array[bool],
+    tendon_guide_active_step: wp.array[bool],
+    tendon_guide_route_rest_length: wp.array[float],
+    seg_attachment_l: wp.array[wp.vec3],
+    seg_attachment_r: wp.array[wp.vec3],
+    seg_length: wp.array[float],
+    seg_attachment_l_local: wp.array[wp.vec3],
+    seg_attachment_r_local: wp.array[wp.vec3],
+    seg_rolling_delta_l: wp.array[float],
+    seg_rolling_delta_r: wp.array[float],
+    tendon_guide_cone_seg_l: wp.array[int],
+    tendon_guide_cone_seg_r: wp.array[int],
+    tendon_guide_cap_ratio: wp.array[float],
+    tendon_cone_sweep_count: wp.array[int],
+    damping_from_pose_delta: int,
+    dt: float,
+    apply_rolling_transfer: int,
+    apply_pinhole_slip: int,
+    adaptive_cone_sweeps: int,
+    tendon_max_sweeps: int,
+    tendon_settle_tol: float,
+    tendon_settle_atol: float,
+    guide_material_transfer: wp.array[float],
+):
+    """Update free-span rest-length transfer for one tendon.
+
+    With adaptive sweeps enabled, the capstan cone is relaxed by up to ``tendon_max_sweeps``
+    Gauss-Seidel passes. Early-out checks every final contact's force residual
+    against ``tendon_settle_atol + tendon_settle_tol * max(T_left, T_right)``.
+    Zero relative tolerance disables early-out. Without adaptive sweeps,
+    the established fixed 4/32-sweep policy is used.
+
+    XPBD derives damping from body velocities. VBD sets ``damping_from_pose_delta``
+    to use the current and previous accepted poses, matching its force evaluation.
+    """
+    tendon_id = wp.tid()
+    guide_start = tendon_start[tendon_id]
+    guide_end = tendon_start[tendon_id + 1]
+    num_guides = guide_end - guide_start
+    num_segs = num_guides - 1
+    tendon_cone_sweep_count[tendon_id] = 0
+    if num_segs < 1:
+        return
+
+    # Each preceding tendon contributes one fewer segment than guides, so the
+    # segment prefix is the guide prefix minus the number of preceding tendons.
+    seg_offset = guide_start - tendon_id
+
+    min_rest = 1.0e-6
+
+    _initialize_tendon_material(
+        tendon_id,
+        body_q,
+        body_qd,
+        body_q_prev,
+        body_com,
+        tendon_start,
+        tendon_guide_body,
+        tendon_guide_type,
+        tendon_guide_radius,
+        tendon_guide_offset,
+        tendon_guide_axis,
+        seg_rest_length,
+        seg_rest_length_step,
+        seg_route_rest_length,
+        seg_stretch,
+        seg_damping_tension,
+        seg_active,
+        seg_active_guide_l,
+        seg_active_guide_r,
+        seg_active_damping,
+        tendon_guide_active,
+        tendon_guide_active_step,
+        tendon_guide_route_rest_length,
+        seg_attachment_l,
+        seg_attachment_r,
+        seg_length,
+        seg_attachment_l_local,
+        seg_attachment_r_local,
+        tendon_cone_sweep_count,
+        damping_from_pose_delta,
+        dt,
+        apply_rolling_transfer,
+        apply_pinhole_slip,
+        guide_material_transfer,
+    )
+
+    if apply_rolling_transfer != 0 or apply_pinhole_slip != 0:
         # Rolling supplies the full no-slip trial; friction decides how much
         # can stick. Applying a beta-scaled increment after projection would
         # leave the final material state outside the cone.
@@ -1293,6 +1391,7 @@ def solve_tendon_material(
                 if tendon_guide_type[guide_start + i_policy] == int(TendonGuideType.PINHOLE):
                     material_sweep_count = int(32)
 
+        nonlocal_cone_rows = int(0)
         converged = int(0)
         for material_sweep in range(material_sweep_count):
             if converged != 0:
