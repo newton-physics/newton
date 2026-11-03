@@ -2710,6 +2710,7 @@ def accumulate_connect_wrenches_from_impulses(
     connect_joint: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
+    connect_at_midpoint: wp.array[int],
     connect_row_inv_norm: wp.array2d[float],
     art_to_world: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -2725,8 +2726,9 @@ def accumulate_connect_wrenches_from_impulses(
     """Add each loop closure's solved force along its world axes at the parent and child anchors.
 
     The row builder normalizes each axis row and stores the factor it applied, so a row impulse
-    maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent at its anchor and
-    ``-`` on the child at its anchor, as in the row's Jacobian.
+    maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent and ``-`` on the
+    child, at the points the row's Jacobian uses (the anchors' midpoint where the row builder set
+    ``connect_at_midpoint``, otherwise each body's own anchor).
     """
     k = wp.tid()
     base_slot = connect_slot[k]
@@ -2740,6 +2742,9 @@ def accumulate_connect_wrenches_from_impulses(
     if body_p >= 0:
         p_a = wp.transform_point(body_q[body_p], p_a)
     p_b = wp.transform_point(body_q[body_c], wp.transform_get_translation(joint_X_c[joint]))
+    if connect_at_midpoint[k] != 0:
+        p_a = 0.5 * (p_a + p_b)
+        p_b = p_a
     for axis in range(3):
         slot = base_slot + axis
         if slot >= world_constraint_count[world] or world_row_type[world, slot] != PGS_CONSTRAINT_TYPE_CONNECT:
@@ -3285,6 +3290,24 @@ def allocate_connect_slots(
     )
 
 
+@wp.func
+def _walk_has_free_dof(
+    body: int,
+    body_to_joint: wp.array[int],
+    joint_ancestor: wp.array[int],
+    joint_qd_start: wp.array[int],
+    kinematic_dof_mask: wp.array[int],
+) -> bool:
+    """Return whether a body's ancestor walk has a DOF that is not kinematic."""
+    curr = body_to_joint[body]
+    while curr != -1:
+        for d in range(joint_qd_start[curr], joint_qd_start[curr + 1]):
+            if kinematic_dof_mask[d] == 0:
+                return True
+        curr = joint_ancestor[curr]
+    return False
+
+
 @wp.kernel
 def populate_connect_J_for_size(
     articulation_dof_start: wp.array[int],
@@ -3299,6 +3322,7 @@ def populate_connect_J_for_size(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     connect_parent_prescribed: wp.array[int],
+    kinematic_dof_mask: wp.array[int],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
@@ -3315,19 +3339,25 @@ def populate_connect_J_for_size(
     world_phi: wp.array2d[float],
     world_target_velocity: wp.array2d[float],
     connect_row_inv_norm: wp.array2d[float],
+    connect_at_midpoint: wp.array[int],
 ):
     """Fill the Jacobian and metadata of the connect rows of one size group.
 
     One thread per articulation of the group scans the closure table and writes three
     rows per owned closure: for world axis ``e``, ``phi = e . (p_A - p_B)`` and
-    ``J = e . (J_point(parent, p_A) - J_point(child, p_B))``, built with the ancestor
-    walk of the contact rows. Shared ancestors cancel. The anchors are the translations of
-    the closure joint's ``joint_X_p`` / ``joint_X_c``, read every step.
+    ``J = e . (J_point(parent, p_M) - J_point(child, p_M))``, built with the ancestor
+    walk of the contact rows. ``p_M`` is the midpoint of the two anchors, so each impulse
+    pair acts at one world point and adds no couple while the closure is open. Once the
+    closure is satisfied this is the per-anchor Jacobian. Shared ancestors cancel. The
+    anchors are the translations of the closure joint's ``joint_X_p`` / ``joint_X_c``,
+    read every step. If either body's ancestor walk has no non-kinematic DOF (such as a
+    fixed or kinematic root of the articulation), only one side takes the impulse, so each
+    body keeps its own anchor. ``connect_at_midpoint`` records the choice for the force report.
 
     A prescribed parent (a kinematic body outside the child's articulation, or the world
-    when ``connect_body_p[k] < 0``) contributes no DOFs; its anchor velocity enters the
-    row target instead (``J v = -e . v_A``), so the child anchor follows the moving
-    parent anchor.
+    when ``connect_body_p[k] < 0``) contributes no DOFs and takes no reaction, so the row
+    keeps each body's own anchor: ``J = -e . J_point(child, p_B)``, and the parent's
+    velocity at ``p_A`` enters the row target (``J v = -e . v_A``).
 
     Each row is normalized. On a planar linkage one axis is nearly redundant with the
     tree (``|J|`` around ``1e-4``), and an unnormalized row would relax a real velocity
@@ -3367,6 +3397,17 @@ def populate_connect_J_for_size(
         rel_a = p_a - origin
         rel_b = p_b - origin
         delta = p_a - p_b
+        at_midpoint = (
+            not prescribed
+            and _walk_has_free_dof(body_p, body_to_joint, joint_ancestor, joint_qd_start, kinematic_dof_mask)
+            and _walk_has_free_dof(body_c, body_to_joint, joint_ancestor, joint_qd_start, kinematic_dof_mask)
+        )
+        connect_at_midpoint[k] = int(at_midpoint)
+        if at_midpoint:
+            # Both walks take their lever arm from the anchors' midpoint, so the impulse pair
+            # is not a couple across an open closure.
+            rel_a = (p_a - 0.5 * delta) - origin
+            rel_b = rel_a
 
         for axis in range(3):
             slot = base_slot + axis
@@ -5318,6 +5359,21 @@ def invert_lower_factor_grouped(
             Linv_group[idx, row, col] = value / L_group[idx, row, row]
 
 
+@wp.kernel(enable_backward=False)
+def copy_unarticulated_body_state(
+    bodies: wp.array[int],
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
+    # outputs
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
+):
+    """Pass the prescribed state of bodies outside every articulation through the step."""
+    body = bodies[wp.tid()]
+    body_q_out[body] = body_q_in[body]
+    body_qd_out[body] = body_qd_in[body]
+
+
 @wp.kernel
 def update_body_qd_from_featherstone(
     body_v_s: wp.array[wp.spatial_vector],
@@ -5329,7 +5385,9 @@ def update_body_qd_from_featherstone(
     body_qd_out: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
-    if body_active[tid] == 0:
+    art = body_to_articulation[tid]
+    # copy_unarticulated_body_state publishes bodies outside every articulation.
+    if body_active[tid] == 0 or art < 0:
         return
 
     twist = body_v_s[tid]  # spatial twist about origin
@@ -5339,11 +5397,7 @@ def update_body_qd_from_featherstone(
     X_wb = body_q[tid]
     com_local = body_com[tid]
     com_world = wp.transform_point(X_wb, com_local)
-    art = body_to_articulation[tid]
-    origin = wp.vec3()
-    if art >= 0:
-        origin = articulation_origin[art]
-    com_rel = com_world - origin
+    com_rel = com_world - articulation_origin[art]
 
     v_com = v0 + wp.cross(w, com_rel)
 

@@ -10,7 +10,10 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.steel.kernels import accumulate_connect_wrenches_from_impulses, populate_connect_J_for_size
+from newton._src.solvers.steel.kernels import (
+    accumulate_connect_wrenches_from_impulses,
+    populate_connect_J_for_size,
+)
 from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import (
@@ -521,6 +524,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
             row_parent = wp.zeros((1, 3), dtype=wp.int32, device=device)
             row_fields = [wp.zeros((1, 3), dtype=float, device=device) for _ in range(3)]
             inv_norm = wp.zeros((1, 3), dtype=float, device=device)
+            at_midpoint = wp.zeros(1, dtype=wp.int32, device=device)
             wp.launch(
                 populate_connect_J_for_size,
                 dim=1,
@@ -537,6 +541,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     anchor_xform,
                     anchor_xform,
                     zero,  # connect_parent_prescribed
+                    ints([0, 0]),  # kinematic_dof_mask
                     body_q,
                     wp.zeros(2, dtype=wp.spatial_vector, device=device),
                     wp.zeros(2, dtype=wp.vec3, device=device),
@@ -546,7 +551,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     motion,
                     origin,
                 ],
-                outputs=[J, row_type, row_parent, *row_fields, inv_norm],
+                outputs=[J, row_type, row_parent, *row_fields, inv_norm, at_midpoint],
                 device=device,
             )
             wrench = wp.zeros(2, dtype=wp.spatial_vector, device=device)
@@ -562,6 +567,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     zero,  # connect_joint
                     anchor_xform,
                     anchor_xform,
+                    at_midpoint,
                     inv_norm,
                     zero,  # art_to_world
                     body_q,
@@ -579,6 +585,103 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
             float32_lever = 1.0 + float(motion.numpy()[1, 1])
             force = wrench.numpy()[:, 1]
             np.testing.assert_allclose(force, [1.0 / float32_lever, -1.0 / float32_lever], rtol=1.0e-5)
+
+
+def test_open_closure_force_acts_where_the_rows_do(test, device):
+    """Apply an open closure's force at the anchors' midpoint, or at each anchor when only one body can move."""
+
+    def ints(values):
+        return wp.array(values, dtype=wp.int32, device=device)
+
+    p_a, p_b = np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.2, 0.0])
+    force = np.array([1.0, 0.0, 0.0])
+    midpoint = 0.5 * (p_a + p_b)
+    zero = ints([0])
+    parent_xform = wp.array([wp.transform(p_a, wp.quat_identity())], dtype=wp.transform, device=device)
+    child_xform = wp.array([wp.transform(p_b, wp.quat_identity())], dtype=wp.transform, device=device)
+    body_q = wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device)
+    # A root hinge carrying a child hinge; the closure joins the root to the child.
+    for case, prescribed, qd_start, kinematic, parent_point, child_point in (
+        ("dynamic root", 0, [0, 1, 2], [0, 0], midpoint, midpoint),
+        ("fixed root", 0, [0, 0, 1], [0], p_a, p_b),
+        ("kinematic root", 0, [0, 1, 2], [1, 0], p_a, p_b),
+        ("prescribed parent", 1, [0, 1, 2], [0, 0], p_a, p_b),
+    ):
+        with test.subTest(case=case):
+            n_dofs = qd_start[-1]
+            J = wp.zeros((1, 3, n_dofs), dtype=float, device=device)
+            row_type = wp.zeros((1, 3), dtype=wp.int32, device=device)
+            at_midpoint = wp.zeros(1, dtype=wp.int32, device=device)
+            wp.launch(
+                populate_connect_J_for_size,
+                dim=1,
+                inputs=[
+                    zero,  # articulation_dof_start
+                    zero,  # art_to_world
+                    zero,  # group_to_art
+                    n_dofs,
+                    zero,  # connect_slot
+                    zero,  # connect_art
+                    zero,  # connect_joint
+                    zero,  # connect_body_p
+                    ints([1]),  # connect_body_c
+                    parent_xform,
+                    child_xform,
+                    ints([prescribed]),
+                    ints(kinematic),  # kinematic_dof_mask
+                    body_q,
+                    wp.zeros(2, dtype=wp.spatial_vector, device=device),
+                    wp.zeros(2, dtype=wp.vec3, device=device),
+                    ints([0, 1]),  # body_to_joint
+                    ints([-1, 0]),  # joint_ancestor
+                    ints(qd_start),
+                    wp.array([[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]] * n_dofs, dtype=wp.spatial_vector, device=device),
+                    wp.zeros(1, dtype=wp.vec3, device=device),
+                ],
+                outputs=[
+                    J,
+                    row_type,
+                    wp.zeros((1, 3), dtype=wp.int32, device=device),  # world_row_parent
+                    *[wp.zeros((1, 3), dtype=float, device=device) for _ in range(4)],
+                    at_midpoint,
+                ],
+                device=device,
+            )
+            wrench = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+            wp.launch(
+                accumulate_connect_wrenches_from_impulses,
+                dim=1,
+                inputs=[
+                    zero,  # connect_slot
+                    zero,  # connect_art
+                    zero,  # connect_body_p
+                    ints([1]),  # connect_body_c
+                    zero,  # connect_joint
+                    parent_xform,
+                    child_xform,
+                    at_midpoint,
+                    wp.array([[1.0, 0.0, 0.0]], dtype=float, device=device),  # connect_row_inv_norm
+                    zero,  # art_to_world
+                    body_q,
+                    ints([0, 0]),  # body_to_articulation
+                    wp.zeros(1, dtype=wp.vec3, device=device),
+                    ints([3]),  # world_constraint_count
+                    row_type,
+                    wp.array([[1.0, 0.0, 0.0]], dtype=wp.float32, device=device),
+                    1.0,
+                ],
+                outputs=[wrench],
+                device=device,
+            )
+            # The parent walks the root hinge unless prescribed, the child walks both hinges; rows are normalized.
+            rows = np.zeros((3, n_dofs))
+            for body_joints, point, sign in (([0], parent_point, 1.0 - prescribed), ([1, 0], child_point, -1.0)):
+                for joint in body_joints:
+                    rows[:, qd_start[joint] : qd_start[joint + 1]] += sign * np.cross([0.0, 0.0, 1.0], point)[:, None]
+            norms = np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1.0e-4)
+            np.testing.assert_allclose(J.numpy()[0], rows / norms, atol=1.0e-6)
+            expected = [[*force, *np.cross(parent_point, force)], [*-force, *np.cross(child_point, -force)]]
+            np.testing.assert_allclose(wrench.numpy(), expected, atol=1.0e-6)
 
 
 def test_parent_wrench_of_a_near_redundant_closure(test, device):
@@ -914,6 +1017,7 @@ for _name in (
     "test_unattached_body_reports_zero",
     "test_jointless_model_reports_zero",
     "test_closure_force_uses_the_row_builder_norm",
+    "test_open_closure_force_acts_where_the_rows_do",
     "test_parent_wrench_matches_inverse_dynamics_on_every_path",
     "test_parent_wrench_excludes_joint_armature",
     "test_parent_wrench_of_a_contact_stop_with_armature",
