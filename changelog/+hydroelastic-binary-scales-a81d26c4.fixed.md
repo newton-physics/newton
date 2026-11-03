@@ -1,0 +1,1 @@
+Use exact power-of-two scales in deterministic hydroelastic contact reduction, avoiding CUDA rounding in general exponentiation and reducing collision overhead. CUDA contact values may differ slightly from previous versions; no API changes are required.
