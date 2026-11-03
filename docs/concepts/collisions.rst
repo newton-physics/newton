@@ -2713,6 +2713,9 @@ captured region so it is replayed each frame:
         # Each frame:
         wp.capture_launch(graph)
 
+This loop assumes an even ``sim_substeps``. For odd counts, see
+:ref:`performance-odd-substeps`.
+
 .. _Solver Integration:
 
 Solver Integration

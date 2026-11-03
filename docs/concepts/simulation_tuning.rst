@@ -89,7 +89,8 @@ For contact-dominated rigid-body and articulation problems, use this order:
    effort limits, armature, or joint friction only where the selected solver
    supports them.
 8. **Optimize performance last.** Reduce collision frequency, contact count,
-   solver iterations, or substeps only after the behavior is acceptable.
+   solver iterations, or substeps only after the behavior is acceptable. See
+   :ref:`performance-guide`.
 
 Do not hide model errors with extreme solver settings. Bad mass ratios,
 incorrect inertia tensors, overlapping collision geometry, and over-stiff
@@ -169,7 +170,8 @@ Symptom Table
        constraints.
      - Runtime
    * - Simulation is too slow
-     - Reduce substeps, contact refresh rate, and expensive contact models.
+     - Capture the frame in a CUDA graph (see :ref:`performance-guide`);
+       reduce substeps, contact refresh rate, and expensive contact models.
      - Lower iterations if available; simplify collision geometry; reduce
        contact buffers or contact count when safe.
      - Accuracy
@@ -183,5 +185,7 @@ Going Deeper
   math.
 - :ref:`Tuning MuJoCo` — the MuJoCo-Warp constraint model, ``ke``/``kd`` to
   ``solref``/``solimp`` mapping, and task templates.
+- :ref:`performance-guide` — CUDA graph capture, buffer sizing, and
+  benchmarking.
 - :ref:`Tuning VBD` — the VBD mental model, parameter effects, failure modes
   and fixes, and known-good parameter combinations (in development).

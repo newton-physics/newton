@@ -19,6 +19,7 @@ Newton Physics
    guide/compatibility
    guide/visualization
    guide/diagnostics
+   guide/performance
    guide/tutorials
    Development <guide/development>
    Source Code Guidelines <guide/source_code_guidelines>
