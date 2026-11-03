@@ -33,7 +33,7 @@ jobs:
         run: uv python install
       - name: Build a binary wheel
         run: uv build --wheel
-      - name: Check installed-wheel documentation offline
+      - name: Check installed-wheel documentation
         run: |
           uv venv /tmp/newton-wheel-check
           uv pip install --python /tmp/newton-wheel-check/bin/python dist/*.whl

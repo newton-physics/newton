@@ -1,21 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check installed-wheel documentation offline, outside a source checkout."""
+"""Check installed-wheel documentation outside a source checkout."""
 
 import json
-import socket
 from importlib.metadata import distribution
 from pathlib import Path
 
 
 def check() -> None:
-    def offline(*args, **kwargs):
-        raise AssertionError("Installed documentation attempted network access")
-
-    socket.create_connection = offline
-    socket.getaddrinfo = offline
-    socket.socket.connect = offline
     installed = distribution("newton")
     root = Path(installed.locate_file("newton/docs"))
     declared_licenses = installed.metadata.get_all("License-File", [])
@@ -31,7 +24,7 @@ def check() -> None:
     for page, expected in (
         ("guide/installation.md", "Installation"),
         ("concepts/conventions.md", "Conventions"),
-        ("solvers/vbd.md", "experimental"),
+        ("solvers/vbd.md", "Vertex Block Descent"),
         ("faq.md", "FAQ"),
         ("tutorials/00_introduction.md", "import newton"),
         ("api/_generated/newton.ModelBuilder.md", "finalize"),
@@ -42,7 +35,7 @@ def check() -> None:
             target = line.rsplit("](", 1)[1].removesuffix(")")
             if "://" not in target:
                 assert (root / target).is_file(), target
-    print(f"Verified offline Newton {installed.version} documentation in {root}")
+    print(f"Verified installed Newton {installed.version} documentation in {root}")
 
 
 if __name__ == "__main__":

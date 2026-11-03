@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build==0.13.5"]
+requires = ["uv_build>=0.13.5"]
 build-backend = "build_backend"
 backend-path = ["."]
 
