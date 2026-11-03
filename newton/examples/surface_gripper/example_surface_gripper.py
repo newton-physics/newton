@@ -95,6 +95,7 @@ Runs:
 """
 
 import argparse
+import math
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.utils.download_assets import download_git_folder
 from newton.examples.surface_gripper.robot_playback import RobotPlayback, recording_duration
 from newton.examples.surface_gripper.surface_gripper import (
     SurfaceGripper,
@@ -120,10 +122,24 @@ from newton.viewer import ViewerBase
 
 # Asset paths (global constants). All assets live in the shared newton/examples/assets/ directory.
 ASSETS = Path(__file__).parent.parent / "assets"
-# robot arm USD
-ROBOT_USD = ASSETS / "palletizer_arm.usda"
+# robot arm USD, downloaded (and cached) from a branch of the newton-assets fork.
+# TODO: switch to newton.utils.download_asset("fanuc_m710id_50m/usd") once the asset is merged upstream.
+ROBOT_USD = (
+    download_git_folder(
+        "https://github.com/gyeomannvidia/newton-assets.git",
+        "fanuc_m710id_50m/usd",
+        ref="dev/gyeoman/fanuc_palletizer",
+    )
+    / "fanuc_arm.usd"
+)
+# World placement of the robot arm. The asset no longer carries this placement, so it loads at the origin.
+ROBOT_BASE_POSITION = wp.vec3(-0.9548298500297838, 0.2817000725962616, 0.7495161294937144)  # [m]
+ROBOT_BASE_YAW = -math.pi / 2  # [rad] about +Z
+ROBOT_BASE_XFORM = wp.transform(ROBOT_BASE_POSITION, wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), ROBOT_BASE_YAW))
+# Name of the robot arm's USD root prim. Rename it here if the USD changes.
+ROBOT_ROOT_NAME = "m710id_50m"
 # ArticulationView pattern matching the robot arm's USD root prim label (used to find its joint_q offsets).
-ROBOT_ARTICULATION_PATTERN = "*Robot*"
+ROBOT_ARTICULATION_PATTERN = f"*{ROBOT_ROOT_NAME}*"
 # Pick scene (2 static pallets + panel + 6 crates as box colliders at their waiting poses).
 PICK_SCENE_USD = ASSETS / "palletizer_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
@@ -194,10 +210,10 @@ CRATE_GRIP_POSES = (
 # The paths to the pads are used to extract the geometry of
 # each pad from USD.
 PAD_PRIMS = (
-    "/Robot/J6_link/GripperPads/pad_0",
-    "/Robot/J6_link/GripperPads/pad_1",
-    "/Robot/J6_link/GripperPads/pad_2",
-    "/Robot/J6_link/GripperPads/pad_3",
+    f"/{ROBOT_ROOT_NAME}/J6_link/GripperPads/pad_0",
+    f"/{ROBOT_ROOT_NAME}/J6_link/GripperPads/pad_1",
+    f"/{ROBOT_ROOT_NAME}/J6_link/GripperPads/pad_2",
+    f"/{ROBOT_ROOT_NAME}/J6_link/GripperPads/pad_3",
 )
 
 # A pad's contact perimeter is the circle of the pad radius on its bottom face (toward the box, +half-height along the
@@ -763,7 +779,7 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(env)
 
         # Load the robot arm.
-        robot = env.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
+        robot = env.add_usd(str(ROBOT_USD), xform=ROBOT_BASE_XFORM, floating=False, collapse_fixed_joints=True)
         ee_body_local = env.body_count - 1  # last arm link (J6_link), the flange, within one env
         # The pad geometry lives in the robot arm USD: four visual cylinders under J6_link/GripperPads (see the
         # asset). Read each pad's placement transform and its radius/half-height.
