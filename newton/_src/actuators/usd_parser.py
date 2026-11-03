@@ -13,6 +13,7 @@ from typing import Any
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonWarning
+from ..utils.deprecation import RemovedAttribute
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
@@ -41,6 +42,9 @@ class ActuatorParsed:
     component_specs: list[tuple[type[ClampingBase | Delay], dict[str, Any]]] = field(default_factory=list)
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
+
+    controller_class = RemovedAttribute("drive_class", removed_in="1.8")
+    controller_kwargs = RemovedAttribute("drive_kwargs", removed_in="1.8")
 
 
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")

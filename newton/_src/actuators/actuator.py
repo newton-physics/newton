@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ..utils.deprecation import RemovedAttribute
 from .clamping.base import ClampingBase
 from .delay import Delay
 from .drives.base import DriveBase
@@ -190,6 +191,8 @@ class Actuator:
         """Delay buffer state, or ``None`` if no delay is used."""
         drive_state: DriveBase.State | None = None
         """Drive-specific state, or ``None`` if stateless."""
+
+        controller_state = RemovedAttribute("drive_state", removed_in="1.8")
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset composed state.
@@ -396,6 +399,8 @@ class Actuator:
     # To achieve public API Actuator.ImplicitOptions.
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
     ImplicitOptions = ImplicitOptions
+
+    controller = RemovedAttribute("drive", removed_in="1.8")
 
     def set_effort_mode_implicit(
         self,
