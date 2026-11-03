@@ -31,6 +31,7 @@ __all__ = [
     "DenseSquareMultiLinearInfo",
     "make_dtype_tolerance",
     "prefix_offsets",
+    "segment_local_indices",
 ]
 
 
@@ -583,6 +584,13 @@ def prefix_offsets(sizes: Sequence[int] | np.ndarray, *, validate_dtype: np.dtyp
                 f"Total block size {int(offsets[-1])} does not fit in {validate_dtype} (max {max_value})."
             )
     return offsets
+
+
+def segment_local_indices(counts: np.ndarray, offsets: np.ndarray | None = None) -> np.ndarray:
+    """Return packed indices relative to the start of each variable-length segment."""
+    if offsets is None:
+        offsets = prefix_offsets(counts)
+    return np.arange(int(offsets[-1]), dtype=np.int64) - np.repeat(offsets[:-1], counts)
 
 
 def make_dtype_tolerance(tol: FloatType | float | None = None, dtype: FloatType = wp.float32) -> FloatType:

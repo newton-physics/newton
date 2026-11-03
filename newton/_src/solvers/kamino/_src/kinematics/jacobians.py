@@ -32,7 +32,7 @@ from ..core.types import (
 )
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.limits import LimitsKamino
-from ..linalg import prefix_offsets
+from ..linalg import prefix_offsets, segment_local_indices
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
 from .joints import gimbal_reciprocal_axes, universal_intermediary_axes
@@ -65,7 +65,7 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 def _expand_joint_indices(counts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Expand per-joint counts into joint IDs and joint-local IDs."""
     joint_ids = np.repeat(np.arange(counts.size), counts)
-    local_ids = np.arange(joint_ids.size) - np.repeat(prefix_offsets(counts)[:-1], counts)
+    local_ids = segment_local_indices(counts)
     return joint_ids, local_ids
 
 

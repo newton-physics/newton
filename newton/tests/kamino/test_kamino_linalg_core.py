@@ -13,6 +13,7 @@ from newton._src.solvers.kamino._src.linalg.core import (
     DenseSquareMultiLinearInfo,
     make_dtype_tolerance,
     prefix_offsets,
+    segment_local_indices,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
@@ -38,6 +39,14 @@ class TestLinAlgCorePrefixOffsets(unittest.TestCase):
         size = 2**30 + 1
         offsets = prefix_offsets(np.full(3, size, dtype=np.int32))
         np.testing.assert_array_equal(offsets, [0, size, 2 * size, 3 * size])
+
+    def test_segment_local_indices(self):
+        """Restart local indices after each nonempty segment."""
+        for sizes, expected in (([], []), ([0, 0], []), ([2, 0, 3], [0, 1, 0, 1, 2])):
+            counts = np.asarray(sizes, dtype=np.int32)
+            with self.subTest(counts=counts):
+                np.testing.assert_array_equal(segment_local_indices(counts), expected)
+                np.testing.assert_array_equal(segment_local_indices(counts, prefix_offsets(counts)), expected)
 
     def test_dense_offset_overflow(self):
         """Reject overflowing dense offsets for rectangular and square systems."""

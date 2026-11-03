@@ -9,6 +9,7 @@ from .core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
     prefix_offsets,
+    segment_local_indices,
 )
 
 # Import the RCM-reordered semi-sparse blocked LLT solver here (rather than
@@ -68,5 +69,6 @@ __all__ = [
     "LinearSolverType",
     "LinearSolverTypeToName",
     "prefix_offsets",
+    "segment_local_indices",
     "utils",
 ]
