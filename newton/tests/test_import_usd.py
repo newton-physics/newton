@@ -11140,37 +11140,6 @@ def Xform "Body" (
             self.assertAlmostEqual(channel, want, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_rigid_shape_invalid_display_color_is_clamped_or_ignored(self):
-        """Clamp an out-of-range rigid-shape displayColor and ignore a non-finite one."""
-        from pxr import Usd, UsdGeom
-
-        cases = (
-            ("out_of_range", (1.5, -0.25, 0.5), "Clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
-            # A dropped color falls back to the neutral unmaterialed color.
-            (
-                "non_finite",
-                (float("nan"), 0.5, 0.5),
-                "Ignoring non-finite imported color",
-                color_linear_to_srgb((0.18, 0.18, 0.18)),
-            ),
-        )
-        for name, authored_color, message, expected_color in cases:
-            with self.subTest(name=name):
-                stage = Usd.Stage.CreateInMemory()
-                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-                UsdGeom.Xform.Define(stage, "/World")
-                cube = UsdGeom.Cube.Define(stage, "/World/Colored")
-                cube.GetDisplayColorAttr().Set([authored_color])
-
-                builder = newton.ModelBuilder()
-                with self.assertLogs("newton", level="WARNING") as caught:
-                    result = builder.add_usd(stage, load_visual_shapes=True)
-                self.assertTrue(any(message in m for m in caught.output), caught.output)
-
-                color = builder.shape_color[result["path_shape_map"]["/World/Colored"]]
-                np.testing.assert_allclose(color, expected_color, atol=1e-6, rtol=1e-6)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_display_color_inherited_from_ancestor(self):
         """Verify a constant displayColor authored on an ancestor reaches its descendants.
 
@@ -11590,35 +11559,6 @@ def Xform "Body" (
             self.assertAlmostEqual(loaded_mesh.opacity, 0.37, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_get_mesh_invalid_display_color_is_clamped_or_ignored(self):
-        """Clamp an out-of-range displayColor in the mesh from get_mesh and drop a non-finite one."""
-        from pxr import Sdf, Usd, UsdGeom
-
-        cases = (
-            ("out_of_range", (1.5, -0.25, 0.5), "Clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
-            ("non_finite", (float("nan"), 0.5, 0.5), "Ignoring non-finite imported color", None),
-        )
-        for name, authored_color, message, expected_color in cases:
-            with self.subTest(name=name):
-                stage = Usd.Stage.CreateInMemory()
-                mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
-                mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
-                mesh.CreateFaceVertexCountsAttr().Set([3])
-                mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
-                UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
-                    "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
-                ).Set([authored_color])
-
-                with self.assertLogs("newton", level="WARNING") as caught:
-                    loaded_mesh = usd.get_mesh(mesh.GetPrim())
-                self.assertTrue(any(message in m for m in caught.output), caught.output)
-
-                if expected_color is None:
-                    self.assertIsNone(loaded_mesh.color)
-                else:
-                    np.testing.assert_allclose(loaded_mesh.color, expected_color, atol=1e-6, rtol=1e-6)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_varying_display_opacity_uses_first_value_and_warns(self):
         """Log a warning and use the first varying displayOpacity value."""
         from pxr import Sdf, Usd, UsdGeom
@@ -11640,47 +11580,14 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_tet_mesh_display_appearance_imports_to_surface_triangles(self):
-        """Import TetMesh display color and opacity onto generated surface triangles."""
-        from pxr import Sdf, Usd, UsdGeom
-
-        stage = Usd.Stage.CreateInMemory()
-        tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
-        tet_mesh.CreatePointsAttr().Set(
-            [
-                (0.0, 0.0, 0.0),
-                (1.0, 0.0, 0.0),
-                (0.0, 1.0, 0.0),
-                (0.0, 0.0, 1.0),
-            ]
-        )
-        tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
-        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
-            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
-        ).Set([0.44])
-        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
-            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
-        ).Set([(0.2, 0.4, 0.6)])
-
-        loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
-        expected_color = usd_utils.resolve_material_properties_for_prim(tet_mesh.GetPrim())["color"]
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
-
-        self.assertFalse(hasattr(loaded_mesh, "opacity"))
-        self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
-        self.assertNotIn("displayColor", loaded_mesh.custom_attributes)
-        self.assertEqual(builder.tri_count, 4)
-        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
-        np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_tet_mesh_invalid_display_color_does_not_abort_import(self):
-        """Clamp or ignore an invalid TetMesh display color instead of raising from the builder."""
+        """Import TetMesh display color and opacity onto surface triangles, clamping or dropping an invalid color."""
         from pxr import Sdf, Usd, UsdGeom
 
         cases = (
-            ("out_of_range", (1.5, -0.25, 0.5), "Clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
-            ("non_finite", (float("nan"), 0.5, 0.5), "Ignoring non-finite imported color", (0.7, 0.5, 0.3)),
+            ("valid", (0.2, 0.4, 0.6), None, color_linear_to_srgb((0.2, 0.4, 0.6))),
+            ("out_of_range", (1.5, -0.25, 0.5), "clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
+            # A dropped color leaves the builder's default triangle color.
+            ("non_finite", (float("nan"), 0.5, 0.5), "ignoring non-finite imported color", (0.7, 0.5, 0.3)),
         )
         for name, authored_color, message, expected_color in cases:
             with self.subTest(name=name):
@@ -11696,16 +11603,28 @@ def Xform "Body" (
                 )
                 tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
                 UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+                    "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+                ).Set([0.44])
+                UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
                     "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
                 ).Set([authored_color])
 
                 builder = newton.ModelBuilder()
-                with self.assertLogs("newton", level="WARNING") as caught:
-                    builder.add_usd(stage)
-                self.assertTrue(any(message in m for m in caught.output), caught.output)
+                if message is None:
+                    loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        builder.add_usd(stage)
+                    self.assertFalse(hasattr(loaded_mesh, "opacity"))
+                    self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
+                    self.assertNotIn("displayColor", loaded_mesh.custom_attributes)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as caught:
+                        builder.add_usd(stage)
+                    self.assertIn(f"/SoftTet.primvars:displayColor: {message}", "\n".join(caught.output))
 
                 self.assertEqual(builder.tri_count, 4)
                 np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
+                np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_drawability_follows_purpose_not_material(self):
@@ -14438,6 +14357,53 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             newton.utils.color_linear_to_srgb(linear_color),
             atol=1e-6,
         )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_invalid_color_and_opacity_are_clamped_or_dropped_with_source(self):
+        """Clamp or drop invalid primvar and shader values, logging the attribute each came from."""
+        from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        nan = float("nan")
+        cases = (
+            ("primvar", "color", (1.5, -0.25, 0.5), color_linear_to_srgb((1.0, 0.0, 0.5)), "clamping imported color"),
+            ("primvar", "color", (nan, 0.5, 0.5), None, "ignoring non-finite imported color"),
+            ("primvar", "opacity", 1.5, 1.0, "clamping imported opacity"),
+            ("shader", "color", (1.5, 0.5, 0.5), color_linear_to_srgb((1.0, 0.5, 0.5)), "clamping imported color"),
+            ("shader", "opacity", nan, None, "ignoring non-finite imported opacity"),
+        )
+        for source, key, value, expected, message in cases:
+            with self.subTest(source=source, key=key, value=value):
+                stage = Usd.Stage.CreateInMemory()
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+                mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+                mesh.CreateFaceVertexCountsAttr().Set([3])
+                mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+                if source == "primvar":
+                    name = "displayColor" if key == "color" else "displayOpacity"
+                    type_name = Sdf.ValueTypeNames.Color3fArray if key == "color" else Sdf.ValueTypeNames.FloatArray
+                    UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(name, type_name, UsdGeom.Tokens.constant, 1).Set([value])
+                    attr_path = f"/World/Mesh.primvars:{name}"
+                else:
+                    name = "diffuseColor" if key == "color" else "opacity"
+                    type_name = Sdf.ValueTypeNames.Color3f if key == "color" else Sdf.ValueTypeNames.Float
+                    material = UsdShade.Material.Define(stage, "/World/Looks/Material")
+                    shader = UsdShade.Shader.Define(stage, "/World/Looks/Material/PreviewSurface")
+                    shader.CreateIdAttr("UsdPreviewSurface")
+                    shader.CreateInput(name, type_name).Set(value)
+                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+                    attr_path = f"/World/Looks/Material/PreviewSurface.inputs:{name}"
+
+                with self.assertLogs("newton", level="WARNING") as caught:
+                    material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+                self.assertIn(f"{attr_path}: {message}", "\n".join(caught.output))
+                if expected is None:
+                    self.assertIsNone(material_props[key])
+                else:
+                    np.testing.assert_allclose(material_props[key], expected, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_ancestor_binding_overrides_unapplied_mesh_binding(self):

@@ -428,6 +428,23 @@ def _warn_subset_material_bindings(prim, path: str) -> None:
         )
 
 
+def _has_graphics_material_subsets(prim) -> bool:
+    """Whether a non-empty ``UsdGeomSubset`` of ``prim`` carries its own graphics (non-physics) material binding."""
+    from pxr import UsdShade
+
+    physics_bindings = ("material:binding:physics", "material:binding:collection:physics:")
+    return any(
+        subset.GetIndicesAttr().Get()
+        and any(
+            rel.GetName().startswith("material:binding")
+            and not rel.GetName().startswith(physics_bindings)
+            and rel.GetTargets()
+            for rel in subset.GetPrim().GetRelationships()
+        )
+        for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+    )
+
+
 def _enabled_collider_prim(prim) -> bool:
     """Whether a prim carries an enabled ``PhysicsCollisionAPI``.
 

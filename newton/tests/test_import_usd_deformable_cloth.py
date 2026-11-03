@@ -104,25 +104,48 @@ class TestUSDDeformableCloth(unittest.TestCase):
         np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.37), atol=1e-6, rtol=1e-6)
 
-    def test_cloth_out_of_range_display_color_is_clamped(self):
-        """Clamp an HDR cloth display color instead of aborting the import."""
-        from pxr import Sdf, UsdGeom
+    def test_cloth_ignores_graphics_material_subsets(self):
+        """Ignore and log graphics materials bound to GeomSubsets; physics subset bindings are not reported as such."""
+        from pxr import Sdf, UsdGeom, UsdShade, Vt
 
-        stage = _deformable_stage()
-        mesh = _add_cloth_mesh(stage, "/World/Cloth")
-        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
-        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
-            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
-        ).Set([(1.5, 0.5, 0.5)])
+        def stage_with_subset_binding(purpose):
+            stage = _deformable_stage()
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+                "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+            ).Set([(0.2, 0.4, 0.6)])
+            material = UsdShade.Material.Define(stage, "/World/SubsetLook")
+            if purpose == "physics":
+                material.GetPrim().AddAppliedSchema("PhysicsMaterialAPI")
+            else:
+                shader = UsdShade.Shader.Define(stage, "/World/SubsetLook/PreviewSurface")
+                shader.CreateIdAttr("UsdPreviewSurface")
+                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
+                material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            subset = UsdShade.MaterialBindingAPI(mesh).CreateMaterialBindSubset(
+                "Part", Vt.IntArray([0]), UsdGeom.Tokens.face
+            )
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(material, materialPurpose=purpose)
+            return stage
 
-        builder = newton.ModelBuilder()
-        with self.assertLogs("newton", level="WARNING") as caught:
-            builder.add_usd(stage)
-        self.assertTrue(any("Clamping imported color" in m for m in caught.output), caught.output)
-
-        self.assertEqual(builder.tri_count, 2)
-        expected_color = newton.utils.color_linear_to_srgb((1.0, 0.5, 0.5))
-        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
+        # The subset's material never reaches the triangles; the mesh's displayColor applies to both.
+        expected_color = np.tile(newton.utils.color_linear_to_srgb((0.2, 0.4, 0.6)), (2, 1))
+        with self.subTest(binding="graphics"):
+            builder = newton.ModelBuilder()
+            with self.assertLogs("newton", level="WARNING") as caught:
+                builder.add_usd(stage_with_subset_binding(UsdShade.Tokens.allPurpose))
+            self.assertTrue(
+                any("/World/Cloth: graphics material subsets are not supported" in m for m in caught.output),
+                caught.output,
+            )
+            np.testing.assert_allclose(builder.tri_color, expected_color, atol=1e-6, rtol=1e-6)
+        with self.subTest(binding="physics"):
+            builder = newton.ModelBuilder()
+            # A per-element physics material only gets the existing physics-subset warning.
+            with self.assertWarns(NewtonWarning), self.assertNoLogs("newton", level="WARNING"):
+                builder.add_usd(stage_with_subset_binding("physics"))
+            np.testing.assert_allclose(builder.tri_color, expected_color, atol=1e-6, rtol=1e-6)
 
     def test_cloth_rest_shape_drives_material_state(self):
         """Import disjoint rest poses, thickness-weighted masses, lengths, and bend angles."""
