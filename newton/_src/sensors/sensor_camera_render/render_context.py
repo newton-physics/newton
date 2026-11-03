@@ -81,6 +81,7 @@ class RenderContext:
         render_hdr_color: bool = False
         render_face_index: bool = False
         render_barycentric: bool = False
+        simulation_face_count: int = 0
         has_view_clip: bool = False
         ray_mode: int = 0
         ray_function: Any = None
@@ -186,6 +187,8 @@ class RenderContext:
             deformable_surface_mode != DeformableSurfaceMode.VISUAL_ONLY and model.particle_count and model.tri_count
         )
         if has_simulation_triangles:
+            # Simulation triangles come first in the combined triangle mesh, before visual faces.
+            self._render_state.simulation_face_count = int(model.tri_count)
             self._triangle_particle_count = model.particle_count
             if deformable_visual_meshes:
                 # Copy only the triangle span into the combined buffer. Interleaved
@@ -477,7 +480,7 @@ class RenderContext:
         sample_count: int | None = None,
         view_ray_bundle: wp.array[wp.int32] | None = None,
         view_pinhole: wp.array[wp.vec4f] | None = None,
-        view_clip: wp.array[wp.vec2f] | None = None,
+        view_clip: wp.array[wp.vec3f] | None = None,
         view_frame: wp.array[wp.int32] | None = None,
         ray_function: Any = None,
         ray_params: wp.array2d[wp.float32] | None = None,
@@ -533,6 +536,8 @@ class RenderContext:
         if ray_function is not None:
             ray_mode = RayGenerationMode.FUNCTION
         elif view_pinhole is not None:
+            if view_ray_bundle is None:
+                raise ValueError("view_pinhole requires view_ray_bundle")
             ray_mode = RayGenerationMode.PINHOLE
         elif view_ray_bundle is not None:
             ray_mode = RayGenerationMode.BUNDLE_INDEXED
@@ -610,7 +615,7 @@ class RenderContext:
                     raise ValueError(
                         f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
                     )
-            elif ray_mode == RayGenerationMode.BUNDLE_INDEXED:
+            elif ray_mode != RayGenerationMode.FUNCTION:
                 if (
                     camera_rays.ndim != 4
                     or camera_rays.shape[0] % height != 0

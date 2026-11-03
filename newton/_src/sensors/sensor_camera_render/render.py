@@ -137,7 +137,13 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             row = view_ray_bundle[view_index] * img_height + py
             return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
         elif wp.static(state.ray_mode == int(RayGenerationMode.PINHOLE)):
-            # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal
+            # A view with its own bundle (a CUSTOM camera, a site, or a pinhole camera given rays)
+            # uses it; the others generate pinhole rays from
+            # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal.
+            bundle = view_ray_bundle[view_index]
+            if bundle >= 0:
+                row = bundle * img_height + py
+                return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
             direction = _pinhole_pixel_ray(
                 px, py, sample_index, sample_count, img_width, img_height, view_pinhole[view_index]
             )
@@ -154,6 +160,13 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             query.height = img_height
             query.sample_count = sample_count
             return ray_function(ray_params, query)
+
+    @wp.func
+    def published_face_index(shape_index: wp.uint32, face_index: wp.int32):
+        """Return the face index reported to callers: visual-mesh faces have no ``tri_indices`` row."""
+        if shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID and face_index >= wp.static(state.simulation_face_count):
+            return wp.int32(-1)
+        return face_index
 
     if config.output_color_space == ColorSpace.LINEAR:
         clear_data = ClearData(
@@ -205,6 +218,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         world_index: wp.int32,
         near: wp.float32,
         far: wp.float32,
+        planar_clip: wp.bool,
         camera_transform: wp.transformf,
         camera_forward: wp.vec3f,
         forward_axis: wp.vec3f,
@@ -244,8 +258,21 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         # Near clipping starts the trace ``near`` along the ray; distances stay relative
         # to the unshifted origin.
         trace_origin_world = ray_origin_world
+        near_distance = near
+        far_distance = far
         if wp.static(state.has_view_clip):
-            trace_origin_world = ray_origin_world + ray_dir_world * near
+            # Unit directions keep clip and hit distances in meters along the ray.
+            ray_length = wp.length(ray_dir_world)
+            ray_dir_world = ray_dir_world / ray_length
+            result.ray_dir_world = ray_dir_world
+            if planar_clip:
+                # Pinhole clip planes bound the depth along the camera's -Z axis, as in USD and MJCF.
+                forward_cos = -camera_ray_direction[2] / ray_length
+                if forward_cos <= 1.0e-6:
+                    return result
+                near_distance = near / forward_cos
+                far_distance = wp.min(far / forward_cos, wp.float32(wp.static(config.max_distance)))
+            trace_origin_world = ray_origin_world + ray_dir_world * near_distance
 
         closest_hit = raytrace_closest_hit(
             bvh_shapes_size,
@@ -255,7 +282,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
-            far - near,
+            far_distance - near_distance,
             shape_enabled,
             shape_types,
             shape_sizes,
@@ -276,7 +303,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
             result.closest_hit = closest_hit
             return result
-        closest_hit.distance = closest_hit.distance + near
+        closest_hit.distance = closest_hit.distance + near_distance
         result.closest_hit = closest_hit
 
         result.hit = wp.bool(True)
@@ -436,6 +463,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         world_index: wp.int32,
         near: wp.float32,
         far: wp.float32,
+        planar_clip: wp.bool,
         camera_transform: wp.transformf,
         camera_forward: wp.vec3f,
         forward_axis: wp.vec3f,
@@ -489,6 +517,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             world_index,
             near,
             far,
+            planar_clip,
             camera_transform,
             camera_forward,
             forward_axis,
@@ -521,8 +550,10 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         result.hit = wp.bool(True)
         result.distance = closest_hit.distance
         result.shape_index = closest_hit.shape_index
-        result.face_index = closest_hit.face_idx
+        result.face_index = published_face_index(closest_hit.shape_index, closest_hit.face_idx)
         result.barycentric = wp.vec2f(closest_hit.bary_u, closest_hit.bary_v)
+        if result.face_index < 0:
+            result.barycentric = wp.vec2f(0.0)
         result.normal = closest_hit.normal
         result.forward_depth = trace.forward_depth
 
@@ -588,7 +619,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         sample_count: wp.int32,
         view_ray_bundle: wp.array[wp.int32],
         view_pinhole: wp.array[wp.vec4f],
-        view_clip: wp.array[wp.vec2f],
+        view_clip: wp.array[wp.vec3f],
         view_frame: wp.array[wp.int32],
         ray_params: wp.array2d[wp.float32],
         # Shapes BVH
@@ -692,10 +723,12 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
         near = wp.float32(0.0)
         far = wp.float32(wp.static(config.max_distance))
+        planar_clip = wp.bool(False)
         if wp.static(state.has_view_clip):
             clip = view_clip[view_index]
             near = clip[0]
             far = wp.min(clip[1], far)
+            planar_clip = clip[2] > 0.0
         frame_index = wp.int32(-1)
         if wp.static(state.ray_mode == int(RayGenerationMode.FUNCTION)):
             frame_index = view_frame[view_index]
@@ -730,6 +763,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 world_index,
                 near,
                 far,
+                planar_clip,
                 camera_transform,
                 camera_forward,
                 forward_axis,
@@ -827,7 +861,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             color_sum = wp.vec4f(0.0)
             albedo_sum = wp.vec4f(0.0)
             hdr_color_sum = wp.vec3f(0.0)
-            nearest_distance = far + 1.0
+            nearest_distance = wp.float32(3.4e38)
             nearest_forward_depth = wp.float32(0.0)
             nearest_normal = wp.vec3f(0.0)
             nearest_shape_index = wp.uint32(raytrace.NO_HIT_SHAPE_ID)
@@ -856,6 +890,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     world_index,
                     near,
                     far,
+                    planar_clip,
                     camera_transform,
                     camera_forward,
                     forward_axis,
@@ -966,7 +1001,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             return
 
         if wp.static(config.anti_aliasing == AntiAliasing.MSAA):
-            nearest_distance = far + 1.0
+            nearest_distance = wp.float32(3.4e38)
             nearest_forward_depth = wp.float32(0.0)
             nearest_normal = wp.vec3f(0.0)
             nearest_shape_index = wp.uint32(raytrace.NO_HIT_SHAPE_ID)
@@ -1007,6 +1042,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     world_index,
                     near,
                     far,
+                    planar_clip,
                     camera_transform,
                     camera_forward,
                     forward_axis,
@@ -1045,8 +1081,10 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                         nearest_normal = trace.closest_hit.normal
                     if wp.static(state.render_shape_index):
                         nearest_shape_index = trace.closest_hit.shape_index
-                    nearest_face_index = trace.closest_hit.face_idx
+                    nearest_face_index = published_face_index(trace.closest_hit.shape_index, trace.closest_hit.face_idx)
                     nearest_barycentric = wp.vec2f(trace.closest_hit.bary_u, trace.closest_hit.bary_v)
+                    if nearest_face_index < 0:
+                        nearest_barycentric = wp.vec2f(0.0)
 
                 if wp.static(state.render_color or state.render_albedo or state.render_hdr_color):
                     surface_id = trace.closest_hit.shape_index

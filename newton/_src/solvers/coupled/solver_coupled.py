@@ -1982,6 +1982,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        # Entry views drive solvers; cameras are rendered from the full model.
+        view.camera_count = 0
         view.curve_count = len(compact.order(frequency.CURVE))
         view.surface_count = len(compact.order(frequency.SURFACE))
         view.volume_count = len(compact.order(frequency.VOLUME))

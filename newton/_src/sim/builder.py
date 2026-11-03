@@ -9835,19 +9835,20 @@ class ModelBuilder:
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``
         right (USD, OpenGL and MuJoCo convention). Cameras added inside a world
-        context belong to that world; cameras added at global scope (world ``-1``)
-        are rendered once per world by :class:`~newton.sensors.SensorCamera`.
+        context belong to that world. Cameras added at global scope (world ``-1``)
+        are rendered once in every world by :class:`~newton.sensors.SensorCamera`,
+        just as global shapes such as the ground appear in every world.
 
         Args:
-            body: Parent body index, or ``-1`` for a fixed camera.
+            body: Parent body index (an integer), or ``-1`` for a fixed camera.
             xform: Camera frame relative to the parent body [m, unitless
                 quaternion]; the world pose for ``body == -1``. Defaults to identity.
             lens_type: Lens type. :attr:`~newton.CameraLensType.PINHOLE` uses the
                 intrinsics below; :attr:`~newton.CameraLensType.CUSTOM` takes its rays
                 from the rendering sensor and ignores the intrinsics.
-            fov: Vertical field of view [rad], in ``(0, pi)``. Mutually exclusive with
-                ``focal_length``. The horizontal extent then follows the image aspect
-                ratio, as with MJCF ``fovy``. Defaults to 45 degrees when no
+            fov: Vertical field of view [rad], in ``(0, pi)``, like MJCF ``fovy``
+                (in radians). Mutually exclusive with ``focal_length``. The horizontal
+                extent follows the image aspect ratio. Defaults to 45 degrees when no
                 intrinsics are given.
             focal_length: Focal length [m]. Requires at least one positive
                 aperture; only its ratio to the aperture affects the projection.
@@ -9861,12 +9862,15 @@ class ModelBuilder:
                 conform policy.
             horizontal_aperture_offset: Horizontal principal-point offset [m].
             vertical_aperture_offset: Vertical principal-point offset [m].
-            clipping_range: Near and far clip distance [m], measured along each ray
-                from the camera origin rather than as planar depth. Hits outside the
-                range are misses. USD and MJCF clip ranges are imported unchanged, so
-                toward the image corners they clip slightly closer than a planar clip.
-            resolution: Nominal ``(width, height)`` [px] authored by the asset. Only a
-                default for sensors.
+            clipping_range: Near and far clip distance [m]. For ``PINHOLE`` cameras
+                they are depths along the camera's ``-Z`` axis (planar clipping, as in
+                USD and MJCF); for ``CUSTOM`` cameras they are distances along each
+                ray. Hits outside the range are misses.
+            resolution: Image size ``(width, height)`` [px] that the apertures map
+                onto exactly. When both apertures are set, it also fixes the pixel
+                aspect ratio kept at other image sizes. It is the default ``width``
+                and ``height`` of a :class:`~newton.sensors.SensorCamera` bound to the
+                camera. ``None`` leaves it unspecified.
             label: Unique label; defaults to ``camera_{index}``.
             custom_attributes: Values of declared ``CAMERA``-frequency custom
                 attributes.
@@ -9874,6 +9878,8 @@ class ModelBuilder:
         Returns:
             The camera index.
         """
+        if not self._is_integer_scalar(body):
+            raise TypeError(f"Camera body must be an integer index, got {type(body).__name__}")
         body = int(body)
         if body < -1 or body >= self.body_count:
             raise ValueError(f"Camera body {body} is out of range for a builder with {self.body_count} bodies")
@@ -9902,9 +9908,14 @@ class ModelBuilder:
         camera_xform = wp.transform() if xform is None else wp.transform(*xform)
         aperture_offset = (float(horizontal_aperture_offset), float(vertical_aperture_offset))
         near, far = (float(v) for v in clipping_range)
-        if not all(math.isfinite(v) for v in (focal_length, horizontal, vertical, *aperture_offset, near, far)):
-            raise ValueError("Camera intrinsics and clipping_range must be finite")
-        if not 0.0 <= near < far:
+        # Camera data is stored as float32: reject values that would overflow or underflow there.
+        float32_max = float(np.finfo(np.float32).max)
+        values = (focal_length, horizontal, vertical, *aperture_offset, near, far)
+        if not all(math.isfinite(v) and abs(v) <= float32_max for v in values):
+            raise ValueError("Camera intrinsics and clipping_range must be finite float32 values")
+        if any(v > 0.0 and np.float32(v) == 0.0 for v in (focal_length, horizontal, vertical)):
+            raise ValueError("Camera focal length and apertures are too small for float32")
+        if not 0.0 <= near < far or not np.float32(near) < np.float32(far):
             raise ValueError(f"clipping_range must satisfy 0 <= near < far, got {clipping_range}")
         if resolution is None:
             width, height = 0, 0

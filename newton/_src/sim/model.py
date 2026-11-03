@@ -1263,7 +1263,7 @@ class Model:
         """Camera labels, shape (camera_count,)."""
         self.camera_world: wp.array[wp.int32] | None = None
         """Owning world of each camera, shape [camera_count], int. ``-1`` is the global world;
-        a global camera is rendered once per world."""
+        a global camera is rendered once in every world, just as global shapes appear in every world."""
         self.camera_body: wp.array[wp.int32] | None = None
         """Parent body of each camera, shape [camera_count], int. ``-1`` means the camera is fixed."""
         self.camera_transform: wp.array[wp.transformf] | None = None
@@ -1281,10 +1281,13 @@ class Model:
         self.camera_aperture_offset: wp.array[wp.vec2f] | None = None
         """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2."""
         self.camera_clipping_range: wp.array[wp.vec2f] | None = None
-        """Near and far clip distance of each camera [m], shape [camera_count], vec2. Distances are measured
-        along each ray from the camera origin, not as planar depth."""
+        """Near and far clip distance of each camera [m], shape [camera_count], vec2. For ``PINHOLE`` cameras
+        they are depths along the camera's -Z axis (planar clipping, as in USD and MJCF); for ``CUSTOM``
+        cameras they are distances along each ray."""
         self.camera_resolution: wp.array[wp.vec2i] | None = None
-        """Nominal (width, height) of each camera [px], shape [camera_count], vec2i. ``(0, 0)`` means unspecified."""
+        """Image size (width, height) each camera's aperture maps onto exactly [px], shape [camera_count], vec2i.
+        It also fixes the pixel aspect ratio kept at other image sizes and is the default size of a bound
+        :class:`~newton.sensors.SensorCamera`. ``(0, 0)`` means unspecified."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0

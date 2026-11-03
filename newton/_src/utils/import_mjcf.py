@@ -1916,6 +1916,7 @@ def parse_mjcf(
 
         return site_shapes
 
+    pending_camera_targets: list[tuple[int, str, str]] = []
     builder_custom_attr_camera: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [Model.AttributeFrequency.CAMERA]
     )
@@ -1939,14 +1940,12 @@ def parse_mjcf(
                 logger.warning("MJCF camera '%s' is orthographic, which is not supported; skipping.", camera_name)
                 continue
             mode = camera_attrib.get("mode", "fixed")
-            if mode != "fixed" or "target" in camera_attrib:
-                # Tracking cameras are common in MuJoCo assets; importing them as fixed mounts is a
-                # documented limitation, so report it at debug level instead of warning on every import.
-                logger.debug(
-                    "MJCF camera '%s' uses mode='%s'%s; only fixed mounts are supported, importing it as a fixed camera.",
+            if mode != "fixed":
+                logger.warning(
+                    "MJCF camera '%s' uses mode='%s'; it is imported as a fixed mount that matches MuJoCo only "
+                    "at the initial pose. The mode is kept in the mujoco:camera_mode custom attribute.",
                     camera_name,
                     mode,
-                    f" with target='{camera_attrib['target']}'" if "target" in camera_attrib else "",
                 )
 
             camera_pos = parse_vec(camera_attrib, "pos", (0.0, 0.0, 0.0)) * scale
@@ -2010,7 +2009,7 @@ def parse_mjcf(
                 if builder_custom_attr_camera
                 else None
             )
-            builder.add_camera(
+            camera_id = builder.add_camera(
                 link,
                 xform=camera_xform,
                 resolution=resolution,
@@ -2018,6 +2017,9 @@ def parse_mjcf(
                 custom_attributes=camera_custom_attrs,
                 **intrinsics,
             )
+            if "target" in camera_attrib:
+                # Targets may name bodies defined later; they are resolved once every body is parsed.
+                pending_camera_targets.append((camera_id, camera_name, camera_attrib["target"]))
 
     def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
         """Compute composed transform for a frame element."""
@@ -2255,12 +2257,16 @@ def parse_mjcf(
                 child_cameras = frame.findall("camera")
                 if child_cameras:
                     body_name = "world" if parent_body == -1 else builder.body_label[parent_body]
+                    camera_xform = composed_body_rel
+                    if body_relative_xform is None and parent_body != -1:
+                        # Worldbody frames compose world transforms; mount cameras relative to parent_body.
+                        camera_xform = wp.transform_inverse(builder.body_q[parent_body]) * composed_world
                     _parse_cameras_impl(
                         _defaults,
                         body_name,
                         parent_body,
                         child_cameras,
-                        incoming_xform=composed_body_rel,
+                        incoming_xform=camera_xform,
                         label_prefix=label_prefix,
                     )
 
@@ -3282,6 +3288,15 @@ def parse_mjcf(
             label_prefix=root_label_path,
             track_root_boundaries=True,
         )
+
+        if pending_camera_targets:
+            camera_target = builder.custom_attributes["mujoco:camera_target"]
+            for camera_id, camera_name, target_name in pending_camera_targets:
+                target = body_name_to_idx.get(sanitize_name(target_name))
+                if target is None:
+                    logger.warning("MJCF camera '%s' targets unknown body '%s'; ignoring it.", camera_name, target_name)
+                    continue
+                camera_target.values[camera_id] = target
 
     # -----------------
     # Report once outside the recursive body parser so the warning points to the caller.

@@ -38,7 +38,8 @@ class RayGenerationMode(enum.IntEnum):
     BUNDLE_INDEXED = 1
     """Bundles stacked along the first axis, selected per view by ``view_ray_bundle``."""
     PINHOLE = 2
-    """Pinhole rays generated in the kernel from per-view ``view_pinhole`` parameters."""
+    """Pinhole rays generated in the kernel from per-view ``view_pinhole`` parameters, except for
+    views with a stacked bundle in ``view_ray_bundle``."""
     FUNCTION = 3
     """Rays generated in the kernel by a user ray function."""
 

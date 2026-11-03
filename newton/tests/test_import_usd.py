@@ -2709,6 +2709,7 @@ def Xform "World"
     def Camera "Overridden" {}
     def Camera "Standalone" {}
     def Camera "Unauthored" {}
+    def Camera "Elsewhere" {}
 }
 
 def Scope "Render"
@@ -2743,6 +2744,15 @@ def Scope "Render"
         rel camera = </World/Unauthored>
     }
 }
+
+def Scope "Elsewhere"
+{
+    def RenderProduct "Product"
+    {
+        rel camera = </World/Elsewhere>
+        int2 resolution = (32, 16)
+    }
+}
 """
         )
         builder = newton.ModelBuilder()
@@ -2764,6 +2774,8 @@ def Scope "Render"
         self.assertEqual(builder.camera_resolution[cameras["/World/Overridden"]], (64, 48))
         self.assertEqual(builder.camera_resolution[cameras["/World/Standalone"]], (200, 100))
         self.assertEqual(builder.camera_resolution[cameras["/World/Unauthored"]], (0, 0))
+        # Render products are found anywhere in the stage, not only below /Render.
+        self.assertEqual(builder.camera_resolution[cameras["/World/Elsewhere"]], (32, 16))
 
         # Apertures are conformed to the product's image format with its conform policy; without a
         # resolution the authored (here fallback) aperture is kept.
