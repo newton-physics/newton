@@ -163,6 +163,53 @@ def test_adaptive_sweeps_replenished_donor(test, device):
             test.assertGreater(rest[1], 1.0e-6)
 
 
+def test_adaptive_sweeps_coincident_pinholes(test, device):
+    """Certify shared spans after all coincident-pinhole rows have updated them."""
+    # The zero-length span makes three cone rows share the next span. Checking
+    # only the immediately preceding row can miss the last row's final residual.
+    points = [(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 1.0, 0.0)]
+    friction = [0.0, 0.1, 0.2, 0.01, 0.0]
+    rest = [0.91, 1.0e-6, 0.99, 0.91]
+    rho = np.exp(0.01 * np.pi / 2.0)
+    # Only the last pinhole slips at equilibrium: its neighboring tensions
+    # sum to 10 N and have ratio rho. The coincident pair stays inside its cone.
+    expected = np.array([9.0, 0.0, 10.0 / (1.0 + rho), 10.0 * rho / (1.0 + rho)])
+    for reverse in (False, True):
+        positions = points[::-1] if reverse else points
+        coefficients = friction[::-1] if reverse else friction
+        rest_lengths = rest[::-1] if reverse else rest
+        builder = newton.ModelBuilder()
+        guides = [newton.TendonGuide(body=-1, offset=positions[0])]
+        for i in range(1, len(positions)):
+            guides.append(
+                newton.TendonGuide(
+                    body=-1,
+                    offset=positions[i],
+                    guide_type=newton.TendonGuideType.ANCHOR if i == 4 else newton.TendonGuideType.PINHOLE,
+                    mu=coefficients[i],
+                    compliance=0.01,
+                    rest_length=rest_lengths[i - 1],
+                )
+            )
+        builder.add_tendon(guides)
+        model = builder.finalize(device=device)
+        for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+            with test.subTest(reverse=reverse, solver=solver_type.__name__):
+                solver = solver_type(model, iterations=1, tendon_settle_tol=1.0e-6)
+                state, output, control = model.state(), model.state(), model.control()
+                solver.step(state, output, control, None, 0.01)
+                tension = np.maximum(solver.tendon_segment_stretch.numpy() / 0.01, 0.0)
+                np.testing.assert_allclose(tension, expected[::-1] if reverse else expected, atol=2.0e-5, rtol=0)
+                test.assertLess(int(solver.tendon_cone_sweep_count.numpy()[0]), 256)
+                if device.is_cuda:
+                    with wp.ScopedCapture(device=device) as captured:
+                        solver.step(state, output, control, None, 0.01)
+                    wp.capture_launch(captured.graph)
+                    np.testing.assert_array_equal(
+                        np.maximum(solver.tendon_segment_stretch.numpy() / 0.01, 0.0), tension
+                    )
+
+
 def test_material_convergence_bound_directions(test, device):
     """An exhausted donor can stop transfer, but cannot prevent release from its bound."""
     rows = [
@@ -441,6 +488,12 @@ add_function_test(
     TestTendonMaterialSweeps,
     "test_adaptive_sweeps_replenished_donor",
     test_adaptive_sweeps_replenished_donor,
+    devices=devices,
+)
+add_function_test(
+    TestTendonMaterialSweeps,
+    "test_adaptive_sweeps_coincident_pinholes",
+    test_adaptive_sweeps_coincident_pinholes,
     devices=devices,
 )
 add_function_test(
