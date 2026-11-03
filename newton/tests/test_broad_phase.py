@@ -202,9 +202,13 @@ class TestBroadPhase(unittest.TestCase):
                         self.assertIn("broad_phase='sap'", str(caught[0].message))
 
     def test_sap_auto_sort_selection(self):
-        """Select bounded tile sizes only for medium-sized SAP worlds."""
+        """Select bounded tile sizes for small and medium-sized SAP worlds."""
         cases = (
-            (63, "segmented", 63),
+            (0, "segmented", 0),
+            (1, "tile", 32),
+            (32, "tile", 32),
+            (33, "tile", 64),
+            (63, "tile", 64),
             (64, "tile", 128),
             (129, "tile", 256),
             (257, "tile", 512),
@@ -265,7 +269,7 @@ class TestBroadPhase(unittest.TestCase):
 
     def test_sap_broadphase_auto(self):
         """Generate correct SAP pairs with automatic sort selection."""
-        for shape_count in (70, 150, 300):
+        for shape_count in (2, 31, 33, 63, 70, 150, 300):
             with self.subTest(shape_count=shape_count):
                 self._test_sap_broadphase_impl("auto", shape_count)
 
