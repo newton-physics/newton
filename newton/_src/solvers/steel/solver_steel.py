@@ -2116,8 +2116,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 every island). Driven articulations (nonzero drive gains)
                 stay awake. Sleeping is configured at construction; rebuild captured graphs
                 to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
-                or ``velocity_iterations``, or for a model without articulations;
-                :meth:`step` raises :class:`ValueError` for a nonpositive or nonfinite
+                or ``velocity_iterations``, or for a model without articulations, and
+                :class:`NotImplementedError` with ``articulated_contact_response="propagation"``;
+                with ``"propagation_colored"`` the contacts of skipped islands are left out of
+                the coloring and the colored sweep. :meth:`step` raises :class:`ValueError` for a nonpositive or nonfinite
                 ``dt`` and when ``state_in`` and ``state_out`` share arrays. The sleeping
                 options are runtime solver settings with no USD schema.
             sleep_linear_threshold: Body center-of-mass speed below which a body is quiet
@@ -2489,7 +2491,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 name
                 for name, requested in (
                     ("contact_compliance=True", self._contact_compliance),
-                    ("enable_sleeping=True", bool(enable_sleeping)),
+                    (
+                        "enable_sleeping=True",
+                        bool(enable_sleeping) and articulated_contact_response != "propagation_colored",
+                    ),
                     (
                         f"friction_mode={self._friction_mode!r}",
                         self._friction_mode != "fixed_normal" and articulated_contact_response != "propagation_colored",

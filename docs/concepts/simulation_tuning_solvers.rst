@@ -351,12 +351,12 @@ repository examples spend tuning effort, not a shared solver API.
        order can converge more slowly on stacks at a fixed iteration count, so measure the
        full step at the target world count before switching. ``"propagation"`` and
        ``"propagation_colored"`` solve contact torsion with ``contact_torsion_device=True`` and
-       ``velocity_iterations=0``. The propagation responses reject contact compliance,
-       sleeping and loop-closing joints, and fall back from bilateral pre-elimination to iterative
+       ``velocity_iterations=0``. The propagation responses reject contact compliance
+       and loop-closing joints, and fall back from bilateral pre-elimination to iterative
        mimic rows with a warning.
-       ``"propagation_colored"`` supports the ``friction_mode`` values other than
-       ``"fixed_normal"`` and applies them to the articulated contacts on its propagation rows
-       as well. ``"propagation"`` requires ``"fixed_normal"``.
+       ``"propagation_colored"`` supports sleeping and the ``friction_mode`` values other than
+       ``"fixed_normal"``, which it applies to the articulated contacts on its propagation rows
+       as well. ``"propagation"`` rejects sleeping and requires ``"fixed_normal"``.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.

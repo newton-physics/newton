@@ -4,6 +4,7 @@
 """Experimental passive-island sleeping of SolverSteel."""
 
 import functools
+import inspect
 import unittest
 import warnings
 from pathlib import Path
@@ -15,6 +16,7 @@ import warp as wp
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.friction_patches import _FLOOD_MIN_CONTACTS
+from newton._src.solvers.steel.sleeping import _SleepState
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -2206,6 +2208,442 @@ for _name in (
     "test_nonfinite_prescribed_velocity_wakes_before_allocation",
 ):
     add_function_test(TestSteelSleepWorkSkipping, _name, globals()[_name], devices=devices)
+
+
+COLORED_STEPS = 360
+
+
+def test_colored_sleeping_gate(test, device):
+    """Construct colored propagation with sleeping; keep rejecting plain propagation."""
+    model = _arm_heap_model(device, worlds=1)
+    for response in ("immediate", "propagation_colored"):
+        SolverSteel(model, solve_mode="matrix_free", articulated_contact_response=response, enable_sleeping=True)
+    with test.assertRaisesRegex(NotImplementedError, "enable_sleeping=True is not supported"):
+        SolverSteel(model, solve_mode="matrix_free", articulated_contact_response="propagation", enable_sleeping=True)
+
+
+def test_colored_separated_boxes_sleep_and_wake_like_immediate(test, device):
+    """Sleep, force-wake and resettle separated boxes at the same steps as immediate, with units only while awake."""
+    traces = {}
+    for response in ("immediate", "propagation_colored"):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for x in (0.0, 0.5):
+            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+        model.rigid_contact_max = 64
+        scene = _Heap(device, response, model=model, sleep_quiet_time=0.05, friction_anchor_beta=0.0)
+        awake, poses, units = [], [], []
+        force = np.zeros((2, 6), dtype=np.float32)
+        force[0, 0] = 100.0
+        for k in range(200):
+            if k == 120:
+                scene.state_in.body_f.assign(force)
+            scene.step(clear=k != 120)
+            awake.append(scene.solver._sleeping.body_awake.numpy().copy())
+            poses.append(scene.state_in.body_q.numpy().copy())
+            if response == "propagation_colored":
+                _contact, body_a, body_b = scene.units()
+                units.append([int(np.sum((body_a == b) | (body_b == b))) for b in (0, 1)])
+        traces[response] = (np.array(awake), np.array(poses), np.array(units))
+    immediate, colored = traces["immediate"], traces["propagation_colored"]
+    np.testing.assert_array_equal(colored[0], immediate[0])
+    awake, units = colored[0], colored[2]
+    slept = int(np.argmax(awake.sum(axis=1) == 0))
+    test.assertGreater(slept, 0, "both boxes must fall asleep before the force")
+    test.assertLess(slept, 120)
+    np.testing.assert_allclose(colored[1][:slept], immediate[1][:slept], atol=1.0e-4, rtol=0)
+    # Units exist only for a box that was awake during the step, and never for one asleep before and after it.
+    test.assertTrue(np.all(units[:slept] > 0))
+    np.testing.assert_array_equal(units[slept + 1 : 120], 0)
+    np.testing.assert_array_equal(awake[120], [1, 0])
+    test.assertGreater(units[120, 0], 0)
+    np.testing.assert_array_equal(units[120:, 1], 0)
+
+
+def test_colored_units_omit_exactly_the_sleeping_islands(test, device):
+    """Color every contact of an awake island and none of a skipped one; keep all of them with skipping off."""
+    for skip in (True, False):
+        with test.subTest(skip=skip):
+            scene = _Heap(device, sleep_skip_constraints=skip)
+            scene.step(COLORED_STEPS)
+            asleep = scene.asleep_this_step()
+            body0, body1 = scene.contact_bodies()
+            sleeping_contacts = _touches(body0, asleep) | _touches(body1, asleep)
+            test.assertGreater(int(sleeping_contacts.sum()), 0, "the heap must have sleeping contacts")
+            test.assertGreater(int((~sleeping_contacts).sum()), 0, "the arm must keep awake contacts")
+            contact, body_a, body_b = scene.units()
+            test.assertEqual(len(contact), len(set(contact.tolist())))
+            path = scene.solver._contact_path.numpy()[: len(body0)]
+            np.testing.assert_array_equal(np.sort(contact), np.flatnonzero(path == 2))
+            expected = np.flatnonzero(~sleeping_contacts) if skip else np.arange(len(body0))
+            np.testing.assert_array_equal(np.sort(contact), expected)
+            rows_touch = _touches(scene.propagation_row_bodies(), asleep)
+            units_touch = _touches(body_a, asleep) | _touches(body_b, asleep)
+            if skip:
+                test.assertFalse(units_touch.any())
+                test.assertFalse(rows_touch.any())
+            else:
+                test.assertEqual(int(units_touch.sum()), int(sleeping_contacts.sum()))
+                test.assertTrue(rows_touch.any())
+
+
+def test_colored_propagation_overflow_vetoes_sleep(test, device):
+    """Keep worlds whose propagation rows overflowed awake; the same scene sleeps when the veto ignores it."""
+    module = inspect.getmodule(_SleepState)
+    launch = wp.launch
+    asleep = {}
+    for ignore_overflow in (False, True):
+        # The settled arm and heap need more rows than this; once they sleep they need fewer.
+        scene = _Heap(device, propagation_constraint_max=300, warn_constraint_overflow=False)
+        clean = wp.zeros_like(scene.solver.constraint_overflow)
+
+        def veto_without_overflow(kernel, dim, inputs=None, *args, scene=scene, clean=clean, **kwargs):
+            if kernel in (module._veto_unsafe_islands, module._quiet_components):
+                inputs = [clean if value is scene.solver.constraint_overflow else value for value in inputs]
+            return launch(kernel, dim, inputs, *args, **kwargs)
+
+        with patch.object(module.wp, "launch", veto_without_overflow if ignore_overflow else launch):
+            scene.step(COLORED_STEPS)
+        marks = scene.solver.constraint_row_watermarks()
+        test.assertGreater(marks["propagation_overflow_world_steps"], 0, "the propagation rows must overflow")
+        test.assertEqual(marks["articulation_overflow_world_steps"], 0)
+        test.assertEqual(marks["free_body_overflow_world_steps"], 0)
+        test.assertTrue(scene.solver.constraint_overflow.numpy()[: scene.model.world_count].all())
+        asleep[ignore_overflow] = int(np.sum(scene.solver._sleeping.art_awake.numpy() == 0))
+    test.assertEqual(asleep[False], 0)
+    test.assertGreater(asleep[True], 0)
+
+
+def test_colored_force_reset_and_notification_wake_islands(test, device):
+    """Wake a forced island, a masked-reset world and a notified body's island, and color their contacts again."""
+    scene = _Heap(device)
+    scene.step(COLORED_STEPS)
+    sleeping = scene.solver._sleeping
+    worlds = scene.model.world_count
+    bodies_per_world = scene.model.body_count // worlds
+    body_world = np.arange(scene.model.body_count) // bodies_per_world
+    islands = sleeping.body_island.numpy()
+    asleep = np.flatnonzero(sleeping.body_awake.numpy() == 0)
+    test.assertEqual(len(asleep) % worlds, 0)
+    test.assertGreater(len(asleep), 0)
+
+    def colored_bodies():
+        _contact, body_a, body_b = scene.units()
+        return set(body_a.tolist()) | set(body_b.tolist())
+
+    # Force: the forced body's island wakes alone, in world 1.
+    target = int(asleep[body_world[asleep] == 1][0])
+    force = np.zeros((scene.model.body_count, 6), dtype=np.float32)
+    force[target, 2] = 5.0
+    scene.state_in.body_f.assign(force)
+    before = sleeping.body_awake.numpy().copy()
+    scene.step(clear=False)
+    awake = sleeping.body_awake.numpy()
+    woken = np.flatnonzero((before == 0) & (awake == 1))
+    test.assertIn(target, woken)
+    test.assertTrue(np.all(body_world[woken] == 1))
+    test.assertIn(target, colored_bodies())
+    np.testing.assert_array_equal(islands[woken], islands[target])
+
+    # Masked reset: world 2 wakes, other worlds keep their sleepers.
+    before = sleeping.body_awake.numpy().copy()
+    mask = np.zeros(worlds + 1, dtype=bool)
+    mask[2] = True
+    scene.solver.reset(scene.state_in, world_mask=wp.array(mask, dtype=wp.bool, device=device))
+    after = sleeping.body_awake.numpy()
+    test.assertTrue(np.all(after[body_world == 2] == 1))
+    np.testing.assert_array_equal(after[body_world != 2], before[body_world != 2])
+    scene.step()
+    test.assertFalse(scene.asleep_this_step()[body_world == 2].any())
+    count = int(scene.contacts.rigid_contact_count.numpy()[0])
+    contact_world = scene.solver._contact_world.numpy()[:count]
+    # Contacts beyond the gap limit get no rows and are never colored.
+    routed = scene.solver._contact_path.numpy()[:count] == 2
+    contact, _body_a, _body_b = scene.units()
+    np.testing.assert_array_equal(
+        np.sort(contact[contact_world[contact] == 2]), np.flatnonzero((contact_world == 2) & routed)
+    )
+    test.assertTrue(set(np.flatnonzero((body_world == 2) & (before == 0)).tolist()) <= colored_bodies())
+
+    # Notification: changing one sleeping body's mass wakes its island in world 3 only.
+    before = sleeping.body_awake.numpy().copy()
+    target = int(np.flatnonzero((before == 0) & (body_world == 3))[0])
+    mass = scene.model.body_mass.numpy()
+    mass[target] *= 2.0
+    scene.model.body_mass.assign(mass)
+    scene.solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    scene.step()
+    awake = sleeping.body_awake.numpy()
+    woken = np.flatnonzero((before == 0) & (awake == 1))
+    test.assertIn(target, woken)
+    test.assertTrue(np.all(body_world[woken] == 3))
+    test.assertIn(target, colored_bodies())
+
+
+def test_colored_sleeping_rollout_is_bitwise_repeatable(test, device):
+    """Repeat a sleeping rollout bitwise across runs and identical worlds."""
+    runs = []
+    for _ in range(2):
+        scene = _Heap(device)
+        history = []
+        for _ in range(COLORED_STEPS):
+            scene.step()
+            history.append(scene.snapshot())
+        runs.append((history, scene.solver._sleeping.art_awake.numpy().copy()))
+        test.assertGreater(int(np.sum(runs[-1][1] == 0)), 0)
+    np.testing.assert_array_equal(runs[0][1], runs[1][1])
+    worlds = scene.model.world_count
+    for k, (a, b) in enumerate(zip(runs[0][0], runs[1][0], strict=True)):
+        for name in _FIELDS:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"run-to-run {name} step {k}")
+            per_world = a[name].reshape(worlds, -1, *a[name].shape[1:])
+            for world in range(1, worlds):
+                np.testing.assert_array_equal(per_world[world], per_world[0], err_msg=f"world {world} {name} step {k}")
+
+
+def test_colored_sleeping_rollout_is_independent_of_world_order(test, device):
+    """Give each world the same trajectory and sleep pattern whichever position it takes in the model."""
+    offsets = (0.0, 0.05)
+    results = []
+    for order in ((0, 1), (1, 0)):
+        scene = _Heap(device, worlds=2)
+        model = scene.model
+        coord_world = model.joint_q.numpy().size // 2
+        q = scene.state_in.joint_q.numpy()
+        arm = np.arange(6)
+        for position, variant in enumerate(order):
+            q[position * coord_world + arm] += offsets[variant]
+        scene.state_in.joint_q.assign(q)
+        newton.eval_fk(model, scene.state_in.joint_q, scene.state_in.joint_qd, scene.state_in)
+        scene.step(COLORED_STEPS)
+        per_variant = {}
+        for position, variant in enumerate(order):
+            per_variant[variant] = [
+                values.reshape(2, -1, *values.shape[1:])[position]
+                for values in (
+                    scene.state_in.body_q.numpy(),
+                    scene.state_in.body_qd.numpy(),
+                    scene.state_in.joint_q.numpy(),
+                    scene.solver._sleeping.art_awake.numpy(),
+                )
+            ]
+        results.append(per_variant)
+    for variant in (0, 1):
+        for a, b in zip(results[0][variant], results[1][variant], strict=True):
+            np.testing.assert_array_equal(a, b, err_msg=f"offset {offsets[variant]}")
+        test.assertGreater(int(np.sum(results[0][variant][3] == 0)), 0)
+    test.assertFalse(np.array_equal(results[0][0][0], results[0][1][0]), "the two worlds must differ")
+
+
+def test_colored_captured_sleep_and_wake_match_eager(test, device):
+    """Cold-capture one step, then match an eager twin bitwise through sleeping and a force wake."""
+    captured, eager = _Heap(device), _Heap(device)
+    with wp.ScopedCapture(device) as capture:
+        captured.step(clear=False)
+    force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+    for k in range(COLORED_STEPS + 20):
+        if k == COLORED_STEPS:
+            asleep = np.flatnonzero(eager.solver._sleeping.body_awake.numpy() == 0)
+            test.assertGreater(len(asleep), 0)
+            force[asleep[0], 2] = 5.0
+        for scene in (captured, eager):
+            scene.state_in.body_f.assign(force)
+        wp.capture_launch(capture.graph)
+        eager.step(clear=False)
+        a, b = captured.snapshot(), eager.snapshot()
+        for name in _FIELDS:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"replay {k} {name}")
+        np.testing.assert_array_equal(
+            captured.solver._sleeping.art_awake.numpy(), eager.solver._sleeping.art_awake.numpy()
+        )
+        force[:] = 0.0
+    test.assertEqual(int(captured.solver._sleeping.body_awake.numpy()[asleep[0]]), 1)
+
+
+def test_colored_separated_stacks_sleep_like_immediate(test, device):
+    """Separated box stacks sleep within a few steps of immediate and leave no colored units."""
+    scene_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    for _ in range(4):
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for ix in range(3):
+            for iy in range(3):
+                for iz in range(3):
+                    body = world.add_body(
+                        xform=wp.transform(wp.vec3(0.3 * ix, 0.3 * iy, 0.051 + 0.102 * iz), wp.quat_identity())
+                    )
+                    world.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
+        scene_builder.add_world(world)
+    scene_builder.add_ground_plane()
+    model = scene_builder.finalize(device=device)
+    model.rigid_contact_max = 8192
+    first_sleep, final_asleep = {}, {}
+    for response in ("immediate", "propagation_colored"):
+        scene = _Heap(device, response, model=model)
+        first = np.full(model.articulation_count, -1)
+        for k in range(COLORED_STEPS):
+            scene.step()
+            asleep = scene.solver._sleeping.art_awake.numpy() == 0
+            first[(first < 0) & asleep] = k
+            if response == "propagation_colored" and k == 0:
+                test.assertGreater(len(scene.units()[0]), 0)
+        first_sleep[response], final_asleep[response] = first, asleep
+    test.assertEqual(len(scene.units()[0]), 0)
+    test.assertTrue(final_asleep["immediate"].all())
+    test.assertTrue(final_asleep["propagation_colored"].all())
+    delta = np.abs(first_sleep["propagation_colored"] - first_sleep["immediate"])
+    test.assertLessEqual(int(delta.max()), 6)
+
+
+class TestSteelSleepingColoredPropagation(unittest.TestCase):
+    pass
+
+
+for _name in (
+    "test_colored_sleeping_gate",
+    "test_colored_separated_boxes_sleep_and_wake_like_immediate",
+    "test_colored_units_omit_exactly_the_sleeping_islands",
+    "test_colored_propagation_overflow_vetoes_sleep",
+    "test_colored_force_reset_and_notification_wake_islands",
+    "test_colored_sleeping_rollout_is_bitwise_repeatable",
+    "test_colored_sleeping_rollout_is_independent_of_world_order",
+    "test_colored_captured_sleep_and_wake_match_eager",
+    "test_colored_separated_stacks_sleep_like_immediate",
+):
+    add_function_test(TestSteelSleepingColoredPropagation, _name, globals()[_name], devices=devices)
+
+
+class _Heap:
+    """Colored-propagation solver on arm-on-heap worlds, stepped in place so steps can be captured."""
+
+    def __init__(
+        self, device, response="propagation_colored", *, model=None, worlds=4, heap=(5, 2, 2), **solver_kwargs
+    ):
+        self.model = model if model is not None else _arm_heap_model(device, worlds=worlds, heap=heap)
+        args = {
+            "solve_mode": "matrix_free",
+            "articulated_contact_response": response,
+            "deterministic": wp.DeterministicMode.RUN_TO_RUN,
+            "iterations": 16,
+            "contact_regularization": 0.01,
+            "free_body_constraint_max": 1024,
+            "articulation_constraint_max": 128,
+            "enable_joint_limits": True,
+            "row_watermark": True,
+            "enable_sleeping": True,
+        }
+        args.update(solver_kwargs)
+        self.solver = SolverSteel(self.model, **args)
+        self.pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.model.rigid_contact_max, deterministic=True
+        )
+        self.contacts = self.pipeline.contacts()
+        self.state_in, self.state_out = self.model.state(), self.model.state()
+        self.control = self.model.control()
+
+    def step(self, steps=1, *, clear=True):
+        for _ in range(steps):
+            if clear:
+                self.state_in.clear_forces()
+            self.pipeline.collide(self.state_in, self.contacts)
+            self.solver.step(self.state_in, self.state_out, self.control, self.contacts, 1.0 / 240.0)
+            for name in _FIELDS:
+                wp.copy(getattr(self.state_in, name), getattr(self.state_out, name))
+
+    def snapshot(self):
+        return {name: getattr(self.state_in, name).numpy().copy() for name in _FIELDS}
+
+    def asleep_this_step(self):
+        """Bodies of the islands the last step skipped."""
+        nodes = self.solver._sleeping.body_nodes.numpy()
+        skipped = self.solver._sleeping.step_asleep.numpy()
+        return (nodes >= 0) & (skipped[np.maximum(nodes, 0)] == 1)
+
+    def contact_bodies(self):
+        count = int(self.contacts.rigid_contact_count.numpy()[0])
+        shape_body = self.model.shape_body.numpy()
+        bodies = []
+        for shapes in (self.contacts.rigid_contact_shape0, self.contacts.rigid_contact_shape1):
+            shape = shapes.numpy()[:count]
+            bodies.append(np.where(shape >= 0, shape_body[np.maximum(shape, 0)], -1))
+        return bodies
+
+    def units(self):
+        """Contact index and bodies of every colored unit of the last step."""
+        solver = self.solver
+        capacity = solver._propagation_max_constraints
+        cursor = np.minimum(solver._color_world_unit_cursor.numpy(), capacity)
+        index = np.concatenate([w * capacity + np.arange(n) for w, n in enumerate(cursor)]).astype(int)
+        return (
+            solver._color_unit_contact.numpy()[index],
+            solver._color_unit_body_a.numpy()[index],
+            solver._color_unit_body_b.numpy()[index],
+        )
+
+    def propagation_row_bodies(self):
+        counts = self.solver._propagation_constraint_count.numpy()
+        rows = [
+            np.concatenate(
+                [table.numpy()[w, :n] for table in (self.solver._propagation_body_a, self.solver._propagation_body_b)]
+            )
+            for w, n in enumerate(counts)
+        ]
+        return np.concatenate(rows)
+
+
+def _touches(bodies, mask):
+    return (bodies >= 0) & mask[np.maximum(bodies, 0)]
+
+
+def _arm_heap_model(device, worlds=4, heap=(5, 2, 2)):
+    """Worlds of a fixed-base six-link arm drooping onto a box heap; spheres on links 0, 3 and 5."""
+    scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    scene.rigid_gap = 0.005
+    for _ in range(worlds):
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        world.rigid_gap = 0.005
+        world.default_shape_cfg.density = 1000.0
+        world.default_shape_cfg.mu = 0.7
+        no_collision = world.default_shape_cfg.copy()
+        no_collision.has_shape_collision = False
+        no_collision.collision_group = 0
+        prev, joints = -1, []
+        for i in range(6):
+            link = world.add_link()
+            world.add_shape_box(link, hx=0.12, hy=0.03, hz=0.03, cfg=no_collision)
+            if i in (0, 3, 5):
+                world.add_shape_sphere(link, radius=0.08)
+            parent_xform = wp.transform(
+                wp.vec3(0.0, 0.0, 0.32) if prev == -1 else wp.vec3(0.12, 0.0, 0.0), wp.quat_identity()
+            )
+            joints.append(
+                world.add_joint_revolute(
+                    parent=prev,
+                    child=link,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=parent_xform,
+                    child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+            prev = link
+        world.add_articulation(joints)
+        nx, ny, nz = heap
+        for ix in range(nx):
+            for iy in range(ny):
+                for iz in range(nz):
+                    body = world.add_body(
+                        xform=wp.transform(
+                            wp.vec3(0.15 + 0.216 * ix, 0.083 * (iy - (ny - 1) / 2), 0.041 + 0.082 * iz),
+                            wp.quat_rpy(0.0, 0.0, 0.05 * (ix + iy + iz)),
+                        )
+                    )
+                    world.add_shape_box(body, hx=0.04, hy=0.04, hz=0.04)
+        scene.add_world(world)
+    scene.add_ground_plane()
+    model = scene.finalize(device=device)
+    model.rigid_contact_max = 4096 * worlds
+    return model
 
 
 if __name__ == "__main__":
