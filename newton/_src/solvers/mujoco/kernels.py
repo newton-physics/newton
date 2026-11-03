@@ -862,7 +862,7 @@ def convert_mj_coords_to_warp_kernel(
         w_body = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
         w_world = quat_rotate_normalized(world_rot, w_body)
 
-        com_world = wp.quat_rotate(world_rot, body_com[child])
+        com_world = quat_rotate_normalized(world_rot, body_com[child])
         v_origin_world = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
         v_com_world = v_origin_world + wp.cross(w_world, com_world)
 
@@ -951,8 +951,6 @@ def convert_warp_coords_to_mj_kernel(
         # joint_qd[0:6] follows the parent-frame contract from State.joint_qd.
         # MuJoCo only allows FREE joints at the worldbody root, so the parent
         # anchor's world transform is joint_X_p.
-        # joint_X_p * joint_xform * inv(joint_X_c), with the translation rotated
-        # by normalized quaternions; see convert_mj_coords_to_warp_kernel.
         joint_pos = wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2])
         joint_rot = wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6])
         q_p = wp.transform_get_rotation(joint_X_p[joint_id])
@@ -984,7 +982,7 @@ def convert_warp_coords_to_mj_kernel(
         w_world = quat_rotate_normalized(q_p, w_parent)
 
         child = joint_child[joint_id]
-        com_world = wp.quat_rotate(world_rot, body_com[child])
+        com_world = quat_rotate_normalized(world_rot, body_com[child])
         v_origin_world = v_com_world - wp.cross(w_world, com_world)
         qvel[worldid, qd_i + 0] = v_origin_world[0]
         qvel[worldid, qd_i + 1] = v_origin_world[1]
