@@ -580,8 +580,8 @@ def _build(
 
     Frozen pairs carried by :func:`_carry_frozen_pairs` are skipped.
 
-    With ``flooded``, pairs with more than ``_FLOOD_MIN_CONTACTS`` contacts were grown by
-    :func:`_flood_regions`; their seeds own themselves and each region's first location,
+    With ``flooded``, pairs with more than ``_FLOOD_MIN_CONTACTS`` contacts, including frozen pairs whose carry
+    failed, were grown by :func:`_flood_regions`; their seeds own themselves and each region's first location,
     member range and farthest member are stored. Other pairs flood here.
     """
     start = wp.tid()
@@ -621,8 +621,6 @@ def _build(
 
     member_stop = start
     remaining = stop - start
-    # Pairs with more than _FLOOD_MIN_CONTACTS contacts were grown by _flood_regions,
-    # including frozen pairs whose carry failed.
     pair_flooded = int(0)
     if flooded != 0 and remaining > _FLOOD_MIN_CONTACTS:
         pair_flooded = 1
@@ -967,12 +965,12 @@ def _build(
 
 
 @wp.func
-def _pair_frozen(frozen_bodies: wp.array[int], frame: _PatchFrame, start: int):
-    """Whether either body of the sorted pair starting at ``start`` is frozen."""
+def _pair_frozen(frozen_bodies: wp.array[int], frame: _PatchFrame, index: int):
+    """Whether either body of the pair of sorted contact ``index`` is frozen; a pair's contacts share their bodies."""
     if frozen_bodies.shape[0] == 0:
         return False
-    a = frame.body_a[frame.indices[start]]
-    b = frame.body_b[frame.indices[start]]
+    a = frame.body_a[frame.indices[index]]
+    b = frame.body_b[frame.indices[index]]
     return (a >= 0 and frozen_bodies[a] != 0) or (b >= 0 and frozen_bodies[b] != 0)
 
 
@@ -1013,9 +1011,9 @@ def _check_frozen_carry(count: wp.array[int], frozen_bodies: wp.array[int], fram
     key = frame.keys[i]
     if key == wp.int64(0x7FFFFFFFFFFFFFFF):
         return
-    start, stop = _sorted_range(frame.keys, end, key)
-    if not _pair_frozen(frozen_bodies, frame, start):
+    if not _pair_frozen(frozen_bodies, frame, i):
         return
+    start, stop = _sorted_range(frame.keys, end, key)
     prev_start, prev_stop = _sorted_range(prev.keys, n, key)
     if prev_stop - prev_start != stop - start:
         frame.carry_failed[start] = 1
@@ -1045,8 +1043,10 @@ def _carry_frozen_pairs(
     key = frame.keys[i]
     if key == wp.int64(0x7FFFFFFFFFFFFFFF):
         return
+    if not _pair_frozen(frozen_bodies, frame, i):
+        return
     start, stop = _sorted_range(frame.keys, end, key)
-    if not _pair_frozen(frozen_bodies, frame, start) or frame.carry_failed[start] != 0:
+    if frame.carry_failed[start] != 0:
         return
     prev_start, _prev_stop = _sorted_range(prev.keys, n, key)
     c = frame.indices[i]
@@ -1308,6 +1308,8 @@ class _FrictionPatchState:
         self._changed_bodies = wp.zeros(model.body_count, dtype=int, device=device)
         self.current = self._frame(capacity, device)
         self.previous = self._frame(capacity, device)
+        # Only the current frame flags failed carries.
+        self.previous.carry_failed = wp.zeros(0, dtype=int, device=device)
         self.previous_q = wp.zeros(model.body_count, dtype=wp.transform, device=device)
         # Body pairs large enough for the warp flood: at most one per _FLOOD_MIN_CONTACTS + 1
         # contacts, grown by a fixed grid of warps so the launch does not scale with capacity.
