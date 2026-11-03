@@ -16,6 +16,7 @@ try:
     from sphinx.application import Sphinx
 
     from docs._ext import markdown_docs
+    from docs.build_markdown import build
 except ModuleNotFoundError as exc:
     if exc.name not in ("docs", "docutils", "sphinx", "sphinx_markdown_builder", "docs._ext.markdown_docs"):
         raise
@@ -126,6 +127,29 @@ class TestMarkdownDocumentation(unittest.TestCase):
         symbols = json.loads((output / "symbols.json").read_text(encoding="utf-8"))
         self.assertEqual(symbols["newton.Example.step"]["path"], "index.md#newton.Example.step")
         self.assertIn("newton.Example.step", (output / "genindex.md").read_text(encoding="utf-8"))
+
+    def test_staged_build_ignores_generated_files(self):
+        """Render current sources despite obsolete generated API stubs."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            docs = source / "docs"
+            stale = docs / "api/_generated/removed.rst"
+            stale.parent.mkdir(parents=True)
+            stale.write_text(".. autofunction:: newton.no_longer_exists\n", encoding="utf-8")
+            (source / "newton").mkdir()
+            (source / "newton/__init__.py").write_text("", encoding="utf-8")
+            (docs / "conf.py").write_text(
+                "extensions = ['sphinx.ext.autodoc', 'sphinx.ext.intersphinx', "
+                "'nbsphinx', 'sphinx_markdown_builder']\n",
+                encoding="utf-8",
+            )
+            (docs / "index.rst").write_text("Current docs\n============\n\nCurrent content.\n", encoding="utf-8")
+            output = root / "output"
+            build(source, output)
+            self.assertIn("Current content.", (output / "index.md").read_text(encoding="utf-8"))
+            self.assertFalse((output / "api/_generated/removed.md").exists())
+            self.assertTrue(stale.is_file())
 
     def test_unknown_node_fails(self):
         """Reject unsupported nodes rather than silently dropping their content."""

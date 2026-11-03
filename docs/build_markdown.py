@@ -18,7 +18,7 @@ def build(source: Path, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="newton-docs-") as temporary:
         staged = Path(temporary)
-        ignore = shutil.ignore_patterns("_build", "__pycache__", ".cache", "sphinx-env")
+        ignore = shutil.ignore_patterns("_build", "_generated", "__pycache__", ".cache", "sphinx-env")
         for directory in ("docs", "newton"):
             shutil.copytree(source / directory, staged / directory, ignore=ignore)
         for path in source.iterdir():
