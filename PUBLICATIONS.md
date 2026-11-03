@@ -106,6 +106,10 @@ published citation when available and retain an accessible preprint link.
 
 - **SceneFactory-3D: Lifting 2D Traffic Scenes into 3D Physical Counterfactuals for Scalable Physically Grounded Safety Evaluation**. *Y. Zhu, L. Tian, T. Zhao, Y. Chen, F. Zuo, T. Li, Z. Bian*. October 2026. [arXiv:2610.02874](https://arxiv.org/abs/2610.02874)
 
+### 2025
+
+- **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205), [arXiv:2403.06321](https://arxiv.org/abs/2403.06321)
+
 ## Newton used solely as a comparison baseline
 
 ### 2026
