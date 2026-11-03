@@ -1381,9 +1381,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         projected onto the joint's motion subspace is therefore its generalized load
         (:attr:`~newton.Control.joint_f`, explicit passive spring forces, passive damping and
         joint-space rows) less ``armature * qdd``. Positive passive damping on PRISMATIC,
-        REVOLUTE, BALL and D6 DOFs is evaluated implicitly at the end-of-step velocity,
-        contributing ``-damping * (qd + dt * qdd)`` to that load. Kinematic DOFs report the
-        rigid-body load of carrying their subtree along the prescribed motion.
+        REVOLUTE, BALL and D6 DOFs contributes ``-damping * (qd + dt * qdd)`` to that load,
+        where ``qd`` is the input velocity. This is the end-of-step velocity when joint
+        velocity-limit prescaling is inactive; with prescaling, the predictor starts from
+        the scaled velocity while passive forces still use the input velocity. Kinematic
+        DOFs report the rigid-body load of carrying their subtree along the prescribed motion.
 
         The accounting has these limits:
 

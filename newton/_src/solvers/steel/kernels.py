@@ -696,7 +696,8 @@ def jcalc_tau(
     if type == JointType.BALL:
         for i in range(3):
             j = dof_start + i
-            # Passive damping per angular DOF, as in SolverFeatherstone; a ball joint has no passive spring.
+            # Passive damping enters the RHS and the positive damping adds to the
+            # implicit mass diagonal; a ball joint has no passive spring.
             value = -wp.dot(joint_S_s[j], body_f_s) + joint_f[j] - joint_damping[j] * joint_qd[j]
             if add_existing_tau != 0:
                 value += tau[j]
@@ -721,8 +722,8 @@ def jcalc_tau(
             j = dof_start + i
             S_s = joint_S_s[j]
             # Passive forces enter the RHS; Steel also adds the positive damping
-            # velocity derivative to the augmented mass diagonal. These joint types have one coordinate per DOF,
-            # so coord_start + i addresses the axis position.
+            # velocity derivative to the augmented mass diagonal. These joint types
+            # have one coordinate per DOF, so coord_start + i addresses the axis position.
             passive_f = joint_spring_stiffness[j] * (joint_spring_ref[j] - joint_q[coord_start + i])
             passive_f -= joint_damping[j] * joint_qd[j]
             # total torque / force on the joint (drive forces handled via augmented mass)
