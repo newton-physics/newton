@@ -631,7 +631,7 @@ a grasp can slip; in the pouch scene below, lowering the contact stiffness to
    same time in both runs. Membrane stiffness 2,000 N/m, self-contact margin
    8 mm, gap 8 mm, ``dt`` = 1/300 s, 20 iterations. Left: contact stiffness
    30,000 N/m. Right: 4,000 N/m. The scene is a test scene, not a shipped
-   example. Newton commit 353e0ea1.
+   example.
 
 .. list-table::
    :header-rows: 1
@@ -910,101 +910,66 @@ Empirical Parameter Combinations That Work
 
 Start from an example, not from material data. Stiffness values derived from
 measured material properties (Young's modulus, Poisson ratio, thickness) are
-usually far too high for VBD to converge at practical iteration counts. The
-values below are the ones each shipped example runs with at Newton commit
-cced8ced1; open the example file for the complete configuration. The
-"resembles" column is a visual resemblance at the example's scale, not a
-material measurement.
+usually far too high for VBD to converge at practical iteration counts. Each
+shipped example below is a working combination of material, contact and
+time-step values for its scenario. Open the example file for the complete
+configuration; the examples are maintained with the solver, so their values are
+the ones to copy. The resemblance given for each scenario is visual, at the
+example's scale, not a material measurement.
 
 .. list-table::
    :header-rows: 1
-   :widths: 14 30 24 12 20
+   :widths: 20 30 50
 
    * - Scenario
-     - Material values
-     - Contact values
-     - dt, iterations
-     - Resembles
+     - Example
+     - What it demonstrates
    * - Cloth drape
-       (`cloth_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_hanging.py>`__)
-     - grid cells 0.1 m, 0.1 kg per particle; :attr:`tri_ke <newton.Model.tri_materials>` 1e3, :attr:`tri_ka <newton.Model.tri_materials>` 1e3,
-       :attr:`tri_kd <newton.Model.tri_materials>` 1e2, :attr:`edge_ke <newton.Model.edge_bending_properties>` 10, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0
-     - radius 0.05, margin 0.02, gap 0.01; :attr:`~newton.Model.soft_contact_ke` 1e2, ``kd``
-       1e2, ``mu`` 1
-     - 1/600, 10
-     - heavy cotton sheet at a coarse scale
+     - :github:`cloth_hanging <newton/examples/cloth/example_cloth_hanging.py>`
+       (run with ``--solver vbd``)
+     - A planar cloth fixed on one side hangs under gravity and settles on the
+       ground. Resembles a heavy cotton sheet at a coarse scale.
    * - Cloth with a robot
-       (`cloth_franka <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_franka.py>`__,
-       scene in centimetres)
-     - density 0.02; :attr:`tri_ke <newton.Model.tri_materials>` 1e4, :attr:`tri_ka <newton.Model.tri_materials>` 1e4, :attr:`tri_kd <newton.Model.tri_materials>` 1.5e-2,
-       :attr:`edge_ke <newton.Model.edge_bending_properties>` 5, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0.5
-     - radius 0.8, pipeline gap 0.8, self margin 0.2, gap 0;
-       :attr:`~newton.Model.soft_contact_ke` 1e4, ``kd`` 10; robot shapes ``ke`` 5e4, ``kd``
-       50, ``mu`` 1.5
-     - 1/600, 5
-     - cotton cloth handled by a gripper
+     - :github:`cloth_franka <newton/examples/cloth/example_cloth_franka.py>`
+     - A Franka arm folds a shirt: VBD cloth coupled with a Featherstone robot,
+       in centimetre scale. Resembles cotton cloth handled by a gripper.
    * - Stiff sheets
-       (`cloth_poker_cards <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_poker_cards.py>`__)
-     - 1.8 g per card over 35 particles; :attr:`tri_ke <newton.Model.tri_materials>` 1e4, :attr:`tri_ka <newton.Model.tri_materials>` 1e4,
-       :attr:`tri_kd <newton.Model.tri_materials>` 1, :attr:`edge_ke <newton.Model.edge_bending_properties>` 1e2, :attr:`edge_kd <newton.Model.edge_bending_properties>` 1
-     - radius 3 mm, margin 1 mm, gap 0.5 mm, pipeline gap 5 mm
-     - 1/1200, 10
-     - playing cards, cardboard
+     - :github:`cloth_poker_cards <newton/examples/cloth/example_cloth_poker_cards.py>`
+     - 52 cards stack on a cube and are knocked off by a sphere; high bending
+       stiffness keeps their shape. Resembles playing cards, cardboard.
    * - Inextensible sheet
-       (`cloth_stiff_material_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_cloth_stiff_material_hanging.py>`__)
-     - density 0.2; :attr:`tri_ke <newton.Model.tri_materials>` 1e8, :attr:`tri_ka <newton.Model.tri_materials>` 1e8, :attr:`tri_kd <newton.Model.tri_materials>` 0, :attr:`edge_ke <newton.Model.edge_bending_properties>`
-       10, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0
-     - margin 2 mm, gap 1.5 mm
-     - 1/600, 10
-     - a plastic membrane that drapes but does not stretch
+     - :github:`cloth_stiff_material_hanging <newton/examples/vbd/example_cloth_stiff_material_hanging.py>`
+     - A curtain pinned along one edge swings and settles with very stiff
+       membrane values. Resembles a plastic membrane that drapes but does not
+       stretch.
    * - Soft-body beams
-       (`softbody_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/softbody/example_softbody_hanging.py>`__)
-     - cells 0.1 m, density 1e3; :attr:`k_mu <newton.Model.tet_materials>` 1e5, :attr:`k_lambda <newton.Model.tet_materials>` 1e5, :attr:`k_damp <newton.Model.tet_materials>`
-       10 to 1e4
-     - ground contact only: :attr:`~newton.Model.soft_contact_ke` 100, ``kd`` 0, ``mu`` 1;
-       self-contact off
-     - 1/600, 10
-     - rubber to foam beams, depending on :attr:`k_damp <newton.Model.tet_materials>`
+     - :github:`softbody_hanging <newton/examples/softbody/example_softbody_hanging.py>`
+     - Four tetrahedral beams hang with damping from 1e4 down to 1e1, showing
+       what damping does to Neo-Hookean behaviour. Resembles rubber to foam
+       beams, depending on the damping.
    * - Soft box with ribbon
-       (`softbody_gift <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/multiphysics/example_softbody_gift.py>`__)
-     - box density 100, :attr:`k_mu <newton.Model.tet_materials>` 1e5, :attr:`k_lambda <newton.Model.tet_materials>` 1e5, :attr:`k_damp <newton.Model.tet_materials>` 1; ribbon
-       density 0.02, :attr:`tri_ke <newton.Model.tri_materials>` 1e5, :attr:`tri_ka <newton.Model.tri_materials>` 1e5, :attr:`tri_kd <newton.Model.tri_materials>` 1,
-       :attr:`edge_ke <newton.Model.edge_bending_properties>` 0.01, :attr:`edge_kd <newton.Model.edge_bending_properties>` 1e-4
-     - margin 0.04, gap 0.02
-     - 1/600, 15
-     - foam box, thin ribbon
+     - :github:`softbody_gift <newton/examples/multiphysics/example_softbody_gift.py>`
+     - Four soft blocks tied by cloth straps drop and bounce while the straps
+       hold the stack together. Resembles a foam box with a thin ribbon.
    * - Soft-body grasp
-       (`softbody_franka <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/softbody/example_softbody_franka.py>`__)
-     - density 100; :attr:`k_mu <newton.Model.tet_materials>` 1e6, :attr:`k_lambda <newton.Model.tet_materials>` 1e6, :attr:`k_damp <newton.Model.tet_materials>` 1
-     - radius 5 mm, margin 3 mm, gap 2 mm, pipeline gap 10 mm;
-       :attr:`~newton.Model.soft_contact_ke` 2e6, ``kd`` 0.2
-     - 1/600, 5
-     - a firm rubber block in a gripper
+     - :github:`softbody_franka <newton/examples/softbody/example_softbody_franka.py>`
+     - A Franka arm grasps, lifts and drops a tetrahedral rubber duck.
+       Resembles a firm rubber block in a gripper.
    * - Thin bags with contents
-       (`vbd_soft_rigid_contact <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_vbd_soft_rigid_contact.py>`__)
-     - density 0.08; :attr:`tri_ke <newton.Model.tri_materials>` 1e5, :attr:`tri_ka <newton.Model.tri_materials>` 1e5, :attr:`tri_kd <newton.Model.tri_materials>` 1e2,
-       :attr:`edge_ke <newton.Model.edge_bending_properties>` 50, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0.5
-     - radius 3 mm, margin 3 mm, gap 3 mm, pipeline gap 10 mm, shape margin
-       5 mm; :attr:`~newton.Model.soft_contact_ke` 1e5, ``kd`` 1e2, ``mu`` 0.8; shapes ``ke``
-       1e5, ``kd`` 10, ``mu`` 0.5; filter threshold 3
-     - 1/300, 15
-     - plastic bags holding rigid objects
+     - :github:`vbd_soft_rigid_contact <newton/examples/vbd/example_vbd_soft_rigid_contact.py>`
+     - Six cloth bags each hold a different rigid shape type; the bags settle,
+       then lift their contents, so rigid-soft contact can be inspected per
+       shape type. Resembles plastic bags holding rigid objects.
    * - Tarp under fast impacts
-       (`vbd_dat_rigid_soft <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/multiphysics/example_vbd_dat_rigid_soft.py>`__)
-     - 1.6 m sheet, 40 cells, 0.6 kg; :attr:`tri_ke <newton.Model.tri_materials>` 4e3, :attr:`tri_ka <newton.Model.tri_materials>` 4e3,
-       :attr:`tri_kd <newton.Model.tri_materials>` 0.2, :attr:`edge_ke <newton.Model.edge_bending_properties>` 1
-     - radius 6 mm, margin 12 mm, gap 40 mm, pipeline gap 60 mm; shapes
-       ``ke`` 3e6, ``kd`` 1e3; :attr:`~newton.Model.soft_contact_ke` 2e4, ``kd`` 1e-4, ``mu``
-       0.6; rigid-soft DAT on
-     - 1/240, 8
-     - a tarp struck by thrown objects
+     - :github:`vbd_dat_rigid_soft <newton/examples/multiphysics/example_vbd_dat_rigid_soft.py>`
+     - Heavy, fast projectiles hit sheets that catch them; rigid-soft DAT keeps
+       the cloth outside the bodies where contact stiffness alone cannot.
+       Resembles a tarp struck by thrown objects.
    * - Gripper on a soft pad
-       (`vbd_gripper_soft_grid <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_vbd_gripper_soft_grid.py>`__)
-     - 4 particles of 0.1 kg each (0.4 kg pad); :attr:`tri_ke <newton.Model.tri_materials>` 5e2, :attr:`tri_kd <newton.Model.tri_materials>` 0.1
-     - radius 10 mm, pipeline gap 10 mm; :attr:`~newton.Model.soft_contact_ke` 1e3, ``kd`` 10,
-       ``mu`` 1
-     - 1/1200, 5
-     - a foam pad pinched and lifted
+     - :github:`vbd_gripper_soft_grid <newton/examples/vbd/example_vbd_gripper_soft_grid.py>`
+     - A parallel-jaw gripper pinches a two-triangle grid on its interior edge
+       and lifts it, which needs full-surface rigid-soft contact. Resembles a
+       foam pad pinched and lifted.
 
 .. _vbd-rules-of-thumb:
 

@@ -845,8 +845,8 @@ Examples
 --------
 
 :ref:`vbd-empirical-table` on the tuning page lists one shipped example per
-scenario, from cloth drape to a gripper on a soft pad, with the material,
-contact and time-step values each one runs with.
+scenario, from cloth drape to a gripper on a soft pad, and says what each one
+demonstrates; copy the values from the example file.
 
 Runnable examples using :class:`~newton.solvers.SolverVBD` on GitHub:
 
