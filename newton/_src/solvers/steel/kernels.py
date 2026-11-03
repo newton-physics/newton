@@ -751,6 +751,7 @@ def jcalc_integrate(
     ang_axis_count: int,
     dt: float,
     angular_damping: float,
+    linear_damping: float,
     parent: int,
     # outputs
     joint_q_new: wp.array[float],
@@ -863,6 +864,7 @@ def jcalc_integrate(
 
         if parent < 0:
             w_s = w_s * (1.0 - angular_damping * dt)
+            v_com = v_com * (1.0 - linear_damping * dt)
 
         # update transform
         joint_q_new[coord_start + 0] = p_s_new[0]
@@ -2292,23 +2294,27 @@ def remove_free_root_transport_from_qdd(
 
 
 @wp.kernel
-def apply_free_root_angular_damping(
+def apply_free_root_damping(
     free_root_joint_indices: wp.array[int],
     joint_qd_start: wp.array[int],
     kinematic_joint_mask: wp.array[int],
     joint_child: wp.array[int],
+    body_linear_damping: wp.array[float],
     body_angular_damping: wp.array[float],
     dt: float,
     joint_qd: wp.array[float],
 ):
-    """Scale each active free root's angular velocity by the decay ``jcalc_integrate`` applies."""
+    """Scale each active free root's velocity by the decay ``jcalc_integrate`` applies."""
     root_index = wp.tid()
     d = _active_free_root_dof_start(free_root_joint_indices, joint_qd_start, kinematic_joint_mask, root_index)
     if d < 0:
         return
-    scale = 1.0 - body_angular_damping[joint_child[free_root_joint_indices[root_index]]] * dt
-    for i in range(3, 6):
-        joint_qd[d + i] = joint_qd[d + i] * scale
+    child = joint_child[free_root_joint_indices[root_index]]
+    linear_scale = 1.0 - body_linear_damping[child] * dt
+    angular_scale = 1.0 - body_angular_damping[child] * dt
+    for i in range(3):
+        joint_qd[d + i] = joint_qd[d + i] * linear_scale
+        joint_qd[d + 3 + i] = joint_qd[d + 3 + i] * angular_scale
 
 
 @wp.kernel
@@ -2327,6 +2333,7 @@ def integrate_generalized_joints(
     joint_qdd: wp.array[float],
     dt: float,
     body_angular_damping: wp.array[float],
+    body_linear_damping: wp.array[float],
     joint_active: wp.array[int],
     joint_q_new: wp.array[float],
     joint_qd_new: wp.array[float],
@@ -2365,6 +2372,7 @@ def integrate_generalized_joints(
         ang_axis_count,
         dt,
         body_angular_damping[child],
+        body_linear_damping[child],
         parent,
         joint_q_new,
         joint_qd_new,

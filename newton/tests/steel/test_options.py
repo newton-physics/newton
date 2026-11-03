@@ -136,6 +136,7 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
     for name, value in (
         ("physxRigidBody:angularDamping", 0.3),
+        ("physxRigidBody:linearDamping", 0.2),
         ("physxRigidBody:maxLinearVelocity", 2.0),
         ("physxRigidBody:maxAngularVelocity", 90.0),
         ("physxRigidBody:maxDepenetrationVelocity", 1.5),
@@ -147,6 +148,7 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     builder.add_usd(stage)
     model = builder.finalize(device=device)
     np.testing.assert_allclose(model.steel.rigid_body_angular_damping.numpy(), [0.3])
+    np.testing.assert_allclose(model.steel.rigid_body_linear_damping.numpy(), [0.2])
     np.testing.assert_allclose(model.steel.rigid_body_max_linear_velocity.numpy(), [2.0])
     np.testing.assert_allclose(model.steel.rigid_body_max_angular_velocity.numpy(), [0.5 * np.pi], rtol=1.0e-6)
     np.testing.assert_allclose(model.steel.rigid_body_max_depenetration_velocity.numpy(), [1.5])
@@ -156,14 +158,17 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
 
     solver = SolverSteel(model, **_split_or_default(device))
     model.steel.rigid_body_angular_damping = wp.zeros(1, dtype=wp.float32, device=device)
+    model.steel.rigid_body_linear_damping = wp.zeros(1, dtype=wp.float32, device=device)
     model.steel.rigid_body_max_angular_velocity = wp.full(1, 100.0, dtype=wp.float32, device=device)
     state_in, state_out = model.state(), model.state()
     joint_qd = state_in.joint_qd.numpy()
+    joint_qd[0] = 1.0
     joint_qd[5] = 4.0
     state_in.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
     solver.step(state_in, state_out, model.control(), None, DT)
     # The replaced arrays apply: no damping and no clamp at the imported 90 deg/s.
+    test.assertAlmostEqual(float(state_out.joint_qd.numpy()[0]), 1.0, delta=1.0e-5)
     test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), 4.0, delta=1.0e-5)
 
 
@@ -176,6 +181,116 @@ def test_angular_damping_survives_graph_capture(test, device):
         _run(_build_spinning_model(device, register=True, damping=0.3), **run),
         "captured",
     )
+
+
+def _build_sliding_model(device, *, register=True, damping=None):
+    """Slide a damped free box, an undamped free box and a hinged floating base on frictionless ground."""
+    builder = newton.ModelBuilder()
+    if register:
+        SolverSteel.register_custom_attributes(builder)
+    damped = None if damping is None else {"steel:rigid_body_linear_damping": damping}
+    undamped = None if damping is None else {"steel:rigid_body_linear_damping": 0.0}
+    cfg = newton.ModelBuilder.ShapeConfig(mu=0.0)
+    for y, attributes in ((0.0, damped), (1.0, undamped)):
+        box = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, y, 0.1), wp.quat_identity()), custom_attributes=attributes
+        )
+        builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    base = builder.add_link(xform=wp.transform(wp.vec3(0.0, 2.0, 0.1), wp.quat_identity()), custom_attributes=damped)
+    builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    arm = builder.add_link(xform=wp.transform(wp.vec3(0.3, 2.0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(arm, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    builder.add_articulation(
+        [
+            builder.add_joint_free(parent=-1, child=base),
+            builder.add_joint_revolute(
+                parent=base,
+                child=arm,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                parent_xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()),
+            ),
+        ]
+    )
+    builder.add_ground_plane(cfg=cfg)
+    return builder.finalize(device=device)
+
+
+def _slide(model, state):
+    """Give the three free roots the same horizontal velocity."""
+    joint_qd = state.joint_qd.numpy()
+    for root in range(3):
+        joint_qd[6 * root : 6 * root + 2] = (1.0, 0.5)
+    state.joint_qd.assign(joint_qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+
+def _root_velocities(joint_qd):
+    """Return the horizontal COM velocity of the damped box, the undamped box and the floating base."""
+    return np.array([joint_qd[6 * root : 6 * root + 2] for root in range(3)])
+
+
+_LINEAR_DAMPING_SOLVES = {
+    "matrix_free": {},
+    "propagation": {"articulated_contact_response": "propagation"},
+    "propagation_colored": {"articulated_contact_response": "propagation_colored"},
+    "split": {"solve_mode": "split"},
+    "velocity_post_pass": {"velocity_iterations": 2},
+    "propagation_velocity_post_pass": {"articulated_contact_response": "propagation", "velocity_iterations": 2},
+}
+
+
+def test_linear_damping_decays_free_root_com_velocity(test, device):
+    """Scale free roots' COM velocity by ``1 - d dt`` per step on every solve and leave undamped bodies alone."""
+    damping, steps = 2.0, 48
+    solves = _LINEAR_DAMPING_SOLVES.items() if device.is_cuda else [("split", _LINEAR_DAMPING_SOLVES["split"])]
+    expected = np.array((1.0, 0.5)) * (1.0 - damping * DT) ** steps
+    for label, options in solves:
+        with test.subTest(solve=label):
+            _, _, joint_qd, _ = _run(
+                _build_sliding_model(device, damping=damping), init=_slide, steps=steps, iterations=8, **options
+            )
+            damped_box, undamped_box, floating_base = _root_velocities(joint_qd)
+            np.testing.assert_allclose(damped_box, expected, rtol=1.0e-3, err_msg=f"{label}: damped box")
+            np.testing.assert_allclose(undamped_box, (1.0, 0.5), rtol=1.0e-4, err_msg=f"{label}: undamped box")
+            np.testing.assert_allclose(floating_base, expected, rtol=1.0e-3, err_msg=f"{label}: floating base")
+
+
+def test_linear_damping_defaults_to_zero(test, device):
+    """Step a model without the attribute exactly like one whose linear damping is 0."""
+    run = {"init": _slide, "steps": 12, **_split_or_default(device)}
+    _assert_bitwise(
+        test,
+        _run(_build_sliding_model(device, register=False), **run),
+        _run(_build_sliding_model(device, damping=0.0), **run),
+        "unregistered vs 0 attribute",
+    )
+
+
+def test_linear_damping_follows_in_place_edits(test, device):
+    """Apply an in-place edit of the linear damping on the next step, and stop damping when it returns to 0."""
+    model = _build_sliding_model(device, damping=0.0)
+    solver = SolverSteel(model, **_split_or_default(device))
+    state_in, state_out = model.state(), model.state()
+    _slide(model, state_in)
+    control = model.control()
+    for damping, scale in ((0.0, 1.0), (2.0, 1.0 - 2.0 * DT), (0.0, 1.0 - 2.0 * DT)):
+        model.steel.rigid_body_linear_damping.fill_(damping)
+        solver.step(state_in, state_out, control, None, DT)
+        state_in, state_out = state_out, state_in
+        test.assertAlmostEqual(float(state_in.joint_qd.numpy()[0]), scale, delta=1.0e-5)
+
+
+def test_linear_damping_survives_graph_capture(test, device):
+    """Replay a captured step with per-body linear damping exactly like eager steps, with and without the post-pass."""
+    for options in ({}, {"velocity_iterations": 2}):
+        with test.subTest(**options):
+            run = {"init": _slide, "steps": 6, **options}
+            _assert_bitwise(
+                test,
+                _run(_build_sliding_model(device, damping=2.0), capture=True, **run),
+                _run(_build_sliding_model(device, damping=2.0), **run),
+                "captured",
+            )
 
 
 _SOLVES = {
@@ -431,6 +546,10 @@ class TestSteelAngularDamping(unittest.TestCase):
     pass
 
 
+class TestSteelLinearDamping(unittest.TestCase):
+    pass
+
+
 class TestSteelFrictionOptions(unittest.TestCase):
     pass
 
@@ -445,6 +564,10 @@ for _cls, _fn, _devices in (
     (TestSteelAngularDamping, test_angular_damping_follows_in_place_edits, get_test_devices()),
     (TestSteelAngularDamping, test_physx_attributes_import_from_usd_and_are_read_every_step, get_test_devices()),
     (TestSteelAngularDamping, test_angular_damping_survives_graph_capture, get_cuda_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_decays_free_root_com_velocity, get_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_defaults_to_zero, get_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_follows_in_place_edits, get_test_devices()),
+    (TestSteelLinearDamping, test_linear_damping_survives_graph_capture, get_cuda_test_devices()),
     (TestSteelFrictionOptions, test_zero_friction_matches_normal_rows_only, get_test_devices()),
     (TestSteelFrictionOptions, test_contact_friction_scale_matches_scaled_materials, get_test_devices()),
     (TestSteelFrictionOptions, test_contact_friction_scale_applies_to_notified_materials, get_test_devices()),
