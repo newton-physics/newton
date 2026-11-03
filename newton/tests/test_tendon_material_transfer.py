@@ -435,6 +435,8 @@ def test_direct_missing_pinhole_connection_is_rejected(test, device):
                     if device.is_cuda and length == 0.0 and not reverse:
                         with wp.ScopedCapture(device=device) as capture:
                             solver.step(state_in, state_out, control, None, 0.01)
+                        state_out._tendon_material_failure.fill_(wp.vec2i(0, -1))
+                        solver.check_tendon_material(state_out)
                         wp.capture_launch(capture.graph)
                         with test.assertRaisesRegex(RuntimeError, "INVALID_ROUTE"):
                             solver.check_tendon_material(state_out)
