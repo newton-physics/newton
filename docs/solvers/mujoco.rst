@@ -424,9 +424,8 @@ Contact friction ``solreffriction`` mapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
-``solreffriction`` when the MuJoCo Warp backend uses elliptic friction cones
-(``use_mujoco_cpu=False``, ``cone="elliptic"``) with Newton contacts
-(``use_mujoco_contacts=False``). It targets the force-space friction slope
+``solreffriction`` with elliptic friction cones (``cone="elliptic"``) and Newton
+contacts (``use_mujoco_contacts=False``). It targets the force-space friction slope
 ``f = -kf * v`` below the Coulomb limit. The mapping is exact when the sum of
 MuJoCo's translational ``body_invweight0`` values matches the contact's inverse
 effective mass (the relevant diagonal of :math:`J M^{-1} J^T`) and the contact

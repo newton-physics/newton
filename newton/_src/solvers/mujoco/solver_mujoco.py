@@ -4822,8 +4822,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     warnings.warn(
                         f"{force_space_shapes} shape(s) have mujoco.solref_mode == SOLREF_MODE_FORCE_SPACE "
                         "but SolverMuJoCo is running with use_mujoco_contacts=True. The per-contact "
-                        "body_invweight0 override only fires on the Newton-contacts GPU path "
-                        "(use_mujoco_contacts=False); on this backend these shapes silently fall back to "
+                        "body_invweight0 override only fires with Newton contacts "
+                        "(use_mujoco_contacts=False); with MuJoCo contacts these shapes silently fall back to "
                         "the legacy convert_solref(ke, kd, 1, 1) approximation and shape_material_ke/kd "
                         "will not behave as force-space gains. See "
                         "docs/solvers/mujoco.rst > 'Shape-material contact stiffness and damping'.",
