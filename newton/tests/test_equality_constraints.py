@@ -359,33 +359,39 @@ class TestEqualityConstraints(unittest.TestCase):
         np.testing.assert_allclose(solref[1], default_solref)
         np.testing.assert_allclose(solref[2], [7.0, 7.0])
 
-    def test_zero_constraint_model_exposes_shape_stable_equality_arrays(self):
-        """A constraint-free finalized model still exposes the equality namespace arrays.
+    def test_zero_constraint_model_exposes_equality_count_and_world_start(self):
+        """Publish the equality count and world starts, but no per-row arrays, without constraints.
 
-        The canonical ``model.mujoco.equality_constraint_*`` fields stay shape-stable (empty
-        arrays) even when no constraints are present.
+        Like every other custom frequency, empty per-row ``model.mujoco.equality_constraint_*``
+        arrays are not materialized. The frequency declares a world attribute, so its count and
+        world-start metadata are still published.
         """
-        model = newton.ModelBuilder().finalize()
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        builder.add_body()
+        builder.end_world()
+        model = builder.finalize()
 
         self.assertEqual(model.mujoco.equality_constraint_count, 0)
+        np.testing.assert_array_equal(model.mujoco.equality_constraint_world_start.numpy(), [0, 0, 0])
+        for name in ("equality_constraint_type", "equality_constraint_world", "eq_solref"):
+            self.assertFalse(hasattr(model.mujoco, name), f"model.mujoco.{name} should be absent at zero rows")
 
-        # Each per-row field must be present and read back as an empty (zero-row) array rather
-        # than being absent. Vector-typed fields additionally keep their per-row width.
-        fields = [
-            ("equality_constraint_type", ()),
-            ("equality_constraint_body1", ()),
-            ("equality_constraint_anchor", (3,)),
-            ("equality_constraint_polycoef", ()),
-            ("equality_constraint_enabled", ()),
-            ("equality_constraint_world", ()),
-            ("eq_solref", (2,)),
-            ("eq_solimp", (5,)),
-        ]
-        for name, row_shape in fields:
-            self.assertTrue(hasattr(model.mujoco, name), f"model.mujoco.{name} should exist at zero rows")
-            arr = getattr(model.mujoco, name).numpy()
-            self.assertEqual(arr.shape[0], 0, f"model.mujoco.{name} should be empty at zero rows")
-            self.assertEqual(arr.shape[1:], row_shape, f"model.mujoco.{name} per-row shape should be stable")
+    def test_label_prefix_applies_once_to_equality_labels(self):
+        """Prefix merged equality labels exactly once and keep unlabeled rows empty."""
+        robot = newton.ModelBuilder()
+        body = robot.add_body()
+        _add_equality_constraint(
+            robot, constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD, body1=body, label="weld"
+        )
+        _add_equality_constraint(robot, constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT, body1=body)
+
+        main = newton.ModelBuilder()
+        main.add_builder(robot, label_prefix="left")
+        main.add_builder(robot, label_prefix="right")
+
+        labels = [_eq_value(main, "equality_constraint_label", i) for i in range(4)]
+        self.assertEqual(labels, ["left/weld", "", "right/weld", ""])
 
     def test_default_equality_constraint_torquescale_is_numeric(self):
         builder = newton.ModelBuilder()

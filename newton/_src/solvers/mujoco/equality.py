@@ -58,8 +58,17 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     eq_freq = "mujoco:equality_constraint"
     model_assignment = Model.AttributeAssignment.MODEL
 
-    # Register the custom frequency before any custom attributes that use it.
-    builder.add_custom_frequency(type(builder).CustomFrequency(name="equality_constraint", namespace="mujoco"))
+    # Register the custom frequency before any custom attributes that use it. The label and world
+    # attributes it names are registered below; they are only resolved when the builder is merged
+    # or finalized.
+    builder.add_custom_frequency(
+        type(builder).CustomFrequency(
+            name="equality_constraint",
+            namespace="mujoco",
+            label_attribute="mujoco:equality_constraint_label",
+            world_attribute="mujoco:equality_constraint_world",
+        )
+    )
 
     builder.add_custom_attribute(
         ca(
