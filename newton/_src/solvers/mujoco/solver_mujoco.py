@@ -8688,10 +8688,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return fallback if objtype < 0 else objtype
 
         def get_joint_equality_endpoint(i: int, endpoint: int, joint: int, dofs: np.ndarray | None) -> str:
+            dof = int(dofs[i]) if dofs is not None else -1
             # An omitted joint2 fixes joint1 to the polynomial's constant term.
             if joint < 0:
+                if dof >= 0:
+                    raise ValueError(f"Joint equality {i} endpoint {endpoint} selects DoF {dof} but has no joint.")
                 return ""
-            dof = int(dofs[i]) if dofs is not None else -1
+            if joint_type[joint] in (JointType.BALL, JointType.FREE):
+                kind = "ball" if joint_type[joint] == JointType.BALL else "free"
+                raise ValueError(
+                    f"Joint equality {i} endpoint {endpoint} targets {kind} joint '{model.joint_label[joint]}'; "
+                    "MuJoCo joint equalities require a scalar hinge or slide joint. "
+                    "For MJCF hinge endpoints, disable convert_3d_hinge_to_ball_joints."
+                )
             if dof >= 0:
                 first_dof = int(joint_qd_start[joint])
                 if not first_dof <= dof < first_dof + int(joint_dof_dim[joint].sum()):

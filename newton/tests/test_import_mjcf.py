@@ -7199,10 +7199,56 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                 warning = "higher-order polycoef" if 'joint2="' in equality else "omit joint2"
                 with self.assertWarnsRegex(newton.exceptions.NewtonWarning, warning):
                     builder.add_mjcf(mjcf, scale=scale)
-                solver = SolverMuJoCo(
-                    builder.finalize(device="cpu"), use_mujoco_cpu=True, kinematic_switchable_roots=False
-                )
+                model = builder.finalize(device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
                 np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], expected, rtol=1e-6)
+                if 'joint2="' in equality:
+                    self.assertEqual(model.constraint_mimic_count, 1)
+                    np.testing.assert_allclose(model.constraint_mimic_coef0.numpy(), [expected[0]], rtol=1e-6)
+                    np.testing.assert_allclose(model.constraint_mimic_coef1.numpy(), [expected[1]], rtol=1e-6)
+                else:
+                    self.assertEqual(model.constraint_mimic_count, 0)
+
+    def test_dof_selector_without_joint_raises(self):
+        """Reject a DoF selector for an omitted equality endpoint instead of ignoring it."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(
+            self._mjcf(_EQUALITY_TEST_JOINTS["h1"], '<joint joint1="h1"/>'),
+            convert_mjc_equality_constraints=False,
+        )
+        builder.custom_attributes["mujoco:equality_constraint_joint2_dof"].values[0] = 0
+        model = builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "endpoint 2 selects DoF 0 but has no joint"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+
+    def test_equality_on_nonscalar_joint_raises(self):
+        """Reject ball and free endpoints, including hinges converted to a ball joint."""
+        joints = (
+            _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"] + '<joint name="h3" type="hinge" axis="0 0 1"/>'
+        )
+        cases = (
+            (joints, False, None),
+            (joints, True, "ball"),
+            ('<joint name="h1" type="ball"/>', False, "ball"),
+            ('<joint name="h1" type="free"/>', False, "free"),
+        )
+        for joints, convert_to_ball, kind in cases:
+            with self.subTest(convert_to_ball=convert_to_ball, kind=kind):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_mjcf(
+                    self._mjcf(joints, '<joint joint1="h1"/>'),
+                    convert_3d_hinge_to_ball_joints=convert_to_ball,
+                    convert_mjc_equality_constraints=False,
+                )
+                model = builder.finalize(device="cpu")
+                if kind is not None:
+                    with self.assertRaisesRegex(ValueError, f"endpoint 1.*{kind} joint.*scalar hinge or slide"):
+                        SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+                else:
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+                    self.assertEqual(solver.mj_model.neq, 1)
 
     def test_unknown_joint_raises(self):
         """Reject an equality that names an unknown joint as either endpoint."""
