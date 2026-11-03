@@ -47,6 +47,7 @@ construction.
 
 .. autosummary::
    :toctree: _generated
+   :signatures: long
 
    parse_actuator_prim
    register_actuator_component

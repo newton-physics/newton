@@ -27,6 +27,7 @@ newton.geometry
 
 .. autosummary::
    :toctree: _generated
+   :signatures: long
 
    collide_box_box
    collide_capsule_box

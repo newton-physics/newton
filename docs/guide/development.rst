@@ -381,6 +381,8 @@ To build the documentation locally, ensure you have the documentation dependenci
 
 The built documentation will be available in ``docs/_build/html``.
 
+Use Python 3.11 or later for documentation rendering.
+
 To generate searchable Markdown with resolved API content and an alphabetical
 API index, run:
 

@@ -33,17 +33,11 @@ class NewtonMarkdownTranslator(MarkdownTranslator):
         else:
             super().visit_title(node)
 
-    def visit_abbreviation(self, node):
-        pass
-
     def depart_abbreviation(self, node):
         if explanation := node.get("explanation"):
             self.add(f" ({explanation})")
 
     def visit_CodeAreaNode(self, node):
-        pass
-
-    def depart_CodeAreaNode(self, node):
         pass
 
     def visit_caption(self, node):
@@ -61,9 +55,6 @@ class NewtonMarkdownTranslator(MarkdownTranslator):
     def visit_desc_type_parameter(self, node):
         if node.parent.index(node):
             self.add(", ")
-
-    def depart_desc_type_parameter(self, node):
-        pass
 
     def visit_mermaid(self, node):
         self.add(f"```mermaid\n{node['code']}\n```", prefix_eol=2, suffix_eol=2)
