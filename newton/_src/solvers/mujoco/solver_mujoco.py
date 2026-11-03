@@ -7721,7 +7721,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 heterogeneous_geoms = bool(np.any(cone_sizes != cone_sizes[:1]))
             if heterogeneous_geoms and self.use_mujoco_cpu:
                 raise ValueError(
-                    "Per-world mesh or heightfield assets with separate_worlds=True require use_mujoco_cpu=False."
+                    "Per-world mesh, heightfield, or cone assets with separate_worlds=True "
+                    "require use_mujoco_cpu=False."
                 )
             if padded_shapes and pair_count:
                 raise ValueError("Differing mesh counts with explicit MuJoCo contact pairs are not supported.")

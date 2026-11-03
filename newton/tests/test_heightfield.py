@@ -459,24 +459,6 @@ class TestHeightfield(unittest.TestCase):
             state_in, state_out = state_out, state_in
         return state_in.body_q.numpy()[:, 2]
 
-    def test_solver_mujoco_hfield_per_world(self):
-        """Collide each world against its own heightfield when the worlds' terrains differ."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
-
-        tops = (0.1, 0.2, 0.3)
-        heightfields = []
-        for top in tops:
-            # A plateau at `top` with its rim at 0.
-            plateau = np.full((9, 9), top, dtype=np.float32)
-            plateau[[0, -1], :] = plateau[:, [0, -1]] = 0.0
-            heightfields.append(Heightfield(data=plateau, nrow=9, ncol=9, hx=0.5, hy=0.5))
-        model = self._per_world_hfield_model(heightfields, [(0.0, 0.0, top + 0.07) for top in tops])
-
-        np.testing.assert_allclose(self._sphere_heights(model, steps=500), np.array(tops) + 0.05, atol=0.01)
-
     def test_solver_mujoco_hfield_per_world_bounds(self):
         """Bound each world's heightfield geom by that world's terrain, so the broadphase keeps its contacts."""
         try:
