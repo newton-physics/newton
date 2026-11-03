@@ -1,0 +1,1 @@
+Evaluate `DriveNeuralGRU` checkpoints with the Warp-NN ONNX runtime instead of rebuilding the network from the ONNX graph. Any graph the runtime can compile is now accepted, but every `GRU` node's `Y_h` must be a graph output; re-export checkpoints that do not expose it.
