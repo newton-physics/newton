@@ -1,10 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
-from enum import EnumMeta, IntEnum
-
-from ..exceptions import NewtonDeprecationWarning
+from enum import IntEnum
 
 
 class ModelFlags(IntEnum):
@@ -23,7 +20,7 @@ class ModelFlags(IntEnum):
     """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
+    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_stiffness, joint_rest_q, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q, body_qd, body_flags."""
@@ -53,7 +50,15 @@ class ModelFlags(IntEnum):
     """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
-    """Indicates joint reference-pose and spring-reference updates, including Rod rest rotations in joint_target_q. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q and Rod rest rotations in joint_target_q. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+
+    SHAPE_TYPE_AND_SOURCE = 1 << 12
+    """Indicates that shapes changed type or source (shape_type, shape_source_ptr) together with the collision data derived from them, or were emptied: variant rows took other variant shapes in :meth:`~newton.Model.select_body_variants`. Viewers and solvers that cache shape geometry must refresh it. Edits of shape_transform or shape_scale alone are :attr:`SHAPE_PROPERTIES`. Use at reset rather than every step.
+
+    .. experimental::
+
+        Body variants, including this flag, may change without a deprecation period.
+    """
 
     ALL = (
         JOINT_PROPERTIES
@@ -68,6 +73,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_FORCE_PROPERTIES
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
+        | SHAPE_TYPE_AND_SOURCE
     )
     """Indicates all property updates."""
 
@@ -164,36 +170,8 @@ class BodyFlags(IntEnum):
     """Filter bitmask selecting all body types."""
 
 
-def _warn_joint_type_cable_deprecated() -> None:
-    warnings.warn(
-        "newton.JointType.CABLE is deprecated in Newton 1.6; use newton.JointType.ROD instead.",
-        NewtonDeprecationWarning,
-        stacklevel=3,
-    )
-
-
-class _DeprecatedJointTypeMeta(EnumMeta):
-    def __getattribute__(cls, name: str):
-        # Defined members resolve before EnumMeta.__getattr__, so intercept deprecated access here.
-        value = super().__getattribute__(name)
-        if name == "CABLE":
-            _warn_joint_type_cable_deprecated()
-        return value
-
-    def __getitem__(cls, name: str):
-        value = super().__getitem__(name)
-        if name == "CABLE":
-            _warn_joint_type_cable_deprecated()
-        return value
-
-    def __dir__(cls):
-        # EnumMeta.__dir__ omits aliases; keep the preferred ROD name discoverable.
-        names = super().__dir__()
-        return names if "ROD" in names else [*names, "ROD"]
-
-
 # Types of joints linking rigid bodies
-class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
+class JointType(IntEnum):
     """
     Enumeration of joint types supported in Newton.
     """
@@ -219,15 +197,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     D6 = 6
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
-    # Keep CABLE as the canonical enum name throughout its 1.6 deprecation.
-    CABLE = 7
-    """Deprecated name for :attr:`ROD`.
-
-    .. deprecated:: 1.6
-        Use :attr:`ROD` instead.
-    """
-
-    ROD = CABLE
+    ROD = 7
     """Rod joint: 7-coordinate relative pose and 6-DoF relative
     twist with stretch, shear, bend, and twist response."""
 

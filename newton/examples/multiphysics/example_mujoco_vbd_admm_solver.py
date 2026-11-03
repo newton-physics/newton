@@ -1,24 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid-VBD ADMM Coupled Solver
-#
-# A rigid ball is attached to the centre of a pinned VBD cloth sheet
-# through a model-level particle-body attachment annotation, while a separate
-# rigid pendulum link carries a VBD rigid payload through a normal model ball
-# joint. SolverCoupledADMM converts both cross-solver couplings into ADMM
-# attachment constraints.
-#
-# This example demonstrates ``SolverCoupledADMM``, an
-# alternative to proxy-body coupling based on linearised ADMM over model
-# joints, model attachment annotations, and collision-detected contacts rather
-# than proxy bodies. See ``docs/plans/2026-04-23-admm-coupling.tex`` for the
-# algorithm.
-#
-# Command: python -m newton.examples mujoco_vbd_admm_solver
-#
-###########################################################################
+"""Example Rigid-VBD ADMM Coupled Solver
+
+A rigid ball is attached to the centre of a pinned VBD cloth sheet
+through a model-level particle-body attachment annotation, while a separate
+rigid pendulum link carries a VBD rigid payload through a normal model ball
+joint. SolverCoupledADMM converts both cross-solver couplings into ADMM
+attachment constraints.
+
+This example demonstrates ``SolverCoupledADMM``, an
+alternative to proxy-body coupling based on linearised ADMM over model
+joints, model attachment annotations, and collision-detected contacts rather
+than proxy bodies. See ``docs/plans/2026-04-23-admm-coupling.tex`` for the
+algorithm.
+
+Success criteria:
+- A pinned VBD cloth sheet appears with a rigid ball attached near its center.
+- A separate rigid pendulum link carries a VBD rigid payload through a model ball joint.
+- ADMM attachment constraints keep the rigid ball attached to the cloth and keep the pendulum
+  payload coupled.
+- The ball should hang below the cloth plane while remaining attached to the cloth center.
+- The pendulum payload should remain coupled without excessive drift.
+
+Runs:
+- `python -m newton.examples mujoco_vbd_admm_solver`
+"""
 
 from __future__ import annotations
 

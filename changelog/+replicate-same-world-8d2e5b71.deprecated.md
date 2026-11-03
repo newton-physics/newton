@@ -1,0 +1,1 @@
+Deprecate the `world_count` argument of `ModelBuilder.replicate()` in favor of `copy_count`, since copies no longer necessarily become worlds. Pass `copy_count=...` instead of `world_count=...`; positional calls are unaffected.

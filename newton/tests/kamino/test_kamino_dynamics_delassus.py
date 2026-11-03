@@ -219,7 +219,7 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -356,7 +356,7 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -732,7 +732,7 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1249,7 +1249,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1337,7 +1337,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1425,7 +1425,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1513,7 +1513,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
