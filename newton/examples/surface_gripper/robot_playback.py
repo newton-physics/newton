@@ -43,6 +43,8 @@ class Frame:
 def load_recording(path: str | Path) -> list[Frame]:
     """Read a ``.csv`` recording into a flat list of :class:`Frame`.
 
+    Lines that start with ``#`` are comments and are skipped.
+
     Raises:
         FileNotFoundError: if ``path`` does not exist (with a clear message rather than a deep parse
             error).
@@ -52,7 +54,11 @@ def load_recording(path: str | Path) -> list[Frame]:
         raise FileNotFoundError(f"robot recording not found: {path}")
     frames: list[Frame] = []
     with path.open(newline="") as file:
-        for row in csv.DictReader(file):
+        data_lines = []
+        for line in file:
+            if not line.startswith("#"):
+                data_lines.append(line)
+        for row in csv.DictReader(data_lines):
             joints_deg = []
             for column in JOINT_COLUMNS:
                 joints_deg.append(float(row[column]))

@@ -1,3 +1,6 @@
+# The trajectories originally came from FANUC. They are reduced to these fields: time_s, J1_deg to J6_deg
+# (joint angles; J3 is relative to J2) and gripper_close. prepare_to_engage was not in the original
+# trajectories; it was added for the surface gripper example.
 time_s,J1_deg,J2_deg,J3_deg_rel_J2,J4_deg,J5_deg,J6_deg,gripper_close,prepare_to_engage
 0.000,160.5714,-3.4991,-7.3408,0.0000,-82.6592,-116.5714,0,0
 0.041,160.5714,-3.4991,-7.3408,0.0000,-82.6592,-116.5714,0,0
