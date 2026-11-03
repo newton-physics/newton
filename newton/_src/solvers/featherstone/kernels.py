@@ -1545,9 +1545,10 @@ def eval_rigid_id_joint_motion(
 ):
     """Per-joint part of :func:`eval_rigid_id`, one thread per joint.
 
-    Writes the joint's motion subspace, its velocity ``S qd`` and the part of
-    the child acceleration that does not depend on the parent velocity,
-    ``c_app + S qdd``, all in the articulation's solve frame.
+    Writes the joint's motion subspace, its velocity ``S qd``, the part of the
+    child acceleration that does not depend on the parent velocity,
+    ``c_app + S qdd``, all in the articulation's solve frame, and the solve
+    origin of the child body.
     """
     i = wp.tid()
     art_idx = joint_articulation[i]
@@ -1607,10 +1608,9 @@ def eval_rigid_id_body_force(
     # outputs
     body_f_s: wp.array[wp.spatial_vector],
 ):
-    """Body bias wrench of :func:`eval_rigid_id`, one thread per joint.
+    """Bias wrench of the joint's child body as in :func:`eval_rigid_id`, one thread per joint.
 
-    Sums the child body's velocity and acceleration over the joint's ancestor
-    chain instead of reading the parent's, so joints need no ordering.
+    Sums the child body's velocity and acceleration over the joint's ancestor chain.
     """
     i = wp.tid()
     art_idx = joint_articulation[i]
@@ -1646,38 +1646,7 @@ def eval_rigid_id_body_force(
 
 
 @wp.kernel(enable_backward=False)
-def eval_rigid_subtree_force(
-    articulation_level_start: wp.array[wp.int32],
-    level_joint_start: wp.array[wp.int32],
-    level_joints: wp.array[wp.int32],
-    articulation_mask: wp.array[bool],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    # outputs
-    body_f_s: wp.array2d[float],
-):
-    """Add each body's wrench into its parent's, deepest tree level first, one thread per (articulation, component).
-
-    On return ``body_f_s[b]`` is the total wrench of the subtree rooted at ``b``.
-    """
-    art_idx, component = wp.tid()
-    if articulation_mask:
-        if not articulation_mask[art_idx]:
-            return
-
-    level_begin = articulation_level_start[art_idx]
-    level_end = articulation_level_start[art_idx + 1]
-    # Level 0 holds the roots, whose parents are outside the articulation.
-    for k in range(level_end - 1 - level_begin):
-        level = level_end - 1 - k
-        for n in range(level_joint_start[level], level_joint_start[level + 1]):
-            j = level_joints[n]
-            parent = joint_parent[j]
-            body_f_s[parent, component] = body_f_s[parent, component] + body_f_s[joint_child[j], component]
-
-
-@wp.kernel(enable_backward=False)
-def eval_rigid_joint_bias_tau(
+def eval_rigid_id_bias_tau(
     articulation_mask: wp.array[bool],
     joint_articulation: wp.array[wp.int32],
     joint_child: wp.array[int],

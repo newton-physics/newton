@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core.types import Devicelike
-from .articulation import eval_jacobian, eval_mass_matrix
+from .articulation import eval_articulation_composite_inertia, eval_jacobian, eval_mass_matrix
 from .enums import JointType
 
 if TYPE_CHECKING:
@@ -148,13 +148,9 @@ class _InverseDynamicsScratchBuffer:
         self.zero_gravity = wp.zeros(world_count + 1, dtype=wp.vec3, device=device)
 
 
-def _uses_parallel_rnea(model: Model, state: State, joint_qd: wp.array[wp.float32]) -> bool:
+def _uses_parallel_rnea(model: Model) -> bool:
     """Whether :func:`_rnea_compensation_pass` runs one thread per joint instead of one per articulation."""
-    if not model.device.is_cuda or model._fk_articulation_level_start is None:  # pyright: ignore[reportPrivateUsage]
-        return False
-    return not (
-        model.requires_grad or state.joint_q.requires_grad or state.body_q.requires_grad or joint_qd.requires_grad
-    )
+    return model.device.is_cuda and model._fk_articulation_level_start is not None  # pyright: ignore[reportPrivateUsage]
 
 
 def _rnea_compensation_pass(
@@ -192,10 +188,9 @@ def _rnea_compensation_pass(
         convert_free_distance_joint_f_internal_to_public,
         convert_free_distance_joint_qd_public_to_internal,
         eval_rigid_id,
+        eval_rigid_id_bias_tau,
         eval_rigid_id_body_force,
         eval_rigid_id_joint_motion,
-        eval_rigid_joint_bias_tau,
-        eval_rigid_subtree_force,
         eval_rigid_tau,
     )
 
@@ -255,7 +250,7 @@ def _rnea_compensation_pass(
         device=device,
     )
 
-    if _uses_parallel_rnea(model, state, joint_qd):
+    if _uses_parallel_rnea(model):
         wp.launch(
             eval_rigid_id_joint_motion,
             dim=model.joint_count,
@@ -300,7 +295,7 @@ def _rnea_compensation_pass(
             device=device,
         )
         wp.launch(
-            eval_rigid_subtree_force,
+            eval_articulation_composite_inertia,
             dim=(model.articulation_count, 6),
             inputs=[
                 model._fk_articulation_level_start,  # pyright: ignore[reportPrivateUsage]
@@ -310,11 +305,11 @@ def _rnea_compensation_pass(
                 model.joint_parent,
                 model.joint_child,
             ],
-            outputs=[scratch.body_f_s.view(wp.float32).reshape((bc, 6))],
+            outputs=[scratch.body_f_s.view(wp.float32).reshape((bc, 1, 6))],
             device=device,
         )
         wp.launch(
-            eval_rigid_joint_bias_tau,
+            eval_rigid_id_bias_tau,
             dim=model.joint_count,
             inputs=[
                 mask,
