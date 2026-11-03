@@ -296,7 +296,7 @@ def _build_limited_chain_on_ground(device, num_links, num_worlds=2, *, with_free
                 limit_upper=0.6,
                 target_ke=200.0,
                 target_kd=5.0,
-                target_pos=0.3,
+                target_q=0.3,
             )
         )
         parent = link
@@ -1794,7 +1794,7 @@ def _build_chains_on_boxes(device):
                     limit_upper=0.6,
                     target_ke=200.0,
                     target_kd=5.0,
-                    target_pos=0.3,
+                    target_q=0.3,
                 )
             )
             parent = link

@@ -1672,7 +1672,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         builder.add_mjcf(mjcf, scale=2.0, ctrl_direct=True)
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.mujoco.dof_ref.numpy(), [0.2, np.deg2rad(10)], atol=1e-6)
-        np.testing.assert_allclose(model.mujoco.dof_springref.numpy(), [0.3, np.deg2rad(15)], atol=1e-6)
+        np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.1, np.deg2rad(5)], atol=1e-6)
         np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.02, 0.05], atol=1e-6)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
         np.testing.assert_allclose(solver.mj_model.qpos0, [0.2, np.deg2rad(10)], atol=1e-6)
@@ -1923,7 +1923,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf, scale=2.0)
         self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_ref"].values[0], 0.2)
-        self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_springref"].values[0], 0.3)
+        self.assertAlmostEqual(builder.joint_rest_q[0], 0.1)
 
 
 class TestImportMjcfMeshFileCache(unittest.TestCase):
@@ -5137,11 +5137,10 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
-        mujoco_joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_stiffness = model.joint_stiffness.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
         joint_damping = model.joint_damping.numpy()
@@ -5157,7 +5156,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         for joint_name, expected in expected_values.items():
             joint_idx = joint_names.index(joint_name)
             dof_idx = joint_qd_start[joint_idx]
-            self.assertAlmostEqual(mujoco_joint_stiffness[dof_idx], expected["stiffness"], places=4)
+            self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
@@ -6407,13 +6406,13 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
-        springref = model.mujoco.dof_springref.numpy()
-        qd_start = model.joint_qd_start.numpy()
+        rest_q = model.joint_rest_q.numpy()
+        q_start = model.joint_q_start.numpy()
 
         hinge_idx = model.joint_label.index("test/worldbody/base/child1/hinge")
-        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 0.5236, places=4)
+        self.assertAlmostEqual(rest_q[q_start[hinge_idx]], 0.5236, places=4)
         slide_idx = model.joint_label.index("test/worldbody/base/child1/child2/slide")
-        self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
+        self.assertAlmostEqual(rest_q[q_start[slide_idx]], 0.25, places=4)
 
     def test_static_geom_xform_not_applied_twice(self):
         """Test that xform parameter is applied exactly once to static geoms.
@@ -9086,10 +9085,11 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         hinge_idx = model.joint_label.index("test_radians/worldbody/base/child1/hinge")
         dof_idx = qd_start[hinge_idx]
 
-        # No conversion when angle="radian" - values pass through unchanged
-        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.785, places=4)
+        # Radian references need no unit conversion; rest coordinates subtract ref.
+        coord_idx = model.joint_q_start.numpy()[hinge_idx]
+        self.assertAlmostEqual(model.joint_rest_q.numpy()[coord_idx], 0.785 - 0.524, places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.524, places=4)
-        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.joint_stiffness.numpy()[dof_idx], 10.0, places=4)
         self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 5.0, places=4)
 
     def test_dof_angle_conversion_slide_joint(self):
@@ -9116,10 +9116,11 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         slide_idx = model.joint_label.index("test_slide/worldbody/base/child1/slide")
         dof_idx = qd_start[slide_idx]
 
-        # Slide joints: values pass through unchanged (linear, not angular)
-        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.5, places=4)
+        # Slide references stay in meters; rest coordinates subtract ref.
+        coord_idx = model.joint_q_start.numpy()[slide_idx]
+        self.assertAlmostEqual(model.joint_rest_q.numpy()[coord_idx], 0.5 - 0.1, places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.1, places=4)
-        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 100.0, places=4)
+        self.assertAlmostEqual(model.joint_stiffness.numpy()[dof_idx], 100.0, places=4)
         self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 10.0, places=4)
 
     def test_dof_angle_conversion_degrees(self):
@@ -9146,13 +9147,14 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         hinge_idx = model.joint_label.index("test_degrees/worldbody/base/child1/hinge")
         dof_idx = qd_start[hinge_idx]
 
-        # springref/ref: converted from deg to rad (45 deg -> 45 * pi/180 rad)
-        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], np.deg2rad(45), places=4)
+        # Convert degree references to radians and subtract ref for the rest coordinate.
+        coord_idx = model.joint_q_start.numpy()[hinge_idx]
+        self.assertAlmostEqual(model.joint_rest_q.numpy()[coord_idx], np.deg2rad(45 - 30), places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], np.deg2rad(30), places=4)
 
         # stiffness/damping: MuJoCo stores these in Nm/rad and Nm*s/rad regardless of
         # compiler.angle (velocity is always rad/s internally), so values pass through unchanged.
-        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.joint_stiffness.numpy()[dof_idx], 10.0, places=4)
         self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 5.0, places=4)
 
 
@@ -9534,17 +9536,25 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         np.testing.assert_allclose(m.solimplimit.numpy()[j_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
         np.testing.assert_allclose(m.solreffriction.numpy()[j_def], [0.05, 2.0], atol=1e-4)
         np.testing.assert_allclose(m.solimpfriction.numpy()[j_def], [0.7, 0.85, 0.02, 0.3, 1.5], atol=1e-4)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0, places=5)
+        self.assertAlmostEqual(float(self.model.joint_stiffness.numpy()[j_def]), 2.0, places=5)
         self.assertAlmostEqual(float(self.model.joint_damping.numpy()[j_def]), 3.0, places=5)
-        self.assertAlmostEqual(float(m.dof_springref.numpy()[j_def]), 45.0 * self.DEG2RAD, places=4)
+        self.assertAlmostEqual(
+            float(self.model.joint_rest_q.numpy()[self.model.joint_q_start.numpy()[j_def]]),
+            15.0 * self.DEG2RAD,
+            places=4,
+        )
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_def]), 30.0 * self.DEG2RAD, places=4)
         self.assertEqual(bool(m.jnt_actgravcomp.numpy()[j_def]), True)
 
         j_cls = idx(f"{wb}/b_class/j_class")
         self.assertAlmostEqual(float(m.limit_margin.numpy()[j_cls]), 10.0, places=5)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0, places=5)
+        self.assertAlmostEqual(float(self.model.joint_stiffness.numpy()[j_cls]), 20.0, places=5)
         self.assertAlmostEqual(float(self.model.joint_damping.numpy()[j_cls]), 30.0, places=5)
-        self.assertAlmostEqual(float(m.dof_springref.numpy()[j_cls]), 90.0 * self.DEG2RAD, places=4)
+        self.assertAlmostEqual(
+            float(self.model.joint_rest_q.numpy()[self.model.joint_q_start.numpy()[j_cls]]),
+            30.0 * self.DEG2RAD,
+            places=4,
+        )
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_cls]), 60.0 * self.DEG2RAD, places=4)
 
         j_ovr = idx(f"{wb}/b_class/b_override/j_override")

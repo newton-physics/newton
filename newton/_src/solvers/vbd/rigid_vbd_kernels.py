@@ -4292,8 +4292,8 @@ def _joint_axis_angular_support(
 @wp.kernel
 def init_rod_rest_bend_twist(
     joint_type: wp.array[int],
-    joint_target_q_start: wp.array[int],
-    joint_target_q: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_rest_q: wp.array[float],
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
@@ -4305,12 +4305,12 @@ def init_rod_rest_bend_twist(
     if joint_type[j] != JointType.ROD:
         return
 
-    target_start = joint_target_q_start[j]
+    q_start = joint_q_start[j]
     q_wc_rest = wp.quat(
-        joint_target_q[target_start + 3],
-        joint_target_q[target_start + 4],
-        joint_target_q[target_start + 5],
-        joint_target_q[target_start + 6],
+        joint_rest_q[q_start + 3],
+        joint_rest_q[q_start + 4],
+        joint_rest_q[q_start + 5],
+        joint_rest_q[q_start + 6],
     )
     q_wc_rest = wp.normalize(q_wc_rest)
 
@@ -8493,3 +8493,19 @@ def apply_body_truncation_ts(
             half_w = axis * (ta * 0.5)
             q_new = wp.normalize(wp.quat(half_w[0], half_w[1], half_w[2], 1.0) * q_rot)
         body_q[b] = wp.transform(c_new - wp.quat_rotate(q_new, com), q_new)
+
+
+@wp.kernel(enable_backward=False)
+def select_variant_bounding_radius(
+    body_variant: wp.array[wp.int32],
+    variant_radius_start: wp.array[wp.int32],
+    variant_radius: wp.array[float],
+    # outputs
+    rigid_dat_body_bounding_radius: wp.array[float],
+):
+    """Set each body's DAT bounding radius to that of its selected variant."""
+    b = wp.tid()
+    variant = body_variant[b]
+    start = variant_radius_start[b]
+    if variant >= 0 and start >= 0:
+        rigid_dat_body_bounding_radius[b] = variant_radius[start + variant]
