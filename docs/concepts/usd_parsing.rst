@@ -463,6 +463,11 @@ under ``attachment_particle_body_indices`` in that prim's ``path_attachment_attr
 Hard attachments (unauthored or infinite stiffness) warn and are preserved as unsupported
 metadata instead of becoming compliant springs.
 
+With ``override_root_xform=True``, only the articulation is moved to the import ``xform``.
+Cloth and volume deformables keep their composed USD pose. The attachment anchor is
+still correct in the body frame, but the deformable and the anchor start apart, so the
+attachment pulls them together on the first step.
+
 For these experimental cloth/volume attachments, Newton interprets finite
 ``physics:stiffness`` as a point-spring stiffness [N/m] and ``physics:damping`` as an absolute
 damping coefficient [N·s/m], matching the builder API. The pinned proposal describes attachment

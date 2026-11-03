@@ -756,8 +756,10 @@ def _resolve_attachment_target(
     body = ctx.path_body_map.get(body_path)
     if body is None:
         return None
-    # The source body pose shares the target's USD world frame; the builder pose may be rebased.
-    body_point = wp.transform_point(wp.transform_inverse(ctx.body_source_xforms[body_path]), world_point)
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    body_xform = ctx.incoming_world_xform * usd.get_transform(ctx.stage.GetPrimAtPath(body_path), local=False)
+    body_point = wp.transform_point(wp.transform_inverse(body_xform), world_point)
     return body, body_point
 
 
@@ -1471,8 +1473,6 @@ class _DeformableImportContext:
     ignore_paths: Sequence[str]
     verbose: bool
     path_body_map: dict
-    body_source_xforms: dict[str, wp.transform]
-    """USD physics body poses after the import transform, before articulation-root rebasing."""
     path_shape_map: dict
     path_cable_map: dict
     path_cable_attrs: dict
