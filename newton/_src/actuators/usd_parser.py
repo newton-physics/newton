@@ -16,7 +16,7 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
-from .utils import _looks_like_torch_checkpoint, load_metadata
+from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
 
 _DEPRECATED_UNSET = object()
 _COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG = (
@@ -316,6 +316,9 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             checkpoints: ``torch.export.load`` may execute code during model
             finalization. Defaults to ``False``.
 
+            .. deprecated:: 1.8
+                Torch checkpoints are deprecated; export the network to ONNX.
+
     Raises:
         ValueError: If the prim is a ``NewtonActuator`` but:
             - has no authored ``newton:targets`` relationship,
@@ -328,6 +331,8 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     """
     if prim.GetTypeName() != SchemaNames.ACTUATOR:
         return None
+    if allow_unsafe_torch_checkpoints:
+        warnings.warn(_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
 
     target_paths = _get_relationship_targets(prim, "newton:targets")
     if not target_paths:

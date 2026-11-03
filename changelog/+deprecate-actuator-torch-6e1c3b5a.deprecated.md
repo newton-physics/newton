@@ -1,0 +1,1 @@
+Deprecate Torch checkpoints (`.pt2`, `.pt`, `.pth`) in `DriveNeuralMLP` and `DriveNeuralLSTM`, and the `allow_unsafe_torch_checkpoints` option of `ModelBuilder.add_usd()` and `parse_actuator_prim()`. Export the network to ONNX with `torch.onnx.export` and load the `.onnx` file instead.

@@ -4919,6 +4919,9 @@ class ModelBuilder:
                 checkpoints: loading a Torch checkpoint may execute code during
                 :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
+                .. deprecated:: 1.8
+                    Torch checkpoints are deprecated; export the network to ONNX.
+
         Returns:
             .. experimental::
 

@@ -331,6 +331,11 @@ checkpoint. This does not rewrite batch sizes embedded in graph operations
 such as ``Reshape``; re-export those models with dynamic batch axes when
 running a different number of actuators.
 
+.. deprecated:: 1.8
+   Torch checkpoints and ``allow_unsafe_torch_checkpoints`` are deprecated and
+   will be removed in a future release. Export the network to ONNX with
+   ``torch.onnx.export`` instead.
+
 Torch checkpoints must be pt2 archives saved with ``torch.export.save``.
 Use the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
 archives.
