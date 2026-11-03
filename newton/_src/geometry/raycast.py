@@ -275,7 +275,10 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
         for i in range(3):
             if wp.abs(ray_direction[i]) >= MINVAL:
                 face_t = entry[i] if t_near >= 0.0 else exit[i]
-                if wp.abs(face_t - t_hit) < EPSILON:
+                # Compare in spatial units so rescaling the ray does not widen
+                # the tie window. Scale before squaring to avoid length overflow.
+                separation = (face_t - t_hit) * ray_direction
+                if wp.dot(separation, separation) < EPSILON * EPSILON:
                     sign = -1.0 if ray_direction[i] > 0.0 else 1.0
                     normal_local[i] = sign if t_near >= 0.0 else -sign
         normal = wp.normalize(normal_local)

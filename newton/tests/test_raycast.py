@@ -167,7 +167,7 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
                 test.assertAlmostEqual(float(out_t.numpy()[0]), 1.0, delta=1e-6)
                 np.testing.assert_allclose(out_n.numpy()[0], np.abs(ray_direction) / np.sqrt(count), atol=1e-6)
 
-    # Near ties use the slab-distance tolerance, even when a reconstructed
+    # Near ties use a spatial-distance tolerance, even when a reconstructed
     # face point would round just outside the other slab.
     for offset, expected_normal in ((5e-7, [2**-0.5, 2**-0.5, 0.0]), (2e-6, [0.0, 1.0, 0.0])):
         with test.subTest(near_tie_offset=offset):
@@ -188,6 +188,31 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
             )
             test.assertAlmostEqual(float(out_t.numpy()[0]), 1.0 + offset, delta=2e-7)
             np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
+
+    # Rescaling a ray changes its hit parameter, not its hit face. Include a
+    # scale whose squared direction length overflows float32.
+    for direction_scale in (1.0, 1e8, 1e20):
+        for inside in (False, True):
+            origin = wp.vec3(0.0) if inside else wp.vec3(2.0, 1.5, 0.0)
+            direction_sign = 1.0 if inside else -1.0
+            with test.subTest(direction_scale=direction_scale, inside=inside):
+                wp.launch(
+                    kernel_test_geom,
+                    dim=1,
+                    inputs=[
+                        out_t,
+                        out_n,
+                        identity,
+                        size,
+                        GeoType.BOX,
+                        origin,
+                        wp.vec3(direction_sign * direction_scale, direction_sign * 0.6 * direction_scale, 0.0),
+                        0,
+                    ],
+                    device=device,
+                )
+                test.assertAlmostEqual(float(out_t.numpy()[0]) * direction_scale, 1.0, delta=2e-6)
+                np.testing.assert_allclose(out_n.numpy()[0], [1.0, 0.0, 0.0], atol=1e-6)
 
     with test.subTest(small_direction=True):
         wp.launch(
