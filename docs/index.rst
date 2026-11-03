@@ -32,6 +32,8 @@ Newton Physics
    Worlds <concepts/worlds>
    Articulations <concepts/articulations>
    Deformable Objects <concepts/deformable_objects>
+   Selection API <concepts/selection>
+   Deformable Selection <concepts/deformable_selection>
    Mass and Inertia <concepts/mass_inertia>
    Sites <concepts/sites>
    Sensors <concepts/sensors>
@@ -40,6 +42,7 @@ Newton Physics
    Custom Attributes <concepts/custom_attributes>
    Solver Observables <concepts/solver_observables>
    Collisions and Contacts <concepts/collisions>
+   Deterministic Simulation <concepts/determinism>
    Simulation Tuning <concepts/simulation_tuning>
    Coupled Solvers <concepts/coupling>
    Actuators <concepts/actuators>

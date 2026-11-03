@@ -51,15 +51,27 @@ _SUPPORTED_TYPES = (
 
 
 def configure_contact_torsion(solver):
-    """Enable contact torsion when any shape has a positive torsion radius, and validate the radii."""
+    """Enable contact torsion when any shape has a positive torsion radius, and validate the radii.
+
+    A body variant row takes the radius and type of the variant shape it holds, so each row is
+    checked with every variant shape it can hold.
+    """
+    model = solver.model
     radius_array = solver._contact_torsion_shape_radius
     radii = radius_array.numpy() if radius_array is not None else np.zeros(0, dtype=np.float32)
+    types = model.shape_type.numpy()
+    shapes = np.arange(len(radii))
+    variant_radius = model._variant_shape_custom.get("steel:min_torsional_patch_radius")
+    if radius_array is not None and variant_radius is not None:
+        rows, options = model._variant_row_options()
+        radii = np.concatenate((radii, variant_radius[0].numpy()[options]))
+        types = np.concatenate((types, model._variant_shape_geometry["shape_type"].numpy()[options]))
+        shapes = np.concatenate((shapes, rows))
     if not np.all(np.isfinite(radii)) or np.any(radii < 0.0):
         raise ValueError("steel:min_torsional_patch_radius must be finite and non-negative [m]")
     enabled = bool(np.any(radii > 0.0))
     if enabled:
-        types = solver.model.shape_type.numpy()
-        unsupported = np.flatnonzero((radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)).tolist()
+        unsupported = np.unique(shapes[(radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)]).tolist()
         if unsupported:
             raise ValueError(f"Contact torsion does not support the geometry of shapes {unsupported}")
     solver._contact_torsion_enabled = enabled
@@ -354,7 +366,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     membership = np.full(solver._contact_torsion_group.shape, -1, dtype=np.int32)
     fields = {
         key: getattr(solver, f"_{key}").numpy()
-        for key in ("row_type", "row_parent", "row_mu", "phi", "target_velocity", "row_restitution")
+        for key in ("row_type", "row_parent", "row_mu", "phi", "target_velocity", "row_rebound_velocity")
     }
     jacobians = {size: array.numpy() for size, array in solver._J_by_size.items()}
     body_joint = solver._body_to_joint.numpy()
@@ -506,12 +518,7 @@ def torque_sweep_source(dofs):
                 float dot = 0.0f;
                 for (int d = lane; d < {dofs}; d += 32)
                     dot += J_world.data[jy_world_base + spin * {dofs} + d] * s_v[d];
-                dot += __shfl_down_sync(MASK, dot, 16);
-                dot += __shfl_down_sync(MASK, dot, 8);
-                dot += __shfl_down_sync(MASK, dot, 4);
-                dot += __shfl_down_sync(MASK, dot, 2);
-                dot += __shfl_down_sync(MASK, dot, 1);
-                float residual = __shfl_sync(MASK, dot, 0) + rhs_bias.data[off_dense + spin];
+                float residual = warp_sum(dot) + rhs_bias.data[off_dense + spin];
                 float old = s_lam_dense[spin];
                 float diagonal = world_diag.data[off_dense + spin];
                 float trial = diagonal > 0.0f ? old - omega * residual / diagonal : 0.0f;

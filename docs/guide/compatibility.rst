@@ -26,7 +26,8 @@ Newton releases are tested on the following configurations:
    * - GPU
      - NVIDIA Ada Lovelace, Blackwell
    * - Python
-     - 3.10+; full tests use ``.python-version``; CI imports 3.10-3.14 and resolves deps on 3.10-3.13
+     - 3.10+ (3.10 support is deprecated; removal planned for Newton 1.9; use 3.11+).
+       Full tests use ``.python-version``; CI imports 3.10-3.14 and resolves deps on 3.10-3.13.
    * - Dependencies
      - Latest known-good versions are pinned in the release branch's ``uv.lock``
    * - CUDA

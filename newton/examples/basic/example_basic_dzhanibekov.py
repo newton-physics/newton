@@ -1,20 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Dzhanibekov
-#
-# Demonstrates the Dzhanibekov effect on a free T-shaped rigid body.
-# The body is composed of a horizontal bar (一) and a vertical stem (|).
-# The initial angular velocity is about the stem axis, gravity is
-# disabled, and the body is advanced by a rigid-body solver.
-#
-# Command: python -m newton.examples basic_dzhanibekov
-# XPBD: python -m newton.examples basic_dzhanibekov --solver xpbd
-# MuJoCo: python -m newton.examples basic_dzhanibekov --solver mujoco
-# Kamino: python -m newton.examples basic_dzhanibekov --solver kamino
-#
-###########################################################################
+"""Example Basic Dzhanibekov
+
+Demonstrates the Dzhanibekov effect on a free T-shaped rigid body.
+The body is composed of a horizontal bar (一) and a vertical stem (|).
+The initial angular velocity is about the stem axis, gravity is
+disabled, and the body is advanced by a rigid-body solver.
+
+Success criteria:
+- The T-shaped body rotates freely and undergoes an intermediate-axis flip rather than falling under
+  gravity.
+- The center of mass stays in place and rotation remains bounded without visible energy growth.
+
+Runs:
+- `python -m newton.examples basic_dzhanibekov`
+- `python -m newton.examples basic_dzhanibekov --solver xpbd`
+- `python -m newton.examples basic_dzhanibekov --solver mujoco`
+- `python -m newton.examples basic_dzhanibekov --solver kamino`
+"""
 
 import numpy as np
 import warp as wp

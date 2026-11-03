@@ -12,6 +12,7 @@ import warp as wp
 from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_convex import ConvexQueryResult, create_write_convex_query_result
 from ..geometry.collision_core import (
+    MINKOWSKI_CORE_RADIUS,
     check_infinite_plane_bsphere_overlap,
     compute_bounding_sphere_from_aabb,
     compute_tight_aabb_from_support,
@@ -317,13 +318,12 @@ def create_prepare_convex_pair(external_aabb: bool, speculative: bool = False):
 
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
-        small_radius = 0.0001
         if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
             radius_eff_a = geom_a.scale[0]
-            geom_a.scale[0] = small_radius
+            geom_a.scale[0] = MINKOWSKI_CORE_RADIUS
         if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
             radius_eff_b = geom_b.scale[0]
-            geom_b.scale[0] = small_radius
+            geom_b.scale[0] = MINKOWSKI_CORE_RADIUS
 
         margin_sum = margin_a + margin_b
         eps = 1.0e-4
@@ -1531,17 +1531,18 @@ def create_narrow_phase_kernels_gjk_mpr_split(
             # refinements the back.
             num_distance = wp.min(gjk_work_items.shape[0], gjk_work_count[0])
             num_work_items = num_distance
-            # A refinement's box-hull certificate loops over the whole hull.
-            # Few pairs need it, so each takes a thread block that splits that
-            # loop; the first thread runs the remaining serial refinement.
+            # Large accelerated hulls benefit from a cooperative certificate.
+            # Keep small exhaustive-support pairs independent across lanes so
+            # dense refinement queues retain their full pair parallelism.
             lane = int(0)
             first = tid
             stride = total_num_threads
             if wp.static(refine_overlap):
                 num_work_items = wp.min(gjk_work_items.shape[0] - num_distance, gjk_work_count[1])
-                lane = tid % wp.block_dim()
-                first = tid / wp.block_dim()
-                stride = total_num_threads / wp.block_dim()
+                if wp.static(accelerated_support):
+                    lane = tid % wp.block_dim()
+                    first = tid / wp.block_dim()
+                    stride = total_num_threads / wp.block_dim()
             for work_index in range(first, num_work_items, stride):
                 pair_index = gjk_work_items[work_index]
                 witnesses_valid = False
@@ -1600,19 +1601,20 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                         certificate_ready = False
                         certificate_normal = wp.vec3(0.0)
                         certificate_depth = float(0.0)
-                        if not separated_pair:
-                            certificate_ready, certificate_normal, certificate_depth = wp.static(
-                                solve_mpr.cooperative_certificate
-                            )(
-                                query.geom_a,
-                                query.geom_b,
-                                query.relative_orientation_b,
-                                query.relative_position_b,
-                                provider,
-                                pending.normal,
-                                lane,
-                                wp.block_dim(),
-                            )
+                        if wp.static(accelerated_support):
+                            if not separated_pair:
+                                certificate_ready, certificate_normal, certificate_depth = wp.static(
+                                    solve_mpr.cooperative_certificate
+                                )(
+                                    query.geom_a,
+                                    query.geom_b,
+                                    query.relative_orientation_b,
+                                    query.relative_position_b,
+                                    provider,
+                                    pending.normal,
+                                    lane,
+                                    wp.block_dim(),
+                                )
                         if lane == 0:
                             penetration = float(0.0)
                             if separated_pair:
