@@ -779,15 +779,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 atomics in every other mode. Self-contact forces are
                 accumulated with atomics in every mode; the deterministic
                 lowering covers them while every stored pair has its own
-                thread, that is while the pair capacity of each family (budget
-                times element count) stays within the per-pair launch size
-                (2048 threads per SM on CUDA). Above that the strided pair
-                loops revisit the atomic sites, Warp's static per-thread record
-                bound no longer holds and the deterministic buffers can
-                overflow, which Warp reports only with
-                ``wp.config.deterministic_debug`` enabled. Raise
-                ``wp.config.deterministic_max_records`` to cover such scenes,
-                or keep self-contact in ``NOT_GUARANTEED`` mode.
+                thread, that is while each family stores at most as many
+                pairs as the per-pair launch size (2048 threads per SM on
+                CUDA, about 290k pairs on an L40). Above that the strided pair
+                loops revisit the atomic sites and exceed Warp's static record
+                bound: a direct launch raises ``wp.WarpDeterminismError``, and
+                a captured graph replays with dropped records, which Warp
+                reports only with ``wp.config.deterministic_debug`` enabled.
+                The solver sets the record bound of its particle kernel module
+                itself, so ``wp.config.deterministic_max_records`` does not
+                reach these kernels; keep the default ``NOT_GUARANTEED`` mode
+                for scenes that store more self-contact pairs than that.
             enable_fast_math: Compile the particle kernels, the rigid body
                 solve, and the joint dual update with Warp's ``fast_math``
                 (approximate division and square root). Results change at the
@@ -1069,11 +1071,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     attachment_records,
                 )
         # Self-contact forces are accumulated with atomics in every mode. The
-        # deterministic lowering bounds the records per thread statically, which
-        # holds while every stored pair has its own thread (pair capacity within
-        # the launch size, see _update_self_contact_launch_size); larger
-        # capacities revisit the atomic sites and can overflow the deterministic
-        # buffers (see the ``deterministic`` argument docstring).
+        # deterministic lowering sizes its record buffers from the static count
+        # of atomic sites per thread, which holds while every stored pair has
+        # its own thread (stored pairs per family within the launch size, see
+        # _update_self_contact_launch_size); denser scenes revisit the atomic
+        # sites and overflow (see the ``deterministic`` argument docstring).
+        # The bound set here replaces wp.config.deterministic_max_records for
+        # the module; the pooled rows give no per-thread bound to derive.
         if model.particle_count > 0:
             self._set_module_options(
                 {
