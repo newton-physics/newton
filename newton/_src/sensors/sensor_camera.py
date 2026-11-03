@@ -1682,7 +1682,9 @@ class SensorCamera:
             camera_rays = self._camera_rays
             ray_kwargs.update(sample_count=self.sample_count, view_ray_bundle=self._view_ray_bundle)
             if self._ray_mode == SensorCamera.RayMode.ANALYTIC:
-                self._compute_pinhole_params(self._view_pinhole)
+                # Only pinhole views can lack a bundle here; sites index shapes, not cameras.
+                if np.any(self._view_bundle_np < 0):
+                    self._compute_pinhole_params(self._view_pinhole)
                 ray_kwargs["view_pinhole"] = self._view_pinhole
 
         with wp.ScopedTimer("Newton::SensorCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True):
