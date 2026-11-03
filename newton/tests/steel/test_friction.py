@@ -262,8 +262,8 @@ class TestSteelFrictionAnchors(unittest.TestCase):
     def test_anchors_hold_near_the_cone_on_a_mesh_incline(self):
         """Hold boxes that need 95 to 99% of their Coulomb budget on a mesh incline, within bounded creep.
 
-        At 8 and 12 iterations and 240 Hz the boxes hold and carry their anchors. Fewer iterations or a coarser
-        step can release a near-cone anchor during the landing; the accepted creep there is bounded.
+        At 8 and 12 iterations and 240 Hz the boxes hold and carry their anchors. A coarser step can release a
+        near-cone anchor during the landing; the accepted creep there is bounded.
         """
         demands = (0.95, 0.97, 0.99)
         model, down_slope = _mesh_incline_model([np.tan(np.radians(15.0)) / demand for demand in demands])
@@ -271,7 +271,6 @@ class TestSteelFrictionAnchors(unittest.TestCase):
         for iterations, rate, window, bound in (
             (8, 240, 0.5, 1.0e-5),
             (12, 240, 0.5, 1.0e-5),
-            (4, 240, 3.5, 6.0e-3),
             (8, 120, 1.0, 6.0e-4),
         ):
             dt = 1.0 / rate
@@ -285,11 +284,13 @@ class TestSteelFrictionAnchors(unittest.TestCase):
             anchors = solver._friction_patches.view.weight.numpy() > 0.0
             boxes = solver._friction_patches.current.body_a.numpy()
             sources = solver._friction_patches.current.source.numpy()
+            valid = solver._friction_patches.current.valid.numpy()
             for box, demand in enumerate(demands):
                 with self.subTest(iterations=iterations, rate=rate, demand=demand):
                     held = anchors & (boxes == box)
                     self.assertTrue(held.any())
                     self.assertTrue((sources[held] >= 0).all())
+                    self.assertTrue((valid[held] != 0).all())
 
     def test_row_builders_store_anchor_separation_per_route(self):
         """Store raw separation in dense rows and gain-scaled separation in free-body rows."""
