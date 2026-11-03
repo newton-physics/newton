@@ -6062,7 +6062,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         nworld = model.world_count
         attrs = model.mujoco
 
-        def check(source, names, indices=None):
+        def check(source, names, indices=None, *, compiled=False):
             for name in names:
                 attribute = getattr(source, name, None)
                 if attribute is None or attribute.size == 0:
@@ -6073,6 +6073,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     raise ValueError(
                         f"Multi-world CPU mode requires identical shared model parameters across worlds: {name} differs."
                     )
+                if compiled:
+                    self._check_cpu_compiled_value(name, rows)
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             check(model, ("body_mass", "body_inertia", "body_com"))
@@ -6093,6 +6095,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             local_frames = ~((parents[0] < 0) & runtime_pose)
             indices = np.arange(model.joint_count).reshape(nworld, -1)[:, local_frames]
             check(model, ("joint_X_p", "joint_X_c"), indices)
+            runtime_joints = getattr(self, "_cpu_updatable_joint_geometry", None)
+            if runtime_joints is not None:
+                # State-driven roots and CONNECT loops publish their geometry; FIXED loops do not.
+                indices = np.arange(model.joint_count).reshape(nworld, -1)[:, ~runtime_joints]
+                check(model, ("joint_X_p", "joint_X_c"), indices, compiled=True)
+                compiled_axes = np.repeat(~runtime_joints, dof_counts[0])
+                indices = np.arange(model.joint_dof_count).reshape(nworld, -1)[:, compiled_axes]
+                check(model, ("joint_axis",), indices, compiled=True)
 
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES):
             check(model, ("joint_armature",))
@@ -6160,11 +6170,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # slot in every world, and visual-only shapes may not be exported.
             indices = getattr(self, "_cpu_shared_shape_indices", None)
             if indices is not None:
+                check(model, ("shape_scale", "shape_transform"), indices, compiled=True)
+                geom_slots = (model.shape_flags.numpy()[indices[0]] & int(ShapeFlags.SITE)) == 0
+                check(model, ("shape_margin", "shape_gap"), indices[:, geom_slots], compiled=True)
                 check(
                     model,
                     (
-                        "shape_scale",
-                        "shape_transform",
                         "shape_material_mu",
                         "shape_material_mu_torsional",
                         "shape_material_mu_rolling",
@@ -9986,6 +9997,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._kinematic_weld_eq_np = weld_eq
             if np.any(jnt_mocap >= 0):
                 self._jnt_mocap = wp.array(jnt_mocap, dtype=wp.int32)
+            if self.use_mujoco_cpu and model.world_count > 1:
+                self._cpu_updatable_joint_geometry = (
+                    (jnt_mocap >= 0)
+                    | ((joint_type[selected_joints] == JointType.FREE) & (self.mj_q_start.numpy() >= 0))
+                    | np.isin(selected_joints, list(mjc_eq_to_newton_jnt.values()))
+                )
 
             # Create mjc_jnt_to_newton_jnt: MuJoCo[world, joint] -> Newton joint index
             # selected_joints[idx] is the Newton template joint index

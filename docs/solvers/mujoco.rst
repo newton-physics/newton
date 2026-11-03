@@ -912,6 +912,14 @@ Equivalent actuator target encodings remain accepted.
 Standalone nonkinematic fixed roots compile as static bodies; their joint frames
 must match across worlds and cannot change after construction. Fixed roots
 compiled as mocap bodies retain independent, updatable poses.
+Joint frames and axes that define compiled geometry also require rebuilding,
+including world-attached FIXED loop joints. Frames and motion axes consumed by
+FREE or mocap state conversion, and CONNECT-loop anchor updates, remain runtime
+inputs. Exported geom and site sizes and local transforms, and geom margins
+and gaps, require rebuilding.
+This includes shared global shapes; unexported visual geometry is unaffected.
+Ordinary geom contact materials remain updatable through
+:attr:`~newton.ModelFlags.SHAPE_PROPERTIES`.
 Joint state, controls, applied forces, gravity, equality activation, and free or
 mocap root poses remain independent. A scalar ``dof_ref`` is a model reference,
 not an independent runtime pose; it must match across CPU worlds.

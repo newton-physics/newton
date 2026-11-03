@@ -611,6 +611,168 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, field):
                     SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
 
+    def test_cpu_compiled_geometry_edits_require_rebuild(self):
+        """Reject uniform native geometry edits before publishing any notification flags."""
+        flags = newton.ModelFlags
+        cases = (
+            ("joint_X_p", "joint", "body_pos"),
+            ("joint_X_c", "joint", "jnt_pos"),
+            ("joint_axis", "joint", "jnt_axis"),
+            ("shape_scale", "geom", "geom_size"),
+            ("shape_transform", "geom", "geom_pos"),
+            ("shape_margin", "geom", "geom_margin"),
+            ("shape_gap", "geom", "geom_gap"),
+            ("shape_scale", "site", "site_size"),
+            ("shape_transform", "site", "site_pos"),
+            ("shape_transform", "global", "geom_pos"),
+            ("joint_X_p", "loop", "eq_data"),
+        )
+        for name, kind, native_name in cases:
+            with self.subTest(name=name, kind=kind):
+                if kind == "site":
+                    model = self._reference_model()
+                elif kind == "global":
+                    model = _build_two_world_model(device="cpu")
+                elif kind == "loop":
+                    template = newton.ModelBuilder()
+                    root, child = template.add_link(), template.add_link()
+                    template.add_shape_sphere(root, radius=0.1)
+                    template.add_shape_sphere(child, radius=0.1)
+                    root_joint = template.add_joint_revolute(-1, root)
+                    child_joint = template.add_joint_revolute(
+                        root, child, parent_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity())
+                    )
+                    template.add_articulation([root_joint, child_joint])
+                    template.add_joint_fixed(-1, child)
+                    builder = newton.ModelBuilder()
+                    builder.replicate(template, 2)
+                    model = builder.finalize(device="cpu")
+                else:
+                    model = self._scalar_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=True)
+                attribute = getattr(model, name)
+                original = attribute.numpy().copy()
+                values = original.copy()
+                selected = np.ones(len(values), dtype=bool)
+                if kind == "site":
+                    selected = (model.shape_flags.numpy() & int(newton.ShapeFlags.SITE)) != 0
+                elif kind == "global":
+                    selected = model.shape_world.numpy() == -1
+                elif kind == "loop":
+                    selected = model.joint_articulation.numpy() == -1
+                if name == "joint_axis":
+                    values[selected] = (0.0, 1.0, 0.0)
+                elif values.ndim == 1:
+                    values[selected] += 0.01
+                else:
+                    values[selected, 0] += 0.1
+                attribute.assign(values)
+                native_before = getattr(solver.mj_model, native_name).copy()
+                warp_before = getattr(solver.mjw_model, native_name).numpy().copy()
+                mass_before = solver.mj_model.body_mass.copy()
+                model.body_mass.assign(model.body_mass.numpy() * 2)
+                with self.assertRaisesRegex(ValueError, name):
+                    solver.notify_model_changed(
+                        flags.JOINT_PROPERTIES | flags.SHAPE_PROPERTIES | flags.BODY_INERTIAL_PROPERTIES
+                    )
+                np.testing.assert_array_equal(getattr(solver.mj_model, native_name), native_before)
+                np.testing.assert_array_equal(getattr(solver.mjw_model, native_name).numpy(), warp_before)
+                np.testing.assert_array_equal(solver.mj_model.body_mass, mass_before)
+                rebuilt = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=True)
+                self.assertFalse(np.array_equal(getattr(rebuilt.mj_model, native_name), native_before))
+                attribute.assign(original)
+                solver.notify_model_changed(
+                    flags.JOINT_PROPERTIES | flags.SHAPE_PROPERTIES | flags.BODY_INERTIAL_PROPERTIES
+                )
+                np.testing.assert_allclose(solver.mj_model.body_mass, 2 * mass_before)
+
+    def test_cpu_geometry_guards_preserve_runtime_and_unexported_inputs(self):
+        """Preserve free and mocap root motion while allowing unexported visual geometry edits."""
+        template = newton.ModelBuilder()
+        free = template.add_link()
+        template.add_shape_sphere(free, radius=0.1)
+        joint = template.add_joint_free(free)
+        template.add_articulation([joint])
+        mocap = template.add_link(is_kinematic=True)
+        template.add_shape_sphere(mocap, radius=0.1)
+        joint = template.add_joint_fixed(-1, mocap)
+        template.add_articulation([joint])
+        template.add_shape_sphere(
+            free,
+            radius=0.05,
+            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False),
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize(device="cpu")
+        model.gravity.fill_(wp.vec3(0.0))
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nmocap, 1)
+        before = solver.mj_model.geom_pos.copy()
+        for name, component in (("joint_X_p", 0), ("joint_X_c", 1)):
+            attribute = getattr(model, name)
+            values = attribute.numpy().copy()
+            values[:, component] += np.arange(1, model.joint_count + 1) * 0.2
+            attribute.assign(values)
+        visual = (model.shape_flags.numpy() & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0
+        self.assertEqual(np.count_nonzero(visual), 2)
+        for name in ("shape_scale", "shape_transform", "shape_margin", "shape_gap"):
+            attribute = getattr(model, name)
+            values = attribute.numpy().copy()
+            if values.ndim == 1:
+                values[visual] += (0.01, 0.02)
+            else:
+                values[visual, 0] += (0.1, 0.2)
+            attribute.assign(values)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.SHAPE_PROPERTIES)
+        state, out = model.state(), model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        expected = state.body_q.numpy().copy()
+        solver.step(state, out, model.control(), None, 0.001)
+        for world, data in enumerate(solver.mj_data_by_world):
+            body_map = solver.mjc_body_to_newton.numpy()[world]
+            valid = body_map >= 0
+            np.testing.assert_allclose(data.xpos[valid], expected[body_map[valid], :3], atol=1e-6)
+        np.testing.assert_array_equal(solver.mj_model.geom_pos, before)
+
+    def test_cpu_connect_loop_geometry_remains_updatable(self):
+        """Publish supported loop-frame and axis edits to native CONNECT anchors."""
+        template = newton.ModelBuilder()
+        root, child = template.add_link(), template.add_link()
+        template.add_shape_sphere(root, radius=0.1)
+        template.add_shape_sphere(child, radius=0.1)
+        root_joint = template.add_joint_revolute(-1, root)
+        child_joint = template.add_joint_revolute(
+            root, child, parent_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity())
+        )
+        template.add_articulation([root_joint, child_joint])
+        template.add_joint_revolute(-1, child, axis=newton.Axis.X)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        loops = np.flatnonzero(model.joint_articulation.numpy() == -1)
+        for name in ("joint_X_p", "joint_axis"):
+            with self.subTest(name=name):
+                attribute = getattr(model, name)
+                values = attribute.numpy().copy()
+                if name == "joint_X_p":
+                    values[loops, 2] += 0.2
+                else:
+                    values[model.joint_qd_start.numpy()[loops]] = (0.0, 1.0, 0.0)
+                attribute.assign(values)
+                before = solver.mj_model.eq_data.copy()
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                self.assertFalse(np.array_equal(solver.mj_model.eq_data, before))
+                np.testing.assert_allclose(solver.mj_model.eq_data, solver.mjw_model.eq_data.numpy()[0])
+                connect = solver.mj_model.eq_type == SolverMuJoCo.EqType.CONNECT
+                anchors = solver.mj_model.eq_data[connect, :3]
+                self.assertEqual(len(anchors), 2)
+                np.testing.assert_allclose(anchors.mean(axis=0), (0.0, 0.0, 0.2), atol=1e-6)
+                if name == "joint_axis":
+                    self.assertGreater(abs(float(anchors[1, 1] - anchors[0, 1])), 0.0)
+                    np.testing.assert_allclose(anchors[:, 0], 0.0, atol=1e-6)
+
     def test_reject_mismatched_cpu_equality_data(self):
         """Joint/tendon polynomials and imported mimic coefficients share native eq_data."""
         xml = """
