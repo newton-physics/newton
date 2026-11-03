@@ -268,11 +268,11 @@ joints, with the spring and the damper folded into one row
 with :math:`k_t = \mathtt{joint\_target\_ke}`, :math:`d_t =
 \mathtt{joint\_target\_kd}`, and :math:`K_{\text{eff}}, s` formed from
 :math:`K` and the axis metric as above. Limits are unilateral rows at the
-nearer bound with ``joint_limit_ke`` and ``joint_limit_kd``; only forces into
+nearer bound with :attr:`~newton.Model.joint_limit_ke` and :attr:`~newton.Model.joint_limit_kd`; only forces into
 the bound are kept, and the multiplier is projected onto its half-line
 (``_evaluate_limit_axis``, ``_update_limit_lambda``). ROD joints use four rows,
-stretch, shear, bend and twist, with ``joint_target_ke`` and
-``joint_target_kd`` as their stiffness and damping. DISTANCE joints are not
+stretch, shear, bend and twist, with :attr:`~newton.Model.joint_target_ke` and
+:attr:`~newton.Model.joint_target_kd` as their stiffness and damping. DISTANCE joints are not
 supported.
 
 *Body-body contact* is the unilateral row of the same family: :math:`C` is the
@@ -304,32 +304,32 @@ Each energy term depends on a few blocks and on model parameters:
      - Kernel
    * - Membrane
      - the 3 particles of a triangle
-     - ``tri_ke`` (:math:`\mu`), ``tri_ka`` (:math:`\lambda`), ``tri_kd``
+     - :attr:`tri_ke <newton.Model.tri_materials>` (:math:`\mu`), :attr:`tri_ka <newton.Model.tri_materials>` (:math:`\lambda`), :attr:`tri_kd <newton.Model.tri_materials>`
      - ``evaluate_neo_hookean_membrane_force_hessian``
    * - Bending
      - the 4 particles of an interior edge
-     - ``edge_ke``, ``edge_kd``
+     - :attr:`edge_ke <newton.Model.edge_bending_properties>`, :attr:`edge_kd <newton.Model.edge_bending_properties>`
      - ``evaluate_dihedral_angle_based_bending_force_hessian``
    * - Volumetric
      - the 4 particles of a tetrahedron
-     - ``k_mu``, ``k_lambda``, ``k_damp``
+     - :attr:`k_mu <newton.Model.tet_materials>`, :attr:`k_lambda <newton.Model.tet_materials>`, :attr:`k_damp <newton.Model.tet_materials>`
      - ``evaluate_volumetric_neo_hookean_force_and_hessian``
    * - Self-contact, with friction and damping
      - a vertex and a triangle, or two edges, of one particle system
-     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``,
+     - :attr:`~newton.Model.soft_contact_ke`, :attr:`~newton.Model.soft_contact_kd`, :attr:`~newton.Model.soft_contact_mu`,
        ``particle_self_contact_margin``
      - ``evaluate_self_contact_force_norm``, ``compute_friction``, ``damp_collision``
    * - Rigid-soft contact, with friction and damping
      - a particle, or a point on a soft edge or face, and one shape
-     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu`` averaged
-       with the shape ``ke``, ``kd``, ``mu``; ``particle_radius`` and the shape
-       ``margin``
+     - :attr:`~newton.Model.soft_contact_ke`, :attr:`~newton.Model.soft_contact_kd`, :attr:`~newton.Model.soft_contact_mu` averaged
+       with the shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu`; :attr:`~newton.Model.particle_radius` and the shape
+       :attr:`~newton.ModelBuilder.ShapeConfig.margin`
      - ``_compute_body_particle_contact_force``,
        ``compute_projected_isotropic_friction``
    * - Body-body contact, with friction and damping
      - two shapes, on two rigid bodies or on a rigid body and a static shape
-     - shape ``ke``, ``kd``, ``mu`` averaged over the pair; shape radius and
-       ``margin``
+     - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` averaged over the pair; shape radius and
+       :attr:`~newton.ModelBuilder.ShapeConfig.margin`
      - ``evaluate_rigid_contact_from_collision``, ``_compliant_contact_dual_step``
    * - Attachments and springs
      - a particle and a body, or two particles
@@ -353,7 +353,7 @@ energy per unit rest area is the stable Neo-Hookean membrane energy
 
 with :math:`\mu = \mathtt{tri\_ke}` and :math:`\lambda_{\text{NH}} =
 \mathtt{tri\_ka} + \mathtt{tri\_ke}`; the triangle energy is :math:`A_0\,\psi_{\text{m}}`.
-``tri_kd`` damps the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`,
+:attr:`tri_kd <newton.Model.tri_materials>` damps the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`,
 so rigid rotations are not damped. The bending term resists a change of the
 dihedral angle :math:`\theta` across an interior edge of rest length
 :math:`L_0`:
@@ -362,7 +362,7 @@ dihedral angle :math:`\theta` across an interior edge of rest length
 
    E_{\text{b}} = \tfrac{1}{2}\,\mathtt{edge\_ke}\;L_0\,(\theta - \theta_0)^2,
 
-and ``edge_kd`` damps the angle rate with the force
+and :attr:`edge_kd <newton.Model.edge_bending_properties>` damps the angle rate with the force
 :math:`\mathbf{f}_d = -\mathtt{edge\_kd}\,L_0\,\dot\theta\,\partial\theta/\partial\mathbf{x}`,
 where :math:`\dot\theta` is the change of :math:`\theta` over the step divided
 by :math:`h`. The volumetric term is the stable
@@ -375,8 +375,8 @@ Neo-Hookean energy of a tetrahedron of rest volume :math:`V_0`,
 
 with :math:`\mu = \mathtt{k\_mu}`, :math:`\lambda_{\text{NH}} = \mathtt{k\_lambda} +
 \mathtt{k\_mu}`, the same :math:`\alpha`, energy :math:`V_0\,\psi_{\text{v}}`,
-and ``k_damp`` damping the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`
-like ``tri_kd``. In both Neo-Hookean terms the user values are
+and :attr:`k_damp <newton.Model.tet_materials>` damping the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`
+like :attr:`tri_kd <newton.Model.tri_materials>`. In both Neo-Hookean terms the user values are
 Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
 is why :math:`\lambda_{\text{NH}}` carries the extra :math:`\mu`.
 
@@ -435,7 +435,7 @@ soft edge or face; the records come from the collision pipeline. The
 distance is :math:`d = \mathbf{n}\cdot(\mathbf{x} - \mathbf{b})`, with
 :math:`\mathbf{b}` the shape's contact point carried along with its body and
 :math:`\mathbf{n}` the stored contact normal. The interaction distance is
-:math:`r = \mathtt{particle\_radius}` plus the shape ``margin``; an edge or
+:math:`r = \mathtt{particle\_radius}` plus the shape :attr:`~newton.ModelBuilder.ShapeConfig.margin`; an edge or
 face point uses the largest radius among its corners. The material is mixed
 per contact from the two sides (``init_body_particle_contacts``):
 :math:`k = \tfrac{1}{2}(\mathtt{soft\_contact\_ke} + \mathtt{ke}_{\text{shape}})`,
@@ -465,7 +465,7 @@ rigid body and a static shape. It is a constraint row of the rigid solve, not
 a penalty energy. The gap is measured between the two effective surfaces:
 with :math:`\mathbf{p}_0, \mathbf{p}_1` the support points carried along with
 their bodies and :math:`t_0, t_1` the effective thicknesses (shape radius plus
-``margin``, stored by the collision pipeline as ``rigid_contact_margin0`` and
+:attr:`~newton.ModelBuilder.ShapeConfig.margin`, stored by the collision pipeline as ``rigid_contact_margin0`` and
 ``rigid_contact_margin1``), the penetration is
 
 .. math::
@@ -566,7 +566,7 @@ the signed-distance derivative for rows that start inside the plane's band;
 prefix with interval arithmetic (experimental). Without it, a crossing that
 happens and reverses between two sample points can be missed. Full-surface
 mesh contacts name the exact rigid triangle, edge or vertex through
-``Contacts.soft_contact_rigid_indices``; analytic SDF contacts and
+:attr:`~newton.Contacts.soft_contact_rigid_indices`; analytic SDF contacts and
 penetration-recovery contacts truncate only their stored rigid surface point.
 Each body then scales its whole pose update, translation and rotation about
 the centre of mass, by the smallest factor of its contacts
@@ -617,9 +617,9 @@ and the solver, in that order:
        state_in, state_out = state_out, state_in
 
 For rigid joints the solver captures the structural rest pose from
-``model.body_q`` at construction, so the body transforms must match the joint
+:attr:`~newton.Model.body_q` at construction, so the body transforms must match the joint
 angles when the solver is built; ROD rest bend and twist come from
-``model.joint_target_q``.
+:attr:`~newton.Model.joint_target_q`.
 
 With a solver-owned pipeline, ``SolverVBD(model, collision_pipeline=...)``, the
 solver allocates its own contacts buffer, seeds the pipeline's self-contact
@@ -658,12 +658,12 @@ without matching.
 For CUDA graph capture keep the same order, pipeline, contacts, solver, all
 before capture. Body-body contact state is pre-sized from the pipeline's
 published rigid contact maximum and body-particle contact state from the
-particle-shape pair count; both grow from ``Contacts`` on the first step.
+particle-shape pair count; both grow from :class:`~newton.Contacts` on the first step.
 During capture that growth needs Warp's stream-ordered memory pool, otherwise
 the solver raises and asks you to pre-size. ``rigid_contact_history=True``
 needs its warm-start buffers allocated before capture, on every device:
 construct the :class:`~newton.CollisionPipeline` before the solver, which
-publishes ``rigid_contact_max``, or run one uncaptured step first.
+publishes :attr:`~newton.CollisionPipeline.rigid_contact_max`, or run one uncaptured step first.
 
 Start at ``dt`` = 1/600 s with 10 iterations and adjust following
 :ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists the
@@ -680,28 +680,28 @@ The solver reads three systems from the :class:`~newton.Model`:
   :meth:`~newton.ModelBuilder.add_cloth_mesh`,
   :meth:`~newton.ModelBuilder.add_cloth_grid`, or
   :meth:`~newton.ModelBuilder.add_triangle` and
-  :meth:`~newton.ModelBuilder.add_edge`. Material: ``tri_ke``, ``tri_ka`` and
-  ``tri_kd`` per triangle, ``edge_ke`` and ``edge_kd`` per edge, and
-  ``particle_radius`` per particle. ``validate_mesh=True`` runs the
+  :meth:`~newton.ModelBuilder.add_edge`. Material: :attr:`tri_ke <newton.Model.tri_materials>`, :attr:`tri_ka <newton.Model.tri_materials>` and
+  :attr:`tri_kd <newton.Model.tri_materials>` per triangle, :attr:`edge_ke <newton.Model.edge_bending_properties>` and :attr:`edge_kd <newton.Model.edge_bending_properties>` per edge, and
+  :attr:`~newton.Model.particle_radius` per particle. ``validate_mesh=True`` runs the
   element-quality checker.
 - **Soft bodies**: particles with tetrahedra, from
   :meth:`~newton.ModelBuilder.add_soft_mesh`,
   :meth:`~newton.ModelBuilder.add_soft_grid` or
-  :meth:`~newton.ModelBuilder.add_tetrahedron`. Material: ``k_mu``,
-  ``k_lambda`` and ``k_damp`` per tetrahedron. The surface triangles take part
+  :meth:`~newton.ModelBuilder.add_tetrahedron`. Material: :attr:`k_mu <newton.Model.tet_materials>`,
+  :attr:`k_lambda <newton.Model.tet_materials>` and :attr:`k_damp <newton.Model.tet_materials>` per tetrahedron. The surface triangles take part
   in self-contact and rigid-soft contact.
 - **Rigid bodies**: :meth:`~newton.ModelBuilder.add_body` with shapes, and
   joints of type BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6 and ROD
   (:meth:`~newton.ModelBuilder.add_joint_rod` for cables). DISTANCE joints are
-  not supported. Shape materials ``ke``, ``kd``, ``mu`` and ``margin`` come
+  not supported. Shape materials :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` and :attr:`~newton.ModelBuilder.ShapeConfig.margin` come
   from :class:`~newton.ModelBuilder.ShapeConfig`. Drives and limits read
-  ``joint_target_ke``, ``joint_target_kd``, ``joint_limit_lower``,
-  ``joint_limit_upper``, ``joint_limit_ke`` and ``joint_limit_kd``.
+  :attr:`~newton.Model.joint_target_ke`, :attr:`~newton.Model.joint_target_kd`, :attr:`~newton.Model.joint_limit_lower`,
+  :attr:`~newton.Model.joint_limit_upper`, :attr:`~newton.Model.joint_limit_ke` and :attr:`~newton.Model.joint_limit_kd`.
 
 Springs (:meth:`~newton.ModelBuilder.add_spring`) and particle-body
 attachments (:meth:`~newton.ModelBuilder.add_attachment_particle_body`) connect
 the systems. The contact material between particles and shapes mixes
-``soft_contact_ke``, ``soft_contact_kd`` and ``soft_contact_mu`` on the Model
+:attr:`~newton.Model.soft_contact_ke`, :attr:`~newton.Model.soft_contact_kd` and :attr:`~newton.Model.soft_contact_mu` on the Model
 with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
 :ref:`Tuning VBD` gives the effect and typical values of each of these.
 
@@ -795,8 +795,8 @@ schedule of the ``SOFT_SELF_CONTACT`` collision slot, by default before and
 after the inertial step of every substep. Rigid-soft records (particles, and
 with ``enable_rigid_soft_full_surface_contact`` also soft edges and faces) and
 body-body records come from the :class:`~newton.CollisionPipeline`, which
-detects out to its ``soft_contact_gap`` beyond ``particle_radius`` plus the
-shape ``margin`` and carries the shape thicknesses of body-body pairs. With a
+detects out to its ``soft_contact_gap`` beyond :attr:`~newton.Model.particle_radius` plus the
+shape :attr:`~newton.ModelBuilder.ShapeConfig.margin` and carries the shape thicknesses of body-body pairs. With a
 solver-owned pipeline the rigid slot follows ``collision_frequency_type`` as
 well.
 

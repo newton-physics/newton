@@ -161,9 +161,9 @@ Model parameters are set when the geometry is added, through
 :meth:`~newton.ModelBuilder.add_soft_mesh` and
 :meth:`~newton.ModelBuilder.add_soft_grid`, under the names below. After
 :meth:`~newton.ModelBuilder.finalize` they live on the :class:`~newton.Model`
-as the arrays ``tri_materials``, ``edge_bending_properties``,
-``tet_materials``, ``particle_radius`` and ``particle_mass``, and as the
-scalars ``soft_contact_ke``, ``soft_contact_kd`` and ``soft_contact_mu``. The
+as the arrays :attr:`~newton.Model.tri_materials`, :attr:`~newton.Model.edge_bending_properties`,
+:attr:`~newton.Model.tet_materials`, :attr:`~newton.Model.particle_radius` and :attr:`~newton.Model.particle_mass`, and as the
+scalars :attr:`~newton.Model.soft_contact_ke`, :attr:`~newton.Model.soft_contact_kd` and :attr:`~newton.Model.soft_contact_mu`. The
 formulas they enter are in :ref:`vbd-energy-terms`.
 
 .. list-table::
@@ -175,54 +175,54 @@ formulas they enter are in :ref:`vbd-energy-terms`.
      - What it controls
      - Raise when
      - Cost or risk
-   * - ``tri_ke``, ``tri_ka`` [N/m]
+   * - :attr:`tri_ke <newton.Model.tri_materials>`, :attr:`tri_ka <newton.Model.tri_materials>` [N/m]
      - Membrane stretch and area stiffness (:math:`\mu` and :math:`\lambda`
        per unit area of the stable Neo-Hookean membrane).
      - Cloth stretches visibly under its own weight.
      - Above about 1e6, slow convergence and jitter under contact; stiffening
        only the membrane moves deformation into bending (see
        :ref:`vbd-fail-membrane-only`).
-   * - ``tri_kd``
+   * - :attr:`tri_kd <newton.Model.tri_materials>`
      - Membrane damping.
      - In-plane ringing after impacts.
      - Overdamped, slow drape.
-   * - ``edge_ke`` [N]
+   * - :attr:`edge_ke <newton.Model.edge_bending_properties>` [N]
      - Bending stiffness of the dihedral hinge.
      - Cloth folds too sharply or looks too limp.
      - Stiff hinges need more iterations; raise membrane and bending together
        for a stiffer object.
-   * - ``edge_kd``
+   * - :attr:`edge_kd <newton.Model.edge_bending_properties>`
      - Bending damping.
      - Bending jitter; first knob of the jitter pipeline for cloth without
        contacts.
      - Slow unfolding.
-   * - ``k_mu``, ``k_lambda`` [Pa]
+   * - :attr:`k_mu <newton.Model.tet_materials>`, :attr:`k_lambda <newton.Model.tet_materials>` [Pa]
      - Volumetric Neo-Hookean shear and volume stiffness.
      - A soft body sags or inverts too easily.
-     - Same ceiling as the membrane; ``k_lambda`` far above ``k_mu`` makes a
+     - Same ceiling as the membrane; :attr:`k_lambda <newton.Model.tet_materials>` far above :attr:`k_mu <newton.Model.tet_materials>` makes a
        stiff local system.
-   * - ``k_damp`` [Pa s]
+   * - :attr:`k_damp <newton.Model.tet_materials>` [Pa s]
      - Volumetric viscous damping.
      - Soft-body jitter; the soft-body knob of the jitter pipeline.
      - Slow recovery.
-   * - ``soft_contact_ke`` [N/m]
-     - Contact stiffness for self-contact; averaged with the shape ``ke`` for
+   * - :attr:`~newton.Model.soft_contact_ke` [N/m]
+     - Contact stiffness for self-contact; averaged with the shape :attr:`~newton.ModelBuilder.ShapeConfig.ke` for
        rigid-soft contact.
      - Penetration between layers or into shapes that the fix below does not
        cure.
      - Keep within about 10x the elastic stiffness; see
        :ref:`vbd-fail-contact-stiffness`.
-   * - ``soft_contact_kd``
+   * - :attr:`~newton.Model.soft_contact_kd`
      - Contact damping on the gap rate, active only while approaching.
      - Contact jitter; second knob of the jitter pipeline.
      - Shrinks each correction by enlarging the local matrix; too much slows
        settling.
-   * - ``soft_contact_mu``
-     - Friction coefficient (geometric mean with the shape ``mu`` for
+   * - :attr:`~newton.Model.soft_contact_mu`
+     - Friction coefficient (geometric mean with the shape :attr:`~newton.ModelBuilder.ShapeConfig.mu` for
        rigid-soft contact).
      - Cloth slides off a gripper.
      - Sticking, slow sliding.
-   * - ``particle_radius`` [m]
+   * - :attr:`~newton.Model.particle_radius` [m]
      - The particle's half of the rigid-soft interaction distance; also the
        resting offset from shapes.
      - Cloth sinks into shapes.
@@ -233,14 +233,14 @@ formulas they enter are in :ref:`vbd-energy-terms`.
      - Never as a fix; set it from the real object.
      - Too small a mass is an explosion cause; see
        :ref:`vbd-explosion-checklist`.
-   * - shape ``ke``, ``kd``, ``mu``, ``margin``
+   * - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu`, :attr:`~newton.ModelBuilder.ShapeConfig.margin`
        (:class:`~newton.ModelBuilder.ShapeConfig`)
      - The shape's half of the rigid-soft material and distance.
-     - Set once per object; the shape ``margin`` adds to the interaction
+     - Set once per object; the shape :attr:`~newton.ModelBuilder.ShapeConfig.margin` adds to the interaction
        distance.
-     - ``ke`` and ``kd`` are averaged with the particle side; ``mu`` is the
+     - :attr:`~newton.ModelBuilder.ShapeConfig.ke` and :attr:`~newton.ModelBuilder.ShapeConfig.kd` are averaged with the particle side; :attr:`~newton.ModelBuilder.ShapeConfig.mu` is the
        geometric mean, so a zero on either side removes friction. The shape
-       ``gap`` is a rigid-rigid broad-phase setting and does not enter
+       :attr:`~newton.ModelBuilder.ShapeConfig.gap` is a rigid-rigid broad-phase setting and does not enter
        rigid-soft detection, which uses ``soft_contact_gap``.
    * - ``CollisionPipeline(soft_contact_gap=...)`` (0.01)
      - Rigid-soft detection slack, added on top of particle radius plus shape
@@ -288,7 +288,7 @@ edges or faces against a body or static shape.
    distance and ``particle_self_contact_gap`` is added on top of it: the two
    stacked arrows sum to the query radius, drawn once more as the horizontal
    arrow. Right: rigid-soft contact, with the particle resting at the
-   interaction distance ``particle_radius`` plus the shape ``margin``; the
+   interaction distance :attr:`~newton.Model.particle_radius` plus the shape :attr:`~newton.ModelBuilder.ShapeConfig.margin`; the
    pipeline's ``soft_contact_gap`` is a detection band beyond that.
 
 For self-contact the solver reads the two values from its constructor and
@@ -469,13 +469,13 @@ Work through these steps in order and stop at the first one that fixes it.
 
 1. If the scene has self-contacts, check whether the self-contact stiffness is
    disproportionately high. Keep the collision stiffness within 10x of the
-   elasticity stiffness: ``soft_contact_ke`` against ``tri_ke`` for cloth or
-   ``k_mu`` for soft bodies. This is the stiffness ratio
+   elasticity stiffness: :attr:`~newton.Model.soft_contact_ke` against :attr:`tri_ke <newton.Model.tri_materials>` for cloth or
+   :attr:`k_mu <newton.Model.tet_materials>` for soft bodies. This is the stiffness ratio
    (:ref:`vbd-stiffness-ratio`).
-2. If not fixed, tune the self-contact damping, ``soft_contact_kd``.
+2. If not fixed, tune the self-contact damping, :attr:`~newton.Model.soft_contact_kd`.
 3. If it is still not fixed, or there is no contact, increase the elasticity
-   damping: bending damping ``edge_kd`` for cloth, tet damping ``k_damp`` for
-   soft bodies, and ``joint_target_kd`` if the scene has articulations (see
+   damping: bending damping :attr:`edge_kd <newton.Model.edge_bending_properties>` for cloth, tet damping :attr:`k_damp <newton.Model.tet_materials>` for
+   soft bodies, and :attr:`~newton.Model.joint_target_kd` if the scene has articulations (see
    :ref:`Tuning Solver Reference`).
 4. Increasing the iterations or the collision detection frequency also helps,
    but both increase the computational cost. Only use them as the last resort.
@@ -541,7 +541,7 @@ buckles more.
 same local system, so one stiffness far above the others impedes the overall
 convergence and makes some of the elasticity look less stiff. The pair depends
 on the scene: contact against the elasticity of the material it presses on,
-membrane against bending, volume against shear (the ``k_mu``, ``k_lambda`` row
+membrane against bending, volume against shear (the :attr:`k_mu <newton.Model.tet_materials>`, :attr:`k_lambda <newton.Model.tet_materials>` row
 of the model table), and in general any two terms that share vertices.
 
 **Fix.** Keep the stiffnesses of terms that share vertices within about 10x of
@@ -561,8 +561,8 @@ motion is fast, local, and does not settle when you add iterations.
 **Cause.** The stiffness ratio: the contact stiffness is too high compared to
 the elasticity.
 
-**Fix.** Bring ``soft_contact_ke`` to within about 10x of the membrane
-stiffness (``tri_ke``) or the volumetric stiffness (``k_mu``), then check that
+**Fix.** Bring :attr:`~newton.Model.soft_contact_ke` to within about 10x of the membrane
+stiffness (:attr:`tri_ke <newton.Model.tri_materials>`) or the volumetric stiffness (:attr:`k_mu <newton.Model.tet_materials>`), then check that
 grasps still hold. Lower contact stiffness also means lower friction force, so
 a grasp can slip; in the pouch scene below, lowering the contact stiffness to
 2x the membrane stiffness lost the grasp.
@@ -604,21 +604,21 @@ over 0.1 s was 0.123 m/s at 20 iterations, 0.023 m/s at 40, 0.141 m/s at 100
 and 0.205 m/s at 200.
 
 **Reproduce.** A similar setup is ``example_vbd_soft_rigid_contact`` with
-``soft_contact_ke`` raised from 1e5 to 1e6 while ``cloth_tri_ke`` stays at 1e5.
+:attr:`~newton.Model.soft_contact_ke` raised from 1e5 to 1e6 while ``cloth_tri_ke`` stays at 1e5.
 
 .. _vbd-fail-membrane-only:
 
 Example 2: stiffening only the membrane does not stiffen the object
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-**Symptom.** You raise ``tri_ke`` and ``tri_ka`` by orders of magnitude and the
+**Symptom.** You raise :attr:`tri_ke <newton.Model.tri_materials>` and :attr:`tri_ka <newton.Model.tri_materials>` by orders of magnitude and the
 object still wobbles; at the highest values it buckles and wrinkles more.
 
 **Cause.** The stiffness ratio: the membrane is far stiffer than bending. Once
 the membrane is near inextensible, the deformation energy moves into bending,
 which stayed soft.
 
-**Fix.** Scale ``edge_ke`` together with ``tri_ke`` and ``tri_ka``. Stiffening
+**Fix.** Scale :attr:`edge_ke <newton.Model.edge_bending_properties>` together with :attr:`tri_ke <newton.Model.tri_materials>` and :attr:`tri_ka <newton.Model.tri_materials>`. Stiffening
 both gives a monotonic stiffening with diminishing returns past the baseline.
 
 .. figure:: ../images/vbd_tuning_bag_stretch_sweep.gif
@@ -628,7 +628,7 @@ both gives a monotonic stiffening with diminishing returns past the baseline.
 
    A bag with rigid contents, pinned at the rim, rim driven sideways at
    0.85 Hz, seconds 3 to 6 of the run. Only the membrane stiffness changes,
-   ``edge_ke`` stays at 200 N. ``dt`` = 1/600 s, 10 iterations. The x100 bag
+   :attr:`edge_ke <newton.Model.edge_bending_properties>` stays at 200 N. ``dt`` = 1/600 s, 10 iterations. The x100 bag
    buckles at the bottom. The scene is a test scene, not a shipped example.
 
 .. list-table::
@@ -666,13 +666,13 @@ both gives a monotonic stiffening with diminishing returns past the baseline.
      - 0.006
      - 0.015
 
-Baseline x1: ``tri_ke`` 1e5, ``tri_ka`` 2e4, ``edge_ke`` 200. Scores are mean
+Baseline x1: :attr:`tri_ke <newton.Model.tri_materials>` 1e5, :attr:`tri_ka <newton.Model.tri_materials>` 2e4, :attr:`edge_ke <newton.Model.edge_bending_properties>` 200. Scores are mean
 deformation measures over the last second of each run; lower means stiffer.
 Scaling only the membrane leaves the stretch score flat from x1 on and raises
 the bend score twelve-fold. Scaling both keeps every score flat.
 
-**Reproduce.** A similar setup is ``example_cloth_hanging`` with ``tri_ke`` and
-``tri_ka`` multiplied by 100 and ``edge_ke`` unchanged, compared with all
+**Reproduce.** A similar setup is ``example_cloth_hanging`` with :attr:`tri_ke <newton.Model.tri_materials>` and
+:attr:`tri_ka <newton.Model.tri_materials>` multiplied by 100 and :attr:`edge_ke <newton.Model.edge_bending_properties>` unchanged, compared with all
 three multiplied.
 
 .. _vbd-fail-resolution:
@@ -872,81 +872,81 @@ material measurement.
      - Resembles
    * - Cloth drape
        (`cloth_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_hanging.py>`__)
-     - grid cells 0.1 m, 0.1 kg per particle; ``tri_ke`` 1e3, ``tri_ka`` 1e3,
-       ``tri_kd`` 1e2, ``edge_ke`` 10, ``edge_kd`` 0
-     - radius 0.05, margin 0.02, gap 0.01; ``soft_contact_ke`` 1e2, ``kd``
+     - grid cells 0.1 m, 0.1 kg per particle; :attr:`tri_ke <newton.Model.tri_materials>` 1e3, :attr:`tri_ka <newton.Model.tri_materials>` 1e3,
+       :attr:`tri_kd <newton.Model.tri_materials>` 1e2, :attr:`edge_ke <newton.Model.edge_bending_properties>` 10, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0
+     - radius 0.05, margin 0.02, gap 0.01; :attr:`~newton.Model.soft_contact_ke` 1e2, ``kd``
        1e2, ``mu`` 1
      - 1/600, 10
      - heavy cotton sheet at a coarse scale
    * - Cloth with a robot
        (`cloth_franka <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_franka.py>`__,
        scene in centimetres)
-     - density 0.02; ``tri_ke`` 1e4, ``tri_ka`` 1e4, ``tri_kd`` 1.5e-2,
-       ``edge_ke`` 5, ``edge_kd`` 0.5
+     - density 0.02; :attr:`tri_ke <newton.Model.tri_materials>` 1e4, :attr:`tri_ka <newton.Model.tri_materials>` 1e4, :attr:`tri_kd <newton.Model.tri_materials>` 1.5e-2,
+       :attr:`edge_ke <newton.Model.edge_bending_properties>` 5, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0.5
      - radius 0.8, pipeline gap 0.8, self margin 0.2, gap 0;
-       ``soft_contact_ke`` 1e4, ``kd`` 10; robot shapes ``ke`` 5e4, ``kd``
+       :attr:`~newton.Model.soft_contact_ke` 1e4, ``kd`` 10; robot shapes ``ke`` 5e4, ``kd``
        50, ``mu`` 1.5
      - 1/600, 5
      - cotton cloth handled by a gripper
    * - Stiff sheets
        (`cloth_poker_cards <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/cloth/example_cloth_poker_cards.py>`__)
-     - 1.8 g per card over 35 particles; ``tri_ke`` 1e4, ``tri_ka`` 1e4,
-       ``tri_kd`` 1, ``edge_ke`` 1e2, ``edge_kd`` 1
+     - 1.8 g per card over 35 particles; :attr:`tri_ke <newton.Model.tri_materials>` 1e4, :attr:`tri_ka <newton.Model.tri_materials>` 1e4,
+       :attr:`tri_kd <newton.Model.tri_materials>` 1, :attr:`edge_ke <newton.Model.edge_bending_properties>` 1e2, :attr:`edge_kd <newton.Model.edge_bending_properties>` 1
      - radius 3 mm, margin 1 mm, gap 0.5 mm, pipeline gap 5 mm
      - 1/1200, 10
      - playing cards, cardboard
    * - Inextensible sheet
        (`cloth_stiff_material_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_cloth_stiff_material_hanging.py>`__)
-     - density 0.2; ``tri_ke`` 1e8, ``tri_ka`` 1e8, ``tri_kd`` 0, ``edge_ke``
-       10, ``edge_kd`` 0
+     - density 0.2; :attr:`tri_ke <newton.Model.tri_materials>` 1e8, :attr:`tri_ka <newton.Model.tri_materials>` 1e8, :attr:`tri_kd <newton.Model.tri_materials>` 0, :attr:`edge_ke <newton.Model.edge_bending_properties>`
+       10, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0
      - margin 2 mm, gap 1.5 mm
      - 1/600, 10
      - a plastic membrane that drapes but does not stretch
    * - Soft-body beams
        (`softbody_hanging <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/softbody/example_softbody_hanging.py>`__)
-     - cells 0.1 m, density 1e3; ``k_mu`` 1e5, ``k_lambda`` 1e5, ``k_damp``
+     - cells 0.1 m, density 1e3; :attr:`k_mu <newton.Model.tet_materials>` 1e5, :attr:`k_lambda <newton.Model.tet_materials>` 1e5, :attr:`k_damp <newton.Model.tet_materials>`
        10 to 1e4
-     - ground contact only: ``soft_contact_ke`` 100, ``kd`` 0, ``mu`` 1;
+     - ground contact only: :attr:`~newton.Model.soft_contact_ke` 100, ``kd`` 0, ``mu`` 1;
        self-contact off
      - 1/600, 10
-     - rubber to foam beams, depending on ``k_damp``
+     - rubber to foam beams, depending on :attr:`k_damp <newton.Model.tet_materials>`
    * - Soft box with ribbon
        (`softbody_gift <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/multiphysics/example_softbody_gift.py>`__)
-     - box density 100, ``k_mu`` 1e5, ``k_lambda`` 1e5, ``k_damp`` 1; ribbon
-       density 0.02, ``tri_ke`` 1e5, ``tri_ka`` 1e5, ``tri_kd`` 1,
-       ``edge_ke`` 0.01, ``edge_kd`` 1e-4
+     - box density 100, :attr:`k_mu <newton.Model.tet_materials>` 1e5, :attr:`k_lambda <newton.Model.tet_materials>` 1e5, :attr:`k_damp <newton.Model.tet_materials>` 1; ribbon
+       density 0.02, :attr:`tri_ke <newton.Model.tri_materials>` 1e5, :attr:`tri_ka <newton.Model.tri_materials>` 1e5, :attr:`tri_kd <newton.Model.tri_materials>` 1,
+       :attr:`edge_ke <newton.Model.edge_bending_properties>` 0.01, :attr:`edge_kd <newton.Model.edge_bending_properties>` 1e-4
      - margin 0.04, gap 0.02
      - 1/600, 15
      - foam box, thin ribbon
    * - Soft-body grasp
        (`softbody_franka <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/softbody/example_softbody_franka.py>`__)
-     - density 100; ``k_mu`` 1e6, ``k_lambda`` 1e6, ``k_damp`` 1
+     - density 100; :attr:`k_mu <newton.Model.tet_materials>` 1e6, :attr:`k_lambda <newton.Model.tet_materials>` 1e6, :attr:`k_damp <newton.Model.tet_materials>` 1
      - radius 5 mm, margin 3 mm, gap 2 mm, pipeline gap 10 mm;
-       ``soft_contact_ke`` 2e6, ``kd`` 0.2
+       :attr:`~newton.Model.soft_contact_ke` 2e6, ``kd`` 0.2
      - 1/600, 5
      - a firm rubber block in a gripper
    * - Thin bags with contents
        (`vbd_soft_rigid_contact <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_vbd_soft_rigid_contact.py>`__)
-     - density 0.08; ``tri_ke`` 1e5, ``tri_ka`` 1e5, ``tri_kd`` 1e2,
-       ``edge_ke`` 50, ``edge_kd`` 0.5
+     - density 0.08; :attr:`tri_ke <newton.Model.tri_materials>` 1e5, :attr:`tri_ka <newton.Model.tri_materials>` 1e5, :attr:`tri_kd <newton.Model.tri_materials>` 1e2,
+       :attr:`edge_ke <newton.Model.edge_bending_properties>` 50, :attr:`edge_kd <newton.Model.edge_bending_properties>` 0.5
      - radius 3 mm, margin 3 mm, gap 3 mm, pipeline gap 10 mm, shape margin
-       5 mm; ``soft_contact_ke`` 1e5, ``kd`` 1e2, ``mu`` 0.8; shapes ``ke``
+       5 mm; :attr:`~newton.Model.soft_contact_ke` 1e5, ``kd`` 1e2, ``mu`` 0.8; shapes ``ke``
        1e5, ``kd`` 10, ``mu`` 0.5; filter threshold 3
      - 1/300, 15
      - plastic bags holding rigid objects
    * - Tarp under fast impacts
        (`vbd_dat_rigid_soft <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/multiphysics/example_vbd_dat_rigid_soft.py>`__)
-     - 1.6 m sheet, 40 cells, 0.6 kg; ``tri_ke`` 4e3, ``tri_ka`` 4e3,
-       ``tri_kd`` 0.2, ``edge_ke`` 1
+     - 1.6 m sheet, 40 cells, 0.6 kg; :attr:`tri_ke <newton.Model.tri_materials>` 4e3, :attr:`tri_ka <newton.Model.tri_materials>` 4e3,
+       :attr:`tri_kd <newton.Model.tri_materials>` 0.2, :attr:`edge_ke <newton.Model.edge_bending_properties>` 1
      - radius 6 mm, margin 12 mm, gap 40 mm, pipeline gap 60 mm; shapes
-       ``ke`` 3e6, ``kd`` 1e3; ``soft_contact_ke`` 2e4, ``kd`` 1e-4, ``mu``
+       ``ke`` 3e6, ``kd`` 1e3; :attr:`~newton.Model.soft_contact_ke` 2e4, ``kd`` 1e-4, ``mu``
        0.6; rigid-soft DAT on
      - 1/240, 8
      - a tarp struck by thrown objects
    * - Gripper on a soft pad
        (`vbd_gripper_soft_grid <https://github.com/newton-physics/newton/blob/cced8ced132ec62096088a5544b53f9e3c31d14a/newton/examples/vbd/example_vbd_gripper_soft_grid.py>`__)
-     - 4 particles of 0.1 kg each (0.4 kg pad); ``tri_ke`` 5e2, ``tri_kd`` 0.1
-     - radius 10 mm, pipeline gap 10 mm; ``soft_contact_ke`` 1e3, ``kd`` 10,
+     - 4 particles of 0.1 kg each (0.4 kg pad); :attr:`tri_ke <newton.Model.tri_materials>` 5e2, :attr:`tri_kd <newton.Model.tri_materials>` 0.1
+     - radius 10 mm, pipeline gap 10 mm; :attr:`~newton.Model.soft_contact_ke` 1e3, ``kd`` 10,
        ``mu`` 1
      - 1/1200, 5
      - a foam pad pinched and lifted
