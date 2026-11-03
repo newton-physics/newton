@@ -7744,9 +7744,12 @@ def test_plane_convex_support(test, device):
         support_height = -float(np.min(rotated @ normal))
         margin = 0.0005 * scale
         cfg = builder.ShapeConfig(gap=0.002 * scale, margin=margin)
-        for clearance in (-0.001 * scale, 0.001 * scale, 0.02 * scale):
+        for clearance, plane_first in itertools.product((-0.001 * scale, 0.001 * scale, 0.02 * scale), (True, False)):
             builder.begin_world()
-            builder.add_shape_plane(xform=wp.transform(wp.vec3(0.0), rotation_plane), width=0.0, length=0.0, cfg=cfg)
+            if plane_first:
+                builder.add_shape_plane(
+                    xform=wp.transform(wp.vec3(0.0), rotation_plane), width=0.0, length=0.0, cfg=cfg
+                )
             body = builder.add_body(
                 xform=wp.transform(wp.vec3(*(normal * (support_height + clearance))), rotation),
                 mass=1.0,
@@ -7754,6 +7757,10 @@ def test_plane_convex_support(test, device):
                 lock_inertia=True,
             )
             builder.add_shape_convex_hull(body, mesh=hull, scale=shape_scale, cfg=cfg)
+            if not plane_first:
+                builder.add_shape_plane(
+                    xform=wp.transform(wp.vec3(0.0), rotation_plane), width=0.0, length=0.0, cfg=cfg
+                )
             builder.end_world()
             expected.append((scale, clearance - 2 * margin, clearance < 0.005 * scale, triangles[:, 0], face_normals))
     model = builder.finalize(device=device)
@@ -7765,13 +7772,25 @@ def test_plane_convex_support(test, device):
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
         if wp.get_device(device).is_cuda:
-            with wp.ScopedCapture(device=device) as capture:
-                pipeline.collide(state, contacts)
+            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
+            try:
+                with wp.ScopedCapture(device=device) as capture:
+                    pipeline.collide(state, contacts)
+            finally:
+                if gc_was_enabled:
+                    gc.enable()
             wp.capture_launch(capture.graph)
         distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
         newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
         count = int(contacts.rigid_contact_count.numpy()[0])
         shapes = contacts.rigid_contact_shape1.numpy()[:count]
+        plane_shapes = contacts.rigid_contact_shape0.numpy()[:count]
+        shape_types = model.shape_type.numpy()
+        # Narrow-phase routing orders by type, regardless of shape creation order.
+        np.testing.assert_array_equal(shape_types[plane_shapes], GeoType.PLANE)
+        np.testing.assert_array_equal(shape_types[shapes], GeoType.CONVEX_MESH)
         normals = contacts.rigid_contact_normal.numpy()[:count]
         points_plane = contacts.rigid_contact_point0.numpy()[:count]
         points_hull = contacts.rigid_contact_point1.numpy()[:count]

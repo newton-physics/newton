@@ -4710,7 +4710,7 @@ class TestMuJoCoSolverFixedTendonProperties(unittest.TestCase):
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def test_zero_capacity_contacts_clear_collision_counts(self):
-        """Empty contact storage clears counts after a populated conversion."""
+        """Clear collision counts when converting empty contact storage."""
         model = self._build_grounded_spheres(1)
         try:
             solver = SolverMuJoCo(model, use_mujoco_contacts=False)
