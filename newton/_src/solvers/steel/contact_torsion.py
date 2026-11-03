@@ -51,15 +51,27 @@ _SUPPORTED_TYPES = (
 
 
 def configure_contact_torsion(solver):
-    """Enable contact torsion when any shape has a positive torsion radius, and validate the radii."""
+    """Enable contact torsion when any shape has a positive torsion radius, and validate the radii.
+
+    A body variant row takes the radius and type of the variant shape it holds, so each row is
+    checked with every variant shape it can hold.
+    """
+    model = solver.model
     radius_array = solver._contact_torsion_shape_radius
     radii = radius_array.numpy() if radius_array is not None else np.zeros(0, dtype=np.float32)
+    types = model.shape_type.numpy()
+    shapes = np.arange(len(radii))
+    variant_radius = model._variant_shape_custom.get("steel:min_torsional_patch_radius")
+    if radius_array is not None and variant_radius is not None:
+        rows, options = model._variant_row_options()
+        radii = np.concatenate((radii, variant_radius[0].numpy()[options]))
+        types = np.concatenate((types, model._variant_shape_geometry["shape_type"].numpy()[options]))
+        shapes = np.concatenate((shapes, rows))
     if not np.all(np.isfinite(radii)) or np.any(radii < 0.0):
         raise ValueError("steel:min_torsional_patch_radius must be finite and non-negative [m]")
     enabled = bool(np.any(radii > 0.0))
     if enabled:
-        types = solver.model.shape_type.numpy()
-        unsupported = np.flatnonzero((radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)).tolist()
+        unsupported = np.unique(shapes[(radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)]).tolist()
         if unsupported:
             raise ValueError(f"Contact torsion does not support the geometry of shapes {unsupported}")
     solver._contact_torsion_enabled = enabled

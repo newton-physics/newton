@@ -2030,9 +2030,9 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
                 actual_val = updated_jnt_margin[world_idx, mjc_jnt]
                 self.assertAlmostEqual(actual_val, expected_val, places=6)
 
-    def test_dof_passive_stiffness_damping_multiworld(self):
+    def test_joint_stiffness_damping_multiworld(self):
         """
-        Verify that dof_passive_stiffness and joint_damping propagate correctly:
+        Verify that joint_stiffness and joint_damping propagate correctly:
         1. Different per-world values survive conversion to MuJoCo.
         2. notify_model_changed updates all worlds consistently.
         """
@@ -2078,7 +2078,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
                 initial_stiffness[global_idx] = 0.05 + 0.01 * dof_idx + 0.25 * world_idx
                 initial_damping[global_idx] = 0.4 + 0.02 * dof_idx + 0.3 * world_idx
 
-        model.mujoco.dof_passive_stiffness.assign(initial_stiffness)
+        model.joint_stiffness.assign(initial_stiffness)
         model.joint_damping.assign(initial_damping)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -2125,7 +2125,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
         updated_stiffness = initial_stiffness + 0.5 + 0.05 * np.arange(model.joint_dof_count, dtype=np.float32)
         updated_damping = initial_damping + 0.3 + 0.03 * np.arange(model.joint_dof_count, dtype=np.float32)
 
-        model.mujoco.dof_passive_stiffness.assign(updated_stiffness)
+        model.joint_stiffness.assign(updated_stiffness)
         model.joint_damping.assign(updated_damping)
         solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
@@ -4709,6 +4709,30 @@ class TestMuJoCoSolverFixedTendonProperties(unittest.TestCase):
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
+    def test_zero_capacity_contacts_clear_collision_counts(self):
+        """Clear collision counts when converting empty contact storage."""
+        model = self._build_grounded_spheres(1)
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        self.assertGreater(int(solver.mjw_data.nacon.numpy()[0]), 0)
+
+        empty = newton.Contacts(0, 0, device=model.device)
+        for _ in range(2):
+            solver.mjw_data.ncollision.fill_(7)
+            solver._convert_contacts_to_mjwarp(model, state, empty)
+            self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 0)
+            self.assertEqual(int(solver.mjw_data.ncollision.numpy()[0]), 0)
+
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), int(contacts.rigid_contact_count.numpy()[0]))
+
     @staticmethod
     def _build_grounded_spheres(sphere_count):
         """Build a single-world model with separated spheres touching the ground."""
