@@ -361,8 +361,9 @@ PyTorch versions need the ``onnxscript`` package for ``torch.onnx.export``.
 
 For :class:`DriveNeuralLSTM`, export the input, initial hidden, and initial
 cell state as three graph inputs and the effort, hidden, and cell state as
-three graph outputs, with batch axis 1, set ``model_type`` to ``"lstm"``, and
-add their names to the metadata as ``input_name``, ``hidden_in_name``, ``cell_in_name``, ``output_name``,
+three graph outputs. The effort has shape ``(batch, 1)`` with batch axis 0; the
+other inputs and outputs use batch axis 1. Set ``model_type`` to ``"lstm"`` and
+add the input and output names to the metadata as ``input_name``, ``hidden_in_name``, ``cell_in_name``, ``output_name``,
 ``hidden_out_name``, and ``cell_out_name``. With an ONNX checkpoint,
 ``State.hidden`` and ``State.cell`` are Warp arrays instead of Torch tensors.
 In USD, point ``newton:modelPath`` at the ``.onnx`` file.
