@@ -22,9 +22,11 @@ axes, and enforce the latter during Standards review.
    CPU/CUDA and backend differences, autodiff, determinism, graph capture, and
    numerical invariants. For performance changes, examine setup and steady-state
    complexity, allocations, synchronization, transfers, and whether benchmarks
-   exercise the changed path. Run a minimal adversarial probe when feasible.
-   Apply the guides' schema and importer checks to authorable features,
-   including behavioral equivalence and explicit acceptance of deferrals.
+   exercise the changed path. Answer the Honest contract, Siblings, Tests, and
+   Cost questions in `REVIEW_GUIDELINES.rst`. Run a minimal adversarial probe
+   when feasible. Apply the guides' schema and importer checks to authorable
+   features, including behavioral equivalence and explicit acceptance of
+   deferrals.
 4. Freeze candidate findings before reading existing reviews. Record the
    location, triggering input or condition, mechanism, observable impact,
    evidence, and confidence for each candidate.
@@ -32,8 +34,9 @@ axes, and enforce the latter during Standards review.
    independently discovered concerns; acknowledge existing concerns when they
    affect the verdict.
 6. Review Fit and Standards independently using their definitions in
-   `REVIEW_GUIDELINES.rst`. When independent agent contexts are available, use
-   separate passes so one conclusion does not bias another.
+   `REVIEW_GUIDELINES.rst`, and answer its Simplest and Principled questions
+   as part of Fit. When independent agent contexts are available, use separate
+   passes so one conclusion does not bias another.
 7. Report Fit and architectural concerns first, but retain every supported
    material behavioral, correctness, compatibility, and performance finding
    even when Fit fails. Do not let missing tests, documentation, or measurements

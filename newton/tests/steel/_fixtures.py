@@ -48,6 +48,25 @@ def _heap(device, nx=6, ny=6, nz=3, pitch=0.042, half=0.02, kinematic_tray=False
     return model
 
 
+def _parent_wrench_scene(device):
+    """Two free boxes resting on the ground, each carrying a smaller box welded on top."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    for x in (0.0, 0.5):
+        base = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
+        builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
+        top = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.25), wp.quat_identity()))
+        builder.add_shape_box(top, hx=0.05, hy=0.05, hz=0.05)
+        free = builder.add_joint_free(base)
+        weld = builder.add_joint_fixed(
+            base, top, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity())
+        )
+        builder.add_articulation([free, weld])
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    return model, pipeline
+
+
 def _build_four_bar():
     """Build a planar four-bar: two grounded revolute chains closed by a BALL loop joint.
 
@@ -433,7 +452,7 @@ def _build_v_jaws(tilt_deg: float, geometry: str = "box", device=None):
                 axis=newton.Axis.X,
                 limit_lower=-0.05,
                 limit_upper=0.05,
-                target_pos=-0.01 * sign,
+                target_q=-0.01 * sign,
                 target_ke=100.0,
                 target_kd=10.0,
             )
@@ -545,7 +564,7 @@ def _tree(device, links, *, branched=False, worlds=2, loop=False):
                 child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
                 target_ke=20.0 + i,
                 target_kd=1.0,
-                target_pos=0.2,
+                target_q=0.2,
                 armature=0.01,
             )
         )
@@ -607,7 +626,7 @@ def _build_contact_scene(device, *, mu=0.6, restitution=0.0, worlds=2):
                 child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.12), wp.quat_identity()),
                 target_ke=20.0,
                 target_kd=1.0,
-                target_pos=0.4,
+                target_q=0.4,
             ),
         ]
     )

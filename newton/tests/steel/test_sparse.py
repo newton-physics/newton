@@ -24,6 +24,7 @@ from newton._src.solvers.steel.kernels import (
     PGS_LOCAL_SOLVE_OWNER_PAIR,
     PGS_LOCAL_SOLVE_OWNER_PAIR_RESIDUAL,
     PGS_LOCAL_SOLVE_OWNER_SINGLE,
+    ROW_SLOTS_ATOMIC,
     classify_local_solve_worlds,
     compact_local_pair_candidates,
     populate_world_J_for_compact_size,
@@ -468,7 +469,20 @@ class TestSparseContacts(unittest.TestCase):
                         f["packed"],
                         f["velocity"],
                     ],
-                    outputs=[count, row_type, parent, mu, phi, target, dof, factor, incident, diagonal],
+                    outputs=[
+                        count,
+                        row_type,
+                        parent,
+                        mu,
+                        phi,
+                        target,
+                        dof,
+                        factor,
+                        incident,
+                        diagonal,
+                        ROW_SLOTS_ATOMIC,
+                        wp.zeros(1, dtype=wp.int32, device="cpu"),
+                    ],
                     block_dim=128,
                     device="cpu",
                 )
@@ -548,7 +562,7 @@ class TestSparseContacts(unittest.TestCase):
                 array(packed),
                 array(velocity),
             ],
-            outputs=outputs,
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
             block_dim=128,
             device=device,
         )
@@ -792,6 +806,7 @@ def test_sparse_diagonal_gs_matches_scalar_reference(test, device):
             wp.zeros((1, world_dofs), dtype=wp.float32, device=device),
             wp.array(inverse_mass, device=device),
             cfm,
+            wp.zeros((1, 1), dtype=float, device=device),
             iterations,
             omega,
             0,
@@ -892,6 +907,7 @@ def test_speculative_sparse_contact_batches_match_serial_reference(test, device)
             wp.zeros((1, world_dofs), dtype=wp.float32, device=device),
             wp.array(inverse_mass, device=device),
             cfm,
+            wp.zeros((1, 1), dtype=float, device=device),
             iterations,
             omega,
             0,
@@ -1123,9 +1139,12 @@ def test_sparse_diagonal_is_selected_only_where_supported(test, device):
         test.assertFalse(solver._sparse_diagonal_contact_solve)
         return
     options = dict(_PAIR_SOLVER, use_parallel_streams=True)
-    test.assertTrue(SolverSteel(model, **options)._sparse_diagonal_contact_solve)
+    selected = SolverSteel(model, **options)
+    test.assertTrue(selected._sparse_diagonal_contact_solve)
+    test.assertTrue(selected._fused_diagonal_joint_limit_sizes)
     for label, overrides in (
         ("no streams", {"use_parallel_streams": False}),
+        ("joint friction", {"enable_joint_friction": True}),
         ("joint limits off", {"enable_joint_limits": False}),
         ("regularization", {"contact_regularization": 0.02}),
         ("velocity iterations", {"velocity_iterations": 1}),
@@ -1138,6 +1157,7 @@ def test_sparse_diagonal_is_selected_only_where_supported(test, device):
             solver = SolverSteel(model, **dict(options, **overrides))
             test.assertFalse(solver._sparse_diagonal_contact_solve)
             test.assertFalse(solver._sparse_diagonal_contact_triples)
+            test.assertFalse(solver._fused_diagonal_joint_limit_sizes)
     with_free_body = _build_sparse_diagonal_pair_model(device=device, with_free_body=True)
     test.assertFalse(SolverSteel(with_free_body, **options)._sparse_diagonal_contact_solve)
 
@@ -2031,7 +2051,7 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
                     child,
                     axis=newton.Axis.Y,
                     parent_xform=wp.transform(wp.vec3(x, y, -0.11), wp.quat_identity()),
-                    target_pos=0.05,
+                    target_q=0.05,
                     target_ke=15.0,
                     target_kd=1.0,
                     armature=0.05,
@@ -2485,6 +2505,7 @@ class TestSteelSparseSolver(unittest.TestCase):
             {"contact_regularization": 0.01},
             {"velocity_iterations": 1},
             {"contact_friction_gap_max": 0.01},
+            {"enable_joint_friction": True},
         ):
             with self.subTest(options=options):
                 solver = _make_solver(model, True, **options)

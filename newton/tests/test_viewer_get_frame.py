@@ -12,8 +12,11 @@ import warp as wp
 
 import newton
 import newton.viewer
+from newton._src.viewer import viewer_gl
+from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+from newton.tests.unittest_utils import import_pyglet_window
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -522,6 +525,21 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 finally:
                     viewer.close()
 
+    def test_failed_viewer_setup_closes_its_window(self):
+        """Close the window when renderer or viewer setup fails after creating it."""
+        _make_headless_viewer_gl_or_skip(self).close()
+        import pyglet
+
+        open_windows = len(pyglet.app.windows)
+        for module, name in ((opengl, "ShaderShape"), (viewer_gl, "ImageLogger")):
+            with (
+                self.subTest(failure=name),
+                mock.patch.object(module, name, side_effect=RuntimeError("setup failed")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "setup failed"):
+                    ViewerGL(width=64, height=48, headless=True)
+                self.assertEqual(len(pyglet.app.windows), open_windows)
+
     def test_viewer_constructor_known_backend_error_skips(self):
         """Verify unavailable display/backend errors skip GL-dependent coverage."""
         unavailable_error = type(
@@ -730,6 +748,107 @@ class TestViewerGLGetFrame(unittest.TestCase):
             visible = np.any(expected > 8, axis=2)
             self.assertGreater(np.std(expected[visible]), 30.0, "the texture control was not visibly asymmetric")
             self.assertLess(np.abs(actual.astype(np.int16) - expected.astype(np.int16))[visible].mean(), 2.0)
+        finally:
+            viewer.close()
+
+
+class TestViewerGLMinimumVersion(unittest.TestCase):
+    def setUp(self):
+        try:
+            pyglet = import_pyglet_window()
+        except Exception as exc:
+            if not _is_viewer_gl_unavailable_error(self, exc):
+                raise
+            self.skipTest(f"pyglet window backend not available: {exc}")
+        self.pyglet = pyglet
+
+    @staticmethod
+    def _gl_1_1_context():
+        info = mock.Mock()
+        info.have_version.return_value = False
+        info.get_version_string.return_value = "1.1.0"
+        info.get_renderer.return_value = "GDI Generic"
+        return mock.Mock(**{"get_info.return_value": info})
+
+    def test_old_driver_is_rejected_before_opening_a_window(self):
+        """Verify a driver below the minimum OpenGL version is rejected without opening a window."""
+        pyglet = self.pyglet
+        with (
+            mock.patch.object(pyglet.gl, "current_context", self._gl_1_1_context()),
+            mock.patch.object(pyglet.window, "Window") as window,
+            self.assertRaisesRegex(pyglet.gl.ContextException, r"OpenGL 3\.3 .*OpenGL 1\.1\.0 \(GDI Generic\)"),
+        ):
+            RendererGL(headless=True)
+        window.assert_not_called()
+
+    def test_old_window_context_is_rejected_and_closed(self):
+        """Verify a window whose context is below the minimum OpenGL version is closed."""
+        pyglet = self.pyglet
+        window = mock.Mock(context=self._gl_1_1_context())
+        with (
+            mock.patch.object(pyglet.gl, "current_context", None),
+            mock.patch.object(pyglet.window, "Window", return_value=window),
+            self.assertRaises(pyglet.gl.ContextException),
+        ):
+            RendererGL(headless=True)
+        window.close.assert_called_once()
+
+
+class TestViewerGLMultisampling(unittest.TestCase):
+    def test_window_config_requests_the_scene_sample_count(self):
+        """Verify the window config is negotiated at the scene's sample count.
+
+        The scene is never drawn into the window's own buffer: it is rendered
+        into the multi-sampled framebuffer allocated at ``msaa_samples`` and
+        resolved into a texture. Requesting a different count from the window
+        therefore buys a default framebuffer that goes unused, and narrows the
+        set of drivers that can match the request.
+        """
+        viewer = _make_headless_viewer_gl_or_skip(self)
+
+        try:
+            # A driver offering no multi-sampled config at all reports 0, and a
+            # backend that leaves the attribute unset reports None; any other
+            # value has to agree with what the scene is rendered at.
+            granted = viewer.renderer.window.config.samples or 0
+            self.assertIn(granted, (0, viewer.renderer.msaa_samples))
+        finally:
+            viewer.close()
+
+    def test_scene_keeps_msaa_without_a_multisampled_window_config(self):
+        """Verify the scene stays anti-aliased when the window config has no MSAA."""
+        try:
+            pyglet = import_pyglet_window()
+        except Exception as exc:
+            if not _is_viewer_gl_unavailable_error(self, exc):
+                raise
+            self.skipTest(f"pyglet window backend not available: {exc}")
+
+        real_window = pyglet.window.Window
+        requested_samples = []
+
+        def _reject_multisampled_config(*args, **kwargs):
+            """Stand in for a driver that matches no multi-sampled window config."""
+            config = kwargs.pop("config", None)
+            if config is not None:
+                requested_samples.append(config.samples)
+                raise pyglet.window.NoSuchConfigException("no multi-sampled config")
+            return real_window(*args, **kwargs)
+
+        with mock.patch.object(pyglet.window, "Window", _reject_multisampled_config):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+
+        try:
+            # _setup_frame_buffer creates the multi-sampled framebuffer before
+            # checking it, so a driver that cannot complete one leaves the
+            # framebuffer behind and only zeroes the sample count. A missing
+            # framebuffer instead means the window-config fallback disabled the
+            # scene's MSAA, which is the regression under test.
+            self.assertIsNotNone(viewer.renderer._frame_msaa_fbo)
+            if viewer.renderer.msaa_samples == 0:
+                self.skipTest("no complete multi-sampled framebuffer at this size")
+            self.assertEqual(viewer.renderer.msaa_samples, RendererGL.MSAA_SAMPLES)
+            self.assertEqual(requested_samples, [RendererGL.MSAA_SAMPLES])
         finally:
             viewer.close()
 

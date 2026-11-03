@@ -572,7 +572,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
     def test_09_large_pair_warning_only_on_explicit_setup(self):
         """Warn about large pair workloads only for explicit collision setup."""
         builder = ModelBuilder()
-        builder.replicate(basics.build_sphere_on_plane(z_offset=0.5), world_count=2)
+        builder.replicate(basics.build_sphere_on_plane(z_offset=0.5), copy_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         pairs = wp.array([[0, 1], [1, 0], [0, 1], [2, 3]], dtype=wp.vec2i, device=self.default_device)
         model.geoms.collidable_pairs = pairs

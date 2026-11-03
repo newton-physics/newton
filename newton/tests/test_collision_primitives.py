@@ -1746,6 +1746,72 @@ class TestCollisionPrimitives(unittest.TestCase):
                     msg=f"Test case {i}, contact {j}: Normal not unit length: {normal_length:.4f}",
                 )
 
+    def test_box_box_stacked_drift_manifold(self):
+        """Keep stacked equal boxes under sub-microradian drift to a bounded four-corner face manifold.
+
+        The first pose emits more than eight face candidates; in the second an edge axis ties the face axis in float32."""
+        poses = [
+            (
+                (115.99996185302734, 0.9994751214981079, 2.125256299972534),
+                (2.316320291e-08, 1.542881200e-08, 3.762892930e-08, 1.0),
+                (115.99996185302734, 0.9994751214981079, 2.625131368637085),
+                (2.393707099e-08, 1.426083340e-08, -2.363266204e-08, 1.0),
+            ),
+            (
+                (-163.7054443359375, 73.91228485107422, 1.4831559658050537),
+                (2.9252282374159222e-08, -2.3461932840973532e-08, 2.2285188805426515e-08, 1.0),
+                (-163.7054443359375, 73.91228485107422, 1.9829976558685303),
+                (-3.3266271959320193e-09, 1.700541041316228e-08, 1.5326108382396342e-08, 1.0),
+            ),
+        ]
+        half_extent = 0.25
+        size = wp.vec3(half_extent, half_extent, half_extent)
+        # Both argument orders and a positive margin for each pose.
+        cases = []
+        for lower_pos, lower_quat, upper_pos, upper_quat in poses:
+            lower = (wp.vec3(*lower_pos), wp.quat_to_matrix(wp.quat(*lower_quat)))
+            upper = (wp.vec3(*upper_pos), wp.quat_to_matrix(wp.quat(*upper_quat)))
+            for first, second in ((lower, upper), (upper, lower)):
+                for margin in (0.0, 0.01):
+                    cases.append((first, second, margin, np.array(lower_pos)))
+
+        vec8 = wp.types.vector(8, wp.float32)
+        mat83 = wp.types.matrix((8, 3), wp.float32)
+        distances = wp.zeros(len(cases), dtype=vec8)
+        contact_positions = wp.zeros(len(cases), dtype=mat83)
+        contact_normals = wp.zeros(len(cases), dtype=mat83)
+        wp.launch(
+            test_box_box_with_margin_kernel,
+            dim=len(cases),
+            inputs=[
+                wp.array([c[0][0] for c in cases], dtype=wp.vec3),
+                wp.array([c[0][1] for c in cases], dtype=wp.mat33),
+                wp.array([size] * len(cases), dtype=wp.vec3),
+                wp.array([c[1][0] for c in cases], dtype=wp.vec3),
+                wp.array([c[1][1] for c in cases], dtype=wp.mat33),
+                wp.array([size] * len(cases), dtype=wp.vec3),
+                wp.array([c[2] for c in cases], dtype=float),
+                distances,
+                contact_positions,
+                contact_normals,
+            ],
+        )
+
+        distances_np = distances.numpy()
+        positions_np = contact_positions.numpy()
+        normals_np = contact_normals.numpy()
+        for i, case in enumerate(cases):
+            live = distances_np[i] < MAXVAL * 0.99
+            normals = normals_np[i][live]
+            offsets = positions_np[i][live] - case[3]
+            msg = f"case {i}: positions {offsets.tolist()}, normals {normals.tolist()}"
+            np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-4, err_msg=msg)
+            self.assertTrue(np.all(np.abs(normals[:, 2]) > 0.999), msg)
+            self.assertTrue(np.all(np.abs(offsets[:, :2]) < half_extent + 1.0e-4), msg)
+            self.assertTrue(np.all(np.abs(offsets[:, 2] - half_extent) < 1.0e-3), msg)
+            corners = {(bool(x > 0.0), bool(y > 0.0)) for x, y in offsets[:, :2]}
+            self.assertEqual(len(corners), 4, msg)
+
     def test_capsule_box(self):
         """Test capsule-box collision with analytical penetration depth validation.
 

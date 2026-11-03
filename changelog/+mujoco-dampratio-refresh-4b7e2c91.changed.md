@@ -1,0 +1,1 @@
+Resolve `dampratio` on `SolverMuJoCo` direct position actuators whenever model changes refresh MuJoCo's constants, from each world's physical inertia. Damping now follows inertia edits notified without `ModelFlags.ACTUATOR_PROPERTIES`, and actuators below a kinematic root no longer use the root's locked inertia. Existing models need no changes.

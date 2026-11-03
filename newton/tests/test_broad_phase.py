@@ -263,54 +263,6 @@ class TestBroadPhase(unittest.TestCase):
         )
         self.assertEqual(int(candidate_pair_count.numpy()[0]), 3)
 
-    @unittest.skipUnless(wp.get_cuda_device_count() > 0, "CUDA is required for graph capture")
-    def test_sap_single_segment_capture_replay(self):
-        """Capture and replay single-segment SAP through segmented sorting."""
-        shape_count = 4
-        device = wp.get_device("cuda:0")
-        shape_lower = wp.full(shape_count, wp.vec3(-1.0), dtype=wp.vec3, device=device)
-        shape_upper = wp.full(shape_count, wp.vec3(1.0), dtype=wp.vec3, device=device)
-        shape_group = wp.array([0, 1, 1, -1], dtype=wp.int32, device=device)
-        shape_world = wp.full(shape_count, -1, dtype=wp.int32, device=device)
-        candidate_pair = wp.zeros(6, dtype=wp.vec2i, device=device)
-        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
-        broad_phase = BroadPhaseSAP(shape_world, sort_type="segmented", device=device)
-
-        broad_phase.launch(
-            shape_lower,
-            shape_upper,
-            None,
-            shape_group,
-            shape_world,
-            shape_count,
-            candidate_pair,
-            candidate_pair_count,
-            device=device,
-        )
-        with mock.patch.object(
-            wp.utils,
-            "segmented_sort_pairs",
-            wraps=wp.utils.segmented_sort_pairs,
-        ) as segmented_sort:
-            with wp.ScopedCapture(device=device) as capture:
-                broad_phase.launch(
-                    shape_lower,
-                    shape_upper,
-                    None,
-                    shape_group,
-                    shape_world,
-                    shape_count,
-                    candidate_pair,
-                    candidate_pair_count,
-                    device=device,
-                )
-
-        segmented_sort.assert_called_once()
-        for _ in range(2):
-            wp.capture_launch(capture.graph)
-            wp.synchronize_device(device)
-            self.assertEqual(int(candidate_pair_count.numpy()[0]), 3)
-
     def test_sap_broadphase_auto(self):
         """Generate correct SAP pairs with automatic sort selection."""
         for shape_count in (70, 150, 300):

@@ -24,6 +24,7 @@ from ._resolution_policy import (
     _shift_joint_limits_for_reference,
 )
 from .schema_resolver import PrimType
+from .schemas import _mjc_angle_scale
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdPhysics
@@ -35,6 +36,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _resolve_scalar_spring(
+    prim: Usd.Prim,
+    is_revolute: bool,
+    builder: ModelBuilder,
+    joint_properties: _UsdJointProperties,
+    physics_scene_prim: Usd.Prim | None,
+    custom_attrs: dict[str, Any],
+) -> tuple[float, float | None, float]:
+    """Resolve scalar stiffness, rest coordinate and reference offset in Newton units."""
+    resolver = joint_properties.resolver
+    legacy_stiffness = custom_attrs.pop("mujoco:dof_passive_stiffness", None)
+    legacy_springref = custom_attrs.pop("mujoco:dof_springref", None)
+    stiffness = resolver.get_value(
+        prim,
+        PrimType.JOINT,
+        "stiffness",
+        default=builder.default_joint_cfg.stiffness if legacy_stiffness is None else legacy_stiffness,
+    )
+    springref = resolver.get_value(prim, PrimType.JOINT, "springref", default=None)
+    ref = resolver.get_value(prim, PrimType.JOINT, "ref", default=None)
+    angle_scale = _mjc_angle_scale(physics_scene_prim) if is_revolute else 1.0
+    # Registered custom values have already passed through their unit transformers.
+    if springref is not None:
+        springref = float(springref) * angle_scale
+    else:
+        springref = legacy_springref
+    ref = custom_attrs.get("mujoco:dof_ref", None if ref is None else float(ref) * angle_scale)
+    rest_q = builder.default_joint_cfg.rest_q
+    if springref is not None or ref is not None:
+        rest_q = float(springref or 0.0) - float(ref or 0.0)
+    ref = float(ref or 0.0)
+    return stiffness, rest_q, ref
 
 
 def resolve_joint_parent_child(
@@ -126,7 +161,6 @@ def parse_joint(
         context={
             "builder": builder,
             "physics_scene_prim": physics_scene_prim,
-            "legacy_springref_units": joint_properties.legacy_springref_units,
         },
     )
     joint_params = {
@@ -152,7 +186,12 @@ def parse_joint(
             joint_drive_gains_scaling=joint_drive_gains_scaling,
             force_position_velocity_actuation=force_position_velocity_actuation,
         )
-        _shift_joint_limits_for_reference(dof, joint_custom_attrs)
+        stiffness, rest_q, ref = _resolve_scalar_spring(
+            joint_prim, is_revolute, builder, joint_properties, physics_scene_prim, joint_custom_attrs
+        )
+        _shift_joint_limits_for_reference(dof, {"mujoco:dof_ref": ref})
+        joint_params["stiffness"] = stiffness
+        joint_params["rest_q"] = rest_q
         if _should_write_solreflimit_mode():
             joint_custom_attrs[solreflimit_mode_key] = dof.limit_solref_mode
         if _should_write_solreflimit_gain_baseline():
@@ -168,8 +207,8 @@ def parse_joint(
         joint_params["velocity_limit"] = dof.velocity_limit
         joint_params["effort_limit"] = dof.effort_limit
         if dof.has_drive:
-            joint_params["target_vel"] = dof.target_vel
-            joint_params["target_pos"] = dof.target_pos
+            joint_params["target_qd"] = dof.target_vel
+            joint_params["target_q"] = dof.target_pos
             joint_params["target_ke"] = dof.target_ke
             joint_params["target_kd"] = dof.target_kd
         joint_params["actuator_mode"] = dof.actuator_mode
@@ -190,6 +229,13 @@ def parse_joint(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
         _, joint_damping = joint_properties.resolve_joint_damping(joint_prim)
+        joint_params["stiffness"] = R.get_value(
+            joint_prim,
+            PrimType.JOINT,
+            "stiffness",
+            default=joint_custom_attrs.pop("mujoco:dof_passive_stiffness", builder.default_joint_cfg.stiffness),
+        )
+        joint_custom_attrs.pop("mujoco:dof_springref", None)
         joint_params["damping"] = joint_damping
         joint_index = builder.add_joint_ball(**joint_params)
     elif key == UsdPhysics.ObjectType.D6Joint:
@@ -207,6 +253,12 @@ def parse_joint(
             )
             for attr_key in unsupported_ref_attrs:
                 del joint_custom_attrs[attr_key]
+        joint_stiffness = R.get_value(
+            joint_prim,
+            PrimType.JOINT,
+            "stiffness",
+            default=joint_custom_attrs.pop("mujoco:dof_passive_stiffness", builder.default_joint_cfg.stiffness),
+        )
         joint_armature = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
         )
@@ -342,11 +394,12 @@ def parse_joint(
                         limit_upper=limit_upper,
                         limit_ke=current_joint_limit_ke,
                         limit_kd=current_joint_limit_kd,
-                        target_pos=target_pos,
-                        target_vel=target_vel,
+                        target_q=target_pos,
+                        target_qd=target_vel,
                         target_ke=target_ke,
                         target_kd=target_kd,
                         damping=joint_linear_damping,
+                        stiffness=joint_stiffness,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit
@@ -410,11 +463,12 @@ def parse_joint(
                         limit_upper=limit_upper * DegreesToRadian,
                         limit_ke=current_joint_limit_ke / DegreesToRadian,
                         limit_kd=current_joint_limit_kd / DegreesToRadian,
-                        target_pos=target_pos * DegreesToRadian,
-                        target_vel=target_vel * DegreesToRadian,
+                        target_q=target_pos * DegreesToRadian,
+                        target_qd=target_vel * DegreesToRadian,
                         target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                         target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                         damping=joint_angular_damping,
+                        stiffness=joint_stiffness,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -498,9 +552,7 @@ def parse_joint(
                     )
 
             if vel is not None and qd_start + dof_idx < qd_end:
-                vel_val = (
-                    vel * DegreesToRadian if is_rot and not joint_properties.legacy_angular_velocity_units else vel
-                )
+                vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
                     logger.info(
@@ -629,7 +681,6 @@ def parse_merged_joints(
         context={
             "builder": builder,
             "physics_scene_prim": physics_scene_prim,
-            "legacy_springref_units": joint_properties.legacy_springref_units,
         },
     )
     # Per-DOF custom attributes accumulated separately for linear / angular
@@ -675,10 +726,12 @@ def parse_merged_joints(
             context={
                 "builder": builder,
                 "physics_scene_prim": physics_scene_prim,
-                "legacy_springref_units": joint_properties.legacy_springref_units,
             },
         )
-        _shift_joint_limits_for_reference(dof, sibling_dof_attrs)
+        stiffness, rest_q, ref = _resolve_scalar_spring(
+            jp_prim, is_revolute, builder, joint_properties, physics_scene_prim, sibling_dof_attrs
+        )
+        _shift_joint_limits_for_reference(dof, {"mujoco:dof_ref": ref})
         if _should_write_solreflimit_mode():
             sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
         if _should_write_solreflimit_gain_baseline():
@@ -713,11 +766,13 @@ def parse_merged_joints(
             limit_upper=dof.limit_upper,
             limit_ke=dof.limit_ke,
             limit_kd=dof.limit_kd,
-            target_pos=dof.target_pos,
-            target_vel=dof.target_vel,
+            target_q=dof.target_pos,
+            target_qd=dof.target_vel,
             target_ke=dof.target_ke,
             target_kd=dof.target_kd,
             damping=dof.damping,
+            stiffness=stiffness,
+            rest_q=rest_q,
             armature=dof.armature,
             friction=dof.friction,
             effort_limit=dof.effort_limit if dof.effort_limit is not None else np.inf,

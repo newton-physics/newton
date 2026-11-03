@@ -3,6 +3,7 @@
 
 """Friction patches, anchors, directions and friction modes of SolverSteel."""
 
+import math
 import unittest
 import warnings
 
@@ -10,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.friction_patches import (
     _pose_motion,
     finish_patch_impulses,
@@ -24,7 +26,11 @@ from newton._src.solvers.steel.kernels import (
     compute_world_contact_bias,
     compute_world_contact_velocity_bias,
 )
-from newton._src.solvers.steel.solver_steel import _get_pgs_solve_mf_gs_kernel
+from newton._src.solvers.steel.solver_steel import (
+    _colored_staging_supported,
+    _get_pgs_solve_mf_gs_kernel,
+    _get_pgs_solve_propagation_colored_block_kernel,
+)
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import (
     _DEVICE,
@@ -331,7 +337,6 @@ def _position_rhs(family: str, *, phi, baumgarte, friction_anchor_beta, dt, devi
                 1.0,
                 dt,
                 1.0,
-                0.5,
                 3,
             ],
             outputs=[zeros3(), zero_jacobian(), zero_jacobian(), rhs, zeros3()],
@@ -394,7 +399,6 @@ class TestSteelFrictionAnchorKernels(unittest.TestCase):
                 wp.zeros((1, 1), dtype=wp.int32, device=device),
                 wp.zeros((1, 3, 1), dtype=wp.float32, device=device),
                 dt,
-                0.5,
             ],
             outputs=[rhs],
             device=device,
@@ -420,7 +424,6 @@ class TestSteelFrictionAnchorKernels(unittest.TestCase):
                 dt,
                 velocity,
                 velocity,
-                0.5,
                 3,
             ],
             outputs=[rhs],
@@ -462,7 +465,9 @@ class TestSteelFrictionAnchorKernels(unittest.TestCase):
                 np.testing.assert_array_equal(sel, 0 if cleared else 1, err_msg=f"mask={mask} world={world}")
 
 
-def _slide(device, beta, mesh, angle, articulated=False, *, locked_tangent=False):
+def _slide(
+    device, beta, mesh, angle, articulated=False, *, locked_tangent=False, response="immediate", mode="fixed_normal"
+):
     """Slide a symmetric, explicitly massed box under a force above the friction limit.
 
     Returns the final planar velocity, the push direction and the capacity status.
@@ -497,6 +502,8 @@ def _slide(device, beta, mesh, angle, articulated=False, *, locked_tangent=False
         cfm=0.0 if locked_tangent else 1.0e-6,
         free_body_constraint_max=128,
         articulation_constraint_max=32,
+        articulated_contact_response=response,
+        friction_mode=mode,
     )
     solver._rigid_body_angular_damping.zero_()
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=128, deterministic=True)
@@ -591,6 +598,9 @@ def _solve_contact_block(device, tangent_mass, rhs, initial, capacity=32):
             wp.ones((1, 1), dtype=float, device=device),
             wp.ones((1, 1), dtype=float, device=device),
             wp.full((1, 1), -1, dtype=int, device=device),
+            wp.zeros((1, 1), dtype=float, device=device),
+            # Compliance coefficients: no compliant rows.
+            wp.zeros((1, 1), dtype=float, device=device),
             wp.zeros((1, 1), dtype=float, device=device),
             1,
             1.0,
@@ -802,9 +812,8 @@ def test_unsupported_combinations_raise(test, device):
             set_torsion_radius(model, 0.0)
             with test.assertRaisesRegex(ValueError, "friction_mode"):
                 SolverSteel(model, friction_mode=mode, friction_anchor_beta=0.0, contact_compliance=True)
-            for response in ("propagation", "propagation_fused"):
-                with test.assertRaisesRegex(NotImplementedError, "friction_mode"):
-                    SolverSteel(model, friction_mode=mode, articulated_contact_response=response)
+            with test.assertRaisesRegex(NotImplementedError, "friction_mode"):
+                SolverSteel(model, friction_mode=mode, articulated_contact_response="propagation")
 
 
 def test_sparse_factors_require_the_current_mode(test, device):
@@ -863,6 +872,130 @@ add_function_test(
     "test_split_rejects_other_modes",
     test_split_rejects_other_modes,
     devices=get_test_devices(),
+)
+
+
+def _box_on_support(device, mode, articulated, support_speed, steps=60, window=30, response="immediate"):
+    """Step a box placed flat on a support moving at ``support_speed`` along x, with zero contact gap.
+
+    A zero speed makes the support a static shape, otherwise a kinematic body. Returns the box's mean x
+    velocity over the last ``window`` steps, its largest angular speed, the fewest contacts generated in a
+    step and the matrix-free row count.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0, restitution=0.0, density=500.0)
+    support_pose = wp.transform((0.0, 0.0, -0.05), wp.quat_identity())
+    if support_speed == 0.0:
+        builder.add_shape_box(-1, xform=support_pose, hx=2.0, hy=2.0, hz=0.05, cfg=cfg)
+    else:
+        belt = builder.add_body(xform=support_pose)
+        builder.add_shape_box(belt, hx=2.0, hy=2.0, hz=0.05, cfg=cfg)
+        builder.body_flags[belt] = int(newton.BodyFlags.KINEMATIC)
+    pose = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+    box = (builder.add_link if articulated else builder.add_body)(xform=pose)
+    if articulated:
+        joint = builder.add_joint_d6(
+            parent=-1,
+            child=box,
+            parent_xform=pose,
+            linear_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+            angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+        )
+        builder.add_articulation([joint])
+    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.05, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        articulated_contact_response=response,
+        friction_mode=mode,
+        friction_anchor_beta=0.0,
+        iterations=32,
+        free_body_constraint_max=64,
+        articulation_constraint_max=64,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+    )
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=True)
+    contacts = pipeline.contacts()
+    state, next_state, control = model.state(), model.state(), model.control()
+    if support_speed != 0.0:
+        # The belt's free joint comes first.
+        joint_qd = state.joint_qd.numpy()
+        joint_qd[0] = support_speed
+        state.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    # Per-step history stays on the device until the end of the run.
+    n = model.body_count
+    body_q = wp.empty(steps * n, dtype=wp.transform, device=device)
+    body_qd = wp.empty(steps * n, dtype=wp.spatial_vector, device=device)
+    contact_count = wp.empty(steps, dtype=wp.int32, device=device)
+    for step in range(steps):
+        state.clear_forces()
+        pipeline.collide(state, contacts)
+        wp.copy(contact_count, contacts.rigid_contact_count, dest_offset=step, count=1)
+        solver.step(state, next_state, control, contacts, DT)
+        state, next_state = next_state, state
+        wp.copy(body_q, state.body_q, dest_offset=step * n, count=n)
+        wp.copy(body_qd, state.body_qd, dest_offset=step * n, count=n)
+    box_x = body_q.numpy().reshape(steps, n, 7)[:, box, 0]
+    mean_vx = (box_x[-1] - box_x[-1 - window]) / (window * DT)
+    max_spin = float(np.linalg.norm(body_qd.numpy().reshape(steps, n, 6)[:, box, 3:], axis=1).max())
+    return mean_vx, max_spin, int(contact_count.numpy().min()), int(solver._mf_constraint_count.numpy().sum())
+
+
+def test_kinematic_belt_drags_the_box(test, device):
+    """Verify that a box on a kinematic belt reaches the belt speed in the coupled modes, free and articulated.
+
+    Covers the subtests that fail when the sliding rows' rhs is ignored; immediate's articulated
+    ``coulomb_newton`` uses the fixed-normal pair and ``fixed_normal`` adds the rhs itself. The colored sweep
+    folds the support's velocity into the sliding rows' rhs, which its coupled update reads.
+    """
+    cases = [("immediate", False, mode) for mode in MODES[1:]]
+    cases += [("immediate", True, mode) for mode in ("bisection", "bisection_desaxce")]
+    cases += [("propagation_colored", articulated, mode) for articulated in (False, True) for mode in MODES[1:]]
+    for response, articulated, mode in cases:
+        with test.subTest(response=response, articulated=articulated, mode=mode):
+            mean_vx, _, _, mf_rows = _box_on_support(device, mode, articulated, 0.5, response=response)
+            # Only immediate's free box has a matrix-free contact row.
+            test.assertEqual(mf_rows == 0, articulated or response != "immediate")
+            test.assertAlmostEqual(mean_vx, 0.5, delta=5.0e-3)
+
+
+class TestSteelKinematicBeltFriction(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelKinematicBeltFriction,
+    "test_kinematic_belt_drags_the_box",
+    test_kinematic_belt_drags_the_box,
+    devices=cuda_devices,
+)
+
+
+def test_resting_box_keeps_its_contacts(test, device):
+    """Verify that a box resting on four zero-gap contacts stays still in the bisection modes, free and articulated.
+
+    A box lifted by one float32 ulp loses its zero-gap contacts on the next step and falls, so this checks
+    that the coupled normal solve reaches the support load as exactly as fixed_normal does.
+    """
+    for mode in ("bisection", "bisection_desaxce"):
+        for articulated in (False, True):
+            with test.subTest(mode=mode, articulated=articulated):
+                _, max_spin, min_contacts, _ = _box_on_support(device, mode, articulated, support_speed=0.0)
+                test.assertGreaterEqual(min_contacts, 4)
+                test.assertLess(max_spin, 1.0e-6)
+
+
+class TestSteelCoupledFrictionRest(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelCoupledFrictionRest,
+    "test_resting_box_keeps_its_contacts",
+    test_resting_box_keeps_its_contacts,
+    devices=cuda_devices,
 )
 
 
@@ -1288,6 +1421,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         mu = wp.array([[0.5, 0.5, 0.5]], dtype=float, device=_DEVICE)
         impulses = wp.array([[2, 1, 0]], dtype=float, device=_DEVICE)
         velocity = wp.zeros(2, dtype=wp.spatial_vector, device=_DEVICE)
+        articulation = wp.zeros(2, dtype=int, device=_DEVICE)
         args = [
             contacts.rigid_contact_count,
             patches.current,
@@ -1295,6 +1429,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
             state.body_q,
             velocity,
             wp.zeros(2, dtype=wp.vec3, device=_DEVICE),
+            articulation,
             zeros,
             zeros,
             zeros,
@@ -1315,6 +1450,11 @@ class TestFrictionPatchHistory(unittest.TestCase):
         velocity.assign([[0, -0.1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]])
         wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
         self.assertEqual(patches.current.valid.numpy()[0], 0)
+        # Contact rows see a body outside every articulation at rest, so its passed-through velocity is not sliding.
+        patches.current.valid.fill_(1)
+        articulation.fill_(-1)
+        wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
+        self.assertEqual(patches.current.valid.numpy()[0], 1)
 
     def test_convex_shapes_share_one_body_patch(self):
         """Pool friction load across adjacent convex pieces with compatible materials."""
@@ -1425,39 +1565,52 @@ class TestFrictionPatchHistory(unittest.TestCase):
         self.assertAlmostEqual(float(np.linalg.norm(result[1:3])), 0.8)
         self.assertAlmostEqual(float(np.linalg.norm(result[5:7])), 0.8)
 
-    def test_seed_keeps_matched_warmstart_without_patch_history(self):
-        """Keep the contact-matched friction warm start on an anchor that has no patch history yet."""
+    def test_seed_bounds_matched_warmstart_without_patch_history(self):
+        """Keep a contact-matched friction seed inside the pooled patch cone on an anchor without patch history."""
         _model, state, contacts, patches = _patch_fixture([[0, 0, 0]])
         self.assertEqual(int(patches.current.source.numpy()[0]), -1)
         slots = wp.zeros(1, dtype=int, device=_DEVICE)
         lengths = wp.array([3], dtype=int, device=_DEVICE)
-        parents = wp.array([[-1] * 8], dtype=int, device=_DEVICE)
         mu = wp.array([[0.5, 0.25, 0.25] + [0.0] * 5], dtype=float, device=_DEVICE)
-        seeded = [1.0, 0.3, -0.2] + [0.0] * 5
-        impulses = wp.array([seeded], dtype=float, device=_DEVICE)
-        wp.launch(
-            seed_patch_impulses,
-            dim=1,
-            inputs=[
-                contacts.rigid_contact_count,
-                patches.current,
-                patches.previous,
-                state.body_q,
-                slots,
-                slots,
-                slots,
-                lengths,
-                0,
-                parents,
-                mu,
-                impulses,
-                1.0,
-                1.0,
-                wp.zeros(1, dtype=float, device=_DEVICE),
-            ],
-            device=_DEVICE,
+        # Cone radius is 0.25 times the region load: 1.0 or 0.0 on the anchor alone, or 0.5 on a linked row 3.
+        unlinked = [-1] * 8
+        linked = [3, -1, -1, 0] + [-1] * 4
+        cases = (
+            (unlinked, 1.0, 0.0, (0.15, -0.1), (0.15, -0.1)),
+            (unlinked, 1.0, 0.0, (0.3, -0.2), (0.2080, -0.1387)),
+            (linked, 0.0, 0.5, (0.3, -0.2), (0.1040, -0.0693)),
+            (unlinked, 0.0, 0.0, (0.3, -0.2), (0.0, 0.0)),
         )
-        np.testing.assert_array_equal(impulses.numpy()[0], np.array(seeded, dtype=np.float32))
+        for row_parents, anchor_normal, linked_normal, seeded_tangent, expected_tangent in cases:
+            with self.subTest(anchor_normal=anchor_normal, linked_normal=linked_normal, seed=seeded_tangent):
+                parents = wp.array([row_parents], dtype=int, device=_DEVICE)
+                seeded = [anchor_normal, *seeded_tangent, linked_normal] + [0.0] * 4
+                impulses = wp.array([seeded], dtype=float, device=_DEVICE)
+                wp.launch(
+                    seed_patch_impulses,
+                    dim=1,
+                    inputs=[
+                        contacts.rigid_contact_count,
+                        patches.current,
+                        patches.previous,
+                        state.body_q,
+                        slots,
+                        slots,
+                        slots,
+                        lengths,
+                        0,
+                        parents,
+                        mu,
+                        impulses,
+                        1.0,
+                        1.0,
+                        wp.zeros(1, dtype=float, device=_DEVICE),
+                    ],
+                    device=_DEVICE,
+                )
+                result = impulses.numpy()[0]
+                np.testing.assert_allclose(result[1:3], expected_tangent, atol=1.0e-4)
+                np.testing.assert_array_equal(np.delete(result, [1, 2]), np.delete(np.float32(seeded), [1, 2]))
 
     def test_anchors_without_rows_keep_history(self):
         """Keep a valid anchor and its cached impulse when its region gets no friction rows this step."""
@@ -1484,6 +1637,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
                         state.body_q,
                         qd,
                         com,
+                        wp.zeros(2, dtype=int, device=_DEVICE),
                         zeros,
                         wp.array([slot], dtype=int, device=_DEVICE),
                         zeros,
@@ -2128,6 +2282,294 @@ class TestPatchMaterialCompatibility(unittest.TestCase):
 
 for _fn in (test_disabled_material_options_keep_default_patches, test_torsion_opt_in_keeps_default_patches):
     add_function_test(TestPatchMaterialCompatibility, _fn.__name__, _fn, devices=get_cuda_test_devices())
+
+
+_COUPLED_MODES = MODES[1:]
+_MODE_MU = 0.5
+_MODE_SLIP = math.atan(_MODE_MU)
+_MODE_TOLERANCE = 1.0e-4
+
+# Each colored sweep variant: its kernel overrides and a tag of the kernel it must build.
+_COLORED_VARIANTS = {
+    "packed": ({"colored_packed": True}, "_pf1_st0_pk1"),
+    "prefetch": ({"colored_packed": False}, "_pf1_st0_pk0"),
+    "staged": ({"colored_staged": True}, "_pf1_st1"),
+    "reference": ({"colored_prefetch": False}, "_pf0_st0_pk0_sl1"),
+    "row loop": ({"colored_prefetch": False, "colored_straight_line": False}, "_sl0"),
+    "block": ({}, "_sb"),
+    "block global": ({}, "_gb"),
+}
+
+
+def _select_colored_variant(test, solver, variant):
+    """Give ``solver`` the block sweeps of ``variant`` and check the kernel it runs."""
+    if variant.startswith("block"):
+        # More bodies than the staging cap keep the twists in global memory.
+        bodies = 385 if variant == "block global" else solver._max_propagation_bodies
+        solver._pgs_solve_propagation_colored_block_kernel = _get_pgs_solve_propagation_colored_block_kernel(
+            solver._propagation_max_constraints,
+            solver._color_world_offsets.shape[0] // solver._world_count,
+            64,
+            bodies,
+            solver.model.device.arch,
+            friction_mode=solver._friction_mode,
+        )
+        solver._pgs_solve_propagation_colored_warp_kernel = None
+    warp_kernel = solver._pgs_solve_propagation_colored_warp_kernel
+    kernel = solver._pgs_solve_propagation_colored_block_kernel if warp_kernel is None else warp_kernel
+    test.assertIn(_COLORED_VARIANTS[variant][1], kernel.key)
+    mode = solver._friction_mode
+    test.assertEqual(kernel.key.endswith(mode), mode != "fixed_normal", kernel.key)
+
+
+class _ModeScene:
+    """One box on an incline or one sliding sphere per world, stepped in place so steps can be captured."""
+
+    def __init__(
+        self,
+        test,
+        device,
+        response,
+        mode,
+        *,
+        scene="incline",
+        angle=0.0,
+        articulated=False,
+        worlds=1,
+        variant=None,
+        mu=_MODE_MU,
+        **solver_kwargs,
+    ):
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        cfg = newton.ModelBuilder.ShapeConfig(mu=mu, gap=0.0, restitution=0.0, density=500.0)
+        tilt = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(angle))
+        world.add_shape_box(-1, hx=2.0, hy=2.0, hz=0.05, xform=wp.transform((0.0, 0.0, -0.05), tilt), cfg=cfg)
+        if scene == "incline":
+            pose = wp.transform(wp.quat_rotate(tilt, wp.vec3(0.0, 0.0, 0.05)), tilt)
+        else:
+            pose = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+        body = (world.add_link if articulated else world.add_body)(xform=pose)
+        if articulated:
+            joint = world.add_joint_d6(
+                parent=-1,
+                child=body,
+                parent_xform=pose,
+                linear_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+                angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+            )
+            world.add_articulation([joint])
+        if scene == "incline":
+            world.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05, cfg=cfg)
+        else:
+            world.add_shape_sphere(body, radius=0.05, cfg=cfg)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, worlds)
+        self.model = builder.finalize(device=device)
+        args = {
+            "articulated_contact_response": response,
+            "friction_mode": mode,
+            "friction_anchor_beta": 0.0,
+            "iterations": 32,
+            "free_body_constraint_max": 64,
+            "articulation_constraint_max": 64,
+            "row_watermark": True,
+            "deterministic": wp.DeterministicMode.RUN_TO_RUN,
+        }
+        args.update(solver_kwargs)
+        overrides = _COLORED_VARIANTS[variant][0] if variant else {}
+        with kernel_overrides(overrides):
+            self.solver = SolverSteel(self.model, **args)
+        if variant:
+            _select_colored_variant(test, self.solver, variant)
+        self.pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=16 * worlds, deterministic=True)
+        self.contacts = self.pipeline.contacts()
+        self.state_in, self.state_out = self.model.state(), self.model.state()
+        self.control = self.model.control()
+        if scene == "sphere":
+            # Sliding along x without spin.
+            qd = self.state_in.joint_qd.numpy().reshape(worlds, 6)
+            qd[:, 0] = 2.0
+            self.state_in.joint_qd.assign(qd.reshape(-1))
+        newton.eval_fk(self.model, self.state_in.joint_q, self.state_in.joint_qd, self.state_in)
+
+    def step(self, steps=1):
+        for _ in range(steps):
+            self.state_in.clear_forces()
+            self.pipeline.collide(self.state_in, self.contacts)
+            self.solver.step(self.state_in, self.state_out, self.control, self.contacts, DT)
+            for name in ("body_q", "body_qd", "joint_q", "joint_qd"):
+                wp.copy(getattr(self.state_in, name), getattr(self.state_out, name))
+
+    def velocity(self):
+        return self.state_in.body_qd.numpy().astype(np.float64)
+
+    def run(self, steps):
+        trace = []
+        for _ in range(steps):
+            self.step()
+            trace.append(self.velocity())
+        return np.asarray(trace)
+
+
+def _mode_trace(test, device, response, mode, steps, **kwargs):
+    return _ModeScene(test, device, response, mode, **kwargs).run(steps)
+
+
+def test_colored_incline_tracks_immediate(test, device):
+    """Follow immediate's coupled update of each mode on a box near the slip angle, free and on a six-DOF joint.
+
+    The mode's gap to fixed_normal on immediate must exceed ten times the tolerance, so colored solving the box
+    with fixed_normal would miss by that much. At 4 iterations every mode is still short of the converged
+    solution, where coulomb_newton and fixed_normal agree. Colored solves the articulated box with the same
+    coupled update as the free one. Immediate's articulated contacts run bisection without the de Saxce bias
+    and fixed_normal for coulomb_newton, so they match only in bisection. The de Saxce bias lifts the sliding
+    box off the incline at step 7, which grows the joint's float32 rounding gap past the tolerance, so the
+    articulated box is compared for 6 steps in that mode and 12 in the others.
+    """
+    for angle in (_MODE_SLIP - 0.05, _MODE_SLIP + 0.05):
+        fixed = _mode_trace(test, device, "immediate", "fixed_normal", 20, angle=angle, iterations=4)
+        for mode in _COUPLED_MODES:
+            with test.subTest(angle=angle, mode=mode):
+                kwargs = {"angle": angle, "iterations": 4}
+                immediate = _mode_trace(test, device, "immediate", mode, 20, **kwargs)
+                scene = _ModeScene(test, device, "propagation_colored", mode, **kwargs)
+                colored = scene.run(20)
+                for key, value in scene.solver.constraint_row_watermarks().items():
+                    if "overflow" in key or "dropped" in key:
+                        test.assertEqual(value, 0, key)
+                np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
+                test.assertGreater(np.abs(immediate - fixed).max(), 10.0 * _MODE_TOLERANCE)
+                steps = 6 if mode == "bisection_desaxce" else 12
+                articulated = _mode_trace(test, device, "propagation_colored", mode, steps, articulated=True, **kwargs)
+                np.testing.assert_allclose(articulated, colored[:steps], atol=_MODE_TOLERANCE, rtol=0.0)
+                if mode == "bisection":
+                    dense = _mode_trace(test, device, "immediate", mode, steps, articulated=True, **kwargs)
+                    np.testing.assert_allclose(articulated, dense, atol=_MODE_TOLERANCE, rtol=0.0)
+
+
+def test_colored_locked_tangent_keeps_friction(test, device):
+    """Retain friction along a slider whose other tangent has no mobility, on the fixed-normal pair."""
+    for mode in _COUPLED_MODES:
+        with test.subTest(mode=mode):
+            velocity, direction, overflow = _slide(
+                device, 0.0, False, 0.0, True, locked_tangent=True, response="propagation_colored", mode=mode
+            )
+            np.testing.assert_allclose(velocity, direction * (0.2 * 0.3 * 9.81) * 0.5, atol=0.015, rtol=0.03)
+            test.assertFalse(overflow.any())
+
+
+def test_colored_sliding_sphere_rolls_as_on_immediate(test, device):
+    """Slide a sphere launched without spin until it rolls at 5/7 of its speed, as on immediate."""
+    for mode in _COUPLED_MODES:
+        with test.subTest(mode=mode):
+            immediate = _mode_trace(test, device, "immediate", mode, 60, scene="sphere")
+            colored = _mode_trace(test, device, "propagation_colored", mode, 60, scene="sphere")
+            np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
+            speed, spin = colored[-1, 0, 0], colored[-1, 0, 4]
+            test.assertAlmostEqual(speed, 2.0 * 5.0 / 7.0, delta=0.02)
+            test.assertAlmostEqual(spin * 0.05, speed, delta=1.0e-3)
+
+
+def test_coulomb_newton_keeps_frictionless_contacts_frictionless(test, device):
+    """Slide a sphere on a frictionless plane without spinning it up, free and on a six-DOF joint."""
+    for response in ("immediate", "propagation_colored"):
+        for articulated in (False, True):
+            with test.subTest(response=response, articulated=articulated):
+                trace = _mode_trace(
+                    test, device, response, "coulomb_newton", 60, scene="sphere", articulated=articulated, mu=0.0
+                )
+                np.testing.assert_allclose(trace[:, 0, :3], np.tile([2.0, 0.0, 0.0], (60, 1)), atol=1.0e-6, rtol=0.0)
+                test.assertLess(np.abs(trace[:, 0, 3:]).max(), 1.0e-9)
+
+
+def test_every_colored_variant_agrees(test, device):
+    """Run the coupled update in every colored sweep, agreeing within float32 summation order.
+
+    Every sweep calls the same coupled update, so bisection_desaxce covers them; coulomb_newton also builds
+    the block sweeps, which the other tests never select.
+    """
+    for mode, variants in (
+        ("bisection_desaxce", tuple(_COLORED_VARIANTS)),
+        ("coulomb_newton", ("packed", "block", "block global")),
+    ):
+        reference = None
+        for variant in variants:
+            with test.subTest(mode=mode, variant=variant):
+                if variant == "staged" and not _colored_staging_supported(device.arch, 1, 2):
+                    continue
+                kwargs = {"angle": _MODE_SLIP + 0.05, "iterations": 4, "variant": variant}
+                # The staged sweep packs one world per block.
+                trace = _mode_trace(test, device, "propagation_colored", mode, 20, worlds=2, **kwargs)
+                if reference is None:
+                    reference = trace
+                # A bisection or a slip flip turns float32 summation-order differences into larger steps.
+                np.testing.assert_allclose(trace[0], reference[0], atol=1.0e-5, rtol=0.0)
+                np.testing.assert_allclose(trace, reference, atol=_MODE_TOLERANCE, rtol=0.0)
+
+
+def test_colored_modes_repeat_bitwise_and_replay(test, device):
+    """Repeat three deterministic worlds bitwise in a second scene whose last 10 steps replay a captured step."""
+    for mode in _COUPLED_MODES:
+        with test.subTest(mode=mode):
+            kwargs = {"angle": _MODE_SLIP + 0.05, "worlds": 3}
+            expected = _mode_trace(test, device, "propagation_colored", mode, 12, **kwargs)
+            captured = _ModeScene(test, device, "propagation_colored", mode, **kwargs)
+            trace = list(captured.run(2))
+            with wp.ScopedCapture(device=device) as capture:
+                captured.step()
+            for _ in range(10):
+                wp.capture_launch(capture.graph)
+                trace.append(captured.velocity())
+            np.testing.assert_array_equal(np.asarray(trace), expected)
+
+
+def test_colored_modes_keep_the_coupled_restrictions(test, device):
+    """Keep the coupled modes' restrictions on colored, select point friction by default, and reject plain propagation."""
+    model = _ModeScene(test, device, "immediate", "fixed_normal").model
+    for mode in _COUPLED_MODES:
+        with test.subTest(mode=mode):
+            colored = {"articulated_contact_response": "propagation_colored", "friction_mode": mode}
+            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
+                solver = SolverSteel(model, **colored)
+            test.assertEqual(solver.friction_anchor_beta, 0.0)
+            test.assertIn(f"_{mode}", solver._pgs_solve_propagation_colored_warp_kernel.key)
+            with test.assertRaisesRegex(ValueError, "friction_mode='fixed_normal'"):
+                SolverSteel(model, **colored, friction_anchor_beta=0.2)
+            with test.assertRaisesRegex(ValueError, "friction_mode"):
+                SolverSteel(model, **colored, friction_anchor_beta=0.0, contact_compliance=True)
+            for response in ("immediate", "propagation_colored"):
+                with test.assertRaisesRegex(ValueError, "contact_regularization"):
+                    SolverSteel(
+                        model,
+                        articulated_contact_response=response,
+                        friction_mode=mode,
+                        friction_anchor_beta=0.0,
+                        contact_regularization=1.0,
+                    )
+            with test.assertRaisesRegex(NotImplementedError, "friction_mode"):
+                SolverSteel(
+                    model, articulated_contact_response="propagation", friction_mode=mode, friction_anchor_beta=0.0
+                )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        default = SolverSteel(model, articulated_contact_response="propagation_colored")
+    test.assertFalse(default._pgs_solve_propagation_colored_warp_kernel.key.endswith(_COUPLED_MODES))
+
+
+class TestSteelColoredFrictionMode(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_colored_incline_tracks_immediate,
+    test_colored_locked_tangent_keeps_friction,
+    test_colored_sliding_sphere_rolls_as_on_immediate,
+    test_coulomb_newton_keeps_frictionless_contacts_frictionless,
+    test_every_colored_variant_agrees,
+    test_colored_modes_repeat_bitwise_and_replay,
+    test_colored_modes_keep_the_coupled_restrictions,
+):
+    add_function_test(TestSteelColoredFrictionMode, _fn.__name__, _fn, devices=get_cuda_test_devices())
 
 
 if __name__ == "__main__":

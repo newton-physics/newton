@@ -1,0 +1,1 @@
+Speed up `SolverVBD` by compiling its particle kernels, rigid body solve, and joint dual update with fast math by default. Results change at the floating-point rounding level; pass `SolverVBD(enable_fast_math=False)` to keep IEEE division and square root.
