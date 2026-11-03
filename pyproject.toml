@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["uv_build==0.13.5"]
 build-backend = "build_backend"
 backend-path = ["."]
 
@@ -7,7 +7,7 @@ backend-path = ["."]
 name = "newton"
 version = "1.8.0.dev0"
 license = "Apache-2.0"
-license-files = ["LICENSE.md", "newton/licenses/*.txt", "newton/licenses/**/*.txt"]
+license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -146,14 +146,16 @@ notebook = [
     "viser>=1.1.1",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["newton"]
+[tool.uv.build-backend]
+module-name = "newton"
+module-root = ""
+source-include = ["docs/**", "build_backend.py", "*.md", "*.rst"]
+source-exclude = ["/docs/_build/**", "/docs/api/_generated/**", "/docs/sphinx-env/**"]
 
-[tool.hatch.build.targets.wheel.hooks.custom]
-require-runtime-dependencies = true
+[tool.newton.docs]
 # Build tools only; keep rendering CPU-only and avoid importer/example extras.
-# Hatchling and sphinx-markdown-builder are MIT licensed.
-dependencies = [
+# sphinx-markdown-builder is MIT licensed.
+requires = [
     "sphinx>=7.4.7",
     "sphinx-markdown-builder==0.6.11",
     "myst-parser>=3.0.1",
@@ -166,10 +168,6 @@ dependencies = [
     "pypandoc>=1.11",
     "pypandoc_binary>=1.11; sys_platform != 'win32' or platform_machine != 'ARM64'",
 ]
-
-[tool.hatch.build.targets.sdist]
-include = ["/newton", "/docs", "/hatch_build.py", "/build_backend.py", "/*.toml", "/*.rst", "/*.md"]
-exclude = ["/docs/_build", "/docs/api/_generated"]
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple"

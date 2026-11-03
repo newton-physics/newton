@@ -397,7 +397,9 @@ small Newton extension for unsupported node types.
 
 Distributable wheels automatically include a documentation snapshot generated
 from their own sources. ``uv build`` includes the canonical docs and build
-support in the sdist, then builds the wheel from that sdist. Rendering requires
+support in the sdist, then builds the wheel from that sdist. A small build
+wrapper runs rendering and delegates packaging, metadata, and editable installs
+to ``uv_build``. Build wheels with Python 3.11 or later. Rendering requires
 the declared build dependencies and Pandoc, supplied by ``pypandoc_binary``
 where available; Windows ARM64 source builds need Pandoc installed separately.
 Optional USD type annotations use Sphinx's normal mock-import support when

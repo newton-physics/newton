@@ -38,9 +38,18 @@ def build(source: Path, output: Path) -> str:
 import importlib.util
 import os
 import sys
+from importlib.metadata import distribution
 from sphinx.application import Sphinx
 from sphinx.ext.autodoc.mock import mock
 os.environ['NEWTON_REQUIRE_PANDOC'] = '1'
+# pip's isolated Python packages can have a different prefix from sys.prefix.
+# Locate nbconvert's matching shared templates through its installed metadata.
+nbconvert = distribution('nbconvert')
+for entry in nbconvert.files or ():
+    if entry.as_posix().endswith('share/jupyter/nbconvert/templates/rst/conf.json'):
+        data = str(nbconvert.locate_file(entry).resolve().parents[3])
+        os.environ['JUPYTER_PATH'] = os.pathsep.join(filter(None, (data, os.environ.get('JUPYTER_PATH'))))
+        break
 # Resolve optional USD annotations using Sphinx's standard mock mechanism on
 # platforms without USD wheels. Never replace a real installed USD module.
 with mock(['pxr'] if importlib.util.find_spec('pxr') is None else []):
