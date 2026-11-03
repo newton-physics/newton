@@ -5,7 +5,7 @@
 The host implementation remains the oracle during qualification. This module
 changes preparation only; the coupled PGS budget and final-load projection are
 shared with the host path. Enable explicitly with ``enable_device_torsion``.
-Under ``articulated_contact_response="propagation"`` it also groups the propagation
+Under the propagation ``articulated_contact_response`` values it also groups the propagation
 contacts that reserved a torsion spare, which the host path does not cover.
 A world that dropped dense rows gets no dense torsion rows, and a world whose dense
 torsion rows do not all fit keeps the rows that fit; both flag the world in
@@ -843,7 +843,7 @@ class DeviceTorsionPreparation:
         shape = (solver._world_count, solver._articulation_constraint_max)
         w.row_contact = wp.full(shape, -1, dtype=int, device=device)
         w.spin_source = wp.full(shape, -1, dtype=int, device=device)
-        # Plain propagation hosts groups of the contacts that reserved a torsion spare.
+        # The propagation responses host groups of the contacts that reserved a torsion spare.
         self.propagation = bool(solver._propagation_torsion_rows)
         self.families = 2 if self.propagation else 1
         propagation_shape = (solver._world_count, solver._propagation_max_constraints) if self.propagation else (1, 1)
@@ -1001,7 +1001,7 @@ class DeviceTorsionPreparation:
         return [placeholders.get(name, self._dummy_rows_int) for name in names]
 
     def _torsion_lists(self):
-        """Return the per-world torsion row and member lists of the plain propagation sweep."""
+        """Return the per-world torsion row and member lists of the propagation sweeps."""
         if not self.propagation:
             return [self._dummy_head, self._dummy_rows_int, self._dummy_rows_int]
         s = self.solver

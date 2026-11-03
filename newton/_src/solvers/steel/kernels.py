@@ -8853,13 +8853,17 @@ def gather_propagation_unit_meta(
                 walk = row_parent[world, walk]
             overflow = offset | (count << 20)
     unit_meta[base + 7 + PROPAGATION_UNIT_RING] = overflow
-    # Rows of the unit: its first row and the friction rows following it.
+    # Rows of the unit: its first row and the friction rows following it, then its contact torsion row.
     m = wp.min(constraint_count[world], int(row_type.shape[1]))
     rows = int(1)
     while slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_FRICTION:
         rows += 1
-    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows
+    torsion = int(0)
+    if slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_TORSION:
+        torsion = 1
+    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows + torsion
     # Straight-line kinds: a contact row with its friction pair on the unit's two bodies, or a lone contact row.
+    # The sweep solves a torsion row after either.
     standard = int(0)
     if (
         straight_line != 0

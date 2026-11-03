@@ -1,0 +1,1 @@
+Solve experimental contact torsion rows in `SolverSteel` with `articulated_contact_response="propagation_colored"`, with `contact_torsion_device=True` and `velocity_iterations=0`. Each group's row is solved in the colored unit of its last contact, after the rows of its other contacts, with the same budget as on `"propagation"`.

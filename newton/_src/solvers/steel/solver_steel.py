@@ -2062,17 +2062,21 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`reset`. The input error is solver-wide: any reset clears it, and a cause
                 that persists latches it again on the next step. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without
-                contact torsion. With ``articulated_contact_response="propagation"``, every
+                contact torsion. With ``articulated_contact_response`` ``"propagation"`` or
+                ``"propagation_colored"``, every
                 positive-radius contact on an articulated body that is routed to propagation
                 reserves one more propagation row for torsion (same-articulation contacts stay
                 dense unless ``propagation_same_articulation_rows`` is set), so size
                 ``propagation_constraint_max``, or ``articulation_constraint_max`` and
-                ``free_body_constraint_max`` when it is unset, for it; each sweep solves the torsion rows after the other rows with the same budget. That
-                response requires ``contact_torsion_device=True`` and ``velocity_iterations=0``.
+                ``free_body_constraint_max`` when it is unset, for it. A group's torsion row takes
+                that row of its last member. The plain sweep solves the torsion rows after the
+                other rows; the colored sweep solves each in its last member's contact unit, after
+                the rows of the group's other members. Both use the same budget, and both responses
+                require ``contact_torsion_device=True`` and ``velocity_iterations=0``.
                 When propagation rows overflow, a group keeps the contacts that received rows
                 and the step does not raise: it sets :attr:`constraint_overflow`, warns when
                 ``warn_constraint_overflow`` is set, and :meth:`check_constraint_capacity`
-                raises. ``"propagation_colored"`` rejects contact torsion.
+                raises.
             contact_compliance: Experimental: solve contacts that carry a positive
                 :attr:`~newton.Contacts.rigid_contact_stiffness` [N/m] with an implicit
                 unilateral spring-damper law instead of the rigid normal law. The material
@@ -2484,10 +2488,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             unsupported = [
                 name
                 for name, requested in (
-                    (
-                        "contact torsion",
-                        self._contact_torsion_enabled and articulated_contact_response != "propagation",
-                    ),
                     ("contact_compliance=True", self._contact_compliance),
                     ("enable_sleeping=True", bool(enable_sleeping)),
                     (
@@ -2502,16 +2502,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                     f"{', '.join(unsupported)} is not supported with "
                     f"articulated_contact_response={articulated_contact_response!r}"
                 )
-        # The plain propagation sweep solves the torsion rows of its contacts after its other rows.
-        self._propagation_torsion_rows = self._contact_torsion_enabled and articulated_contact_response == "propagation"
+        # The plain sweep solves the torsion rows of its contacts after its other rows; the colored
+        # sweep solves each in the contact unit of its group's last member.
+        self._propagation_torsion_rows = self._contact_torsion_enabled and articulated_contact_response != "immediate"
         if self._propagation_torsion_rows:
             if not contact_torsion_device:
                 raise NotImplementedError(
-                    "contact torsion with articulated_contact_response='propagation' requires contact_torsion_device=True"
+                    f"contact torsion with articulated_contact_response={articulated_contact_response!r} requires "
+                    "contact_torsion_device=True"
                 )
             if self._velocity_iterations > 0:
                 raise NotImplementedError(
-                    "contact torsion with articulated_contact_response='propagation' requires velocity_iterations=0"
+                    f"contact torsion with articulated_contact_response={articulated_contact_response!r} requires "
+                    "velocity_iterations=0"
                 )
 
         # Stand-ins for models without the physx attributes.
@@ -10978,10 +10981,17 @@ class SolverSteel(SolverBase, CouplingInterface):
                 packed=packed,
                 straight_line=self._colored_straight_line,
                 friction_mode=self._friction_mode,
+                contact_torsion=self._propagation_torsion_rows,
             )
         else:
             self._pgs_solve_propagation_colored_block_kernel = _get_pgs_solve_propagation_colored_block_kernel(
-                rows, entries, _COLORED_BLOCK_DIM, bodies, device_arch, friction_mode=self._friction_mode
+                rows,
+                entries,
+                _COLORED_BLOCK_DIM,
+                bodies,
+                device_arch,
+                friction_mode=self._friction_mode,
+                contact_torsion=self._propagation_torsion_rows,
             )
         # The coloring keeps a world's used-color masks in shared memory when its unit bodies
         # span few enough indices: the bodies of one world plus the global ones.
@@ -11881,6 +11891,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._propagation_row_type,
             self._propagation_row_parent,
             self._propagation_row_mu,
+            self._propagation_torsion_first,
+            self._propagation_torsion_next,
+            self._propagation_torsion_row_radius,
             self._color_world_row_order,
             self._color_world_offsets,
             self._propagation_body_list,
@@ -17990,12 +18003,138 @@ def _colored_coupled_row_loop(*, apply: bool, global_twists: bool = False) -> st
     return code
 
 
+def _colored_unit_torsion_row(first: str, *, shared: bool, end: str = "") -> str:
+    """CUDA solving a colored unit's contact torsion row, the unit row ``first`` when it is one.
+
+    A group's row sits in the torsion row of its last member, whose unit takes the group's highest color, so it
+    runs after every member's rows of the sweep and takes the plain sweep's residual budget; the other torsion
+    rows are inert. ``shared`` reads the twists from the color loop's local slots, otherwise from the global
+    bodies. ``end`` also ends the unit.
+    """
+    torsion_type = int(PGS_CONSTRAINT_TYPE_TORSION)
+    friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
+    if shared:
+
+        def locate(row_off: str) -> str:
+            return f"""const int ba = propagation_body_a.data[{row_off}];
+                    const int bb = propagation_body_b.data[{row_off}];
+                    const int la = (ba >= 0) ? propagation_body_local_slot.data[ba] : -1;
+                    const int lb = (bb >= 0) ? propagation_body_local_slot.data[bb] : -1;"""
+
+        def qd(side: str, k: str) -> str:
+            return f"s_qd[l{side} * 6 + {k}]"
+
+        def imp(side: str, k: str) -> str:
+            return f"s_imp[l{side} * 6 + {k}]"
+
+    else:
+
+        def locate(row_off: str) -> str:
+            return f"""const int la = propagation_body_a.data[{row_off}];
+                    const int lb = propagation_body_b.data[{row_off}];"""
+
+        def qd(side: str, k: str) -> str:
+            return f"propagation_body_qd.data[l{side} * 6 + {k}]"
+
+        def imp(side: str, k: str) -> str:
+            return f"propagation_body_impulses.data[l{side} * 6 + {k}]"
+
+    def apply(row_off: str, delta: str) -> str:
+        return f"""for (int e = 0; e < 6; ++e) {{
+                        if (la >= 0) {{
+                            {qd("a", "e")} += propagation_MiJt_a.data[({row_off}) * 6 + e] * {delta};
+                            {imp("a", "e")} += propagation_J_a.data[({row_off}) * 6 + e] * {delta};
+                        }}
+                        if (lb >= 0) {{
+                            {qd("b", "e")} += propagation_MiJt_b.data[({row_off}) * 6 + e] * {delta};
+                            {imp("b", "e")} += propagation_J_b.data[({row_off}) * 6 + e] * {delta};
+                        }}
+                    }}"""
+
+    pair = f"""n + 2 < m &&
+                        propagation_row_type.data[world_base + n + 1] == {friction_type} &&
+                        propagation_row_parent.data[world_base + n + 1] == n &&
+                        propagation_row_type.data[world_base + n + 2] == {friction_type} &&
+                        propagation_row_parent.data[world_base + n + 2] == n"""
+    end_check = f"if ({end}) break;" if end else ""
+    return f"""
+            do {{
+                {end_check}
+                const int slot = start_slot + ({first});
+                if (slot >= m) break;
+                const int off = world_base + slot;
+                if (propagation_row_type.data[off] != {torsion_type}) break;
+                // An inert torsion row has no lead contact.
+                if (propagation_row_parent.data[off] < 0) break;
+                {{
+                    {locate("off")}
+                    // With no responding body the group's units are not ordered by color.
+                    if (la < 0 && lb < 0) break;
+                }}
+                // The row carries its group's undivided coefficient.
+                const float mu = fmaxf(propagation_row_mu.data[off], 0.0f);
+                float normal_load = 0.0f;
+                float sliding_used = 0.0f;
+                for (int n = propagation_torsion_first.data[off]; n >= 0; n = propagation_torsion_next.data[world_base + n]) {{
+                    normal_load += fmaxf(propagation_impulses.data[world_base + n], 0.0f);
+                    // Only a normal followed by its own tangent pair consumes sliding budget.
+                    if ({pair}) {{
+                        const float a = propagation_impulses.data[world_base + n + 1];
+                        const float b = propagation_impulses.data[world_base + n + 2];
+                        sliding_used += sqrtf(a * a + b * b);
+                    }}
+                }}
+                const float normal_budget = mu * normal_load;
+                // Later members can lower the group's load after earlier tangent pairs were solved: project
+                // the pairs onto the final load and apply their velocity response.
+                if (sliding_used > normal_budget) {{
+                    const float scale = normal_budget / sliding_used;
+                    sliding_used = 0.0f;
+                    for (int n = propagation_torsion_first.data[off]; n >= 0; n = propagation_torsion_next.data[world_base + n]) {{
+                        if (!({pair})) continue;
+                        for (int t = 1; t <= 2; ++t) {{
+                            const int row_off = world_base + n + t;
+                            const float old_tangent = propagation_impulses.data[row_off];
+                            const float delta = old_tangent * scale - old_tangent;
+                            if (delta != 0.0f) {{
+                                propagation_impulses.data[row_off] = old_tangent * scale;
+                                {locate("row_off")}
+                                {apply("row_off", "delta")}
+                            }}
+                        }}
+                        const float a = propagation_impulses.data[world_base + n + 1];
+                        const float b = propagation_impulses.data[world_base + n + 2];
+                        sliding_used += sqrtf(a * a + b * b);
+                    }}
+                }}
+                const float bound = propagation_torsion_row_radius.data[off] * fmaxf(normal_budget - sliding_used, 0.0f);
+                {locate("off")}
+                float spin_dot = 0.0f;
+                for (int k = 0; k < 6; ++k) {{
+                    if (la >= 0) spin_dot += propagation_J_a.data[off * 6 + k] * {qd("a", "k")};
+                    if (lb >= 0) spin_dot += propagation_J_b.data[off * 6 + k] * {qd("b", "k")};
+                }}
+                const float residual = spin_dot + propagation_rhs.data[off];
+                const float old_spin = propagation_impulses.data[off];
+                const float spin_eff_inv = propagation_eff_mass_inv.data[off];
+                const float trial = spin_eff_inv > 0.0f ? old_spin - omega * residual * spin_eff_inv : 0.0f;
+                const float next_spin = fminf(fmaxf(trial, -bound), bound);
+                const float spin_delta = next_spin - old_spin;
+                if (spin_delta != 0.0f) {{
+                    propagation_impulses.data[off] = next_spin;
+                    {apply("off", "spin_delta")}
+                }}
+            }} while (0);
+"""
+
+
 def _colored_prefetch_unit_body(
     contact_type: int,
     friction_type: int,
     staged: bool = False,
     packed: bool = False,
     friction_mode: str = "fixed_normal",
+    contact_torsion: bool = False,
 ) -> str:
     """CUDA body solving one contact unit on a single lane with its rows prefetched.
 
@@ -18011,9 +18150,11 @@ def _colored_prefetch_unit_body(
     shared buffer ``s_pay`` that the color loop filled with ``cp.async`` during the
     previous color (layout: :func:`_get_colored_payload_pack_kernel`); other units load directly.
     Any ``friction_mode`` but fixed_normal solves each contact row and its pair together at the
-    pair's first row (see :func:`_colored_coupled_contact`).
+    pair's first row (see :func:`_colored_coupled_contact`). ``contact_torsion`` also solves the
+    unit's contact torsion row (see :func:`_colored_unit_torsion_row`).
     """
     P = 3
+    end_window = "{ unit_rest = rr; unit_done = true; break; }" if contact_torsion else "{ unit_done = true; break; }"
 
     def reg(i: int) -> dict:
         return {
@@ -18185,7 +18326,7 @@ def _colored_prefetch_unit_body(
         rows = []
         for r in range(P):
             sib = reg(r + 1) if r + 1 < P else glob("world_base + slot + 1")
-            code = solve_row(reg(r), sib, "{ unit_done = true; break; }", setup=(r == 1))
+            code = solve_row(reg(r), sib, end_window, setup=(r == 1))
             if registers:
                 code = in_registers(code)
             rows.append(
@@ -18339,6 +18480,15 @@ def _colored_prefetch_unit_body(
     standard = _colored_standard_unit(
         acc, ring, setup, friction=f"um[{PROPAGATION_UNIT_STD_WORD}] == 1", friction_mode=friction_mode
     )
+    unit_rest_decl = rest = standard_rest = ""
+    if contact_torsion:
+        unit_rows = f"um[{5 + PROPAGATION_UNIT_RING}]"
+        unit_rest_decl = f"\n                int unit_rest = {P};"
+        # The window ends at the unit's first row that is not a sliding row.
+        rest = _colored_unit_torsion_row("unit_rest", shared=True, end=f"unit_rest >= {unit_rows}")
+        # A straight-line unit's torsion row follows its sliding pair (kind 1) or its lone contact row (kind 2).
+        first = f"(um[{PROPAGATION_UNIT_STD_WORD}] == 1 ? 3 : 1)"
+        standard_rest = _colored_unit_torsion_row(first, shared=True, end=f"{first} >= {unit_rows}")
     return f"""
             {{
                 int p_type[{P}], p_ba[{P}], p_bb[{P}], p_par[{P}];
@@ -18363,10 +18513,10 @@ def _colored_prefetch_unit_body(
                 for (int q = 0; q < {PROPAGATION_UNIT_RING}; ++q)
                     u_ring_imp[q] = (q < u_ring_n) ? propagation_impulses.data[world_base + um[4 + q]] : 0.0f;
                 if (um[{PROPAGATION_UNIT_STD_WORD}] != 0) {{
-{standard}
+{standard}{standard_rest}
                 }} else {{
                 bool unit_done = false;
-                bool window_done = false;
+                bool window_done = false;{unit_rest_decl}
                 if ((u_la != u_lb || u_la < 0) && {same_bodies}) {{
                     float qa[6], qb[6], ia[6], ib[6];
                     #pragma unroll
@@ -18399,7 +18549,7 @@ def _colored_prefetch_unit_body(
                         const int off = world_base + slot;
 {tail}
                     }}
-                }}
+                }}{rest}
                 }}
             }}
 """
@@ -18417,6 +18567,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     packed: bool = False,
     straight_line: bool = True,
     friction_mode: str = "fixed_normal",
+    contact_torsion: bool = False,
 ) -> "wp.Kernel":
     """Build the warp-per-world colored sweep, one lane per contact unit.
 
@@ -18429,11 +18580,15 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     standard units without the row loop; with fixed_normal every variant gives the same result
     bitwise. Any other ``friction_mode`` solves each contact row and its sliding pair together at
     the pair's first row (see :func:`_colored_coupled_contact`); the variants then agree up to
-    float32 summation order.
+    float32 summation order. ``contact_torsion`` solves each unit's contact torsion row after its other
+    rows (see :func:`_colored_unit_torsion_row`).
     """
     M = propagation_max_constraints
     NE = n_color_entries
     MB = max(int(max_propagation_bodies), 1)
+    # The torsion row follows the unit's last solved row, so the row loops keep their row index.
+    row_loop = "int rr = 0;\n            for (; ; ++rr)" if contact_torsion else "for (int rr = 0; ; ++rr)"
+    rest = _colored_unit_torsion_row("rr", shared=True) if contact_torsion else ""
     # Lanes per unit of the row loop below.
     R = 1
     W = int(worlds_per_block)
@@ -18522,7 +18677,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                 }}
 """
     coop_body = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -18602,11 +18757,11 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     tail_body = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -18656,11 +18811,12 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     if R == 1 and straight_line:
         # The reference body solves standard units with the code every variant uses.
+        reference_rest = _colored_unit_torsion_row("(standard ? 3 : 1)", shared=True) if contact_torsion else ""
         coop_body = f"""
             int std_la = -1, std_lb = -1;
             bool standard = false;
@@ -18689,14 +18845,19 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             if (standard || lone) {{
                 const int u_la = std_la;
                 const int u_lb = std_lb;
-{_colored_standard_unit_reference(friction="standard", friction_mode=friction_mode)}
+{_colored_standard_unit_reference(friction="standard", friction_mode=friction_mode)}{reference_rest}
             }} else {{
 {coop_body}
             }}"""
     _prefetch = R == 1 and bool(prefetch)
     if _prefetch:
         coop_body = _colored_prefetch_unit_body(
-            contact_type, friction_type, staged=staged, packed=packed or staged, friction_mode=friction_mode
+            contact_type,
+            friction_type,
+            staged=staged,
+            packed=packed or staged,
+            friction_mode=friction_mode,
+            contact_torsion=contact_torsion,
         )
     staged = bool(staged) and _prefetch
     if staged:
@@ -18902,6 +19063,9 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -18935,6 +19099,9 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -18969,6 +19136,9 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            propagation_torsion_first,
+            propagation_torsion_next,
+            propagation_torsion_row_radius,
             world_row_order,
             world_color_offsets,
             propagation_body_list,
@@ -18989,7 +19159,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
 
     name = (
         f"pgs_solve_propagation_colored_warp_{M}_{NE}_r{R}_w{W}_mb{MB}_pf{int(_prefetch)}_st{int(staged)}"
-        f"_pk{int(bool(packed or staged))}_sl{int(bool(straight_line))}"
+        f"_pk{int(bool(packed or staged))}_sl{int(bool(straight_line))}{'_tor' if contact_torsion else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
     )
     pgs_solve_propagation_colored_warp_template.__name__ = name
@@ -19007,12 +19177,14 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     max_propagation_bodies: int,
     device_arch: str,
     friction_mode: str = "fixed_normal",
+    contact_torsion: bool = False,
 ) -> "wp.Kernel":
     """Build the block-per-world colored sweep, one thread per contact unit.
 
     Colors run in sequence with ``__syncthreads()`` between them; units past the color cap run
     in order on thread 0. Used when the warp sweep's per-world staging does not fit. Any
     ``friction_mode`` but fixed_normal solves each contact row and its sliding pair together.
+    ``contact_torsion`` solves each unit's contact torsion row after its other rows.
     """
     M = propagation_max_constraints
     NE = n_color_entries
@@ -19022,6 +19194,9 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     # Shared staging of each body's twist and deferred impulse, 48 bytes a body, up to a cap.
     MB = max(int(max_propagation_bodies), 1)
     use_staging = MB <= 384
+    # The torsion row follows the unit's last solved row, so the row loops keep their row index.
+    row_loop = "int rr = 0;\n            for (; ; ++rr)" if contact_torsion else "for (int rr = 0; ; ++rr)"
+    rest = _colored_unit_torsion_row("rr", shared=use_staging) if contact_torsion else ""
 
     global_pair = """                        int sib = parent_idx + 2;
                         const int sib_off = world_base + sib;
@@ -19115,7 +19290,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         staged_pair = _colored_coupled_row_loop(apply=True)
 
     unit_solve_body = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -19205,11 +19380,11 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     unit_solve_body_staged = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -19289,7 +19464,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     body = unit_solve_body_staged if use_staging else unit_solve_body
@@ -19374,6 +19549,9 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -19403,6 +19581,9 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -19433,6 +19614,9 @@ def _get_pgs_solve_propagation_colored_block_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            propagation_torsion_first,
+            propagation_torsion_next,
+            propagation_torsion_row_radius,
             world_row_order,
             world_color_offsets,
             propagation_body_list,
@@ -19449,7 +19633,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
 
     stag = "sb" if use_staging else "gb"
     name = (
-        f"pgs_solve_propagation_colored_units_{M}_{NE}_bd{B}_{stag}{MB}"
+        f"pgs_solve_propagation_colored_units_{M}_{NE}_bd{B}_{stag}{MB}{'_tor' if contact_torsion else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
     )
     pgs_solve_propagation_colored_block_template.__name__ = name
