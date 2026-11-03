@@ -229,8 +229,9 @@ Coupling Modes
 
 Inside one solver no coupling setup is needed. Rigid blocks and particle
 blocks are solved in the same iteration loop, rigid blocks first, and
-rigid-soft contacts, attachments and springs connect them as ordinary energy
-terms (:ref:`vbd-how-solved`). Cloth between the fingers of a VBD-integrated
+rigid-soft contacts and springs connect them as ordinary energy terms, and
+particle-body attachments as compliant augmented-Lagrangian rows
+(:ref:`vbd-how-solved`). Cloth between the fingers of a VBD-integrated
 gripper is the plain case.
 
 With ``integrate_with_external_rigid_solver=True`` the rigid bodies belong to
@@ -346,8 +347,9 @@ external forces. The second sum is the rigid inertia. Its target pose
 rotation vector from the current rotation to the target rotation
 (``solve_rigid_body``). The last sum is every energy term in the scene:
 membrane, bending and volumetric elasticity, self-contact and rigid-soft
-contact with friction and damping, attachments and springs, and the compliant
-augmented-Lagrangian rows of joints and body-body contacts.
+contact with friction and damping, springs, and the compliant
+augmented-Lagrangian rows of joints, body-body contacts and particle-body
+attachments.
 
 .. _vbd-how-solved:
 
@@ -388,6 +390,9 @@ The real call tree, with the control flow written out:
    SolverVBD.step(state_in, state_out, control, contacts, dt)
      _initialize_rigid_bodies   -> forward_step_rigid_bodies   (predicted poses)
      _initialize_particles      -> forward_step                (predicted positions y)
+     _initialize_particle_body_attachments -> step_particle_body_attachment_lambda_rho
+                                (attachment rho from the endpoints' support; retained
+                                 multipliers scaled by rigid_avbd_gamma)
      collision detection (default: self-contact before and after this initialization;
                           rigid contacts before it only, or before and after it with rigid-soft DAT)
      for iteration in range(iterations):
@@ -397,12 +402,14 @@ The real call tree, with the control flow written out:
              for colour in body colours:
                  accumulate attachments, body-particle contacts, body-body contacts
                  solve_rigid_body            (6x6 LDL^T per body)
-             update dual variables of the constraint rows
+             update dual variables of the joint and contact rows
          _solve_particle_iteration
              for colour in particle colours:
                  accumulate attachment, body-particle contact, spring and self-contact terms
                  solve_elasticity            (3x3 per particle: inertia + membrane + bending + volumetric)
                  DAT: planar truncation per pair, then the radius cap
+         update_duals_particle_body_attachments   (dual step of the attachment rows,
+                                                   after both primal blocks)
      _finalize_rigid_bodies     -> update_body_velocity
      _finalize_particles        -> update_velocity             v = (x_new - x_old) / dt
 
@@ -587,11 +594,18 @@ Each energy term depends on a few blocks and on model parameters:
      - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` averaged over the pair; shape radius and
        :attr:`~newton.ModelBuilder.ShapeConfig.margin`
      - ``evaluate_rigid_contact_from_collision``, ``_compliant_contact_dual_step``
-   * - Attachments and springs
-     - a particle and a body, or two particles
-     - attachment and spring stiffness and damping
-     - ``accumulate_body_particle_attachment_force_and_hessian``,
-       ``accumulate_spring_force_and_hessian``
+   * - Particle-body attachments
+     - a particle and a point fixed on a body
+     - attachment stiffness (finite: compliant; infinite: hard limit, damping
+       ignored) and damping
+     - compliant augmented-Lagrangian row:
+       ``accumulate_body_particle_attachment_force_and_hessian`` (particle block),
+       ``accumulate_body_particle_attachments_per_body`` (body block),
+       ``update_duals_particle_body_attachments`` (dual step)
+   * - Springs
+     - two particles
+     - spring stiffness and damping
+     - ``accumulate_spring_force_and_hessian``
    * - Joints, drives and limits
      - one or two bodies
      - joint stiffness and damping
@@ -777,6 +791,25 @@ The underlying methods are described in the references cited by
 rigid rows, Divide and Truncate (DAT) for penetration-free contact and Offset
 Geometric Contact (OGC) for the feature regions of mesh contact. The two
 contact papers are also listed under Contact Handling above.
+
+**Particle-body attachments** are compliant augmented-Lagrangian rows of the
+same form as the joint rows (:ref:`vbd-rigid-joints`). With :math:`C =
+\mathbf{x} - \mathbf{a}` the offset of the particle from its anchor point fixed
+on the body, the row applies :math:`k_{\text{eff}}\,C + s\,\lambda` to the
+particle and the opposite force, with its torque, to the body;
+:math:`k_{\text{eff}}` and :math:`s` follow from the authored stiffness
+:math:`k` and the metric :math:`\rho` as above. The solver sets :math:`\rho`
+once per step to the row's support, the endpoints' reduced inverse mass over
+:math:`h^2` plus the particle's incident material Hessian, and at the same time
+scales the retained multiplier by ``rigid_avbd_gamma``
+(``step_particle_body_attachment_lambda_rho``). The multiplier advances once
+per iteration after both primal blocks, :math:`\lambda \leftarrow s\,(\lambda +
+\rho\,C)` (``update_duals_particle_body_attachments``). Infinite stiffness is
+the hard limit of the same row, :math:`k_{\text{eff}} = \rho` and :math:`s =
+1`, and ignores the attachment damping; a finite stiffness keeps its spring
+offset under load and adds the damping force :math:`k_d\,\dot C`. Springs
+between two particles stay plain penalty energies
+(``accumulate_spring_force_and_hessian``).
 
 .. _vbd-dat:
 
