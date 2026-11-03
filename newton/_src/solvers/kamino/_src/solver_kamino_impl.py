@@ -212,11 +212,36 @@ class SolverKaminoImpl(SolverBase):
         if not self._config.padmm.use_graph_conditionals and issubclass(linear_solver_type, IterativeSolver):
             linear_solver_kwargs.setdefault("use_graph_conditionals", False)
 
+        # Resolve the effective integrator before configuring physical compliance.
+        # LOX solves the velocity of singular (prescribed) bodies, which the integrators then advance.
+        integrate_singular_bodies = self._config.dynamics_solver == "lox"
+        # External contacts are evaluated at the start of a step; Moreau requires midpoint detection.
+        if self._config.integrator == "euler":
+            self._integrator = IntegratorEuler(model=self._model, integrate_singular_bodies=integrate_singular_bodies)
+        elif self._config.integrator == "moreau":
+            if self._config.use_collision_detector:
+                self._integrator = IntegratorMoreauJean(
+                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
+                )
+            else:
+                msg.warning(
+                    "Falling back to the 'euler' integrator: 'moreau' requires "
+                    "`use_collision_detector=True` to generate contacts at the mid-point."
+                )
+                self._integrator = IntegratorEuler(
+                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
+                )
+        else:
+            raise ValueError(
+                f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
+            )
+
         # Bundle both constraint stabilization and forward-
         # dynamics problem configurations into a single object
         problem_fd_config = DualProblem.Config(
             constraints=self._config.constraints,
             dynamics=self._config.dynamics,
+            position_update_fraction=0.5 if isinstance(self._integrator, IntegratorMoreauJean) else 1.0,
             # TODO: linear_solver_type=linear_solver_type,
             # TODO: linear_solver_kwargs=linear_solver_kwargs,
             # TODO: sparse=bool(self._config.sparse_dynamics),
@@ -305,30 +330,6 @@ class SolverKaminoImpl(SolverBase):
         self._solver_fk = None
         if self._config.use_fk_solver:
             self._solver_fk = ForwardKinematicsSolver(model=self._model, config=self._config.fk)
-
-        # LOX solves the velocity of singular (prescribed) bodies, which the integrators then advance
-        integrate_singular_bodies = self._config.dynamics_solver == "lox"
-        # Contacts generated externally are evaluated at the start of a step, so they require
-        # Euler integration. Moreau-Jean is valid only with the internal mid-step detector.
-        if self._config.integrator == "euler":
-            self._integrator = IntegratorEuler(model=self._model, integrate_singular_bodies=integrate_singular_bodies)
-        elif self._config.integrator == "moreau":
-            if self._config.use_collision_detector:
-                self._integrator = IntegratorMoreauJean(
-                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
-                )
-            else:
-                msg.warning(
-                    "Falling back to the 'euler' integrator: 'moreau' requires "
-                    "`use_collision_detector=True` to generate contacts at the mid-point."
-                )
-                self._integrator = IntegratorEuler(
-                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
-                )
-        else:
-            raise ValueError(
-                f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
-            )
 
         # Allocate additional internal data for reset operations
         with wp.ScopedDevice(self._model.device):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from itertools import product
 
 import numpy as np
 import warp as wp
@@ -149,7 +150,7 @@ def _build_fixture(
     )
 
 
-def _make_solver(backend: str, model: newton.Model) -> SolverKamino | SolverMuJoCo:
+def _make_solver(backend: str, model: newton.Model, *, limit_compliance: bool = False) -> SolverKamino | SolverMuJoCo:
     """Create a configured collision-free conformance solver."""
     if backend == "kamino":
         config = SolverKamino.Config(
@@ -158,8 +159,11 @@ def _make_solver(backend: str, model: newton.Model) -> SolverKamino | SolverMuJo
             use_fk_solver=False,
             sparse_jacobian=True,
         )
-        config.constraints.alpha = 0.0
-        config.constraints.beta = 0.1
+        # Match alpha=0 and beta=0.1 at the rollout's 240 Hz timestep.
+        config.constraints.joint_recovery_time = 0.0
+        config.constraints.joint_recovery_speed = 0.0
+        config.constraints.limit_recovery_time = (1.0 / 240.0) * (1.0 / 0.1 - 1.0)
+        config.constraints.limit_compliance = limit_compliance
         config.padmm.max_iterations = 200
         config.padmm.primal_tolerance = 1.0e-6
         config.padmm.dual_tolerance = 1.0e-6
@@ -185,6 +189,7 @@ def _run(
     velocity_target: np.ndarray | None = None,
     steps: int = 1,
     record_trajectory: bool = True,
+    limit_compliance: bool = False,
     **fixture_kwargs,
 ) -> _Probe:
     """Run a D6 rollout and optionally retain each coordinate sample."""
@@ -212,7 +217,7 @@ def _run(
         values[fixture.qd_start : fixture.qd_start + 3] = velocity_target
         control.joint_target_qd.assign(values)
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    solver = _make_solver(backend, model)
+    solver = _make_solver(backend, model, limit_compliance=limit_compliance)
     contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=model.device) if backend == "mjwarp" else None
     q_slice = slice(fixture.q_start, fixture.q_start + 3)
     qd_slice = slice(fixture.qd_start, fixture.qd_start + 3)
@@ -441,28 +446,34 @@ class TestGimbal(unittest.TestCase):
         )
 
     def test_limits(self):
-        """Drive each D6 coordinate to its own position limit."""
+        """Drive each D6 coordinate to its own limit with rigid and compliant stops."""
         lower = np.array([-0.15, -0.25, -0.35], dtype=np.float32)
         upper = np.array([0.2, 0.3, 0.4], dtype=np.float32)
         target = np.array([0.6, -0.6, 0.6], dtype=np.float32)
         expected = np.where(target > 0.0, upper, lower)
-        for axes in (_RH_AXES, _LH_AXES):
-            for fixed_base in (True, False):
-                with self.subTest(axes=axes, fixed_base=fixed_base):
-                    probe = _run(
-                        "kamino",
-                        fixed_base,
-                        axes,
-                        self.default_device,
-                        position_target=target,
-                        stiffness=100.0,
-                        drive_damping=15.0,
-                        lower=lower,
-                        upper=upper,
-                        steps=50,
-                        record_trajectory=False,
-                    )
-                    np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
+        for axes, fixed_base in product((_RH_AXES, _LH_AXES), (True, False)):
+            with self.subTest(axes=axes, fixed_base=fixed_base):
+                trajectories = []
+                for limit_compliance in (False, True):
+                    with self.subTest(limit_compliance=limit_compliance):
+                        probe = _run(
+                            "kamino",
+                            fixed_base,
+                            axes,
+                            self.default_device,
+                            position_target=target,
+                            stiffness=100.0,
+                            drive_damping=15.0,
+                            lower=lower,
+                            upper=upper,
+                            limit_compliance=limit_compliance,
+                            steps=50,
+                        )
+                        trajectories.append(probe.q)
+                        np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
+                # Both laws reach the stops, but must differ above solver noise on every axis.
+                peak_difference = np.max(np.abs(trajectories[1][1:-1] - trajectories[0][1:-1]), axis=0)
+                self.assertGreater(float(np.min(peak_difference)), 5.0e-4)
 
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
