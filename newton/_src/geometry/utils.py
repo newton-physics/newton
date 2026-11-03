@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Vec3
+from ..exceptions import NewtonWarning
 from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
@@ -403,18 +404,11 @@ def load_mesh(filename: str, method: str | None = None):
 
             m = trimesh.load(filename)
             if hasattr(m, "geometry"):
-                # multiple meshes are contained in a scene; combine to one mesh
-                mesh_points = []
-                mesh_indices = []
-                index_offset = 0
-                for geom in m.geometry.values():
-                    vertices = np.array(geom.vertices, dtype=np.float32)
-                    faces = np.array(geom.faces.flatten(), dtype=np.int32)
-                    mesh_points.append(vertices)
-                    mesh_indices.append(faces + index_offset)
-                    index_offset += len(vertices)
-                mesh_points = np.concatenate(mesh_points, axis=0)
-                mesh_indices = np.concatenate(mesh_indices)
+                # Combine scene parts with their node transforms applied;
+                # raw vertices are in node-local space.
+                combined = m.to_mesh()
+                mesh_points = np.array(combined.vertices, dtype=np.float32)
+                mesh_indices = np.array(combined.faces.flatten(), dtype=np.int32)
             else:
                 # a single mesh
                 mesh_points = np.array(m.vertices, dtype=np.float32)
@@ -575,7 +569,9 @@ def remesh_ftetwild(
 
     if len(new_vertices) == 0 or len(new_faces) == 0:
         warnings.warn(
-            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.", stacklevel=2
+            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.",
+            NewtonWarning,
+            stacklevel=2,
         )
         return vertices, faces
 
@@ -727,8 +723,8 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
           well-formed ``(verts, faces)`` pair with ``M >= 3`` and ``K >= 2``.
         - ``verts`` is always a subset of the true convex hull's vertex set.
         - For full-rank (rank-3) inputs, the output is a closed 3D convex hull
-          with outward-facing triangle windings, unchanged from the pre-degeneracy
-          behavior.
+          with outward-facing triangle windings, including hulls capped by
+          ``maxhullvert``.
 
     Degenerate outputs (rank < 3):
         - **Coplanar (rank 2):** a flat, zero-volume triangle soup covering the
@@ -787,7 +783,7 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
             f"remesh_convex_hull: input point cloud is {rank}; returning a "
             "zero-volume fallback mesh. Downstream inertia computations will "
             "produce zero mass / COM / inertia.",
-            UserWarning,
+            NewtonWarning,
             stacklevel=2,
         )
 
@@ -875,20 +871,15 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     verts = vertices.astype(np.float32)
     faces = hull.simplices.astype(np.int32)
 
-    # fix winding order of faces
-    centre_f = verts.mean(0)
-    for i, tri in enumerate(faces):
-        a, b, c = verts[tri]
-        normal = np.cross(b - a, c - a)
-        if np.dot(normal, a - centre_f) < 0:
-            faces[i] = tri[[0, 2, 1]]
+    # Qhull leaves simplex winding arbitrary; flip faces whose normal opposes their facet's outward normal.
+    a, b, c = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]
+    inward = np.einsum("ij,ij->i", np.cross(b - a, c - a), hull.equations[:, :3]) < 0
+    faces[inward] = faces[inward][:, [0, 2, 1]]
 
     # trim vertices to only those that are used in the faces
-    unique_verts = np.unique(faces.flatten())
+    unique_verts, faces_flat = np.unique(faces, return_inverse=True)
     verts = verts[unique_verts]
-    # update face indices to use the new vertex indices
-    mapping = {v: i for i, v in enumerate(unique_verts)}
-    faces = np.array([mapping[v] for v in faces.flatten()], dtype=np.int32).reshape(faces.shape)
+    faces = faces_flat.reshape(faces.shape).astype(np.int32)
 
     return verts, faces
 

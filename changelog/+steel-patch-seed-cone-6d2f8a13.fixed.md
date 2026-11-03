@@ -1,0 +1,1 @@
+Fix `SolverSteel` with `contact_warmstart=True` and friction anchors starting a friction-patch anchor without patch history from a contact-matched seed outside its patch cone; the seed is now projected onto the cone like a carried anchor's.

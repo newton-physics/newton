@@ -1799,6 +1799,7 @@ class SparseSystemJacobians:
         joint_dofs_offset = model.joints.dofs_offset.numpy()
         world_dofs_offset = model.info.joint_dofs_offset.numpy()
         bodies_offset = model.info.bodies_offset.numpy()
+        world_bounded_offset = model.info.joint_bounded_cts_offset.numpy()
         J_cts_nnzb_min = [0] * num_worlds
         J_cts_nnzb_max = [0] * num_worlds
         J_dofs_nnzb = [0] * num_worlds
@@ -1839,7 +1840,10 @@ class SparseSystemJacobians:
             # kinematic_B, friction_F, friction_B, effort_F, effort_B] (see the nzb coordinate
             # loops below), so bounded blocks start after both bodies' dynamic+kinematic blocks.
             if num_bounded_joint_cts > 0:
-                bounded_row_start = joint_bounded_cts_offset[_j]
+                # Constraint rows group all friction rows before all effort rows.
+                # The per-joint bounded offset instead interleaves these categories.
+                bounded_base = world_bounded_offset[w] - world_cts_offset[w] - num_bilateral_joint_cts[w]
+                bounded_row_start = bounded_base + joint_friction_cts_offset_total_cts[_j]
                 body_F_local_offset = J_cts_joint_nzb_offsets[_j] + num_adjacent_bodies * (
                     num_dynamic_cts + num_kinematic_cts
                 )
@@ -1848,7 +1852,7 @@ class SparseSystemJacobians:
                     J_cts_bounded_nzb_offsets_F[bounded_row_start + r] = body_F_local_offset + r
                     if is_binary:
                         J_cts_bounded_nzb_offsets_B[bounded_row_start + r] = body_B_local_offset + r
-                effort_row_start = bounded_row_start + num_friction_cts
+                effort_row_start = bounded_base + joint_effort_cts_offset_total_cts[_j]
                 body_F_local_offset += num_adjacent_bodies * num_friction_cts
                 body_B_local_offset = body_F_local_offset + num_effort_cts
                 for r in range(num_effort_cts):

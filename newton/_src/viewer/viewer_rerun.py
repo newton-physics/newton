@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import subprocess
 import warnings
 from typing import Any
@@ -15,6 +16,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
@@ -25,6 +27,8 @@ try:
 except ImportError:
     rr = None
     rrb = None
+
+logger = logging.getLogger(__name__)
 
 
 class ViewerRerun(ViewerBase):
@@ -107,6 +111,8 @@ class ViewerRerun(ViewerBase):
         if not self._mesh3d_params:
             return True
         return field_name in self._mesh3d_params
+
+    _supports_deformable_visual_meshes = True
 
     def __init__(
         self,
@@ -193,7 +199,7 @@ class ViewerRerun(ViewerBase):
                 self._grpc_server_uri = rr.serve_grpc(grpc_port=grpc_port, default_blueprint=blueprint)
                 rr.serve_web_viewer(connect_to=self._grpc_server_uri, web_port=web_port)
                 query = urlencode({"url": self._grpc_server_uri})
-                print(f"Rerun web viewer running at: http://127.0.0.1:{web_port}/?{query}", flush=True)
+                logger.info("Rerun web viewer running at: http://127.0.0.1:%s/?%s", web_port, query)
             else:
                 rr.spawn(port=grpc_port)
 
@@ -241,6 +247,17 @@ class ViewerRerun(ViewerBase):
             self._scalars = {name: value for name, value in self._scalars.items() if not owns(name)}
 
         super().clear_model()
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, texture=None, **kwargs):
+        name = self._qualify(name)
+        if hidden:
+            mesh = self._meshes.get(name)
+            if mesh is not None and mesh.get("visible", False):
+                rr.log(name, rr.Clear(recursive=False))
+                mesh["visible"] = False
+            return
+        self.log_mesh(name, points, indices, texture=self._deformable_visual_texture(texture), **kwargs)
 
     @override
     def log_mesh(
@@ -446,6 +463,7 @@ class ViewerRerun(ViewerBase):
                 if not np.allclose(opacities_np, first_opacity):
                     warnings.warn(
                         "ViewerRerun does not support per-instance opacity; using the first opacity for the batch.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
             if colors is not None and not has_texture:
@@ -585,6 +603,8 @@ class ViewerRerun(ViewerBase):
         This will terminate any spawned viewer process and disconnect from rerun.
         """
         self._running = False
+        for layer in self.layers.values():
+            layer._deformable_visual_textures.clear()
 
         # Close viewer process if we spawned one
         if self._viewer_process is not None:

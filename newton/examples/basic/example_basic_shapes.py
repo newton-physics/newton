@@ -1,19 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Shapes
-#
-# Shows how to programmatically create a variety of
-# collision shapes using the newton.ModelBuilder() API.
-# Supports XPBD (default), VBD, and Kamino DVI solvers.
-#
-# Command: python -m newton.examples basic_shapes
-# With VBD: python -m newton.examples basic_shapes --solver vbd
-# With Kamino DVI: python -m newton.examples basic_shapes --solver kamino
-#
-#
-###########################################################################
+"""Example Basic Shapes
+
+Shows how to programmatically create a variety of
+collision shapes using the newton.ModelBuilder() API.
+Supports XPBD (default), VBD, and Kamino DVI solvers.
+
+Success criteria:
+- Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.
+- The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.
+
+Runs:
+- `python -m newton.examples basic_shapes --solver xpbd`
+- `python -m newton.examples basic_shapes --solver vbd`
+- `python -m newton.examples basic_shapes`
+- `python -m newton.examples basic_shapes --solver kamino`
+"""
 
 import warp as wp
 from pxr import Usd
@@ -108,7 +111,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=5,
-                rigid_compliant_alm=True,
             )
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
@@ -137,6 +139,11 @@ class Example:
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = (
+            self.solver.observables(contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F})
+            if self.solver_type == "kamino"
+            else None
+        )
 
         self.viewer.set_model(self.model)
 
@@ -172,7 +179,14 @@ class Example:
                     )
             else:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -251,7 +265,6 @@ class Example:
             [5],
         )
         if self.solver_type == "kamino":
-            self.solver.update_contacts(self.contacts, self.state_0)
             if int(self.contacts.rigid_contact_count.numpy()[0]) == 0:
                 raise ValueError("Kamino did not export contacts for visualization")
 
@@ -259,9 +272,7 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         if self.contacts is not None:
-            if self.solver_type == "kamino" and self.viewer.show_contacts:
-                self.solver.update_contacts(self.contacts, self.state_0)
-            self.viewer.log_contacts(self.contacts, self.state_0)
+            self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
 

@@ -1,48 +1,60 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Bend/Twist Analytic Validation
-#
-# This is a visual and numerical comparison against two exact discrete
-# boundary-value solutions:
-#
-#   Bend rows:
-#       Root and tip are kinematic. The tip is placed on a constant-curvature
-#       discrete arc and rotated by the target bend angle. With identical bend
-#       springs and no external load, the analytic minimum-energy solution is
-#       uniform bend:
-#
-#           theta_i = i / (N - 1) * theta_tip
-#
-#       The numerical test compares against that analytic centerline. The
-#       viewer overlays simulated and analytic centerlines so bend agreement is
-#       visible without enabling joint-frame axes by default.
-#
-#   Twist rows:
-#       Root and tip are kinematic at their straight positions. The tip is
-#       twisted about the cable axis. With identical twist springs and no bend
-#       load, the analytic solution is uniform twist:
-#
-#           theta_i = i / (N - 1) * theta_tip
-#
-#       The numerical test compares against that analytic twist distribution.
-#       The viewer overlays simulated and analytic material-frame spokes so
-#       twist agreement is visible without enabling joint-frame axes by default.
-#
-# These rows are direct analytic checks for "bend does not create twist" and
-# "twist does not create bend" without relying on a continuum EI calibration.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_twist_analytic
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_twist_analytic --test --viewer null
-#
-# Verification/report modes:
-#   --cable-analytic-mode {all,bend,twist,twist_max}   (default: all)
-#
-###########################################################################
+"""Cable Bend/Twist Analytic Validation
+
+This is a visual and numerical comparison against two exact discrete
+boundary-value solutions:
+
+  Bend rows:
+      Root and tip are kinematic. The tip is placed on a constant-curvature
+      discrete arc and rotated by the target bend angle. With identical bend
+      springs and no external load, the analytic minimum-energy solution is
+      uniform bend:
+
+          theta_i = i / (N - 1) * theta_tip
+
+      The numerical test compares against that analytic centerline. The
+      viewer overlays simulated and analytic centerlines so bend agreement is
+      visible without enabling joint-frame axes by default.
+
+  Twist rows:
+      Root and tip are kinematic at their straight positions. The tip is
+      twisted about the cable axis. With identical twist springs and no bend
+      load, the analytic solution is uniform twist:
+
+          theta_i = i / (N - 1) * theta_tip
+
+      The numerical test compares against that analytic twist distribution.
+      The viewer overlays simulated and analytic material-frame spokes so
+      twist agreement is visible without enabling joint-frame axes by default.
+
+These rows are direct analytic checks for "bend does not create twist" and
+"twist does not create bend" without relying on a continuum EI calibration.
+
+Verification/report modes:
+  --cable-analytic-mode {all,bend,twist,twist_max}   (default: all)
+
+Success criteria:
+- Kinematic endpoints follow the prescribed bend or twist targets.
+- After the ramp and hold, simulated overlays closely match the analytic reference for each
+  displayed row.
+
+Runs:
+- `python -m newton.examples cable_bend_twist_analytic`
+  - Both bend and twist rows are displayed.
+  - Bend rows follow constant-curvature centerlines without unwanted twist.
+  - Twist rows distribute twist uniformly without visible bending.
+- `python -m newton.examples cable_bend_twist_analytic --cable-analytic-mode bend`
+  - Only bend rows are displayed.
+  - Bend rows follow constant-curvature centerlines without unwanted twist.
+- `python -m newton.examples cable_bend_twist_analytic --cable-analytic-mode twist`
+  - Only twist rows are displayed.
+  - Twist rows distribute twist uniformly without visible bending.
+- `python -m newton.examples cable_bend_twist_analytic --cable-analytic-mode twist_max`
+  - The maximum-twist reference row is displayed.
+  - Twist rows distribute twist uniformly without visible bending.
+"""
 
 import math
 
@@ -149,7 +161,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -209,7 +221,6 @@ class Example:
             twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         return list(bodies), list(joints)
 

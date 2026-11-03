@@ -214,7 +214,7 @@ class TestMeshEdgeAngleFilter(unittest.TestCase):
 
 class TestModelBuilderEdgeAngleThreshold(unittest.TestCase):
     def test_finalize_packs_collision_edge_geometry(self):
-        """Pack scaled geometry and unique corner ownership for collision edges."""
+        """Pack unscaled geometry once per mesh and unique corner ownership for collision edges."""
         mesh = _near_antiparallel_pair_mesh()
         builder = newton.ModelBuilder()
         scales = np.asarray(((1.0, 1.0, 1.0), (2.0, 3.0, 4.0)), dtype=np.float32)
@@ -223,50 +223,50 @@ class TestModelBuilderEdgeAngleThreshold(unittest.TestCase):
             builder.add_shape_mesh(body=body, mesh=mesh, scale=scale)
         model = builder.finalize()
 
-        edge_ranges = model.shape_edge_range.numpy()
-        self.assertNotEqual(edge_ranges[0, 0], edge_ranges[1, 0])
-        packed_edges = model.mesh_edge_indices.numpy()
-        packed_centers = model.mesh_edge_centers.numpy()
-        packed_halves = model.mesh_edge_halves.numpy()
-        for shape_idx, scale in enumerate(scales):
-            start, count = edge_ranges[shape_idx]
-            edges = packed_edges[start : start + count]
-            vertices = np.asarray(mesh.vertices, dtype=np.float32) * scale
-            edge_v0 = vertices[edges[:, 0]]
-            edge_v1 = vertices[edges[:, 1]]
-            expected_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
-            expected_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
-            expected_radii = np.linalg.norm(expected_halves, axis=1)
+        edge_ranges = model._shape_edge_range.numpy()
+        np.testing.assert_array_equal(edge_ranges[0], edge_ranges[1])
+        edges = model._mesh_edge_indices.numpy()
+        packed_centers = model._mesh_edge_centers.numpy()
+        packed_halves = model._mesh_edge_halves.numpy()
+        self.assertEqual(len(edges), edge_ranges[0, 1])
+        vertices = np.asarray(mesh.vertices, dtype=np.float32)
+        edge_v0 = vertices[edges[:, 0]]
+        edge_v1 = vertices[edges[:, 1]]
+        expected_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
+        expected_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
+        expected_radii = np.linalg.norm(expected_halves, axis=1)
 
-            np.testing.assert_array_equal(packed_centers[start : start + count, :3], expected_centers)
-            np.testing.assert_allclose(packed_centers[start : start + count, 3], expected_radii)
-            np.testing.assert_array_equal(packed_halves[start : start + count, :3], expected_halves)
+        np.testing.assert_array_equal(packed_centers[:, :3], expected_centers)
+        np.testing.assert_allclose(packed_centers[:, 3], expected_radii)
+        np.testing.assert_array_equal(packed_halves[:, :3], expected_halves)
 
-            ownership = packed_halves[start : start + count, 3].astype(np.int32)
-            self.assertTrue(np.all((ownership >= 4) & (ownership <= 7)))
-            canonical_edges = mesh._canonical_vertex_ids()[edges]
-            owned_counts = Counter()
-            for edge, code in zip(canonical_edges, ownership, strict=True):
-                if code & 1:
-                    owned_counts[int(edge[0])] += 1
-                if code & 2:
-                    owned_counts[int(edge[1])] += 1
-            for vertex_idx in np.unique(canonical_edges):
-                self.assertEqual(owned_counts[int(vertex_idx)], 1)
+        ownership = packed_halves[:, 3].astype(np.int32)
+        self.assertTrue(np.all((ownership >= 4) & (ownership <= 7)))
+        canonical_edges = mesh._canonical_vertex_ids()[edges]
+        owned_counts = Counter()
+        for edge, code in zip(canonical_edges, ownership, strict=True):
+            if code & 1:
+                owned_counts[int(edge[0])] += 1
+            if code & 2:
+                owned_counts[int(edge[1])] += 1
+        for vertex_idx in np.unique(canonical_edges):
+            self.assertEqual(owned_counts[int(vertex_idx)], 1)
 
     def test_finalize_uses_full_edges_without_build_sdf(self):
+        """Pack every mesh edge when no SDF edge subset was built."""
         mesh = newton.Mesh.create_box(0.5, compute_inertia=False)
 
         builder = newton.ModelBuilder()
         body = builder.add_body()
         builder.add_shape_mesh(body=body, mesh=mesh)
         model = builder.finalize()
-        ranges = model.shape_edge_range.numpy()
+        ranges = model._shape_edge_range.numpy()
         # No build_sdf() -> builder packs all 18 unique cube edges.
         self.assertEqual(int(ranges[0][1]), 18)
-        self.assertEqual(int(model.mesh_edge_indices.shape[0]), 18)
+        self.assertEqual(int(model._mesh_edge_indices.shape[0]), 18)
 
     def test_finalize_shares_edges_across_shapes_referencing_same_mesh(self):
+        """Share one packed edge range across shapes referencing the same mesh."""
         mesh = newton.Mesh.create_box(0.5, compute_inertia=False)
         builder = newton.ModelBuilder()
         body_a = builder.add_body()
@@ -275,13 +275,13 @@ class TestModelBuilderEdgeAngleThreshold(unittest.TestCase):
         builder.add_shape_mesh(body=body_b, mesh=mesh)
         model = builder.finalize()
 
-        ranges = model.shape_edge_range.numpy()
+        ranges = model._shape_edge_range.numpy()
         # Two mesh shapes, both referencing the same Mesh -> identical (start, count) slice.
         mesh_ranges = [tuple(int(x) for x in r) for r in ranges if int(r[1]) > 0]
         self.assertEqual(len(mesh_ranges), 2)
         self.assertEqual(mesh_ranges[0], mesh_ranges[1])
         # Packed array stores only one copy.
-        self.assertEqual(int(model.mesh_edge_indices.shape[0]), mesh_ranges[0][1])
+        self.assertEqual(int(model._mesh_edge_indices.shape[0]), mesh_ranges[0][1])
 
 
 def _open_top_box_mesh() -> newton.Mesh:
@@ -505,6 +505,7 @@ class TestBuildCollisionEdges(unittest.TestCase):
         self.assertEqual(len(self._build(mesh)), 12)
 
     def test_collision_edges_consumed_by_builder(self):
+        """Pack the collision-edge subset supplied by the source mesh."""
         mesh = newton.Mesh.create_box(0.5, compute_inertia=False)
         # Seed _collision_edges with a hand-picked subset (e.g. 6 edges) to
         # simulate ``Mesh.build_sdf()`` having populated it.
@@ -516,9 +517,9 @@ class TestBuildCollisionEdges(unittest.TestCase):
         builder.add_shape_mesh(body=body, mesh=mesh)
         model = builder.finalize()
 
-        ranges = model.shape_edge_range.numpy()
+        ranges = model._shape_edge_range.numpy()
         self.assertEqual(int(ranges[0][1]), len(seeded))
-        np.testing.assert_array_equal(model.mesh_edge_indices.numpy(), seeded)
+        np.testing.assert_array_equal(model._mesh_edge_indices.numpy(), seeded)
 
     def test_empty_mesh_produces_empty_collision_edges(self):
         mesh = newton.Mesh(np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int32), compute_inertia=False)

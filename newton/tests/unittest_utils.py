@@ -9,12 +9,14 @@ import importlib.util
 import io
 import linecache
 import os
+import platform
 import re
 import shlex
 import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -23,6 +25,33 @@ import warp as wp
 
 pxr = importlib.util.find_spec("pxr")
 USD_AVAILABLE = pxr is not None
+
+MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
+
+# The batched transform helpers in newton._src.core.host_transform mirror the operation
+# order of Warp's native builtins, so they match bit for bit where neither side fuses
+# multiply-adds. That is verified on Linux x86-64; elsewhere, tests compare within
+# float32 round-off.
+HOST_TRANSFORMS_BIT_EXACT = platform.system() == "Linux" and platform.machine() == "x86_64"
+
+
+_PRE_RELEASE_RANK = {".dev": 0, "a": 1, "b": 2, "rc": 3, None: 4}
+
+
+def _version_key(version: str, *, exact: bool = False) -> tuple[int, ...]:
+    # Thresholds must match exactly: a dropped suffix such as a local label would change their ordering.
+    match = (re.fullmatch if exact else re.match)(r"(\d+)\.(\d+)\.(\d+)(?:(\.dev|a|b|rc)(\d+))?", version)
+    if match is None:
+        raise ValueError(f"Unsupported version: {version!r}")
+    major, minor, patch, pre, pre_number = match.groups()
+    # PEP 440 order: X.devN < XaN < XbN < XrcN < X.
+    return (int(major), int(minor), int(patch), _PRE_RELEASE_RANK[pre], int(pre_number or 0))
+
+
+def warp_version_at_least(version: str) -> bool:
+    """Compare ``wp.__version__`` with ``version`` without the undeclared ``packaging`` dependency."""
+    return _version_key(wp.__version__) >= _version_key(version, exact=True)
+
 
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device
@@ -84,6 +113,29 @@ def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
 warp_config_overrides: list[str] = []
 
 
+def _restore_warning_filters(saved: list) -> None:
+    warnings.filters[:] = saved
+
+
+def ignore_sensor_tiled_camera_deprecation() -> None:
+    """Silence the whole-class ``SensorTiledCamera`` deprecation warning.
+
+    ``SensorTiledCamera`` is deprecated in favor of ``newton.sensors.SensorCamera``.
+    The tests that still exercise it call this from ``setUpModule`` so its
+    construction warning does not escalate to an error under ``--strict-warnings``.
+
+    The suppression is scoped to the calling module: the previous global filter
+    state is restored after ``tearDownModule`` so it does not leak into later
+    test modules.
+    """
+    unittest.addModuleCleanup(_restore_warning_filters, warnings.filters[:])
+    warnings.filterwarnings(
+        "ignore",
+        message="SensorTiledCamera is deprecated",
+        category=DeprecationWarning,
+    )
+
+
 @contextlib.contextmanager
 def patch_sys_module(name: str, module: Any):
     """Temporarily replace one module entry without rolling back unrelated imports."""
@@ -97,6 +149,24 @@ def patch_sys_module(name: str, module: Any):
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = original
+
+
+def import_pyglet_window(*, shadow_window: bool = True):
+    """Import ``pyglet.window`` with GL error checks off, as ``RendererGL`` does.
+
+    pyglet reads ``debug_gl`` only on its first GL import, so a test importing it first
+    would otherwise leave the checks on for every later viewer in its worker.
+    """
+    import pyglet
+
+    pyglet.options["debug_gl"] = False
+    saved_shadow_window = pyglet.options["shadow_window"]
+    pyglet.options["shadow_window"] = shadow_window
+    try:
+        import pyglet.window
+    finally:
+        pyglet.options["shadow_window"] = saved_shadow_window
+    return pyglet
 
 
 try:
@@ -243,7 +313,16 @@ class StreamCapture:
             write_through=True,
         )
 
-        # Redirect the stream
+        self.resume()
+
+    def suspend(self):
+        if LIBC is not None:
+            LIBC.fflush(None)
+        os.dup2(self.target, self.stream_fd)
+        setattr(sys, self.stream_name, self.saved)
+
+    def resume(self):
+        self.saved.flush()
         os.dup2(self.tempfile.fileno(), self.stream_fd)
         setattr(sys, self.stream_name, self.tempfile)
 
@@ -290,6 +369,9 @@ class CheckOutput:
     def __enter__(self):
         # wp.force_load()
 
+        # Flush device printf output still pending from earlier tests so the
+        # capture holds only this test's output.
+        wp.synchronize()
         self.capture = StdOutCapture()
         self.capture.begin()
 
@@ -356,6 +438,20 @@ class _OutputCapture:
             self.stdout_capture.end()
             raise
         self.active = True
+
+    @contextlib.contextmanager
+    def suspended(self):
+        if not self.active:
+            yield
+            return
+
+        self.stderr_capture.suspend()
+        self.stdout_capture.suspend()
+        try:
+            yield
+        finally:
+            self.stdout_capture.resume()
+            self.stderr_capture.resume()
 
     def add_pattern(self, pattern: str, *, stream: str, required: bool, report: bool = False):
         if stream not in {"stdout", "stderr", "any"}:
@@ -468,6 +564,13 @@ class NewtonTestCase(unittest.TestCase):
 
     _output_capture: _OutputCapture | None = None
 
+    def run(self, result=None):
+        if result is None:
+            return super().run()
+
+        super().run(_UncapturedReportingResult(result, self))
+        return result
+
     def _callSetUp(self):
         self._output_capture = _OutputCapture()
         self._output_capture.begin()
@@ -528,6 +631,26 @@ class NewtonTestCase(unittest.TestCase):
                 return True
 
         return False
+
+
+class _UncapturedReportingResult:
+    """Report outcomes outside the output capture, which is still active for subtest outcomes and skips."""
+
+    def __init__(self, result: unittest.TestResult, test: NewtonTestCase):
+        self._result = result
+        self._test = test
+
+    def __getattr__(self, name):
+        attr = getattr(self._result, name)
+        if not name.startswith("add") or not callable(attr):
+            return attr
+
+        def report(*args, **kwargs):
+            output_capture = self._test._output_capture
+            with output_capture.suspended() if output_capture is not None else contextlib.nullcontext():
+                return attr(*args, **kwargs)
+
+        return report
 
 
 def _format_command(command) -> str:
@@ -760,28 +883,46 @@ def cleanup_test_allocations():
             wp.set_mempool_release_threshold(device_name, 0)
 
 
-class AllocationCleanupTestResultMixin:
-    """Bound cleanup overhead while retaining per-test CUDA memory release."""
+@dataclasses.dataclass
+class _AllocationCleanupState:
+    tests_since_cleanup: int = 0
 
-    _CPU_CLEANUP_INTERVAL = 8
+
+class AllocationCleanupTestResultMixin:
+    """Batch allocation cleanup across suites in a worker process."""
+
+    _CLEANUP_INTERVAL = 8
+    _worker_cleanup_state: _AllocationCleanupState | None = None
+
+    @classmethod
+    def _start_worker(cls):
+        cls._worker_cleanup_state = _AllocationCleanupState()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._tests_since_cleanup = 0
+        self._cleanup_state = self._worker_cleanup_state or _AllocationCleanupState()
+        self.cleanup_count = 0
+        self.cleanup_seconds = 0.0
+
+    def _cleanup_allocations(self):
+        start = time.perf_counter()
+        cleanup_test_allocations()
+        self.cleanup_seconds += time.perf_counter() - start
+        self.cleanup_count += 1
+        self._cleanup_state.tests_since_cleanup = 0
 
     def stopTest(self, test):
         super().stopTest(test)
         if is_statically_skipped_test(test):
             return
-        self._tests_since_cleanup += 1
-        if wp.get_cuda_devices() or self._tests_since_cleanup >= self._CPU_CLEANUP_INTERVAL:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        self._cleanup_state.tests_since_cleanup += 1
+        if self._cleanup_state.tests_since_cleanup >= self._CLEANUP_INTERVAL:
+            self._cleanup_allocations()
 
     def stopTestRun(self):
-        if self._tests_since_cleanup:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        # Worker exit releases remaining allocations; standalone runs must flush.
+        if self._cleanup_state is not self._worker_cleanup_state and self._cleanup_state.tests_since_cleanup:
+            self._cleanup_allocations()
         super().stopTestRun()
 
 

@@ -1,22 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Bundle Hysteresis
-#
-# Demonstrates Dahl friction model for cable bending hysteresis.
-# Creates a bundle of 7 cables passing through moving obstacles that
-# apply cyclic loading (load -> hold -> release). The Dahl model captures
-# plastic deformation and hysteresis loops in cable bending behavior,
-# showing realistic memory effects in cable dynamics.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis --test --viewer null
-#
-###########################################################################
+"""Example Cable Bundle Hysteresis
+
+Demonstrates Dahl friction model for cable bending hysteresis.
+Creates a bundle of 7 cables passing through moving obstacles that
+apply cyclic loading (load -> hold -> release). The Dahl model captures
+plastic deformation and hysteresis loops in cable bending behavior,
+showing realistic memory effects in cable dynamics.
+
+Success criteria:
+- Seven cables are bent by four vertical capsules into an S pattern.
+- After the capsules disappear, the cables settle without exploding.
+
+Runs:
+- `python -m newton.examples cable_bundle_hysteresis --no-dahl`
+  - The cables are mostly straight.
+- `python -m newton.examples cable_bundle_hysteresis`
+  - The cables keep a clear S shape.
+- `python -m newton.examples cable_bundle_hysteresis --segments 15`
+  - The cables have a more irregular S shape with visibly coarser segmentation.
+- `python -m newton.examples cable_bundle_hysteresis --eps-max 0.3`
+  - The cables retain a less-pronounced S shape than the default run.
+- `python -m newton.examples cable_bundle_hysteresis --tau 10.0`
+  - The cables become mostly straight.
+"""
 
 import numpy as np
 import warp as wp
@@ -223,7 +231,6 @@ class Example:
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",
-                body_frame_origin="com",
             )
             self.cable_body_ids.append(rod_bodies)
 
@@ -293,7 +300,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
 
         # Initialize states and contacts

@@ -118,7 +118,7 @@ class TestHeightfield(unittest.TestCase):
           <compiler autolimits="true"/>
           <asset>
             <hfield name="terrain" nrow="10" ncol="10"
-                    size="5 5 1 0"/>
+                    size="5 5 1 0.1"/>
           </asset>
           <worldbody>
             <geom type="hfield" hfield="terrain"/>
@@ -140,7 +140,7 @@ class TestHeightfield(unittest.TestCase):
         self.assertIsInstance(hfield, Heightfield)
         self.assertEqual(hfield.nrow, 10)
         self.assertEqual(hfield.ncol, 10)
-        # MuJoCo size (5, 5, 1, 0) → hx=5, hy=5, min_z=0, max_z=1
+        # MuJoCo size (5, 5, 1, 0.1) → hx=5, hy=5, min_z=0, max_z=1
         self.assertAlmostEqual(hfield.hx, 5.0)
         self.assertAlmostEqual(hfield.hy, 5.0)
         self.assertAlmostEqual(hfield.min_z, 0.0)
@@ -167,7 +167,7 @@ class TestHeightfield(unittest.TestCase):
         <mujoco>
           <asset>
             <hfield name="terrain" nrow="4" ncol="6"
-                    size="3 2 1 0" file="terrain.bin"/>
+                    size="3 2 1 0.1" file="terrain.bin"/>
           </asset>
           <worldbody>
             <geom type="hfield" hfield="terrain"/>
@@ -199,7 +199,7 @@ class TestHeightfield(unittest.TestCase):
         <mujoco>
           <asset>
             <hfield name="terrain" nrow="3" ncol="3"
-                    size="2 2 1 0"
+                    size="2 2 1 0.1"
                     elevation="0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9"/>
           </asset>
           <worldbody>
@@ -220,7 +220,7 @@ class TestHeightfield(unittest.TestCase):
         # Data is normalized from [0.1, 0.9] to [0, 1]
         self.assertAlmostEqual(float(hfield.data.min()), 0.0, places=5)
         self.assertAlmostEqual(float(hfield.data.max()), 1.0, places=5)
-        self.assertAlmostEqual(hfield.min_z, -0.0)  # size_base=0 → min_z=0
+        self.assertAlmostEqual(hfield.min_z, 0.0)  # The base does not shift the surface.
         self.assertAlmostEqual(hfield.max_z, 1.0)  # size_z=1 → max_z=1
 
     def test_solver_mujoco_hfield(self):
@@ -304,6 +304,132 @@ class TestHeightfield(unittest.TestCase):
             -sphere_radius,
             f"Sphere fell through heightfield: z={final_z:.4f}",
         )
+
+    def test_solver_mujoco_hfield_pose_and_size_honor_min_z_and_scale(self):
+        """Place the MuJoCo heightfield at the scaled min_z, at compile time and after every geom sync.
+
+        MuJoCo elevations start at the geom origin, so the geom must be
+        shifted by min_z along the heightfield's own z axis, and the shape's
+        scale applies to hx, hy, min_z, and max_z. The heightfield is rotated
+        so a shift along world z instead would be caught.
+        """
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+        import mujoco
+
+        builder = newton.ModelBuilder()
+        elevation = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 1.0]], dtype=np.float32)
+        hfield = Heightfield(data=elevation, nrow=2, ncol=3, hx=1.0, hy=0.5, min_z=-0.4, max_z=0.6)
+        rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3)
+        xform = wp.transform(wp.vec3(0.2, -0.1, 1.0), rotation)
+        scale = (2.0, 3.0, 0.5)
+        builder.add_shape_heightfield(xform=xform, heightfield=hfield, scale=scale)
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 3.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+
+        mj_model = solver.mj_model
+        geom = next(i for i in range(mj_model.ngeom) if mj_model.geom_type[i] == mujoco.mjtGeom.mjGEOM_HFIELD)
+        hfield_id = mj_model.geom_dataid[geom]
+        np.testing.assert_allclose(mj_model.hfield_size[hfield_id][:3], [2.0, 1.5, 0.5], rtol=1e-6)
+
+        expected_pos = np.array(wp.transform_point(xform, wp.vec3(0.0, 0.0, -0.4 * scale[2])))
+        np.testing.assert_allclose(mj_model.geom_pos[geom], expected_pos, atol=1e-6)
+        runtime_pos = solver.mjw_model.geom_pos.numpy().reshape(-1, mj_model.ngeom, 3)[0, geom]
+        np.testing.assert_allclose(runtime_pos, expected_pos, atol=1e-6)
+
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        runtime_pos = solver.mjw_model.geom_pos.numpy().reshape(-1, mj_model.ngeom, 3)[0, geom]
+        np.testing.assert_allclose(runtime_pos, expected_pos, atol=1e-6)
+
+    @unittest.skipUnless(_cuda_available, "graph capture requires CUDA")
+    def test_solver_mujoco_hfield_shape_update_is_graph_capturable(self):
+        """Capture a SHAPE_PROPERTIES notification for a scene with an offset heightfield."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        builder = newton.ModelBuilder()
+        elevation = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+        builder.add_shape_heightfield(
+            heightfield=Heightfield(data=elevation, nrow=2, ncol=2, hx=1.0, hy=1.0, min_z=-0.5, max_z=0.5)
+        )
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+        model = builder.finalize(device="cuda:0")
+        solver = SolverMuJoCo(model)
+
+        with wp.ScopedCapture(device="cuda:0") as capture:
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        wp.capture_launch(capture.graph)
+
+    def test_solver_mujoco_hfield_rescale_after_construction_keeps_compiled_geometry(self):
+        """Keep the heightfield offset at its construction-time scale, matching MuJoCo's compiled hfield_size."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+        import mujoco
+
+        builder = newton.ModelBuilder()
+        elevation = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+        hfield_shape = builder.add_shape_heightfield(
+            xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+            heightfield=Heightfield(data=elevation, nrow=2, ncol=2, hx=1.0, hy=1.0, min_z=-0.5, max_z=0.5),
+        )
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 3.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        mj_model = solver.mj_model
+        geom = next(i for i in range(mj_model.ngeom) if mj_model.geom_type[i] == mujoco.mjtGeom.mjGEOM_HFIELD)
+        compiled_pos = np.array(mj_model.geom_pos[geom])
+
+        scales = model.shape_scale.numpy()
+        scales[hfield_shape] = (1.0, 1.0, 2.0)
+        model.shape_scale.assign(scales)
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        runtime_pos = solver.mjw_model.geom_pos.numpy().reshape(-1, mj_model.ngeom, 3)[0, geom]
+        np.testing.assert_allclose(runtime_pos, compiled_pos, atol=1e-6)
+        np.testing.assert_allclose(compiled_pos, [0.0, 0.0, 0.5], atol=1e-6)
+
+    def test_solver_mujoco_sphere_settles_at_negative_min_z(self):
+        """Settle a sphere at the bottom of a bowl whose lowest point is below the heightfield origin."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        builder = newton.ModelBuilder()
+        # A bowl from z = -0.3 at its center up to z = 0.3 at its rim.
+        n = 21
+        xs = np.linspace(-1.0, 1.0, n, dtype=np.float32)
+        xx, yy = np.meshgrid(xs, xs)
+        bowl = -0.3 + 0.6 * np.minimum(xx**2 + yy**2, 1.0)
+        builder.add_shape_heightfield(heightfield=Heightfield(data=bowl, nrow=n, ncol=n, hx=1.0, hy=1.0))
+        sphere_radius = 0.1
+        sphere_body = builder.add_body(xform=wp.transform((0.05, -0.05, 0.2), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        for _ in range(600):
+            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
+            state_in, state_out = state_out, state_in
+
+        # The bowl is shallow at its center, so the sphere's center rests
+        # only slightly more than one radius above the bowl's lowest point.
+        final_z = float(state_in.body_q.numpy()[sphere_body, 2])
+        self.assertGreater(final_z, -0.3 + sphere_radius - 0.01)
+        self.assertLess(final_z, -0.3 + sphere_radius + 0.03)
 
     def test_heightfield_always_static(self):
         """Test that heightfields are always static (zero mass, zero inertia)."""

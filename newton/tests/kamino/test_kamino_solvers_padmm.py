@@ -860,9 +860,14 @@ class TestPADMMSolver(unittest.TestCase):
                 # Store info for dense-sparse comparison
                 info_vectors[sparse] = (info.v_plus.numpy(), info.v_aug.numpy(), info.s.numpy())
 
-        # Compare dense-sparse info
-        for dense_values, sparse_values in zip(info_vectors[False], info_vectors[True], strict=True):
-            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=1e-6)
+        # Dense and sparse solves/reductions accumulate float32 roundoff
+        # differently. Allow absolute error in near-zero components of these
+        # O(10) velocities, which can shift with one-ULP changes in model inputs.
+        # Keep the tighter bound for the correction s.
+        for dense_values, sparse_values, atol in zip(
+            info_vectors[False], info_vectors[True], (1e-5, 1e-5, 1e-6), strict=True
+        ):
+            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=atol)
 
     def test_09_apadmm_restart_matches_bilateral_reference(self):
         """Match a NumPy reference across an APADMM solve whose final iteration restarts.
@@ -1010,7 +1015,7 @@ class TestPADMMSolver(unittest.TestCase):
 
                 def builder_fn():
                     builder = ModelBuilder()
-                    builder.replicate(basics.build_box_pendulum(ground=False), world_count=len(budgets))
+                    builder.replicate(basics.build_box_pendulum(ground=False), copy_count=len(budgets))
                     return builder
 
                 test = TestSetup(
@@ -1046,7 +1051,7 @@ class TestPADMMSolver(unittest.TestCase):
         """Assert one primal or dual Coulomb cone projection."""
         is_primal = cone == "primal"
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def project(x: wp.array[wp.vec3f], mu: wp.array[wp.float32], y: wp.array[wp.vec3f]):
             if wp.static(is_primal):
                 y[0] = project_to_coulomb_cone(x[0], mu[0])

@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Pendulum
-#
-# Shows how to set up a simulation of a simple double pendulum using the
-# newton.ModelBuilder() class.
-#
-# Command: python -m newton.examples basic_pendulum --solver xpbd
-#          python -m newton.examples basic_pendulum --solver kamino
-#
-###########################################################################
+"""Example Basic Pendulum
+
+Shows how to set up a simulation of a simple double pendulum using the
+newton.ModelBuilder() class.
+
+Success criteria:
+- The two-link pendulum swings back and forth with both joints connected.
+- Motion stays bounded and in the pendulum plane without explosive separation.
+
+Runs:
+- `python -m newton.examples basic_pendulum`
+- `python -m newton.examples basic_pendulum --solver xpbd`
+- `python -m newton.examples basic_pendulum --solver kamino`
+"""
 
 import warp as wp
 
@@ -99,12 +103,7 @@ class Example:
 
         if self.solver_type == "kamino":
             self.collision_pipeline = None
-            self.contacts = newton.Contacts(
-                self.model.rigid_contact_max,
-                0,
-                device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
-            )
+            self.contacts = None
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
@@ -170,8 +169,6 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         if self.contacts is not None:
-            if self.solver_type == "kamino" and self.viewer.show_contacts:
-                self.solver.update_contacts(self.contacts, self.state_0)
             self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 

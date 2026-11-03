@@ -9,10 +9,11 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Mesh, Model, ModelBuilder
+from newton import Mesh, Model, ModelBuilder, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.exceptions import NewtonDeprecationWarning
+from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT, add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
 
@@ -166,20 +167,71 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):
+        """Match repeated world composition with replicated builder arrays."""
         world_count = 4
-        for use_coord_layout_targets in (False, True):
-            with mock.patch("newton.use_coord_layout_targets", use_coord_layout_targets):
-                source = self._make_source()
-                for spacing in ((0.0, 0.0, 0.0), (2.0, 3.0, 0.0)):
-                    with self.subTest(use_coord_layout_targets=use_coord_layout_targets, spacing=spacing):
-                        expected = self._make_destination()
-                        for offset in compute_world_offsets(world_count, spacing, expected.up_axis):
-                            expected.add_world(source, wp.transform(offset, wp.quat_identity()))
+        source = self._make_source()
+        for spacing in ((0.0, 0.0, 0.0), (2.0, 3.0, 0.0)):
+            with self.subTest(spacing=spacing):
+                expected = self._make_destination()
+                for offset in compute_world_offsets(world_count, spacing, expected.up_axis):
+                    expected.add_world(source, wp.transform(offset, wp.quat_identity()))
 
-                        actual = self._make_destination()
-                        actual.replicate(source, world_count, spacing)
+                actual = self._make_destination()
+                actual.replicate(source, world_count, spacing)
 
-                        self.assert_builder_merge_state_equal(expected, actual)
+                self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_copy_rotation_rotates_world_velocities(self):
+        """Verify that yaw rotates world-frame position and twist and that a pure translation leaves velocity unchanged."""
+
+        def make_source() -> ModelBuilder:
+            builder = ModelBuilder()
+            root = builder.add_link(xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()), label="root")
+            builder.body_qd[root] = wp.spatial_vector(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            free = builder.add_joint_free(child=root, label="free")
+            qd_start = builder.joint_qd_start[free]
+            builder.joint_qd[qd_start : qd_start + 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            child = builder.add_link(xform=wp.transform((2.0, 0.0, 0.0), wp.quat_identity()), label="child")
+            hinge = builder.add_joint_revolute(parent=root, child=child, axis=(0.0, 0.0, 1.0), label="hinge")
+            builder.joint_qd[builder.joint_qd_start[hinge]] = 0.5
+            builder.body_qd[child] = wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 1.0, 0.0)
+            return builder
+
+        yaw = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
+        yaw_xform = wp.transform((0.0, 0.0, 0.0), yaw)
+        for merge in ("add_world", "replicate"):
+            with self.subTest(merge=merge):
+                scene = ModelBuilder()
+                if merge == "add_world":
+                    scene.add_world(make_source(), yaw_xform)
+                else:
+                    scene.replicate(make_source(), 1, xforms=[yaw_xform])
+
+                body_q = np.asarray(scene.body_q, dtype=np.float32)
+                body_qd = np.asarray(scene.body_qd, dtype=np.float32)
+                np.testing.assert_allclose(body_q[0, :3], [0.0, 1.0, 0.0], atol=1e-5)
+                np.testing.assert_allclose(body_q[1, :3], [0.0, 2.0, 0.0], atol=1e-5)
+                expected_yaw = np.broadcast_to(np.asarray(yaw, dtype=np.float32), (2, 4))
+                np.testing.assert_allclose(body_q[:, 3:], expected_yaw, atol=1e-5)
+                np.testing.assert_allclose(body_qd[0], [0.0, 1.0, 0.0, 0.0, 1.0, 0.0], atol=1e-5)
+                np.testing.assert_allclose(body_qd[1], [0.0, 0.0, 1.0, -1.0, 0.0, 0.0], atol=1e-5)
+                joint_qd = np.asarray(scene.joint_qd, dtype=np.float32)
+                np.testing.assert_allclose(joint_qd[:6], [0.0, 1.0, 0.0, 0.0, 1.0, 0.0], atol=1e-5)
+                np.testing.assert_allclose(joint_qd[6], 0.5, atol=1e-6)
+                free_q = np.asarray(scene.joint_q[:7], dtype=np.float32)
+                np.testing.assert_allclose(free_q[:3], [0.0, 1.0, 0.0], atol=1e-5)
+
+        source = make_source()
+        translated = ModelBuilder()
+        translated.add_world(source, wp.transform((5.0, -2.0, 3.0), wp.quat_identity()))
+        np.testing.assert_array_equal(np.asarray(translated.body_qd), np.asarray(source.body_qd))
+        np.testing.assert_array_equal(np.asarray(translated.joint_qd), np.asarray(source.joint_qd))
+        np.testing.assert_allclose(np.asarray(translated.body_q[0])[:3], [6.0, -2.0, 3.0], atol=1e-6)
+
+        replicated = ModelBuilder()
+        replicated.replicate(source, 1, xforms=[wp.transform((5.0, -2.0, 3.0), wp.quat_identity())])
+        np.testing.assert_array_equal(np.asarray(replicated.body_qd), np.asarray(source.body_qd))
+        np.testing.assert_array_equal(np.asarray(replicated.joint_qd), np.asarray(source.joint_qd))
 
     def test_replicate_matches_add_world_loop_with_explicit_transforms(self):
         source = self._make_source()
@@ -197,6 +249,104 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_replicate_matches_add_world_loop_with_many_transforms(self):
+        """Match per-world composition when copies transform enough rows to batch with NumPy."""
+        source = self._make_source()
+        rng = np.random.default_rng(42)
+        xforms = [
+            wp.transform(wp.vec3(*rng.uniform(-3.0, 3.0, 3)), wp.quat_rpy(*rng.uniform(-np.pi, np.pi, 3).tolist()))
+            for _ in range(24)
+        ]
+
+        expected = self._make_destination()
+        for xform in xforms:
+            expected.add_world(source, xform)
+
+        actual = self._make_destination()
+        actual.replicate(source, len(xforms), xforms=xforms)
+
+        for name in ("body_q", "body_qd", "joint_q", "joint_qd", "joint_X_p", "shape_transform"):
+            with self.subTest(attribute=name):
+                actual_values = np.asarray(getattr(actual, name), dtype=np.float32)
+                expected_values = np.asarray(getattr(expected, name), dtype=np.float32)
+                if HOST_TRANSFORMS_BIT_EXACT:
+                    np.testing.assert_array_equal(actual_values, expected_values)
+                else:
+                    np.testing.assert_allclose(actual_values, expected_values, rtol=1e-6, atol=1e-6)
+
+    def test_replicate_into_current_world_matches_add_builder_loop(self):
+        """Match repeated add_builder calls when copies share the current world context."""
+        source = self._make_source()
+        xforms = [
+            wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.1, 0.2, 0.3)),
+            wp.transform((-2.0, 1.0, 0.5), wp.quat_identity()),
+            wp.transform((0.5, -1.0, 2.0), wp.quat_rpy(-0.2, 0.4, 0.1)),
+        ]
+        label_prefixes = ["a", None, "c"]
+        for in_world in (False, True):
+            with self.subTest(in_world=in_world):
+                expected = self._make_destination()
+                actual = self._make_destination()
+                if in_world:
+                    expected.begin_world()
+                    actual.begin_world()
+                for xform, label_prefix in zip(xforms, label_prefixes, strict=True):
+                    expected.add_builder(source, xform=xform, label_prefix=label_prefix)
+                actual.replicate(
+                    source, len(xforms), separate_worlds=False, xforms=xforms, label_prefixes=label_prefixes
+                )
+                if in_world:
+                    expected.end_world()
+                    actual.end_world()
+
+                self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_into_current_world_adds_no_worlds(self):
+        """Add shared-world copies to the current world without changing the world count."""
+        source = ModelBuilder(gravity=(0.0, 0.0, -3.0))
+        body = source.add_body()
+        source.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+
+        builder = ModelBuilder()
+        builder.replicate(source, copy_count=5, spacing=(1.5, 0.0, 0.0), separate_worlds=False)
+        self.assertEqual(builder.world_count, 0)
+        self.assertEqual(builder.body_count, 5)
+        self.assertEqual(builder.body_world, [-1] * 5)
+        np.testing.assert_allclose(np.asarray(builder._gravity_as_vector()), [0.0, 0.0, -3.0])
+
+        builder.begin_world()
+        builder.replicate(source, copy_count=2, separate_worlds=False)
+        builder.end_world()
+        self.assertEqual(builder.world_count, 1)
+        self.assertEqual(builder.body_world, [-1] * 5 + [0] * 2)
+        np.testing.assert_allclose(np.asarray(builder.world_gravity[0]), [0.0, 0.0, -3.0])
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.body_count, 7)
+
+    def test_replicate_world_count_is_deprecated(self):
+        """Warn for the deprecated world_count keyword and reject conflicting or missing counts."""
+        source = self._make_source()
+        expected = self._make_destination()
+        expected.replicate(source, copy_count=2)
+
+        actual = self._make_destination()
+        with self.assertWarnsRegex(NewtonDeprecationWarning, r"replicate\(world_count=\.\.\.\)"):
+            actual.replicate(source, world_count=2)
+        self.assert_builder_merge_state_equal(expected, actual)
+
+        with self.assertRaisesRegex(TypeError, "only one of"):
+            ModelBuilder().replicate(source, 2, world_count=2)
+        with self.assertRaisesRegex(TypeError, "copy_count"):
+            ModelBuilder().replicate(source)
+
+    def test_replicate_separate_worlds_rejects_world_context(self):
+        """Reject separate-world replication inside an active world context."""
+        builder = ModelBuilder()
+        builder.begin_world()
+        with self.assertRaisesRegex(RuntimeError, "already in world context"):
+            builder.replicate(self._make_source(), copy_count=2)
+
     def test_replicate_remaps_joint_mimic_references(self):
         """Verify replication remaps dense mimic references per world."""
         source = ModelBuilder()
@@ -205,7 +355,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         reference = source.add_joint_revolute(-1, body0)
         follower = source.add_joint_revolute(body0, body1)
         source.add_articulation([reference, follower])
-        source.set_joint_mimic(follower, reference, (0.25, -2.0))
+        source.set_joint_mimic(follower, reference, coeffs=(0.25, -2.0))
 
         builder = ModelBuilder()
         builder.replicate(source, 3)
@@ -220,6 +370,22 @@ class TestModelBuilderReplicate(unittest.TestCase):
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
             ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])
+
+    def test_replicate_zero_copies_validates_per_copy_inputs(self):
+        """Reject per-copy inputs with entries for zero copies, and add nothing for zero or negative counts."""
+        source = self._make_source()
+        with self.assertRaisesRegex(ValueError, "xforms must contain 0 entries, got 1"):
+            ModelBuilder().replicate(source, 0, xforms=[wp.transform_identity()])
+        with self.assertRaisesRegex(ValueError, "label_prefixes must contain 0 entries, got 1"):
+            ModelBuilder().replicate(source, 0, label_prefixes=["a"])
+
+        builder = ModelBuilder()
+        builder.begin_world()
+        builder.replicate(source, 0, xforms=[], label_prefixes=[])
+        builder.end_world()
+        builder.replicate(source, -1)
+        self.assertEqual(builder.world_count, 1)
+        self.assertEqual(builder.body_count, 0)
 
     def test_replicate_does_not_call_add_world(self):
         source = self._make_source()
@@ -239,11 +405,13 @@ class TestModelBuilderReplicate(unittest.TestCase):
         builder.replicate(source, 4)
         self.assertEqual(len(builder._shape_collision_filter_pairs), 0)
 
-        with mock.patch.object(builder, "_test_group_pair", wraps=builder._test_group_pair) as test_group_pair:
-            model = builder.finalize(device="cpu")
-
+        model = builder.finalize(device="cpu")
         self.assertEqual(model.shape_contact_pair_count, 4 * 6)
-        self.assertEqual(test_group_pair.call_count, 6)
+        data = model._shape_contact_pair_data
+        with mock.patch.object(data, "_store_pairs", wraps=data._store_pairs) as store_pairs:
+            self.assertEqual(len(model.shape_contact_pairs), 4 * 6)
+        # Enumerate six pairs once; replay the other three worlds directly.
+        self.assertEqual(sum(len(call.args[1]) for call in store_pairs.call_args_list), 6)
 
     def test_add_world_uses_public_composition(self):
         class TrackingBuilder(ModelBuilder):
@@ -733,50 +901,61 @@ class TestModelBuilderReplicate(unittest.TestCase):
     def test_finalize_matches_materialized_finalize(self):
         """Match materialized finalization for array-backed attributes."""
         for world_count in (1, 3):
-            for use_coord_layout_targets in (False, True):
-                with self.subTest(world_count=world_count, use_coord_layout_targets=use_coord_layout_targets):
-                    with mock.patch("newton.use_coord_layout_targets", use_coord_layout_targets):
-                        source = self._make_source()
+            with self.subTest(world_count=world_count):
+                source = self._make_source()
 
-                        array_backed = self._make_destination()
-                        array_backed.replicate(source, world_count)
-                        array_backed_names = set(array_backed._array_backed_attributes)
-                        self.assertTrue(array_backed_names)
-                        self.assertTrue(
-                            {
-                                "body_inertia",
-                                "joint_target_q",
-                                "muscle_params",
-                                "tri_poses",
-                                "tet_poses",
-                            }.issubset(array_backed_names)
-                        )
+                array_backed = self._make_destination()
+                array_backed.replicate(source, world_count)
+                array_backed_names = set(array_backed._array_backed_attributes)
+                self.assertTrue(array_backed_names)
+                self.assertTrue(
+                    {
+                        "body_inertia",
+                        "joint_target_q",
+                        "muscle_params",
+                        "tri_poses",
+                        "tet_poses",
+                    }.issubset(array_backed_names)
+                )
 
-                        materialized = self._make_destination()
-                        materialized.replicate(source, world_count)
-                        for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
-                            getattr(materialized, name)
-                        self.assertFalse(materialized._array_backed_attributes)
+                materialized = self._make_destination()
+                materialized.replicate(source, world_count)
+                for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+                    getattr(materialized, name)
+                self.assertFalse(materialized._array_backed_attributes)
 
-                        with warnings.catch_warnings():
-                            warnings.filterwarnings(
-                                "ignore",
-                                message="The legacy DOF-shaped joint_target_q layout is deprecated.*",
-                                category=DeprecationWarning,
-                            )
-                            expected = materialized.finalize(device="cpu")
-                            actual = array_backed.finalize(device="cpu")
+                expected = materialized.finalize(device="cpu")
+                actual = array_backed.finalize(device="cpu")
 
-                        self.assertEqual(actual.world_count, expected.world_count)
-                        self.assertEqual(set(array_backed._array_backed_attributes), array_backed_names)
-                        for name in sorted(array_backed_names):
-                            with self.subTest(attribute=name):
-                                expected_array = getattr(expected, name)
-                                actual_array = getattr(actual, name)
-                                self.assertIsInstance(expected_array, wp.array)
-                                self.assertIsInstance(actual_array, wp.array)
-                                self.assertIs(expected_array.dtype, actual_array.dtype)
-                                np.testing.assert_array_equal(expected_array.numpy(), actual_array.numpy())
+                self.assertEqual(actual.world_count, expected.world_count)
+                self.assertEqual(set(array_backed._array_backed_attributes), array_backed_names)
+                for name in sorted(array_backed_names):
+                    with self.subTest(attribute=name):
+                        expected_array = getattr(expected, name)
+                        actual_array = getattr(actual, name)
+                        self.assertIsInstance(expected_array, wp.array)
+                        self.assertIsInstance(actual_array, wp.array)
+                        self.assertIs(expected_array.dtype, actual_array.dtype)
+                        np.testing.assert_array_equal(expected_array.numpy(), actual_array.numpy())
+
+    def test_array_backed_finalize_preserves_rod_target_coordinates(self):
+        """Preserve replicated Rod target quaternions during finalization."""
+        source = ModelBuilder()
+        source.add_rod(
+            rod=Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.5, 0.0, 2.0)], radius=0.1),
+            body_frame_origin="com",
+        )
+
+        array_backed = ModelBuilder()
+        array_backed.replicate(source, 2)
+        self.assertIn("joint_target_q", array_backed._array_backed_attributes)
+
+        actual = array_backed.finalize(device="cpu")
+
+        self.assertEqual(actual.joint_target_q.shape, (actual.joint_coord_count,))
+        np.testing.assert_allclose(actual.joint_target_q.numpy(), np.tile(source.joint_target_q, 2), atol=1.0e-6)
+        targets = actual.joint_target_q.numpy().reshape(-1, 7)
+        np.testing.assert_allclose(np.linalg.norm(targets[:, 3:], axis=1), 1.0, atol=1.0e-6)
 
     def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
         """Skip orphan-joint validation and keep topology array-backed when every joint is articulated."""
@@ -805,10 +984,21 @@ class TestModelBuilderReplicate(unittest.TestCase):
             scene.finalize(device="cpu")
 
     def test_all_builder_lists_have_merge_metadata(self):
+        """Cover every builder list with valid, coordinate-aware merge metadata."""
         list_attributes = {name for name, value in vars(ModelBuilder()).items() if isinstance(value, list)}
         specs = ModelBuilder._builder_merge_attribute_specs()
         self.assertEqual(set(specs), list_attributes)
         self.assertIs(specs["shape_body"], Model._CORE_ATTRIBUTE_SPECS["shape_body"])
+        self.assertEqual(specs["joint_target_q"].frequency, Model.AttributeFrequency.JOINT_COORD)
+
+        for family, references in ModelBuilder._BUILDER_GROUP_REFERENCES.items():
+            for suffix in references:
+                name = f"{family}_{suffix}"
+                with self.subTest(attribute=name):
+                    builder_spec = specs[f"_{name}"]
+                    model_spec = Model._CORE_ATTRIBUTE_SPECS[name]
+                    self.assertEqual(builder_spec.references, model_spec.references)
+                    self.assertEqual(builder_spec.compaction_policy, model_spec.compaction_policy)
 
         base_attributes, base_lists = ModelBuilder._base_builder_attributes()
 
@@ -818,7 +1008,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
             mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists | added),
         ):
             with self.assertRaisesRegex(RuntimeError, "_missing_merge_metadata"):
-                ModelBuilder._build_builder_merge_attribute_specs(False)
+                ModelBuilder._build_builder_merge_attribute_specs()
 
         removed = {"body_lock_inertia"}
         with (
@@ -826,11 +1016,11 @@ class TestModelBuilderReplicate(unittest.TestCase):
             mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed),
         ):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-                ModelBuilder._build_builder_merge_attribute_specs(False)
+                ModelBuilder._build_builder_merge_attribute_specs()
 
         with mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-                ModelBuilder._build_builder_merge_attribute_specs(False)
+                ModelBuilder._build_builder_merge_attribute_specs()
 
     def test_array_backed_attributes_have_generic_merge_metadata(self):
         """Require generic merge metadata and NumPy-compatible dtypes for array-backed attributes."""

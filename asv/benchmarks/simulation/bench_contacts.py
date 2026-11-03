@@ -25,7 +25,7 @@ from newton.viewer import ViewerNull
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 IRREGULAR_ROCK_VERTEX_COUNTS = (10, 14, 18, 26)
-CONVEX_COLLISION_CASES = (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191))
+CONVEX_COLLISION_CASES = (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191))
 # Large enough that the split GJK/MPR path is active and its launch is the
 # limit, which the cases above are an order of magnitude too small to reach.
 SPLIT_CONVEX_COLLISION_CASES = (("hulls_split", 4096),)
@@ -144,7 +144,6 @@ def _build_convex_scene(
     triangle_local_vertices: bool = False,
 ) -> newton.Model:
     """Build replicated isolated convex pairs."""
-    newton.use_coord_layout_targets = True
     rocks = [
         _make_irregular_rock(count, 100 + index, triangle_local_vertices)
         for index, count in enumerate(IRREGULAR_ROCK_VERTEX_COUNTS)
@@ -168,13 +167,12 @@ def _build_convex_scene(
         _add_mixed_convex_shape(world_builder, body_b, shape_b, rocks, 2 * pair_index + 1, shape_cfg)
 
     builder = newton.ModelBuilder()
-    builder.replicate(world_builder, world_count=world_count)
+    builder.replicate(world_builder, world_count)
     return builder.finalize()
 
 
 def _build_single_world_scene(pair_count: int) -> newton.Model:
     """Build sparse mixed contacts in one large global SAP segment."""
-    newton.use_coord_layout_targets = True
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     shape_cfg = newton.ModelBuilder.ShapeConfig(gap=0.01, margin=0.0)
     rock = _make_irregular_rock(26, seed=701)
@@ -225,7 +223,7 @@ def _build_mesh_convex_scene(world_count: int, resolution: int) -> tuple[newton.
     world.add_shape_convex_hull(body=body, mesh=hull, cfg=shape_cfg)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(world, world_count=world_count)
+    builder.replicate(world, world_count)
     triangles_per_world = 4 * resolution * resolution
     return builder.finalize(), triangles_per_world * world_count
 
@@ -244,7 +242,7 @@ def _build_mesh_sdf_scene(world_count: int, device) -> newton.Model:
     world.add_shape_mesh(body=body_b, mesh=mesh_b)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(world, world_count=world_count)
+    builder.replicate(world, world_count)
     return builder.finalize(device=device)
 
 

@@ -1,0 +1,1 @@
+Fix revolute loop joints in `SolverMuJoCo` twisting off their hinge axis under load through the pin. The two synthesized CONNECT constraints are now centered on the joint anchor instead of placed on one side of it.

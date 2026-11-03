@@ -21,7 +21,7 @@ from . import utils as usd
 if TYPE_CHECKING:
     from pxr import Usd
 
-logger = logging.getLogger("newton")
+logger = logging.getLogger(__name__)
 
 
 class _UsdVisuals:
@@ -83,7 +83,7 @@ class _UsdVisuals:
         ).copy(recompute_inertia=False)
         self.apply_visual_material(mesh, material_props)
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
+            logger.debug("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
         return mesh
 
     def get_face_material_subsets(self, prim: Usd.Prim) -> list[Usd.Prim]:
@@ -186,7 +186,7 @@ class _UsdVisuals:
 
         self.apply_visual_material(submesh, material_props)
         if submesh.texture is not None and submesh.uvs is None:
-            logger.info(
+            logger.debug(
                 "Mesh material subset %s has a texture but no UV coordinates; texture sampling is disabled.",
                 path_name,
             )
@@ -239,7 +239,7 @@ class _UsdVisuals:
             subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
             valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
             if not np.all(valid):
-                logger.info(
+                logger.debug(
                     "Mesh material subset %s: face indices outside the mesh face range; "
                     "out-of-range indices will be ignored.",
                     subset_path,

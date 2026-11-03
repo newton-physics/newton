@@ -1,17 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Joints
-#
-# Shows how to use the ModelBuilder API to programmatically create different
-# joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
-#
-# Command: python -m newton.examples basic_joints --solver xpbd
-#          python -m newton.examples basic_joints --solver vbd
-#          python -m newton.examples basic_joints --solver kamino
-#
-###########################################################################
+"""Example Basic Joints
+
+Shows how to use the ModelBuilder API to programmatically create different
+joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
+
+Success criteria:
+- Three two-link systems appear: a revolute pendulum on the left, a prismatic slider in the middle,
+  and a ball joint on the right.
+- The revolute pendulum swings; the prismatic body initially slides downward along its constrained
+  axis.
+- Right-drag the hanging bodies: the revolute joint stays in its plane, the slider follows its axis,
+  and the ball joint permits rotation about all three axes.
+
+Runs:
+- `python -m newton.examples basic_joints`
+- `python -m newton.examples basic_joints --solver xpbd`
+- `python -m newton.examples basic_joints --solver vbd`
+- `python -m newton.examples basic_joints --solver kamino`
+"""
 
 import warp as wp
 
@@ -190,7 +198,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=2,
-                rigid_compliant_alm=True,
                 rigid_joint_linear_ke=1.0e6,
                 rigid_joint_angular_ke=1.0e6,
             )
@@ -217,12 +224,7 @@ class Example:
 
         if self.solver_type == "kamino":
             self.collision_pipeline = None
-            self.contacts = newton.Contacts(
-                self.model.rigid_contact_max,
-                0,
-                device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
-            )
+            self.contacts = None
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
@@ -345,8 +347,6 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         if self.contacts is not None:
-            if self.solver_type == "kamino" and self.viewer.show_contacts:
-                self.solver.update_contacts(self.contacts, self.state_0)
             self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
