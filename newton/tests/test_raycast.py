@@ -214,6 +214,40 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
                 test.assertAlmostEqual(float(out_t.numpy()[0]) * direction_scale, 1.0, delta=2e-6)
                 np.testing.assert_allclose(out_n.numpy()[0], [1.0, 0.0, 0.0], atol=1e-6)
 
+    # Large entry parameters can round different crossings to the same float.
+    for half_extents, expected_normal in (
+        ([1.0, 0.999997, 1.0], [0.0, -1.0, 0.0]),
+        ([0.999997, 1.0, 1.0], [-1.0, 0.0, 0.0]),
+        ([1.0, 1.0, 1.0], [-(2**-0.5), -(2**-0.5), 0.0]),
+    ):
+        with test.subTest(rounded_entry=half_extents):
+            wp.launch(
+                kernel_test_geom,
+                dim=1,
+                inputs=[
+                    out_t,
+                    out_n,
+                    identity,
+                    wp.vec3(*half_extents),
+                    GeoType.BOX,
+                    wp.vec3(-100.0, -100.0, 0.0),
+                    wp.vec3(1e-5, 1e-5, 0.0),
+                    0,
+                ],
+                device=device,
+            )
+            test.assertGreater(float(out_t.numpy()[0]), 0.0)
+            np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
+
+    with test.subTest(anisotropic_near_tie=True):
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, out_n, identity, size, GeoType.BOX, wp.vec3(0.0, 0.9999995, 0.0), wp.vec3(1e8, 1.0, 0.0), 0],
+            device=device,
+        )
+        np.testing.assert_allclose(out_n.numpy()[0], [1.0, 0.0, 0.0], atol=1e-6)
+
     with test.subTest(small_direction=True):
         wp.launch(
             kernel_test_geom,
