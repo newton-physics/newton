@@ -2080,9 +2080,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 damping term is dropped while the gap is open. Requires point friction
                 (``None`` or ``0`` for ``friction_anchor_beta``; ``None`` warns), positive
                 ``iterations``, no warm start, no velocity-only iterations, no contact
-                regularization, no shared anchors and zero shape restitution. The contacts must carry the
-                hydroelastic material arrays. The rows are prepared on the device, so :meth:`step`
-                can be captured in a CUDA graph. Invalid input (for example a compliant contact
+                regularization, no shared anchors and zero shape restitution. With
+                ``articulated_contact_response="propagation_colored"`` the colored sweep solves the
+                compliant rows; that response rejects it with contact torsion, and ``"propagation"``
+                rejects it. The contacts must carry the hydroelastic material arrays. The rows are
+                prepared on the device, so :meth:`step` can be captured in a CUDA graph. Invalid input (for example a compliant contact
                 lost to a row capacity, even with ``warn_constraint_overflow`` off, or a positive
                 shape restitution) makes an eager step raise. In a captured step the error is
                 deferred: :meth:`check_constraint_capacity` raises after the replays, until
@@ -2484,7 +2486,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                         "contact torsion",
                         self._contact_torsion_enabled and articulated_contact_response != "propagation",
                     ),
-                    ("contact_compliance=True", self._contact_compliance),
+                    # The colored compliant rows are not validated with torsion rows in their units.
+                    (
+                        "contact_compliance=True",
+                        self._contact_compliance
+                        and (articulated_contact_response != "propagation_colored" or self._contact_torsion_enabled),
+                    ),
                     ("enable_sleeping=True", bool(enable_sleeping)),
                     (
                         f"friction_mode={self._friction_mode!r}",
@@ -7805,12 +7812,14 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._preelim_active:
             # After the warm-start installs, so a carried contact impulse cannot reopen the projection.
             self._stage5_project_bilateral_velocity()
+        if self._propagation_active:
+            self._propagation_setup(state_in, state_aug, dt)
         if self._contact_compliance:
+            # After the propagation setup, whose contact row biases and effective masses this replaces.
             _contact_compliance.prepare_rows(self, contacts, dt)
         self._pack_mf_meta(self._mf_rhs)
         friction_start = self._friction_start_iteration(self._iterations)
         if self._propagation_active:
-            self._propagation_setup(state_in, state_aug, dt)
             if self._contact_warmstart:
                 self._apply_propagation_warmstart_velocity()
             solve = functools.partial(
@@ -10972,11 +10981,18 @@ class SolverSteel(SolverBase, CouplingInterface):
                 staged=staged,
                 packed=packed,
                 straight_line=self._colored_straight_line,
+                contact_compliance=self._contact_compliance,
                 friction_mode=self._friction_mode,
             )
         else:
             self._pgs_solve_propagation_colored_block_kernel = _get_pgs_solve_propagation_colored_block_kernel(
-                rows, entries, _COLORED_BLOCK_DIM, bodies, device_arch, friction_mode=self._friction_mode
+                rows,
+                entries,
+                _COLORED_BLOCK_DIM,
+                bodies,
+                device_arch,
+                contact_compliance=self._contact_compliance,
+                friction_mode=self._friction_mode,
             )
         # The coloring keeps a world's used-color masks in shared memory when its unit bodies
         # span few enough indices: the bodies of one world plus the global ones.
@@ -11876,6 +11892,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._propagation_row_type,
             self._propagation_row_parent,
             self._propagation_row_mu,
+            self._compliance_off_gamma if self._compliance is None else self._compliance.propagation_gamma,
             self._color_world_row_order,
             self._color_world_offsets,
             self._propagation_body_list,
@@ -17729,7 +17746,12 @@ PROPAGATION_UNIT_STD_WORD = 6 + PROPAGATION_UNIT_RING
 
 
 def _colored_standard_unit(
-    acc: dict, ring: str, setup: str, friction: str = "true", friction_mode: str = "fixed_normal"
+    acc: dict,
+    ring: str,
+    setup: str,
+    friction: str = "true",
+    contact_compliance: bool = False,
+    friction_mode: str = "fixed_normal",
 ) -> str:
     """CUDA solving one standard contact unit straight-line, on register twists.
 
@@ -17742,7 +17764,8 @@ def _colored_standard_unit(
     ``acc`` maps payload fields to expressions: ``eff``, ``rhs``, ``w``, ``mu`` take a row
     index; ``Ja``, ``Jb``, ``Ma``, ``Mb`` a row and a component. ``ring`` adds the contact
     row's patch-ring members to ``lambda_n``; ``setup`` declares ``fp[5]``, the friction
-    pair's operator setup. Any ``friction_mode`` but fixed_normal solves the contact row and
+    pair's operator setup. ``contact_compliance`` adds ``gamma * lambda`` (``acc["gamma"]``) to
+    the contact row's residual. Any ``friction_mode`` but fixed_normal solves the contact row and
     its pair again together after the contact row (see :func:`_colored_coupled_contact`).
     """
 
@@ -17758,6 +17781,7 @@ def _colored_standard_unit(
             for e in range(6)
         )
 
+    rhs0 = f"({acc['rhs'](0)} + {acc['gamma'](0)} * old0)" if contact_compliance else acc["rhs"](0)
     friction_block = (
         f"""
                     if (!({friction})) {{
@@ -17830,7 +17854,7 @@ def _colored_standard_unit(
                     if (eff0 > 0.0f) {{
                         const float old0 = lambda_n;
                         const float w0 = regularize ? {acc["w"](0)} : 1.0f;
-                        float new0 = old0 + omega * (-({dot(0)} + {acc["rhs"](0)}) * eff0 * w0 - (1.0f - w0) * old0);
+                        float new0 = old0 + omega * (-({dot(0)} + {rhs0}) * eff0 * w0 - (1.0f - w0) * old0);
                         if (new0 < 0.0f) new0 = 0.0f;
                         const float d0 = new0 - old0;
                         imp[0] = new0;
@@ -17847,13 +17871,16 @@ def _colored_standard_unit(
 """
 
 
-def _colored_standard_unit_reference(friction: str = "true", friction_mode: str = "fixed_normal") -> str:
+def _colored_standard_unit_reference(
+    friction: str = "true", contact_compliance: bool = False, friction_mode: str = "fixed_normal"
+) -> str:
     """The standard-unit solve with every field loaded from global memory (reference body)."""
     o = "(world_base + start_slot + {r})"
     acc = {
         "imp": lambda r: f"propagation_impulses.data[world_base + start_slot + {r}]",
         "eff": lambda r: f"__ldg(&propagation_eff_mass_inv.data[world_base + start_slot + {r}])",
         "rhs": lambda r: f"__ldg(&propagation_rhs.data[world_base + start_slot + {r}])",
+        "gamma": lambda r: f"__ldg(&compliance_gamma.data[world_base + start_slot + {r}])",
         "w": lambda r: f"propagation_row_w.data[world_base + start_slot + {r}]",
         "mu": lambda r: f"__ldg(&propagation_row_mu.data[world_base + start_slot + {r}])",
         "Ja": lambda r, k: f"__ldg(&propagation_J_a.data[{o.format(r=r)} * 6 + {k}])",
@@ -17877,7 +17904,9 @@ def _colored_standard_unit_reference(friction: str = "true", friction_mode: str 
                             {cross}
                             friction_pair_setup(e1 > 0.0f ? 1.0f / e1 : 0.0f, cross, e2 > 0.0f ? 1.0f / e2 : 0.0f, fp[0], fp[1], fp[2], fp[3], fp[4]);
                         }}"""
-    return _colored_standard_unit(acc, ring, setup, friction=friction, friction_mode=friction_mode)
+    return _colored_standard_unit(
+        acc, ring, setup, friction=friction, contact_compliance=contact_compliance, friction_mode=friction_mode
+    )
 
 
 def _colored_coupled_contact(J, M, rhs, mu, old, qd, ok) -> str:
@@ -17990,6 +18019,7 @@ def _colored_prefetch_unit_body(
     friction_type: int,
     staged: bool = False,
     packed: bool = False,
+    contact_compliance: bool = False,
     friction_mode: str = "fixed_normal",
 ) -> str:
     """CUDA body solving one contact unit on a single lane with its rows prefetched.
@@ -18005,7 +18035,8 @@ def _colored_prefetch_unit_body(
     With ``staged`` the lane's first unit of each color reads its payload from the
     shared buffer ``s_pay`` that the color loop filled with ``cp.async`` during the
     previous color (layout: :func:`_get_colored_payload_pack_kernel`); other units load directly.
-    Any ``friction_mode`` but fixed_normal solves each contact row and its pair together at the
+    ``contact_compliance`` adds ``gamma * lambda`` to each contact row's residual. Any
+    ``friction_mode`` but fixed_normal solves each contact row and its pair together at the
     pair's first row (see :func:`_colored_coupled_contact`).
     """
     P = 3
@@ -18017,6 +18048,7 @@ def _colored_prefetch_unit_body(
             "ba": f"p_ba[{i}]",
             "bb": f"p_bb[{i}]",
             "rhs": f"p_rhs[{i}]",
+            "gamma": f"__ldg(&compliance_gamma.data[world_base + start_slot + {i}])",
             "w": f"p_w[{i}]",
             "mu": f"p_mu[{i}]",
             "par": f"p_par[{i}]",
@@ -18035,6 +18067,7 @@ def _colored_prefetch_unit_body(
             "ba": f"propagation_body_a.data[{o}]",
             "bb": f"propagation_body_b.data[{o}]",
             "rhs": f"propagation_rhs.data[{o}]",
+            "gamma": f"compliance_gamma.data[{o}]",
             "w": f"propagation_row_w.data[{o}]",
             "mu": f"propagation_row_mu.data[{o}]",
             "par": f"propagation_row_parent.data[{o}]",
@@ -18134,6 +18167,7 @@ def _colored_prefetch_unit_body(
                     if (sib_delta != 0.0f) {{ {body_update(sib, "sib_delta")} }}
                     new_impulse = c1;
 """
+        rhs = f"({me['rhs']} + {me['gamma']} * {me['imp']})" if contact_compliance else me["rhs"]
         jv_a = " ".join(f"jv += {me['Ja'](k)} * s_qd[la * 6 + {k}];" for k in range(6))
         jv_b = " ".join(f"jv += {me['Jb'](k)} * s_qd[lb * 6 + {k}];" for k in range(6))
         return f"""
@@ -18155,7 +18189,7 @@ def _colored_prefetch_unit_body(
                 float jv = 0.0f;
                 if (la >= 0) {{ {jv_a} }}
                 if (lb >= 0) {{ {jv_b} }}
-                const float residual = jv + {me["rhs"]};
+                const float residual = jv + {rhs};
                 const float old_impulse = {me["imp"]};
                 const float w = regularize ? {me["w"]} : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -18295,6 +18329,7 @@ def _colored_prefetch_unit_body(
         "imp": lambda r: f"u_imp[{r}]",
         "eff": lambda r: f"p_eff[{r}]",
         "rhs": lambda r: f"p_rhs[{r}]",
+        "gamma": lambda r: f"__ldg(&compliance_gamma.data[world_base + start_slot + {r}])",
         "w": lambda r: f"p_w[{r}]",
         "mu": lambda r: f"p_mu[{r}]",
         "Ja": lambda r, k: f"p_Ja[{r}][{k}]",
@@ -18332,7 +18367,12 @@ def _colored_prefetch_unit_body(
                         #pragma unroll
                         for (int q = 0; q < 5; ++q) fp[q] = u_fp[q];"""
     standard = _colored_standard_unit(
-        acc, ring, setup, friction=f"um[{PROPAGATION_UNIT_STD_WORD}] == 1", friction_mode=friction_mode
+        acc,
+        ring,
+        setup,
+        friction=f"um[{PROPAGATION_UNIT_STD_WORD}] == 1",
+        contact_compliance=contact_compliance,
+        friction_mode=friction_mode,
     )
     return f"""
             {{
@@ -18411,6 +18451,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     staged: bool = False,
     packed: bool = False,
     straight_line: bool = True,
+    contact_compliance: bool = False,
     friction_mode: str = "fixed_normal",
 ) -> "wp.Kernel":
     """Build the warp-per-world colored sweep, one lane per contact unit.
@@ -18422,7 +18463,8 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     the step's unit records, ``packed`` from a packed payload, ``staged`` copies the next
     color's payload to shared memory while a color solves, and ``straight_line`` solves the
     standard units without the row loop; with fixed_normal every variant gives the same result
-    bitwise. Any other ``friction_mode`` solves each contact row and its sliding pair together at
+    bitwise. ``contact_compliance`` adds ``compliance_gamma * lambda`` to every contact row's
+    residual; the coefficient is zero on rigid rows. Any other ``friction_mode`` solves each contact row and its sliding pair together at
     the pair's first row (see :func:`_colored_coupled_contact`); the variants then agree up to
     float32 summation order.
     """
@@ -18435,6 +18477,11 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     contact_type = int(PGS_CONSTRAINT_TYPE_CONTACT)
     friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
     gmask = f"(1u << (grp * {R}))"
+    rhs_term = "__ldg(&propagation_rhs.data[off])"
+    tail_rhs_term = "propagation_rhs.data[off]"
+    if contact_compliance:
+        rhs_term = f"({rhs_term} + compliance_gamma.data[off] * propagation_impulses.data[off])"
+        tail_rhs_term = f"({tail_rhs_term} + compliance_gamma.data[off] * propagation_impulses.data[off])"
 
     coop_pair = """                            sib = parent_idx + 2;
                             const int sib_off = world_base + sib;
@@ -18548,7 +18595,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                 float sib_delta = 0.0f;
                 int sib = -1;
 {coop_parent_decl}                if (gl == 0) {{
-                    const float residual = partial + __ldg(&propagation_rhs.data[off]);
+                    const float residual = partial + {rhs_term};
                     const float old_impulse = propagation_impulses.data[off];
                     const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                     float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -18620,7 +18667,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                 float jv = 0.0f;
                 if (la >= 0) for (int k = 0; k < 6; ++k) jv += propagation_J_a.data[off * 6 + k] * s_qd[la * 6 + k];
                 if (lb >= 0) for (int k = 0; k < 6; ++k) jv += propagation_J_b.data[off * 6 + k] * s_qd[lb * 6 + k];
-                const float residual = jv + propagation_rhs.data[off];
+                const float residual = jv + {tail_rhs_term};
                 const float old_impulse = propagation_impulses.data[off];
                 const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -18684,14 +18731,19 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             if (standard || lone) {{
                 const int u_la = std_la;
                 const int u_lb = std_lb;
-{_colored_standard_unit_reference(friction="standard", friction_mode=friction_mode)}
+{_colored_standard_unit_reference(friction="standard", contact_compliance=contact_compliance, friction_mode=friction_mode)}
             }} else {{
 {coop_body}
             }}"""
     _prefetch = R == 1 and bool(prefetch)
     if _prefetch:
         coop_body = _colored_prefetch_unit_body(
-            contact_type, friction_type, staged=staged, packed=packed or staged, friction_mode=friction_mode
+            contact_type,
+            friction_type,
+            staged=staged,
+            packed=packed or staged,
+            contact_compliance=contact_compliance,
+            friction_mode=friction_mode,
         )
     staged = bool(staged) and _prefetch
     if staged:
@@ -18897,6 +18949,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -18930,6 +18983,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -18964,6 +19018,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            compliance_gamma,
             world_row_order,
             world_color_offsets,
             propagation_body_list,
@@ -18984,7 +19039,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
 
     name = (
         f"pgs_solve_propagation_colored_warp_{M}_{NE}_r{R}_w{W}_mb{MB}_pf{int(_prefetch)}_st{int(staged)}"
-        f"_pk{int(bool(packed or staged))}_sl{int(bool(straight_line))}"
+        f"_pk{int(bool(packed or staged))}_sl{int(bool(straight_line))}{'_cc' if contact_compliance else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
     )
     pgs_solve_propagation_colored_warp_template.__name__ = name
@@ -19001,12 +19056,14 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     block_dim: int,
     max_propagation_bodies: int,
     device_arch: str,
+    contact_compliance: bool = False,
     friction_mode: str = "fixed_normal",
 ) -> "wp.Kernel":
     """Build the block-per-world colored sweep, one thread per contact unit.
 
     Colors run in sequence with ``__syncthreads()`` between them; units past the color cap run
-    in order on thread 0. Used when the warp sweep's per-world staging does not fit. Any
+    in order on thread 0. Used when the warp sweep's per-world staging does not fit.
+    ``contact_compliance`` adds ``compliance_gamma * lambda`` to every contact row's residual. Any
     ``friction_mode`` but fixed_normal solves each contact row and its sliding pair together.
     """
     M = propagation_max_constraints
@@ -19017,6 +19074,9 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     # Shared staging of each body's twist and deferred impulse, 48 bytes a body, up to a cap.
     MB = max(int(max_propagation_bodies), 1)
     use_staging = MB <= 384
+    rhs_term = "__ldg(&propagation_rhs.data[off])"
+    if contact_compliance:
+        rhs_term = f"({rhs_term} + compliance_gamma.data[off] * propagation_impulses.data[off])"
 
     global_pair = """                        int sib = parent_idx + 2;
                         const int sib_off = world_base + sib;
@@ -19145,7 +19205,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         jv += j.x * v.x + j.y * v.y;
                     }}
                 }}
-                const float residual = jv + __ldg(&propagation_rhs.data[off]);
+                const float residual = jv + {rhs_term};
                 const float old_impulse = propagation_impulses.data[off];
                 const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -19237,7 +19297,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         jv += j.x * s_qd[lb * 6 + 2 * k] + j.y * s_qd[lb * 6 + 2 * k + 1];
                     }}
                 }}
-                const float residual = jv + __ldg(&propagation_rhs.data[off]);
+                const float residual = jv + {rhs_term};
                 const float old_impulse = propagation_impulses.data[off];
                 const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -19369,6 +19429,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -19398,6 +19459,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -19428,6 +19490,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            compliance_gamma,
             world_row_order,
             world_color_offsets,
             propagation_body_list,
@@ -19444,7 +19507,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
 
     stag = "sb" if use_staging else "gb"
     name = (
-        f"pgs_solve_propagation_colored_units_{M}_{NE}_bd{B}_{stag}{MB}"
+        f"pgs_solve_propagation_colored_units_{M}_{NE}_bd{B}_{stag}{MB}{'_cc' if contact_compliance else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
     )
     pgs_solve_propagation_colored_block_template.__name__ = name
