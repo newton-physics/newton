@@ -6,6 +6,7 @@
 import gc
 import sys
 import unittest
+import weakref
 
 import numpy as np
 import warp as wp
@@ -118,7 +119,7 @@ def test_overflow_warning_is_printed_once(test, device, solve_mode="matrix_free"
 
 
 def test_status_snapshot_reports_status_at_snapshot(test, device, solve_mode="matrix_free"):
-    """Report the status as copied by snapshot_constraint_status, unchanged by later steps and resets."""
+    """Report the status as copied by snapshot_constraint_status, unchanged by later steps, and retaken by a reset."""
     model = _box_on_ground(device)
     solver = SolverSteel(model, solve_mode=solve_mode, free_body_constraint_max=1, warn_constraint_overflow=False)
     with test.assertRaisesRegex(RuntimeError, "snapshot_constraint_status"):
@@ -131,12 +132,11 @@ def test_status_snapshot_reports_status_at_snapshot(test, device, solve_mode="ma
     solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
     solver.check_constraint_capacity(snapshot=True)
     solver.snapshot_constraint_status()
-    solver.reset(state_out)
-    solver.check_constraint_capacity()
     with test.assertRaisesRegex(RuntimeError, "dropped contacts or constraint rows"):
         solver.check_constraint_capacity(snapshot=True)
-    solver.snapshot_constraint_status()
+    solver.reset(state_out)
     solver.check_constraint_capacity(snapshot=True)
+    solver.check_constraint_capacity()
     for name, pattern in (
         ("_disabled_tree_joint", "articulation tree joint"),
         ("_joint_friction_invalid", "joint_friction was invalid"),
@@ -158,8 +158,10 @@ def test_released_snapshot_solver_keeps_another_capture_valid(test, device):
     counter = wp.zeros(1, dtype=int, device=device)
     with wp.ScopedCapture(device) as capture:
         counter.fill_(1)
+        reference = weakref.ref(solver)
         del solver
         gc.collect()
+        test.assertIsNone(reference())
         counter.fill_(2)
     wp.capture_launch(capture.graph)
     test.assertEqual(int(counter.numpy()[0]), 2)

@@ -15,6 +15,7 @@ import newton
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.contact_compliance import (
     begin_rows,
+    clear_status,
     material_coefficients,
     normal_coefficients,
     prepare_rows,
@@ -811,7 +812,7 @@ def test_captured_errors_are_deferred_until_reset(test, device):
 
 
 def test_status_snapshot_reports_a_replay_error(test, device):
-    """Report a replay's invalid contact input from a snapshot taken after it, not from one taken before."""
+    """Report a replay's invalid contact input from a snapshot taken after it, not before it or after a reset."""
     scene = _CompliantScene(device, articulated=True)
     graph = scene.capture()
     wp.capture_launch(graph)
@@ -820,10 +821,13 @@ def test_status_snapshot_reports_a_replay_error(test, device):
     wp.capture_launch(graph)
     scene.solver.check_constraint_capacity(snapshot=True)
     scene.solver.snapshot_constraint_status()
-    scene.solver.reset(scene.states[0])
+    clear_status(scene.solver._compliance)
     scene.solver.check_constraint_capacity()
     with test.assertRaisesRegex(RuntimeError, r"contact compliance.*Invalid contact stiffness \(contact 0\)"):
         scene.solver.check_constraint_capacity(snapshot=True)
+    scene.solver.snapshot_constraint_status()
+    scene.solver.reset(scene.states[0])
+    scene.solver.check_constraint_capacity(snapshot=True)
 
 
 def _run_paired_fixture(device, *, hinv_jt_kernel, friction, friction_gap_max=None, steps=40):

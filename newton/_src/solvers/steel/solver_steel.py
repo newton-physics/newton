@@ -3252,6 +3252,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
+            self._retake_status_snapshot()
             return
 
         # One launch covers both the status entries (world_count + 1, including the
@@ -3273,6 +3274,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._friction_anchors_enabled:
             self._friction_patches.reset(world_mask, int(self.model.world_count))
         self._clear_warmstart_history(world_mask)
+        self._retake_status_snapshot()
+
+    def _retake_status_snapshot(self) -> None:
+        """Replace a status snapshot taken before a reset, so it does not report what the reset cleared."""
+        if self._status_snapshot is not None and not self.model.device.is_capturing:
+            self.snapshot_constraint_status()
 
     # ------------------------------------------------------------------
     # Coupling hooks (experimental)
@@ -8129,13 +8136,18 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         Call outside capture, on the stream that steps the solver, after the steps to observe.
         ``check_constraint_capacity(snapshot=True)`` then raises from this copy, waiting only for the work
-        enqueued on that stream before this call. A new snapshot replaces the previous one, so check it first.
+        enqueued on that stream before this call. A new snapshot replaces the previous one, so check it first,
+        and check the last one when stepping stops. A :meth:`reset` outside capture retakes the snapshot.
+
+        Raises:
+            RuntimeError: If called during CUDA graph capture.
         """
         device = self.model.device
         if device.is_capturing:
             raise RuntimeError("snapshot_constraint_status() must run outside CUDA graph capture")
         sources = self._status_sources()
-        if self._status_snapshot is None:
+        # Torsion prepared on the device after the last snapshot adds a source.
+        if self._status_snapshot is None or self._status_snapshot.keys() != sources.keys():
             self._status_snapshot = {name: wp.empty_like(array) for name, array in sources.items()}
             # Pageable host copies: freeing pinned memory while another stream captures invalidates that capture.
             self._status_snapshot_host = (
@@ -8145,7 +8157,10 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
         for name, array in sources.items():
             wp.copy(self._status_snapshot[name], array)
-        self._status_snapshot_event = wp.get_stream(device).record_event() if device.is_cuda else None
+        if device.is_cuda:
+            if self._status_snapshot_event is None:
+                self._status_snapshot_event = wp.Event(device)
+            wp.get_stream(device).record_event(self._status_snapshot_event)
 
     def check_constraint_capacity(self, *, snapshot: bool = False) -> None:
         """Raise if any world or the global entry lost contacts or rows, or rejected input, since its last reset.
@@ -8197,7 +8212,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 for name, array in self._status_snapshot.items():
                     wp.copy(arrays[name], array, stream=stream)
                 wp.synchronize_stream(stream)
-        if self._device_torsion is not None:
+        if self._device_torsion is not None and "torsion" in arrays:
             try:
                 self._device_torsion.validate(int(arrays["torsion"].numpy()[0]))
             except (RuntimeError, ValueError) as error:
