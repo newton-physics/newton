@@ -79,7 +79,7 @@ _NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
 _NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
 _PYRAMID_BUILD_OUTPUT_RE = r"Built 3 pyramids x 5 rows = 45 boxes\n?"
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
-_DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
+_DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
 _DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}"
 _BASIC_PLOTTING_OUTPUT_RE = (
@@ -217,6 +217,13 @@ def add_example_test(
                     test.skipTest("onnx or warp-nn not installed")
                 if options.pop("usd_required", False) and not USD_AVAILABLE:
                     test.skipTest("Requires usd-core")
+                if options.pop("mujoco_adjoint_required", False):
+                    try:
+                        import mujoco_warp
+                    except ImportError:
+                        test.skipTest("Requires MuJoCo Warp")
+                    if not hasattr(mujoco_warp, "enable_grad"):
+                        test.skipTest("Requires the MuJoCo Warp adjoint API")
                 timeout = options.pop("test_timeout", 600)
                 allow_deprecations = options.pop("allow_deprecation_warnings", False)
                 argv = ["--device", str(device), "--test", "--quiet"]
@@ -1274,6 +1281,15 @@ add_diffsim_example_test(
     devices=test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 36},
+    use_viewer=True,
+    expect_output_regexes=[(_DIFFSIM_BALL_GRADIENT_OUTPUT_RE, "stdout")],
+)
+
+add_diffsim_example_test(
+    name="diffsim.example_diffsim_ball",
+    devices=test_devices,
+    test_options={"solver": "mujoco", "num-frames": 2 * 36, "mujoco_adjoint_required": True},
+    test_suffix="mujoco",
     use_viewer=True,
     expect_output_regexes=[(_DIFFSIM_BALL_GRADIENT_OUTPUT_RE, "stdout")],
 )
