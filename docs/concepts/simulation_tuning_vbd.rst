@@ -52,6 +52,42 @@ math, how the solver converges and why it fails:
 For the underlying method, see the VBD paper cited in
 :class:`~newton.solvers.SolverVBD`.
 
+.. _vbd-rigid-cable-tuning:
+
+Rigid Bodies and Cables
+~~~~~~~~~~~~~~~~~~~~~~~
+
+This section covers bodies integrated by :class:`~newton.solvers.SolverVBD`,
+including capsule cables connected by rod joints.
+
+For specific guidance, see :ref:`joint gains <vbd-rigid-joint-gains>`,
+:ref:`cable materials <vbd-cable-inputs>`,
+:ref:`rigid contacts <vbd-rigid-contacts>`,
+:ref:`contact history <vbd-rigid-contact-history>`, and
+:ref:`model changes and reset <vbd-rigid-model-updates>`.
+
+See :class:`~newton.solvers.SolverVBD` and
+:doc:`VBD </solvers/vbd>` for setup, stepping, scene-authored defaults, and
+the experimental status of the solver. Check :ref:`Joint feature support` and
+:ref:`Contact material support` before tuning an imported model; use
+:ref:`Simulation Tuning` for the general timestep, iteration, and diagnostic
+workflow.
+
+VBD advances body poses and velocities in ``state.body_q`` and
+``state.body_qd`` directly. :meth:`~newton.solvers.SolverVBD.step` does not
+call :func:`eval_fk` or :func:`eval_ik`, and does not automatically update
+``state.joint_q`` or ``state.joint_qd``. These helpers are supported for
+articulations: call ``eval_fk`` explicitly to convert joint coordinates and
+velocities to body state, or ``eval_ik`` to recover them from body state.
+
+.. _vbd-rigid-compliance:
+
+Compliant ALM uses finite stiffness, so some stretch, joint displacement, or
+contact penetration can remain even after convergence. If deformation is
+larger than expected, check loads, material values, rest geometry, attachments,
+and contact setup. Also check timestep and iteration sensitivity rather than
+relying only on higher stiffness; see :ref:`Simulation Tuning`.
+
 Parameter Effects
 -----------------
 
@@ -77,6 +113,30 @@ Until then, the authoritative parameter list with defaults is
 deprecated; new configurations should use ``collision_frequency`` /
 ``collision_frequency_type`` and ``dat_conservative_bound_relaxation``.
 
+.. _vbd-rigid-joint-gains:
+
+Rigid Constraints
+`````````````````
+
+Use ``rigid_compliant_alm=True`` and initially keep ``rigid_avbd_alpha`` and
+``rigid_avbd_gamma`` at their defaults. Revalidate scenes when migrating from
+legacy AVBD; the same settings can produce different behavior.
+
+Non-rod structural stiffness and damping are set by ``rigid_joint_linear_ke``
+/ ``rigid_joint_angular_ke`` and ``rigid_joint_linear_kd`` /
+``rigid_joint_angular_kd``. Omitted arguments use the corresponding settings
+stored in ``model.vbd`` when present; otherwise, stiffness defaults to
+``1.0e5`` N/m and N·m/rad, and damping to ``0.0`` N·s/m and N·m·s/rad.
+Changing drive gains does not change that structural response.
+
+Tune these gains on an isolated joint under load. Choose stiffness for
+acceptable displacement or rotation in constrained directions, then tune
+damping for those directions from constraint-error decay after release.
+Very large stiffness can slow convergence; excessive damping can slow
+settling. Check timestep and iteration sensitivity when errors exceed
+expectations; see :ref:`Simulation Tuning`. Rebuild the solver after changing
+these construction-only settings.
+
 Model Parameters
 ~~~~~~~~~~~~~~~~
 
@@ -87,88 +147,10 @@ materials (``soft_contact_*`` and shape ``mu``/``ke``/``kd``), joint and rod
 stiffness and damping, particle mass and radius, and the
 ``dt``–substeps–``iterations`` trade-off.
 
-Contact Handling
-~~~~~~~~~~~~~~~~
-
-*In development.* How the contact stack responds to tuning: the self-contact
-detection family (radius, margin, detection interval, buffer sizes, and the
-topological and rest-shape filters), the penetration-free Divide and Truncate
-(DAT) truncation and ``particle_conservative_bound_relaxation``, and the
-interplay of contact stiffness, damping, and friction. Coverage of Offset
-Geometric Contact (OGC) will be added once it is available in Newton.
-
-Best Practices
---------------
-
-What Can Go Wrong and How to Fix It
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-*In development.* One entry per failure mode — symptom, cause, fix — topped
-by a quick-lookup symptom table. Planned entries include cloth oscillation
-that more iterations do not fix, outlier-vertex explosions, self-contact
-tunneling, contact chattering and penetration, grasp slip versus finger
-penetration, and joint drift.
-
-Until then, use the generic Symptom Table in :ref:`Simulation Tuning`.
-
-Empirical Parameter Combinations That Work
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-*In development.* Known-good value tables per scenario family — cloth, soft
-body, rods (cables), rigid contacts, mixed scenes — each linking to a
-representative
-runnable example from the `examples directory
-<https://github.com/newton-physics/newton/tree/main/newton/examples>`_.
-
-Rules of Thumb
-~~~~~~~~~~~~~~
-
-*In development.* Distilled starting values and tuning orderings, with the
-reasoning that makes them portable across scenes.
-
-.. _vbd-rigid-cable-tuning:
-
-Rigid Bodies and Cables
------------------------
-
-This section covers bodies integrated by :class:`~newton.solvers.SolverVBD`,
-including capsule cables connected by rod joints. Use the default compliant
-ALM path (``rigid_compliant_alm=True``) and initially leave its stabilization
-and retention parameters (``rigid_avbd_alpha``, ``rigid_avbd_gamma``) at their
-defaults; deprecated hard/soft and penalty-ramping controls are not part
-of this workflow. Compliant ALM can produce different behavior from legacy
-AVBD with the same settings; revalidate existing scenes and tuning when
-migrating.
-
-See :class:`~newton.solvers.SolverVBD` and
-:doc:`VBD </solvers/vbd>` for setup, stepping, scene-authored defaults, and
-the experimental status of the solver. Check :ref:`Joint feature support` and
-:ref:`Contact material support` before tuning an imported model; use
-:ref:`Simulation Tuning` for the general timestep, iteration, and diagnostic
-workflow.
-
-VBD advances body poses and velocities in ``state.body_q`` and
-``state.body_qd`` directly. :meth:`~newton.solvers.SolverVBD.step` does not
-call :func:`eval_fk` or :func:`eval_ik`, and does not automatically update
-``state.joint_q`` or ``state.joint_qd``. These helpers are supported for
-articulations: call ``eval_fk`` explicitly to convert joint coordinates and
-velocities to body state, or ``eval_ik`` to recover them from body state.
-
-.. _vbd-rigid-compliance:
-
-Compliant ALM uses finite stiffness, so some stretch, joint displacement, or
-contact penetration can remain even after convergence. If deformation is
-larger than expected, check loads, material values, rest geometry, attachments,
-and contact setup. Also check timestep and iteration sensitivity rather than
-relying only on higher stiffness; see :ref:`Simulation Tuning`.
-
-Very large joint stiffness can make the coupled solve harder to converge at a
-fixed timestep and iteration budget.
-
 .. _vbd-cable-inputs:
 
 Cable Material, Resolution, and Rest Shape
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``````````````````````````````````````````
 
 Create a :class:`Rod` and pass it to :meth:`ModelBuilder.add_rod`; each
 segment becomes a capsule body connected to its neighbors by rod joints (see
@@ -200,34 +182,42 @@ separately from timestep and iterations: the new joint graph, masses,
 inertias, and contact workload require another convergence check. Recheck the
 damping transient at the final resolution too.
 
-Initial geometry (``points``, ``quaternions``) and structural rest geometry
-(``rest_points``, ``rest_quaternions``) are distinct; when rest inputs are
-omitted, the initial shape is also the rest shape. For an ordered chain,
-``rest_straight=True`` sets a straight, untwisted rest shape without supplying
-``rest_points`` or ``rest_quaternions``, while retaining the initial segment
-lengths; it cannot be combined with explicit rest inputs. With nonzero bending
-stiffness, a bent initial cable tends toward straight. The default
-``body_frame_origin="com"`` places the body origin at the segment midpoint,
-so an endpoint attachment needs the corresponding local offset.
+Initial geometry (``points``, ``quaternions``) and rest geometry
+(``rest_points``, ``rest_quaternions``) are distinct; rest defaults to the
+initial shape. For an ordered chain, ``rest_straight=True`` sets a straight,
+untwisted rest shape with the initial segment lengths. Do not supply explicit
+rest inputs with it. With nonzero bending stiffness, the cable then tends
+toward straight. The default ``body_frame_origin="com"`` places the body origin
+at the segment midpoint; use the corresponding local offset for an endpoint
+attachment.
 
 Before tuning stiffness, check the initial and rest orientations and how the
 cable ends are attached. Fixing only an endpoint's position allows it to
 rotate; fixing its orientation as well makes the attachment clamped.
 
-Fit stretch, bend, and twist stiffness one mode at a time under an isolated
-static load (where resting velocity is zero so damping does not affect the
-settled shape), then tune damping on a release transient (how quickly
-oscillations decay after displacing and releasing the cable). Lowering stretch
-stiffness to speed up convergence is a material approximation justified only
-by an acceptable extension, and increasing damping to hide slow drift also
-makes dynamic motion sluggish.
+Fit stretch, bend, and twist stiffness separately under static loads, then
+tune damping from oscillation decay after release. Lower stretch stiffness
+changes the material; use it only if the extra extension is acceptable.
+Excessive damping can make motion sluggish.
+
+Contact Handling
+~~~~~~~~~~~~~~~~
+
+*In development.* How the contact stack responds to tuning: the self-contact
+detection family (radius, margin, detection interval, buffer sizes, and the
+topological and rest-shape filters), the penetration-free Divide and Truncate
+(DAT) truncation and ``particle_conservative_bound_relaxation``, and the
+interplay of contact stiffness, damping, and friction. Coverage of Offset
+Geometric Contact (OGC) will be added once it is available in Newton.
+
+.. _vbd-rigid-contacts:
 
 Rigid Contacts
-~~~~~~~~~~~~~~
+``````````````
 
-**Detection first.** Radius or thickness describes geometry; margin shifts
-the contact surface; gap extends detection distance. See
-:ref:`margin and gap semantics <margin-gap-semantics>`. The builder's
+**Detection first.** Shape geometry, such as a capsule radius, describes the
+body; margin shifts the contact surface; gap extends the detection distance.
+See :ref:`margin and gap semantics <margin-gap-semantics>`. The builder's
 ``rigid_gap`` defaults to 0.1 m for shapes without an explicit gap, which can
 be large beside a centimeter-scale cable. Set ``builder.default_shape_cfg.gap``
 or a shape's ``ShapeConfig.gap`` before adding shapes, then check fast motion
@@ -240,14 +230,14 @@ If those contacts exceed the available capacity, increase the relevant
 (``collision_filter_parent``), but other nearby cable segments can still
 overlap, especially with short segments or thick capsules. Unfiltered overlaps
 can produce unwanted contact forces from the first step. Inspect the initial
-geometry and add explicit exclusions for overlaps that should not produce
-contact forces, using :meth:`ModelBuilder.add_shape_collision_filter_pair`
-before ``finalize()``.
+geometry and exclude intentionally overlapping neighboring segments whose
+collision response is unnecessary throughout the expected motion, using
+:meth:`ModelBuilder.add_shape_collision_filter_pair` before ``finalize()``.
+Correct unintended initial overlaps, and preserve self-contact needed for
+folding and tight bends.
 
 Filtering additional neighbors along the cable can also reduce contact
-processing and buffer demand. Exclude only pairs whose collision response is
-unnecessary throughout the expected motion; preserve self-contact needed for
-folding and tight bends.
+processing and buffer demand.
 
 **Normal support before friction.** Check penetration and normal-load support
 before increasing ``mu``. VBD mixes body–body ``ke`` and ``kd`` with an
@@ -264,7 +254,7 @@ zero slip.
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
 contacts. Contacting bodies may share a color, which can slow or prevent
-convergence. For small scenes with predictable contacts, consider splitting
+contact convergence. For small scenes with predictable contacts, consider splitting
 existing groups in ``builder.body_color_groups`` to separate frequently
 contacting bodies. Make these edits after ``builder.color()`` and before
 ``builder.finalize()``; calling ``color()`` again replaces them.
@@ -276,18 +266,16 @@ More colors reduce parallelism, so compare convergence and runtime.
 .. _vbd-rigid-contact-history:
 
 Contact History
-^^^^^^^^^^^^^^^
+'''''''''''''''
 
-The :class:`CollisionPipeline` owns contact geometry and correspondence;
-VBD owns numerical warm-start history. Set ``contact_matching`` when
-constructing the pipeline and ``rigid_contact_history`` on
-:class:`~newton.solvers.SolverVBD`. Enabling solver history does not enable
-pipeline matching automatically.
+Set ``contact_matching`` on :class:`CollisionPipeline` and
+``rigid_contact_history`` on :class:`~newton.solvers.SolverVBD`.
+Enabling history does not enable matching automatically.
 
-Establish a baseline with ``rigid_contact_history=False``. Use
-``contact_matching="disabled"`` unless rigid collision detection uses
-``ITERATIONS``, which requires ``"latest"`` or ``"sticky"`` matching.
-Set the history flag explicitly to override any scene-authored setting.
+Matching associates contacts across collision passes. VBD uses it for
+between-step warm starts when history is enabled, and to preserve ALM state
+during ``ITERATIONS`` re-detection by a solver-owned pipeline, even with
+``rigid_contact_history=False``.
 
 With history enabled, passing a pipeline with matching disabled to
 ``SolverVBD`` raises ``ValueError`` at construction. With externally supplied
@@ -314,6 +302,10 @@ behave as follows:
        tangential memory comes from the replayed material anchor.
        This matching mode is experimental.
 
+For a baseline, set ``rigid_contact_history=False`` explicitly. Use
+``contact_matching="disabled"`` unless rigid detection uses ``ITERATIONS``,
+which requires ``"latest"`` or ``"sticky"`` matching.
+
 Contact history can improve convergence and reduce jitter or unintended slip
 for persistent contacts; it does not change the authored friction coefficient.
 Compare latest matching plus history against the baseline, measuring drift,
@@ -335,19 +327,19 @@ Alternating contact buffers or colliding twice between steps can cold-start
 contacts even with history enabled; see
 :class:`~newton.solvers.SolverVBD` for the contact-generation contract.
 
-When a substep reuses the previous contacts without rerunning collision
-detection, call :meth:`~newton.solvers.SolverVBD.set_rigid_history_update`
-with ``False`` to skip rebuilding contact lists and reinitializing contact
-state. Reuse the same unmodified contact buffers from the last refresh, with
-body mass and kinematic status unchanged. Keep refresh enabled after collision
-detection or reset. Normal per-step contact and joint updates still run. The
-flag returns to ``True`` after each step and is independent of
+When a substep reuses contacts without rerunning collision detection, call
+:meth:`~newton.solvers.SolverVBD.set_rigid_history_update` with ``False`` to
+skip rebuilding contact lists and reinitializing contact records. Reuse the
+last refreshed contact buffers unchanged, with body mass and kinematic status
+unchanged. Per-step contact/joint updates, solving, and enabled history
+snapshots still run. Keep refresh enabled after detection or reset. The flag
+resets to ``True`` after each step and is independent of
 ``rigid_contact_history``.
 
 .. _vbd-contact-buffers:
 
 Contact Capacity
-^^^^^^^^^^^^^^^^
+''''''''''''''''
 
 Global storage and per-body adjacency have independent capacities. Increasing
 one does not increase the other. :class:`CollisionPipeline` exposes:
@@ -372,6 +364,51 @@ For body–particle contacts, ``rigid_body_particle_contact_buffer_size``
 all stored soft contacts, preserving reactions at extra cost. It cannot recover
 contacts lost from the global ``CollisionPipeline.soft_contact_max`` storage.
 
+Best Practices
+--------------
+
+What Can Go Wrong and How to Fix It
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+*In development.* One entry per failure mode — symptom, cause, fix — topped
+by a quick-lookup symptom table. Planned entries include cloth oscillation
+that more iterations do not fix, outlier-vertex explosions, self-contact
+tunneling, contact chattering and penetration, grasp slip versus finger
+penetration, and joint drift.
+
+Until then, use the generic Symptom Table in :ref:`Simulation Tuning`.
+
+Rigid-Body and Cable Problems
+`````````````````````````````
+
+**Unexpected motion at startup.** Check initial overlaps, cable rest geometry,
+and joint attachment frames. Adjust the initial geometry to remove unintended
+overlaps. Exclude intentionally overlapping neighboring segments only if their
+collision response is unnecessary throughout the expected motion. See
+:ref:`cable inputs <vbd-cable-inputs>` and
+:ref:`rigid contact setup <vbd-rigid-contacts>`.
+
+**Excessive stretch or joint displacement.** Check loads, stiffness inputs,
+rest geometry, and attachments. Also check timestep and iteration sensitivity
+with those inputs held fixed. Finite stiffness permits some deformation;
+see :ref:`rigid compliance <vbd-rigid-compliance>`,
+:ref:`cable materials <vbd-cable-inputs>`, and
+:ref:`non-rod joint gains <vbd-rigid-joint-gains>`.
+
+**Excessive penetration, unexpected slip, or jitter.** Check contact detection,
+including fast motion between collision passes, buffer overflow, and
+normal-load support. For slip, also check both shapes' friction and the
+joint/contact solve's convergence before increasing ``mu``. For persistent
+contacts, compare :ref:`contact history <vbd-rigid-contact-history>` against
+a baseline. See :ref:`rigid contact setup <vbd-rigid-contacts>` and
+:ref:`contact capacity <vbd-contact-buffers>`.
+
+**Unexpected behavior after edits or reset.** Check whether a model edit
+requires :meth:`~newton.solvers.SolverVBD.notify_model_changed` or rebuilding
+the solver. For resets, clear solver and collision-pipeline history and
+regenerate contacts at the final pose. See
+:ref:`model changes and reset <vbd-rigid-model-updates>`.
+
 .. _vbd-rigid-model-updates:
 
 Model Changes and Reset
@@ -395,13 +432,9 @@ When editing mass or inertia directly, keep ``model.body_inv_mass`` and
 ``model.body_inv_inertia`` consistent with them. The notification refreshes
 solver caches; it does not recompute these model arrays.
 
-Rebuild the solver for construction-only settings, constraint layout, or
-non-rod reference-transform changes. Non-rod structural stiffness and damping
-are set by ``rigid_joint_linear_ke`` / ``rigid_joint_angular_ke`` and
-``rigid_joint_linear_kd`` / ``rigid_joint_angular_kd``. Omitted arguments use
-the corresponding settings stored in ``model.vbd`` when present; otherwise,
-stiffness defaults to ``1.0e5`` N/m and N·m/rad, and damping to ``0.0`` N·s/m
-and N·m·s/rad. Changing drive gains does not change that structural response.
+Create a new ``SolverVBD`` after changing construction-only settings,
+joint topology or DOF layout, or the non-rod reference configuration used
+to initialize drive/limit angle offsets.
 
 For an episode reset, call :meth:`~newton.solvers.SolverVBD.reset` to clear
 rigid solver history and optionally restore selected state fields from the
@@ -417,8 +450,17 @@ at the final pose and leave rigid-history refresh enabled for the next
 contact-bearing step. See the reset API for partial-world and coupled-solver
 behavior.
 
-Examples
-~~~~~~~~
+Empirical Parameter Combinations That Work
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+*In development.* Known-good value tables per scenario family — cloth, soft
+body, rods (cables), rigid contacts, mixed scenes — each linking to a
+representative
+runnable example from the `examples directory
+<https://github.com/newton-physics/newton/tree/main/newton/examples>`_.
+
+Cable Examples
+``````````````
 
 These examples demonstrate cable setup and behavior:
 
@@ -430,3 +472,9 @@ These examples demonstrate cable setup and behavior:
 Run, for example, ``uv run -m newton.examples cable_initial_rest_pose``.
 Example settings are specific to each scene; check convergence before reusing
 them.
+
+Rules of Thumb
+~~~~~~~~~~~~~~
+
+*In development.* Distilled starting values and tuning orderings, with the
+reasoning that makes them portable across scenes.

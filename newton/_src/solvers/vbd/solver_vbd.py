@@ -2692,6 +2692,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         automatic rho refresh) runs every step regardless of this flag via
         step_joint_C0_lambda_rho().
         Rigid contact history snapshotting also runs every step when enabled.
+        Per-step contact maintenance (C0, conditioning, penalty, and lambda
+        retention) also runs on the reused contact records.
 
         This setting applies only to the next call to :meth:`step` and is then
         reset to True.  Useful for substepping where collision detection frequency
