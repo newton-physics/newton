@@ -46,6 +46,7 @@ from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
 from . import dcmotor, kernels, speculative
+from .adjoint import MuJoCoAdjoint
 from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
@@ -574,6 +575,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
           are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
+
+    .. experimental::
+
+        Models finalized with ``requires_grad=True`` use the MuJoCo Warp analytic
+        adjoint, requiring a backend build with ``enable_grad``. This mode supports
+        initial joint states, joint targets, applied forces, and identification of
+        ``body_mass``, ``joint_armature``, and ``joint_damping``. Use distinct states
+        and controls for each rollout step, and warm up forward and backward before
+        CUDA capture. Parameter gradients hold compiled reference-pose inverse
+        weights and contact/limit regularization fixed; refresh model constants
+        outside the tape.
 
     Example
     -------
@@ -4434,7 +4446,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
         strict_capacity: bool = False,
-        kinematic_switchable_roots: bool = True,
+        kinematic_switchable_roots: bool | None = None,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -4529,18 +4541,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_switchable_roots: If ``True``, every movable root gets an inactive
                 weld so it can be switched to kinematic at runtime. If ``False``, only roots
                 that are kinematic in some world at construction get one, which keeps the
-                compiled MuJoCo model free of unused welds.
+                compiled MuJoCo model free of unused welds. Defaults to ``False`` for
+                differentiable models and ``True`` otherwise.
         """
         if update_data_interval is not None:
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
+        if kinematic_switchable_roots is None:
+            kinematic_switchable_roots = not model.requires_grad
         self._kinematic_switchable_roots = kinematic_switchable_roots
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
         self._use_speculative_contacts = use_speculative_contacts
 
         # Import and cache MuJoCo modules (only happens once per class)
-        mujoco, _ = self.import_mujoco()
+        mujoco, mujoco_warp = self.import_mujoco()
+        self._adjoint = None
+        if model.requires_grad:
+            if use_mujoco_cpu or not use_mujoco_contacts or use_speculative_contacts:
+                raise ValueError("Differentiable SolverMuJoCo requires MuJoCo Warp with native MuJoCo contacts.")
+            if update_data_interval not in (None, 1):
+                raise ValueError("Differentiable SolverMuJoCo requires updating state on every step.")
+            if not hasattr(mujoco_warp, "enable_grad"):
+                raise ImportError("Differentiable SolverMuJoCo requires a MuJoCo Warp build with the adjoint API.")
+            mujoco_warp.enable_grad()
         mujoco_attrs = getattr(model, "mujoco", None)
         if enable_sleeping is None:
             if mujoco_attrs is not None and hasattr(mujoco_attrs, "enable_sleeping"):
@@ -4962,6 +4986,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
 
+        if model.requires_grad:
+            with wp.ScopedDevice(model.device):
+                self._adjoint = MuJoCoAdjoint(self)
+
     def _allocate_speculative_contact_buffers(self):
         count = self.mjw_data.naconmax
         self._speculative_clearance = wp.zeros(count, dtype=float, device=self.device)
@@ -5110,6 +5138,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 :meth:`observables`.
         """
         self.validate_observables(observables, contacts)
+        if self._adjoint is not None:
+            if (
+                observables is not None
+                or state_out.body_qdd is not None
+                or state_out.body_parent_f is not None
+                or getattr(getattr(state_out, "mujoco", None), "qfrc_actuator", None) is not None
+            ):
+                raise ValueError("Differentiable SolverMuJoCo currently supports joint and body state outputs only.")
         if self._use_speculative_contacts and (not math.isfinite(dt) or dt <= 0.0):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
@@ -5147,6 +5183,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in, observables=observables)
         else:
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
+                if self._adjoint is not None:
+                    adjoint_buffers = self._adjoint.prepare(state_in, state_out, dt)
                 self._enable_rne_postconstraint(state_out, observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
                 if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
@@ -5163,7 +5201,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Always clear d.overflow before the step so observables.overflow
                 # reflects only the current step (d.overflow uses |= accumulation).
                 self.mjw_data.overflow.zero_()
-                self._mujoco_warp_step()
+                if self._adjoint is not None:
+                    self._adjoint.step(*adjoint_buffers)
+                else:
+                    self._mujoco_warp_step()
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
                 )
@@ -5936,7 +5977,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # Keep the compiled actuator_lengthrange: MuJoCo computes it by simulation at compile
                     # time, and mujoco_warp.set_length_range() would overwrite muscle ranges with limits * gear.
                     if need_const_fixed:
-                        self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
+                        if hasattr(self._mujoco_warp, "SetConstGroup"):
+                            self._mujoco_warp.set_const(
+                                self.mjw_model,
+                                self.mjw_data,
+                                groups=self._mujoco_warp.SetConstGroup.FIXED,
+                                restore=False,
+                            )
+                        else:
+                            self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
                     if need_const_0:
                         self._set_const_0()
                     if need_solref_update:
@@ -9981,7 +10030,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mujoco.mj_setConst(self.mj_model, self.mj_data)
         else:
             m = self.mjw_model
-            self._mujoco_warp.set_const_0(m, self.mjw_data)
+            if hasattr(self._mujoco_warp, "SetConstGroup"):
+                self._mujoco_warp.set_const(
+                    m,
+                    self.mjw_data,
+                    groups=self._mujoco_warp.SetConstGroup.KIN0 | self._mujoco_warp.SetConstGroup.INERT0,
+                )
+            else:
+                self._mujoco_warp.set_const_0(m, self.mjw_data)
             if invweight:
                 wp.launch(
                     resolve_actuator_dampratio_invweight_kernel,
