@@ -422,8 +422,8 @@ before the next step:
 
 - :attr:`ModelFlags.JOINT_DOF_PROPERTIES` for rod gains in
   ``model.joint_target_ke`` or ``model.joint_target_kd``.
-- :attr:`ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` for rod angular rest
-  targets in ``model.joint_target_q``.
+- :attr:`ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` for rod rest
+  rotations in ``model.joint_rest_q``.
 - :attr:`ModelFlags.JOINT_PROPERTIES` after toggling ``model.joint_enabled``.
 - :attr:`ModelFlags.BODY_PROPERTIES` after changing kinematic flags.
 - :attr:`ModelFlags.BODY_INERTIAL_PROPERTIES` after changing body mass or inertia.
