@@ -825,7 +825,6 @@ def test_status_snapshot_reports_a_replay_error(test, device):
     scene.solver.check_constraint_capacity()
     with test.assertRaisesRegex(RuntimeError, r"contact compliance.*Invalid contact stiffness \(contact 0\)"):
         scene.solver.check_constraint_capacity(snapshot=True)
-    scene.solver.snapshot_constraint_status()
     scene.solver.reset(scene.states[0])
     scene.solver.check_constraint_capacity(snapshot=True)
 
