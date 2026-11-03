@@ -42,8 +42,10 @@ result should match a reference run within a tolerance you choose in advance.
 A good reference is the same scene with more substeps or iterations, compared
 using a physical quantity such as penetration depth or the trajectory of a body.
 
-Then find out where the time goes. In practice, the largest cost is usually
-one of the following, roughly from most to least common:
+Then find out where the time goes. Measure a reproducible baseline, profile it
+(see :ref:`performance-profiling`), and read the profile before deciding what
+to change. In practice, the largest cost is usually one of the following,
+roughly from most to least common:
 
 1. Kernel launch overhead, when the frame is not captured in a CUDA graph.
 2. Host synchronization inside the frame.
@@ -53,9 +55,77 @@ one of the following, roughly from most to least common:
 6. Rendering.
 
 The first two are pure overhead and can be removed without touching the
-physics, so start there. Change one setting at a time, and record the accuracy
-metric next to each timing so you can tell a real speedup from a cheaper
-simulation.
+physics, so start there. Changes that reduce simulation work, such as fewer
+substeps or coarser collision geometry, trade accuracy for speed; see
+:ref:`performance-tradeoffs`. Change one setting at a time, or a small set of
+settings that interact, and record the accuracy metric next to each timing so
+you can tell a real speedup from a cheaper simulation.
+
+.. _performance-profiling:
+
+Profiling
+---------
+
+Startup and steady-state stepping have different causes, so profile them
+separately.
+
+Startup
+^^^^^^^
+
+Startup covers importing modules, building and finalizing the model, compiling
+and loading kernels, allocating buffers, and capturing graphs. Python's
+:mod:`cProfile` or timers around each phase show where the time goes; call
+:func:`warp.synchronize` before reading a timer so GPU work is counted in the
+phase that launched it. Warp prints the load and compile time of each module,
+and later runs reuse compiled kernels from the kernel cache, so the first run
+after a code or option change is slower than later ones. To compile kernels
+before latency-sensitive work, or to ship them precompiled, see Warp's guide to
+`reducing compilation and startup time
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/reducing_compilation_and_startup_time.html>`__.
+
+Stepping
+^^^^^^^^
+
+How you profile the step depends on whether it runs eagerly or as a captured
+graph.
+
+When the step runs eagerly, :class:`warp.ScopedTimer` with ``synchronize=True``
+measures a region, and its ``cuda_filter`` option records the duration of each
+kernel and memory operation. This is the easiest way to find the most expensive
+kernels, and :class:`~utils.EventTracer` does the same for instrumented solver
+functions.
+
+When the step is captured, the graph launch is a single operation, and
+per-kernel timers inside it are not available. Time the graph as a whole, or
+profile the eager version of the same frame to see the kernels. Warp's
+`profiling guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#timing-in-cuda-graphs>`__
+describes what can be timed inside graphs. To check what a graph contains,
+:func:`warp.capture_debug_dot_print` writes it as a Graphviz file.
+
+For a full picture, run the application under NVIDIA Nsight Systems. Its
+timeline shows kernels, memory copies, host synchronization, and gaps where the
+GPU waits for the CPU, which is often the most direct evidence of launch
+overhead or a hidden synchronization. Pass ``use_nvtx=True`` to
+:class:`warp.ScopedTimer` to label regions on the timeline. By default, Nsight
+Systems shows a captured graph as one range; its ``--cuda-graph-trace=node``
+option traces the individual kernels. To analyze a single kernel's memory
+throughput, occupancy, or SM utilization, use Nsight Compute. Reading GPU
+performance counters can require administrator privileges.
+
+Profilers and synchronizing timers add overhead and change the timing they
+measure. Use them to find the expensive parts, and compare configurations with
+the same instrumentation, or none, on both sides.
+
+Memory
+^^^^^^
+
+:func:`warp.get_mempool_used_mem_high` reports the peak memory Warp has
+allocated. :class:`warp.ScopedMemoryTracker` reports which call sites allocated
+memory, which helps find oversized buffers. ``nvidia-smi`` reports more than
+either, because it includes memory reserved by the pool and used by other
+processes. See Warp's `memory management guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/memory_management.html#querying-memory-usage>`__.
 
 .. _performance-graph-capture:
 
@@ -365,6 +435,64 @@ See :ref:`collision-frequency-in-the-simulation-loop`.
 Contact sensors and contact observables add work to every step, so request
 them only when you use them.
 
+.. _performance-tradeoffs:
+
+Trading Accuracy for Speed
+--------------------------
+
+Once the overhead is gone, further speedups come from doing less simulation
+work, which changes the results. Accept such a change only when the accuracy
+metric stays within the tolerance chosen in `Measuring`_. The settings below
+are the common levers; :ref:`Simulation Tuning` and the linked pages describe
+their effect on behavior.
+
+Collision and solver rates
+    Detecting collisions less often than the solver steps saves collision time
+    but uses contacts that are older by up to the detection interval. See
+    :ref:`collision-frequency-in-the-simulation-loop`.
+
+Contact gap and tunneling
+    A contact is found only when two shapes are within the contact gap at the
+    time of detection. If a body moves farther than the gap between two
+    detection passes, it can pass through thin geometry. A larger gap, or
+    velocity-dependent speculative contacts, prevents this but creates more
+    contacts. Less frequent detection or larger time steps increase the motion
+    between passes, so revisit the gap when changing either. See
+    :ref:`Collisions`.
+
+Collision geometry
+    Primitives and convex hulls are cheaper than meshes, and the cost and
+    accuracy of mesh contact depend on mesh and SDF resolution. A coarser SDF
+    builds faster and uses less memory but rounds off small features. See
+    :ref:`Collision Pipeline Details`.
+
+Contact model
+    Point contacts are cheaper than SDF-based or hydroelastic contacts, which
+    model contact patches and pressure distributions more accurately. Choose
+    the cheapest model that resolves the behavior the task depends on, and
+    enable expensive models only on the shapes that need them. See
+    :ref:`Hydroelastic Contacts`.
+
+Contact pairs
+    Filtering pairs that cannot or should not touch, such as adjacent links,
+    reduces collision work without changing the results for the remaining
+    pairs. See :ref:`Collisions`.
+
+Substeps, iterations, and tolerances
+    Solver cost scales with substeps and iterations. Reduce iterations, or let
+    the solver stop early through a convergence tolerance where it supports
+    one, only while the residual or task metric stays within bounds that you
+    can justify physically. Fewer substeps also make each step larger, which
+    affects stability and contact. See the tuning order in
+    :ref:`Simulation Tuning` and :ref:`Tuning Solver Reference`.
+
+Solver choice and solver options
+    Solvers differ in cost and in the effects they model, and many expose
+    options that trade accuracy for speed. For example,
+    :class:`~solvers.SolverImplicitMPM` can transfer velocities with PIC, which
+    is cheaper but more dissipative than the default APIC scheme. See the
+    :doc:`solver overview </solvers/index>` and the solver's API reference.
+
 Multiple Worlds
 ---------------
 
@@ -382,9 +510,10 @@ then call :meth:`~solvers.SolverBase.notify_model_changed` once. Partial resets
 take a device mask rather than a list of indices; see
 :ref:`Per-world reset masks`.
 
-To measure memory, :func:`warp.get_mempool_used_mem_high` reports Warp's peak
-allocation. ``nvidia-smi`` reports more, because it includes memory reserved by
-the pool and used by other processes.
+A model and its solver run on a single device. To use several GPUs, run an
+independent simulation on each, for example one process per GPU, and divide
+the worlds between them. Throughput then scales with the number of GPUs as long
+as the simulations do not need to exchange data every step.
 
 .. _performance-benchmarking:
 
