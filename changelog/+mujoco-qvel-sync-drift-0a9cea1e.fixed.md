@@ -1,0 +1,1 @@
+Fix `SolverMuJoCo` free- and ball-joint velocities drifting upward when the state is synced every step (the default `update_data_interval=1`). The `qvel` frame conversions rotated by float32 quaternions that are not exactly unit length, which grew a steady 3 rad/s spin by about 0.01 rad/s over 15360 steps.

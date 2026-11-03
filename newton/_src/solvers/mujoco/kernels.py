@@ -222,6 +222,26 @@ def quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
     return wp.quat(q[3], q[0], q[1], q[2])
 
 
+@wp.func
+def quat_rotate_normalized(q: wp.quat, v: wp.vec3) -> wp.vec3:
+    """Rotate ``v`` by ``q / |q|``, normalizing and rotating in float64.
+
+    ``wp.quat_rotate`` assumes ``|q| == 1`` and otherwise returns
+    ``|q|^2 R v + (|q|^2 - 1) v``. Float32 quaternions miss unit norm by up
+    to ~1e-7, and float32 normalization leaves that error biased positive,
+    so repeating the qvel frame changes on every :class:`SolverMuJoCo` step
+    would scale velocities geometrically. Float64 keeps each push/pull round
+    trip unbiased.
+    """
+    return wp.vec3(wp.quat_rotate(wp.normalize(wp.quatd(q)), wp.vec3d(v)))
+
+
+@wp.func
+def quat_rotate_inv_normalized(q: wp.quat, v: wp.vec3) -> wp.vec3:
+    """Rotate ``v`` by the inverse of ``q / |q|``; see :func:`quat_rotate_normalized`."""
+    return wp.vec3(wp.quat_rotate_inv(wp.normalize(wp.quatd(q)), wp.vec3d(v)))
+
+
 # Coupling kernels
 @wp.func
 def find_mujoco_body_from_newton_body(
@@ -838,14 +858,14 @@ def convert_mj_coords_to_warp_kernel(
         q_p = wp.transform_get_rotation(joint_X_p[joint_id])
 
         w_body = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
-        w_world = wp.quat_rotate(world_rot, w_body)
+        w_world = quat_rotate_normalized(world_rot, w_body)
 
         com_world = wp.quat_rotate(world_rot, body_com[child])
         v_origin_world = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
         v_com_world = v_origin_world + wp.cross(w_world, com_world)
 
-        v_com_parent = wp.quat_rotate_inv(q_p, v_com_world)
-        w_parent = wp.quat_rotate_inv(q_p, w_world)
+        v_com_parent = quat_rotate_inv_normalized(q_p, v_com_world)
+        w_parent = quat_rotate_inv_normalized(q_p, w_world)
 
         joint_qd[wqd_i + 0] = v_com_parent[0]
         joint_qd[wqd_i + 1] = v_com_parent[1]
@@ -869,7 +889,7 @@ def convert_mj_coords_to_warp_kernel(
         joint_q[wq_i + 3] = r[3]
 
         omega_mj = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
-        w_newton = wp.quat_rotate(mj_to_anchor, omega_mj)
+        w_newton = quat_rotate_normalized(mj_to_anchor, omega_mj)
         joint_qd[wqd_i + 0] = w_newton[0]
         joint_qd[wqd_i + 1] = w_newton[1]
         joint_qd[wqd_i + 2] = w_newton[2]
@@ -954,8 +974,8 @@ def convert_warp_coords_to_mj_kernel(
         v_com_parent = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
         w_parent = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
 
-        v_com_world = wp.quat_rotate(q_p, v_com_parent)
-        w_world = wp.quat_rotate(q_p, w_parent)
+        v_com_world = quat_rotate_normalized(q_p, v_com_parent)
+        w_world = quat_rotate_normalized(q_p, w_parent)
 
         child = joint_child[joint_id]
         com_world = wp.quat_rotate(world_rot, body_com[child])
@@ -964,7 +984,7 @@ def convert_warp_coords_to_mj_kernel(
         qvel[worldid, qd_i + 1] = v_origin_world[1]
         qvel[worldid, qd_i + 2] = v_origin_world[2]
 
-        w_body = wp.quat_rotate_inv(world_rot, w_world)
+        w_body = quat_rotate_inv_normalized(world_rot, w_world)
         qvel[worldid, qd_i + 3] = w_body[0]
         qvel[worldid, qd_i + 4] = w_body[1]
         qvel[worldid, qd_i + 5] = w_body[2]
@@ -981,7 +1001,7 @@ def convert_warp_coords_to_mj_kernel(
         qpos[worldid, q_i + 3] = ball_q_wxyz[3]
 
         w_newton = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
-        w_mj = wp.quat_rotate(q_cj * wp.quat_inverse(r), w_newton)
+        w_mj = quat_rotate_normalized(q_cj * wp.quat_inverse(r), w_newton)
         qvel[worldid, qd_i + 0] = w_mj[0]
         qvel[worldid, qd_i + 1] = w_mj[1]
         qvel[worldid, qd_i + 2] = w_mj[2]

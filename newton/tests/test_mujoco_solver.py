@@ -9432,6 +9432,63 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
         self.assertIn("floater", str(mjc_warnings[0].message))
 
 
+class TestMuJoCoSolverVelocitySync(unittest.TestCase):
+    """SolverMuJoCo's per-step qpos/qvel sync must not bias FREE or BALL velocities."""
+
+    # Float32 rotation whose |q|^2 - 1 is +8.1e-8, so the anchor-frame conversions
+    # see a non-unit quaternion on every step.
+    PARENT_XFORM = wp.transform((1.0, -0.5, 0.25), wp.quat(0.08189196, 0.0, 0.57195348, 0.81618810))
+    CHILD_ROT = wp.quat_rpy(-0.3, 0.2, 0.1)
+
+    def _run_spin(self, joint_type: JointType, steps: int = 500, dt: float = 1.0e-3):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(0.1 * np.eye(3)))
+        if joint_type == JointType.FREE:
+            child_xform = wp.transform((-0.2, 0.4, 0.1), self.CHILD_ROT)
+            joint = builder.add_joint_free(child=body, parent_xform=self.PARENT_XFORM, child_xform=child_xform)
+        else:
+            # Anchor at the COM so the isotropic body stays torque-free.
+            child_xform = wp.transform((0.0, 0.0, 0.0), self.CHILD_ROT)
+            joint = builder.add_joint_ball(
+                parent=-1, child=body, parent_xform=self.PARENT_XFORM, child_xform=child_xform
+            )
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        # 3 rad/s spin (and, for FREE, 0.5 m/s drift) expressed in the parent anchor frame.
+        qd = model.joint_qd.numpy()
+        if joint_type == JointType.FREE:
+            qd[0:6] = [0.5, 0.0, 0.0, 0.0, 3.0, 0.0]
+        else:
+            qd[0:3] = [0.0, 3.0, 0.0]
+        model.joint_qd.assign(qd)
+
+        solver = SolverMuJoCo(model, update_data_interval=1, disable_contacts=True)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        initial_qd = state_0.joint_qd.numpy().copy()
+        for _ in range(steps):
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+        return initial_qd, state_0.joint_qd.numpy()
+
+    def test_free_joint_velocity_preserved(self):
+        """Keep a torque-free FREE body's spin rate and linear speed constant across synced steps.
+
+        ``|q|^2 - 1`` of MuJoCo Warp's float32-normalized quaternion is biased
+        positive, so rotating qvel with ``wp.quat_rotate`` on every push and pull
+        used to grow ``|omega|`` by up to ``4 (|q|^2 - 1)`` per step.
+        """
+        initial_qd, final_qd = self._run_spin(JointType.FREE)
+        np.testing.assert_allclose(np.linalg.norm(final_qd[3:6]), np.linalg.norm(initial_qd[3:6]), rtol=1.0e-5)
+        np.testing.assert_allclose(np.linalg.norm(final_qd[0:3]), np.linalg.norm(initial_qd[0:3]), rtol=1.0e-5)
+
+    def test_ball_joint_spin_rate_preserved(self):
+        """Keep a torque-free BALL body's spin rate constant across synced steps."""
+        initial_qd, final_qd = self._run_spin(JointType.BALL)
+        np.testing.assert_allclose(np.linalg.norm(final_qd[0:3]), np.linalg.norm(initial_qd[0:3]), rtol=1.0e-5)
+
+
 class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
     def test_zero_mass_body(self):
         """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
