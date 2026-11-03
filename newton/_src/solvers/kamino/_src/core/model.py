@@ -526,7 +526,7 @@ class ModelKamino:
     gravity: wp.array[wp.vec3] | None = None
     """
     Per-world gravity vector [m/s²], aliasing :attr:`newton.Model.gravity`.
-    Shape of ``(num_worlds,)``.
+    Shape of ``(num_worlds,)`` or ``(num_worlds + 1,)`` when the final entry holds global-world gravity.
     """
 
     bodies: RigidBodiesModel | None = None
