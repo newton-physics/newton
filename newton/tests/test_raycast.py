@@ -88,6 +88,7 @@ def test_ray_intersect_sphere(test: TestRaycast, device: str):
 
 
 def test_ray_intersect_box(test: TestRaycast, device: str):
+    """Check box hit distances and outward normals at faces, edges, and corners."""
     out_t = wp.zeros(1, dtype=float, device=device)
     out_n = wp.zeros(1, dtype=wp.vec3, device=device)
     size = wp.vec3(1.0, 1.0, 1.0)  # half-extents
@@ -113,6 +114,58 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
+
+    # Float32 edge hits from #5056: the slab hit survives, but reconstructing
+    # the face from a second division and strict bounds can reject every face.
+    size_np = np.array([0.30, 0.24, 0.04], dtype=np.float32)
+    edge_cases = [
+        ([5.0502934, -1.8969021, 7.960762], [-0.5309731, 0.17350523, -0.82943565]),
+        ([-5.8391385, 1.4568362, -0.88245], [0.9651539, -0.20853564, 0.15808512]),
+        ([-1.3642906, 3.376525, 2.7550356], [0.3311514, -0.7545974, -0.5664993]),
+        # An interior ray exercises the far slab rather than the near slab.
+        ([-0.015038496, -0.034916792, 0.014108458], [0.06421096, 0.9935398, 0.09357114]),
+    ]
+    for index, (origin, ray_direction) in enumerate(edge_cases):
+        with test.subTest(edge=index):
+            wp.launch(
+                kernel_test_geom,
+                dim=1,
+                inputs=[
+                    out_t,
+                    out_n,
+                    identity,
+                    wp.vec3(*size_np),
+                    GeoType.BOX,
+                    wp.vec3(*origin),
+                    wp.vec3(*ray_direction),
+                    0,
+                ],
+                device=device,
+            )
+            distance = float(out_t.numpy()[0])
+            normal = out_n.numpy()[0]
+            test.assertGreaterEqual(distance, 0.0)
+            test.assertAlmostEqual(float(np.linalg.norm(normal)), 1.0, delta=1e-6)
+            point = np.array(origin, dtype=np.float32) + distance * np.array(ray_direction, dtype=np.float32)
+            np.testing.assert_array_less(np.abs(point), size_np + 2e-6)
+            active = np.abs(normal) > 0.0
+            np.testing.assert_allclose(np.abs(point[active]), size_np[active], atol=2e-6, rtol=0)
+            test.assertTrue(np.all(normal[active] * point[active] > 0.0))
+
+    # Keep averaged outward normals for exact ties, including inside exits.
+    for count in (2, 3):
+        for inside in (False, True):
+            origin = np.zeros(3) if inside else np.array([2.0] * count + [0.0] * (3 - count))
+            ray_direction = np.array([1.0 if inside else -1.0] * count + [0.0] * (3 - count))
+            with test.subTest(tied_faces=count, inside=inside):
+                wp.launch(
+                    kernel_test_geom,
+                    dim=1,
+                    inputs=[out_t, out_n, identity, size, GeoType.BOX, wp.vec3(*origin), wp.vec3(*ray_direction), 0],
+                    device=device,
+                )
+                test.assertAlmostEqual(float(out_t.numpy()[0]), 1.0, delta=1e-6)
+                np.testing.assert_allclose(out_n.numpy()[0], np.abs(ray_direction) / np.sqrt(count), atol=1e-6)
 
 
 def test_ray_intersect_capsule(test: TestRaycast, device: str):

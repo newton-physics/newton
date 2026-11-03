@@ -239,6 +239,8 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
     normal = wp.vec3(0.0)
     t_near = -1.0e10
     t_far = 1.0e10
+    near_axis = -1
+    far_axis = -1
     hit = 1
 
     for i in range(3):
@@ -255,6 +257,10 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
                 t1 = t2
                 t2 = temp
 
+            if t1 > t_near:
+                near_axis = i
+            if t2 < t_far:
+                far_axis = i
             t_near = wp.max(t_near, t1)
             t_far = wp.min(t_far, t2)
 
@@ -279,6 +285,13 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
                         if wp.abs(p0) <= size[id0] and wp.abs(p1) <= size[id1]:
                             if wp.abs(sol - t_hit) < EPSILON:
                                 normal_local[i] = -1.0 if side < 0 else 1.0
+        # Rounding at edges can reject every reconstructed face. The slab
+        # that selected the hit still provides a valid outward face normal.
+        if wp.dot(normal_local, normal_local) == 0.0:
+            axis = near_axis if t_near >= 0.0 else far_axis
+            if axis >= 0:
+                sign = -1.0 if ray_direction[axis] > 0.0 else 1.0
+                normal_local[axis] = sign if t_near >= 0.0 else -sign
         normal = wp.normalize(normal_local)
 
     return t_hit, normal
