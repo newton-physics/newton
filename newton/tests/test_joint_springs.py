@@ -211,15 +211,18 @@ class TestJointSprings(unittest.TestCase):
         fixed = builder.add_joint_fixed(ball_body, fixed_body)
         slider_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         slider = builder.add_joint_prismatic(fixed_body, slider_body, stiffness=4.0, rest_q=0.6)
-        builder.add_articulation([free, ball, fixed, slider])
+        rod_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        rod_rest = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1, 2, 3)), 0.4)
+        rod = builder.add_joint_rod(slider_body, rod_body, rest_rotation=rod_rest)
+        builder.add_articulation([free, ball, fixed, slider, rod])
         builder.collapse_fixed_joints()
-        expected_rest = np.array([0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0.6])
+        expected_rest = np.array([0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0.6, 0, 0, 0, *rod_rest])
         combined = newton.ModelBuilder()
         combined.replicate(builder, 2)
         model = combined.finalize(device="cpu")
         self.assertEqual(model.joint_rest_q.shape, model.joint_q.shape)
         np.testing.assert_allclose(model.joint_rest_q.numpy(), np.tile(expected_rest, 2))
-        np.testing.assert_allclose(model.joint_stiffness.numpy(), np.tile([0] * 9 + [4], 2))
+        np.testing.assert_allclose(model.joint_stiffness.numpy(), np.tile([0] * 9 + [4] + [0] * 6, 2))
 
     def test_target_keyword_alias_conflicts(self):
         """Accept deprecated targets and reject contradictory old and new keyword values."""

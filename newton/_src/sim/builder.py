@@ -6236,15 +6236,18 @@ class ModelBuilder:
                         "JointType.ROD requires canonical XYZ linear and XYZ angular axis ordering; "
                         "use ModelBuilder.add_joint_rod() to construct the canonical layout."
                     )
-                if not math.isfinite(float(configured.target_q)):
-                    raise ValueError("JointType.ROD requires finite target_q values for structural rest.")
+                if configured.target_q != 0.0:
+                    raise ValueError(
+                        "JointType.ROD requires zero target_q values; "
+                        "use add_joint_rod(rest_rotation=...) or joint_rest_q for structural rest."
+                    )
                 if configured.actuator_mode is not None and configured.actuator_mode != JointTargetMode.NONE:
                     raise ValueError(
                         f"JointType.ROD requires actuator_mode=JointTargetMode.NONE; got {configured.actuator_mode!r}."
                     )
-            if any(float(configured.target_q) != 0.0 for configured in linear_axes):
+            if any(configured.rest_q not in (None, 0.0) for configured in linear_axes):
                 raise ValueError(
-                    "JointType.ROD requires zero linear target_q values because its structural-rest anchors coincide."
+                    "JointType.ROD requires zero linear rest_q values because its structural-rest anchors coincide."
                 )
 
         if collision_filter_parent is None:
@@ -7067,7 +7070,8 @@ class ModelBuilder:
                 translation is the attachment point and its local ``+Z`` axis is the child-side material
                 tangent.
             rest_rotation: Child anchor rotation relative to the parent anchor at structural rest
-                [unitless quaternion]. If None, it uses the initial relative anchor rotation at creation.
+                [unitless quaternion], stored in :attr:`joint_rest_q`. If None, it uses the initial
+                relative anchor rotation at creation.
             stretch_stiffness: Rod stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
             stretch_damping: Rod stretch damping [N·s/m] (stored as ``target_kd``). If None,
                 defaults to 0.0.
@@ -7163,8 +7167,8 @@ class ModelBuilder:
         q_start = self.joint_q_start[joint_id]
         if rest_rotation_value is None:
             rest_rotation_value = wp.quat(*self.joint_q[q_start + 3 : q_start + 7])
-        self.joint_target_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
-        self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
+        self.joint_rest_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
+        self.joint_rest_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
         return joint_id
 
     def add_tendon(
@@ -10464,10 +10468,10 @@ class ModelBuilder:
                 link_joints.append(j_loop)
 
         if rest_straight:
-            # Straight rest uses the identity quaternion in each joint's target coordinates.
+            # Straight rest uses the identity quaternion in each joint's rest coordinates.
             for joint in link_joints:
                 q_start = self.joint_q_start[joint]
-                self.joint_target_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
+                self.joint_rest_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
 
         return link_bodies, link_joints
 

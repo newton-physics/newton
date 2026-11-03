@@ -1469,7 +1469,7 @@ class Model:
         which aliases :attr:`joint_q_start`. Ball and free joint rotations use
         unit quaternions.
 
-        For ROD joints, this Model-owned array defines structural rest;
+        ROD joints use :attr:`joint_rest_q` for structural rest and ignore drive targets;
         see :ref:`Rod joints`.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
@@ -1510,16 +1510,26 @@ class Model:
         self.joint_target_mode: wp.array[wp.int32] | None = None
         """Joint target mode per DOF, see :class:`newton.JointTargetMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke: wp.array[wp.float32] | None = None
-        """Drive proportional gain [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
+        """Drive proportional gain [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float.
+
+        ROD joints use this array for material stiffness about :attr:`joint_rest_q`;
+        see :ref:`Rod joints`.
+        """
         self.joint_target_kd: wp.array[wp.float32] | None = None
-        """Drive derivative gain [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
+        """Drive derivative gain [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float.
+
+        ROD joints use this array for material damping; see :ref:`Rod joints`.
+        """
         self.joint_stiffness: wp.array[wp.float32] | None = None
         """Passive spring stiffness [N/m or N·m/rad], shape [joint_dof_count]. Independent of drive gains."""
         self.joint_rest_q: wp.array[wp.float32] | None = None
-        """Spring rest configuration [m or rad; xyzw unit quaternion for rotations], shape [joint_coord_count].
+        """Joint rest configuration [m or rad; xyzw unit quaternion for rotations], shape [joint_coord_count].
 
         Uses the layout of :attr:`joint_q` and indexing of :attr:`joint_q_start`.
         Scalar rest coordinates may lie outside the joint limits to produce preload.
+        ROD joints store zero translation and their relative structural-rest rotation.
+        SolverVBD reads only the quaternion entries, with material coefficients in
+        :attr:`joint_target_ke` and :attr:`joint_target_kd`; see :ref:`Rod joints`.
         """
         self.joint_damping: wp.array[wp.float32] | None = None
         """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint, shape [joint_dof_count], float."""
