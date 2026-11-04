@@ -11566,6 +11566,21 @@ class TestSiteFromto(unittest.TestCase):
         np.testing.assert_allclose(model.shape_collision_aabb_lower.numpy()[shape_idx], [-0.1, -0.1, -0.2], atol=1.0e-6)
         np.testing.assert_allclose(model.shape_collision_aabb_upper.numpy()[shape_idx], [0.1, 0.1, 0.2], atol=1.0e-6)
 
+    def test_deprecated_site_size_is_display_zeroes_cylinder_barrel(self):
+        """Keep the deprecated display-size tag working on cylinder sites."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        body = builder.add_body()
+        with self.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "site_size_is_display"):
+            site = builder.add_site(
+                body,
+                type=GeoType.CYLINDER,
+                scale=(0.1, 0.2, 0.05),
+                custom_attributes={"mujoco:site_size_is_display": True},
+            )
+
+        np.testing.assert_allclose(builder.shape_scale[site], [0.1, 0.2, 0.0], atol=1.0e-6)
+
     def test_site_fromto_inherits_defaults_inside_frame(self):
         """Compose an inherited fromto site with its containing frame."""
         mjcf = """

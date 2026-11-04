@@ -1480,9 +1480,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         .. deprecated:: 1.8
             The ``mujoco:site_size_is_display`` shape attribute is no longer populated
-            by the MJCF importer and has no effect. The importer now sets ``scale[2]``
-            of cylinder sites to zero instead, because MuJoCo ignores their third size
-            component. The attribute remains registered for compatibility and will be
+            by the MJCF importer. The importer now sets ``scale[2]`` of cylinder sites
+            to zero instead, because MuJoCo ignores their third size component. Passing
+            the attribute to :meth:`~newton.ModelBuilder.add_site` emits a deprecation
+            warning and zeroes ``scale[2]`` of a cylinder site. The attribute will be
             removed in a future release.
         Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
         to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
@@ -1571,8 +1572,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # endregion custom frequencies
 
         # region geom attributes
-        # Deprecated in 1.8: no longer populated by the MJCF importer and has no effect.
-        # Kept registered so existing code that sets or reads it keeps working.
+        # Deprecated in 1.8: no longer populated by the MJCF importer. ModelBuilder.add_shape
+        # zeroes scale[2] of tagged cylinder sites for compatibility.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="site_size_is_display",
