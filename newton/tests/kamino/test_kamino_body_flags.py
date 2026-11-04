@@ -587,7 +587,22 @@ class TestKaminoBodyFlags(unittest.TestCase):
                     state_in, state_out = state_out, state_in
 
                 np.testing.assert_allclose(state_in.body_q.numpy(), start, rtol=0.0, atol=1.0e-3)
-                self.assertLess(float(np.max(np.linalg.norm(state_in.body_qd.numpy(), axis=1))), 1.0e-3)
+                body_twists = state_in.body_qd.numpy()
+                max_twist_norm = float(np.max(np.linalg.norm(body_twists, axis=1)))
+                details = None
+                if not max_twist_norm < 1.0e-3:
+                    details = (
+                        f"device={self.default_device}, Warp={wp.__version__}, MuJoCo bodies={bodies['mjc']}, "
+                        f"Kamino bodies={bodies['kamino']}, body twists={body_twists.tolist()}"
+                    )
+                    if dynamics_solver == "dvi":
+                        status = solver.solver("kamino")._solver_kamino.solver_fd.data.status.numpy()[0]
+                        residuals = {
+                            name: status[name].item()
+                            for name in ("converged", "iterations", "r_p", "r_d", "r_c", "r_b")
+                        }
+                        details += f", DVI status={residuals}"
+                self.assertLess(max_twist_norm, 1.0e-3, msg=details)
 
     def test_newton_arrays_not_mutated(self):
         """SolverKamino must not mutate Newton's body_inv_mass / body_inv_inertia."""
