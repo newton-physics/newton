@@ -863,8 +863,9 @@ def jcalc_integrate(
             p_s_new = p_s + dpdt_s * dt
 
         if parent < 0:
-            w_s = w_s * (1.0 - angular_damping * dt)
-            v_com = v_com * (1.0 - linear_damping * dt)
+            # Clamped at 0 like PhysX, so a damping beyond 1 / dt stops the body.
+            w_s = w_s * wp.max(1.0 - angular_damping * dt, 0.0)
+            v_com = v_com * wp.max(1.0 - linear_damping * dt, 0.0)
 
         # update transform
         joint_q_new[coord_start + 0] = p_s_new[0]
@@ -2299,8 +2300,8 @@ def apply_free_root_damping(
     joint_qd_start: wp.array[int],
     kinematic_joint_mask: wp.array[int],
     joint_child: wp.array[int],
-    body_linear_damping: wp.array[float],
     body_angular_damping: wp.array[float],
+    body_linear_damping: wp.array[float],
     dt: float,
     joint_qd: wp.array[float],
 ):
@@ -2310,8 +2311,8 @@ def apply_free_root_damping(
     if d < 0:
         return
     child = joint_child[free_root_joint_indices[root_index]]
-    linear_scale = 1.0 - body_linear_damping[child] * dt
-    angular_scale = 1.0 - body_angular_damping[child] * dt
+    linear_scale = wp.max(1.0 - body_linear_damping[child] * dt, 0.0)
+    angular_scale = wp.max(1.0 - body_angular_damping[child] * dt, 0.0)
     for i in range(3):
         joint_qd[d + i] = joint_qd[d + i] * linear_scale
         joint_qd[d + 3 + i] = joint_qd[d + 3 + i] * angular_scale

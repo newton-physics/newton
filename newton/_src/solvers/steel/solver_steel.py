@@ -1534,12 +1534,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         Each body and shape attribute maps to the matching PhysX USD attribute:
 
         - ``steel:rigid_body_angular_damping`` [1/s] damps the angular velocity of free bodies and
-          floating bases as ``w *= 1 - d dt`` each step (``physxRigidBody:angularDamping``,
+          floating bases as ``w *= max(1 - d dt, 0)`` each step (``physxRigidBody:angularDamping``,
           default 0.05, as :class:`~newton.solvers.SolverFeatherstone`); joints with a parent
           body are not damped. Fill the attribute for one value on every body.
         - ``steel:rigid_body_linear_damping`` [1/s] damps the COM velocity of the same bodies as
-          ``v *= 1 - d dt`` each step (``physxRigidBody:linearDamping``, default 0). Keep it
-          nonnegative with ``d dt < 1``.
+          ``v *= max(1 - d dt, 0)`` each step (``physxRigidBody:linearDamping``, default 0). Keep
+          it nonnegative.
         - ``steel:rigid_body_max_linear_velocity`` [m/s] and ``steel:rigid_body_max_angular_velocity`` [rad/s]
           bound the velocity of free bodies (``physxRigidBody:maxLinearVelocity`` and
           ``physxRigidBody:maxAngularVelocity``, default unbounded).
@@ -7015,8 +7015,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.joint_qd_start,
                         self._kinematic_joint_mask,
                         model.joint_child,
-                        self._rigid_body_linear_damping,
                         self._rigid_body_angular_damping,
+                        self._rigid_body_linear_damping,
                         dt,
                     ],
                     outputs=[self._v_out],

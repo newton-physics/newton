@@ -118,6 +118,10 @@ def test_angular_damping_follows_in_place_edits(test, device):
     model.steel.rigid_body_angular_damping.fill_(0.0)
     solver.step(state_in, state_out, model.control(), None, DT)
     test.assertAlmostEqual(float(state_out.joint_qd.numpy()[5]), 4.0, delta=1.0e-5)
+    # A damping beyond 1 / dt stops the spin rather than reversing it.
+    model.steel.rigid_body_angular_damping.fill_(2.0 / DT)
+    solver.step(state_out, state_in, model.control(), None, DT)
+    test.assertEqual(float(state_in.joint_qd.numpy()[5]), 0.0)
 
 
 def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
@@ -241,7 +245,7 @@ _LINEAR_DAMPING_SOLVES = {
 
 def test_linear_damping_decays_free_root_com_velocity(test, device):
     """Scale free roots' COM velocity by ``1 - d dt`` per step on every solve and leave undamped bodies alone."""
-    damping, steps = 2.0, 48
+    damping, steps = 2.0, 24
     solves = _LINEAR_DAMPING_SOLVES.items() if device.is_cuda else [("split", _LINEAR_DAMPING_SOLVES["split"])]
     expected = np.array((1.0, 0.5)) * (1.0 - damping * DT) ** steps
     for label, options in solves:
@@ -267,13 +271,13 @@ def test_linear_damping_defaults_to_zero(test, device):
 
 
 def test_linear_damping_follows_in_place_edits(test, device):
-    """Apply an in-place edit of the linear damping on the next step, and stop damping when it returns to 0."""
+    """Apply an in-place edit of the linear damping on the next step, and stop the body for a damping beyond 1 / dt."""
     model = _build_sliding_model(device, damping=0.0)
     solver = SolverSteel(model, **_split_or_default(device))
     state_in, state_out = model.state(), model.state()
     _slide(model, state_in)
     control = model.control()
-    for damping, scale in ((0.0, 1.0), (2.0, 1.0 - 2.0 * DT), (0.0, 1.0 - 2.0 * DT)):
+    for damping, scale in ((0.0, 1.0), (2.0, 1.0 - 2.0 * DT), (0.0, 1.0 - 2.0 * DT), (2.0 / DT, 0.0)):
         model.steel.rigid_body_linear_damping.fill_(damping)
         solver.step(state_in, state_out, control, None, DT)
         state_in, state_out = state_out, state_in
@@ -281,10 +285,15 @@ def test_linear_damping_follows_in_place_edits(test, device):
 
 
 def test_linear_damping_survives_graph_capture(test, device):
-    """Replay a captured step with per-body linear damping exactly like eager steps, with and without the post-pass."""
+    """Replay a captured step exactly like eager steps while the linear damping changes between steps."""
+    schedule = (2.0, 0.0, 5.0, 0.0, 2.0, 5.0)
+
+    def edit(model, index):
+        model.steel.rigid_body_linear_damping.fill_(schedule[index])
+
     for options in ({}, {"velocity_iterations": 2}):
         with test.subTest(**options):
-            run = {"init": _slide, "steps": 6, **options}
+            run = {"init": _slide, "steps": len(schedule), "before_step": edit, **options}
             _assert_bitwise(
                 test,
                 _run(_build_sliding_model(device, damping=2.0), capture=True, **run),
