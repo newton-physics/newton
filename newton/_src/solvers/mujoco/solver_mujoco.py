@@ -3494,7 +3494,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
-    def _init_pairs(self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int) -> None:
+    def _init_pairs(
+        self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int
+    ) -> list[tuple[int, Any]]:
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
@@ -3507,11 +3509,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec: The MuJoCo spec to add pairs to.
             shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
             template_world: The world index to use as the template (typically first_group).
+
+        Returns:
+            The ``(Newton pair row, MjsPair)`` of each pair added to the spec.
         """
-        self._spec_pairs = []
+        spec_pairs: list[tuple[int, Any]] = []
         pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if pair_count == 0:
-            return
+            return spec_pairs
 
         mujoco_attrs = model.mujoco
 
@@ -3523,7 +3528,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         pair_geom1 = get_numpy("pair_geom1")
         pair_geom2 = get_numpy("pair_geom2")
         if pair_world is None or pair_geom1 is None or pair_geom2 is None:
-            return
+            return spec_pairs
 
         pair_condim = get_numpy("pair_condim")
         pair_solref = get_numpy("pair_solref")
@@ -3600,7 +3605,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if pair_friction is not None:
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
-            self._spec_pairs.append(spec.add_pair(**pair_kwargs))
+            spec_pairs.append((i, spec.add_pair(**pair_kwargs)))
+
+        return spec_pairs
 
     @staticmethod
     def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
@@ -8951,7 +8958,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
 
         # add explicit contact pairs from custom attributes
-        self._init_pairs(model, spec, shape_mapping, first_world)
+        spec_pairs = self._init_pairs(model, spec, shape_mapping, first_world)
 
         selected_tendons, mjc_tendon_names = self._init_tendons(
             model, spec, joint_mapping, shape_mapping, site_mapping, first_world
@@ -9070,7 +9077,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_welds.append(eq)
 
         self.mj_model = spec.compile()
-        self._mjc_pair_spec_index = self._compiled_pair_spec_index(model.device)
+        self._mjc_pair_spec_index = self._compiled_pair_spec_index(model, spec_pairs)
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "
@@ -10993,21 +11000,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
             self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
 
-    def _compiled_pair_spec_index(self, device) -> wp.array | None:
-        """Return, for each compiled MuJoCo pair, its position among the pairs added by :meth:`_init_pairs`.
+    def _compiled_pair_spec_index(self, model: Model, spec_pairs: list[tuple[int, Any]]) -> wp.array | None:
+        """Return, for each compiled MuJoCo pair, its ``mujoco:pair`` row within a world.
 
         The MuJoCo compiler groups explicit pairs by body pair, so compiled pair ``j``
-        is not necessarily the ``j``-th pair added to the spec. After ``spec.compile()``,
-        each spec pair's ``id`` is its compiled index.
+        is not necessarily the ``j``-th pair added to the spec, and rows skipped by
+        :meth:`_init_pairs` shift the rest. After ``spec.compile()``, each spec pair's
+        ``id`` is its compiled index.
+
+        Args:
+            model: The Newton model.
+            spec_pairs: The ``(Newton pair row, MjsPair)`` list returned by :meth:`_init_pairs`.
         """
         npair = self.mj_model.npair
         if npair == 0:
             return None
+        pairs_per_world = model.custom_frequency_counts.get("mujoco:pair", 0) // model.world_count
         index = np.arange(npair, dtype=np.int32)
-        for position, pair in enumerate(getattr(self, "_spec_pairs", ())):
-            index[pair.id] = position
-        self._spec_pairs = []
-        return wp.array(index, dtype=wp.int32, device=device)
+        for newton_pair, pair in spec_pairs:
+            index[pair.id] = newton_pair % pairs_per_world if pairs_per_world > 0 else newton_pair
+        return wp.array(index, dtype=wp.int32, device=model.device)
 
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.

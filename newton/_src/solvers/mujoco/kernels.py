@@ -3401,9 +3401,9 @@ def update_pair_properties_kernel(
 
     Iterates over MuJoCo pairs [world, pair] and copies solver properties
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
-    ``mjc_pair_spec_index[mjc_pair]`` is the position of the pair among the
-    pairs added to the spec, which differs from ``mjc_pair`` when MuJoCo
-    reorders the pairs at compile time.
+    ``mjc_pair_spec_index[mjc_pair]`` is the pair's ``mujoco:pair`` row within
+    a world, which differs from ``mjc_pair`` when MuJoCo reorders the pairs at
+    compile time or when rows were skipped.
     """
     world, mjc_pair = wp.tid()
     newton_pair = world * pairs_per_world + mjc_pair_spec_index[mjc_pair]
