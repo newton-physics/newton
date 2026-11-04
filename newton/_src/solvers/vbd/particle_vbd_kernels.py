@@ -740,8 +740,11 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     n2_norm = wp.length(n2)
     e_norm = wp.length(e)
 
-    # Early exit for degenerate cases
-    if n1_norm < eps or n2_norm < eps or e_norm < eps:
+    # Early exit for degenerate cases. n1 and n2 are not normalized (their length is twice the triangle area), so
+    # compare them with the squared edge length: a triangle is degenerate when its height is below eps times the
+    # edge, at any mesh scale.
+    area_eps = eps * e_norm * e_norm
+    if e_norm < eps or n1_norm < area_eps or n2_norm < area_eps:
         return wp.vec3(0.0), wp.mat33(0.0)
 
     n1_hat = n1 / n1_norm
@@ -822,7 +825,8 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
         n1_prev_norm = wp.length(n1_prev_raw)
         n2_prev_norm = wp.length(n2_prev_raw)
         e_prev_norm = wp.length(e_prev)
-        if n1_prev_norm < eps or n2_prev_norm < eps or e_prev_norm < eps:
+        area_eps_prev = eps * e_prev_norm * e_prev_norm
+        if e_prev_norm < eps or n1_prev_norm < area_eps_prev or n2_prev_norm < area_eps_prev:
             return bending_force, bending_hessian
 
         n1_prev = n1_prev_raw / n1_prev_norm
