@@ -841,7 +841,8 @@ def test_propagation_rejects_unsupported_options(test, device):
             with test.assertRaisesRegex(NotImplementedError, "contact torsion.*articulated_contact_response"):
                 SolverSteel(model, articulated_contact_response=response)
         set_torsion_radius(model, 0.0)
-        options = [({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance")]
+        compliance = {"contact_compliance": True, "friction_anchor_beta": 0.0}
+        options = []
         if response == "propagation":
             options.append(({"enable_sleeping": True}, "enable_sleeping"))
         else:
@@ -849,16 +850,21 @@ def test_propagation_rejects_unsupported_options(test, device):
                 test.assertIsNotNone(
                     SolverSteel(model, articulated_contact_response=response, enable_sleeping=True)._sleeping
                 )
-        for kwargs, name in options:
-            with test.subTest(response=response, option=name):
-                with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
-                    SolverSteel(model, articulated_contact_response=response, **kwargs)
-        for kwargs in (
+        accepted = [
             {"drive_mode": "rows"},
             {"contact_regularization": 0.02},
             {"velocity_iterations": 2},
             {"contact_warmstart": True},
-        ):
+        ]
+        if response == "propagation":
+            options.append((compliance, "contact_compliance"))
+        else:
+            accepted.append(compliance)
+        for kwargs, name in options:
+            with test.subTest(response=response, option=name):
+                with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
+                    SolverSteel(model, articulated_contact_response=response, **kwargs)
+        for kwargs in accepted:
             with test.subTest(response=response, **kwargs):
                 solver = SolverSteel(model, articulated_contact_response=response, **kwargs)
                 test.assertTrue(solver._propagation_active)
