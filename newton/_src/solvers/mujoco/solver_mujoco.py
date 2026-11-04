@@ -7788,10 +7788,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
             ) or shape in mujoco_pair_contact_shapes
             if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
+                if self.use_mujoco_cpu:
+                    hint = (
+                        "Replace the mesh with a plane, box, or a mesh with thickness; "
+                        "the MuJoCo CPU backend requires MuJoCo contacts."
+                    )
+                else:
+                    hint = (
+                        "Use use_mujoco_contacts=False so Newton's collision pipeline handles this mesh, "
+                        "or replace it with a plane/box/thick mesh."
+                    )
                 raise ValueError(
                     f"MuJoCo contact generation does not support planar mesh collider "
-                    f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
-                    "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
+                    f"{model.shape_label[shape]!r} (shape {shape}). {hint}"
                 )
             shape_mesh_names[shape] = name
             return name
