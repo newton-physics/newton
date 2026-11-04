@@ -3,6 +3,7 @@
 
 """Experimental passive-island sleeping of SolverSteel."""
 
+import ctypes
 import functools
 import inspect
 import unittest
@@ -2645,6 +2646,60 @@ def _check_colored_sleeping_skips_work(test, device, compliant, welded):
         all_asleep += int(not awake.any())
 
 
+def test_colored_sleeping_runs_under_external_and_warp_capture(test, device):
+    """Replay a colored sleeping step captured by Warp or directly through CUDA bitwise like eager stepping."""
+    for mode in ("warp", "external"):
+        with test.subTest(mode=mode):
+            captured, eager = (
+                _Heap(device, model=_dumbbells_model(device), sleep_quiet_time=0.05, friction_anchor_beta=0.0)
+                for _ in range(2)
+            )
+            replay = _capture_step(captured, mode)
+            force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+            slept = False
+            for k in range(60):
+                force[:] = 0.0
+                if k == 40:
+                    test.assertTrue(slept, "both chains must sleep before the force")
+                    force[0, 2] = 5.0
+                for scene in (captured, eager):
+                    scene.state_in.body_f.assign(force)
+                replay()
+                eager.step(clear=False)
+                a, b = captured.snapshot(), eager.snapshot()
+                for name in _FIELDS:
+                    np.testing.assert_array_equal(a[name], b[name], err_msg=f"{mode} replay {k} {name}")
+                slept |= not eager.solver._sleeping.art_awake.numpy().any()
+
+
+def _capture_step(scene, mode):
+    """Capture one step of ``scene`` with Warp or with the CUDA driver alone; return a replay function."""
+    device = scene.model.device
+    if mode == "warp":
+        with wp.ScopedCapture(device) as capture:
+            scene.step(clear=False)
+        return lambda: wp.capture_launch(capture.graph)
+    # Capture that Warp does not track, as another framework's graph capture would start.
+    cuda = ctypes.CDLL("libcuda.so.1")
+    stream = ctypes.c_void_p(wp.get_stream(device).cuda_stream)
+    graph, graph_exec = ctypes.c_void_p(), ctypes.c_void_p()
+    thread_local_mode = 1
+    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
+    assert began == 0, began
+    try:
+        scene.step(clear=False)
+    finally:
+        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    assert ended == 0, ended
+    assert cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(0)) == 0
+
+    def replay():
+        assert cuda.cuGraphLaunch(graph_exec, stream) == 0
+        wp.synchronize_stream(wp.get_stream(device))
+
+    return replay
+
+
 class TestSteelSleepingColoredPropagation(unittest.TestCase):
     pass
 
@@ -2658,6 +2713,7 @@ for _name in (
     "test_colored_captured_sleep_and_wake_match_eager",
     "test_colored_separated_stacks_sleep_like_immediate",
     "test_colored_sleeping_skips_tree_and_solve_work",
+    "test_colored_sleeping_runs_under_external_and_warp_capture",
     "test_colored_compliant_contacts_sleep_and_wake_like_immediate",
 ):
     add_function_test(TestSteelSleepingColoredPropagation, _name, globals()[_name], devices=devices)
