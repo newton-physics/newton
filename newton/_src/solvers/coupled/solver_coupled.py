@@ -3798,7 +3798,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
         # Entry solvers check this stamp; the filtered rows are as reduced as their source.
-        filtered._rigid_contacts_body_pair_reduced = contacts.rigid_contacts_body_pair_reduced
+        filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )

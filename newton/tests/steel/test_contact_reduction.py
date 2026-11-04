@@ -76,7 +76,7 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
         pipeline.collide(state_0, contacts)
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
+        self.assertTrue(contacts.rigid_contact_body_pair_reduced)
         solver = newton.solvers.SolverSteel(
             model, solve_mode="matrix_free", contact_compliance=True, friction_anchor_beta=0.0
         )

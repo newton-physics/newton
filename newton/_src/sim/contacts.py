@@ -524,7 +524,7 @@ class Contacts:
 
         self.rigid_contact_max = rigid_contact_max
         self.soft_contact_max = soft_contact_max
-        self._rigid_contacts_body_pair_reduced = False
+        self._rigid_contact_body_pair_reduced = False
 
     def clear(self, bump_generation: bool = True):
         """
@@ -593,7 +593,7 @@ class Contacts:
         #   Solvers only read [0, contact_count), so stale data is never accessed
 
     @property
-    def rigid_contacts_body_pair_reduced(self) -> bool:
+    def rigid_contact_body_pair_reduced(self) -> bool:
         """Whether this buffer holds body-pair-reduced rigid contacts.
 
         Fixed when :meth:`newton.CollisionPipeline.contacts` allocates the buffer
@@ -604,7 +604,7 @@ class Contacts:
 
         .. experimental::
         """
-        return self._rigid_contacts_body_pair_reduced
+        return self._rigid_contact_body_pair_reduced
 
     @property
     def device(self):

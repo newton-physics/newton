@@ -1487,7 +1487,7 @@ class CollisionPipeline:
         workflow before relying on them in optimization loops.
     """
 
-    @dataclass(frozen=True)
+    @dataclass(frozen=True, kw_only=True)
     class BodyPairReductionConfig:
         """Configure body-pair contact reduction.
 
@@ -1509,37 +1509,34 @@ class CollisionPipeline:
         accept the reduced buffers.  Sticky contact matching and hydroelastic
         contacts are rejected at construction.
 
-        Args:
-            cell_size: Spatial cell edge [m] that keeps separated same-normal
-                patches of one body pair independently represented.
-            hashtable_headroom: Multiplier on the group-table capacity derived
-                from the model's contact-pair topology.  A table too small makes
-                individual frames keep every contact rather than drop any.
-            material_attributes: Per-shape custom attributes, by full name such
-                as ``"steel:min_torsional_patch_radius"``, that must also match
-                for shapes on one body to share a group.  ``None`` uses every
-                per-shape custom attribute the model registers.
-
         .. experimental::
         """
 
         cell_size: float = 0.25
-        hashtable_headroom: float = 1.0
+        """Spatial cell edge [m] that keeps separated same-normal patches of one body pair
+        independently represented."""
+        hashtable_size_factor: float = 1.0
+        """Multiplier on the group-table capacity, which is derived from the model's contact-pair topology
+        rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames keep every
+        primitive and convex contact, so ``rigid_contact_count`` stays near its unreduced value."""
         material_attributes: tuple[str, ...] | None = None
+        """Per-shape custom attributes, by full name such as ``"steel:min_torsional_patch_radius"``, that
+        must also match for shapes on one body to share a group.  ``None`` uses every per-shape custom
+        attribute the model registers."""
 
         def __post_init__(self):
             """Validate configuration before any device allocation."""
             try:
                 cell_size = float(self.cell_size)
-                hashtable_headroom = float(self.hashtable_headroom)
+                hashtable_size_factor = float(self.hashtable_size_factor)
             except (TypeError, ValueError) as error:
                 raise TypeError("BodyPairReductionConfig numeric fields must be real numbers") from error
             with np.errstate(over="ignore", under="ignore", invalid="ignore"):
                 cell_size_f32 = float(np.float32(cell_size))
             if not np.isfinite(cell_size_f32) or cell_size_f32 <= 0.0:
                 raise ValueError("BodyPairReductionConfig.cell_size must be finite and > 0 at float32 precision")
-            if not np.isfinite(hashtable_headroom) or hashtable_headroom <= 0.0:
-                raise ValueError("BodyPairReductionConfig.hashtable_headroom must be finite and > 0")
+            if not np.isfinite(hashtable_size_factor) or hashtable_size_factor <= 0.0:
+                raise ValueError("BodyPairReductionConfig.hashtable_size_factor must be finite and > 0")
             if self.material_attributes is not None:
                 if not isinstance(self.material_attributes, (tuple, list)) or not all(
                     isinstance(name, str) for name in self.material_attributes
@@ -1605,7 +1602,7 @@ class CollisionPipeline:
                 With ``body_pair_reduction``, this sizes the reduced output. The
                 raw primitive and convex contacts are staged in a buffer of the
                 automatic estimate or this value, whichever is larger; contacts
-                beyond it set the contact stream's reduction-overflow flag.
+                beyond it are dropped for that frame.
             max_triangle_pairs:
                 Maximum number of triangle pairs allocated by narrow phase
                 for mesh and heightfield collisions; also the capacity of the
@@ -2169,7 +2166,7 @@ class CollisionPipeline:
                 group_reduction, group_pair_bound, group_capacity_request = build_group_reduction_config(
                     model,
                     body_pair_reduction.cell_size,
-                    body_pair_reduction.hashtable_headroom,
+                    body_pair_reduction.hashtable_size_factor,
                     body_pair_reduction.material_attributes,
                     self.shape_pairs_filtered,
                     group_staging_capacity,
@@ -2549,7 +2546,7 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
-        contacts._rigid_contacts_body_pair_reduced = self._reduces_body_pairs
+        contacts._rigid_contact_body_pair_reduced = self._reduces_body_pairs
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2822,7 +2819,7 @@ class CollisionPipeline:
                 this call. Ignored when speculative contacts are disabled. See
                 :ref:`Speculative contacts <speculative-contacts>`.
         """
-        if contacts.rigid_contacts_body_pair_reduced != self._reduces_body_pairs:
+        if contacts.rigid_contact_body_pair_reduced != self._reduces_body_pairs:
             raise ValueError(
                 "body-pair-reduced Contacts buffers and pipelines with body_pair_reduction must be used together; "
                 "allocate the buffer with this pipeline's contacts()"

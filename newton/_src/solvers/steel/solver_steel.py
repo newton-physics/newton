@@ -1460,9 +1460,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         }
     )
 
-    # Conformance-tested against body-pair-reduced contacts (tests/steel/test_contact_reduction.py);
-    # contact compliance rejects them in step().
     supports_body_pair_reduced_contacts: bool = True
+    """:meth:`step` accepts body-pair-reduced contacts, except with ``contact_compliance=True``, where it raises.
+
+    The compliant contact law is validated only on unreduced contacts.
+
+    .. experimental::
+    """
 
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()

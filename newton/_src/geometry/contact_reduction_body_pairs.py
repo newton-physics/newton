@@ -283,7 +283,7 @@ def build_reduction_group_pair_upper_bound(shape_body, shape_world, shape_active
 def build_group_reduction_config(
     model,
     cell_size: float,
-    hashtable_headroom: float,
+    hashtable_size_factor: float,
     material_attributes,
     shape_pairs,
     staging_capacity: int,
@@ -293,7 +293,7 @@ def build_group_reduction_config(
     Args:
         model: The simulation model.
         cell_size: Spatial cell edge [m].
-        hashtable_headroom: Multiplier on the derived group-table capacity.
+        hashtable_size_factor: Multiplier on the derived group-table capacity.
         material_attributes: Per-shape attributes that split groups (see :func:`build_reduction_groups`).
         shape_pairs: The explicit broad phase's pair list, or ``None`` for SAP and NXN.
         staging_capacity: Raw contacts the stage holds; also caps the table, since a group needs a contact.
@@ -346,8 +346,8 @@ def build_group_reduction_config(
     # A replicated scene can have one reachable pair per body, yet each pair spans
     # several bins and cells: reserve four patch entries per group at half load.
     group_budget = 8 * len(np.unique(shape_group))
-    # Cap in float: an extreme headroom would overflow the integer conversion.
-    capacity_request = min(float(max(group_pair_bound, group_budget)) * float(hashtable_headroom), staging_capacity)
+    # Cap in float: an extreme size factor would overflow the integer conversion.
+    capacity_request = min(float(max(group_pair_bound, group_budget)) * float(hashtable_size_factor), staging_capacity)
     capacity_request = max(1024, int(capacity_request))
     config = GroupReductionConfig(
         shape_group=shape_group,

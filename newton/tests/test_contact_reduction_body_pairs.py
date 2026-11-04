@@ -273,7 +273,7 @@ def _encode_oct(normal):
 def _make_pipeline(model, reduce_body_pairs, *, reduce_mesh_contacts=True, body_pair_verify=False, **kwargs):
     config_kwargs = {
         name: kwargs.pop(f"body_pair_{name}")
-        for name in ("cell_size", "hashtable_headroom", "material_attributes")
+        for name in ("cell_size", "hashtable_size_factor", "material_attributes")
         if f"body_pair_{name}" in kwargs
     }
     deterministic = kwargs.pop("deterministic", True)
@@ -722,7 +722,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertEqual(both_rows, mesh_rows, "body-pair reduction changed mesh-reduced contacts")
         self.assertEqual(stats["sum_contacts_in"], 0, "mesh contacts entered group reduction")
         # Nothing is reduced by group, so the buffers stay unstamped and every solver accepts them.
-        self.assertFalse(both.contacts().rigid_contacts_body_pair_reduced)
+        self.assertFalse(both.contacts().rigid_contact_body_pair_reduced)
         # Also when replacing the pair array has dropped the model's pair topology.
         model.shape_contact_pairs = None
         for broad_phase in ("nxn", "sap"):
@@ -732,7 +732,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
                 rigid_contact_max=rigid_contact_max,
                 body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             )
-            self.assertFalse(pipeline.contacts().rigid_contacts_body_pair_reduced, broad_phase)
+            self.assertFalse(pipeline.contacts().rigid_contact_body_pair_reduced, broad_phase)
 
     def test_group_mode_narrow_phase_rejects_simple_launch(self):
         """Group reduction runs only through launch_custom_write, which takes the body poses."""
@@ -884,9 +884,9 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         plain_pipeline = _make_pipeline(model, False)
         plain = plain_pipeline.contacts()
         plain_pipeline.collide(state, plain)
-        self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contacts_body_pair_reduced)
-        self.assertFalse(coupled.entry_contacts("all", plain).rigid_contacts_body_pair_reduced)
-        self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contacts_body_pair_reduced)
+        self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contact_body_pair_reduced)
+        self.assertFalse(coupled.entry_contacts("all", plain).rigid_contact_body_pair_reduced)
+        self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contact_body_pair_reduced)
 
     def test_config_is_fixed_at_construction(self):
         """Reject reassigning the pipeline's body-pair configuration after construction."""
@@ -986,7 +986,7 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
     """The group table is sized from scene topology, not from contact capacity."""
 
     def test_replicated_compound_feet_do_not_exhaust_default_table(self):
-        """Replication must retain the patch budget without tuning headroom."""
+        """Replication must retain the patch budget without tuning hashtable_size_factor."""
         template = newton.ModelBuilder()
         _cylinder_foot(template, wp.vec3(0.0, 0.0, 0.015))
         builder = newton.ModelBuilder()
@@ -1079,17 +1079,17 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
             self.assertEqual(exact, 15)
             self.assertEqual(bound, exact, broad_phase)
 
-    def test_headroom_scales_the_derived_capacity(self):
-        """Scale the derived capacity by ``hashtable_headroom``."""
+    def test_size_factor_scales_the_derived_capacity(self):
+        """Scale the derived capacity by ``hashtable_size_factor``."""
         model = self._scene(24)
-        small = _make_pipeline(model, True, body_pair_hashtable_headroom=1.0)
-        large = _make_pipeline(model, True, body_pair_hashtable_headroom=8.0)
+        small = _make_pipeline(model, True, body_pair_hashtable_size_factor=1.0)
+        large = _make_pipeline(model, True, body_pair_hashtable_size_factor=8.0)
         self.assertGreater(
             large._body_pair_reducer.describe()["hashtable_capacity_request"],
             small._body_pair_reducer.describe()["hashtable_capacity_request"],
         )
-        # An extreme headroom caps at the staging capacity instead of overflowing the conversion.
-        huge = _make_pipeline(model, True, body_pair_hashtable_headroom=1.0e308)
+        # An extreme size factor caps at the staging capacity instead of overflowing the conversion.
+        huge = _make_pipeline(model, True, body_pair_hashtable_size_factor=1.0e308)
         desc = huge._body_pair_reducer.describe()
         self.assertEqual(desc["hashtable_capacity_request"], max(1024, desc["staging_capacity"]))
 
@@ -1422,8 +1422,8 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         n_base = int(contacts_base.rigid_contact_count.numpy()[0])
         self.assertGreater(n_base, 1024)
 
-        # a headroom small enough to hit the 1024-entry floor: 1200 groups cannot fit
-        pipeline = _make_pipeline(model, True, body_pair_hashtable_headroom=1e-6)
+        # a size factor small enough to hit the 1024-entry floor: 1200 groups cannot fit
+        pipeline = _make_pipeline(model, True, body_pair_hashtable_size_factor=1e-6)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
         n_red = int(contacts.rigid_contact_count.numpy()[0])
@@ -1456,10 +1456,10 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         pipeline = _make_pipeline(model, True)
         plain = newton.CollisionPipeline(model, broad_phase="nxn")
         contacts = pipeline.contacts()
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
+        self.assertTrue(contacts.rigid_contact_body_pair_reduced)
         contacts.clear()
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
-        self.assertFalse(plain.contacts().rigid_contacts_body_pair_reduced)
+        self.assertTrue(contacts.rigid_contact_body_pair_reduced)
+        self.assertFalse(plain.contacts().rigid_contact_body_pair_reduced)
         with self.assertRaisesRegex(ValueError, "contacts\\(\\)"):
             plain.collide(state, contacts)
         for unstamped in (
@@ -1484,13 +1484,15 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             {"body_pair_cell_size": float("inf")},
             {"body_pair_cell_size": float("nan")},
             {"body_pair_cell_size": 1.0e-50},
-            {"body_pair_hashtable_headroom": 0.0},
+            {"body_pair_hashtable_size_factor": 0.0},
         ):
             with self.assertRaises(ValueError, msg=f"accepted invalid {kwargs}"):
                 _make_pipeline(model, True, **kwargs)
         for material_attributes in ("steel:min_torsional_patch_radius", (name for name in ("steel:x",)), [1]):
             with self.assertRaises(TypeError, msg=f"accepted material_attributes={material_attributes!r}"):
                 _make_pipeline(model, True, body_pair_material_attributes=material_attributes)
+        with self.assertRaises(TypeError, msg="accepted positional fields"):
+            newton.CollisionPipeline.BodyPairReductionConfig(0.1, 2.0)
 
     def test_single_contact_groups_keep_every_contact(self):
         """Deliver the unreduced contacts when every group holds one contact.
@@ -1765,7 +1767,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         wp.capture_launch(step_a.graph)
         self.assertEqual(_full_contact_rows(contacts_a), expected)
         self.assertEqual(_full_contact_rows(contacts_b), expected)
-        self.assertTrue(contacts_a.rigid_contacts_body_pair_reduced)
+        self.assertTrue(contacts_a.rigid_contact_body_pair_reduced)
 
     def test_unsupported_solver_rejects_stamped_buffer_in_capture(self):
         """Reject a stamped buffer when an unsupported solver step is captured, as when it runs eagerly."""

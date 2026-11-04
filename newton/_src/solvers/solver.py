@@ -625,7 +625,7 @@ class SolverBase:
         pipeline_contacts = None if collision_pipeline is None else collision_pipeline.contacts()
         if (
             pipeline_contacts is not None
-            and pipeline_contacts.rigid_contacts_body_pair_reduced
+            and pipeline_contacts.rigid_contact_body_pair_reduced
             and not type(self).supports_body_pair_reduced_contacts
         ):
             raise ValueError(f"{type(self).__name__} cannot own a pipeline with body-pair contact reduction")
@@ -1117,7 +1117,7 @@ class SolverBase:
     A :class:`newton.CollisionPipeline` built with ``body_pair_reduction``
     compacts rigid contacts to each patch's depth and sampled footprint
     representatives and, when the scene has primitive or convex contact pairs,
-    stamps the buffers it allocates (:attr:`Contacts.rigid_contacts_body_pair_reduced`).  A solver may only
+    stamps the buffers it allocates (:attr:`Contacts.rigid_contact_body_pair_reduced`).  A solver may only
     declare support after a conformance test demonstrates that it consumes
     contact depth with the reducer's signed-separation convention.  The built-in
     solvers that do not declare support raise in :meth:`step` when given a
@@ -1147,7 +1147,7 @@ class SolverBase:
             supports_body_pair_reduced_contacts = type(self).supports_body_pair_reduced_contacts
         if supports_body_pair_reduced_contacts or not isinstance(contacts, Contacts):
             return
-        if contacts.rigid_contacts_body_pair_reduced:
+        if contacts.rigid_contact_body_pair_reduced:
             subject = type(self).__name__
             if configuration:
                 raise ValueError(
