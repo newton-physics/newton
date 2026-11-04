@@ -56,9 +56,22 @@ def finalize_stiffness(builder: ModelBuilder, model: Model, attr: ModelBuilder.C
 
 def finalize_springref(builder: ModelBuilder, model: Model, attr: ModelBuilder.CustomAttribute) -> None:
     """Convert absolute MuJoCo spring references once, then use Newton rest coordinates."""
-    model.mujoco._removed_attributes[attr.name] = RemovedAttribute(
-        "model.joint_rest_q (springref - ref, indexed by joint_q_start)", removed_in="1.8"
-    )
+    ref_attr = builder.custom_attributes["mujoco:dof_ref"]
+    refs = _authored_values(ref_attr)
+    # The legacy layout equals joint_rest_q only without multi-coordinate joints or reference offsets.
+    if model.joint_coord_count == model.joint_dof_count and not any(refs.values()) and not ref_attr.default:
+        model.mujoco._add_deprecated_alias(
+            attr.name,
+            lambda: model.joint_rest_q,
+            "model.mujoco.dof_springref is deprecated since Newton 1.8; use model.joint_rest_q instead.",
+        )
+        model._set_attribute_spec(
+            attr.key, replace(model._attribute_spec("joint_rest_q"), deprecated=True, alias_of="joint_rest_q")
+        )
+    else:
+        model.mujoco._removed_attributes[attr.name] = RemovedAttribute(
+            "model.joint_rest_q (springref - ref, indexed by joint_q_start)", removed_in="1.8"
+        )
     authored = _authored_values(attr)
     if authored:
         warnings.warn(
@@ -74,8 +87,6 @@ def finalize_springref(builder: ModelBuilder, model: Model, attr: ModelBuilder.C
     if not entries:
         return
     rest = model.joint_rest_q.numpy()
-    ref_attr = builder.custom_attributes["mujoco:dof_ref"]
-    refs = _authored_values(ref_attr)
     for j, kind in enumerate(builder.joint_type):
         if kind not in (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6):
             continue
