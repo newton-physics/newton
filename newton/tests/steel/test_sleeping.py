@@ -2479,6 +2479,75 @@ def test_colored_separated_stacks_sleep_like_immediate(test, device):
     test.assertLessEqual(int(delta.max()), 6)
 
 
+def _dumbbells_model(device, count=2):
+    """Two-link floating chains resting apart on a ground plane, so their trees go through propagation."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_ground_plane()
+    for i in range(count):
+        x = 0.6 * i
+        a = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(a, hx=0.08, hy=0.04, hz=0.04)
+        b = builder.add_link(xform=wp.transform(wp.vec3(x + 0.16, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.08, hy=0.04, hz=0.04)
+        root = builder.add_joint_free(child=a, parent_xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        hinge = builder.add_joint_revolute(
+            parent=a,
+            child=b,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(-0.08, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([root, hinge])
+    model = builder.finalize(device=device)
+    model.rigid_contact_max = 128
+    return model
+
+
+def test_colored_sleeping_skips_tree_and_solve_work(test, device):
+    """Leave sleeping trees unfactored, and skip the captured propagation solve while all sleep, bitwise like eager."""
+    for tree_kernel in ("auto", "generic"):
+        with test.subTest(tree_kernel=tree_kernel), kernel_overrides({"propagation_tree_kernel": tree_kernel}):
+            _check_colored_sleeping_skips_work(test, device)
+
+
+def _check_colored_sleeping_skips_work(test, device):
+    captured, eager = (
+        _Heap(device, model=_dumbbells_model(device), sleep_quiet_time=0.05, friction_anchor_beta=0.0) for _ in range(2)
+    )
+    test.assertTrue(captured.solver._propagation_tree_sizes)
+    with wp.ScopedCapture(device) as capture:
+        captured.step(clear=False)
+    gated = wp.is_conditional_graph_supported()
+    joint_art = captured.model.joint_articulation.numpy()
+    force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+    all_asleep = 0
+    for k in range(60):
+        force[:] = 0.0
+        if k == 40:
+            test.assertGreater(all_asleep, 0, "both chains must sleep before the force")
+            force[0, 2] = 5.0
+        for scene in (captured, eager):
+            scene.state_in.body_f.assign(force)
+            scene.solver._propagation_tree_D_inv.fill_(np.nan)
+            scene.solver._propagation_body_com_rel.fill_(np.nan)
+        wp.capture_launch(capture.graph)
+        eager.step(clear=False)
+        a, b = captured.snapshot(), eager.snapshot()
+        for name in _FIELDS:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"replay {k} {name}")
+        active = eager.solver._dynamics_art_active.numpy()
+        np.testing.assert_array_equal(captured.solver._dynamics_art_active.numpy(), active)
+        for scene in (captured, eager):
+            factored = ~np.isnan(scene.solver._propagation_tree_D_inv.numpy()[:, 0, 0])
+            np.testing.assert_array_equal(factored, active[joint_art] == 1, err_msg=f"step {k}")
+        solved = ~np.isnan(captured.solver._propagation_body_com_rel.numpy()).any(axis=1)
+        test.assertEqual(bool(solved.all()), bool(active.any() or not gated), f"step {k}")
+        test.assertTrue(bool(solved.all()) or not solved.any())
+        if k == 40:
+            test.assertEqual(active.tolist(), [1, 0], "the force must wake its chain only")
+        all_asleep += int(not active.any())
+
+
 class TestSteelSleepingColoredPropagation(unittest.TestCase):
     pass
 
@@ -2491,6 +2560,7 @@ for _name in (
     "test_colored_sleeping_rollout_is_independent_of_world_order",
     "test_colored_captured_sleep_and_wake_match_eager",
     "test_colored_separated_stacks_sleep_like_immediate",
+    "test_colored_sleeping_skips_tree_and_solve_work",
 ):
     add_function_test(TestSteelSleepingColoredPropagation, _name, globals()[_name], devices=devices)
 
