@@ -756,6 +756,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     @update_data_interval.setter
     def update_data_interval(self, value: int) -> None:
         warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        if self._adjoint is not None and value != 1:
+            raise ValueError("Differentiable SolverMuJoCo requires updating state on every step.")
         self._update_data_interval = value
 
     @property

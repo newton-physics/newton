@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -199,6 +200,39 @@ def test_configuration(test, device):
         solver.step(state, model.state(), control, None, 0.01, observables=observables)
 
 
+def test_update_data_interval(test, device):
+    """Reject skipped differentiable state updates and preserve consecutive rollout states."""
+    model = make_slider(device, world_count=1)
+    model.joint_target_ke.zero_()
+    model.joint_target_kd.zero_()
+    model.joint_damping.zero_()
+    model.joint_qd.fill_(0.8)
+    solver = SolverMuJoCo(model, kinematic_switchable_roots=False, njmax=4, nconmax=1)
+
+    for interval in (0, 2):
+        with test.subTest(interval=interval):
+            with (
+                test.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated"),
+                test.assertRaisesRegex(ValueError, "updating state on every step"),
+            ):
+                solver.update_data_interval = interval
+            with test.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated"):
+                test.assertEqual(solver.update_data_interval, 1)
+    with test.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated"):
+        solver.update_data_interval = 1
+
+    states = [model.state() for _ in range(3)]
+    control = model.control()
+    with wp.Tape() as tape:
+        for i in range(2):
+            solver.step(states[i], states[i + 1], control, None, 0.1)
+    np.testing.assert_allclose(states[1].joint_q.numpy(), [0.23], atol=1.0e-6)
+    np.testing.assert_allclose(states[2].joint_q.numpy(), [0.31], atol=1.0e-6)
+    tape.backward(grads={states[-1].joint_q: wp.ones_like(states[-1].joint_q)})
+    np.testing.assert_allclose(states[0].joint_q.grad.numpy(), [1.0], atol=1.0e-6)
+    np.testing.assert_allclose(states[0].joint_qd.grad.numpy(), [0.2], atol=1.0e-6)
+
+
 class TestMuJoCoDifferentiability(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -218,6 +252,9 @@ add_function_test(
     TestMuJoCoDifferentiability, "test_contact_gradients", test_contact_gradients, devices=get_test_devices()
 )
 add_function_test(TestMuJoCoDifferentiability, "test_configuration", test_configuration, devices=get_test_devices())
+add_function_test(
+    TestMuJoCoDifferentiability, "test_update_data_interval", test_update_data_interval, devices=get_test_devices()
+)
 
 
 if __name__ == "__main__":
