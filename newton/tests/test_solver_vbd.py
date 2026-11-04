@@ -3105,12 +3105,15 @@ def _eval_bending_hinge_kernel(
 def _bending_force_is_scale_free(test, device):
     """A folded hinge gets the same bending force at every mesh scale (the energy is stiffness * rest length *
     theta^2 / 2 and d(theta)/dx scales with 1/L), including hinges with sub-millimetre triangles, while a hinge with a
-    collapsed triangle, or with a triangle whose height is below eps times the edge, still gets none."""
+    collapsed triangle, or with a triangle whose height is below eps times the edge, still gets none (and one just
+    above that threshold does)."""
     angle = np.radians(30.0)
     scales = [1.0, 1.0e-2, 1.0e-3, 5.0e-4, 1.0e-4]
     hinges = [
         [[0.0, L * np.cos(angle), L * np.sin(angle)], [0.0, -L, 0.0], [0.0, 0.0, 0.0], [L, 0.0, 0.0]] for L in scales
     ]
+    # triangle height 2e-6 times the edge, folded onto the side of the other apex: just above eps * |e|^2
+    hinges.append([[0.5e-3, -2.0e-9, 0.0], [0.0, -1.0e-3, 0.0], [0.0, 0.0, 0.0], [1.0e-3, 0.0, 0.0]])
     hinges.append([[0.5e-3, 0.0, 0.0], [0.0, -1.0e-3, 0.0], [0.0, 0.0, 0.0], [1.0e-3, 0.0, 0.0]])  # collinear
     # triangle height 1e-7 times the edge: a nonzero normal below eps * |e|^2
     hinges.append([[0.5e-3, 1.0e-10, 0.0], [0.0, -1.0e-3, 0.0], [0.0, 0.0, 0.0], [1.0e-3, 0.0, 0.0]])
@@ -3128,7 +3131,7 @@ def _bending_force_is_scale_free(test, device):
                 pos,
                 wp.array(np.arange(4 * count, dtype=np.int32).reshape(-1, 4), dtype=wp.int32),
                 wp.zeros(count, dtype=float),
-                wp.array([*scales, 1.0e-3, 1.0e-3], dtype=float),
+                wp.array([*scales, 1.0e-3, 1.0e-3, 1.0e-3], dtype=float),
             ],
             outputs=[forces, hessians],
         )
@@ -3143,6 +3146,8 @@ def _bending_force_is_scale_free(test, device):
             np.testing.assert_allclose(
                 hessians_np[i] * L, hessians_np[0], rtol=0.0, atol=1.0e-3 * np.abs(hessians_np[0]).max()
             )
+    test.assertGreater(np.abs(forces_np[len(scales)]).max(), 0.0)
+    test.assertGreater(np.abs(hessians_np[len(scales)]).max(), 0.0)
     np.testing.assert_array_equal(forces_np[-2:], 0.0)
     np.testing.assert_array_equal(hessians_np[-2:], 0.0)
 
