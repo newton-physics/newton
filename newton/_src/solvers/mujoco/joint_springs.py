@@ -14,7 +14,7 @@ import numpy as np
 from ...exceptions import NewtonDeprecationWarning
 from ...sim.enums import JointType
 from ...sim.model import Model
-from ...utils.deprecation import RemovedAttribute
+from ...utils.deprecation import UnavailableAttribute
 
 if TYPE_CHECKING:
     from ...sim.builder import ModelBuilder
@@ -59,7 +59,12 @@ def finalize_springref(builder: ModelBuilder, model: Model, attr: ModelBuilder.C
     ref_attr = builder.custom_attributes["mujoco:dof_ref"]
     refs = _authored_values(ref_attr)
     # The legacy layout equals joint_rest_q only without multi-coordinate joints or reference offsets.
-    if model.joint_coord_count == model.joint_dof_count and not any(refs.values()) and not ref_attr.default:
+    reasons = []
+    if model.joint_coord_count != model.joint_dof_count:
+        reasons.append("joints with more coordinates than DOFs (free, ball, distance, or rod)")
+    if any(refs.values()) or ref_attr.default:
+        reasons.append("nonzero mujoco:dof_ref")
+    if not reasons:
         model.mujoco._add_deprecated_alias(
             attr.name,
             lambda: model.joint_rest_q,
@@ -69,8 +74,9 @@ def finalize_springref(builder: ModelBuilder, model: Model, attr: ModelBuilder.C
             attr.key, replace(model._attribute_spec("joint_rest_q"), deprecated=True, alias_of="joint_rest_q")
         )
     else:
-        model.mujoco._removed_attributes[attr.name] = RemovedAttribute(
-            "model.joint_rest_q (springref - ref, indexed by joint_q_start)", removed_in="1.8"
+        model.mujoco._removed_attributes[attr.name] = UnavailableAttribute(
+            "model.mujoco.dof_springref is deprecated since Newton 1.8 and unavailable for models with "
+            f"{' or '.join(reasons)}; use model.joint_rest_q (springref - ref, indexed by joint_q_start) instead."
         )
     authored = _authored_values(attr)
     if authored:

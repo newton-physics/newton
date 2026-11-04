@@ -188,7 +188,7 @@ class TestJointSprings(unittest.TestCase):
                 with self.assertWarns(DeprecationWarning):
                     owner.mujoco.dof_passive_stiffness = [5.0]
                 np.testing.assert_array_equal(owner.joint_stiffness.numpy(), [5.0])
-                with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
+                with self.assertRaisesRegex(AttributeError, "deprecated.*nonzero mujoco:dof_ref.*springref - ref"):
                     _ = owner.mujoco.dof_springref
                 with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
                     owner.mujoco.dof_springref = [0.5]
@@ -215,7 +215,9 @@ class TestJointSprings(unittest.TestCase):
                 builder.add_articulation(joints, label="arm")
                 model = builder.finalize(device="cpu")
                 if ball:
-                    with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
+                    with self.assertRaisesRegex(
+                        AttributeError, "deprecated.*more coordinates than DOFs.*joint_rest_q.*springref - ref"
+                    ):
                         _ = model.mujoco.dof_springref
                     continue
                 view = ModelView(model, "spring")
@@ -223,6 +225,9 @@ class TestJointSprings(unittest.TestCase):
                     with self.assertWarnsRegex(DeprecationWarning, "joint_rest_q") as warning:
                         self.assertIs(owner.mujoco.dof_springref, owner.joint_rest_q)
                     self.assertEqual(warning.filename, __file__)
+                view.joint_rest_q = wp.array([0.25], dtype=wp.float32, device="cpu")
+                with self.assertWarns(DeprecationWarning):
+                    self.assertIs(view.mujoco.dof_springref, view.joint_rest_q)
                 with self.assertWarns(DeprecationWarning):
                     model.mujoco.dof_springref = [0.5]
                 np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.5])
