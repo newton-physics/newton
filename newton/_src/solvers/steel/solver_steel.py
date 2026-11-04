@@ -1510,6 +1510,14 @@ class SolverSteel(SolverBase, CouplingInterface):
         }
     )
 
+    supports_body_pair_reduced_contacts: bool = True
+    """:meth:`step` accepts body-pair-reduced contacts, except with ``contact_compliance=True``, where it raises.
+
+    The compliant contact law is validated only on unreduced contacts.
+
+    .. experimental::
+    """
+
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()
     iterations = _ConstructionOption()
@@ -6813,6 +6821,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
+            # The compliant contact law is validated on unreduced contacts only.
+            self._require_unreduced_contacts(
+                contacts, supports_body_pair_reduced_contacts=False, configuration="contact_compliance=True"
+            )
         self.validate_observables(observables, contacts)
         if contacts is not None and contacts.rigid_contact_max > self._max_contacts_alloc:
             raise ValueError(
