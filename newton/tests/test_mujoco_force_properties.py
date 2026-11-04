@@ -130,7 +130,10 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         natives = [mujoco.MjModel.from_xml_string(xml) for xml in xmls]
         expected_k = np.concatenate([np.repeat(m.jnt_stiffness, np.diff(m.jnt_dofadr, append=m.nv)) for m in natives])
         expected_d = np.concatenate([m.dof_damping for m in natives])
-        for cpu, device in ((True, "cpu"), (False, wp.get_device())):
+        backends = [(True, "cpu"), (False, "cpu")]
+        if wp.get_device().is_cuda:
+            backends.append((False, wp.get_device()))
+        for cpu, device in backends:
             with self.subTest(native_cpu=cpu, device=device):
                 builder = newton.ModelBuilder()
                 for xml in xmls:

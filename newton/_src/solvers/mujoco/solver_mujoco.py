@@ -11302,7 +11302,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.use_mujoco_cpu and mapping.shape[0] == 1 and not locked:
             invweight = self.mj_model.dof_invweight0[None, :]
         else:
-            invweight = self.mjw_model.dof_invweight0.numpy()
+            invweight = self.mjw_model.dof_invweight0.numpy().copy()
         if locked:
             self._set_const_0()
 
