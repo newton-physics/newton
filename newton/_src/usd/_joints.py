@@ -38,6 +38,22 @@ logger = logging.getLogger(__name__)
 AttributeFrequency = Model.AttributeFrequency
 
 
+def _endpoints_swapped(joint_desc: UsdPhysics.JointDesc, body_index_map: dict[str, int]) -> bool:
+    """Return whether the importer swaps a joint's ends, making physics:body0 the child.
+
+    The ends are swapped when physics:body1 is not an imported rigid body, for example when
+    it is empty (the world) or a static prim.
+
+    Args:
+        joint_desc: The joint description.
+        body_index_map: The map from body prim path to body index used to resolve the joint.
+
+    Returns:
+        ``True`` if the joint's ends are swapped.
+    """
+    return body_index_map.get(str(joint_desc.body1), -1) == -1
+
+
 def resolve_joint_parent_child(
     joint_desc: UsdPhysics.JointDesc,
     body_index_map: dict[str, int],
@@ -57,8 +73,7 @@ def resolve_joint_parent_child(
     child_path = str(joint_desc.body1)
     parent_id = body_index_map.get(parent_path, -1)
     child_id = body_index_map.get(child_path, -1)
-    # If child_id is -1, swap parent and child
-    if child_id == -1:
+    if _endpoints_swapped(joint_desc, body_index_map):
         if parent_id == -1:
             raise ValueError(f"Unable to parse joint {joint_desc.primPath}: both bodies unresolved")
         parent_id, child_id = child_id, parent_id
@@ -161,7 +176,7 @@ def parse_joint(
     )
     # A swap reverses the direction of the authored joint coordinate. Negating the joint
     # axes restores it, so authored limits, targets, and state keep their meaning.
-    endpoints_swapped = child_id != path_body_map.get(str(joint_desc.body1), -1)
+    endpoints_swapped = _endpoints_swapped(joint_desc, path_body_map)
 
     if incoming_xform is not None:
         parent_tf = incoming_xform * parent_tf
@@ -738,7 +753,7 @@ def parse_merged_joints(
         # Compute the DOF axis in the representative joint's frame.
         # Each USD joint may have a different localRot that orients its fixed axis
         # (X, Y, or Z) to the physical DOF direction.  We remap into the rep frame.
-        _, jp_child_id, jp_parent_tf, _ = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+        _, _, jp_parent_tf, _ = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
             jd, path_body_map, get_transforms=True
         )
         jp_parent_rot = np.array(jp_parent_tf.q, dtype=float)
@@ -775,7 +790,7 @@ def parse_merged_joints(
             velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
             actuator_mode=dof.actuator_mode,
         )
-        if jp_child_id != path_body_map.get(str(jd.body1), -1):
+        if _endpoints_swapped(jd, path_body_map):
             swapped_axes.append(ax)
 
         if is_revolute:
