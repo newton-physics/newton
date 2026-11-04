@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression test for issue #2106: NATIVECCD margin NotImplementedError.
+"""Regression tests for SolverMuJoCo margin handling (issue #2106).
 
-Upstream ``mujoco_warp`` rejects non-zero geom margins at ``put_model()``
-time when NATIVECCD is enabled.  Newton must zero margins in the MJCF spec,
-and keep ``mjw_model.geom_margin`` zero when MuJoCo handles collisions.
+Earlier ``mujoco_warp`` releases rejected non-zero geom margins at ``put_model()``
+when NATIVECCD or MULTICCD was enabled. The MuJoCo Warp backend still zeroes
+margins in the MJCF spec and keeps ``mjw_model.geom_margin`` zero when MuJoCo
+handles collisions; the CPU backend keeps the authored margins.
 """
 
 import unittest
@@ -79,11 +80,17 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
                 native = mujoco.MjModel.from_xml_string(mjcf)
                 builder = newton.ModelBuilder()
                 builder.add_mjcf(mjcf)
+                model = builder.finalize(device="cpu")
                 with warnings.catch_warnings():
                     warnings.simplefilter("error")
-                    solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True)
                 self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
-                np.testing.assert_allclose(np.sort(solver.mj_model.geom_margin), np.sort(native.geom_margin), atol=1e-7)
+                # Match each compiled geom to the native geom it was imported from.
+                geom_names = [
+                    model.shape_label[shape].rsplit("/", 1)[-1] for shape in solver.mjc_geom_to_newton_shape.numpy()[0]
+                ]
+                native_margins = [native.geom(name).margin[0] for name in geom_names]
+                np.testing.assert_allclose(solver.mj_model.geom_margin, native_margins, atol=1e-7)
                 np.testing.assert_allclose(solver.mj_model.pair_margin, native.pair_margin, atol=1e-7)
                 expected, actual = mujoco.MjData(native), mujoco.MjData(solver.mj_model)
                 mujoco.mj_forward(native, expected)
