@@ -899,6 +899,110 @@ python -m newton.examples --describe robot_omniwheel
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_admm_contact_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_admm_contact_solver.jpg" alt="ADMM Contact Solver">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_kamino_mujoco_admm_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_mujoco_admm_solver.jpg" alt="Kamino MuJoCo ADMM Solver">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_mujoco_mpm_coupled_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_mpm_coupled_solver.jpg" alt="MuJoCo MPM Coupled Solver">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples admm_contact_solver</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_mujoco_admm_solver</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_mpm_coupled_solver</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_mujoco_vbd_admm_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_vbd_admm_solver.jpg" alt="MuJoCo VBD ADMM Solver">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_mujoco_vbd_coupled_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_vbd_coupled_solver.jpg" alt="MuJoCo VBD Coupled Solver">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_mujoco_xpbd_coupled_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_xpbd_coupled_solver.jpg" alt="MuJoCo XPBD Coupled Solver">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_vbd_admm_solver</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_vbd_coupled_solver</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_xpbd_coupled_solver</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_proxy_joint_gripper.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_proxy_joint_gripper.jpg" alt="Proxy Joint Gripper">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_vbd_mpm_coupled_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_vbd_mpm_coupled_solver.jpg" alt="VBD MPM Coupled Solver">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_xpbd_mpm_coupled_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_xpbd_mpm_coupled_solver.jpg" alt="XPBD MPM Coupled Solver">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples proxy_joint_gripper</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples vbd_mpm_coupled_solver</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples xpbd_mpm_coupled_solver</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_xpbd_vbd_coupled_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_xpbd_vbd_coupled_solver.jpg" alt="XPBD VBD Coupled Solver">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples xpbd_vbd_coupled_solver</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Contacts Examples</h3></td>
   </tr>
   <tr>
