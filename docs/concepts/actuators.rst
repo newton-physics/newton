@@ -72,16 +72,6 @@ The per-step pipeline is:
 Drives and clamping objects are pluggable: implement the
 :class:`DriveBase` or :class:`ClampingBase` class to add new models.
 
-.. deprecated:: 1.6
-
-   The actuator ``Controller*`` class names are retained as compatibility
-   aliases for :class:`DriveBase`, :class:`DrivePD`, :class:`DrivePID`,
-   :class:`DriveNeuralMLP`, and :class:`DriveNeuralLSTM`. The former
-   ``controller`` constructor keywords and attributes are also deprecated;
-   use ``drive``, ``drive_class``, ``drive_state``, and ``drive_kwargs``.
-   The clamping base class is now :class:`ClampingBase`; :class:`Clamping`
-   remains as a deprecated compatibility alias.
-
 .. note::
 
    **Current limitations:** the first version does not include a transmission

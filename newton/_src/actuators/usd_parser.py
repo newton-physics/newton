@@ -12,56 +12,23 @@ from typing import Any
 
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
+from ..utils.deprecation import RemovedAttribute
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .utils import _looks_like_torch_checkpoint, load_metadata
 
-_DEPRECATED_UNSET = object()
-_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG = (
-    "ComponentKind.CONTROLLER is deprecated in Newton 1.6; use ComponentKind.DRIVE instead."
-)
-_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG = (
-    "ActuatorParsed.controller_class is deprecated in Newton 1.6; use drive_class instead."
-)
-_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG = (
-    "ActuatorParsed.controller_kwargs is deprecated in Newton 1.6; use drive_kwargs instead."
-)
 
-
-class _ComponentKindMeta(enum.EnumMeta):
-    """Provide a warning-producing compatibility member for ``CONTROLLER``."""
-
-    def __getattr__(cls, name: str):
-        if name == "CONTROLLER":
-            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.DRIVE
-        return super().__getattr__(name)
-
-    def __getitem__(cls, name: str):
-        if name == "CONTROLLER":
-            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.DRIVE
-        return super().__getitem__(name)
-
-
-class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
+class ComponentKind(enum.Enum):
     """Classification of actuator component schemas."""
 
     DRIVE = "drive"
     CLAMPING = "clamping"
     DELAY = "delay"
 
-    @classmethod
-    def _missing_(cls, value: object):
-        if value == "controller":
-            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.DRIVE
-        return None
 
-
-@dataclass(init=False)
+@dataclass
 class ActuatorParsed:
     """Result of parsing a USD actuator prim.
 
@@ -76,74 +43,12 @@ class ActuatorParsed:
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
 
-    def __init__(
-        self,
-        drive_class: type[DriveBase] | object = _DEPRECATED_UNSET,
-        drive_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
-        component_specs: list[tuple[type[ClampingBase | Delay], dict[str, Any]]] | None = None,
-        target_path: str = "",
-        *,
-        controller_class: type[DriveBase] | object = _DEPRECATED_UNSET,
-        controller_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
-    ) -> None:
-        """Initialize a parsed actuator specification.
+    controller_class = RemovedAttribute("drive_class", removed_in="1.8")
+    controller_kwargs = RemovedAttribute("drive_kwargs", removed_in="1.8")
 
-        Args:
-            drive_class: Parsed drive class.
-            drive_kwargs: Parsed drive constructor arguments.
-            component_specs: Parsed delay and clamping specifications.
-            target_path: USD prim path of the driven joint.
-            controller_class: Deprecated in Newton 1.6; use ``drive_class``.
-            controller_kwargs: Deprecated in Newton 1.6; use ``drive_kwargs``.
-        """
-        if controller_class is not _DEPRECATED_UNSET and drive_class is not _DEPRECATED_UNSET:
-            raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
-        if controller_kwargs is not _DEPRECATED_UNSET and drive_kwargs is not _DEPRECATED_UNSET:
-            raise TypeError("Specify only one of 'drive_kwargs' and deprecated 'controller_kwargs'.")
-
-        if controller_class is not _DEPRECATED_UNSET:
-            warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            drive_class = controller_class
-        if controller_kwargs is not _DEPRECATED_UNSET:
-            warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            drive_kwargs = controller_kwargs
-        if drive_class is _DEPRECATED_UNSET:
-            raise TypeError("ActuatorParsed() missing required argument: 'drive_class'")
-
-        self.drive_class = drive_class
-        self.drive_kwargs = {} if drive_kwargs is _DEPRECATED_UNSET else drive_kwargs
-        self.component_specs = [] if component_specs is None else component_specs
-        self.target_path = target_path
-
-    @property
-    def controller_class(self) -> type[DriveBase]:
-        """Deprecated alias for :attr:`drive_class`.
-
-        .. deprecated:: 1.6
-            Use :attr:`drive_class` instead.
-        """
-        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self.drive_class
-
-    @controller_class.setter
-    def controller_class(self, value: type[DriveBase]) -> None:
-        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self.drive_class = value
-
-    @property
-    def controller_kwargs(self) -> dict[str, Any]:
-        """Deprecated alias for :attr:`drive_kwargs`.
-
-        .. deprecated:: 1.6
-            Use :attr:`drive_kwargs` instead.
-        """
-        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self.drive_kwargs
-
-    @controller_kwargs.setter
-    def controller_kwargs(self, value: dict[str, Any]) -> None:
-        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self.drive_kwargs = value
+    def __post_init__(self) -> None:
+        if self.component_specs is None:
+            self.component_specs = []
 
 
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
