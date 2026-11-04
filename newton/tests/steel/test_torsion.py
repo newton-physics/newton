@@ -3110,6 +3110,8 @@ def test_colored_longest_first_hosts_the_group_in_its_last_unit(test, device):
                 # The friction-carrying members color first, so the highest-index member is not the last unit.
                 test.assertLess(colors[3], colors[host])
             _assert_torsion_budgets(test, sweeps)
+            # The hosted row is solved: the slow spin leaves the sliding pairs short of the budget.
+            test.assertNotEqual(float(solver._propagation_impulses.numpy()[0, spin]), 0.0)
 
 
 def test_colored_spin_decelerates_at_the_coulomb_rate_and_sticks(test, device):
