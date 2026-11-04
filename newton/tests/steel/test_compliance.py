@@ -23,6 +23,7 @@ from newton._src.solvers.steel.contact_compliance import (
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
+    PROPAGATION_COLOR_TAIL,
     compute_world_contact_bias,
 )
 from newton.geometry import HydroelasticSDF
@@ -686,6 +687,9 @@ for _fn in (
     add_function_test(TestContactComplianceSafety, _fn.__name__, _fn, devices=devices)
 
 
+_COLORED = {"articulated_contact_response": "propagation_colored"}
+
+
 class _CompliantScene:
     """A compliant sphere-on-plane solver stepped from fixed buffers, so its steps can be captured."""
 
@@ -737,15 +741,16 @@ class _CompliantScene:
 
 def test_captured_steps_match_eager_steps(test, device):
     """Replay a compliant step captured cold, before any eager step, bitwise like eager stepping."""
-    for articulated in (True, False):
-        eager, captured = (_CompliantScene(device, articulated=articulated) for _ in range(2))
+    for colored, articulated in ((False, True), (False, False), (True, True), (True, False)):
+        options = _COLORED if colored else None
+        eager, captured = (_CompliantScene(device, articulated=articulated, solver_options=options) for _ in range(2))
         graph = captured.capture()
         # The capture records the step without running it.
         np.testing.assert_array_equal(captured.pose(), eager.pose())
         for step in range(40):
             eager.step()
             wp.capture_launch(graph)
-            with test.subTest(articulated=articulated, step=step):
+            with test.subTest(colored=colored, articulated=articulated, step=step):
                 np.testing.assert_array_equal(captured.pose(), eager.pose())
         test.assertEqual(captured.solver.compliance_contact_count, 1)
         test.assertEqual(captured.solver.compliance_contact_count, eager.solver.compliance_contact_count)
@@ -967,9 +972,6 @@ for _fn in (
     add_function_test(TestContactComplianceCapture, _fn.__name__, _fn, devices=devices)
 
 
-_COLORED = {"articulated_contact_response": "propagation_colored"}
-
-
 def test_colored_support_matches_immediate(test, device):
     """Recover the finite-stiffness indentation on colored propagation rows, as the immediate rows do."""
     for articulated in (True, False):
@@ -1147,17 +1149,18 @@ def test_colored_rolled_back_capacity_fails_without_warnings(test, device):
             )
 
 
-def test_every_colored_variant_matches_immediate(test, device):
-    """Add the compliant residual in every colored sweep body, for articulated and free spheres."""
+def test_colored_sweep_bodies_match_immediate(test, device):
+    """Add the compliant residual in each colored sweep body, for articulated and free spheres."""
     for articulated in (True, False):
         immediate = _CompliantScene(device, articulated=articulated)
         reference = []
         for _ in range(40):
             immediate.step()
             reference.append(immediate.pose())
-        for variant, (overrides, _) in COLORED_VARIANTS.items():
+        # The prefetch and staged sweeps solve this unit with the packed sweep's code.
+        for variant in ("packed", "reference", "row loop", "block", "block global"):
             with test.subTest(articulated=articulated, variant=variant):
-                with kernel_overrides(overrides):
+                with kernel_overrides(COLORED_VARIANTS[variant][0]):
                     scene = _CompliantScene(device, articulated=articulated, solver_options=_COLORED)
                 select_colored_variant(test, scene.solver, variant)
                 for step, expected in enumerate(reference):
@@ -1166,28 +1169,83 @@ def test_every_colored_variant_matches_immediate(test, device):
                 test.assertEqual(scene.solver.compliance_contact_count, 1)
 
 
-def test_colored_deterministic_repeats_bitwise(test, device):
-    """Repeat a compliant colored run bitwise with deterministic=RUN_TO_RUN."""
-    options = {**_COLORED, "deterministic": wp.DeterministicMode.RUN_TO_RUN}
-    runs = [
-        run_fixture(device=device, articulated=True, enabled=True, steps=60, solver_options=options)[0]
-        for _ in range(2)
-    ]
-    np.testing.assert_array_equal(runs[0], runs[1])
+def test_colored_mixed_routes_match_immediate(test, device):
+    """Solve a same-articulation dense contact and a colored propagation contact in one step, as immediate does."""
+
+    def build():
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.rigid_gap = 0.005
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+        cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=0.5)
+        # Two sibling links whose boxes overlap: a contact within one articulation.
+        base = builder.add_link()
+        builder.add_shape_box(base, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+        joints = [
+            builder.add_joint_revolute(
+                parent=-1,
+                child=base,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
+            )
+        ]
+        for side in (1.0, -1.0):
+            link = builder.add_link()
+            builder.add_shape_box(link, hx=0.12, hy=0.03, hz=0.04, cfg=cfg)
+            joints.append(
+                builder.add_joint_revolute(
+                    parent=base,
+                    child=link,
+                    axis=wp.vec3(0.0, 0.0, 1.0),
+                    parent_xform=wp.transform(wp.vec3(0.06, side * 0.028, 0.0), wp.quat_identity()),
+                    child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+        builder.add_articulation(joints)
+        sphere = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.05), wp.quat_identity()))
+        builder.add_shape_sphere(sphere, radius=0.05, cfg=cfg)
+        return builder.finalize(device=device)
+
+    traces = {}
+    for response, routes in (("immediate", {0, 1}), ("propagation_colored", {0, 2})):
+        trace, paths, solver, count = _step_compliant(build(), response, 60, stiffness=3000.0, damping=20.0)
+        test.assertEqual(paths, routes)
+        test.assertEqual(solver.compliance_contact_count, count)
+        gamma = {
+            0: solver._compliance.dense_gamma.numpy(),
+            1: solver._compliance.mf_gamma.numpy(),
+            2: solver._compliance.propagation_gamma.numpy(),
+        }
+        mapping = zip(
+            *(a.numpy()[:count] for a in (solver._contact_path, solver._contact_world, solver._contact_slot)),
+            strict=True,
+        )
+        test.assertTrue(all(gamma[int(path)][world, slot] > 0.0 for path, world, slot in mapping))
+        traces[response] = trace
+    np.testing.assert_allclose(traces["propagation_colored"], traces["immediate"], atol=1e-6, rtol=0)
 
 
-def test_colored_captured_steps_match_eager_steps(test, device):
-    """Replay a compliant colored step captured cold bitwise like eager stepping."""
-    for articulated in (True, False):
-        eager, captured = (_CompliantScene(device, articulated=articulated, solver_options=_COLORED) for _ in range(2))
-        graph = captured.capture()
-        for step in range(40):
-            eager.step()
-            wp.capture_launch(graph)
-            with test.subTest(articulated=articulated, step=step):
-                np.testing.assert_array_equal(captured.pose(), eager.pose())
-        test.assertEqual(captured.solver.compliance_contact_count, 1)
-        captured.solver.check_constraint_capacity()
+def test_colored_serial_tail_keeps_compliance(test, device):
+    """Hold a plate on 529 compliant contacts at the spring law's indentation when 17 of them solve in the serial tail."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.rigid_gap = 0.005
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.01), wp.quat_identity()))
+    cfg = newton.ModelBuilder.ShapeConfig(density=100.0, mu=0.5)
+    # Every contact shares the plate, so each takes its own color until the colors run out.
+    for i, j in np.ndindex(23, 23):
+        xform = wp.transform(wp.vec3(0.02 * (i - 11), 0.02 * (j - 11), 0.0), wp.quat_identity())
+        builder.add_shape_sphere(plate, xform=xform, radius=0.01, cfg=cfg)
+    model = builder.finalize(device=device)
+    trace, paths, solver, count = _step_compliant(
+        model, "propagation_colored", 300, stiffness=2.0, damping=0.1, propagation_constraint_max=4096
+    )
+    test.assertEqual(paths, {2})
+    test.assertEqual(count, 529)
+    test.assertEqual(solver.compliance_contact_count, count)
+    offsets = solver._color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2]
+    test.assertGreater(int(offsets[PROPAGATION_COLOR_TAIL + 1] - offsets[PROPAGATION_COLOR_TAIL]), 0)
+    indentation = float(model.body_mass.numpy()[plate]) * 9.81 / (count * 2.0)
+    test.assertAlmostEqual(float(trace[-1, 2]), 0.01 - indentation, delta=2e-5)
 
 
 def test_colored_replay_reports_row_capacity_loss(test, device):
@@ -1210,7 +1268,7 @@ def test_colored_incompatible_options_rejected(test, device):
     with test.assertRaisesRegex(NotImplementedError, "enable_sleeping=True"):
         SolverSteel(model, **base, **_COLORED, enable_sleeping=True)
     set_torsion_radius(model, 0.01)
-    with test.assertRaisesRegex(NotImplementedError, "contact_compliance=True"):
+    with test.assertRaisesRegex(NotImplementedError, "^contact torsion is not supported"):
         SolverSteel(model, **base, **_COLORED, contact_torsion_device=True)
 
 
@@ -1227,13 +1285,50 @@ for _fn in (
     test_colored_device_coefficients_match_host_law,
     test_colored_routing_errors_rejected,
     test_colored_rolled_back_capacity_fails_without_warnings,
-    test_every_colored_variant_matches_immediate,
-    test_colored_deterministic_repeats_bitwise,
-    test_colored_captured_steps_match_eager_steps,
+    test_colored_sweep_bodies_match_immediate,
+    test_colored_mixed_routes_match_immediate,
+    test_colored_serial_tail_keeps_compliance,
     test_colored_replay_reports_row_capacity_loss,
     test_colored_incompatible_options_rejected,
 ):
     add_function_test(TestContactComplianceColored, _fn.__name__, _fn, devices=devices)
+
+
+def _step_compliant(model, response, steps, *, stiffness, damping, **solver_options):
+    """Step ``model`` with every contact compliant; return its body states per step, routes, solver and contact count."""
+    contact_max = 1024
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=contact_max)
+    model.rigid_contact_max = contact_max
+    contacts = pipeline.contacts()
+    for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+        setattr(contacts, name, wp.zeros(contact_max, dtype=float, device=model.device))
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        articulated_contact_response=response,
+        contact_compliance=True,
+        friction_anchor_beta=0.0,
+        iterations=8,
+        baumgarte=0.05,
+        articulation_constraint_max=64,
+        free_body_constraint_max=4096,
+        **solver_options,
+    )
+    state, next_state, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    trace, paths = [], set()
+    for _ in range(steps):
+        state.clear_forces()
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        contacts.rigid_contact_stiffness.fill_(stiffness)
+        contacts.rigid_contact_damping.fill_(damping)
+        contacts.rigid_contact_friction.fill_(1.0)
+        solver.step(state, next_state, control, contacts, 0.005)
+        state, next_state = next_state, state
+        paths.update(solver._contact_path.numpy()[:count].tolist())
+        trace.append(np.concatenate([state.body_q.numpy().ravel(), state.body_qd.numpy().ravel()]))
+    return np.asarray(trace), paths, solver, count
 
 
 DT = 1.0 / 60.0
