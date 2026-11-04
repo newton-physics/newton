@@ -8315,14 +8315,16 @@ class SolverSteel(SolverBase, CouplingInterface):
         Per row family (``articulation``, ``free_body``, ``propagation``): the largest retained
         and requested row count of any world and step, the largest number of dropped contact
         rows, the largest excess over the capacity, and the number of overflowing world-steps;
-        and ``contact_high_water``, the largest contact count. Reads the device on the host, so
-        call it outside CUDA graph capture. Every value is ``0`` when ``row_watermark`` is off.
+        and ``contact_high_water``, the largest contact count. With ``row_watermark``, reads the
+        device on the host and raises :class:`RuntimeError` during CUDA graph capture. Every value
+        is ``0`` when ``row_watermark`` is off.
         """
-        values = (
-            self._row_watermarks.numpy().tolist()
-            if self._row_watermarks is not None
-            else [0] * (ROW_WATERMARK_CONTACT_SLOT + 1)
-        )
+        if self._row_watermarks is None:
+            values = [0] * (ROW_WATERMARK_CONTACT_SLOT + 1)
+        else:
+            if self.model.device.is_capturing:
+                raise RuntimeError("constraint_row_watermarks() must run outside CUDA graph capture")
+            values = self._row_watermarks.numpy().tolist()
         result = {}
         for family, name in enumerate(("articulation", "free_body", "propagation")):
             base = family * ROW_WATERMARK_FAMILY_STRIDE
