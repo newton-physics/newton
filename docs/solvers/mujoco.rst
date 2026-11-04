@@ -124,6 +124,8 @@ For hinge, slide, and BALL joints, constructing
 :class:`~newton.solvers.SolverMuJoCo` resolves positive MJCF ``springdamper``
 or USD ``mjc:springdamper`` pairs once into core ``joint_stiffness`` and
 ``joint_damping``.
+Positive pairs must be identical across a BALL joint's DOFs; inconsistent
+per-DOF values raise ``ValueError``.
 Resolution uses each world's initial physical inertia and authored armature,
 excluding kinematic-lock regularization, and leaves ``joint_rest_q`` unchanged.
 Positive pairs override explicit gains; nonpositive pairs retain them. After resolution,

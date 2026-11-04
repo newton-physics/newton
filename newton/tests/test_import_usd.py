@@ -4313,6 +4313,27 @@ def Xform "Articulation" (
         expected_springdamper[joint_qd_start[joint_names.index("/Articulation/Joint2")]] = [0.2, 1.5]
         np.testing.assert_allclose(springdamper, expected_springdamper)
 
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        with tempfile.TemporaryDirectory() as directory:
+            filename = f"{directory}/model.xml"
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, save_to_mjcf=filename)
+            native_spec = mujoco.MjSpec.from_file(filename)
+        dof = joint_qd_start[joint_names.index("/Articulation/Joint2")]
+        joint = np.flatnonzero(solver.mjc_jnt_to_newton_dof.numpy()[0] == dof)[0]
+        native_spec.joints[joint].springdamper[:] = [0.2, 1.5]
+        native = native_spec.compile()
+        np.testing.assert_allclose(
+            [model.joint_stiffness.numpy()[dof], solver.mj_model.jnt_stiffness[joint]],
+            native.jnt_stiffness[joint],
+            rtol=2e-5,
+        )
+        mjc_dof = native.jnt_dofadr[joint]
+        np.testing.assert_allclose(
+            [model.joint_damping.numpy()[dof], solver.mj_model.dof_damping[mjc_dof]],
+            native.dof_damping[mjc_dof],
+            rtol=2e-5,
+        )
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_damping_respects_schema_resolver_priority(self):
         """Honor resolver priority when multiple damping schemas are authored."""
