@@ -17,7 +17,7 @@ import newton
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.friction_patches import _FLOOD_MIN_CONTACTS
 from newton._src.solvers.steel.sleeping import _SleepState
-from newton.solvers import SolverSteel
+from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -2478,8 +2478,13 @@ def test_colored_sleeping_rollout_is_independent_of_world_order(test, device):
 
 
 def test_colored_captured_sleep_and_wake_match_eager(test, device):
-    """Cold-capture one step, then match an eager twin bitwise, with identical worlds, through sleeping and a force wake."""
+    """Cold-capture one step, then match an eager twin bitwise, with identical worlds, through sleeping and a force wake.
+
+    The joint wrenches match to rounding as well.
+    """
     captured, eager = _Heap(device), _Heap(device)
+    for scene in (captured, eager):
+        scene.observables = scene.solver.observables({SolverBase.ObservableKind.BODY_PARENT_F})
     with wp.ScopedCapture(device) as capture:
         captured.step(clear=False)
     worlds = eager.model.world_count
@@ -2503,6 +2508,14 @@ def test_colored_captured_sleep_and_wake_match_eager(test, device):
         np.testing.assert_array_equal(
             captured.solver._sleeping.art_awake.numpy(), eager.solver._sleeping.art_awake.numpy()
         )
+        wrench = eager.observables.body_parent_f.numpy()
+        # The wrench sums are not ordered, so replay and eager agree only to rounding.
+        np.testing.assert_allclose(
+            captured.observables.body_parent_f.numpy(), wrench, rtol=1.0e-5, atol=1.0e-4, err_msg=f"replay {k}"
+        )
+        if k == COLORED_STEPS - 1:
+            # The arm's joints carry its weight while the heap sleeps, so the match is not trivial.
+            test.assertGreater(np.abs(wrench).max(), 1.0)
         force[:] = 0.0
     test.assertEqual(int(captured.solver._sleeping.body_awake.numpy()[asleep[0]]), 1)
 
@@ -2579,6 +2592,8 @@ class _Heap:
         }
         args.update(solver_kwargs)
         self.solver = SolverSteel(self.model, **args)
+        # Tests that compare joint wrenches set this to the solver's observables.
+        self.observables = None
         self.pipeline = newton.CollisionPipeline(
             self.model, rigid_contact_max=self.model.rigid_contact_max, deterministic=True
         )
@@ -2591,7 +2606,9 @@ class _Heap:
             if clear:
                 self.state_in.clear_forces()
             self.pipeline.collide(self.state_in, self.contacts)
-            self.solver.step(self.state_in, self.state_out, self.control, self.contacts, 1.0 / 240.0)
+            self.solver.step(
+                self.state_in, self.state_out, self.control, self.contacts, 1.0 / 240.0, observables=self.observables
+            )
             for name in _FIELDS:
                 wp.copy(getattr(self.state_in, name), getattr(self.state_out, name))
 
