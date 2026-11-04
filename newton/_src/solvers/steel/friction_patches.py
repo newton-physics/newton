@@ -1678,6 +1678,14 @@ def _point_velocity(
     return velocity
 
 
+_SLIP_SATURATION_TOLERANCE = wp.constant(0.05)
+"""Fraction of the Coulomb radius by which a slipping anchor's friction may fall short and still count as saturated.
+
+Gauss-Seidel clamps each anchor against the pooled normal load it sees mid-sweep. On a footprint with redundant
+contacts the later normal rows keep moving that load, so a sliding anchor can end a few percent inside the final cone.
+"""
+
+
 @wp.kernel(enable_backward=False)
 def finish_patch_impulses(
     count: wp.array[int],
@@ -1699,7 +1707,7 @@ def finish_patch_impulses(
 ):
     """Cache solved friction and release saturated anchors with tangential motion.
 
-    The tolerance is relative to geometry and timestep. Merely resting at the
+    The motion tolerance is relative to geometry and timestep. Merely resting at the
     Coulomb limit does not prove sliding, so it must not erase static history.
     """
     c = wp.tid()
@@ -1740,6 +1748,6 @@ def finish_patch_impulses(
         q_out, qd_out, com, body_to_articulation, b, frame.anchor_b[c]
     )
     # Check opposing tangential motion to distinguish slipping from impending slip.
-    if radius > 0.0 and wp.length(tangent) >= (1.0 - 1.0e-5) * radius:
+    if radius > 0.0 and wp.length(tangent) >= (1.0 - _SLIP_SATURATION_TOLERANCE) * radius:
         if wp.dot(speed, tangent) < -radius * (1.0e-5 * frame.radius[c] / dt):
             frame.valid[c] = 0

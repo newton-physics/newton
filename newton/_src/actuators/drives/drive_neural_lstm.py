@@ -9,7 +9,9 @@ from typing import Any, ClassVar
 
 import warp as wp
 
+from ...utils.deprecation import warn_deprecation
 from ..utils import (
+    _TORCH_CHECKPOINT_DEPRECATION_MSG,
     _looks_like_torch_checkpoint,
     _parse_metadata_scale,
     load_checkpoint,
@@ -116,12 +118,15 @@ class DriveNeuralLSTM(DriveBase):
     Torch checkpoints use the Torch backend and preserve the Torch state
     interface. They must be pt2 archives saved with ``torch.export.save``.
 
+    .. deprecated:: 1.8
+        Torch checkpoints are deprecated; export the network to ONNX.
+
     Checkpoints must record ``num_layers`` and ``hidden_size`` in metadata.
 
     ``.onnx`` checkpoints use Warp-NN. The exported ONNX model must have three
     inputs (input, initial hidden, and initial cell) and three graph outputs
     (effort, hidden output, and cell output). Metadata properties map those
-    names to drive roles.
+    names to drive roles. ONNX checkpoints currently support one LSTM layer.
 
     ONNX checkpoints support the implicit effort mode through a per-step
     linearization of the network; Torch checkpoints do not and must use the
@@ -181,12 +186,14 @@ class DriveNeuralLSTM(DriveBase):
 
         Args:
             model_path: Path to the ``.onnx`` checkpoint or the pt2 archive
-                (``.pt2``, ``.pt``, or ``.pth``).
+                (``.pt2``, ``.pt``, or ``.pth``). Torch checkpoints are
+                deprecated since 1.8; use ONNX.
         """
         self.model_path = model_path
 
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
         if self._is_torch_checkpoint:
+            warn_deprecation(_TORCH_CHECKPOINT_DEPRECATION_MSG)
             import torch
 
             self._torch_device = torch.device("cpu")

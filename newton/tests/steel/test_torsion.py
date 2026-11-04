@@ -1688,7 +1688,7 @@ def test_cuda_preparation_graph_changes_and_failure(test, device):
 
 
 def test_cuda_captured_capacity_errors(test, device):
-    """Fail an input overflow solver-wide under graph replay, and flag only the world of a dense or spin overflow."""
+    """Fail an input overflow solver-wide under graph replay; a dense or spin overflow drops only its world's torsion rows."""
     for failure in ("input", "dense", "spin"):
         solver, state, augmented, contacts = synthetic_fixture(device=device)
         preparer = DeviceTorsionPreparation(solver, deferred_errors=True)
@@ -1738,6 +1738,7 @@ def test_cuda_captured_capacity_errors(test, device):
                 preparer.validate()
                 # The step is not rolled back: body_q keeps the operation's zeroed output.
                 np.testing.assert_array_equal(output.body_q.numpy(), 0.0)
+                # The dense drop's flag comes from the step's row allocation, which this operation does not run.
                 np.testing.assert_array_equal(
                     solver.constraint_overflow.numpy(), [False, failure == "spin", False, False]
                 )
@@ -1799,6 +1800,39 @@ def test_cuda_cold_capture_reports_errors_until_reset(test, device):
     wp.capture_launch(capture.graph)
     solver.check_constraint_capacity()
     test.assertFalse(np.array_equal(output.joint_q.numpy(), state.joint_q.numpy()))
+
+
+def test_cuda_status_snapshot_reports_a_replay_error(test, device):
+    """Report a replay's torsion error from a snapshot taken after it, and not from an earlier one."""
+    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, iterations=16)
+    output = model.state()
+    with wp.ScopedCapture(device=model.device) as capture:
+        solver.step(state, output, model.control(), contacts, 0.0025)
+    wp.capture_launch(capture.graph)
+    solver.snapshot_constraint_status()
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity(snapshot=True)
+    solver.snapshot_constraint_status()
+    with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
+        solver.check_constraint_capacity(snapshot=True)
+    np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
+    solver.reset(state)
+    wp.capture_launch(capture.graph)
+    solver.snapshot_constraint_status()
+    solver.check_constraint_capacity(snapshot=True)
+
+
+def test_cuda_status_snapshot_takes_device_torsion_prepared_later(test, device):
+    """Check and retake a status snapshot taken before device torsion was prepared."""
+    _, solver, *_ = fixture(0.01, device=device, iterations=16, step=False)
+    solver.snapshot_constraint_status()
+    enable_device_torsion(solver)
+    solver.check_constraint_capacity(snapshot=True)
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    solver.snapshot_constraint_status()
+    with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
+        solver.check_constraint_capacity(snapshot=True)
 
 
 def test_cuda_full_solver_graph(test, device):
@@ -1880,6 +1914,8 @@ for _fn in (
     test_cuda_captured_capacity_errors,
     test_public_api_noop_and_fail_stop,
     test_cuda_cold_capture_reports_errors_until_reset,
+    test_cuda_status_snapshot_reports_a_replay_error,
+    test_cuda_status_snapshot_takes_device_torsion_prepared_later,
     test_cuda_full_solver_graph,
 ):
     add_function_test(TestDeviceTorsionPreparation, _fn.__name__, _fn, devices=get_cuda_test_devices())
@@ -1913,7 +1949,7 @@ def _pad_worlds(pairs_per_world, device):
     return model, state
 
 
-def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", steps=3, reset_mask=None, warn=False):
+def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", steps=3, warn=False):
     """Step the pad worlds deterministically; return per-world joint_qd, the overflow flags and the solver."""
     model, a = _pad_worlds(pairs_per_world, device)
     solver = SolverSteel(
@@ -1929,6 +1965,7 @@ def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", ste
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
         contact_torsion_device=preparation != "host",
         warn_constraint_overflow=warn,
+        row_watermark=True,
     )
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=256, deterministic=True)
     contacts = pipeline.contacts()
@@ -1950,26 +1987,30 @@ def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", ste
         for _ in range(steps):
             pair()
     overflow = solver.constraint_overflow.numpy().copy()
-    if reset_mask is not None:
-        solver.reset(a, wp.array(reset_mask, dtype=wp.bool, device=model.device))
     dofs = np.cumsum([0] + [12 * pairs for pairs in pairs_per_world])
     qd = a.joint_qd.numpy()
     return [qd[dofs[w] : dofs[w + 1]] for w in range(len(pairs_per_world))], overflow, solver
 
 
+_PAD_CAPACITY = {}
+
+
 def _pad_capacity(test, device):
     """Return a capacity that fits every dense row of a two-pair world and one of its two torsion rows."""
-    _, overflow, solver = _pad_rollout([1, 1, 2], 64, device=device, steps=1)
-    test.assertFalse(overflow.any())
-    counts = solver._constraint_count.numpy()
-    torsion = (solver._row_type.numpy() == PGS_CONSTRAINT_TYPE_TORSION).sum(axis=1)
-    np.testing.assert_array_equal(torsion, [1, 1, 2])
-    test.assertLess(counts[0], counts[2] - 1)
-    return int(counts[2]) - 1
+    key = str(device)
+    if key not in _PAD_CAPACITY:
+        _, overflow, solver = _pad_rollout([1, 1, 2], 64, device=device, steps=1)
+        test.assertFalse(overflow.any())
+        counts = solver._constraint_count.numpy()
+        torsion = (solver._row_type.numpy() == PGS_CONSTRAINT_TYPE_TORSION).sum(axis=1)
+        np.testing.assert_array_equal(torsion, [1, 1, 2])
+        test.assertLess(counts[0], counts[2] - 1)
+        _PAD_CAPACITY[key] = int(counts[2]) - 1
+    return _PAD_CAPACITY[key]
 
 
 def test_overflowing_world_is_flagged_and_others_are_unchanged(test, device):
-    """Flag only the world whose torsion rows overflow and leave the other worlds bitwise unchanged."""
+    """Flag and count only the world whose torsion rows overflow, leave the other worlds bitwise unchanged, and reset it."""
     capacity = _pad_capacity(test, device)
     for preparation in ("host", "device", "graph"):
         with test.subTest(preparation=preparation):
@@ -1986,16 +2027,19 @@ def test_overflowing_world_is_flagged_and_others_are_unchanged(test, device):
             test.assertEqual(int(solver._constraint_count.numpy()[2]), capacity)
             with test.assertRaisesRegex(RuntimeError, r"Steel dropped contacts or constraint rows in worlds \[2\]"):
                 solver.check_constraint_capacity()
-
-
-def test_torsion_overflow_reset_clears_only_the_selected_world(test, device):
-    """Keep the torsion overflow flag through another world's reset and clear it with its own."""
-    capacity = _pad_capacity(test, device)
-    _, overflow, solver = _pad_rollout([1, 1, 2], capacity, device=device, reset_mask=[False, True, False, False])
-    np.testing.assert_array_equal(overflow, [False, False, True, False])
-    np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, True, False])
-    solver.reset(solver.model.state(), wp.array([False, False, True, False], dtype=wp.bool, device=device))
-    solver.check_constraint_capacity()
+            # The watermarks count the torsion rows the world requested, beyond the ones it kept.
+            marks = solver.constraint_row_watermarks()
+            test.assertGreater(marks["articulation_raw_high_water"], capacity)
+            test.assertEqual(
+                marks["articulation_overflow_excess_high_water"], marks["articulation_raw_high_water"] - capacity
+            )
+            test.assertGreater(marks["articulation_overflow_world_steps"], 0)
+            if preparation == "device":
+                state = solver.model.state()
+                solver.reset(state, wp.array([False, True, False, False], dtype=wp.bool, device=device))
+                np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, True, False])
+                solver.reset(state, wp.array([False, False, True, False], dtype=wp.bool, device=device))
+                solver.check_constraint_capacity()
 
 
 def test_torsion_overflow_warns_once(test, device):
@@ -2020,17 +2064,19 @@ def test_torsion_overflow_warns_once(test, device):
     test.assertEqual(len(matches), 1, [str(w.message) for w in caught])
     test.assertIn("in world 2: requested", str(matches[0].message))
     test.assertTrue(issubclass(matches[0].category, newton.exceptions.NewtonWarning))
+    test.assertEqual(matches[0].filename, __file__)
 
 
 class TestTorsionRowOverflow(unittest.TestCase):
     """A world whose torsion rows exceed the dense capacity is flagged alone; the other worlds step as before."""
 
 
-for _fn in (
+add_function_test(
+    TestTorsionRowOverflow,
+    "test_overflowing_world_is_flagged_and_others_are_unchanged",
     test_overflowing_world_is_flagged_and_others_are_unchanged,
-    test_torsion_overflow_reset_clears_only_the_selected_world,
-):
-    add_function_test(TestTorsionRowOverflow, _fn.__name__, _fn, devices=get_cuda_test_devices())
+    devices=get_cuda_test_devices(),
+)
 
 # The test checks its own output: CheckOutput's capture would receive the device printf.
 add_function_test(

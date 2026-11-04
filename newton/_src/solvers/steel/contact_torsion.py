@@ -444,6 +444,8 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
         )
     solver._torsion_stats["rows"] = len(solver._torsion_stats["groups"])
     _flag_torsion_overflow(solver, requested, count)
+    # The row watermarks read the slot counter as the world's requested rows.
+    solver._slot_counter.assign(np.maximum(solver._slot_counter.numpy(), requested))
     if not solver._torsion_stats["rows"]:
         return
     for name, values in fields.items():
@@ -452,7 +454,6 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     for size, values in jacobians.items():
         solver._J_by_size[size].assign(values)
     solver._constraint_count.assign(count)
-    solver._slot_counter.assign(count)
     solver._contact_torsion_group.assign(membership)
 
 
@@ -478,12 +479,25 @@ def _flag_torsion_overflow(solver, requested, count):
         f"limit {solver._articulation_constraint_max}; dropped {int(requested[world] - count[world])} torsion rows. "
         "Increase articulation_constraint_max.",
         NewtonWarning,
-        stacklevel=3,
+        stacklevel=5,
     )
 
 
 def torque_sweep_source(dofs):
     """Return the coupled residual-budget angular solve inside each PGS sweep."""
+    lanes = [f"lane + {k * 32}" if k else "lane" for k in range((dofs + 31) // 32)]
+    # The spin row's own loads do not depend on the member walk, so they are issued before it.
+    row_loads = "\n".join(
+        f"""                float spin_J_{k} = {d} < {dofs} ? J_world.data[jy_world_base + spin * {dofs} + {d}] : 0.0f;
+                float spin_Y_{k} = {d} < {dofs} ? Y_world.data[jy_world_base + spin * {dofs} + {d}] : 0.0f;"""
+        for k, d in enumerate(lanes)
+    )
+    spin_dot = "\n".join(
+        f"                if ({d} < {dofs}) dot += spin_J_{k} * s_v[{d}];" for k, d in enumerate(lanes)
+    )
+    spin_update = "\n".join(
+        f"                    if ({d} < {dofs}) s_v[{d}] += spin_Y_{k} * delta;" for k, d in enumerate(lanes)
+    )
     return f"""
         {{
             for (int spin = 0; spin < m_dense; ++spin) {{
@@ -492,6 +506,10 @@ def torque_sweep_source(dofs):
                 // The torsion row carries its group's undivided coefficient. Persistent
                 // patches divide the anchor tangent rows' coefficient by the anchor count.
                 float mu = fmaxf(world_row_mu.data[off_dense + spin], 0.0f);
+{row_loads}
+                float spin_rhs = rhs_bias.data[off_dense + spin];
+                float spin_diag = world_diag.data[off_dense + spin];
+                int spin_group = world_torsion_group.data[off_dense + spin];
                 float normal_load = 0.0f;
                 float sliding_used = 0.0f;
                 for (int n = 0; n < m_dense; ++n) {{
@@ -549,13 +567,12 @@ def torque_sweep_source(dofs):
                     }}
                 }}
                 float bound = radius * fmaxf(normal_budget - sliding_used, 0.0f);
-                if (world_torsion_group.data[off_dense + spin] == {_TORSION_SPIN_RETIRED}) bound = 0.0f;
+                if (spin_group == {_TORSION_SPIN_RETIRED}) bound = 0.0f;
                 float dot = 0.0f;
-                for (int d = lane; d < {dofs}; d += 32)
-                    dot += J_world.data[jy_world_base + spin * {dofs} + d] * s_v[d];
-                float residual = warp_sum(dot) + rhs_bias.data[off_dense + spin];
+{spin_dot}
+                float residual = warp_sum(dot) + spin_rhs;
                 float old = s_lam_dense[spin];
-                float diagonal = world_diag.data[off_dense + spin];
+                float diagonal = spin_diag;
                 float trial = diagonal > 0.0f ? old - omega * residual / diagonal : 0.0f;
                 float next = fminf(fmaxf(trial, -bound), bound);
                 float delta = next - old;
@@ -564,8 +581,7 @@ def torque_sweep_source(dofs):
                 if (delta != 0.0f) {{
                     iteration_changed = 1;
                     if (lane == 0) s_lam_dense[spin] = next;
-                    for (int d = lane; d < {dofs}; d += 32)
-                        s_v[d] += Y_world.data[jy_world_base + spin * {dofs} + d] * delta;
+{spin_update}
                 }}
                 __syncwarp();
             }}
