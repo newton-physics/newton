@@ -2210,20 +2210,11 @@ for _name in (
     add_function_test(TestSteelSleepWorkSkipping, _name, globals()[_name], devices=devices)
 
 
-COLORED_STEPS = 360
-
-
-def test_colored_sleeping_gate(test, device):
-    """Construct colored propagation with sleeping; keep rejecting plain propagation."""
-    model = _arm_heap_model(device, worlds=1)
-    for response in ("immediate", "propagation_colored"):
-        SolverSteel(model, solve_mode="matrix_free", articulated_contact_response=response, enable_sleeping=True)
-    with test.assertRaisesRegex(NotImplementedError, "enable_sleeping=True is not supported"):
-        SolverSteel(model, solve_mode="matrix_free", articulated_contact_response="propagation", enable_sleeping=True)
+COLORED_STEPS = 240
 
 
 def test_colored_separated_boxes_sleep_and_wake_like_immediate(test, device):
-    """Sleep, force-wake and resettle separated boxes at the same steps as immediate, with units only while awake."""
+    """Sleep, force-wake and contact-wake separated boxes at the same steps as immediate, with units only while awake."""
     traces = {}
     for response in ("immediate", "propagation_colored"):
         builder = newton.ModelBuilder()
@@ -2235,9 +2226,10 @@ def test_colored_separated_boxes_sleep_and_wake_like_immediate(test, device):
         model.rigid_contact_max = 64
         scene = _Heap(device, response, model=model, sleep_quiet_time=0.05, friction_anchor_beta=0.0)
         awake, poses, units = [], [], []
+        # One step of this force slides box 0 into box 1, which no force or reset touches.
         force = np.zeros((2, 6), dtype=np.float32)
-        force[0, 0] = 100.0
-        for k in range(200):
+        force[0, 0] = 8000.0
+        for k in range(240):
             if k == 120:
                 scene.state_in.body_f.assign(force)
             scene.step(clear=k != 120)
@@ -2248,18 +2240,25 @@ def test_colored_separated_boxes_sleep_and_wake_like_immediate(test, device):
                 units.append([int(np.sum((body_a == b) | (body_b == b))) for b in (0, 1)])
         traces[response] = (np.array(awake), np.array(poses), np.array(units))
     immediate, colored = traces["immediate"], traces["propagation_colored"]
-    np.testing.assert_array_equal(colored[0], immediate[0])
-    awake, units = colored[0], colored[2]
+    awake, poses, units = colored
     slept = int(np.argmax(awake.sum(axis=1) == 0))
     test.assertGreater(slept, 0, "both boxes must fall asleep before the force")
     test.assertLess(slept, 120)
-    np.testing.assert_allclose(colored[1][:slept], immediate[1][:slept], atol=1.0e-4, rtol=0)
+    hit = 120 + int(np.argmax(awake[120:, 1] == 1))
+    test.assertGreater(hit, 120, "box 1 must wake after the force")
+    np.testing.assert_array_equal(awake[: hit + 1], immediate[0][: hit + 1])
+    np.testing.assert_allclose(poses[:slept], immediate[1][:slept], atol=1.0e-4, rtol=0)
     # Units exist only for a box that was awake during the step, and never for one asleep before and after it.
     test.assertTrue(np.all(units[:slept] > 0))
     np.testing.assert_array_equal(units[slept + 1 : 120], 0)
-    np.testing.assert_array_equal(awake[120], [1, 0])
+    np.testing.assert_array_equal(awake[120:hit], [[1, 0]] * (hit - 120))
     test.assertGreater(units[120, 0], 0)
-    np.testing.assert_array_equal(units[120:, 1], 0)
+    np.testing.assert_array_equal(units[120:hit, 1], 0)
+    test.assertGreater(units[hit + 1, 1], 0)
+    test.assertGreater(poses[hit - 1, 0, 0], poses[119, 0, 0] + 0.05)
+    test.assertGreater(poses[-1, 1, 0], poses[hit, 1, 0] + 0.05)
+    np.testing.assert_array_equal(awake[-1], [0, 0])
+    np.testing.assert_array_equal(immediate[0][-1], [0, 0])
 
 
 def test_colored_units_omit_exactly_the_sleeping_islands(test, device):
@@ -2382,27 +2381,6 @@ def test_colored_force_reset_and_notification_wake_islands(test, device):
     test.assertIn(target, colored_bodies())
 
 
-def test_colored_sleeping_rollout_is_bitwise_repeatable(test, device):
-    """Repeat a sleeping rollout bitwise across runs and identical worlds."""
-    runs = []
-    for _ in range(2):
-        scene = _Heap(device)
-        history = []
-        for _ in range(COLORED_STEPS):
-            scene.step()
-            history.append(scene.snapshot())
-        runs.append((history, scene.solver._sleeping.art_awake.numpy().copy()))
-        test.assertGreater(int(np.sum(runs[-1][1] == 0)), 0)
-    np.testing.assert_array_equal(runs[0][1], runs[1][1])
-    worlds = scene.model.world_count
-    for k, (a, b) in enumerate(zip(runs[0][0], runs[1][0], strict=True)):
-        for name in _FIELDS:
-            np.testing.assert_array_equal(a[name], b[name], err_msg=f"run-to-run {name} step {k}")
-            per_world = a[name].reshape(worlds, -1, *a[name].shape[1:])
-            for world in range(1, worlds):
-                np.testing.assert_array_equal(per_world[world], per_world[0], err_msg=f"world {world} {name} step {k}")
-
-
 def test_colored_sleeping_rollout_is_independent_of_world_order(test, device):
     """Give each world the same trajectory and sleep pattern whichever position it takes in the model."""
     offsets = (0.0, 0.05)
@@ -2438,10 +2416,11 @@ def test_colored_sleeping_rollout_is_independent_of_world_order(test, device):
 
 
 def test_colored_captured_sleep_and_wake_match_eager(test, device):
-    """Cold-capture one step, then match an eager twin bitwise through sleeping and a force wake."""
+    """Cold-capture one step, then match an eager twin bitwise, with identical worlds, through sleeping and a force wake."""
     captured, eager = _Heap(device), _Heap(device)
     with wp.ScopedCapture(device) as capture:
         captured.step(clear=False)
+    worlds = eager.model.world_count
     force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
     for k in range(COLORED_STEPS + 20):
         if k == COLORED_STEPS:
@@ -2455,6 +2434,10 @@ def test_colored_captured_sleep_and_wake_match_eager(test, device):
         a, b = captured.snapshot(), eager.snapshot()
         for name in _FIELDS:
             np.testing.assert_array_equal(a[name], b[name], err_msg=f"replay {k} {name}")
+            if k < COLORED_STEPS:
+                per_world = b[name].reshape(worlds, -1, *b[name].shape[1:])
+                for world in range(1, worlds):
+                    np.testing.assert_array_equal(per_world[world], per_world[0], err_msg=f"world {world} {name} {k}")
         np.testing.assert_array_equal(
             captured.solver._sleeping.art_awake.numpy(), eager.solver._sleeping.art_awake.numpy()
         )
@@ -2501,12 +2484,10 @@ class TestSteelSleepingColoredPropagation(unittest.TestCase):
 
 
 for _name in (
-    "test_colored_sleeping_gate",
     "test_colored_separated_boxes_sleep_and_wake_like_immediate",
     "test_colored_units_omit_exactly_the_sleeping_islands",
     "test_colored_propagation_overflow_vetoes_sleep",
     "test_colored_force_reset_and_notification_wake_islands",
-    "test_colored_sleeping_rollout_is_bitwise_repeatable",
     "test_colored_sleeping_rollout_is_independent_of_world_order",
     "test_colored_captured_sleep_and_wake_match_eager",
     "test_colored_separated_stacks_sleep_like_immediate",
