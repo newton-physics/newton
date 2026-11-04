@@ -3427,6 +3427,77 @@ def test_colored_mismatched_propagation_load_ring_raises(test, device):
             solver.step(state, model.state(), model.control(), contacts, 0.0025)
 
 
+def test_colored_sleeping_islands_drop_their_torsion_rows(test, device):
+    """Host no torsion row for a sleeping island, and host the rows of the island a push wakes, and only those."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_ground_plane()
+    for x in (0.0, 0.8):
+        a = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(a, hx=0.08, hy=0.04, hz=0.04)
+        b = builder.add_link(xform=wp.transform(wp.vec3(x + 0.16, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.08, hy=0.04, hz=0.04)
+        root = builder.add_joint_free(child=a, parent_xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        hinge = builder.add_joint_revolute(
+            parent=a,
+            child=b,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(-0.08, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([root, hinge])
+    model = builder.finalize(device=device)
+    set_torsion_radius(model, 0.01)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        iterations=16,
+        velocity_iterations=0,
+        contact_warmstart=False,
+        friction_anchor_beta=0.0,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        **_COLORED_TORSION,
+    )
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=128, deterministic=True)
+    contacts = pipeline.contacts()
+    state, output = model.state(), model.state()
+    body_art = solver._body_to_articulation.numpy()
+
+    def step(force=None):
+        nonlocal state, output
+        state.clear_forces()
+        if force is not None:
+            state.body_f.assign(force)
+        pipeline.collide(state, contacts)
+        solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
+        state, output = output, state
+        solver.check_constraint_capacity()
+
+    def hosted_articulations():
+        rows = _propagation_torsion_rows(solver)
+        bodies = solver._propagation_body_a.numpy()[0]
+        return sorted({int(body_art[bodies[n]]) for members in rows.values() for n in members}), len(rows)
+
+    step()
+    test.assertEqual(hosted_articulations()[0], [0, 1])
+    for _ in range(120):
+        step()
+        if not solver._sleeping.art_awake.numpy().any():
+            break
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [0, 0])
+    test.assertEqual(hosted_articulations(), ([], 0))
+    frozen = state.body_q.numpy().copy()
+    force = np.zeros((model.body_count, 6), dtype=np.float32)
+    force[0, 2] = 5.0
+    step(force)
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
+    articulations, rows = hosted_articulations()
+    test.assertEqual(articulations, [0])
+    test.assertGreater(rows, 0)
+    np.testing.assert_array_equal(state.body_q.numpy()[2:], frozen[2:])
+
+
 def test_colored_unsupported_combinations_raise(test, device):
     """Keep colored torsion rejected without device preparation, with velocity iterations and with warm start."""
     colored = {"articulated_contact_response": "propagation_colored"}
@@ -3461,6 +3532,7 @@ for _fn in (
     test_colored_deterministic_runs_repeat_bitwise_and_ignore_world_order,
     test_colored_captured_steps_match_eager_steps_and_report_errors,
     test_colored_mismatched_propagation_load_ring_raises,
+    test_colored_sleeping_islands_drop_their_torsion_rows,
     test_colored_unsupported_combinations_raise,
 ):
     add_function_test(TestColoredPropagationTorsion, _fn.__name__, _fn, devices=get_cuda_test_devices())

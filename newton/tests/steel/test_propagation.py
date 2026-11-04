@@ -17,6 +17,7 @@ from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
+    PGS_CONSTRAINT_TYPE_TORSION,
     PROPAGATION_COLOR_TAIL,
     PROPAGATION_UNIT_META,
     PROPAGATION_UNIT_RING,
@@ -1824,6 +1825,48 @@ def test_cross_response_effective_mass_matches_reference_operator(test, device):
             test.assertGreater(checked[PGS_CONSTRAINT_TYPE_FRICTION], 0, "no non-degenerate friction rows were checked")
 
 
+def test_same_articulation_torsion_rows_carry_the_cross_response(test, device):
+    """Give the torsion rows of same-articulation propagation contacts the exact two-link response, on both responses."""
+    model = _build_scissor_model(device)
+    set_torsion_radius(model, 0.01)
+    for response in SAME_ARTICULATION_RESPONSES:
+        with test.subTest(response=response):
+            solver = SolverSteel(
+                model,
+                iterations=0,
+                cfm=PGS_CFM,
+                articulated_contact_response=response,
+                propagation_same_articulation_rows=True,
+                contact_torsion_device=True,
+                velocity_iterations=0,
+                contact_warmstart=False,
+            )
+            state, _ = _step_once(model, solver)
+            count = int(solver._propagation_constraint_count.numpy()[0])
+            row_type = solver._propagation_row_type.numpy()[0, :count]
+            J_a = solver._propagation_J_a.numpy()[0, :count].astype(np.float64)
+            J_b = solver._propagation_J_b.numpy()[0, :count].astype(np.float64)
+            MiJt_a = solver._propagation_MiJt_a.numpy()[0, :count].astype(np.float64)
+            MiJt_b = solver._propagation_MiJt_b.numpy()[0, :count].astype(np.float64)
+            body_a = solver._propagation_body_a.numpy()[0, :count]
+            body_b = solver._propagation_body_b.numpy()[0, :count]
+            eff_mass_inv = solver._propagation_eff_mass_inv.numpy()[0, :count].astype(np.float64)
+            body_art = solver._body_to_articulation.numpy()
+            H, X = _analytic_H_and_X(model, state)
+            # Hosted torsion rows have both bodies; reserved rows that host no group have none.
+            spins = [r for r in np.flatnonzero(row_type == PGS_CONSTRAINT_TYPE_TORSION) if body_a[r] >= 0]
+            test.assertGreater(len(spins), 0, "no torsion row was hosted")
+            for r in spins:
+                test.assertGreaterEqual(int(body_b[r]), 0)
+                test.assertEqual(body_art[body_a[r]], body_art[body_b[r]])
+                g = X[body_a[r]].T @ J_a[r] + X[body_b[r]].T @ J_b[r]
+                expected = float(g @ np.linalg.solve(H, g))
+                diagonal = float(J_a[r] @ MiJt_a[r] + J_b[r] @ MiJt_b[r])
+                test.assertAlmostEqual(1.0 / eff_mass_inv[r], diagonal + PGS_CFM, delta=1.0e-6 * (diagonal + 1.0))
+                test.assertGreater(expected, 1.0e-6)
+                test.assertLess(abs(diagonal - expected) / expected, 1.0e-3, f"torsion row {r}: cross response missing")
+
+
 def test_closing_gripper_stops_at_finger_contact(test, device):
     """Stop squeezed fingers at contact in one sweep, which needs the cross response between the two links."""
     model = _closing_gripper_model(device, world_count=3)
@@ -1891,6 +1934,7 @@ for _name in (
     "test_scissor_dense_diagonal_matches_reference",
     "test_default_routing_keeps_same_articulation_rows_dense",
     "test_cross_response_effective_mass_matches_reference_operator",
+    "test_same_articulation_torsion_rows_carry_the_cross_response",
     "test_closing_gripper_stops_at_finger_contact",
 ):
     add_function_test(TestPropagationSameArticulation, _name, globals()[_name], devices=devices)
