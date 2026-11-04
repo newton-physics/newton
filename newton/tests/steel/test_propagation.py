@@ -1827,8 +1827,8 @@ def test_cross_response_effective_mass_matches_reference_operator(test, device):
 
 def test_same_articulation_torsion_rows_carry_the_cross_response(test, device):
     """Give the torsion rows of same-articulation propagation contacts the exact two-link response, on both responses."""
-    # Siblings hinged about the contact normal can spin against each other, so their torsion rows are not locked.
-    model = _build_scissor_model(device, sibling_axis=(0.0, 1.0, 0.0))
+    # Hinged about the contact normal, the siblings spin against each other on a base that couples them.
+    model = _build_scissor_model(device, axis=(0.0, 1.0, 0.0))
     set_torsion_radius(model, 0.01)
     for response in SAME_ARTICULATION_RESPONSES:
         with test.subTest(response=response):
