@@ -4477,6 +4477,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ``noslip_iterations`` and ``noslip_tolerance`` have no constructor argument: they come from
         ``model.mujoco.noslip_iterations`` and ``model.mujoco.noslip_tolerance`` (set by the MJCF ``<option>``
         element or the USD ``mjc:option:noslip_*`` attributes), or MuJoCo's defaults (0, noslip off, and 1e-6).
+        Like the other ONCE options, each is a single value shared by all worlds.
 
         For imported MJCF position drives using joint-target control and ``dampratio``,
         construction writes resolved damping into zero entries of ``model.joint_target_kd``
