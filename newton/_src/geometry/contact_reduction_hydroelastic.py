@@ -105,6 +105,9 @@ FIXED_MOMENT_UNREDUCED = wp.constant(14)
 FIXED_MOMENT_REDUCED = wp.constant(15)
 FIXED_MOMENT2_REDUCED = wp.constant(16)
 NUM_FIXED_SLOTS = 17
+FIXED_AGG_TANGENT = wp.constant(17)  # 9 components, allocated only for the opt-in path
+FIXED_TANGENT_DEPTH = wp.constant(26)
+NUM_TANGENT_FIXED_SLOTS = 10
 
 # Scale families, laid out ``family * ht_capacity + entry``.  Quantities that
 # share a physical scale share a family so they stay mutually consistent.
@@ -116,6 +119,9 @@ SCALE_MOMENT_UNREDUCED = wp.constant(4)
 SCALE_MOMENT_REDUCED = wp.constant(5)
 SCALE_MOMENT2_REDUCED = wp.constant(6)
 NUM_SCALE_FAMILIES = 7
+SCALE_TANGENT = wp.constant(7)
+SCALE_TANGENT_DEPTH = wp.constant(8)
+NUM_TANGENT_SCALE_FAMILIES = 2
 
 # Accumulation phases for the two-pass (scale, then add) accumulators.
 PHASE_SCALE = 0
@@ -125,6 +131,7 @@ PHASE_ACCUMULATE = 1
 FINALIZE_UNREDUCED = 0
 FINALIZE_REDUCED_DEPTH = 1
 FINALIZE_MOMENTS = 2
+FINALIZE_TANGENT_DEPTH = 3
 
 
 def _fixed_mantissa_bits(max_terms: int) -> int:
@@ -301,6 +308,53 @@ def _effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
 
 
 @wp.func
+def _linearize_contact(
+    stiffness: float, distance: float, pressure: float, pressure_gradient: float
+) -> tuple[float, float]:
+    """Convert a penetrating spring to a pressure tangent without changing its current force."""
+    if distance < 0.0 and pressure > 0.0 and pressure_gradient > 0.0:
+        tangent_distance = -pressure / pressure_gradient
+        if wp.isfinite(tangent_distance) and tangent_distance < 0.0:
+            tangent_stiffness = stiffness * (distance / tangent_distance)
+            if wp.isfinite(tangent_stiffness) and tangent_stiffness > 0.0:
+                return tangent_stiffness, tangent_distance
+    return stiffness, distance
+
+
+@wp.func
+def _face_tangent(area: float, pressure: float, distance: float, gradient: float) -> float:
+    """Use a valid pressure tangent, or the existing secant for an unusable derivative."""
+    secant = area * pressure / wp.max(-distance, wp.static(EPS_SMALL))
+    tangent, _distance = _linearize_contact(secant, distance, pressure, gradient)
+    return tangent
+
+
+@wp.func
+def _linearize_patch_contact(
+    stiffness: float,
+    distance: float,
+    tangent: wp.mat33,
+    force: wp.vec3,
+    projected_depth: float,
+    anchor_depth: float,
+) -> tuple[float, float]:
+    """Preserve allocated force and match the patch's directional translation tangent."""
+    force_mag = wp.length(force)
+    denominator = projected_depth + anchor_depth
+    if distance < 0.0 and force_mag > wp.static(EPS_SMALL) and denominator > 0.0:
+        direction = force / force_mag
+        patch_stiffness = wp.dot(direction, tangent * direction)
+        # The winning faces and anchor share the source patch tangent in
+        # proportion to their geometric depths, not their selected gradients.
+        tangent_stiffness = (-distance / denominator) * patch_stiffness
+        if wp.isfinite(tangent_stiffness) and tangent_stiffness > 0.0:
+            tangent_distance = distance * (stiffness / tangent_stiffness)
+            if wp.isfinite(tangent_distance) and tangent_distance < 0.0:
+                return tangent_stiffness, tangent_distance
+    return stiffness, distance
+
+
+@wp.func
 def _register_voxel_contact(
     shape_a: int,
     shape_b: int,
@@ -380,6 +434,7 @@ def export_hydroelastic_contact_to_buffer(
     if contact_id >= 0:
         reducer_data.contact_area[contact_id] = area
         reducer_data.contact_pressure[contact_id] = pressure
+        reducer_data.contact_pressure_gradient[contact_id] = 0.0
 
     return contact_id
 
@@ -443,6 +498,14 @@ def _create_unreduced_aggregate_kernel(mantissa_bits: int):
             area = reducer_data.contact_area[contact_id]
             force_weight = area * reducer_data.contact_pressure[contact_id]
             depth_volume = (area * (-depth)) * normal
+            tangent = wp.mat33(0.0)
+            if reducer_data.agg_tangent.shape[0] > 0:
+                tangent = _face_tangent(
+                    area,
+                    reducer_data.contact_pressure[contact_id],
+                    depth,
+                    reducer_data.contact_pressure_gradient[contact_id],
+                ) * wp.outer(normal, normal)
 
             if phase == wp.static(PHASE_SCALE):
                 # |normal| == 1, so force_weight already bounds force_weight * normal.
@@ -455,6 +518,10 @@ def _create_unreduced_aggregate_kernel(mantissa_bits: int):
                     force_weight * _max_abs_component(position),
                 )
                 _record_scale(fixed_scale, SCALE_DEPTH_VOLUME, entry_idx, ht_capacity, _max_abs_component(depth_volume))
+                if reducer_data.agg_tangent.shape[0] > 0:
+                    for row in range(3):
+                        for col in range(3):
+                            _record_scale(fixed_scale, SCALE_TANGENT, entry_idx, ht_capacity, tangent[row, col])
                 continue
 
             # One shift per scale family, not per component: see ``_fixed_shift``.
@@ -466,6 +533,18 @@ def _create_unreduced_aggregate_kernel(mantissa_bits: int):
             _add_fixed(fixed_accum, FIXED_WEIGHT_SUM, entry_idx, ht_capacity, force_weight, shift_force)
             _add_fixed_vec(fixed_accum, FIXED_WEIGHTED_POS, entry_idx, ht_capacity, force_weight * position, shift_pos)
             _add_fixed_vec(fixed_accum, FIXED_DEPTH_VOLUME, entry_idx, ht_capacity, depth_volume, shift_vol)
+            if reducer_data.agg_tangent.shape[0] > 0:
+                shift_tangent = _fixed_shift(fixed_scale[wp.static(SCALE_TANGENT) * ht_capacity + entry_idx], mb)
+                for row in range(3):
+                    for col in range(3):
+                        _add_fixed(
+                            fixed_accum,
+                            FIXED_AGG_TANGENT + row * 3 + col,
+                            entry_idx,
+                            ht_capacity,
+                            tangent[row, col],
+                            shift_tangent,
+                        )
 
     return accumulate_unreduced_aggregates_kernel
 
@@ -560,6 +639,15 @@ def _create_finalize_fixed_kernel(mantissa_bits: int):
             reducer_data.agg_depth_volume[entry_idx] = _read_fixed_vec(
                 fixed_accum, FIXED_DEPTH_VOLUME, entry_idx, ht_capacity, shift_vol
             )
+            if reducer_data.agg_tangent.shape[0] > 0:
+                shift_tangent = _fixed_shift(fixed_scale[wp.static(SCALE_TANGENT) * ht_capacity + entry_idx], mb)
+                tangent = wp.mat33(0.0)
+                for row in range(3):
+                    for col in range(3):
+                        tangent[row, col] = _from_fixed_scaled(
+                            fixed_accum[(FIXED_AGG_TANGENT + row * 3 + col) * ht_capacity + entry_idx], shift_tangent
+                        )
+                reducer_data.agg_tangent[entry_idx] = tangent
         elif group == wp.static(FINALIZE_REDUCED_DEPTH):
             shift_depth = _fixed_shift(fixed_scale[wp.static(SCALE_REDUCED_DEPTH) * ht_capacity + entry_idx], mb)
             reducer_data.total_depth_reduced[entry_idx] = _from_fixed_scaled(
@@ -567,6 +655,12 @@ def _create_finalize_fixed_kernel(mantissa_bits: int):
             )
             reducer_data.total_normal_reduced[entry_idx] = _read_fixed_vec(
                 fixed_accum, FIXED_TOTAL_NORMAL, entry_idx, ht_capacity, shift_depth
+            )
+        elif group == wp.static(FINALIZE_TANGENT_DEPTH) and reducer_data.agg_tangent.shape[0] > 0:
+            reducer_data.total_tangent_depth_reduced[entry_idx] = _from_fixed(
+                fixed_accum[wp.static(FIXED_TANGENT_DEPTH) * ht_capacity + entry_idx],
+                fixed_scale[wp.static(SCALE_TANGENT_DEPTH) * ht_capacity + entry_idx],
+                mb,
             )
         elif group == wp.static(FINALIZE_MOMENTS) and agg_moment_unreduced.shape[0] > 0:
             agg_moment_unreduced[entry_idx] = _from_fixed(
@@ -849,6 +943,64 @@ def _create_accumulate_reduced_depth_kernel(deterministic: bool = False, mantiss
     return accumulate_reduced_depth_kernel
 
 
+def _create_accumulate_tangent_depth_kernel(normal_matching: bool, deterministic: bool, mantissa_bits: int):
+    """Accumulate the directional tangent weights of the contacts actually exported."""
+    exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
+
+    @wp.kernel(enable_backward=False)
+    def accumulate_tangent_depth_kernel(
+        data: GlobalContactReducerData,
+        fixed_accum: wp.array[wp.int64],
+        fixed_scale: wp.array[wp.int32],
+        phase: int,
+        total_num_threads: int,
+    ):
+        tid = wp.tid()
+        ht_capacity = data.ht_capacity
+        num_active = data.ht_active_slots[ht_capacity]
+        for i in range(tid, num_active, total_num_threads):
+            entry = data.ht_active_slots[i]
+            ids = exported_ids_vec()
+            count = int(0)
+            for slot in range(wp.static(VALUES_PER_KEY)):
+                value = data.ht_values[slot * ht_capacity + entry]
+                if value == wp.uint64(0):
+                    continue
+                contact_id = wp.static(_unpack_contact_id_variant(deterministic))(value)
+                if is_contact_already_exported(contact_id, ids, count):
+                    continue
+                ids[count] = contact_id
+                count += 1
+                depth = data.position_depth[contact_id][3]
+                nbin = data.contact_nbin_entry[contact_id]
+                if depth >= 0.0 or nbin < 0:
+                    continue
+                force = data.agg_force[nbin]
+                force_mag = wp.length(force)
+                if force_mag <= wp.static(EPS_SMALL):
+                    continue
+                direction = force / force_mag
+                normal = decode_oct(data.normal[contact_id])
+                if wp.static(normal_matching):
+                    if wp.length(data.agg_depth_volume[nbin]) > wp.static(EPS_LARGE):
+                        rotation = _compute_normal_matching_rotation(data.total_normal_reduced[nbin], force, force_mag)
+                        normal = wp.normalize(wp.quat_rotate(rotation, normal))
+                projection = wp.dot(normal, direction)
+                contribution = (-depth) * projection * projection
+                if wp.static(deterministic):
+                    if phase == wp.static(PHASE_SCALE):
+                        _record_scale(fixed_scale, SCALE_TANGENT_DEPTH, nbin, ht_capacity, contribution)
+                    else:
+                        shift = _fixed_shift(
+                            fixed_scale[wp.static(SCALE_TANGENT_DEPTH) * ht_capacity + nbin], wp.static(mantissa_bits)
+                        )
+                        _add_fixed(fixed_accum, FIXED_TANGENT_DEPTH, nbin, ht_capacity, contribution, shift)
+                else:
+                    wp.atomic_add(data.total_tangent_depth_reduced, nbin, contribution)
+
+    return accumulate_tangent_depth_kernel
+
+
 def _create_accumulate_moments_kernel(
     normal_matching: bool = True, deterministic: bool = False, mantissa_bits: int = 48
 ):
@@ -987,6 +1139,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
     anchor_contact: bool = False,
     moment_matching: bool = False,
     deterministic_sort_keys: bool = False,
+    *,
+    use_pressure_gradient: bool = False,
 ):
     """Create a kernel that exports reduced hydroelastic contacts using a custom writer function.
 
@@ -1020,6 +1174,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             reduced and unreduced contacts.
         deterministic_sort_keys: Whether to tag normal-bin and voxel-bin
             exports so deterministic contact sort keys remain unique.
+        use_pressure_gradient: Match the source patch tangent along its aggregate
+            force direction without changing the current force allocation.
 
     Returns:
         A warp kernel that can be launched to export reduced hydroelastic contacts.
@@ -1051,6 +1207,9 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         contact_fingerprints: wp.array[wp.int32],
         contact_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
+        contact_pressure_gradient: wp.array[wp.float32],
+        agg_tangent: wp.array[wp.mat33],
+        total_tangent_depth_reduced: wp.array[wp.float32],
         shape_material_k_hydro: wp.array[wp.float32],
         contact_nbin_entry: wp.array[wp.int32],
         # Pre-accumulated total depth of winning contacts per normal bin
@@ -1275,8 +1434,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 pressure_i = contact_pressure[contact_id]
 
                 c_friction_scale = float(1.0)
+                tangent_entry = int(-1)
+                tangent_anchor_depth = float(0.0)
 
                 if has_reliable_agg_direction:
+                    tangent_entry = entry_idx
+                    tangent_anchor_depth = wp.float32(add_anchor) * anchor_depth
                     # --- Normal-bin entry ---
                     if wp.static(normal_matching) and depth < 0.0:
                         final_normal = wp.normalize(wp.quat_rotate(rotation_q, contact_normal))
@@ -1308,6 +1471,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     nbin_entry_idx = contact_nbin_entry[contact_id]
 
                     if nbin_entry_idx >= 0 and depth < 0.0:
+                        tangent_entry = nbin_entry_idx
                         nbin_agg_force = agg_force[nbin_entry_idx]
                         nbin_agg_mag = wp.length(nbin_agg_force)
                         # Same reliability gate as the aggregate path above.
@@ -1343,6 +1507,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
                             if weight_sum[nbin_entry_idx] > wp.static(EPS_SMALL) and nbin_anchor_depth > 0.0:
                                 nbin_effective_depth = nbin_effective_depth_no_anchor + nbin_anchor_depth
+                                tangent_anchor_depth = nbin_anchor_depth
 
                         if nbin_agg_mag > wp.static(EPS_SMALL) and nbin_effective_depth > 0.0:
                             c_stiffness = nbin_agg_mag / nbin_effective_depth
@@ -1396,6 +1561,22 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     c_stiffness = wp.static(margin_contact_area) * k_eff_first
                     c_friction_scale = 1.0
 
+                spring_distance = depth
+                if wp.static(use_pressure_gradient):
+                    if tangent_entry >= 0:
+                        c_stiffness, spring_distance = _linearize_patch_contact(
+                            c_stiffness,
+                            depth,
+                            agg_tangent[tangent_entry],
+                            agg_force[tangent_entry],
+                            total_tangent_depth_reduced[tangent_entry],
+                            tangent_anchor_depth,
+                        )
+                    else:
+                        c_stiffness, spring_distance = _linearize_contact(
+                            c_stiffness, depth, pressure_i, contact_pressure_gradient[contact_id]
+                        )
+
                 # Transform contact to world space
                 normal_world = wp.transform_vector(transform_b, final_normal)
                 pos_world = wp.transform_point(transform_b, position)
@@ -1404,7 +1585,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data = ContactData()
                 contact_data.contact_point_center = pos_world
                 contact_data.contact_normal_a_to_b = normal_world
-                contact_data.contact_distance = depth
+                contact_data.contact_distance = spring_distance
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
                 contact_data.margin_a = 0.0
@@ -1432,12 +1613,24 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 anchor_normal_world = wp.transform_vector(transform_b, anchor_normal)
                 anchor_pos_world = wp.transform_point(transform_b, anchor_pos)
 
+                anchor_stiffness = shared_stiffness
+                anchor_distance = -anchor_depth
+                if wp.static(use_pressure_gradient):
+                    anchor_stiffness, anchor_distance = _linearize_patch_contact(
+                        shared_stiffness,
+                        -anchor_depth,
+                        agg_tangent[entry_idx],
+                        agg_force_vec,
+                        total_tangent_depth_reduced[entry_idx],
+                        anchor_depth,
+                    )
+
                 # Create ContactData for anchor
                 # anchor_depth is positive magnitude, so negate for standard convention
                 contact_data = ContactData()
                 contact_data.contact_point_center = anchor_pos_world
                 contact_data.contact_normal_a_to_b = anchor_normal_world
-                contact_data.contact_distance = -anchor_depth
+                contact_data.contact_distance = anchor_distance
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
                 contact_data.margin_a = 0.0
@@ -1445,7 +1638,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_a = shape_a_first
                 contact_data.shape_b = shape_b_first
                 contact_data.gap_sum = gap_sum
-                contact_data.contact_stiffness = shared_stiffness
+                contact_data.contact_stiffness = anchor_stiffness
                 contact_data.contact_friction_scale = wp.float32(anchor_friction_scale)
                 bin_id = int((ht_keys[entry_idx] >> wp.uint64(55)) & wp.uint64(0xFF))
                 contact_data.sort_sub_key = 0x400000 | bin_id
@@ -1477,6 +1670,8 @@ class HydroelasticReductionConfig:
             speculative contact activation stiffness.
         hashtable_size_factor: Multiplier applied to the contact buffer capacity
             when allocating the reduction hashtable. Must be positive.
+        use_pressure_gradient: Opt into force-preserving springs matching the
+            source patch's translation tangent along its aggregate force direction.
     """
 
     normal_matching: bool = True
@@ -1484,6 +1679,7 @@ class HydroelasticReductionConfig:
     moment_matching: bool = False
     margin_contact_area: float = 1e-2
     hashtable_size_factor: float = 0.25
+    use_pressure_gradient: bool = False
 
 
 class HydroelasticContactReduction:
@@ -1586,6 +1782,7 @@ class HydroelasticContactReduction:
             deterministic=deterministic,
             hashtable_size_factor=config.hashtable_size_factor,
             enable_reduction=enable_reduction,
+            store_hydroelastic_tangent=config.use_pressure_gradient,
         )
 
         # Fixed-point accumulators, used only in deterministic mode.  Unreduced
@@ -1595,8 +1792,12 @@ class HydroelasticContactReduction:
         ht_capacity = self.reducer.hashtable.capacity
         self._mantissa_bits = _fixed_mantissa_bits(max(capacity, ht_capacity * VALUES_PER_KEY))
         if deterministic:
-            self._fixed_accum = wp.zeros(NUM_FIXED_SLOTS * ht_capacity, dtype=wp.int64, device=device)
-            self._fixed_scale = wp.full(NUM_SCALE_FAMILIES * ht_capacity, FIXED_EXP_NONE, dtype=wp.int32, device=device)
+            num_fixed_slots = NUM_FIXED_SLOTS + (NUM_TANGENT_FIXED_SLOTS if config.use_pressure_gradient else 0)
+            num_scale_families = NUM_SCALE_FAMILIES + (
+                NUM_TANGENT_SCALE_FAMILIES if config.use_pressure_gradient else 0
+            )
+            self._fixed_accum = wp.zeros(num_fixed_slots * ht_capacity, dtype=wp.int64, device=device)
+            self._fixed_scale = wp.full(num_scale_families * ht_capacity, FIXED_EXP_NONE, dtype=wp.int32, device=device)
         else:
             self._fixed_accum = wp.zeros(0, dtype=wp.int64, device=device)
             self._fixed_scale = wp.zeros(0, dtype=wp.int32, device=device)
@@ -1606,6 +1807,11 @@ class HydroelasticContactReduction:
         self._accumulate_depth_kernel = _create_accumulate_reduced_depth_kernel(
             deterministic=deterministic, mantissa_bits=self._mantissa_bits
         )
+        self._accumulate_tangent_depth_kernel = None
+        if config.use_pressure_gradient:
+            self._accumulate_tangent_depth_kernel = _create_accumulate_tangent_depth_kernel(
+                config.normal_matching, deterministic, self._mantissa_bits
+            )
 
         # In deterministic mode the generate kernel skips the unreduced aggregate
         # atomics; they are recomputed here in fixed point instead.
@@ -1635,6 +1841,7 @@ class HydroelasticContactReduction:
             anchor_contact=config.anchor_contact,
             moment_matching=config.moment_matching,
             deterministic_sort_keys=deterministic,
+            use_pressure_gradient=config.use_pressure_gradient,
         )
 
     @property
@@ -1823,6 +2030,17 @@ class HydroelasticContactReduction:
         if self.deterministic:
             # Reduced normals feed the moment accumulator's normal matching.
             self._launch_finalize(self.reducer.get_data_struct(), FINALIZE_REDUCED_DEPTH)
+        if self._accumulate_tangent_depth_kernel is not None:
+            for phase in phases:
+                wp.launch(
+                    self._accumulate_tangent_depth_kernel,
+                    dim=[grid_size],
+                    inputs=[self.reducer.get_data_struct(), self._fixed_accum, self._fixed_scale, phase, grid_size],
+                    device=self.device,
+                    record_tape=False,
+                )
+            if self.deterministic:
+                self._launch_finalize(self.reducer.get_data_struct(), FINALIZE_TANGENT_DEPTH)
         # --- accumulate reduced friction moments per normal bin (Phase 1.5) ---
         if self._accumulate_moments_kernel is not None:
             for phase in phases:
@@ -1870,6 +2088,9 @@ class HydroelasticContactReduction:
                 self.reducer.contact_fingerprints,
                 self.reducer.contact_area,
                 self.reducer.contact_pressure,
+                self.reducer.contact_pressure_gradient,
+                self.reducer.agg_tangent,
+                self.reducer.total_tangent_depth_reduced,
                 shape_material_k_hydro,
                 self.reducer.contact_nbin_entry,
                 self.reducer.total_depth_reduced,
