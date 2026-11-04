@@ -9923,6 +9923,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         model.mujoco.pair_friction.assign(wp.array(friction, dtype=vec5, device=model.device))
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy()[0, :, 0], [0.1, 0.4, 0.2], rtol=1e-6)
+        np.testing.assert_allclose(solver.mjw_model.pair_solref.numpy()[0, :, 0], [0.01, 0.03, 0.02], rtol=1e-6)
 
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
