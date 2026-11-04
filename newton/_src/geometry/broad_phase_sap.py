@@ -755,13 +755,7 @@ class BroadPhaseSAP:
         if shape_count < 0 or shape_count > shape_lower.shape[0]:
             raise ValueError(f"shape_count must be in [0, {shape_lower.shape[0]}], got {shape_count}")
 
-        # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
-        if shape_gap is None:
-            shape_gap = wp.empty(0, dtype=wp.float32, device=device)
-        if shape_body is None:
-            shape_body = wp.empty(0, dtype=wp.int32, device=device)
-        if body_flags is None:
-            body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        # Warp passes None arrays as zero-sized descriptors to the kernels.
         if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
             raise ValueError(
                 "shape_displacement length must match the shape bounds "
@@ -777,9 +771,9 @@ class BroadPhaseSAP:
                 )
             projection_limit = sort_axis_displacement_limit
 
-        # Exclusion filter: empty array and 0 when not provided or empty
+        # Exclusion filter: null array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
-            filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
+            filter_pairs_arr = None
             n_filter = 0
         else:
             filter_pairs_arr = filter_pairs

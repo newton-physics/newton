@@ -278,12 +278,12 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
      - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
      - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as
-       training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes
-       ``examples``). On an R545–R579 driver, install with
+       training or running deprecated Torch ``.pt2`` / ``.pt`` / ``.pth`` policies
+       (includes ``examples``). On an R545–R579 driver, install with
        ``python -m pip install "newton[torch-cu12]" "warp-lang==1.17.0"``; the extra
        does not select Warp 1.17 by itself.
    * - ``torch-cu13``
-     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
+     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running deprecated Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``

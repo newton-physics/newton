@@ -3660,7 +3660,7 @@ wheels = [
 
 [[package]]
 name = "newton"
-version = "1.8.0.dev0"
+version = "1.9.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "warp-lang" },
@@ -4672,18 +4672,18 @@ wheels = [
 
 [[package]]
 name = "ovrtx"
-version = "0.5.1.385782"
+version = "0.6.0.1791947691"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/74/f8/c6fa8edf4ef1ae9add73ecd5359f4cb7aa0c9a84225f481ebc22523983fd/ovrtx-0.5.1.385782.tar.gz", hash = "sha256:41d5209ae69c0b059d27591d6c68204c0a4ed161429cfb59b977ea0115f7292c", size = 23080, upload-time = "2026-10-06T00:47:50.848Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/3a/e4f8c74f2f3b5c2de6682e0bd4eeaa460811df0f49f5426e6e530a9fe1c1/ovrtx-0.6.0.1791947691.tar.gz", hash = "sha256:2c2895d48aeab7b16c2795e3389114cd973a2990ac334b739ec7e824f754903e", size = 23088, upload-time = "2026-10-15T05:49:20.493Z" }
 
 [[package]]
 name = "ovstage"
-version = "0.2.1.385922"
+version = "0.3.0.1791986420"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/3a/10ca15d015edf276ce641000a597c91409aa12a5c551b968911b5a9c3037/ovstage-0.2.1.385922-py3-none-manylinux_2_35_aarch64.whl", hash = "sha256:ddf7f5723926e12a1d332315e4be4c224366396e4d321c8d314f4296e96a00d5", size = 70139856, upload-time = "2026-10-05T20:01:53.562Z" },
-    { url = "https://files.pythonhosted.org/packages/6b/78/8bf3f2f6adf5957352f614591068fbc8ee86b7978efa6250cec40fe61791/ovstage-0.2.1.385922-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:19b5549260f6088678ec5ff914517fd18a5629319bbb531401fff8ebf3fe5c5d", size = 72591365, upload-time = "2026-10-05T20:02:11.223Z" },
-    { url = "https://files.pythonhosted.org/packages/32/28/7ee76958d7360f2bb95fdabb7c9c3cc38f7e0039d574ebb595272ff85e32/ovstage-0.2.1.385922-py3-none-win_amd64.whl", hash = "sha256:35f7ffb5ba1e97388d63882839577af5097e5f8d5331f7d5d225f65f1752df27", size = 46480476, upload-time = "2026-10-05T20:01:35.342Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/ae/f7348aec410a971f4126bd7b4cca92fcec25b7cca60f92267f5c98cc2ba2/ovstage-0.3.0.1791986420-py3-none-manylinux_2_35_aarch64.whl", hash = "sha256:1b9f983320a45703adab4bf72c9c17419728b9a874c300ae026abe46397f89dd", size = 64550686, upload-time = "2026-10-15T03:53:22.19Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/d1/bebef33ec7c2fd2f7e776109092517b9ab2a4374fccca29b6c3351be77aa/ovstage-0.3.0.1791986420-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:35aa0c10c47549c495e65896356ce3b910041d2eaa602888f092f7e300586cf8", size = 66832291, upload-time = "2026-10-15T03:53:46.247Z" },
+    { url = "https://files.pythonhosted.org/packages/65/73/445749e2534e8fbd78a9f2ad2cc44d83cfd121a9bbdf459737c06c27adcd/ovstage-0.3.0.1791986420-py3-none-win_amd64.whl", hash = "sha256:400df4b7dc916edefa6f832aa11b674deb8a4d6831bba9ad3849169236b80c46", size = 38037230, upload-time = "2026-10-15T03:53:02.713Z" },
 ]
 
 [[package]]
