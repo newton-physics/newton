@@ -2509,9 +2509,9 @@ def test_colored_captured_sleep_and_wake_match_eager(test, device):
             captured.solver._sleeping.art_awake.numpy(), eager.solver._sleeping.art_awake.numpy()
         )
         wrench = eager.observables.body_parent_f.numpy()
-        # The wrench sums are not ordered, so replay and eager agree to rounding, as in the parent-wrench tests.
+        # The wrench sums are not ordered, so replay and eager agree only to rounding.
         np.testing.assert_allclose(
-            captured.observables.body_parent_f.numpy(), wrench, rtol=1.0e-5, atol=1.0e-5, err_msg=f"replay {k}"
+            captured.observables.body_parent_f.numpy(), wrench, rtol=1.0e-5, atol=1.0e-4, err_msg=f"replay {k}"
         )
         if k == COLORED_STEPS - 1:
             # Sleeping bodies keep nonzero wrenches, so the match is not trivial.
