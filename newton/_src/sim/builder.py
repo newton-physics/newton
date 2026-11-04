@@ -7821,10 +7821,33 @@ class ModelBuilder:
             a warning only when no segment bodies remain. Pass the relevant fixed joints
             through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
+
+        Raises:
+            ValueError: If a fixed joint to merge connects a body that a sensor imported with
+                ``add_mjcf(..., parse_sensors=True)`` measures.
         """
         if self._body_variants:
             raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
         joints_to_keep = set(joints_to_keep or ())
+
+        # Merging changes the frames and contacts that imported MuJoCo sensors measure, so reject it.
+        sensor_count = self._custom_frequency_counts.get("mujoco:sensor", 0)
+        if sensor_count:
+            sensor_bodies = set()
+            for name in ("body", "refbody", "site", "refsite"):
+                attribute = self.custom_attributes.get(f"mujoco:sensor_{name}")
+                for value in attribute._values_with_defaults(sensor_count) if attribute is not None else ():
+                    if int(value) >= 0:
+                        sensor_bodies.add(self.shape_body[int(value)] if name.endswith("site") else int(value))
+            for joint, joint_type in enumerate(self.joint_type):
+                merged = joint_type == JointType.FIXED and not (
+                    self.joint_label[joint] in joints_to_keep or joint in joints_to_keep
+                )
+                if merged and {self.joint_parent[joint], self.joint_child[joint]} & sensor_bodies:
+                    raise ValueError(
+                        f"collapse_fixed_joints() would merge body {self.body_label[self.joint_child[joint]]!r}, "
+                        "which changes what imported MuJoCo sensors measure; keep its fixed joint with joints_to_keep."
+                    )
 
         original_counts = self._builder_merge_counts(self)
         original_counts.update(once=1, world=max(1, self.world_count))

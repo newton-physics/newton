@@ -1050,8 +1050,18 @@ with their ``cutoff``, ``noise``, ``user``, ``nsample``, ``interp``, ``delay``,
 and ``interval`` values, so ``mj_data.sensordata`` matches native MuJoCo.
 Newton does not read these sensors; they cost MuJoCo time on every step. Other
 sensor types, geom and camera frames, and sensors on a body or site that is not
-imported are skipped and logged once per file. Sensor import is off by default,
-cannot be combined with collapsing fixed joints, and has no USD counterpart.
+imported are skipped and logged once per file. Sites that imported sensors use
+are exported even with ``include_sites=False``, and duplicate sensor names get a
+numeric suffix, as tendon names do.
+
+Sensor import is off by default and cannot be combined with collapsing fixed
+joints, because merging bodies changes the frames and contacts that sensors
+measure. ``add_mjcf`` rejects its collapse options, and
+:meth:`~newton.ModelBuilder.collapse_fixed_joints` raises if it would merge a
+body that an imported sensor uses. With ``separate_worlds=True``, every world
+needs the same sensors, since only the template world's sensors are exported.
+Sensor import is MJCF-only: MuJoCo's ``MjcPhysics`` USD schema defines no
+sensor prims, so USD assets carry no MuJoCo sensors to import.
 
 The converted model may order a body's principal axes of inertia differently
 from native MuJoCo. Sensors that use the inertial frame (``objtype`` or
@@ -1209,9 +1219,10 @@ imported when loading an MJCF or USD asset into Newton, and that
 :class:`~newton.solvers.SolverMuJoCo` does not reconstruct during conversion:
 
 - **Sensors** (``<sensor>`` — force/torque, IMU, gyro, accelerometer,
-  rangefinder, touch, camera-based, …). Newton has its own sensor
-  pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo
-  solver.
+  rangefinder, camera-based, …), except the touch and frame sensors that
+  ``add_mjcf(..., parse_sensors=True)`` imports (see `Imported sensors`_).
+  Newton has its own sensor pipeline (:doc:`/concepts/sensors`) that is
+  independent of the MuJoCo solver.
 - **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
   and lighting pipeline; camera/light primitives in the source asset are
   ignored.

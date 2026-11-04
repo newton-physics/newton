@@ -135,7 +135,12 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
-from .sensors import _add_imported_sensors, _register_sensor_attributes
+from .sensors import (
+    _add_imported_sensors,
+    _register_sensor_attributes,
+    _sensor_required_sites,
+    _validate_sensor_worlds,
+)
 from .utils import solref_invalid_mask
 
 if TYPE_CHECKING:
@@ -4515,7 +4520,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 .. experimental::
 
                     The ``use_speculative_contacts=True`` mode may change without prior notice.
-            include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
+            include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export, except those that spatial tendons, actuators, or imported MJCF sensors use. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
@@ -7647,7 +7652,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     for label in template_target_labels & site_shape_by_label.keys():
                         actuator_required_shapes.add(site_shape_by_label[label])
 
-        required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
+        required_shapes = (
+            tendon_required_shapes
+            | actuator_required_shapes
+            | mujoco_pair_contact_shapes
+            | _sensor_required_sites(model, first_world, separate_worlds)
+        )
         shape_layout = None
         shape_world_mapping = {}
         export_body_shapes = model.body_shapes
@@ -11428,6 +11438,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         3. Corresponding joints have the same linear/angular DOF counts in each world
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
         5. Actuator layouts, template-only properties, and high-level DC-motor parameters match across worlds
+        6. Imported MJCF sensors match across worlds
 
         Args:
             model: The Newton model to validate.
@@ -11630,6 +11641,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"world 0 references tendon {tendon_refs[0, c]}, "
                         f"but other worlds reference {tendon_refs[1:, c].tolist()}."
                     )
+
+        _validate_sensor_worlds(model, world_count)
 
     def render_mujoco_viewer(
         self,

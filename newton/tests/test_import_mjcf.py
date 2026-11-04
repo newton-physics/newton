@@ -8943,14 +8943,13 @@ class TestImportMjcfSensors(unittest.TestCase):
         self.assertEqual(model.custom_frequency_counts.get("mujoco:sensor", 0), 0)
         self.assertEqual(SolverMuJoCo(model, use_mujoco_cpu=True).mj_model.nsensor, 0)
 
-    def test_touch_and_frame_sensors_match_native(self):
-        """Keep sensor objects, reference frames, attributes, and sensor data."""
+    def assert_sensors_match_native(self, mjcf: str, velocities, **solver_options) -> list[np.ndarray]:
+        """Compare converted sensors with native MuJoCo and return the native sensor data for each velocity."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
-        mjcf = self.mjcf(self.SENSORS)
         native = mujoco.MjModel.from_xml_string(mjcf)
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf, parse_sensors=True)
-        converted = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True).mj_model
+        converted = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True, **solver_options).mj_model
         self.assertEqual(converted.nsensor, native.nsensor)
         for field in (
             "sensor_type",
@@ -8966,12 +8965,73 @@ class TestImportMjcfSensors(unittest.TestCase):
         ):
             np.testing.assert_allclose(getattr(converted, field), getattr(native, field), err_msg=field)
         expected, actual = mujoco.MjData(native), mujoco.MjData(converted)
-        for velocity in ([0.0] * 7, [0.1, 0.2, -0.3, 0.2, -0.1, 0.4, 0.5]):
+        readings = []
+        for velocity in velocities:
             expected.qvel[:] = actual.qvel[:] = velocity
             mujoco.mj_forward(native, expected)
             mujoco.mj_forward(converted, actual)
-            self.assertGreater(expected.sensordata[0], 0.0)
             np.testing.assert_allclose(actual.sensordata, expected.sensordata, rtol=1e-5, atol=1e-6)
+            readings.append(expected.sensordata.copy())
+        return readings
+
+    def test_touch_and_frame_sensors_match_native(self):
+        """Keep sensor objects, reference frames, attributes, and sensor data."""
+        velocities = ([0.0] * 7, [0.1, 0.2, -0.3, 0.2, -0.1, 0.4, 0.5])
+        for readings in self.assert_sensors_match_native(self.mjcf(self.SENSORS), velocities):
+            self.assertGreater(readings[0], 0.0)
+
+    def test_sensor_sites_are_kept_without_sites(self):
+        """Export the sites that sensors use when include_sites=False."""
+        self.assert_sensors_match_native(self.mjcf(self.SENSORS), ([0.0] * 7,), include_sites=False)
+
+    def test_sensor_bodies_use_authored_names(self):
+        """Resolve sensor bodies by their MJCF names, which can sanitize to the same label."""
+        mjcf = """<mujoco><worldbody>
+          <body name="a-b" pos="0 0 1"><freejoint/><geom size="0.1"/></body>
+          <body name="a_b" pos="1 0 1"><freejoint/><geom size="0.1"/></body>
+        </worldbody><sensor><framepos objtype="xbody" objname="a-b"/><framepos objtype="xbody" objname="a_b"/>
+        </sensor></mujoco>"""
+        self.assert_sensors_match_native(mjcf, ([0.0] * 12,))
+
+    def test_duplicate_sensor_names_get_suffixes(self):
+        """Suffix repeated sensor names when one MuJoCo model holds two copies of an MJCF."""
+        builder = newton.ModelBuilder()
+        for x in (0.0, 3.0):
+            builder.add_mjcf(self.mjcf(self.SENSORS), parse_sensors=True, xform=wp.transform((x, 0.0, 0.0)))
+        converted = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True).mj_model
+        names = ["touch", "linear", "angular", "site", "position", "orientation"]
+        self.assertEqual(
+            [converted.sensor(i).name for i in range(converted.nsensor)], names + [f"{name}_1" for name in names]
+        )
+
+    def test_invalid_interval_raises(self):
+        """Reject an interval with more than a period and a phase, as native MuJoCo does."""
+        sensor = '<framepos objtype="site" objname="tip" interval="0.004 -0.001 0"/>'
+        with self.assertRaisesRegex(ValueError, "invalid interval '0.004 -0.001 0'"):
+            newton.ModelBuilder().add_mjcf(self.mjcf(sensor), parse_sensors=True)
+
+    def test_separate_worlds_need_matching_sensors(self):
+        """Reject worlds whose sensors differ from the template world's, which alone are exported."""
+        touch, position = '<touch site="touch-site"/>', '<framepos objtype="site" objname="tip"/>'
+        cases = (
+            ("World 0 has 2 imported sensors, but world 1 has 0", (touch + position, "")),
+            ("imported sensors of world 1 differ", (touch + position, position + touch)),
+            (None, (touch, touch)),
+        )
+        for message, sensors in cases:
+            scene = newton.ModelBuilder()
+            for world_sensors in sensors:
+                scene.begin_world()
+                scene.add_mjcf(self.mjcf(world_sensors), parse_sensors=True)
+                scene.end_world()
+            model = scene.finalize(device="cpu")
+            with self.subTest(message=message):
+                if message is None:
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True)
+                    self.assertEqual(solver.mj_model.nsensor, 1)
+                    continue
+                with self.assertRaisesRegex(ValueError, message):
+                    SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True)
 
     def test_unsupported_sensors_are_skipped_and_logged(self):
         """Skip other sensor types, geom frames, the world body, and sites that are not imported."""
@@ -9001,6 +9061,28 @@ class TestImportMjcfSensors(unittest.TestCase):
         for option in ("collapse_fixed_joints", "collapse_massless_fixed_root"):
             with self.subTest(option=option), self.assertRaisesRegex(ValueError, "collapsing fixed joints"):
                 newton.ModelBuilder().add_mjcf(self.mjcf(self.SENSORS), parse_sensors=True, **{option: True})
+
+    def test_later_collapse_rejects_merging_sensor_bodies(self):
+        """Reject a later collapse that merges a body a sensor uses, and allow merges elsewhere."""
+        mjcf = """<mujoco><worldbody><body name="base"><freejoint/><geom size="0.1"/></body>
+          <body name="other" pos="1 0 0"><freejoint/><geom size="0.1"/>
+            <body name="cap" pos="0.2 0 0"><geom size="0.05"/><site name="pad" size="0.06"/></body>
+          </body></worldbody><sensor>{}</sensor></mujoco>"""
+        sensors = (
+            '<framepos objtype="xbody" objname="cap"/>',
+            '<touch site="pad"/>',
+            '<framepos objtype="body" objname="other"/>',
+        )
+        for sensor in sensors:
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf.format(sensor), parse_sensors=True)
+            with self.subTest(sensor=sensor), self.assertRaisesRegex(ValueError, "would merge body '.*cap'"):
+                builder.collapse_fixed_joints()
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf.format('<framepos objtype="xbody" objname="base"/>'), parse_sensors=True)
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.custom_attributes["mujoco:sensor_body"].values, [0])
 
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):

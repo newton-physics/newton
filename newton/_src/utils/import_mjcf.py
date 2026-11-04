@@ -508,7 +508,7 @@ def parse_mjcf(
         raise ValueError("override_root_xform=True requires xform to be set")
 
     if parse_sensors and (collapse_fixed_joints or collapse_massless_fixed_root):
-        # Collapsing does not remap custom attribute body references, so sensors would name merged bodies.
+        # Collapsing merges bodies, which changes the frames and contacts that sensors measure.
         raise ValueError("parse_sensors=True cannot be combined with collapsing fixed joints.")
 
     if mesh_maxhullvert is None:
@@ -2455,6 +2455,8 @@ def parse_mjcf(
             custom_attributes=body_custom_attributes,
         )
         body_name_to_idx[body_name] = link
+        if "name" in body_attrib:
+            raw_body_name_to_idx[body_attrib["name"]] = link
 
         if joint_type is None:
             joint_type = JointType.D6
@@ -3086,7 +3088,8 @@ def parse_mjcf(
     # Used to resolve equality constraints and actuators that reference entities by their short name.
     body_name_to_idx: dict[str, int] = {}
     site_name_to_idx: dict[str, int] = {}
-    # Spatial tendons need exact authored names within this import, without label aliases.
+    # Spatial tendons and sensors need exact authored names within this import, without label aliases.
+    raw_body_name_to_idx: dict[str, int] = {}
     raw_site_name_to_idx: dict[str, int] = {}
     raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
@@ -4013,7 +4016,7 @@ def parse_mjcf(
             if kind == "site":
                 site = raw_site_name_to_idx.get(name)
                 return None if site is None else (-1, site)
-            body = body_name_to_idx.get(sanitize_name(name)) if name else None
+            body = raw_body_name_to_idx.get(name) if name else None
             return None if body is None else (body, -1)
 
         for section in root.findall("sensor"):
@@ -4029,6 +4032,12 @@ def parse_mjcf(
                     raise ValueError(
                         f"MJCF sensor {sensor.get('name', sensor.tag)!r} has invalid interp {sensor.get('interp')!r}; "
                         f"expected one of {sorted(INTERPOLATION_ORDERS)}."
+                    )
+                if len(sensor.get("interval", "").split()) > 2:
+                    # Native MuJoCo rejects an interval with more than a period and a phase.
+                    raise ValueError(
+                        f"MJCF sensor {sensor.get('name', sensor.tag)!r} has invalid interval "
+                        f"{sensor.get('interval')!r}; expected a period and an optional phase."
                     )
                 reference_kind, reference_name = sensor.get("reftype", ""), sensor.get("refname")
                 unsupported = [t for t in (kind, reference_kind) if t and t not in SENSOR_OBJECT_TYPES]
