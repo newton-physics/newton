@@ -1,0 +1,1 @@
+Compute the mass properties of MJCF mesh geoms without an `inertia` attribute with MuJoCo's default `legacy` mode, which sums absolute tetrahedron volumes. Non-convex, open, or disconnected meshes now get MuJoCo's mass instead of the exact signed volume. Set `inertia="exact"` on the `<mesh>` asset to keep the previous mass properties.

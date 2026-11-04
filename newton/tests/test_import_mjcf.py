@@ -2204,6 +2204,110 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
 
 
+class TestImportMjcfMeshInertia(unittest.TestCase):
+    """MJCF mesh ``inertia`` modes give the mass properties of native MuJoCo."""
+
+    # Two disjoint tetrahedra: legacy, exact, convex and shell all differ.
+    VERTICES = np.concatenate(
+        (
+            np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+            np.array([[3, 0.5, 0], [4, 0.5, 0], [3, 1.5, 0], [3, 0.5, 1]]),
+        )
+    )
+    FACES = (
+        np.concatenate((np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),) * 2) + np.repeat([0, 4], 4)[:, None]
+    )
+
+    def assert_matches_native(self, mjcf: str, asset_dir: str | None = None):
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        if asset_dir is None:
+            native = mujoco.MjModel.from_xml_string(mjcf)
+            source = mjcf
+        else:
+            source = os.path.join(asset_dir, "model.xml")
+            Path(source).write_text(mjcf)
+            native = mujoco.MjModel.from_xml_path(source)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(source)
+        rotation = np.zeros(9)
+        mujoco.mju_quat2Mat(rotation, native.body_iquat[1])
+        rotation = rotation.reshape(3, 3)
+        expected_inertia = rotation @ np.diag(native.body_inertia[1]) @ rotation.T
+        np.testing.assert_allclose(builder.body_mass[0], native.body_mass[1], rtol=1e-5)
+        np.testing.assert_allclose(builder.body_com[0], native.body_ipos[1], atol=1e-5)
+        np.testing.assert_allclose(
+            np.array(builder.body_inertia[0]).reshape(3, 3), expected_inertia, rtol=1e-5, atol=1e-6
+        )
+
+    def inline_mjcf(self, mesh_attributes: str = "", defaults: str = "", geom_attributes: str = "") -> str:
+        vertex = " ".join(map(str, self.VERTICES.flat))
+        face = " ".join(map(str, self.FACES.flat))
+        return f"""<mujoco><default>{defaults}</default><asset>
+          <mesh name="mesh" vertex="{vertex}" face="{face}" {mesh_attributes}/></asset>
+          <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh" {geom_attributes}/></body></worldbody>
+        </mujoco>"""
+
+    def test_inline_mesh_inertia_modes(self):
+        """The default and each authored mode match native MuJoCo."""
+        for mode in (None, "legacy", "exact", "convex", "shell"):
+            with self.subTest(mode=mode):
+                self.assert_matches_native(self.inline_mjcf(f'inertia="{mode}"' if mode else ""))
+
+    def test_mesh_inertia_from_default_class(self):
+        """Mesh class defaults select the inertia mode."""
+        self.assert_matches_native(self.inline_mjcf(defaults='<mesh inertia="shell"/>'))
+        self.assert_matches_native(
+            self.inline_mjcf('class="hull"', defaults='<default class="hull"><mesh inertia="convex"/></default>')
+        )
+
+    def test_file_mesh_inertia_with_scale_ref_pose_and_mass(self):
+        """File meshes apply the mode after scale and reference pose; an authored mass sets the density."""
+        obj = "".join(f"v {x} {y} {z}\n" for x, y, z in self.VERTICES)
+        obj += "".join(f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in self.FACES)
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "mesh.obj").write_text(obj)
+            for mesh_attributes, geom_attributes in (
+                ('scale="2 1 0.5"', ""),
+                ('refpos="0.5 0.2 0.1" refquat="0.9 0.1 0.3 0.2"', 'mass="2"'),
+                ('inertia="shell" scale="0.5 0.5 0.5"', 'mass="3"'),
+            ):
+                with self.subTest(mesh=mesh_attributes, geom=geom_attributes):
+                    mjcf = f"""<mujoco><asset><mesh name="mesh" file="mesh.obj" {mesh_attributes}/></asset>
+                      <worldbody><body name="body"><freejoint/>
+                        <geom type="mesh" mesh="mesh" {geom_attributes}/></body></worldbody></mujoco>"""
+                    self.assert_matches_native(mjcf, directory)
+
+    def test_mesh_inertia_computed_once_per_asset(self):
+        """Geoms sharing a mesh asset reuse its mass properties."""
+        import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
+
+        calls = []
+        original = import_mjcf._mesh_mass_properties
+
+        def counting(*args, **kwargs):
+            calls.append(args[2])
+            return original(*args, **kwargs)
+
+        mjcf = self.inline_mjcf(geom_attributes='pos="0 0 1"').replace(
+            "</body>",
+            '<geom type="mesh" mesh="mesh"/></body><body><freejoint/><geom type="mesh" mesh="mesh"/></body>',
+            1,
+        )
+        import_mjcf._mesh_mass_properties = counting
+        try:
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+        finally:
+            import_mjcf._mesh_mass_properties = original
+        self.assertEqual(builder.shape_count, 3)
+        self.assertEqual(calls, ["legacy"])
+
+    def test_invalid_mesh_inertia_mode_raises(self):
+        """Reject inertia keywords that MuJoCo does not accept."""
+        with self.assertRaisesRegex(ValueError, "unsupported inertia 'solid'"):
+            newton.ModelBuilder().add_mjcf(self.inline_mjcf('inertia="solid"'))
+
+
 class TestImportMjcfInlineMesh(unittest.TestCase):
     """Tests for MJCF mesh assets authored with inline arrays."""
 

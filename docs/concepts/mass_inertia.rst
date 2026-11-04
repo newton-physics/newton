@@ -150,7 +150,9 @@ For format-specific details, see:
 - **MJCF**: :meth:`~newton.ModelBuilder.add_mjcf` — follows MuJoCo semantics
   where ``<inertial>`` fully overrides geom-derived mass (via
   ``lock_inertia``), and geoms contribute via density when ``<inertial>`` is
-  absent.
+  absent. Mesh geoms use the ``inertia`` mode of their ``<mesh>`` asset:
+  MuJoCo's default ``legacy`` sums absolute tetrahedron volumes, ``exact`` uses
+  the signed volume, ``convex`` the convex hull, and ``shell`` the surface area.
 - **URDF**: :meth:`~newton.ModelBuilder.add_urdf` — uses ``<inertial>``
   directly when present; falls back to collision geometry with default density
   otherwise.  By default visual shapes do not contribute mass; however,

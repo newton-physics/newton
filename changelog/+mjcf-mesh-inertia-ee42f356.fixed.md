@@ -1,0 +1,1 @@
+Honor the MJCF mesh `inertia` attribute (`legacy`, `exact`, `convex`, or `shell`) when computing the mass properties of imported mesh geoms, matching native MuJoCo.
