@@ -61,6 +61,126 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_compiler_balanceinertia_matches_native_mujoco(self):
+        """Balance invalid inertia only when the MJCF compiler requests it."""
+        body = """
+<worldbody>
+    <body name="body">
+        <joint name="joint"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.1"/>
+    </body>
+</worldbody>
+"""
+        balanced_mjcf = f'<mujoco><compiler balanceinertia="true"/>{body}</mujoco>'
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(balanced_mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(balanced_mjcf, ignore_inertial_definitions=False)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+
+        unbalanced_mjcf = f'<mujoco><compiler balanceinertia="false"/>{body}</mujoco>'
+        with self.assertRaisesRegex(ValueError, "inertia must satisfy"):
+            newton.ModelBuilder().add_mjcf(unbalanced_mjcf, ignore_inertial_definitions=False)
+
+    def test_compiler_accepts_boundary_valid_inertia(self):
+        """Preserve boundary-valid principal inertia after float32 rotation."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for euler in ("0 0 0", "0 90 0", "30 45 60"):
+            for balance in ("false", "true"):
+                with self.subTest(euler=euler, balance=balance):
+                    mjcf = f"""
+<mujoco>
+    <compiler balanceinertia="{balance}"/>
+    <worldbody><body name="body"><joint/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3" euler="{euler}"/>
+    </body></worldbody>
+</mujoco>
+"""
+                    native_model = mujoco.MjModel.from_xml_string(mjcf)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+                    np.testing.assert_allclose(
+                        np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+                        native_model.body_inertia[1],
+                        rtol=1e-6,
+                    )
+
+    def test_compiler_inertia_guards_preserve_existing_bodies(self):
+        """Guard only imported bodies and update their inverse properties."""
+        mjcf = """
+<mujoco model="compiler_bounds">
+    <compiler boundmass="0.5" boundinertia="0.02"/>
+    <worldbody>
+        <body name="body">
+            <joint name="joint"/>
+            <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.002 0.003"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        existing_inertia = np.diag([0.2, 0.3, 0.4])
+        builder = newton.ModelBuilder()
+        existing_body = builder.add_link(mass=2.0, inertia=wp.mat33(existing_inertia))
+        existing_properties = (
+            builder.body_mass[existing_body],
+            np.array(builder.body_inertia[existing_body]),
+            builder.body_inv_mass[existing_body],
+            np.array(builder.body_inv_inertia[existing_body]),
+        )
+
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        imported_body = existing_body + 1
+        imported_inertia = np.array(builder.body_inertia[imported_body]).reshape(3, 3)
+        imported_inv_inertia = np.array(builder.body_inv_inertia[imported_body]).reshape(3, 3)
+
+        self.assertEqual(builder.body_mass[existing_body], existing_properties[0])
+        np.testing.assert_array_equal(builder.body_inertia[existing_body], existing_properties[1])
+        self.assertEqual(builder.body_inv_mass[existing_body], existing_properties[2])
+        np.testing.assert_array_equal(builder.body_inv_inertia[existing_body], existing_properties[3])
+        self.assertAlmostEqual(builder.body_mass[imported_body], native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(imported_inertia),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+        self.assertAlmostEqual(builder.body_inv_mass[imported_body], 1.0 / native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(imported_inv_inertia, np.linalg.inv(imported_inertia), rtol=1.0e-6, atol=1.0e-8)
+
+    def test_compiler_inertia_guards_apply_bounds_before_validation(self):
+        """Match native compiler bounds on negative authored mass and inertia."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        cases = (
+            ('boundmass="0.5"', 'mass="-1" diaginertia="1 1 1"'),
+            ('boundinertia="0.02"', 'mass="1" diaginertia="-0.01 0.02 0.03"'),
+        )
+        for compiler, inertial in cases:
+            with self.subTest(compiler=compiler):
+                mjcf = f"""
+<mujoco>
+    <compiler {compiler}/>
+    <worldbody><body><joint/>
+        <inertial pos="0 0 0" {inertial}/>
+    </body></worldbody>
+</mujoco>
+"""
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+                self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1])
+                np.testing.assert_allclose(
+                    np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+                    native_model.body_inertia[1],
+                    rtol=1e-6,
+                )
+
     def test_nested_option_flags_match_native_mujoco(self):
         """Preserve later flag overrides and apply gravity to the Newton model."""
         mjcf = """
@@ -843,7 +963,7 @@ class TestImportMjcfBasic(unittest.TestCase):
     <worldbody>
         <body>
             <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
-                      mass="1.0" diaginertia="1.0 2.0 3.0"/>
+                      mass="1.0" diaginertia="1.0 2.0 2.5"/>
         </body>
     </worldbody>
 </mujoco>
@@ -855,7 +975,7 @@ class TestImportMjcfBasic(unittest.TestCase):
     <worldbody>
         <body>
             <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
-                      mass="1.0" fullinertia="1.0 2.0 3.0 0.1 0.2 0.3"/>
+                      mass="1.0" fullinertia="2.0 3.0 4.0 0.1 0.2 0.3"/>
         </body>
     </worldbody>
 </mujoco>
@@ -867,8 +987,8 @@ class TestImportMjcfBasic(unittest.TestCase):
         model = builder.finalize()
 
         # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
-        # This transforms the diagonal inertia [1, 2, 3] to [2, 1, 3] via sandwich product R @ I @ R.T
-        expected_diagonal = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
+        # This transforms the diagonal inertia [1, 2, 2.5] to [2, 1, 2.5].
+        expected_diagonal = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.5]])
 
         actual_inertia = model.body_inertia.numpy()[0]
         # The validation may add a small epsilon for numerical stability
@@ -880,54 +1000,13 @@ class TestImportMjcfBasic(unittest.TestCase):
         builder.add_mjcf(mjcf_full, ignore_inertial_definitions=False)
         model = builder.finalize()
 
-        # For full inertia, we need to compute the expected result manually
-        # Original inertia matrix:
-        # [1.0  0.1  0.2]
-        # [0.1  2.0  0.3]
-        # [0.2  0.3  3.0]
-
-        # The quaternion (0.7071068, 0, 0, 0.7071068) transforms the inertia
-        # We need to use the same quaternion-to-matrix conversion as the MJCF importer
-
-        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
-
-        # For full inertia, calculate the expected result analytically using the same quaternion
-        # Original inertia matrix:
-        # [1.0  0.1  0.2]
-        # [0.1  2.0  0.3]
-        # [0.2  0.3  3.0]
-
-        # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
-        # Calculate the expected result analytically using the correct rotation matrix
-        # For a 90-degree Z-axis rotation: R = [0 -1 0; 1 0 0; 0 0 1]
-
-        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
-
-        # Rotation matrix for 90-degree rotation around Z-axis
+        # Compare the rotated, physically valid non-diagonal inertia directly.
+        original_inertia = np.array([[2.0, 0.1, 0.2], [0.1, 3.0, 0.3], [0.2, 0.3, 4.0]])
         rotation_matrix = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-
         expected_full = rotation_matrix @ original_inertia @ rotation_matrix.T
-
         actual_inertia = model.body_inertia.numpy()[0]
-
-        # The original inertia violates the triangle inequality, so validation will correct it
-        # The eigenvalues are [0.975, 1.919, 3.106], which violates I1 + I2 >= I3
-        # The validation adds ~0.212 to all eigenvalues to fix this
-        # We check that:
-        # 1. The rotation structure is preserved (off-diagonal elements match)
-        # 2. The diagonal has been increased by approximately the same amount
-
-        # Check off-diagonal elements are preserved
-        np.testing.assert_allclose(actual_inertia[0, 1], expected_full[0, 1], atol=1e-6)
-        np.testing.assert_allclose(actual_inertia[0, 2], expected_full[0, 2], atol=1e-6)
-        np.testing.assert_allclose(actual_inertia[1, 2], expected_full[1, 2], atol=1e-6)
-
-        # Check that diagonal elements have been increased by approximately the same amount
-        corrections = np.diag(actual_inertia - expected_full)
-        np.testing.assert_allclose(corrections, corrections[0], rtol=1e-3)
-
-        # Verify that the rotation was actually applied (not just identity)
-        assert not np.allclose(actual_inertia, original_inertia, atol=1e-6)
+        np.testing.assert_allclose(actual_inertia, expected_full, rtol=1e-5, atol=1e-5)
+        self.assertFalse(np.allclose(actual_inertia, original_inertia, atol=1e-6))
 
     def test_single_body_transform(self):
         """Test 1: Single body with pos/quat → verify body_q matches expected world transform."""
@@ -3823,7 +3902,7 @@ f 4 5 8
         )
 
     def test_autolimits_false_joint_effort_limit(self):
-        """Test that autolimits=false prevents auto-applying effort_limit from actuatorfrcrange."""
+        """Test that actuatorfrcrange sets effort_limit only when actuatorfrclimited resolves to true."""
         mjcf_autolimits_true = """<?xml version="1.0" ?>
 <mujoco>
   <worldbody>
@@ -3847,7 +3926,7 @@ f 4 5 8
       <geom type="box" size="0.1 0.1 0.1"/>
       <body name="link1" pos="0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-1 1" limited="true"
-               actuatorfrcrange="-100 100"/>
+               actuatorfrclimited="false" actuatorfrcrange="-100 100"/>
         <geom type="cylinder" size="0.05 0.025"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
@@ -3864,7 +3943,7 @@ f 4 5 8
         effort_limit_true = model_true.joint_effort_limit.numpy()[0]
         self.assertAlmostEqual(effort_limit_true, 100.0, places=4)
 
-        # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
+        # With explicit actuatorfrclimited="false", the force range is inert
         builder_false = newton.ModelBuilder()
         builder_false.add_mjcf(mjcf_autolimits_false)
         model_false = newton.ModelBuilder()
@@ -9151,6 +9230,70 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         # actlimited should be auto (2) — MuJoCo resolves it during compilation
         actlimited = model.mujoco.actuator_actlimited.numpy()
         self.assertEqual(actlimited[0], 2)
+
+
+class TestMjcfJointLimited(unittest.TestCase):
+    """Compare MJCF joint ``limited`` resolution against native MuJoCo."""
+
+    @staticmethod
+    def _xml(joint_attrs, actuator="", compiler=""):
+        return f"""<mujoco><compiler {compiler}/><worldbody><body>
+            <joint name="j" {joint_attrs}/><geom type="sphere" size="0.1" mass="1"/>
+        </body></worldbody><actuator>{actuator}</actuator></mujoco>"""
+
+    def _compare(self, joint_attrs, actuator="", compiler=""):
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        xml = self._xml(joint_attrs, actuator, compiler)
+        native = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+        np.testing.assert_array_equal(solver.mj_model.jnt_limited, native.jnt_limited)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
+
+    def test_disabled_joint_limits_are_not_enforced(self):
+        """Import ``limited="false"`` ranges as unlimited joints."""
+        for joint_type in ("hinge", "slide"):
+            with self.subTest(joint_type=joint_type):
+                self._compare(f'type="{joint_type}" limited="false" range="-1 2"')
+
+    def test_auto_zero_ranges_are_unlimited(self):
+        """Treat all-zero auto ranges as unlimited, for joint and actuator force ranges."""
+        self._compare('type="hinge" range="0 0"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self._xml('type="hinge" actuatorfrcrange="0 0"'))
+        self.assertEqual(builder.joint_effort_limit[0], builder.default_joint_cfg.effort_limit)
+
+    def test_inheritrange_uses_disabled_joint_range(self):
+        """Inherit actuator ranges from disabled joint ranges like native MuJoCo."""
+        for joint_type in ("hinge", "slide"):
+            for angle in ("degree", "radian"):
+                with self.subTest(joint_type=joint_type, angle=angle):
+                    self._compare(
+                        f'type="{joint_type}" limited="false" range="-1 2" ref="0.5"',
+                        '<position joint="j" inheritrange="0.5"/>',
+                        f'angle="{angle}"',
+                    )
+
+    def test_inheritrange_disabled_range_follows_resolved_dof(self):
+        """Read the inert range of the DOF the actuator resolved to, not a sanitized-name alias."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        xml = """<mujoco><worldbody>
+            <body name="b1"><joint name="a-b" limited="false" range="0 1"/><geom size="0.1" mass="1"/></body>
+            <body name="b2"><joint name="a_b" range="-1 1"/><geom size="0.1" mass="1"/></body>
+        </worldbody><actuator><position joint="a_b" inheritrange="1"/></actuator></mujoco>"""
+        native = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
+
+    def test_autolimits_false_rejects_range_without_limited(self):
+        """Reject ranges without an explicit limited flag under ``autolimits="false"``, like MuJoCo."""
+        for attrs in ('range="-1 2"', 'actuatorfrcrange="-1 2"'):
+            with self.subTest(attrs=attrs):
+                with self.assertRaisesRegex(ValueError, "autolimits"):
+                    newton.ModelBuilder().add_mjcf(self._xml(f'type="hinge" {attrs}', compiler='autolimits="false"'))
 
 
 class TestMjcfDefaultCustomAttributes(unittest.TestCase):

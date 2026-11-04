@@ -197,10 +197,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
     return opacities
 
 
-_DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
-_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
-    "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
-)
 _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
@@ -3300,8 +3296,6 @@ class ModelBuilder:
         clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
-        *,
-        controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
         """Add an external actuator for a single DOF.
@@ -3325,14 +3319,8 @@ class ModelBuilder:
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
-            controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
-        if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
-            if drive_class is not None:
-                raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
-            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            drive_class = controller_class
         if drive_class is None:
             raise TypeError("add_actuator() requires 'drive_class'")
 
@@ -4919,6 +4907,9 @@ class ModelBuilder:
                 checkpoints: loading a Torch checkpoint may execute code during
                 :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
+                .. deprecated:: 1.8
+                    Torch checkpoints are deprecated; export the network to ONNX.
+
         Returns:
             .. experimental::
 
@@ -5010,9 +5001,9 @@ class ModelBuilder:
                 * - ``"path_soft_attrs"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``return_deformable_results=True``.
                 * - ``"path_attachment_map"``
-                  - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a supported cable ``PhysicsAttachment`` prim to the created joint indices. Cloth/volume particle-body attachments are not joints and are listed only in ``path_attachment_attrs``. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
                 * - ``"path_attachment_attrs"``
-                  - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Imported cloth/volume attachments list their particle-body attachment indices under ``"attachment_particle_body_indices"``. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
                 * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - ``"linear_unit"``
@@ -11244,11 +11235,11 @@ class ModelBuilder:
     ) -> int:
         """Adds an attachment between a rigid body and a particle.
 
-        The compliant attachment pulls the particle toward a body-local anchor and
+        The attachment pulls the particle toward a body-local anchor and
         transfers equal-and-opposite forces between both endpoints in
         :class:`~newton.solvers.SolverVBD`. The constraint is translational;
-        a single particle does not define an orientation. When the endpoints are
-        owned by different solvers of a coupled simulation, the attachment is
+        a single particle does not define an orientation. Finite-stiffness
+        attachments whose endpoints are owned by different solvers are
         coupled by
         :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
         See :ref:`Particle-body attachments`.
@@ -11258,8 +11249,9 @@ class ModelBuilder:
             body: Index of the rigid body.
             body_point: Attachment point in the body's local frame [m]. If
                 ``None``, the body origin is used.
-            stiffness: Attachment stiffness [N/m].
-            damping: Attachment damping [N·s/m].
+            stiffness: Attachment stiffness [N/m]. Use ``math.inf`` for a hard
+                point constraint in :class:`~newton.solvers.SolverVBD`.
+            damping: Attachment damping [N·s/m]. Ignored for hard attachments.
             enabled: Whether the attachment is active.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -11269,17 +11261,22 @@ class ModelBuilder:
         Raises:
             IndexError: If ``particle`` or ``body`` is out of range.
             ValueError: If the endpoints belong to different worlds, a
-                coefficient is negative, or a coefficient or ``body_point``
-                is not finite.
+                coefficient is negative or NaN, a finite coefficient cannot be
+                represented in float32, or ``damping`` or ``body_point`` is not
+                finite.
         """
         if body < 0 or body >= self.body_count:
             raise IndexError(f"Body index {body} is out of range for {self.body_count} bodies")
         if particle < 0 or particle >= self.particle_count:
             raise IndexError(f"Particle index {particle} is out of range for {self.particle_count} particles")
-        if not math.isfinite(stiffness) or stiffness < 0.0:
-            raise ValueError("Attachment stiffness must be finite and nonnegative")
+        if math.isnan(stiffness) or stiffness < 0.0:
+            raise ValueError("Attachment stiffness must be nonnegative or positive infinity")
+        if math.isfinite(stiffness) and stiffness > float(np.finfo(np.float32).max):
+            raise ValueError("Finite attachment stiffness must be representable in float32")
         if not math.isfinite(damping) or damping < 0.0:
             raise ValueError("Attachment damping must be finite and nonnegative")
+        if damping > float(np.finfo(np.float32).max):
+            raise ValueError("Attachment damping must be representable in float32")
         resolved_body_point = wp.vec3() if body_point is None else axis_to_vec3(body_point)
         if not all(math.isfinite(c) for c in resolved_body_point):
             raise ValueError(f"Attachment body_point must be finite, got {tuple(resolved_body_point)}")

@@ -22,6 +22,7 @@ material properties that can be queried at simulation runtime. It includes:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
@@ -30,9 +31,10 @@ import numpy as np
 import warp as wp
 
 from .....core.types import override
-from ..utils import logger as msg
 from .math import tril_index
 from .types import Descriptor
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -695,7 +697,7 @@ class MaterialManager:
 
         # Add the new material to the list of materials
         self.materials.append(material)
-        msg.debug("Registered new material:\n%s", material)
+        logger.debug("Registered new material:\n%s", material)
 
         # Add placeholder entries in the material pair properties list
         # NOTE: These are initialized to None and are to be set when the material pair is registered
@@ -730,7 +732,7 @@ class MaterialManager:
 
         # Configure the material pair properties
         self.configure_pair(first=first.name, second=second.name, material_pair=material_pair)
-        msg.debug("Registered new material pair: %s - %s", first.name, second.name)
+        logger.debug("Registered new material pair: %s - %s", first.name, second.name)
 
     def configure_pair(self, first: int | str, second: int | str, material_pair: MaterialPairProperties):
         """
@@ -750,7 +752,7 @@ class MaterialManager:
 
         # Set the material pair properties
         self._pair_properties[mid1][mid2] = self._pair_properties[mid2][mid1] = material_pair
-        msg.debug("Configured material pair: %s - %s", self.materials[mid1].name, self.materials[mid2].name)
+        logger.debug("Configured material pair: %s - %s", self.materials[mid1].name, self.materials[mid2].name)
 
     def merge(self, other: MaterialManager):
         """
@@ -882,9 +884,10 @@ class MaterialManager:
                     ij = i * (i + 1) // 2 + j
                     restitution[ij] = self._pair_properties[i][j].restitution
                 else:
-                    msg.debug(
-                        f"Material-pair properties not set for materials:"
-                        f"({self.materials[i].name}, {self.materials[j].name})"
+                    logger.debug(
+                        "Material-pair properties not set for materials:(%s, %s)",
+                        self.materials[i].name,
+                        self.materials[j].name,
                     )
 
         # Return the restitution matrix as a numpy array
@@ -932,9 +935,10 @@ class MaterialManager:
                     ij = i * (i + 1) // 2 + j
                     static_friction[ij] = self._pair_properties[i][j].static_friction
                 else:
-                    msg.debug(
-                        f"Material-pair properties not set for materials:"
-                        f"({self.materials[i].name}, {self.materials[j].name})"
+                    logger.debug(
+                        "Material-pair properties not set for materials:(%s, %s)",
+                        self.materials[i].name,
+                        self.materials[j].name,
                     )
 
         # Return the friction matrix as a numpy array
@@ -982,9 +986,10 @@ class MaterialManager:
                     ij = i * (i + 1) // 2 + j
                     dynamic_friction[ij] = self._pair_properties[i][j].dynamic_friction
                 else:
-                    msg.debug(
-                        f"Material-pair properties not set for materials:"
-                        f"({self.materials[i].name}, {self.materials[j].name})"
+                    logger.debug(
+                        "Material-pair properties not set for materials:(%s, %s)",
+                        self.materials[i].name,
+                        self.materials[j].name,
                     )
 
         # Return the friction matrix as a numpy array
