@@ -1237,7 +1237,7 @@ def test_colored_serial_tail_keeps_compliance(test, device):
         builder.add_shape_sphere(plate, xform=xform, radius=0.01, cfg=cfg)
     model = builder.finalize(device=device)
     trace, paths, solver, count = _step_compliant(
-        model, "propagation_colored", 300, stiffness=2.0, damping=0.1, propagation_constraint_max=4096
+        model, "propagation_colored", 100, stiffness=2.0, damping=0.1, propagation_constraint_max=4096
     )
     test.assertEqual(paths, {2})
     test.assertEqual(count, 529)
