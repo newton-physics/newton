@@ -4535,7 +4535,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if update_data_interval is not None:
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
-        if use_mujoco_cpu and not use_mujoco_contacts:
+        if use_mujoco_cpu and not use_mujoco_contacts and not disable_contacts:
             raise ValueError("use_mujoco_cpu=True requires use_mujoco_contacts=True.")
         self._kinematic_switchable_roots = kinematic_switchable_roots
         if use_speculative_contacts and use_mujoco_contacts:
