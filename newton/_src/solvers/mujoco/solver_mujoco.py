@@ -2044,6 +2044,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="noslip_iterations",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,  # MuJoCo default: noslip off
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:noslip_iterations",
+                mjcf_attribute_name="noslip_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="noslip_tolerance",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1e-6,  # MuJoCo default
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:noslip_tolerance",
+                mjcf_attribute_name="noslip_tolerance",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="ccd_iterations",
                 frequency=AttributeFrequency.ONCE,
                 assignment=AttributeAssignment.MODEL,
@@ -7147,6 +7171,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sdf_iterations = int(mujoco_attrs.sdf_iterations.numpy()[0])
         if sdf_initpoints is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_initpoints"):
             sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
+        noslip_iterations = None
+        noslip_tolerance = None
+        if mujoco_attrs and hasattr(mujoco_attrs, "noslip_iterations"):
+            noslip_iterations = int(mujoco_attrs.noslip_iterations.numpy()[0])
+        if mujoco_attrs and hasattr(mujoco_attrs, "noslip_tolerance"):
+            noslip_tolerance = float(mujoco_attrs.noslip_tolerance.numpy()[0])
 
         # Set defaults for numeric options if still None (use MuJoCo defaults)
         if iterations is None:
@@ -7196,6 +7226,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.option.sdf_iterations = sdf_iterations
         if sdf_initpoints is not None:
             spec.option.sdf_initpoints = sdf_initpoints
+        if noslip_iterations is not None:
+            spec.option.noslip_iterations = noslip_iterations
+        if noslip_tolerance is not None:
+            spec.option.noslip_tolerance = noslip_tolerance
 
         # Set WORLD frequency options (use MuJoCo defaults if None)
         if impratio is not None:

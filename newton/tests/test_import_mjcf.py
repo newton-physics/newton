@@ -5679,6 +5679,37 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 self.assertEqual(len(value), 1)
                 self.assertEqual(value[0], expected)
 
+    def test_option_noslip_reaches_solver(self):
+        """noslip_iterations and noslip_tolerance from <option> reach the MuJoCo model SolverMuJoCo builds."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+<mujoco>
+    <option noslip_iterations="50" noslip_tolerance="1e-10"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        )
+        model = builder.finalize()
+        self.assertEqual(model.mujoco.noslip_iterations.numpy()[0], 50)
+        self.assertAlmostEqual(float(model.mujoco.noslip_tolerance.numpy()[0]), 1e-10, delta=1e-16)
+
+        solver = newton.solvers.SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.opt.noslip_iterations, 50)
+        self.assertAlmostEqual(solver.mj_model.opt.noslip_tolerance, 1e-10, delta=1e-16)
+        self.assertEqual(solver.mjw_model.opt.noslip_iterations, 50)
+
+        # Without the option, noslip stays at MuJoCo's default (off).
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self._create_mjcf_with_option("impratio", "2"))
+        solver = newton.solvers.SolverMuJoCo(builder.finalize())
+        self.assertEqual(solver.mj_model.opt.noslip_iterations, 0)
+
     def test_option_enum_once_parsing(self):
         """Test parsing of ONCE frequency enum options from MJCF (4 options)."""
         test_cases = [
