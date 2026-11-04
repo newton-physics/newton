@@ -324,6 +324,8 @@ def validate(status, *, clear):
 
 def counts(solver):
     """Return the (active, skipped) contact counts of the latest prepared step."""
+    if solver.model.device.is_capturing:
+        raise RuntimeError("Steel compliance contact counts must be read outside CUDA graph capture")
     active, skipped = solver._compliance.counts.numpy()
     return int(active), int(skipped)
 
