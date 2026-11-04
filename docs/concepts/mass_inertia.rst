@@ -152,7 +152,10 @@ For format-specific details, see:
   ``lock_inertia``), and geoms contribute via density when ``<inertial>`` is
   absent. Mesh geoms use the ``inertia`` mode of their ``<mesh>`` asset:
   MuJoCo's default ``legacy`` sums absolute tetrahedron volumes, ``exact`` uses
-  the signed volume, ``convex`` the convex hull, and ``shell`` the surface area.
+  the signed volume, ``convex`` the convex hull (limited by ``maxhullvert`` as
+  in MuJoCo), and ``shell`` the surface area. A mesh with too little surface
+  area or volume for its mode, which MuJoCo rejects, adds no mass and logs a
+  warning; use ``inertia="shell"`` to give flat or open surface meshes mass.
 - **URDF**: :meth:`~newton.ModelBuilder.add_urdf` — uses ``<inertial>``
   directly when present; falls back to collision geometry with default density
   otherwise.  By default visual shapes do not contribute mass; however,

@@ -2219,6 +2219,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
     )
 
     def assert_matches_native(self, mjcf: str, asset_dir: str | None = None):
+        """Compare the first body's mass, center of mass and inertia tensor with native MuJoCo."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
         if asset_dir is None:
             native = mujoco.MjModel.from_xml_string(mjcf)
@@ -2239,9 +2240,17 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
             np.array(builder.body_inertia[0]).reshape(3, 3), expected_inertia, rtol=1e-5, atol=1e-6
         )
 
-    def inline_mjcf(self, mesh_attributes: str = "", defaults: str = "", geom_attributes: str = "") -> str:
-        vertex = " ".join(map(str, self.VERTICES.flat))
-        face = " ".join(map(str, self.FACES.flat))
+    def inline_mjcf(
+        self,
+        mesh_attributes: str = "",
+        defaults: str = "",
+        geom_attributes: str = "",
+        vertices: np.ndarray | None = None,
+        faces: np.ndarray | None = None,
+    ) -> str:
+        """Build an MJCF model with one free body and one inline mesh geom."""
+        vertex = " ".join(map(str, (self.VERTICES if vertices is None else vertices).flat))
+        face = " ".join(map(str, (self.FACES if faces is None else faces).flat))
         return f"""<mujoco><default>{defaults}</default><asset>
           <mesh name="mesh" vertex="{vertex}" face="{face}" {mesh_attributes}/></asset>
           <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh" {geom_attributes}/></body></worldbody>
@@ -2306,6 +2315,82 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
         """Reject inertia keywords that MuJoCo does not accept."""
         with self.assertRaisesRegex(ValueError, "unsupported inertia 'solid'"):
             newton.ModelBuilder().add_mjcf(self.inline_mjcf('inertia="solid"'))
+
+    def test_convex_inertia_with_maxhullvert(self):
+        """A limited convex hull keeps the vertices MuJoCo's qhull options select."""
+        from scipy.spatial import ConvexHull
+
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        # Deterministic, irregular cloud: a Fibonacci sphere with varying radius.
+        index = np.arange(60)
+        z = 1.0 - (2.0 * index + 1.0) / 60.0
+        azimuth = index * np.pi * (3.0 - np.sqrt(5.0))
+        radius = 0.7 + 0.3 * ((index * 0.618034) % 1.0)
+        rho = np.sqrt(1.0 - z**2)
+        vertices = (radius[:, None] * np.stack((rho * np.cos(azimuth), rho * np.sin(azimuth), z), axis=1)).astype(
+            np.float32
+        )
+        faces = ConvexHull(vertices.astype(np.float64)).simplices
+        masses = []
+        for maxhullvert in (None, 8, 10):
+            hull = f'maxhullvert="{maxhullvert}"' if maxhullvert else ""
+            mjcf = self.inline_mjcf(f'inertia="convex" {hull}', vertices=vertices, faces=faces)
+            with self.subTest(maxhullvert=maxhullvert):
+                self.assert_matches_native(mjcf)
+            masses.append(mujoco.MjModel.from_xml_string(mjcf).body_mass[1])
+        # The limits must change the native mass, or the test would not cover them.
+        self.assertGreater(min(abs(masses[0] - masses[1]), abs(masses[0] - masses[2])), 0.01 * masses[0])
+
+    def test_mesh_without_volume_adds_no_mass(self):
+        """A mesh that its mode gives no volume adds no mass, where MuJoCo rejects it; ``shell`` gives it mass."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        # A flat square away from the origin, where Newton's exact signed volume is not zero.
+        square = np.array([[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]])
+        triangles = np.array([[0, 1, 2], [0, 2, 3]])
+        # Non-colliding, so native MuJoCo does not need a collision hull of the flat mesh.
+        geom = 'contype="0" conaffinity="0"'
+        for mode in (None, "convex"):
+            mjcf = self.inline_mjcf(
+                f'inertia="{mode}"' if mode else "", geom_attributes=geom, vertices=square, faces=triangles
+            )
+            with self.subTest(mode=mode):
+                with self.assertRaises(ValueError):
+                    mujoco.MjModel.from_xml_string(mjcf)
+                builder = newton.ModelBuilder()
+                with self.assertLogs("newton", level="WARNING") as logs:
+                    builder.add_mjcf(mjcf)
+                self.assertIn("adds no mass", "\n".join(logs.output))
+                self.assertEqual(builder.body_mass[0], 0.0)
+        self.assert_matches_native(
+            self.inline_mjcf('inertia="shell"', geom_attributes=geom, vertices=square, faces=triangles)
+        )
+
+    def test_file_mesh_skips_exact_inertia(self):
+        """File meshes compute exact mass properties only for ``inertia="exact"``."""
+        import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
+
+        obj = "".join(f"v {x} {y} {z}\n" for x, y, z in self.VERTICES)
+        obj += "".join(f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in self.FACES)
+        original = import_mjcf.load_meshes_from_file
+        requested = []
+
+        def recording(*args, **kwargs):
+            requested.append(kwargs["compute_inertia"])
+            return original(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "mesh.obj").write_text(obj)
+            import_mjcf.load_meshes_from_file = recording
+            try:
+                for mode in ("legacy", "exact"):
+                    with self.subTest(mode=mode):
+                        mjcf = f"""<mujoco><asset><mesh name="mesh" file="mesh.obj" inertia="{mode}"/></asset>
+                          <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh"/></body></worldbody>
+                        </mujoco>"""
+                        self.assert_matches_native(mjcf, directory)
+            finally:
+                import_mjcf.load_meshes_from_file = original
+        self.assertEqual(requested, [False, True])
 
 
 class TestImportMjcfInlineMesh(unittest.TestCase):
