@@ -536,9 +536,13 @@ def compute_gyroscopic_torque(
 
 
 @wp.func
-def has_singular_inertia(inv_m_i: wp.float32, inv_I_i: wp.mat33f) -> bool:
-    """Whether a body has a zero inverse mass or a singular inverse inertia."""
-    return inv_m_i == 0.0 or wp.determinant(inv_I_i) == 0.0
+def has_singular_inertia(inv_m_i: wp.float32, inv_i_I_i: wp.mat33f) -> bool:
+    """Whether a body has a zero inverse mass or a singular inverse inertia.
+
+    The inverse inertia must be the body-frame one, since the determinant of its rotation to the
+    world frame is not exactly zero in floating point.
+    """
+    return inv_m_i == 0.0 or wp.determinant(inv_i_I_i) == 0.0
 
 
 @wp.func
@@ -550,13 +554,10 @@ def compute_body_twist_update_with_eom(
     inv_I_i: wp.mat33f,
     u_i: wp.spatial_vectorf,
     w_i: wp.spatial_vectorf,
-    integrate_singular_bodies: bool = False,
 ) -> tuple[wp.vec3f, wp.vec3f]:
     # Extract linear and angular parts
     v_i = wp.spatial_top(u_i)
     omega_i = wp.spatial_bottom(u_i)
-    if integrate_singular_bodies and has_singular_inertia(inv_m_i, inv_I_i):
-        return v_i, omega_i
     f_i = wp.spatial_top(w_i)
     tau_i = wp.spatial_bottom(w_i)
 

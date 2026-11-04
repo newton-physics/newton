@@ -1,21 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Gripper — Soft Triangle (water-tight FACE contact)
-#
-# A parallel-jaw gripper with CUBE finger pads grips a single soft triangle
-# at its CENTER, then lifts and holds it in the air.
-#
-# The triangle's three vertices sit well outside the gripper's reach, so the
-# legacy per-particle contact path finds nothing between the jaws. Only the
-# water-tight soft-FACE pass detects the triangle face crossing the pinch, so
-# the grip (and the lift that follows) works only with
-# ``enable_rigid_soft_full_surface_contact=True``. With the flag off the
-# triangle slips out and falls.
-#
-# Command: python -m newton.examples vbd_gripper_soft_triangle
-###########################################################################
+"""Example VBD Gripper — Soft Triangle (water-tight FACE contact)
+
+A parallel-jaw gripper with CUBE finger pads grips a single soft triangle
+at its CENTER, then lifts and holds it in the air.
+
+The triangle's three vertices sit well outside the gripper's reach, so the
+legacy per-particle contact path finds nothing between the jaws. Only the
+water-tight soft-FACE pass detects the triangle face crossing the pinch, so
+the grip (and the lift that follows) works only with
+``enable_rigid_soft_full_surface_contact=True``. With the flag off the
+triangle slips out and falls.
+
+Success criteria:
+- Cube finger pads pinch the center of a triangle whose three vertices lie outside the jaws.
+- The triangle lifts with the gripper and remains held during the hold phase; its face does not slip
+  through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_triangle`
+"""
 
 from __future__ import annotations
 
@@ -228,7 +233,7 @@ class Example:
             axis=wp.vec3(0.0, 0.0, 1.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=grab_z,
+            target_q=grab_z,
             label="gantry_z_joint",
         )
         j_x = builder.add_joint_prismatic(
@@ -237,7 +242,7 @@ class Example:
             axis=wp.vec3(1.0, 0.0, 0.0),
             target_ke=p["gantry_drive_ke"],
             target_kd=p["gantry_drive_kd"],
-            target_pos=0.0,
+            target_q=0.0,
             label="gantry_x_joint",
         )
         j_left = builder.add_joint_prismatic(
@@ -247,7 +252,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="left_finger_joint",
         )
         j_right = builder.add_joint_prismatic(
@@ -257,7 +262,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, p["finger_z_offset"]), wp.quat_identity()),
             target_ke=p["finger_drive_ke"],
             target_kd=p["finger_drive_kd"],
-            target_pos=p["open_half_gap"],
+            target_q=p["open_half_gap"],
             label="right_finger_joint",
         )
         builder.add_articulation([j_z, j_x, j_left, j_right], label="gripper")

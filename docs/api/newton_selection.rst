@@ -4,6 +4,10 @@
 newton.selection
 ================
 
+Select articulations and deformable objects by label to read or update state.
+
+See :ref:`selection-api` for an example and the supported array and mask shapes.
+
 .. py:module:: newton.selection
 .. currentmodule:: newton.selection
 
@@ -14,3 +18,12 @@ newton.selection
    :nosignatures:
 
    ArticulationView
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+   :template: class.rst
+
+   DeformableCurveView
+   DeformableSurfaceView
+   DeformableVolumeView

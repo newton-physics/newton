@@ -2935,7 +2935,8 @@ class Gaussian:
         """Load Gaussian splat data from a USD prim.
 
         Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
-        The (possibly inherited) USD color space of the SH radiance selects :attr:`sh_color_space`:
+        The USD color space of the SH coefficient attribute that is read (the single-precision attribute,
+        or the half-precision one when only that has a value) selects :attr:`sh_color_space`:
         untagged, ``srgb_rec709_scene`` and ``srgb_rec709_display`` radiance is :attr:`~newton.utils.ColorSpace.SRGB`, and
         ``lin_rec709_scene`` and other Rec.709 linear names are :attr:`~newton.utils.ColorSpace.LINEAR`.
         Other color spaces are imported without conversion and a warning is logged; see the

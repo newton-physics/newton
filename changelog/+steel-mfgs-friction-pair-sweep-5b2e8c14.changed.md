@@ -1,0 +1,1 @@
+Skip the second row of each friction pair in `SolverSteel`'s fused matrix-free Gauss-Seidel sweeps, whose pair solve at the first row already writes it, and reuse the prefetched Jacobian for the pair's cross term, preserving the reduction order. No migration is required.

@@ -63,6 +63,13 @@ class UI:
             io.add_mouse_wheel_event(scroll_x, scroll_y)
 
         self.impl.on_mouse_scroll = on_mouse_scroll
+
+        # Button transitions belong to press/release events. The backend also
+        # sends a press on every drag motion, which restarts cancelled drags.
+        def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
+            io.add_mouse_pos_event(x, io.display_size.y - y)
+
+        self.impl.on_mouse_drag = on_mouse_drag
         self.impl._attach_callbacks(self.window)
 
         # Set up proper DPI scaling for high-DPI displays.
@@ -362,6 +369,14 @@ class UI:
         style.set_color_(self.imgui.Col_.nav_windowing_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
         style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
         # fmt: on
+
+    def cancel_mouse_interaction(self) -> None:
+        """Discard pending input and release widgets without completing a click."""
+        self.io.clear_events_queue()
+        self.io.clear_input_mouse()
+        self.imgui.internal.clear_active_id()
+        self.imgui.get_current_context().want_capture_mouse_next_frame = -1
+        self.io.want_capture_mouse = False
 
     def begin_frame(self) -> None:
         """Renders a single frame of the UI. This should be called from the main render loop."""
