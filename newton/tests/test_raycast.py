@@ -623,7 +623,16 @@ def test_ray_intersect_heightfield_scaled(test: TestRaycast, device: str):
                 direction,
                 lock,
             ],
-            outputs=[min_dist, min_index, min_body_index, empty_world, empty_offsets, empty_mask],
+            outputs=[
+                min_dist,
+                min_index,
+                min_body_index,
+                empty_world,
+                empty_offsets,
+                empty_mask,
+                wp.array([], dtype=wp.bool, device=device),
+                wp.array([], dtype=wp.int32, device=device),
+            ],
             device=device,
         )
         dist = float(min_dist.numpy()[0])

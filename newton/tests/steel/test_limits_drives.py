@@ -609,6 +609,7 @@ def _allocated_joint_velocity_slots(device, qd: float, *, fraction: float, qdot_
         dim=1,
         inputs=[
             wp.array([0, 1], dtype=wp.int32, device=device),
+            wp.array([1], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.array([1], dtype=wp.int32, device=device),
             wp.array([int(JointType.REVOLUTE)], dtype=wp.int32, device=device),
@@ -982,8 +983,8 @@ def _build_slider(device, *, effort_limit=1.0e6):
         axis=newton.Axis.X,
         target_ke=KE,
         target_kd=KD,
-        target_pos=TARGET_POS,
-        target_vel=TARGET_VEL,
+        target_q=TARGET_POS,
+        target_qd=TARGET_VEL,
         armature=ARMATURE,
         effort_limit=effort_limit,
     )
@@ -1141,6 +1142,7 @@ def test_count_pass_assigns_no_drive_slot_above_the_sentinel(test, device):
             dim=1,
             inputs=[
                 ints([0, 1]),
+                ints([1]),
                 ints([0]),
                 ints([1]),
                 ints([int(JointType.PRISMATIC)]),
@@ -1199,7 +1201,7 @@ def test_pgs_drive_bounds_complete_reaction_under_external_load(test, device):
                     axis=newton.Axis.X,
                     target_ke=10000.0,
                     target_kd=0.0,
-                    target_pos=0.0,
+                    target_q=0.0,
                     damping=0.0,
                     armature=0.0,
                     effort_limit=effort_limit,
@@ -1277,6 +1279,7 @@ def test_prescale_skips_fused_driven_dofs(test, device):
             dim=1,
             inputs=[
                 wp.array([0, 2], dtype=wp.int32, device=device),
+                wp.array([2], dtype=wp.int32, device=device),
                 wp.array([int(JointType.REVOLUTE)] * 2, dtype=wp.int32, device=device),
                 wp.array([0, 1], dtype=wp.int32, device=device),
                 wp.array([0, 1], dtype=wp.int32, device=device),
@@ -1441,7 +1444,7 @@ def _driven_lever_on_ground(device):
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.049), wp.quat_identity()),
         target_ke=1000.0,
         target_kd=50.0,
-        target_pos=0.0,
+        target_q=0.0,
     )
     builder.add_articulation([joint])
     return builder.finalize(device=device)
@@ -1499,8 +1502,8 @@ def _build_slider_augmented_drives(device, *, effort_limit=1.0e6, damping=0.0):
         axis=newton.Axis.X,
         target_ke=KE,
         target_kd=KD,
-        target_pos=TARGET_POS,
-        target_vel=TARGET_VEL,
+        target_q=TARGET_POS,
+        target_qd=TARGET_VEL,
         armature=ARMATURE,
         effort_limit=effort_limit,
         damping=damping,

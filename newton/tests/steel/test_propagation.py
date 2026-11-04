@@ -1093,7 +1093,7 @@ def _combination_scene(device, restitution=0.0, mimic=False):
                 child_xform=wp.transform(wp.vec3(-0.15, 0.0, 0.0), wp.quat_identity()),
                 target_ke=40.0,
                 target_kd=2.0,
-                target_pos=0.2,
+                target_q=0.2,
                 limit_lower=-0.6,
                 limit_upper=0.6,
             )
@@ -3066,7 +3066,7 @@ def _schedule_scene(device, worlds=1, offset=0.028):
                 child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
                 target_ke=50.0 if side > 0 else 0.0,
                 target_kd=2.0 if side > 0 else 0.0,
-                target_pos=0.3,
+                target_q=0.3,
             )
         )
     template.add_articulation(joints)

@@ -51,23 +51,3 @@ construction.
 
    parse_actuator_prim
    register_actuator_component
-
-.. rubric:: Deprecated
-
-.. list-table::
-   :header-rows: 1
-
-   * - Name
-     - Guidance
-   * - ``Clamping``
-     - Deprecated in 1.6; use ClampingBase instead.
-   * - ``Controller``
-     - Deprecated in 1.6; use DriveBase instead.
-   * - ``ControllerNeuralLSTM``
-     - Deprecated in 1.6; use DriveNeuralLSTM instead.
-   * - ``ControllerNeuralMLP``
-     - Deprecated in 1.6; use DriveNeuralMLP instead.
-   * - ``ControllerPD``
-     - Deprecated in 1.6; use DrivePD instead.
-   * - ``ControllerPID``
-     - Deprecated in 1.6; use DrivePID instead.

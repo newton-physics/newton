@@ -17,7 +17,7 @@ from newton._src.viewer.gl.gui import UI
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
-from newton.tests.unittest_utils import patch_sys_module, requires
+from newton.tests.unittest_utils import import_pyglet_window, patch_sys_module, requires
 
 _Vec3 = namedtuple("_Vec3", ("x", "y", "z"))
 
@@ -386,14 +386,9 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui._camera_orbit_sensitivity = 0.1
         self.gui._camera_dolly_drag_sensitivity = 0.01
         # Import input constants without creating Pyglet's shadow GL window.
-        import pyglet
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import mouse
 
-        shadow_window = pyglet.options["shadow_window"]
-        pyglet.options["shadow_window"] = False
-        try:
-            from pyglet.window import mouse
-        finally:
-            pyglet.options["shadow_window"] = shadow_window
         self.mouse = mouse
         self.gui._gizmo_active = {}
         self.gui._gizmo_hovered = False

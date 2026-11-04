@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import warnings
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ from newton.actuators import (
     JointSpaceResponse,
     parse_actuator_prim,
 )
+from newton.exceptions import NewtonDeprecationWarning
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import MUJOCO_MODULES, has_module, requires
 
@@ -2292,6 +2294,10 @@ class _TorchCheckpointTestMixin:
         self.torch = torch
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
+        catcher = warnings.catch_warnings()
+        catcher.__enter__()
+        self.addCleanup(catcher.__exit__, None, None, None)
+        warnings.filterwarnings("ignore", "Torch neural-drive checkpoints", NewtonDeprecationWarning)
 
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
@@ -2332,7 +2338,9 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         """Load MLP from a pt2 archive with metadata and run compute."""
         path = self._save_pt2(self._make_mlp(bias=7.0), metadata={"effort_scale": 2.0})
         n = 1
-        ctrl = DriveNeuralMLP(model_path=path)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "Torch neural-drive checkpoints") as cm:
+            ctrl = DriveNeuralMLP(model_path=path)
+        self.assertEqual(cm.filename, __file__)
         self.assertAlmostEqual(ctrl.effort_scale, 2.0)
         ctrl.finalize(self.device, n)
         self.assertFalse(ctrl.is_graphable())
@@ -2474,7 +2482,9 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         """Load LSTM from a pt2 archive; layer config comes from metadata."""
         metadata = {"effort_scale": 5.0, "num_layers": 2, "hidden_size": 8}
         path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
-        ctrl = DriveNeuralLSTM(model_path=path)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "Torch neural-drive checkpoints") as cm:
+            ctrl = DriveNeuralLSTM(model_path=path)
+        self.assertEqual(cm.filename, __file__)
         self.assertAlmostEqual(ctrl.effort_scale, 5.0)
         self.assertEqual(ctrl._num_layers, 2)
         self.assertEqual(ctrl._hidden_size, 8)
@@ -5772,7 +5782,9 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
             newton.ModelBuilder().add_usd(stage_path)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage_path, allow_unsafe_torch_checkpoints=True)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "allow_unsafe_torch_checkpoints") as cm:
+            result = builder.add_usd(stage_path, allow_unsafe_torch_checkpoints=True)
+        self.assertEqual(cm.filename, __file__)
         self.assertEqual(result["actuator_count"], 1)
         self.assertEqual(next(iter(builder.actuator_entries.values())).drive_shared_kwargs["model_path"], model_path)
 
@@ -5782,12 +5794,18 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
             "Actuator prim '/World/Robot/NeuralActuator': "
             "NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute"
         )
-        for allow_unsafe in (False, True):
-            with self.subTest(allow_unsafe_torch_checkpoints=allow_unsafe):
-                with self.assertRaisesRegex(ValueError, message):
-                    parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe)
-                with self.assertRaisesRegex(ValueError, message):
-                    newton.ModelBuilder().add_usd(stage, allow_unsafe_torch_checkpoints=allow_unsafe)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "allow_unsafe_torch_checkpoints") as cm:
+            with self.assertRaisesRegex(ValueError, message):
+                parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=True)
+        self.assertEqual(cm.filename, __file__)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "allow_unsafe_torch_checkpoints", NewtonDeprecationWarning)
+            for allow_unsafe in (False, True):
+                with self.subTest(allow_unsafe_torch_checkpoints=allow_unsafe):
+                    with self.assertRaisesRegex(ValueError, message):
+                        parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe)
+                    with self.assertRaisesRegex(ValueError, message):
+                        newton.ModelBuilder().add_usd(stage, allow_unsafe_torch_checkpoints=allow_unsafe)
 
 
 # ---------------------------------------------------------------------------

@@ -811,13 +811,11 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(np.asarray(builder.body_q)[bodies], np.asarray(native.body_q), atol=1e-6)
                 q = builder.joint_q_start[joints[0]]
                 nq = native.joint_q_start[native_joints[0]]
-                np.testing.assert_allclose(
-                    builder.joint_target_q[q : q + 7], native.joint_target_q[nq : nq + 7], atol=1e-6
-                )
+                np.testing.assert_allclose(builder.joint_rest_q[q : q + 7], native.joint_rest_q[nq : nq + 7], atol=1e-6)
                 imported_model = builder.finalize(device="cpu")
                 native_model = native.finalize(device="cpu")
                 np.testing.assert_allclose(
-                    imported_model.joint_target_q.numpy(), native_model.joint_target_q.numpy(), atol=1e-6
+                    imported_model.joint_rest_q.numpy(), native_model.joint_rest_q.numpy(), atol=1e-6
                 )
 
     def test_welded_cables_keep_rest_vectors_and_frames(self):
@@ -859,7 +857,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
         )
         np.testing.assert_allclose(builder.body_q, native.body_q, atol=1e-6)
-        np.testing.assert_allclose(builder.joint_target_q, native.joint_target_q, atol=1e-6)
+        np.testing.assert_allclose(builder.joint_rest_q, native.joint_rest_q, atol=1e-6)
 
     def test_welded_cable_normals_follow_merged_tangents(self):
         """Keep authored normals when an accepted weld moves one endpoint slightly."""
@@ -957,7 +955,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                     joint = next(j for j, child in enumerate(builder.joint_child) if child == bodies[1])
                     q = builder.joint_q_start[joint]
                     np.testing.assert_allclose(
-                        builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
+                        builder.joint_rest_q[q : q + 7], [0, 0, 0, 0, 0, math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
                     )
 
     def test_cable_rest_volume_mass_precedence(self):
@@ -1014,7 +1012,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.joint_articulation[joints[-1]], -1)
         np.testing.assert_allclose(builder.body_q, native.body_q, atol=1e-6)
         np.testing.assert_allclose(builder.shape_scale, native.shape_scale, atol=1e-6)
-        np.testing.assert_allclose(builder.joint_target_q, native.joint_target_q, atol=1e-6)
+        np.testing.assert_allclose(builder.joint_rest_q, native.joint_rest_q, atol=1e-6)
         np.testing.assert_allclose(builder.joint_X_p[joints[-1]], native.joint_X_p[native_joints[-1]], atol=1e-6)
 
     def test_cable_rest_arrays_keep_multi_curve_offsets(self):
@@ -1038,7 +1036,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(builder.shape_scale)[shapes, 1], [0.05, 0.1], atol=1e-6)
         q = builder.joint_q_start[joints[0]]
         np.testing.assert_allclose(
-            builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, -math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
+            builder.joint_rest_q[q : q + 7], [0, 0, 0, 0, 0, -math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
         )
 
     def test_cable_bad_rest_normals_preserve_rest_points(self):
@@ -1063,7 +1061,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 shapes = [builder.body_shapes[body][0] for body in bodies]
                 np.testing.assert_allclose(np.asarray(builder.shape_scale)[shapes, 1], [0.05, 0.1], atol=1e-6)
                 q = builder.joint_q_start[joints[0]]
-                np.testing.assert_allclose(builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, 0, 1], atol=1e-6)
+                np.testing.assert_allclose(builder.joint_rest_q[q : q + 7], [0, 0, 0, 0, 0, 0, 1], atol=1e-6)
 
     def test_cable_rest_shape_uses_full_affine_transform(self):
         """Match baked rest geometry under scale, shear, reflection, and an import transform."""
@@ -1118,9 +1116,9 @@ class TestUSDDeformableCable(unittest.TestCase):
                     )
                     joint = result["path_cable_map"]["/World/Cable"][1][0]
                     q = builder.joint_q_start[joint]
-                    rotation = wp.quat_to_matrix(wp.quat(*builder.joint_target_q[q + 3 : q + 7]))
+                    rotation = wp.quat_to_matrix(wp.quat(*builder.joint_rest_q[q + 3 : q + 7]))
                     np.testing.assert_allclose(np.asarray(rotation).reshape(3, 3), expected_rotation, atol=2e-5)
-                for attribute in ("body_q", "shape_scale", "body_mass", "joint_target_q", "joint_X_p", "joint_X_c"):
+                for attribute in ("body_q", "shape_scale", "body_mass", "joint_rest_q", "joint_X_p", "joint_X_c"):
                     np.testing.assert_allclose(
                         getattr(builders[0], attribute), getattr(builders[1], attribute), atol=2e-5, err_msg=attribute
                     )

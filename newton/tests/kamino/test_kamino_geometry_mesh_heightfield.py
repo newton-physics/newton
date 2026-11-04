@@ -8,6 +8,7 @@ and solver integration with mesh and heightfield shapes via the
 ``ModelKamino.from_newton()`` path.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -19,7 +20,7 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 
 _cuda_available = wp.is_cuda_available()
@@ -289,7 +290,7 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
     """Tests Kamino unified collision pipeline with heightfield shapes via from_newton().
 
     The unified pipeline handles heightfield-vs-convex contacts directly.
-    Each test verifies exact contact counts, contact positions, normals,
+    Each test verifies contact counts consistent with reduction, contact positions, normals,
     and signed distances against analytically known values.
     """
 
@@ -299,24 +300,24 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_sphere_on_flat_heightfield(self):
-        """Sphere touching flat heightfield: 2 contacts (one per cell triangle), normal=(0,0,1), position at z=0."""
+        """Retain a valid upward contact patch for a sphere touching a flat heightfield."""
         _, model, data = _finalize_and_get_kamino(_build_sphere_on_heightfield(), self.default_device)
         contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
-        # A sphere centered over a heightfield cell touches both triangles in that cell,
-        # producing 2 contacts on a flat surface.
-        self.assertEqual(nc, 2, f"Sphere-on-flat-heightfield should produce 2 contacts (1 per triangle), got {nc}")
+        # Both cell triangles generate contacts at the same patch. Reduction can merge their representatives;
+        # roundoff can also leave two distinct winners, so the raw triangle count is not an output guarantee.
+        self.assertIn(nc, (1, 2), f"Sphere-on-flat-heightfield should retain 1 or 2 contacts, got {nc}")
 
         gapfunc = contacts.gapfunc.numpy()[:nc]
         pos_a = contacts.position_A.numpy()[:nc]
@@ -390,18 +391,16 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
             self.assertGreater(normal[2], 0.7, f"Contact {i}: normal z={normal[2]}, expected mostly up")
 
     def test_04_multi_world_heightfield(self):
-        """Multi-world sphere-on-heightfield: each world gets exactly 2 contacts (1 per triangle)."""
+        """Retain a sphere-heightfield contact patch in every world."""
         num_worlds = 3
         _, model, data = _finalize_and_get_kamino(_build_multi_world_heightfield(num_worlds), self.default_device)
         contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
-        expected_total = 2 * num_worlds  # 2 contacts per sphere (one per cell triangle)
-        self.assertEqual(nc, expected_total, f"Expected {expected_total} contacts (2 per world), got {nc}")
-
         world_counts = contacts.world_active_contacts.numpy()[:num_worlds]
+        self.assertEqual(nc, int(world_counts.sum()), "Per-world counts must account for every retained contact")
         for w in range(num_worlds):
-            self.assertEqual(int(world_counts[w]), 2, f"World {w}: expected 2 contacts, got {world_counts[w]}")
+            self.assertIn(int(world_counts[w]), (1, 2), f"World {w}: expected 1 or 2 contacts, got {world_counts[w]}")
 
     def test_05_no_contacts_when_separated(self):
         """Sphere far above heightfield must produce zero contacts."""
@@ -428,14 +427,14 @@ class TestNewtonCollisionPathMeshHeightfield(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_newton_to_kamino_heightfield(self):
         """Heightfield contacts survive Newton->Kamino conversion with correct geometry."""
@@ -541,14 +540,14 @@ class TestSolverWithMeshHeightfield(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_sphere_falls_onto_heightfield(self):
         """Sphere dropped from 0.5m above flat heightfield must rest at z ≈ SPHERE_RADIUS."""

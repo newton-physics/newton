@@ -222,6 +222,24 @@ def patch_sys_module(name: str, module: Any):
             sys.modules[name] = original
 
 
+def import_pyglet_window(*, shadow_window: bool = True):
+    """Import ``pyglet.window`` with GL error checks off, as ``RendererGL`` does.
+
+    pyglet reads ``debug_gl`` only on its first GL import, so a test importing it first
+    would otherwise leave the checks on for every later viewer in its worker.
+    """
+    import pyglet
+
+    pyglet.options["debug_gl"] = False
+    saved_shadow_window = pyglet.options["shadow_window"]
+    pyglet.options["shadow_window"] = shadow_window
+    try:
+        import pyglet.window
+    finally:
+        pyglet.options["shadow_window"] = saved_shadow_window
+    return pyglet
+
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")
