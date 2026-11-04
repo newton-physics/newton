@@ -1,0 +1,1 @@
+Apply the MJCF `<compiler>` attributes `boundmass`, `boundinertia`, and `balanceinertia` to each imported body, matching native MuJoCo. Previously Newton ignored them, so bodies kept masses and principal moments below the bounds, and finalize validation corrected unbalanced inertia differently.

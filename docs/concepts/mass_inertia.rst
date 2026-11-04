@@ -207,6 +207,13 @@ behavior:
      - Non-negative extra diagonal shift applied when repairing inertia
        [kg·m²]. Zero disables the extra shift, not validation.
 
+The MJCF ``<compiler>`` attributes ``boundmass``, ``boundinertia``, and
+``balanceinertia`` are separate from these settings.
+:meth:`~newton.ModelBuilder.add_mjcf` applies them to each imported body as
+MuJoCo does: it raises the mass and each principal moment to their bounds and
+replaces unbalanced principal moments with their mean. Finalize validation then
+runs on the bounded values.
+
 Small-inertia models
 ^^^^^^^^^^^^^^^^^^^^
 

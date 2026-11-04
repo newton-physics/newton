@@ -10462,6 +10462,57 @@ class TestZeroMassBodies(unittest.TestCase):
         self.assertEqual(builder.body_mass[empty_idx], 0.0)
 
 
+class TestMjcfCompilerInertiaBounds(unittest.TestCase):
+    """``<compiler boundmass boundinertia balanceinertia>`` bound every body like native MuJoCo."""
+
+    def assert_bodies_match_native(self, mjcf: str):
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.body_count, native.nbody - 1)
+        for body in range(1, native.nbody):
+            with self.subTest(body=native.body(body).name):
+                rotation = np.zeros(9)
+                mujoco.mju_quat2Mat(rotation, native.body_iquat[body])
+                rotation = rotation.reshape(3, 3)
+                expected = rotation @ np.diag(native.body_inertia[body]) @ rotation.T
+                np.testing.assert_allclose(model.body_mass.numpy()[body - 1], native.body_mass[body], rtol=1e-6)
+                np.testing.assert_allclose(model.body_com.numpy()[body - 1], native.body_ipos[body], atol=1e-6)
+                np.testing.assert_allclose(model.body_inertia.numpy()[body - 1], expected, rtol=1e-5, atol=1e-10)
+
+    def test_bounds_and_balance_match_native(self):
+        """Bound massless, light and unbalanced bodies, including mass from <frame> geoms."""
+        self.assert_bodies_match_native(
+            """<mujoco><compiler boundmass="0.001" boundinertia="0.0001" balanceinertia="true"/>
+              <worldbody>
+                <body name="massless"><joint/>
+                  <body name="sphere" pos="0 0 0.5"><joint/><geom type="sphere" size="0.1"/></body>
+                </body>
+                <body name="light" pos="1 0 0"><joint/>
+                  <inertial pos="0.1 0 0" mass="0.0001" diaginertia="1e-6 2e-6 3e-5"/>
+                </body>
+                <body name="unbalanced" pos="2 0 0"><joint/>
+                  <inertial pos="0 0.1 0" quat="0.9 0.1 0.2 0.3" mass="1" diaginertia="0.01 0.02 0.1"/>
+                </body>
+                <body name="frame_geom" pos="3 0 0"><joint/>
+                  <frame pos="0.2 0 0"><geom type="box" size="0.01 0.01 0.3" mass="0.0005"/></frame>
+                </body>
+              </worldbody></mujoco>"""
+        )
+
+    def test_balance_keeps_valid_inertia(self):
+        """Balance only violations of A + B >= C; an exact tie and each bound apply alone."""
+        for compiler in ('balanceinertia="true"', 'boundmass="0.001"', 'boundinertia="2e-6"'):
+            with self.subTest(compiler=compiler):
+                self.assert_bodies_match_native(
+                    f"""<mujoco><compiler {compiler}/><worldbody><body name="tie"><joint/>
+                      <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-6 2e-6 3e-6"/>
+                    </body></worldbody></mujoco>"""
+                )
+
+
 class TestMjcfIncludeMeshdir(unittest.TestCase):
     """Tests for meshdir/texturedir resolution in included MJCF files."""
 

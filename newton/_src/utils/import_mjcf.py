@@ -18,6 +18,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
+from ..geometry.inertia import _inverse_inertia
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
@@ -183,6 +184,42 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
 
 def _join_asset_dir(asset_dir: str | None, file_path: str) -> str:
     return os.path.join(asset_dir, file_path) if asset_dir not in (None, ".") else file_path
+
+
+def _bound_body_inertia(
+    mass: float, inertia: np.ndarray, bound_mass: float, bound_inertia: float, balance_inertia: bool
+) -> tuple[float, np.ndarray] | None:
+    """Apply MJCF ``<compiler boundmass boundinertia balanceinertia>`` to one body.
+
+    Follows ``mjCBody::Compile`` in MuJoCo's ``user_objects.cc``: the mass and each principal
+    moment are raised to their bound, and with ``balanceinertia`` principal moments that violate
+    ``A + B >= C`` are replaced by their mean.
+
+    Args:
+        mass: Body mass [kg].
+        inertia: Body inertia tensor about the center of mass [kg*m^2], shape (3, 3).
+        bound_mass: Lower bound on the mass [kg].
+        bound_inertia: Lower bound on each principal moment [kg*m^2].
+        balance_inertia: Whether to balance principal moments that violate ``A + B >= C``.
+
+    Returns:
+        The bounded mass [kg] and inertia tensor [kg*m^2], or ``None`` when neither changes.
+    """
+    bounded_mass = max(mass, bound_mass)
+    inertia = np.asarray(inertia, dtype=np.float64).reshape(3, 3)
+    bounded_inertia = None
+    if bound_inertia > 0.0 or balance_inertia:
+        principal, axes = np.linalg.eigh(inertia)
+        moments = np.maximum(principal, bound_inertia) if bound_inertia > 0.0 else principal.copy()
+        # eigh sorts the moments in ascending order, so only the largest can exceed the others' sum.
+        # The relative tolerance keeps A + B = C ties, which float32 storage can round either way.
+        if balance_inertia and moments[0] + moments[1] < moments[2] * (1.0 - 1e-6):
+            moments[:] = moments.mean()
+        if not np.array_equal(moments, principal):
+            bounded_inertia = axes @ np.diag(moments) @ axes.T
+    if bounded_mass == mass and bounded_inertia is None:
+        return None
+    return bounded_mass, inertia if bounded_inertia is None else bounded_inertia
 
 
 def _load_and_expand_mjcf(
@@ -615,6 +652,10 @@ def parse_mjcf(
     inertia_group_range = tuple(int(value) for value in compiler_attribs.get("inertiagrouprange", "0 5").split())
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
+    # MuJoCo's per-body lower bounds on mass and principal inertia, applied in parse_body().
+    mjcf_bound_mass = float(compiler_attribs.get("boundmass", "0"))
+    mjcf_bound_inertia = float(compiler_attribs.get("boundinertia", "0"))
+    mjcf_balance_inertia = compiler_attribs.get("balanceinertia", "false").lower() == "true"
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -2728,6 +2769,21 @@ def parse_mjcf(
             label_prefix=body_label_path,
             infer_inertia_from_geoms=infer_body_inertia_from_geoms,
         )
+
+        # Bound the final mass properties, after the geoms of <frame> children contributed.
+        bounded = _bound_body_inertia(
+            builder.body_mass[link],
+            builder.body_inertia[link],
+            mjcf_bound_mass,
+            mjcf_bound_inertia,
+            mjcf_balance_inertia,
+        )
+        if bounded is not None:
+            mass, inertia = bounded
+            builder.body_mass[link] = mass
+            builder.body_inv_mass[link] = 1.0 / mass if mass > 0.0 else 0.0
+            builder.body_inertia[link] = wp.mat33(inertia)
+            builder.body_inv_inertia[link] = _inverse_inertia(builder.body_inertia[link])
 
     def parse_common_attributes(attribs):
         return {
