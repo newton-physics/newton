@@ -18,7 +18,7 @@ import warp as wp
 from ...core.reset import reset_world_selected
 from ...core.types import MAXVAL, override
 from ...exceptions import NewtonWarning
-from ...geometry.flags import ShapeFlags
+from ...geometry.flags import MeshProperties, ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..coupled.interface import CouplingInterface
@@ -2629,6 +2629,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._model_plan.prescribed_articulation, dtype=wp.int32, device=model.device
         )
         self._has_prescribed_response = bool(np.any(self._model_plan.prescribed_articulation != 0))
+        # A body variant row can take a surface-velocity mesh after construction.
+        self._has_surface_velocity = any(
+            properties is not None and bool(np.any(properties.numpy() & int(MeshProperties.SURFACE_VELOCITY)))
+            for properties in (
+                model._shape_mesh_properties,
+                model._variant_shape_geometry.get("_shape_mesh_properties"),
+            )
+        )
+        # Kinematic bodies and moving mesh surfaces both enter contact rows as target velocities.
+        self._has_contact_target_velocity = self._has_prescribed_response or self._has_surface_velocity
         self._compute_articulation_metadata(model)
         self._init_joint_friction(model)
         if self._enable_joint_friction:
@@ -2745,7 +2755,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._compliance = _contact_compliance.ComplianceBuffers(self)
         self._mf_target_velocity = (
             wp.zeros_like(self._mf_rhs)
-            if self._has_prescribed_response
+            if self._has_contact_target_velocity
             else wp.zeros((1, 1), dtype=wp.float32, device=model.device)
         )
         self._update_effective_armature()
@@ -7113,6 +7123,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                             state_out.body_qd,
                             model.body_com,
                             self._body_to_articulation,
+                            contacts.rigid_contact_surface_velocity,
                             self._contact_world,
                             self._contact_slot,
                             self._contact_path,
@@ -7521,7 +7532,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._mf_row_type,
                     self._mf_target_velocity,
                     self._mf_row_rebound_velocity,
-                    int(self._has_prescribed_response),
+                    int(self._has_contact_target_velocity),
                     dt,
                     self._v_out_snap,
                     self._v_hat,
@@ -9616,7 +9627,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         model = self.model
         max_constraints = self._articulation_constraint_max
         mf_active = self._has_free_rigid_bodies
-        if self._has_prescribed_response:
+        if self._has_contact_target_velocity:
             self._mf_target_velocity.zero_()
 
         self._cross_world_contacts.zero_()
@@ -9960,6 +9971,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     contact_gap_limit=self._contact_gap_limit,
                     friction_gap_limit=self._friction_gap,
                     frozen_bodies=frozen_bodies,
+                    dt=dt,
                 )
             wp.launch(
                 allocate_world_contact_slots,
@@ -10034,6 +10046,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     model.shape_body,
                     state_in.body_q,
                     state_aug._body_v_s,
+                    contacts.rigid_contact_surface_velocity,
                     self._prescribed_articulation,
                     self._articulation_origin,
                     self._shape_mu,
@@ -10184,8 +10197,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.shape_body,
                         state_in.body_q,
                         state_aug._body_v_s,
+                        contacts.rigid_contact_surface_velocity,
                         self._prescribed_articulation,
-                        int(self._has_prescribed_response),
+                        int(self._has_contact_target_velocity),
                         self._shape_mu,
                         self._contact_slots_needed,
                         self._shape_restitution,
@@ -10702,7 +10716,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._mf_row_type,
                 self._mf_target_velocity,
                 self._mf_row_rebound_velocity,
-                int(self._has_prescribed_response),
+                int(self._has_contact_target_velocity),
                 self._body_to_articulation,
                 self._articulation_dof_start,
                 self._v_hat,
@@ -11240,6 +11254,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 state_in.body_q,
                 model.body_com,
                 state_aug._body_v_s,
+                contacts.rigid_contact_surface_velocity,
                 self._prescribed_articulation,
                 self._articulation_origin,
                 self._shape_mu,

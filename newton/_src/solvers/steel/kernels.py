@@ -4878,6 +4878,15 @@ def prescribed_relative_contact_target(
 
 
 @wp.func
+def surface_contact_target(contact_surface_velocity: wp.array[wp.vec3], c: int, direction: wp.vec3):
+    """Return the friction-row target velocity of contact ``c``'s moving shape surfaces."""
+    value = float(0.0)
+    if contact_surface_velocity:
+        value = wp.dot(direction, contact_surface_velocity[c])
+    return value
+
+
+@wp.func
 def _contact_mu(shape_a: int, shape_b: int, shape_material_mu: wp.array[float]):
     """Return the arithmetic-mean friction coefficient of one shape pair."""
     mu = float(0.0)
@@ -5028,6 +5037,7 @@ def prepare_world_contact_rows(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
@@ -5138,7 +5148,7 @@ def prepare_world_contact_rows(
                 prescribed_articulation,
                 articulation_origin,
                 body_v_s,
-            )
+            ) + surface_contact_target(contact_surface_velocity, c, tangent)
 
 
 @wp.kernel
@@ -6327,6 +6337,7 @@ def _build_mf_contact_row(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
@@ -6453,7 +6464,7 @@ def _build_mf_contact_row(
             mf_phi[world, row_idx] = friction_anchor_beta * friction_patches.phi[c][row_offset - 1]
             mf_row_rebound_velocity[world, row_idx] = 0.0
         if has_target_velocity != 0:
-            mf_target_velocity[world, row_idx] = prescribed_relative_contact_target(
+            target = prescribed_relative_contact_target(
                 body_a,
                 contact_art_a[c],
                 body_b,
@@ -6465,6 +6476,9 @@ def _build_mf_contact_row(
                 articulation_origin,
                 body_v_s,
             )
+            if row_offset > 0:
+                target += surface_contact_target(contact_surface_velocity, c, d)
+            mf_target_velocity[world, row_idx] = target
 
 
 @wp.kernel
@@ -6488,6 +6502,7 @@ def build_mf_contact_rows(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
@@ -6532,6 +6547,7 @@ def build_mf_contact_rows(
             shape_body,
             body_q,
             body_v_s,
+            contact_surface_velocity,
             prescribed_articulation,
             has_target_velocity,
             shape_material_mu,
@@ -8130,6 +8146,7 @@ def build_propagation_contact_rows(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
@@ -8270,7 +8287,7 @@ def build_propagation_contact_rows(
                 propagation_row_parent[world, row] = slot
                 propagation_phi[world, row] = friction_anchor_beta * friction_patches.phi[c][row_offset - 1]
                 propagation_row_rebound_velocity[world, row] = 0.0
-            propagation_target_velocity[world, row] = prescribed_relative_contact_target(
+            target = prescribed_relative_contact_target(
                 body_a,
                 art_a,
                 body_b,
@@ -8282,6 +8299,9 @@ def build_propagation_contact_rows(
                 articulation_origin,
                 body_v_s,
             )
+            if row_offset > 0:
+                target += surface_contact_target(contact_surface_velocity, c, d)
+            propagation_target_velocity[world, row] = target
 
 
 @wp.kernel

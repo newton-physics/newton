@@ -1064,6 +1064,170 @@ add_function_test(
 )
 
 
+def _surface_belt(device, *, articulated=False, box_z=0.05, gap=0.0, restitution=0.0, **solver_kwargs):
+    """Place a box on a static mesh belt with surface velocity; return the belt mesh and a stepping closure.
+
+    The closure steps ``count`` times at ``dt`` and returns the state after the last step.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, gap=gap, restitution=restitution, density=500.0)
+    belt = newton.Mesh.create_box(2.0, 2.0, 0.05, compute_inertia=False)
+    belt.enable_surface_velocity = True
+    builder.add_shape_mesh(-1, xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), mesh=belt, cfg=cfg)
+    pose = wp.transform((0.0, 0.0, box_z), wp.quat_identity())
+    box = (builder.add_link if articulated else builder.add_body)(xform=pose)
+    if articulated:
+        joint = builder.add_joint_d6(
+            parent=-1,
+            child=box,
+            parent_xform=pose,
+            linear_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+            angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+        )
+        builder.add_articulation([joint])
+    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.05, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        iterations=32,
+        free_body_constraint_max=64,
+        articulation_constraint_max=64,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+        **solver_kwargs,
+    )
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=True)
+    contacts = pipeline.contacts()
+    states = [model.state(), model.state()]
+    control = model.control()
+
+    def step(count, dt=DT, box_qd=None):
+        for i in range(count):
+            states[0].clear_forces()
+            pipeline.collide(states[0], contacts)
+            solver.step(states[0], states[1], control, contacts, dt)
+            states.reverse()
+            if box_qd is not None:
+                wp.copy(box_qd, states[0].body_qd, dest_offset=i, src_offset=box, count=1)
+        return states[0]
+
+    return belt, solver, box, step
+
+
+def test_surface_velocity_belt_drags_the_box(test, device):
+    """Verify that a box on a mesh belt with surface velocity reaches the surface speed.
+
+    One case per row builder that adds the surface target: matrix-free (free box) with point friction and with
+    persistent anchors, a coupled friction mode, dense (articulated immediate) with anchors, and both
+    propagation routes.
+    """
+    for articulated, response, mode, anchor_beta in (
+        (False, "immediate", "fixed_normal", 0.0),
+        (False, "immediate", "fixed_normal", 0.2),
+        (False, "immediate", "coulomb_newton", 0.0),
+        (True, "immediate", "fixed_normal", 0.2),
+        (True, "propagation", "fixed_normal", 0.2),
+        (True, "propagation_colored", "fixed_normal", 0.0),
+    ):
+        with test.subTest(articulated=articulated, response=response, mode=mode, anchor_beta=anchor_beta):
+            belt, _, box, step = _surface_belt(
+                device,
+                articulated=articulated,
+                articulated_contact_response=response,
+                friction_mode=mode,
+                friction_anchor_beta=anchor_beta,
+            )
+            belt.mesh.velocities.fill_(wp.vec3(0.5, 0.0, 0.0))
+            x_start = step(30).body_q.numpy()[box, 0]
+            mean_vx = (step(30).body_q.numpy()[box, 0] - x_start) / (30 * DT)
+            test.assertAlmostEqual(mean_vx, 0.5, delta=5.0e-3)
+
+
+def test_surface_velocity_anchor_history_follows_a_timestep_change(test, device):
+    """Verify that a box riding a mesh belt with persistent anchors keeps no anchor error when the timestep changes."""
+    belt, solver, box, step = _surface_belt(device, friction_anchor_beta=0.2)
+    belt.mesh.velocities.fill_(wp.vec3(0.5, 0.0, 0.0))
+    step(120)
+    x_start = step(1, dt=1.0 / 60.0).body_q.numpy()[box, 0]
+    test.assertLess(float(np.abs(solver._friction_patches.view.phi.numpy()).max()), 1.0e-5)
+    vx = (step(59, dt=1.0 / 60.0).body_q.numpy()[box, 0] - x_start) * 60.0 / 59
+    test.assertAlmostEqual(vx, 0.5, delta=5.0e-3)
+
+
+def test_surface_velocity_wakes_a_sleeping_box(test, device):
+    """Verify that a box asleep on a still mesh belt wakes and rides when the belt starts moving."""
+    belt, solver, box, step = _surface_belt(device, enable_sleeping=True, sleep_quiet_time=0.1)
+    step(240)
+    test.assertEqual(int(solver._sleeping.body_awake.numpy()[box]), 0)
+    belt.mesh.velocities.fill_(wp.vec3(0.5, 0.0, 0.0))
+    state = step(120)
+    test.assertEqual(int(solver._sleeping.body_awake.numpy()[box]), 1)
+    test.assertAlmostEqual(float(state.body_qd.numpy()[box, 0]), 0.5, delta=5.0e-3)
+
+
+def test_surface_velocity_leaves_the_normal_response_alone(test, device):
+    """Verify that a box dropped with restitution rebounds the same off a moving belt, even one with a normal velocity."""
+    results = []
+    for velocity in ((0.0, 0.0, 0.0), (0.5, 0.0, 1.0)):
+        belt, _, _, step = _surface_belt(device, box_z=0.1, gap=None, restitution=0.5)
+        belt.mesh.velocities.fill_(wp.vec3(*velocity))
+        box_qd = wp.empty(240, dtype=wp.spatial_vector, device=device)
+        step(240, box_qd=box_qd)
+        qd = box_qd.numpy()
+        results.append((float(qd[:, 2].max()), float(qd[-1, 0])))
+    (rebound_static, _), (rebound, vx) = results
+    test.assertGreater(rebound_static, 0.2)
+    test.assertAlmostEqual(rebound, rebound_static, delta=1.0e-3)
+    test.assertAlmostEqual(vx, 0.5, delta=5.0e-3)
+
+
+def test_surface_velocity_of_a_body_variant_mesh_drives_the_body(test, device):
+    """Verify that a free box whose surface-velocity mesh is selected as a body variant after construction drives itself."""
+    meshes = [newton.Mesh.create_box(0.1, 0.1, 0.05, compute_inertia=False) for _ in range(2)]
+    meshes[1].enable_surface_velocity = True
+    variants = []
+    for mesh in meshes:
+        variant = newton.ModelBuilder()
+        variant.add_shape_mesh(variant.add_body(), mesh=mesh, cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0))
+        variants.append(variant)
+    builder = newton.ModelBuilder()
+    box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+    builder.add_body_variants(box, variants)
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0))
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, friction_anchor_beta=0.2)
+    solver.notify_model_changed(model.select_body_variants(wp.array([1], dtype=wp.int32, device=device)))
+    meshes[1].mesh.velocities.fill_(wp.vec3(0.5, 0.0, 0.0))
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=True)
+    contacts = pipeline.contacts()
+    states = [model.state(), model.state()]
+    control = model.control()
+    x = []
+    for _ in range(2):
+        for _ in range(30):
+            pipeline.collide(states[0], contacts)
+            solver.step(states[0], states[1], control, contacts, DT)
+            states.reverse()
+        x.append(float(states[0].body_q.numpy()[box, 0]))
+    # The mesh's bottom face moves along +x against the ground, so the box moves along -x.
+    test.assertAlmostEqual((x[1] - x[0]) / (30 * DT), -0.5, delta=5.0e-3)
+    test.assertLess(float(np.abs(solver._friction_patches.view.phi.numpy()).max()), 1.0e-5)
+
+
+class TestSteelSurfaceVelocity(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_surface_velocity_belt_drags_the_box,
+    test_surface_velocity_anchor_history_follows_a_timestep_change,
+    test_surface_velocity_wakes_a_sleeping_box,
+    test_surface_velocity_leaves_the_normal_response_alone,
+    test_surface_velocity_of_a_body_variant_mesh_drives_the_body,
+):
+    add_function_test(TestSteelSurfaceVelocity, _fn.__name__, _fn, devices=cuda_devices)
+
+
 def test_resting_box_keeps_its_contacts(test, device):
     """Verify that a box resting on four zero-gap contacts stays still in the bisection modes, free and articulated.
 
@@ -1128,6 +1292,64 @@ def _ground_box(device, **solver_kwargs):
 
 @unittest.skipUnless(wp.is_cuda_available(), "SolverSteel requires CUDA")
 class TestFrictionPatchHistory(unittest.TestCase):
+    def test_surface_motion_transports_with_relocated_anchors(self):
+        """Keep zero anchor error on a co-rotating surface when the anchor points move inward."""
+        theta, dt = 0.01, 1.0 / 240.0
+        rot = np.array([[np.cos(theta), -np.sin(theta), 0.0], [np.sin(theta), np.cos(theta), 0.0], [0.0, 0.0, 1.0]])
+        points = np.array([[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]], dtype=np.float32)
+        moved = 0.8 * points
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                # Reversing the contact order swaps the points and negates the normal and the surface velocity.
+                sign = -1.0 if reverse else 1.0
+                model, state, contacts, patches = _patch_fixture(
+                    points.tolist(),
+                    shape0=[1, 1] if reverse else None,
+                    normals=[[0.0, 0.0, -sign]] * 2,
+                )
+                if reverse:
+                    contacts.rigid_contact_shape1.zero_()
+                # The surface of the body-1 shape rotates about z; body 0 follows it exactly over the step.
+                contacts.rigid_contact_surface_velocity = wp.array(
+                    sign * (points @ rot.T - points) / dt, dtype=wp.vec3, device=_DEVICE
+                )
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
+                patches.store(state)
+                q = state.body_q.numpy()
+                q[0, 3:] = (0.0, 0.0, np.sin(theta / 2), np.cos(theta / 2))
+                state.body_q.assign(q)
+                on_body0, on_body1 = moved, (moved @ rot.T).astype(np.float32)
+                contacts.rigid_contact_point0.assign(on_body1 if reverse else on_body0)
+                contacts.rigid_contact_point1.assign(on_body0 if reverse else on_body1)
+                contacts.rigid_contact_surface_velocity.assign((sign * (moved @ rot.T - moved) / dt).astype(np.float32))
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
+                np.testing.assert_array_equal(patches.current.source.numpy()[:2] >= 0, True)
+                self.assertLess(float(np.abs(patches.view.phi.numpy()).max()), 5.0e-6)
+
+    def test_surface_motion_keeps_only_its_tangential_part_when_the_normal_turns(self):
+        """Carry a surface step's tangential displacement at full length, and none of its normal part, across a turned normal."""
+        dt, tilt = 1.0 / 60.0, 0.08
+        for velocity, expected in (
+            ((0.0, 0.0, 1.0), 0.0),
+            ((0.0, 0.0, 0.0), 0.0),
+            ((1.0, 0.0, 0.0), dt),
+            ((0.0, 1.0, 0.0), dt),
+        ):
+            with self.subTest(velocity=velocity):
+                model, state, contacts, patches = _patch_fixture([[0.0, 0.0, 0.0]])
+                contacts.rigid_contact_surface_velocity = wp.array([velocity], dtype=wp.vec3, device=_DEVICE)
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
+                patches.store(state)
+                contacts.rigid_contact_surface_velocity.zero_()
+                contacts.rigid_contact_normal.assign([[-np.sin(tilt), 0.0, -np.cos(tilt)]])
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
+                self.assertEqual(patches.current.source.numpy()[0], 0)
+                phi = float(np.linalg.norm(patches.view.phi.numpy()[0]))
+                if expected == 0.0:
+                    self.assertEqual(phi, 0.0)
+                else:
+                    self.assertAlmostEqual(phi, expected, delta=1.0e-6 * expected)
+
     def test_support_edge_centers_ignore_contact_order(self):
         """Keep the same edge centers when contact ordering changes at rest."""
         device = _DEVICE
@@ -1521,6 +1743,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
             velocity,
             wp.zeros(2, dtype=wp.vec3, device=_DEVICE),
             articulation,
+            None,
             zeros,
             zeros,
             zeros,
@@ -1738,6 +1961,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
                         qd,
                         com,
                         wp.zeros(2, dtype=int, device=_DEVICE),
+                        None,
                         zeros,
                         wp.array([slot], dtype=int, device=_DEVICE),
                         zeros,

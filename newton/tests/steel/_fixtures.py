@@ -538,6 +538,7 @@ def _patch_fixture(
         ),
         rigid_contact_margin0=wp.zeros(n, dtype=float, device=device),
         rigid_contact_margin1=wp.zeros(n, dtype=float, device=device),
+        rigid_contact_surface_velocity=None,
     )
     patches = _FrictionPatchState(model, max(n, 8), True, wp.zeros(max(n, 8), dtype=wp.vec2, device=device))
     patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
