@@ -8343,12 +8343,20 @@ class SolverSteel(SolverBase, CouplingInterface):
 
     @property
     def compliance_contact_count(self) -> int:
-        """Compliant contacts prepared by the last step (``contact_compliance`` only; synchronous readback)."""
+        """Compliant contacts prepared by the last step (``contact_compliance`` only).
+
+        With ``contact_compliance``, reads the device on the host and raises :class:`RuntimeError`
+        during CUDA graph capture.
+        """
         return 0 if self._compliance is None else _contact_compliance.counts(self)[0]
 
     @property
     def compliance_skipped_contact_count(self) -> int:
-        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
+        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only).
+
+        With ``contact_compliance``, reads the device on the host and raises :class:`RuntimeError`
+        during CUDA graph capture.
+        """
         return 0 if self._compliance is None else _contact_compliance.counts(self)[1]
 
     def snapshot_constraint_status(self) -> None:
