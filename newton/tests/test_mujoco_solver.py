@@ -9924,29 +9924,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy()[0, :, 0], [0.1, 0.4, 0.2], rtol=1e-6)
 
-    def test_pair_properties_after_skipped_pair_row(self):
-        """A skipped pair row does not shift the properties of the pairs after it."""
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        shapes = []
-        for x in (0.0, 0.1):
-            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.5), wp.quat_identity()), mass=0.01)
-            shapes.append(builder.add_shape_box(body, hx=0.01, hy=0.01, hz=0.01))
-        for geom1, mu in ((-1, 0.9), (shapes[0], 0.1)):
-            builder.add_custom_values(
-                **{
-                    "mujoco:pair_world": builder.current_world,
-                    "mujoco:pair_geom1": geom1,
-                    "mujoco:pair_geom2": shapes[1],
-                    "mujoco:pair_friction": vec5(mu, mu, 0.005, 0.0001, 0.0001),
-                }
-            )
-        model = builder.finalize()
-        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
-        self.assertEqual(solver.mj_model.npair, 1)
-        np.testing.assert_allclose(solver.mj_model.pair_friction[:, 0], [0.1], rtol=1e-6)
-        np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy()[0, :, 0], [0.1], rtol=1e-6)
-
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
 

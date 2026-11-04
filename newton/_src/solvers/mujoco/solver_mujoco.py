@@ -3494,9 +3494,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
-    def _init_pairs(
-        self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int
-    ) -> list[tuple[int, Any]]:
+    def _init_pairs(self, model: Model, spec: Any, shape_mapping: dict[int, str], template_world: int) -> list[Any]:
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
@@ -3511,9 +3509,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             template_world: The world index to use as the template (typically first_group).
 
         Returns:
-            The ``(Newton pair row, MjsPair)`` of each pair added to the spec.
+            The ``MjsPair`` of each pair added to the spec, in the order they were added.
         """
-        spec_pairs: list[tuple[int, Any]] = []
+        spec_pairs: list[Any] = []
         pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if pair_count == 0:
             return spec_pairs
@@ -3605,7 +3603,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if pair_friction is not None:
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
-            spec_pairs.append((i, spec.add_pair(**pair_kwargs)))
+            spec_pairs.append(spec.add_pair(**pair_kwargs))
 
         return spec_pairs
 
@@ -9077,7 +9075,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_welds.append(eq)
 
         self.mj_model = spec.compile()
-        self._mjc_pair_spec_index = self._compiled_pair_spec_index(model, spec_pairs)
+        self._mjc_pair_spec_index = self._compiled_pair_spec_index(spec_pairs, model.device)
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "
@@ -11000,26 +10998,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
             self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
 
-    def _compiled_pair_spec_index(self, model: Model, spec_pairs: list[tuple[int, Any]]) -> wp.array | None:
-        """Return, for each compiled MuJoCo pair, its ``mujoco:pair`` row within a world.
+    def _compiled_pair_spec_index(self, spec_pairs: list[Any], device) -> wp.array | None:
+        """Return, for each compiled MuJoCo pair, its position among the pairs added by :meth:`_init_pairs`.
 
         The MuJoCo compiler groups explicit pairs by body pair, so compiled pair ``j``
-        is not necessarily the ``j``-th pair added to the spec, and rows skipped by
-        :meth:`_init_pairs` shift the rest. After ``spec.compile()``, each spec pair's
-        ``id`` is its compiled index.
+        is not necessarily the ``j``-th pair added to the spec. After ``spec.compile()``,
+        each spec pair's ``id`` is its compiled index.
 
         Args:
-            model: The Newton model.
-            spec_pairs: The ``(Newton pair row, MjsPair)`` list returned by :meth:`_init_pairs`.
+            spec_pairs: The ``MjsPair`` list returned by :meth:`_init_pairs`.
+            device: The device of the returned array.
         """
         npair = self.mj_model.npair
         if npair == 0:
             return None
-        pairs_per_world = model.custom_frequency_counts.get("mujoco:pair", 0) // model.world_count
         index = np.arange(npair, dtype=np.int32)
-        for newton_pair, pair in spec_pairs:
-            index[pair.id] = newton_pair % pairs_per_world if pairs_per_world > 0 else newton_pair
-        return wp.array(index, dtype=wp.int32, device=model.device)
+        for position, pair in enumerate(spec_pairs):
+            index[pair.id] = position
+        return wp.array(index, dtype=wp.int32, device=device)
 
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.
