@@ -1877,7 +1877,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 1; rejected with ``articulated_contact_response="immediate"``.
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
-                compatible with CUDA graph capture.
+                compatible with CUDA graph capture. The host contact torsion preparation
+                emits its overflow warning as a :class:`~newton.exceptions.NewtonWarning`
+                through :mod:`warnings` instead.
             row_watermark: Accumulate the high-water marks of the per-world row counts of
                 every row family and of the contact count on the device in every step,
                 including captured ones; read them with :meth:`constraint_row_watermarks`.
@@ -2093,21 +2095,25 @@ class SolverSteel(SolverBase, CouplingInterface):
                 carry no spin history; free-body contacts get none. Supported geometry is
                 sphere, box, capsule, cylinder, cone, ellipsoid, plane and convex mesh.
                 Requires ``contact_warmstart=False``; contacts with hydroelastic stiffness are
-                rejected, and with the immediate response, running out of
-                ``articulation_constraint_max`` raises instead of dropping rows.
+                rejected. Dense torsion rows count against ``articulation_constraint_max`` after
+                the world's other dense rows. A world whose groups do not all fit keeps the rows
+                that fit, and a world that dropped dense rows gets no dense torsion rows; both set
+                the world's :attr:`constraint_overflow` entry and warn when
+                ``warn_constraint_overflow`` is set, and other worlds step unaffected.
                 ``contact_torsion_device`` prepares the torsion rows on the device instead of
                 on the host. The host preparation is the reference implementation; it reads
                 the contacts back every step and cannot be captured in a CUDA graph. The
                 device preparation builds the same groups and rows with preallocated
                 buffers and supports CUDA graph capture of :meth:`step`. Invalid torsion
-                input (for example dense rows beyond the capacity or hydroelastic contacts)
-                makes an eager step raise before it applies torsion rows. In a captured step the
-                error is deferred: the failing step restores its output motion arrays
+                input (contact-buffer overflow, hydroelastic contacts, or a friction-patch load
+                ring that does not match its group) makes an eager step raise before it applies
+                torsion rows. In a captured step the error is deferred: the failing step
+                restores its output motion arrays
                 (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``, ``body_qdd``) to the input
                 values, while other outputs, observables and solver history still advance,
                 and :meth:`check_constraint_capacity` raises after the replays.
                 Check before using replay results, discard failed output, fix the cause and
-                :meth:`reset`. The error is solver-wide: any reset clears it, and a cause
+                :meth:`reset`. The input error is solver-wide: any reset clears it, and a cause
                 that persists latches it again on the next step. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without
                 contact torsion. With ``articulated_contact_response="propagation"``, every
@@ -2801,7 +2807,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._init_ordered_rows(model)
 
         # Capacity status is allocated before any CUDA graph capture.
-        self._row_overflow_warning_emitted = wp.zeros(4, dtype=wp.int32, device=model.device)
+        self._row_overflow_warning_emitted = wp.zeros(5, dtype=wp.int32, device=model.device)
         self.constraint_overflow = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         """Capacity failure flags, shape ``[model.world_count + 1]``, dtype ``bool``.
 
@@ -3302,7 +3308,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         is selected. Global articulations share world 0's rows, so selecting the global
         entry also discards world 0's warm-start impulses while a dynamic global
         articulation exists. Any reset, whatever its mask, also clears the solver-wide contact
-        torsion error; it clears the disabled-tree-joint and invalid-joint-friction status of the
+        torsion input error; it clears the disabled-tree-joint and invalid-joint-friction status of the
         selected worlds. The reset is launched on the device without host synchronization and can be
         captured in a CUDA graph. A full reset (``world_mask=None``) also restarts the host-side step
         cadence (mass-matrix refresh interval, ``dt`` change detection, double-buffer schedule and
@@ -8375,7 +8381,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         and :meth:`reset`. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
         the last :meth:`reset`; a failing captured step restored its output motion arrays to the
-        input, while a failing eager step raised from :meth:`step`. With ``contact_compliance``,
+        input, while a failing eager step raised from :meth:`step`. Torsion rows dropped for
+        capacity are a capacity loss of their worlds. With ``contact_compliance``,
         also raises if a captured step rejected its compliant contacts since the last :meth:`reset`;
         discard the output of the replays since the last check.
 

@@ -114,7 +114,7 @@ def test_overflow_warning_is_printed_once(test, device, solve_mode="matrix_free"
     test.assertEqual(len(step_output[0]), 1, step_output[0])
     test.assertRegex(step_output[0][0], rf"^Warning: Steel {family} constraint-row overflow in world [01]:")
     test.assertEqual(step_output[1], [])
-    expected = [0, 0, 0, 1] if response == "propagation" else [0, 1, 0, 0]
+    expected = [0, 0, 0, 1, 0] if response == "propagation" else [0, 1, 0, 0, 0]
     np.testing.assert_array_equal(solver._row_overflow_warning_emitted.numpy(), expected)
 
 
