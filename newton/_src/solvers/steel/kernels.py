@@ -751,6 +751,7 @@ def jcalc_integrate(
     ang_axis_count: int,
     dt: float,
     angular_damping: float,
+    linear_damping: float,
     parent: int,
     # outputs
     joint_q_new: wp.array[float],
@@ -862,7 +863,9 @@ def jcalc_integrate(
             p_s_new = p_s + dpdt_s * dt
 
         if parent < 0:
-            w_s = w_s * (1.0 - angular_damping * dt)
+            # Clamped at 0 like PhysX, so a damping beyond 1 / dt stops the body.
+            w_s = w_s * wp.max(1.0 - angular_damping * dt, 0.0)
+            v_com = v_com * wp.max(1.0 - linear_damping * dt, 0.0)
 
         # update transform
         joint_q_new[coord_start + 0] = p_s_new[0]
@@ -2292,23 +2295,27 @@ def remove_free_root_transport_from_qdd(
 
 
 @wp.kernel
-def apply_free_root_angular_damping(
+def apply_free_root_damping(
     free_root_joint_indices: wp.array[int],
     joint_qd_start: wp.array[int],
     kinematic_joint_mask: wp.array[int],
     joint_child: wp.array[int],
     body_angular_damping: wp.array[float],
+    body_linear_damping: wp.array[float],
     dt: float,
     joint_qd: wp.array[float],
 ):
-    """Scale each active free root's angular velocity by the decay ``jcalc_integrate`` applies."""
+    """Scale each active free root's velocity by the decay ``jcalc_integrate`` applies."""
     root_index = wp.tid()
     d = _active_free_root_dof_start(free_root_joint_indices, joint_qd_start, kinematic_joint_mask, root_index)
     if d < 0:
         return
-    scale = 1.0 - body_angular_damping[joint_child[free_root_joint_indices[root_index]]] * dt
-    for i in range(3, 6):
-        joint_qd[d + i] = joint_qd[d + i] * scale
+    child = joint_child[free_root_joint_indices[root_index]]
+    linear_scale = wp.max(1.0 - body_linear_damping[child] * dt, 0.0)
+    angular_scale = wp.max(1.0 - body_angular_damping[child] * dt, 0.0)
+    for i in range(3):
+        joint_qd[d + i] = joint_qd[d + i] * linear_scale
+        joint_qd[d + 3 + i] = joint_qd[d + 3 + i] * angular_scale
 
 
 @wp.kernel
@@ -2327,6 +2334,7 @@ def integrate_generalized_joints(
     joint_qdd: wp.array[float],
     dt: float,
     body_angular_damping: wp.array[float],
+    body_linear_damping: wp.array[float],
     joint_active: wp.array[int],
     joint_q_new: wp.array[float],
     joint_qd_new: wp.array[float],
@@ -2365,6 +2373,7 @@ def integrate_generalized_joints(
         ang_axis_count,
         dt,
         body_angular_damping[child],
+        body_linear_damping[child],
         parent,
         joint_q_new,
         joint_qd_new,
@@ -4878,6 +4887,15 @@ def prescribed_relative_contact_target(
 
 
 @wp.func
+def surface_contact_target(contact_surface_velocity: wp.array[wp.vec3], c: int, direction: wp.vec3):
+    """Return the friction-row target velocity of contact ``c``'s moving shape surfaces."""
+    value = float(0.0)
+    if contact_surface_velocity:
+        value = wp.dot(direction, contact_surface_velocity[c])
+    return value
+
+
+@wp.func
 def _contact_mu(shape_a: int, shape_b: int, shape_material_mu: wp.array[float]):
     """Return the arithmetic-mean friction coefficient of one shape pair."""
     mu = float(0.0)
@@ -5028,6 +5046,7 @@ def prepare_world_contact_rows(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
@@ -5138,7 +5157,7 @@ def prepare_world_contact_rows(
                 prescribed_articulation,
                 articulation_origin,
                 body_v_s,
-            )
+            ) + surface_contact_target(contact_surface_velocity, c, tangent)
 
 
 @wp.kernel
@@ -6327,6 +6346,7 @@ def _build_mf_contact_row(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
@@ -6453,7 +6473,7 @@ def _build_mf_contact_row(
             mf_phi[world, row_idx] = friction_anchor_beta * friction_patches.phi[c][row_offset - 1]
             mf_row_rebound_velocity[world, row_idx] = 0.0
         if has_target_velocity != 0:
-            mf_target_velocity[world, row_idx] = prescribed_relative_contact_target(
+            target = prescribed_relative_contact_target(
                 body_a,
                 contact_art_a[c],
                 body_b,
@@ -6465,6 +6485,9 @@ def _build_mf_contact_row(
                 articulation_origin,
                 body_v_s,
             )
+            if row_offset > 0:
+                target += surface_contact_target(contact_surface_velocity, c, d)
+            mf_target_velocity[world, row_idx] = target
 
 
 @wp.kernel
@@ -6488,6 +6511,7 @@ def build_mf_contact_rows(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
@@ -6532,6 +6556,7 @@ def build_mf_contact_rows(
             shape_body,
             body_q,
             body_v_s,
+            contact_surface_velocity,
             prescribed_articulation,
             has_target_velocity,
             shape_material_mu,
@@ -8130,6 +8155,7 @@ def build_propagation_contact_rows(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_v_s: wp.array[wp.spatial_vector],
+    contact_surface_velocity: wp.array[wp.vec3],
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
@@ -8270,7 +8296,7 @@ def build_propagation_contact_rows(
                 propagation_row_parent[world, row] = slot
                 propagation_phi[world, row] = friction_anchor_beta * friction_patches.phi[c][row_offset - 1]
                 propagation_row_rebound_velocity[world, row] = 0.0
-            propagation_target_velocity[world, row] = prescribed_relative_contact_target(
+            target = prescribed_relative_contact_target(
                 body_a,
                 art_a,
                 body_b,
@@ -8282,6 +8308,9 @@ def build_propagation_contact_rows(
                 articulation_origin,
                 body_v_s,
             )
+            if row_offset > 0:
+                target += surface_contact_target(contact_surface_velocity, c, d)
+            propagation_target_velocity[world, row] = target
 
 
 @wp.kernel
