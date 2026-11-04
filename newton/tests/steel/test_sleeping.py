@@ -2541,8 +2541,11 @@ def test_colored_separated_stacks_sleep_like_immediate(test, device):
     test.assertLessEqual(int(delta.max()), 6)
 
 
-def _dumbbells_model(device, count=2):
-    """Two-link floating chains resting apart on a ground plane, so their trees go through propagation."""
+def _dumbbells_model(device, count=2, welded=False):
+    """Two-link floating chains resting apart on a ground plane, so their trees go through propagation.
+
+    ``welded`` adds a box welded to the world away from the chains, an articulation that never sleeps.
+    """
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.add_ground_plane()
     for i in range(count):
@@ -2560,6 +2563,11 @@ def _dumbbells_model(device, count=2):
             child_xform=wp.transform(wp.vec3(-0.08, 0.0, 0.0), wp.quat_identity()),
         )
         builder.add_articulation([root, hinge])
+    if welded:
+        pose = wp.transform(wp.vec3(-1.0, 0.0, 0.2), wp.quat_identity())
+        post = builder.add_link(xform=pose)
+        builder.add_shape_box(post, hx=0.05, hy=0.05, hz=0.05)
+        builder.add_articulation([builder.add_joint_fixed(-1, post, parent_xform=pose)])
     model = builder.finalize(device=device)
     model.rigid_contact_max = 128
     return model
@@ -2569,25 +2577,35 @@ def test_colored_sleeping_skips_tree_and_solve_work(test, device):
     """Leave sleeping trees unfactored, and skip the captured propagation solve while all sleep, bitwise like eager.
 
     With contact compliance the propagation setup still runs while all sleep, since compliance replaces its rows.
+    A welded box, which never sleeps, does not keep the solve running.
     """
-    for tree_kernel, compliant in (("auto", False), ("generic", False), ("auto", True)):
+    for tree_kernel, compliant, welded in (
+        ("auto", False, False),
+        ("generic", False, False),
+        ("auto", True, False),
+        ("auto", False, True),
+    ):
         with (
-            test.subTest(tree_kernel=tree_kernel, compliant=compliant),
+            test.subTest(tree_kernel=tree_kernel, compliant=compliant, welded=welded),
             kernel_overrides({"propagation_tree_kernel": tree_kernel}),
         ):
-            _check_colored_sleeping_skips_work(test, device, compliant)
+            _check_colored_sleeping_skips_work(test, device, compliant, welded)
 
 
-def _check_colored_sleeping_skips_work(test, device, compliant):
+def _check_colored_sleeping_skips_work(test, device, compliant, welded):
     options = {"sleep_quiet_time": 0.05, "friction_anchor_beta": 0.0}
     if compliant:
         options.update(contact_compliance=True, contact_regularization=0.0, compliance_stiffness=2.0e4)
-    captured, eager = (_Heap(device, model=_dumbbells_model(device), **options) for _ in range(2))
+    captured, eager = (_Heap(device, model=_dumbbells_model(device, welded=welded), **options) for _ in range(2))
     test.assertTrue(captured.solver._propagation_tree_sizes)
     with wp.ScopedCapture(device) as capture:
         captured.step(clear=False)
     gated = wp.is_conditional_graph_supported()
     joint_art = captured.model.joint_articulation.numpy()
+    sleepable = captured.solver._sleeping.art_skippable.numpy()
+    test.assertEqual(sleepable.tolist(), [1, 1, 0] if welded else [1, 1])
+    body_art = captured.solver._body_to_articulation.numpy()
+    tree_bodies = np.flatnonzero(sleepable[body_art] == 1)
     force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
     all_asleep = 0
     for k in range(60):
@@ -2597,8 +2615,9 @@ def _check_colored_sleeping_skips_work(test, device, compliant):
             force[0, 2] = 5.0
         for scene in (captured, eager):
             scene.state_in.body_f.assign(force)
-            scene.solver._propagation_tree_D_inv.fill_(np.nan)
-            scene.solver._propagation_body_com_rel.fill_(np.nan)
+            for name in ("_propagation_tree_D_inv", "_propagation_body_com_rel", "_propagation_body_response"):
+                getattr(scene.solver, name).fill_(np.nan)
+            scene.solver._propagation_body_qd.fill_(np.nan)
         wp.capture_launch(capture.graph)
         eager.step(clear=False)
         a, b = captured.snapshot(), eager.snapshot()
@@ -2606,15 +2625,24 @@ def _check_colored_sleeping_skips_work(test, device, compliant):
             np.testing.assert_array_equal(a[name], b[name], err_msg=f"replay {k} {name}")
         active = eager.solver._dynamics_art_active.numpy()
         np.testing.assert_array_equal(captured.solver._dynamics_art_active.numpy(), active)
+        awake = active * sleepable
         for scene in (captured, eager):
             factored = ~np.isnan(scene.solver._propagation_tree_D_inv.numpy()[:, 0, 0])
-            np.testing.assert_array_equal(factored, active[joint_art] == 1, err_msg=f"step {k}")
-        solved = ~np.isnan(captured.solver._propagation_body_com_rel.numpy()).any(axis=1)
-        test.assertEqual(bool(solved.all()), bool(active.any() or not gated or compliant), f"step {k}")
+            np.testing.assert_array_equal(factored, awake[joint_art] == 1, err_msg=f"step {k}")
+            # The response, twist refresh and impulse propagation kernels leave sleeping trees untouched.
+            asleep = tree_bodies[awake[body_art[tree_bodies]] == 0]
+            for name in ("_propagation_body_response", "_propagation_body_qd"):
+                values = getattr(scene.solver, name).numpy()[asleep]
+                test.assertTrue(np.isnan(values).all(), f"step {k} {name}")
+        moving = tree_bodies[awake[body_art[tree_bodies]] == 1]
+        for name in ("_propagation_body_response", "_propagation_body_qd"):
+            test.assertTrue(np.isfinite(getattr(eager.solver, name).numpy()[moving]).all(), f"step {k} {name}")
+        solved = ~np.isnan(captured.solver._propagation_body_com_rel.numpy()[tree_bodies]).any(axis=1)
+        test.assertEqual(bool(solved.all()), bool(awake.any() or not gated or compliant), f"step {k}")
         test.assertTrue(bool(solved.all()) or not solved.any())
         if k == 40:
-            test.assertEqual(active.tolist(), [1, 0], "the force must wake its chain only")
-        all_asleep += int(not active.any())
+            test.assertEqual(awake[:2].tolist(), [1, 0], "the force must wake its chain only")
+        all_asleep += int(not awake.any())
 
 
 class TestSteelSleepingColoredPropagation(unittest.TestCase):

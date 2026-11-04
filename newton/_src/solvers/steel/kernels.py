@@ -9105,10 +9105,10 @@ def compute_propagation_cache_world_flag(
 
 
 @wp.kernel
-def flag_any_nonzero(values: wp.array[int], flag: wp.array[int]):
-    """Set ``flag[0]`` to one when any entry of ``values`` is nonzero."""
+def flag_any_sleepable_active(active: wp.array[int], sleepable: wp.array[int], flag: wp.array[int]):
+    """Set ``flag[0]`` to one when an articulation that can sleep is active this step."""
     i = wp.tid()
-    if values[i] != 0:
+    if active[i] != 0 and sleepable[i] != 0:
         flag[0] = 1
 
 
@@ -9227,9 +9227,8 @@ def factor_propagation_tree_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active.shape[0] > 0:
-        if articulation_active[art] == 0:
-            return
+    if articulation_active[art] == 0:
+        return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
@@ -9575,9 +9574,8 @@ def compute_propagation_tree_body_response_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active.shape[0] > 0:
-        if articulation_active[art] == 0:
-            return
+    if articulation_active[art] == 0:
+        return
     world = art_to_world[art]
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
@@ -9735,9 +9733,8 @@ def refresh_propagation_tree_body_qd_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active.shape[0] > 0:
-        if articulation_active[art] == 0:
-            return
+    if articulation_active[art] == 0:
+        return
     if force_refresh == 0:
         world = art_to_world[art]
         if world >= 0 and dense_contact_world_flag[world] == 0:
@@ -9828,9 +9825,8 @@ def propagate_tree_impulses_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active.shape[0] > 0:
-        if articulation_active[art] == 0:
-            return
+    if articulation_active[art] == 0:
+        return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
