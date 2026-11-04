@@ -15,9 +15,9 @@ import newton.usd
 from newton.exceptions import NewtonDeprecationWarning
 from newton.sensors import SensorTiledCamera
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
     assert_np_equal,
     ignore_sensor_tiled_camera_deprecation,
+    requires,
 )
 
 
@@ -85,7 +85,7 @@ def _define_folded_mesh(stage, path="/Fold", scheme=None):
     return mesh
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUsdMeshHelpers(unittest.TestCase):
     """Tests for loading Newton meshes from USD source variants."""
 

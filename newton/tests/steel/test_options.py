@@ -28,7 +28,7 @@ from newton.tests.steel._fixtures import (
     _set_box_velocities,
 )
 from newton.tests.steel._fixtures import run_fixture as run_compliance_fixture
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices, requires
 
 
 def _assert_bitwise(test, a, b, label):
@@ -124,6 +124,7 @@ def test_angular_damping_follows_in_place_edits(test, device):
     test.assertEqual(float(state_in.joint_qd.numpy()[5]), 0.0)
 
 
+@requires("pxr.Usd")
 def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     """Import the PhysX body and collision USD attributes into the steel namespace, and step with replaced arrays."""
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics

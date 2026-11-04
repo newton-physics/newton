@@ -226,6 +226,38 @@ To generate a coverage report:
 
 The file ``htmlcov/index.html`` can be opened with a web browser to view the coverage report.
 
+Optional dependencies in tests
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The test suite must pass when optional dependencies are not installed, for
+example on platforms without wheels for them; tests that need one skip
+instead. CI runs the suite with only the required dependencies installed, and
+with the ``dev`` extra on Windows ARM64, where several optional dependencies
+have no wheels. To run it without optional dependencies locally:
+
+.. code-block:: console
+
+    uv run --isolated --no-dev -m newton.tests
+
+In new tests, declare a requirement with the helpers in
+``newton.tests.unittest_utils``. Lint rejects ``importlib.util.find_spec``, and
+``except ImportError`` fallbacks, which some older tests still use, skip a
+broken install as if it were missing; the helpers fail the tests that need it
+instead:
+
+- ``@requires("scipy")`` on a test method, test function, or test class.
+  Decorate a class only when every test in it needs the module. Use
+  ``"pxr.Usd"`` for USD and ``*MUJOCO_MODULES`` for ``SolverMuJoCo``.
+- ``requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(...))``
+  for solver factories passed to ``add_function_test``, which skips only the
+  tests generated for that solver.
+- ``"requires": (...)`` in the ``test_options`` of an example test.
+- ``has_module(...)`` for other conditional logic.
+
+List every optional module a test needs, not only the first one it imports;
+a test with only one of two requirements declared fails on a platform that
+has the other.
+
 Code formatting and linting
 ---------------------------
 

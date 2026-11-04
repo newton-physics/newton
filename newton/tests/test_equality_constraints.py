@@ -14,6 +14,7 @@ from newton._src.solvers.mujoco.equality import (
     MjcEqualityTargetKind,
     _add_equality_constraint,
 )
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _eq_value(builder, name, idx):
@@ -76,6 +77,7 @@ class TestEqualityConstraints(unittest.TestCase):
         main_builder.add_world(namespaced_builder)
         np.testing.assert_array_equal(main_builder.finalize().test.equality_index.numpy(), [0, 1])
 
+    @requires(*MUJOCO_MODULES)
     def test_multiple_constraints(self):
         self.sim_time = 0.0
         self.frame_dt = 1 / 60
@@ -184,6 +186,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
         np.testing.assert_array_equal(model.mujoco.equality_constraint_target.numpy(), [-1, -1, -1])
 
+    @requires(*MUJOCO_MODULES)
     def test_equality_constraints_not_duplicated_per_world(self):
         """Test that equality constraints are not duplicated for each world when using separate_worlds=True"""
         # Create a simple robot builder with equality constraints

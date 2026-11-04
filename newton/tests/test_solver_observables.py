@@ -17,7 +17,7 @@ import newton
 from newton.selection import ArticulationView
 from newton.sensors import SensorContact
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 from newton.viewer import ViewerNull
 
 
@@ -804,6 +804,7 @@ def test_owned_and_external_pipelines(test, device):
                 np.testing.assert_array_equal(rows[soft_start + 1 :], 0.0)
 
 
+@requires(*MUJOCO_MODULES)
 def test_native_solvers_follow_step_contacts(test, device):
     """Export MuJoCo and Kamino geometry and forces to the buffer each step uses."""
     builder = newton.ModelBuilder()

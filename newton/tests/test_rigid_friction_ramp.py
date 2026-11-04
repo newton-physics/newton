@@ -29,9 +29,11 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 # --- Scene / sim configuration ---
@@ -402,15 +404,17 @@ _SOLVERS = {
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "mujoco_warp": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=False,
-            njmax=800,
-            nconmax=500,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                njmax=800,
+                nconmax=500,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "native_contacts": True,
         "mus": _DEFAULT_MUS,
@@ -422,16 +426,18 @@ _SOLVERS = {
     # Same config as mujoco_warp but consuming Newton CollisionPipeline
     # contacts — covers the elliptic + Newton-contacts constraint path.
     "mujoco_warp_newton_contacts": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=False,
-            use_mujoco_contacts=False,
-            njmax=800,
-            nconmax=500,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                use_mujoco_contacts=False,
+                njmax=800,
+                nconmax=500,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
@@ -444,13 +450,15 @@ _SOLVERS = {
         "run_stopping_distance": False,
     },
     "mujoco_cpu": {
-        "factory": lambda model: newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=True,
-            cone="elliptic",
-            impratio=10.0,
-            iterations=200,
-            ls_iterations=100,
+        "factory": requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(
+                model,
+                use_mujoco_cpu=True,
+                cone="elliptic",
+                impratio=10.0,
+                iterations=200,
+                ls_iterations=100,
+            )
         ),
         "native_contacts": True,
         "mus": _DEFAULT_MUS,

@@ -4,7 +4,6 @@
 """Test ViewerRTX compatibility, frame capture, and runtime scene updates."""
 
 import builtins
-import importlib.util
 import os
 import subprocess
 import tempfile
@@ -18,14 +17,11 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
-from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
+from newton.tests.unittest_utils import patch_sys_module, requires
 from newton.viewer import ViewerRTX
 
-OVRTX_AVAILABLE = importlib.util.find_spec("ovrtx") is not None
-OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
 
-
-@unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+@requires("ovrtx")
 class TestViewerRTXConstruction(unittest.TestCase):
     def test_requires_ovstage(self):
         """Require OVStage when constructing ViewerRTX."""
@@ -58,7 +54,7 @@ class TestViewerRTXConstruction(unittest.TestCase):
         viewer._read_borrowed_world_matrices = read
         return viewer, model
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_borrowed_stage_binds_bodies_by_label(self):
         """Drive the stage prim at each body's label and warn about bodies without one."""
         viewer, model = self._borrowed_viewer(["/World/a", "/World/missing", "code_body"], {"/World/a"})
@@ -70,7 +66,7 @@ class TestViewerRTXConstruction(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_borrowed_stage_keeps_model_frame_for_inconsistent_poses(self):
         """Warn and skip the frame correction when root bodies disagree on the stage-from-model transform."""
         viewer, model = self._borrowed_viewer(
@@ -83,7 +79,7 @@ class TestViewerRTXConstruction(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_borrowed_stage_rejects_shared_labels(self):
         """Reject bodies that would drive the same stage prim."""
         viewer, model = self._borrowed_viewer(["/World/a", "/World/a"], {"/World/a"})
@@ -93,7 +89,7 @@ class TestViewerRTXConstruction(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_borrowed_stage_hides_simulated_cloth_by_default(self):
         """Leave cloth to the stage unless the simulated cloth is requested as an overlay."""
         viewer, model = self._borrowed_viewer(["/World/a"], {"/World/a"})
@@ -104,7 +100,7 @@ class TestViewerRTXConstruction(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_borrowed_stage_rejects_layers(self):
         """Reject user layers, since a borrowed stage binds the bodies of a single model."""
         viewer, _ = self._borrowed_viewer([], set())
@@ -114,14 +110,14 @@ class TestViewerRTXConstruction(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_borrowed_stage_rejects_lighting_preset(self):
         """Reject a lighting preset, since a borrowed stage brings its own lights."""
         with self.assertRaisesRegex(ValueError, "lighting from the stage"):
             ViewerRTX(headless=True, ovstage=object(), environment="studio")
 
 
-@unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+@requires("ovrtx")
 class TestViewerRTXWindowCleanup(unittest.TestCase):
     def test_init_failure_closes_partial_window(self):
         """Close and clear a partially initialized presentation window."""
@@ -175,7 +171,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         self.assertIsNone(viewer._gl_vao)
 
 
-@unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+@requires("ovstage")
 class TestViewerRTXOvstage(unittest.TestCase):
     def setUp(self):
         """Create an ovstage-backed ViewerRTX runtime stub."""
@@ -279,6 +275,7 @@ def Xform "World"
         self.assertEqual(values.dtype, points.dtype)
         np.testing.assert_allclose(values, points)
 
+    @requires("pxr.Usd")
     def test_runtime_prim_population_uses_ovstage(self):
         """Add and replace runtime USD through OVStage."""
         from pxr import Usd, UsdGeom
@@ -306,6 +303,7 @@ def Xform "World"
         self.viewer._apply_ovstage_population_changes()
         self.assertFalse(self.viewer._ovstage_population_dirty)
 
+    @requires("pxr.Usd")
     def test_replacing_runtime_prim_releases_its_queries(self):
         """Drop cached queries of a replaced runtime prim so repeated replacements do not accumulate them."""
         from pxr import Usd, UsdGeom
@@ -416,7 +414,7 @@ class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
             np.testing.assert_allclose(out.numpy()[row], expected.T, atol=1.0e-5)
 
 
-@unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+@requires("ovrtx")
 class TestViewerRTXRenderSettings(unittest.TestCase):
     def test_render_settings_override_render_product_attributes(self):
         """Author typed render settings on the render product, overriding the viewer's defaults."""
@@ -474,7 +472,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         self.assertIs(ViewerRTX._get_ldr_color_render_var(viewer, frame), render_var)
         self.assertIsNone(ViewerRTX._get_ldr_color_render_var(viewer, mock.Mock(render_vars={"LdrColor": render_var})))
 
-    @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+    @requires("ovrtx")
     def test_display_uses_ovrtx_05_color_output(self):
         """Blit the fully qualified OVRTX 0.5 color output to the window."""
         viewer = ViewerRTX.__new__(ViewerRTX)
@@ -497,7 +495,7 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         blit.assert_called_once_with(pixels)
         mapping.unmap.assert_called_once_with(stream=17)
 
-    @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+    @requires("ovrtx")
     def test_screenshot_uses_ovrtx_05_color_output(self):
         """Capture the fully qualified OVRTX 0.5 color output."""
         viewer = ViewerRTX.__new__(ViewerRTX)
@@ -512,11 +510,12 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
         np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), expected)
 
 
-@unittest.skipUnless(OVRTX_AVAILABLE and wp.is_cuda_available(), "Requires OVRTX and CUDA")
+@requires("ovrtx")
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestViewerRTXRendering(unittest.TestCase):
     """Keep real OVRTX renders in one class so class-level parallelism runs them serially."""
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_moving_scene_capture_stays_frozen_until_resume(self):
         """Freeze both modes and resume with the latest scene rather than a stale result."""
         builder = newton.ModelBuilder()
@@ -557,7 +556,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_headless_frame_capture(self):
         """Capture the latest moving scene across render mode changes."""
         builder = newton.ModelBuilder()
@@ -597,7 +596,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_runtime_shape_colors(self):
         """Recolor one of two initially identical shapes without changing its neighbor."""
         builder = newton.ModelBuilder()
@@ -671,7 +670,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_runtime_shape_opacities(self):
         """Update one shared-material instance through transparent and opaque states."""
         builder = newton.ModelBuilder()
@@ -737,7 +736,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                 finally:
                     viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_runtime_opacity_preserves_render_settings(self):
         """Keep explicit fractional-opacity settings when a shape becomes translucent."""
         import ovstage
@@ -777,8 +776,7 @@ class TestViewerRTXRendering(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
+    @requires("pxr.Usd", "imageio_ffmpeg", "PIL")
     def test_headless_video_recording(self):
         """Encode and decode a real RTX recording without OpenGL renderer attributes."""
         import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
@@ -816,7 +814,7 @@ class TestViewerRTXRendering(unittest.TestCase):
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_runtime_line_batch_has_no_deprecation_warnings(self):
         """Render a line batch first created after the runtime scene is active."""
         viewer = ViewerRTX(headless=True, async_rendering=False)
@@ -892,7 +890,7 @@ def Xform "World"
         builder.add_usd(path, **add_usd_kwargs)
         return stage, builder.finalize()
 
-    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
+    @requires("ovrtx", "ovstage")
     def test_borrowed_stage_writes_above_caller_advanced_floor(self):
         """Keep writing to a borrowed stage after its owner advances the write floor."""
         import ovstage
@@ -911,7 +909,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
+    @requires("ovrtx", "ovstage")
     def test_borrowed_stage_keeps_authored_poses_until_first_state(self):
         """Render bound bodies at their authored poses on frames before the first logged state."""
         stage, model = self._borrowed_scene()
@@ -925,7 +923,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
+    @requires("ovrtx", "ovstage")
     def test_borrowed_stage_renders_reoriented_import_in_stage_frame(self):
         """Keep bodies at their stage poses when the import rotated a Y-up stage and applied an ``xform``."""
         xform = wp.transform((5.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
@@ -948,7 +946,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
+    @requires("ovrtx", "ovstage")
     def test_borrowed_stage_binds_replicated_clones(self):
         """Bind each replicated world's bodies to the prims the stage cloned into its environment."""
         envs = [f"/World/envs/env_{i}" for i in range(3)]
@@ -1022,7 +1020,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    @requires("ovstage")
     def test_resizing_line_batch_after_first_frame(self):
         """Resize a line batch created before the first frame once rendering has started."""
         viewer = ViewerRTX(headless=True, async_rendering=False)

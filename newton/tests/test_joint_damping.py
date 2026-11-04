@@ -7,7 +7,13 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 class TestJointDamping(unittest.TestCase):
@@ -296,7 +302,9 @@ for device in get_cuda_test_devices():
         "test_revolute_joint_damping_decays_velocity_mujoco_warp",
         test_revolute_joint_damping_decays_velocity,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+        solver_fn=requires(*MUJOCO_MODULES)(
+            lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+        ),
         sync_joint_qd=False,
     )
 

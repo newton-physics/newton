@@ -11,8 +11,10 @@ import warp as wp
 import newton
 from newton import GeoType
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoSiteExport(unittest.TestCase):
     """Test exporting sites to MuJoCo models."""
 
