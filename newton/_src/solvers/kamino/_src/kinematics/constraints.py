@@ -222,9 +222,8 @@ def make_unilateral_constraints_info(
         np.asarray(world_njc) + np.asarray(world_nbc) + np.asarray(world_maxnlc) + np.asarray(world_maxncc)
     )
 
-    # Compute the initial values of the absolute constraint group
-    # offsets for joints (dynamic + kinematic), limits, contacts
-    # TODO: Consider using absolute start indices for each group
+    # Compute the constraint group offsets relative to each world's constraint block. The limit and contact
+    # offsets are initial values that `_update_constraints_info` overwrites.
     world_jdcio = np.zeros(num_worlds, dtype=np.int64)
     world_jkcio = world_jdcio + world_njdc
     world_bccio = world_jkcio + world_njkc

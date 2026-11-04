@@ -1719,9 +1719,6 @@ class SparseSystemJacobians:
         """
         Creates a :class:`SparseSystemJacobians` container and allocates the Jacobian data if a model is provided.
 
-        The Jacobians are stored in block-sparse format using the :class:`BlockSparseLinearOperators` class, and
-        the non-zero block coordinates are stored as local offsets for each world, joint, limit, and contact.
-
         Args:
             model: The model container describing the system structure and properties, used
                 to allocate the Jacobian data and compute the non-zero block coordinates.
@@ -1734,15 +1731,12 @@ class SparseSystemJacobians:
         self._J_cts: BlockSparseLinearOperators[wp.float32, wp.int32] | None = None
         self._J_dofs: BlockSparseLinearOperators[wp.float32, wp.int32] | None = None
 
-        # Local (in-world) offsets for the non-zero blocks of the constraint and dofs Jacobian for
-        # each (global) joint, limit, and contact
+        # Global offsets of the first non-zero block of each joint, limit, and contact in the cts and dofs Jacobians
         self._J_cts_joint_nzb_offsets: wp.array[wp.int32] | None = None
         self._J_cts_limit_nzb_offsets: wp.array[wp.int32] | None = None
         self._J_cts_contact_nzb_offsets: wp.array[wp.int32] | None = None
         self._J_dofs_joint_nzb_offsets: wp.array[wp.int32] | None = None
 
-        # Static non-zero block offsets for each bounded-multiplier (currently: joint friction)
-        # constraint row, one entry per adjacent body (the second is -1 for unary joints).
         self._J_cts_bounded_nzb_offsets: wp.array[wp.vec2i] | None = None
 
         # Lists of number of non-zero blocks in each world connected to joint constraints

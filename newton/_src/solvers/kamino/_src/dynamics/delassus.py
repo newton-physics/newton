@@ -1008,7 +1008,7 @@ class DelassusOperator:
         self._max_of_max_total_D_size = max(self._world_maxsize) if self._world_maxsize else 0
 
         if self._model_maxsize > np.iinfo(np.int32).max:
-            raise ValueError(
+            raise OverflowError(
                 f"Kamino dense Delassus buffer requires {self._model_maxsize} elements across "
                 f"{self._num_worlds} worlds, exceeding the int32 indexing limit of {np.iinfo(np.int32).max}. "
                 "Reduce the number of worlds or max_contacts_per_world, or use sparse_dynamics=True "
