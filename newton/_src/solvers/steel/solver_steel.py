@@ -2082,11 +2082,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ``iterations``, no warm start, no velocity-only iterations, no contact
                 regularization, no shared anchors and zero shape restitution. With
                 ``articulated_contact_response="propagation_colored"`` the colored sweep solves the
-                compliant rows; that response rejects it with contact torsion, and ``"propagation"``
-                rejects it. The contacts must carry the hydroelastic material arrays. The rows are
-                prepared on the device, so :meth:`step` can be captured in a CUDA graph. Invalid input (for example a compliant contact
-                lost to a row capacity, even with ``warn_constraint_overflow`` off, or a positive
-                shape restitution) makes an eager step raise. In a captured step the error is
+                compliant rows; ``"propagation"`` rejects it. The contacts must carry the
+                hydroelastic material arrays. The rows are prepared on the device, so
+                :meth:`step` can be captured in a CUDA graph. Invalid input (for example a
+                compliant contact lost to a row capacity, even with ``warn_constraint_overflow``
+                off, or a positive shape restitution) makes an eager step raise. In a captured step the error is
                 deferred: :meth:`check_constraint_capacity` raises after the replays, until
                 :meth:`reset`, and their results are invalid; eager steps do not report it. Contacts the allocator excludes on
                 purpose are counted in ``compliance_skipped_contact_count`` and compliant contacts
@@ -2486,11 +2486,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                         "contact torsion",
                         self._contact_torsion_enabled and articulated_contact_response != "propagation",
                     ),
-                    # The colored compliant rows are not validated with torsion rows in their units.
                     (
                         "contact_compliance=True",
-                        self._contact_compliance
-                        and (articulated_contact_response != "propagation_colored" or self._contact_torsion_enabled),
+                        self._contact_compliance and articulated_contact_response != "propagation_colored",
                     ),
                     ("enable_sleeping=True", bool(enable_sleeping)),
                     (
@@ -18464,10 +18462,12 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     color's payload to shared memory while a color solves, and ``straight_line`` solves the
     standard units without the row loop; with fixed_normal every variant gives the same result
     bitwise. ``contact_compliance`` adds ``compliance_gamma * lambda`` to every contact row's
-    residual; the coefficient is zero on rigid rows. Any other ``friction_mode`` solves each contact row and its sliding pair together at
-    the pair's first row (see :func:`_colored_coupled_contact`); the variants then agree up to
-    float32 summation order.
+    residual; the coefficient is zero on rigid rows. Any other ``friction_mode`` solves each
+    contact row and its sliding pair together at the pair's first row (see
+    :func:`_colored_coupled_contact`); the variants then agree up to float32 summation order.
     """
+    if contact_compliance and friction_mode != "fixed_normal":
+        raise ValueError(f"contact_compliance requires friction_mode='fixed_normal', got {friction_mode!r}")
     M = propagation_max_constraints
     NE = n_color_entries
     MB = max(int(max_propagation_bodies), 1)
@@ -19066,6 +19066,8 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     ``contact_compliance`` adds ``compliance_gamma * lambda`` to every contact row's residual. Any
     ``friction_mode`` but fixed_normal solves each contact row and its sliding pair together.
     """
+    if contact_compliance and friction_mode != "fixed_normal":
+        raise ValueError(f"contact_compliance requires friction_mode='fixed_normal', got {friction_mode!r}")
     M = propagation_max_constraints
     NE = n_color_entries
     B = int(block_dim)
