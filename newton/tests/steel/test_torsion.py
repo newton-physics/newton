@@ -1688,7 +1688,7 @@ def test_cuda_preparation_graph_changes_and_failure(test, device):
 
 
 def test_cuda_captured_capacity_errors(test, device):
-    """Fail an input overflow solver-wide under graph replay, and flag only the world of a dense or spin overflow."""
+    """Fail an input overflow solver-wide under graph replay; a dense or spin overflow drops only its world's torsion rows."""
     for failure in ("input", "dense", "spin"):
         solver, state, augmented, contacts = synthetic_fixture(device=device)
         preparer = DeviceTorsionPreparation(solver, deferred_errors=True)
@@ -1738,6 +1738,7 @@ def test_cuda_captured_capacity_errors(test, device):
                 preparer.validate()
                 # The step is not rolled back: body_q keeps the operation's zeroed output.
                 np.testing.assert_array_equal(output.body_q.numpy(), 0.0)
+                # The dense drop's flag comes from the step's row allocation, which this operation does not run.
                 np.testing.assert_array_equal(
                     solver.constraint_overflow.numpy(), [False, failure == "spin", False, False]
                 )
@@ -1799,6 +1800,39 @@ def test_cuda_cold_capture_reports_errors_until_reset(test, device):
     wp.capture_launch(capture.graph)
     solver.check_constraint_capacity()
     test.assertFalse(np.array_equal(output.joint_q.numpy(), state.joint_q.numpy()))
+
+
+def test_cuda_status_snapshot_reports_a_replay_error(test, device):
+    """Report a replay's torsion error from a snapshot taken after it, and not from an earlier one."""
+    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, iterations=16)
+    output = model.state()
+    with wp.ScopedCapture(device=model.device) as capture:
+        solver.step(state, output, model.control(), contacts, 0.0025)
+    wp.capture_launch(capture.graph)
+    solver.snapshot_constraint_status()
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity(snapshot=True)
+    solver.snapshot_constraint_status()
+    with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
+        solver.check_constraint_capacity(snapshot=True)
+    np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
+    solver.reset(state)
+    wp.capture_launch(capture.graph)
+    solver.snapshot_constraint_status()
+    solver.check_constraint_capacity(snapshot=True)
+
+
+def test_cuda_status_snapshot_takes_device_torsion_prepared_later(test, device):
+    """Check and retake a status snapshot taken before device torsion was prepared."""
+    _, solver, *_ = fixture(0.01, device=device, iterations=16, step=False)
+    solver.snapshot_constraint_status()
+    enable_device_torsion(solver)
+    solver.check_constraint_capacity(snapshot=True)
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    solver.snapshot_constraint_status()
+    with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
+        solver.check_constraint_capacity(snapshot=True)
 
 
 def test_cuda_full_solver_graph(test, device):
@@ -1880,6 +1914,8 @@ for _fn in (
     test_cuda_captured_capacity_errors,
     test_public_api_noop_and_fail_stop,
     test_cuda_cold_capture_reports_errors_until_reset,
+    test_cuda_status_snapshot_reports_a_replay_error,
+    test_cuda_status_snapshot_takes_device_torsion_prepared_later,
     test_cuda_full_solver_graph,
 ):
     add_function_test(TestDeviceTorsionPreparation, _fn.__name__, _fn, devices=get_cuda_test_devices())
@@ -1913,7 +1949,7 @@ def _pad_worlds(pairs_per_world, device):
     return model, state
 
 
-def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", steps=3, reset_mask=None, warn=False):
+def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", steps=3, warn=False):
     """Step the pad worlds deterministically; return per-world joint_qd, the overflow flags and the solver."""
     model, a = _pad_worlds(pairs_per_world, device)
     solver = SolverSteel(
@@ -1929,6 +1965,7 @@ def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", ste
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
         contact_torsion_device=preparation != "host",
         warn_constraint_overflow=warn,
+        row_watermark=True,
     )
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=256, deterministic=True)
     contacts = pipeline.contacts()
@@ -1950,26 +1987,30 @@ def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", ste
         for _ in range(steps):
             pair()
     overflow = solver.constraint_overflow.numpy().copy()
-    if reset_mask is not None:
-        solver.reset(a, wp.array(reset_mask, dtype=wp.bool, device=model.device))
     dofs = np.cumsum([0] + [12 * pairs for pairs in pairs_per_world])
     qd = a.joint_qd.numpy()
     return [qd[dofs[w] : dofs[w + 1]] for w in range(len(pairs_per_world))], overflow, solver
 
 
+_PAD_CAPACITY = {}
+
+
 def _pad_capacity(test, device):
     """Return a capacity that fits every dense row of a two-pair world and one of its two torsion rows."""
-    _, overflow, solver = _pad_rollout([1, 1, 2], 64, device=device, steps=1)
-    test.assertFalse(overflow.any())
-    counts = solver._constraint_count.numpy()
-    torsion = (solver._row_type.numpy() == PGS_CONSTRAINT_TYPE_TORSION).sum(axis=1)
-    np.testing.assert_array_equal(torsion, [1, 1, 2])
-    test.assertLess(counts[0], counts[2] - 1)
-    return int(counts[2]) - 1
+    key = str(device)
+    if key not in _PAD_CAPACITY:
+        _, overflow, solver = _pad_rollout([1, 1, 2], 64, device=device, steps=1)
+        test.assertFalse(overflow.any())
+        counts = solver._constraint_count.numpy()
+        torsion = (solver._row_type.numpy() == PGS_CONSTRAINT_TYPE_TORSION).sum(axis=1)
+        np.testing.assert_array_equal(torsion, [1, 1, 2])
+        test.assertLess(counts[0], counts[2] - 1)
+        _PAD_CAPACITY[key] = int(counts[2]) - 1
+    return _PAD_CAPACITY[key]
 
 
 def test_overflowing_world_is_flagged_and_others_are_unchanged(test, device):
-    """Flag only the world whose torsion rows overflow and leave the other worlds bitwise unchanged."""
+    """Flag and count only the world whose torsion rows overflow, leave the other worlds bitwise unchanged, and reset it."""
     capacity = _pad_capacity(test, device)
     for preparation in ("host", "device", "graph"):
         with test.subTest(preparation=preparation):
@@ -1986,16 +2027,19 @@ def test_overflowing_world_is_flagged_and_others_are_unchanged(test, device):
             test.assertEqual(int(solver._constraint_count.numpy()[2]), capacity)
             with test.assertRaisesRegex(RuntimeError, r"Steel dropped contacts or constraint rows in worlds \[2\]"):
                 solver.check_constraint_capacity()
-
-
-def test_torsion_overflow_reset_clears_only_the_selected_world(test, device):
-    """Keep the torsion overflow flag through another world's reset and clear it with its own."""
-    capacity = _pad_capacity(test, device)
-    _, overflow, solver = _pad_rollout([1, 1, 2], capacity, device=device, reset_mask=[False, True, False, False])
-    np.testing.assert_array_equal(overflow, [False, False, True, False])
-    np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, True, False])
-    solver.reset(solver.model.state(), wp.array([False, False, True, False], dtype=wp.bool, device=device))
-    solver.check_constraint_capacity()
+            # The watermarks count the torsion rows the world requested, beyond the ones it kept.
+            marks = solver.constraint_row_watermarks()
+            test.assertGreater(marks["articulation_raw_high_water"], capacity)
+            test.assertEqual(
+                marks["articulation_overflow_excess_high_water"], marks["articulation_raw_high_water"] - capacity
+            )
+            test.assertGreater(marks["articulation_overflow_world_steps"], 0)
+            if preparation == "device":
+                state = solver.model.state()
+                solver.reset(state, wp.array([False, True, False, False], dtype=wp.bool, device=device))
+                np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [False, False, True, False])
+                solver.reset(state, wp.array([False, False, True, False], dtype=wp.bool, device=device))
+                solver.check_constraint_capacity()
 
 
 def test_torsion_overflow_warns_once(test, device):
@@ -2020,17 +2064,19 @@ def test_torsion_overflow_warns_once(test, device):
     test.assertEqual(len(matches), 1, [str(w.message) for w in caught])
     test.assertIn("in world 2: requested", str(matches[0].message))
     test.assertTrue(issubclass(matches[0].category, newton.exceptions.NewtonWarning))
+    test.assertEqual(matches[0].filename, __file__)
 
 
 class TestTorsionRowOverflow(unittest.TestCase):
     """A world whose torsion rows exceed the dense capacity is flagged alone; the other worlds step as before."""
 
 
-for _fn in (
+add_function_test(
+    TestTorsionRowOverflow,
+    "test_overflowing_world_is_flagged_and_others_are_unchanged",
     test_overflowing_world_is_flagged_and_others_are_unchanged,
-    test_torsion_overflow_reset_clears_only_the_selected_world,
-):
-    add_function_test(TestTorsionRowOverflow, _fn.__name__, _fn, devices=get_cuda_test_devices())
+    devices=get_cuda_test_devices(),
+)
 
 # The test checks its own output: CheckOutput's capture would receive the device printf.
 add_function_test(
@@ -2947,6 +2993,9 @@ add_function_test(
 
 
 _COLORED_TORSION = {"articulated_contact_response": "propagation_colored", "contact_torsion_device": True}
+# Every variant tracks the same result in the track-plain and two-row-unit tests, so the behavior
+# tests run the default sweep and the block sweep with global twists, the one without shared twists.
+_BEHAVIOR_VARIANTS = (None, "block global")
 
 
 def test_colored_rows_host_in_the_last_members_unit_at_its_highest_color(test, device):
@@ -2980,8 +3029,8 @@ def test_colored_rows_host_in_the_last_members_unit_at_its_highest_color(test, d
 
 
 def test_colored_budget_holds_after_every_sweep(test, device):
-    """Keep each torsion impulse within its group's residual sliding budget after every sweep of each variant."""
-    for variant in _COLORED_VARIANTS:
+    """Keep each torsion impulse within its group's residual sliding budget after every sweep."""
+    for variant in _BEHAVIOR_VARIANTS:
         for case, options in (("center", _CENTER_SPIN), ("corners", _CORNER_SPIN)):
             with test.subTest(variant=variant, case=case):
                 sweeps, _ = _record_propagation_sweeps(
@@ -3002,7 +3051,7 @@ def test_colored_sweeps_built_without_torsion_leave_it_unsolved(test, device):
     def without_torsion(get_kernel):
         return lambda *args, **kwargs: get_kernel(*args, **{**kwargs, "contact_torsion": False})
 
-    for variant in ("packed", "reference", "row loop", "block", "block global"):
+    for variant in ("packed", "block"):
         moved = {}
         for build in ("torsion", "torsion off"):
             with test.subTest(variant=variant, build=build), contextlib.ExitStack() as stack:
@@ -3150,9 +3199,9 @@ def test_colored_contact_order_changes_the_result_no_more_than_on_immediate(test
 
 def test_colored_serial_tail_hosts_the_group_after_its_members(test, device):
     """Solve a group whose members overflow a two-color cap in the serial tail, host last, on each variant."""
-    for variant in ("packed", "reference", "row loop", "block"):
+    uncapped, *_ = fixture(0.01, device=device, spin=10.0, **_COLORED_TORSION)
+    for variant in ("packed", "block"):
         with test.subTest(variant=variant):
-            uncapped, *_ = fixture(0.01, device=device, spin=10.0, **_COLORED_TORSION)
             with patch.object(solver_steel, "PROPAGATION_COLOR_TAIL", 2):
                 with _colored_variant(variant):
                     _, solver, model, state, contacts = fixture(
@@ -3229,8 +3278,8 @@ def test_colored_two_row_units_host_their_group(test, device):
 
 
 def test_colored_inert_torsion_rows_leave_the_result_unchanged(test, device):
-    """Step bitwise as with no reserved rows when no group forms, so every torsion row stays inert, on each variant."""
-    for variant in _COLORED_VARIANTS:
+    """Step bitwise as with no reserved rows when no group forms, so every torsion row stays inert."""
+    for variant in _BEHAVIOR_VARIANTS:
         with test.subTest(variant=variant):
             results = {}
             for shapes in (None, ()):
@@ -3263,7 +3312,7 @@ def test_colored_prescribed_spin_turns_a_resting_sphere(test, device):
     """Spin up a sphere resting on a spinning kinematic platform through torsion alone, as on immediate."""
     expected = _turntable(device, "immediate")
     test.assertGreater(expected, 0.5)
-    for variant in _COLORED_VARIANTS:
+    for variant in _BEHAVIOR_VARIANTS:
         with test.subTest(variant=variant):
             test.assertAlmostEqual(_turntable(device, "propagation_colored", variant=variant), expected, delta=1.0e-4)
 
@@ -3335,7 +3384,7 @@ def test_colored_deterministic_runs_repeat_bitwise_and_ignore_world_order(test, 
 def test_colored_captured_steps_match_eager_steps_and_report_errors(test, device):
     """Replay captured colored steps bit for bit as eager steps, and fail stop on a latched torsion error."""
     options = {"deterministic": wp.DeterministicMode.RUN_TO_RUN}
-    for variant in ("packed", "staged", "reference", "block"):
+    for variant in (*_BEHAVIOR_VARIANTS, "staged"):
         with test.subTest(variant=variant):
             eager, _ = _spinner(device, "propagation_colored", 16, 0.01, spin=4.0, steps=5, variant=variant, **options)
             captured, _ = _spinner(
@@ -3355,6 +3404,27 @@ def test_colored_captured_steps_match_eager_steps_and_report_errors(test, device
         solver.check_constraint_capacity()
     np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
     test.assertTrue(np.all(solver._propagation_constraint_count.numpy() == 0))
+
+
+def test_colored_mismatched_propagation_load_ring_raises(test, device):
+    """Raise from an eager step whose propagation load ring does not match its torsion group, as on dense rows."""
+    _, solver, model, state, contacts = fixture(
+        0.01, device=device, spin=1.0, step=False, **PATCH_OPTIONS, **_COLORED_TORSION
+    )
+    prepare = solver._device_torsion.prepare
+
+    def prepare_corrupted(*args):
+        # Point every contact's normal row at a row that hosts no contact.
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        slots = solver._contact_slot.numpy()[:count]
+        parents = solver._propagation_row_parent.numpy()
+        parents[0, slots[slots >= 0]] = solver._propagation_max_constraints - 1
+        solver._propagation_row_parent.assign(parents)
+        prepare(*args)
+
+    with patch.object(solver._device_torsion, "prepare", prepare_corrupted):
+        with test.assertRaisesRegex(RuntimeError, "load ring"):
+            solver.step(state, model.state(), model.control(), contacts, 0.0025)
 
 
 def test_colored_unsupported_combinations_raise(test, device):
@@ -3390,6 +3460,7 @@ for _fn in (
     test_colored_mixed_families_track_plain_through_the_contact_lifecycle,
     test_colored_deterministic_runs_repeat_bitwise_and_ignore_world_order,
     test_colored_captured_steps_match_eager_steps_and_report_errors,
+    test_colored_mismatched_propagation_load_ring_raises,
     test_colored_unsupported_combinations_raise,
 ):
     add_function_test(TestColoredPropagationTorsion, _fn.__name__, _fn, devices=get_cuda_test_devices())
@@ -3397,12 +3468,25 @@ for _fn in (
 
 @contextlib.contextmanager
 def _colored_variant(variant):
-    """Build the colored sweep of ``variant`` (a ``test_friction`` colored variant) in solvers constructed inside."""
+    """Build the colored sweep of ``variant`` (a ``test_friction`` colored variant) in solvers constructed inside.
+
+    Fails if a solver built another sweep, and skips a staged variant the device cannot stage.
+    """
     if variant is None:
         yield
         return
+    overrides, suffix = _COLORED_VARIANTS[variant]
+    kernels, staging = [], []
+
+    def record(function, results):
+        def recorded(*args, **kwargs):
+            results.append(function(*args, **kwargs))
+            return results[-1]
+
+        return recorded
+
     with contextlib.ExitStack() as stack:
-        stack.enter_context(kernel_overrides(_COLORED_VARIANTS[variant][0]))
+        stack.enter_context(kernel_overrides(overrides))
         if variant.startswith("block"):
             # No warp-sweep staging fits, so the solver builds the block sweep.
             stack.enter_context(patch.object(solver_steel, "_COLORED_STAGING_BYTES", 0))
@@ -3416,7 +3500,19 @@ def _colored_variant(variant):
             stack.enter_context(
                 patch.object(solver_steel, "_get_pgs_solve_propagation_colored_block_kernel", global_twists)
             )
+        for name in (
+            "_get_pgs_solve_propagation_colored_warp_kernel",
+            "_get_pgs_solve_propagation_colored_block_kernel",
+        ):
+            stack.enter_context(patch.object(solver_steel, name, record(getattr(solver_steel, name), kernels)))
+        supported = record(solver_steel._colored_staging_supported, staging)
+        stack.enter_context(patch.object(solver_steel, "_colored_staging_supported", supported))
         yield
+    if not all(staging):
+        raise unittest.SkipTest("This device cannot stage the colored sweep")
+    keys = [kernel.key for kernel in kernels]
+    if not keys or any(suffix not in key for key in keys):
+        raise AssertionError(f"Colored variant {variant!r} built {keys}")
 
 
 def _contact_colors(solver, world=0):

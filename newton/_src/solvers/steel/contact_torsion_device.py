@@ -99,6 +99,7 @@ class _Workspace:
     row_contact: wp.array2d[int]
     spin_source: wp.array2d[int]
     planned_count: wp.array[int]
+    requested_count: wp.array[int]
     status: wp.array[int]
     patch_keys: wp.array[wp.int64]
     patch_indices: wp.array[int]
@@ -429,8 +430,9 @@ def _finish_dense_rows(
     warn: int,
     warning_emitted: wp.array[wp.int32],
 ):
-    """Publish the world's planned row count and flag the world when torsion groups found no row."""
+    """Publish the world's planned and requested row counts and flag the world when torsion groups found no row."""
     work.planned_count[world] = row
+    work.requested_count[world] = first_row + requested
     dropped = first_row + requested - row
     if dropped <= 0:
         return
@@ -749,7 +751,8 @@ def _apply_counts(
     world = wp.tid()
     if work.status[0] == 0:
         count[world] = work.planned_count[world]
-        slots[world] = work.planned_count[world]
+        # The row watermarks read the slot counter as the world's requested rows.
+        slots[world] = wp.max(slots[world], work.requested_count[world])
     else:
         # Do not solve an incomplete contact system while a captured error is
         # awaiting its mandatory host validation boundary.
@@ -868,6 +871,7 @@ class DeviceTorsionPreparation:
         propagation_shape = (solver._world_count, solver._propagation_max_constraints) if self.propagation else (1, 1)
         w.propagation_row_contact = wp.full(propagation_shape, -1, dtype=int, device=device)
         w.planned_count = wp.zeros(solver._world_count, dtype=int, device=device)
+        w.requested_count = wp.zeros(solver._world_count, dtype=int, device=device)
         w.status = wp.zeros(1, dtype=int, device=device)
         w.patch_keys = wp.empty(2 * self.capacity, dtype=wp.int64, device=device)
         w.patch_indices = wp.empty(2 * self.capacity, dtype=int, device=device)
@@ -943,12 +947,13 @@ class DeviceTorsionPreparation:
                     device=self.solver.model.device,
                 )
 
-    def validate(self):
-        """Synchronously raise latched input errors; they stay latched until :meth:`clear_status`.
+    def validate(self, status: int | None = None):
+        """Raise latched input errors, read synchronously unless ``status`` gives them; they stay latched until :meth:`clear_status`.
 
         Rows beyond the capacity flag their worlds in ``constraint_overflow`` instead.
         """
-        status = int(self.work.status.numpy()[0])
+        if status is None:
+            status = int(self.work.status.numpy()[0])
         if status & 1:
             raise RuntimeError("Contact input overflow before contact torsion")
         if status & 2:
