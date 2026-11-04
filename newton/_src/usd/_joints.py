@@ -54,6 +54,7 @@ def _endpoints_swapped(joint_desc: UsdPhysics.JointDesc, body_index_map: dict[st
     """
     return body_index_map.get(str(joint_desc.body1), -1) == -1
 
+
 def _resolve_scalar_spring(
     prim: Usd.Prim,
     is_revolute: bool,
