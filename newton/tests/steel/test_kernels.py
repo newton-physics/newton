@@ -24,6 +24,7 @@ from newton._src.solvers.steel.solver_steel import (
     _select_delassus_chunk_size,
     _select_hinv_jt_chunk_size,
     _SteelExecutionPlan,
+    _use_mfgs_pair_cache,
     _use_resident_mfgs_metadata,
 )
 from newton.solvers import SolverSteel
@@ -842,20 +843,30 @@ def test_propagation_rejects_unsupported_options(test, device):
             with test.assertRaisesRegex(NotImplementedError, "contact torsion.*articulated_contact_response"):
                 SolverSteel(model, articulated_contact_response=response)
         set_torsion_radius(model, 0.0)
-        options = (
-            ({"contact_compliance": True, "friction_anchor_beta": 0.0}, "contact_compliance"),
-            ({"enable_sleeping": True}, "enable_sleeping"),
-        )
-        for kwargs, name in options:
-            with test.subTest(response=response, option=name):
-                with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
-                    SolverSteel(model, articulated_contact_response=response, **kwargs)
-        for kwargs in (
+        compliance = {"contact_compliance": True, "friction_anchor_beta": 0.0}
+        options = []
+        if response == "propagation":
+            options.append(({"enable_sleeping": True}, "enable_sleeping"))
+        else:
+            with test.subTest(response=response, option="enable_sleeping"):
+                test.assertIsNotNone(
+                    SolverSteel(model, articulated_contact_response=response, enable_sleeping=True)._sleeping
+                )
+        accepted = [
             {"drive_mode": "rows"},
             {"contact_regularization": 0.02},
             {"velocity_iterations": 2},
             {"contact_warmstart": True},
-        ):
+        ]
+        if response == "propagation":
+            options.append((compliance, "contact_compliance"))
+        else:
+            accepted.append(compliance)
+        for kwargs, name in options:
+            with test.subTest(response=response, option=name):
+                with test.assertRaisesRegex(NotImplementedError, f"{name}.*articulated_contact_response"):
+                    SolverSteel(model, articulated_contact_response=response, **kwargs)
+        for kwargs in accepted:
             with test.subTest(response=response, **kwargs):
                 solver = SolverSteel(model, articulated_contact_response=response, **kwargs)
                 test.assertTrue(solver._propagation_active)
@@ -1809,21 +1820,20 @@ def _build_chains_on_boxes(device):
     return scene.finalize(device=device)
 
 
-def _row_phase_rollout(model, *, runtime_phase=False, capture=False, **options):
-    options = {"enable_joint_limits": True, "drive_mode": "rows", **options}
+def _row_phase_rollout(model, *, reference=None, capture=False, **options):
+    options = {"enable_joint_limits": True, "drive_mode": "rows", "articulation_constraint_max": _ROWS, **options}
     solver = SolverSteel(
         model,
         solve_mode="matrix_free",
         iterations=12,
-        articulation_constraint_max=_ROWS,
         free_body_constraint_max=_ROWS,
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
         **options,
     )
     prebuilt = set(solver._pgs_solve_mf_gs_kernels)
-    if runtime_phase:
-        # Every launch takes the kernel that reads the phase argument.
-        solver._pgs_solve_mf_gs_kernels = {0: solver._pgs_solve_mf_gs_kernel_for_phase()}
+    if reference is not None:
+        # Every launch takes one kernel built with these options, which reads the phase argument.
+        solver._pgs_solve_mf_gs_kernels = {0: solver._pgs_solve_mf_gs_kernel_for_phase(**reference)}
     solver.launched_phases = set()
     launch_phase = solver._launch_mf_gs_phase
 
@@ -1862,7 +1872,7 @@ def test_compiled_row_phase_matches_runtime_phase(test, device, **options):
     """Kernels with the row phase compiled in reproduce the runtime-phase kernel bit for bit."""
     model = _build_chains_on_boxes(device)
     solver, prebuilt, compiled = _row_phase_rollout(model, **options)
-    _, _, runtime = _row_phase_rollout(model, runtime_phase=True, **options)
+    _, _, runtime = _row_phase_rollout(model, reference={}, **options)
     # Construction built exactly the phases the schedule launched.
     test.assertEqual(set(solver._pgs_solve_mf_gs_kernels), prebuilt)
     test.assertEqual(solver.launched_phases, prebuilt)
@@ -1915,6 +1925,68 @@ add_function_test(
     devices=get_cuda_test_devices(),
 )
 
+
+def test_pair_cache_matches_the_uncached_solve(test, device, torsion_radius=0.0, **options):
+    """Reproduce the uncached resident-metadata MF-GS solve bit for bit with the pair and row caches."""
+    model = _build_chains_on_boxes(device)
+    if torsion_radius > 0.0:
+        set_torsion_radius(model, torsion_radius)
+    solver, _, cached = _row_phase_rollout(model, **options)
+    test.assertTrue(solver._mfgs_pair_cache)
+    test.assertIn("_paircache", solver._pgs_solve_mf_gs_kernel.key)
+    # Streamed metadata also selects the row type and parent cache.
+    test.assertEqual(
+        options.get("articulation_constraint_max", _ROWS) > _ROWS, "_gmeta" in solver._pgs_solve_mf_gs_kernel.key
+    )
+    test.assertEqual(torsion_radius > 0.0, solver._contact_torsion_enabled)
+    # Resident metadata, so the streamed cases also check the streamed-metadata prefetch and row cache.
+    _, _, uncached = _row_phase_rollout(model, reference={"pair_cache": False, "shared_metadata": True}, **options)
+    test.assertTrue(np.isfinite(uncached).all())
+    np.testing.assert_array_equal(cached.view(np.uint32), uncached.view(np.uint32))
+
+
+def test_pair_cache_selection(test, device):
+    """Select the pair cache only for the fixed-normal pair solve outside phased and propagation, all worlds resident."""
+    shape = {"shared_metadata": False, "has_drive_rows": True, "fuse_vel_limits": False}
+    test.assertTrue(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=64, sm_count=100, **shape))
+    test.assertFalse(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=100_000, sm_count=100, **shape))
+    # The cached arrays fit the opt-in limit but exceed 48 KiB of static shared memory.
+    test.assertTrue(_use_mfgs_pair_cache(1024, 1024, 200, 101376, world_count=64, sm_count=100, **shape))
+    test.assertFalse(_use_mfgs_pair_cache(3072, 1024, 200, 101376, world_count=64, sm_count=100, **shape))
+    model = _build_chains_on_boxes(device)
+    options = {"solve_mode": "matrix_free", "articulation_constraint_max": _ROWS, "free_body_constraint_max": _ROWS}
+    test.assertTrue(SolverSteel(model, **options)._mfgs_pair_cache)
+    for excluded in (
+        {"row_schedule": "phased"},
+        {"articulated_contact_response": "propagation"},
+        {"friction_mode": "bisection", "friction_anchor_beta": 0.0},
+    ):
+        with test.subTest(**excluded):
+            test.assertFalse(SolverSteel(model, **options, **excluded)._mfgs_pair_cache)
+
+
+class TestSteelMatrixFreePairCache(unittest.TestCase):
+    pass
+
+
+for _name, _options in (
+    ("resident_metadata", {}),
+    ("streamed_metadata", {"articulation_constraint_max": 192}),
+    ("contact_torsion", {"articulation_constraint_max": 192, "torsion_radius": 0.02}),
+):
+    add_function_test(
+        TestSteelMatrixFreePairCache,
+        f"test_pair_cache_matches_the_uncached_solve_{_name}",
+        test_pair_cache_matches_the_uncached_solve,
+        devices=get_cuda_test_devices(),
+        **_options,
+    )
+add_function_test(
+    TestSteelMatrixFreePairCache,
+    "test_pair_cache_selection",
+    test_pair_cache_selection,
+    devices=get_cuda_test_devices(),
+)
 
 if __name__ == "__main__":
     unittest.main()

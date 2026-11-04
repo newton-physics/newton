@@ -188,7 +188,7 @@ class TestJointSprings(unittest.TestCase):
                 with self.assertWarns(DeprecationWarning):
                     owner.mujoco.dof_passive_stiffness = [5.0]
                 np.testing.assert_array_equal(owner.joint_stiffness.numpy(), [5.0])
-                with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
+                with self.assertRaisesRegex(AttributeError, "deprecated.*nonzero mujoco:dof_ref.*springref - ref"):
                     _ = owner.mujoco.dof_springref
                 with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
                     owner.mujoco.dof_springref = [0.5]
@@ -199,6 +199,43 @@ class TestJointSprings(unittest.TestCase):
         self.assertTrue(model._attribute_spec("mujoco:dof_passive_stiffness").deprecated)
         self.assertNotIn("mujoco:dof_passive_stiffness", dict(model._iter_attribute_specs()))
         self.assertIsNone(model._attribute_spec("mujoco:dof_springref"))
+
+    def test_legacy_springref_alias(self):
+        """Alias springref to joint_rest_q only when both share layout and values."""
+        for ball in (False, True):
+            with self.subTest(ball=ball):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                SolverMuJoCo.register_custom_attributes(builder)
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="arm/link")
+                joint = builder.add_joint_prismatic(-1, body, stiffness=2.0, rest_q=0.3, label="arm/slide")
+                joints = [joint]
+                if ball:
+                    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                    joints.append(builder.add_joint_ball(body, child))
+                builder.add_articulation(joints, label="arm")
+                model = builder.finalize(device="cpu")
+                if ball:
+                    with self.assertRaisesRegex(
+                        AttributeError, "deprecated.*more coordinates than DOFs.*joint_rest_q.*springref - ref"
+                    ):
+                        _ = model.mujoco.dof_springref
+                    continue
+                view = ModelView(model, "spring")
+                for owner in (model, view):
+                    with self.assertWarnsRegex(DeprecationWarning, "joint_rest_q") as warning:
+                        self.assertIs(owner.mujoco.dof_springref, owner.joint_rest_q)
+                    self.assertEqual(warning.filename, __file__)
+                view.joint_rest_q = wp.array([0.25], dtype=wp.float32, device="cpu")
+                with self.assertWarns(DeprecationWarning):
+                    self.assertIs(view.mujoco.dof_springref, view.joint_rest_q)
+                with self.assertWarns(DeprecationWarning):
+                    model.mujoco.dof_springref = [0.5]
+                np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.5])
+                articulations = newton.selection.ArticulationView(model, "arm")
+                with self.assertWarns(DeprecationWarning) as warning:
+                    rest = articulations.get_attribute("mujoco.dof_springref", model)
+                self.assertEqual(warning.filename, __file__)
+                np.testing.assert_allclose(rest.numpy().ravel(), [0.5])
 
     def test_builder_composition_and_coordinate_layout(self):
         """Preserve spring data through fixed-joint collapse and world replication with quaternion joints."""
