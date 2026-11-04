@@ -483,7 +483,7 @@ def _drive_scene(device, sleeping):
     return model, newton.CollisionPipeline(model, rigid_contact_max=64), solver, control, link, box
 
 
-def _compliance_scene(device, sleeping):
+def _compliance_scene(device, sleeping, response="immediate"):
     """Two independent spheres resting on implicit spring-damper contacts."""
     builder = newton.ModelBuilder()
     builder.rigid_gap = 0.005
@@ -508,6 +508,8 @@ def _compliance_scene(device, sleeping):
         baumgarte=0.05,
         articulation_constraint_max=32,
         free_body_constraint_max=32,
+        articulated_contact_response=response,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         **(SLEEP if sleeping else {}),
     )
     return model, pipeline, contacts, solver
@@ -2261,6 +2263,66 @@ def test_colored_separated_boxes_sleep_and_wake_like_immediate(test, device):
     np.testing.assert_array_equal(immediate[0][-1], [0, 0])
 
 
+def test_colored_compliant_contacts_sleep_and_wake_like_immediate(test, device):
+    """Sleep and push-wake spheres on compliant contacts at the steps immediate does, eager and captured."""
+    stiffness = 3000.0
+    force = np.zeros((2, 6), dtype=np.float32)
+    force[0, 0] = 5.0
+    traces = {}
+    for response, graph in (("immediate", False), ("propagation_colored", False), ("propagation_colored", True)):
+        model, pipeline, contacts, solver = _compliance_scene(device, sleeping=True, response=response)
+        states = [model.state(), model.state()]
+        control = model.control()
+        pushes = [wp.zeros_like(states[0].body_f), wp.array(force, dtype=wp.spatial_vector, device=device)]
+
+        def step(push, pipeline=pipeline, contacts=contacts, solver=solver, states=states, control=control):
+            # Fixed buffers, so the same work can be captured.
+            wp.copy(states[0].body_f, push)
+            pipeline.collide(states[0], contacts)
+            contacts.rigid_contact_stiffness.fill_(stiffness)
+            contacts.rigid_contact_damping.fill_(20.0)
+            contacts.rigid_contact_friction.fill_(1.0)
+            solver.step(states[0], states[1], control, contacts, DT)
+            for name in _FIELDS:
+                wp.copy(getattr(states[0], name), getattr(states[1], name))
+
+        if graph:
+            graphs = []
+            for push in pushes:
+                with wp.ScopedCapture(device=model.device) as capture:
+                    step(push)
+                graphs.append(capture.graph)
+
+            def run(push, graphs=graphs):
+                wp.capture_launch(graphs[push])
+        else:
+
+            def run(push, step=step, pushes=pushes):
+                step(pushes[push])
+
+        awake, poses = [], []
+        for k in range(420):
+            run(1 if 400 <= k < 405 else 0)
+            awake.append(solver._sleeping.body_awake.numpy().copy())
+            poses.append(states[0].body_q.numpy().copy())
+        solver.check_constraint_capacity()
+        traces[response, graph] = (np.array(awake), np.array(poses))
+    awake, poses = traces["propagation_colored", False]
+    slept = int(np.argmax(awake.sum(axis=1) == 0))
+    test.assertGreater(slept, 0, "both spheres must fall asleep before the push")
+    test.assertLess(slept, 400)
+    np.testing.assert_array_equal(awake, traces["immediate", False][0])
+    np.testing.assert_allclose(poses, traces["immediate", False][1], atol=1.0e-4, rtol=0)
+    # Asleep, the spheres stay frozen; the push wakes and moves sphere 0 only.
+    np.testing.assert_array_equal(poses[slept:400], np.broadcast_to(poses[slept], poses[slept:400].shape))
+    np.testing.assert_array_equal(awake[404], [1, 0])
+    test.assertGreater(float(poses[-1, 0, 0]), float(poses[399, 0, 0]))
+    np.testing.assert_array_equal(poses[400:, 1], np.broadcast_to(poses[399, 1], poses[400:, 1].shape))
+    # Captured replay matches eager stepping bitwise.
+    np.testing.assert_array_equal(traces["propagation_colored", True][0], awake)
+    np.testing.assert_array_equal(traces["propagation_colored", True][1], poses)
+
+
 def test_colored_units_omit_exactly_the_sleeping_islands(test, device):
     """Color every contact of an awake island and none of a skipped one; keep all of them with skipping off."""
     for skip in (True, False):
@@ -2504,16 +2566,23 @@ def _dumbbells_model(device, count=2):
 
 
 def test_colored_sleeping_skips_tree_and_solve_work(test, device):
-    """Leave sleeping trees unfactored, and skip the captured propagation solve while all sleep, bitwise like eager."""
-    for tree_kernel in ("auto", "generic"):
-        with test.subTest(tree_kernel=tree_kernel), kernel_overrides({"propagation_tree_kernel": tree_kernel}):
-            _check_colored_sleeping_skips_work(test, device)
+    """Leave sleeping trees unfactored, and skip the captured propagation solve while all sleep, bitwise like eager.
+
+    With contact compliance the propagation setup still runs while all sleep, since compliance replaces its rows.
+    """
+    for tree_kernel, compliant in (("auto", False), ("generic", False), ("auto", True)):
+        with (
+            test.subTest(tree_kernel=tree_kernel, compliant=compliant),
+            kernel_overrides({"propagation_tree_kernel": tree_kernel}),
+        ):
+            _check_colored_sleeping_skips_work(test, device, compliant)
 
 
-def _check_colored_sleeping_skips_work(test, device):
-    captured, eager = (
-        _Heap(device, model=_dumbbells_model(device), sleep_quiet_time=0.05, friction_anchor_beta=0.0) for _ in range(2)
-    )
+def _check_colored_sleeping_skips_work(test, device, compliant):
+    options = {"sleep_quiet_time": 0.05, "friction_anchor_beta": 0.0}
+    if compliant:
+        options.update(contact_compliance=True, contact_regularization=0.0, compliance_stiffness=2.0e4)
+    captured, eager = (_Heap(device, model=_dumbbells_model(device), **options) for _ in range(2))
     test.assertTrue(captured.solver._propagation_tree_sizes)
     with wp.ScopedCapture(device) as capture:
         captured.step(clear=False)
@@ -2541,7 +2610,7 @@ def _check_colored_sleeping_skips_work(test, device):
             factored = ~np.isnan(scene.solver._propagation_tree_D_inv.numpy()[:, 0, 0])
             np.testing.assert_array_equal(factored, active[joint_art] == 1, err_msg=f"step {k}")
         solved = ~np.isnan(captured.solver._propagation_body_com_rel.numpy()).any(axis=1)
-        test.assertEqual(bool(solved.all()), bool(active.any() or not gated), f"step {k}")
+        test.assertEqual(bool(solved.all()), bool(active.any() or not gated or compliant), f"step {k}")
         test.assertTrue(bool(solved.all()) or not solved.any())
         if k == 40:
             test.assertEqual(active.tolist(), [1, 0], "the force must wake its chain only")
@@ -2561,6 +2630,7 @@ for _name in (
     "test_colored_captured_sleep_and_wake_match_eager",
     "test_colored_separated_stacks_sleep_like_immediate",
     "test_colored_sleeping_skips_tree_and_solve_work",
+    "test_colored_compliant_contacts_sleep_and_wake_like_immediate",
 ):
     add_function_test(TestSteelSleepingColoredPropagation, _name, globals()[_name], devices=devices)
 
@@ -2569,7 +2639,15 @@ class _Heap:
     """Colored-propagation solver on arm-on-heap worlds, stepped in place so steps can be captured."""
 
     def __init__(
-        self, device, response="propagation_colored", *, model=None, worlds=4, heap=(5, 2, 2), **solver_kwargs
+        self,
+        device,
+        response="propagation_colored",
+        *,
+        model=None,
+        worlds=4,
+        heap=(5, 2, 2),
+        compliance_stiffness=None,
+        **solver_kwargs,
     ):
         self.model = model if model is not None else _arm_heap_model(device, worlds=worlds, heap=heap)
         args = {
@@ -2590,6 +2668,10 @@ class _Heap:
             self.model, rigid_contact_max=self.model.rigid_contact_max, deterministic=True
         )
         self.contacts = self.pipeline.contacts()
+        self.compliance_stiffness = compliance_stiffness
+        if compliance_stiffness is not None:
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(self.contacts, name, wp.zeros(self.model.rigid_contact_max, dtype=float, device=device))
         self.state_in, self.state_out = self.model.state(), self.model.state()
         self.control = self.model.control()
 
@@ -2598,6 +2680,10 @@ class _Heap:
             if clear:
                 self.state_in.clear_forces()
             self.pipeline.collide(self.state_in, self.contacts)
+            if self.compliance_stiffness is not None:
+                self.contacts.rigid_contact_stiffness.fill_(self.compliance_stiffness)
+                self.contacts.rigid_contact_damping.fill_(200.0)
+                self.contacts.rigid_contact_friction.fill_(1.0)
             self.solver.step(self.state_in, self.state_out, self.control, self.contacts, 1.0 / 240.0)
             for name in _FIELDS:
                 wp.copy(getattr(self.state_in, name), getattr(self.state_out, name))

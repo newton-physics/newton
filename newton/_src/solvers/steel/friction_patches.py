@@ -575,6 +575,8 @@ def _build(
     prev: _PatchFrame,
     patches: FrictionPatches,
     flooded: int,
+    contact_surface_velocity: wp.array[wp.vec3],
+    dt: float,
 ):
     """One thread per sorted body pair; writes disjoint current/previous records.
 
@@ -932,8 +934,15 @@ def _build(
                 error -= n * wp.dot(error, n)
                 carried_impulse = prev.tangent_impulse[chosen]
             stored_error = error
+            if contact_surface_velocity:
+                # The rows drive the surface's tangential motion over the coming step, which the next build
+                # pairs with that step's pose motion. The velocity is shape 1's relative to shape 0.
+                surface_motion = contact_surface_velocity[c] * dt
+                if frame.flipped[c] == 0:
+                    surface_motion = -surface_motion
+                stored_error += surface_motion - n * wp.dot(surface_motion, n)
             if a >= 0:
-                stored_error = wp.transform_vector(wp.transform_inverse(q[a]), error)
+                stored_error = wp.transform_vector(wp.transform_inverse(q[a]), stored_error)
             frame.displacement[c] = stored_error
             frame.source[c] = chosen
             if carry_only != 0 and chosen < 0:
@@ -1402,6 +1411,7 @@ class _FrictionPatchState:
         contact_gap_limit=float("inf"),
         friction_gap_limit=float("inf"),
         frozen_bodies=None,
+        dt=0.0,
     ):
         wp.launch(
             _prepare,
@@ -1492,6 +1502,8 @@ class _FrictionPatchState:
                 self.previous,
                 self.view,
                 int(flooded),
+                contacts.rigid_contact_surface_velocity,
+                dt,
             ],
             device=model.device,
         )
@@ -1678,6 +1690,14 @@ def _point_velocity(
     return velocity
 
 
+_SLIP_SATURATION_TOLERANCE = wp.constant(0.05)
+"""Fraction of the Coulomb radius by which a slipping anchor's friction may fall short and still count as saturated.
+
+Gauss-Seidel clamps each anchor against the pooled normal load it sees mid-sweep. On a footprint with redundant
+contacts the later normal rows keep moving that load, so a sliding anchor can end a few percent inside the final cone.
+"""
+
+
 @wp.kernel(enable_backward=False)
 def finish_patch_impulses(
     count: wp.array[int],
@@ -1687,6 +1707,7 @@ def finish_patch_impulses(
     qd_out: wp.array[wp.spatial_vector],
     com: wp.array[wp.vec3],
     body_to_articulation: wp.array[int],
+    contact_surface_velocity: wp.array[wp.vec3],
     world: wp.array[int],
     slot: wp.array[int],
     path: wp.array[int],
@@ -1699,7 +1720,7 @@ def finish_patch_impulses(
 ):
     """Cache solved friction and release saturated anchors with tangential motion.
 
-    The tolerance is relative to geometry and timestep. Merely resting at the
+    The motion tolerance is relative to geometry and timestep. Merely resting at the
     Coulomb limit does not prove sliding, so it must not erase static history.
     """
     c = wp.tid()
@@ -1739,7 +1760,12 @@ def finish_patch_impulses(
     speed = _point_velocity(q_out, qd_out, com, body_to_articulation, a, frame.anchor_a[c]) - _point_velocity(
         q_out, qd_out, com, body_to_articulation, b, frame.anchor_b[c]
     )
+    if contact_surface_velocity:
+        if frame.flipped[c] == 0:
+            speed -= contact_surface_velocity[c]
+        else:
+            speed += contact_surface_velocity[c]
     # Check opposing tangential motion to distinguish slipping from impending slip.
-    if radius > 0.0 and wp.length(tangent) >= (1.0 - 1.0e-5) * radius:
+    if radius > 0.0 and wp.length(tangent) >= (1.0 - _SLIP_SATURATION_TOLERANCE) * radius:
         if wp.dot(speed, tangent) < -radius * (1.0e-5 * frame.radius[c] / dt):
             frame.valid[c] = 0
