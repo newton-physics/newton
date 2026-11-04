@@ -19,7 +19,7 @@ from newton._src.geometry.contact_reduction_global import (
 from newton._src.geometry.contact_reduction_hydroelastic import HydroelasticContactReduction
 from newton.solvers import SolverSemiImplicit
 from newton.solvers.experimental.coupled import SolverCoupled
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 @wp.kernel
@@ -191,7 +191,7 @@ def test_coupled_entry_contacts_keep_reduction_loss(test, device):
     test.assertEqual(int(coupled.entry_contacts("all", other)._reduction_overflow.numpy()[0]), 0)
 
 
-def test_reducer_failures_reach_solver_status(test, device, solve_mode="matrix_free"):
+def test_reducer_failures_reach_solver_status(test, device):
     """Latch Steel capacity status for every world when the reducer dropped contact candidates."""
     model = _boxes_on_mesh_model(device)
     state_0, state_1 = model.state(), model.state()
@@ -203,7 +203,7 @@ def test_reducer_failures_reach_solver_status(test, device, solve_mode="matrix_f
 
     pipeline = newton.CollisionPipeline(model, max_triangle_pairs=candidate_count - 2, verify_buffers=False)
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverSteel(model, solve_mode=solve_mode, warn_constraint_overflow=False)
+    solver = newton.solvers.SolverSteel(model, warn_constraint_overflow=False)
 
     # A lossless pass leaves the status clear.
     solver.step(state_0, state_1, control, reference_contacts, 1.0 / 60.0)
@@ -361,14 +361,7 @@ add_function_test(
     TestContactReductionOverflow,
     "test_reducer_failures_reach_solver_status",
     test_reducer_failures_reach_solver_status,
-    devices=get_cuda_test_devices(),
-)
-add_function_test(
-    TestContactReductionOverflow,
-    "test_reducer_failures_reach_solver_status_split",
-    test_reducer_failures_reach_solver_status,
     devices=devices,
-    solve_mode="split",
 )
 
 add_function_test(

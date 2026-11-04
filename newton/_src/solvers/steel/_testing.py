@@ -18,9 +18,7 @@ def kernel_overrides(overrides: Mapping[str, object]) -> Iterator[None]:
 
     A solver reads the overrides once at construction and keeps them. Tasks and threads that
     inherit this context see the overrides; others do not. Keys: ``cholesky_kernel``, ``trisolve_kernel``,
-    ``hinv_jt_kernel``, ``delassus_kernel``, ``pgs_kernel`` (split solve on CUDA:
-    ``"auto"``, ``"loop"``, ``"tiled"``, ``"tiled_contact"``, ``"streaming"``),
-    ``pgs_chunk_size``, ``tile_threads``, ``serial_kernel_block_dim``,
+    ``hinv_jt_kernel``, ``tile_threads``, ``serial_kernel_block_dim``,
     ``sparse_mass_matrix``, ``diagonal_mass``, ``propagation_tree_kernel`` and the
     ``colored_*`` sweep variants.
     """

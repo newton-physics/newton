@@ -48,7 +48,15 @@ DENSE_PATH = 0
 PROPAGATION_PATH = 2
 
 
-RESPONSES = ("propagation", "propagation_colored")
+# Propagation response labels: "propagation" sweeps serially, "colored" uses solve_mode="colored".
+RESPONSES = ("propagation", "colored")
+
+
+def _response(name: str) -> dict:
+    """Return the constructor options of a response label (``"immediate"``, ``"propagation"`` or ``"colored"``)."""
+    if name == "colored":
+        return {"solve_mode": "colored", "articulated_contact_response": "propagation"}
+    return {"articulated_contact_response": name}
 
 
 def _chain(builder, x, n_links, root_z, joint="revolute"):
@@ -199,9 +207,7 @@ def test_native_tree_kernels_match_generic(test, device):
                 for tree_kernel in ("auto", "generic"):
                     model = _scene(device, kind)
                     with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
-                        solver = SolverSteel(
-                            model, iterations=8, articulation_constraint_max=64, articulated_contact_response=response
-                        )
+                        solver = SolverSteel(model, iterations=8, articulation_constraint_max=64, **_response(response))
                     state, _ = _step(model, solver)
                     results.append(state.joint_qd.numpy())
                 np.testing.assert_allclose(results[0], results[1], rtol=1.0e-4, atol=1.0e-5)
@@ -220,12 +226,10 @@ def test_propagation_row_overflow_is_flagged_and_reset(test, device):
     for response, capacity in (
         # Dense rows hold the two rows of each joint limit; one contact's three rows fit.
         ("propagation", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
-        ("propagation_colored", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
+        ("colored", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
     ):
         with test.subTest(response=response):
-            solver = SolverSteel(
-                model, articulated_contact_response=response, warn_constraint_overflow=False, **capacity
-            )
+            solver = SolverSteel(model, **_response(response), warn_constraint_overflow=False, **capacity)
             state, contacts = _step(model, solver)
             test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 1)
             np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, False, False])
@@ -246,7 +250,7 @@ def test_captured_steps_match_eager(test, device):
             control = model.control()
 
             def run(capture, model=model, pipeline=pipeline, contacts=contacts, control=control, response=response):
-                solver = SolverSteel(model, articulation_constraint_max=64, articulated_contact_response=response)
+                solver = SolverSteel(model, articulation_constraint_max=64, **_response(response))
                 state_0, state_1 = model.state(), model.state()
                 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
@@ -308,7 +312,7 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
                     iterations=50,
                     articulation_constraint_max=64,
                     friction_anchor_beta=0.0,
-                    articulated_contact_response=response,
+                    **_response(response),
                 )
                 state_0, state_1 = model.state(), model.state()
                 joint_qd = state_0.joint_qd.numpy()
@@ -487,7 +491,7 @@ def test_propagation_matches_immediate_when_converged(test, device):
         for response in ("immediate", *RESPONSES):
             solver = SolverSteel(
                 model,
-                articulated_contact_response=response,
+                **_response(response),
                 iterations=32,
                 friction_anchor_beta=0.0,
                 articulation_constraint_max=capacity,
@@ -733,7 +737,7 @@ def _make_solver(
 ) -> SolverSteel:
     return SolverSteel(
         model,
-        articulated_contact_response=response,
+        **_response(response),
         iterations=8,
         friction_anchor_beta=0.0,
         propagation_cached_response=cached,
@@ -902,7 +906,7 @@ def test_lockstep_single_contact(test, device):
 def test_lockstep_colored(test, device):
     """Match the tree walk under the colored sweep."""
     model = _build_chain_model(device, chains=(6,), spheres=("base", "mid", "deep"))
-    stats, _, cached = _run_lockstep(model, "propagation_colored", 40)
+    stats, _, cached = _run_lockstep(model, "colored", 40)
     test.assertTrue(cached._propagation_cached_kernels)
     test.assertTrue(np.all(cached._propagation_cache_world_flag.numpy() == 1))
     _assert_stats(test, stats, expect_min_bodies=2)
@@ -1171,9 +1175,7 @@ def test_options_match_the_immediate_response_at_convergence(test, device):
         _, _, reference = _one_step(model, state, iterations=300, **options)
         for response in RESPONSES:
             with test.subTest(option=name, response=response):
-                solver, contacts, body_qd = _one_step(
-                    model, state, iterations=300, articulated_contact_response=response, **options
-                )
+                solver, contacts, body_qd = _one_step(model, state, iterations=300, **_response(response), **options)
                 count = int(contacts.rigid_contact_count.numpy()[0])
                 test.assertTrue((solver._contact_path.numpy()[:count] == PROPAGATION_PATH).any())
                 np.testing.assert_allclose(body_qd, reference, rtol=0.0, atol=2.0e-3)
@@ -1197,7 +1199,7 @@ def test_restitution_rebounds_on_propagation_rows(test, device):
             state.joint_qd.assign(joint_qd)
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
             solver, contacts, after = _one_step(
-                model, state, iterations=64, articulated_contact_response=response, enable_joint_limits=True
+                model, state, iterations=64, **_response(response), enable_joint_limits=True
             )
             count = int(contacts.rigid_contact_count.numpy()[0])
             test.assertTrue((solver._contact_path.numpy()[:count] == PROPAGATION_PATH).any())
@@ -1216,9 +1218,7 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
     state = _settled_state(model, 90)
     for response in RESPONSES:
         with test.subTest(response=response):
-            solver, _, _ = _one_step(
-                model, state, iterations=8, articulated_contact_response=response, contact_regularization=1.0
-            )
+            solver, _, _ = _one_step(model, state, iterations=8, **_response(response), contact_regularization=1.0)
             count = int(solver._propagation_constraint_count.numpy()[0])
             rows = solver._propagation_row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_CONTACT
             penetrating = solver._propagation_phi.numpy()[0, :count] <= 0.0
@@ -1244,9 +1244,7 @@ def test_warm_start_seeds_the_propagation_rows(test, device):
     state = _settled_state(model, 150)
     for response in RESPONSES:
         with test.subTest(response=response):
-            solver = _combination_solver(
-                model, iterations=64, contact_warmstart=True, articulated_contact_response=response
-            )
+            solver = _combination_solver(model, iterations=64, contact_warmstart=True, **_response(response))
             pipeline = _pipeline(model, warmstart=True)
             contacts = pipeline.contacts()
             state_0, state_1 = model.state(), model.state()
@@ -1271,7 +1269,7 @@ def test_mimic_rows_hold_with_propagation(test, device):
     for response in RESPONSES:
         with test.subTest(response=response):
             model = _combination_scene(device, mimic=True)
-            solver = _combination_solver(model, iterations=32, articulated_contact_response=response)
+            solver = _combination_solver(model, iterations=32, **_response(response))
             pipeline = _pipeline(model)
             contacts = pipeline.contacts()
             state_0, state_1 = model.state(), model.state()
@@ -1299,18 +1297,18 @@ for _fn in (
     add_function_test(TestSteelPropagationCombinations, _fn.__name__, _fn, devices=devices)
 
 
-PROPAGATION_RESPONSES = ("propagation", "propagation_colored")
+PROPAGATION_RESPONSES = ("propagation", "colored")
 
 
 REGULARIZED = {"baumgarte": 0.0, "cfm": 0.0, "contact_regularization": 3.0}
 
 
-# (articulated_contact_response, propagation_cached_response)
+# (response label, propagation_cached_response)
 PROPAGATION_ROUTES = (
     ("propagation", False),
     ("propagation", True),
-    ("propagation_colored", False),
-    ("propagation_colored", True),
+    ("colored", False),
+    ("colored", True),
 )
 
 
@@ -1423,7 +1421,7 @@ def _linkage_gripper_model(device):
 
 def _coupled_solver(model, response, iterations, cached=False, **kwargs):
     options = {
-        "articulated_contact_response": response,
+        **_response(response),
         "propagation_cached_response": cached,
         "friction_anchor_beta": 0.0,
         "articulation_constraint_max": 96,
@@ -1547,7 +1545,7 @@ def test_linkage_gripper_holds_lifted_box(test, device):
         with test.subTest(response=response):
             solver = SolverSteel(
                 model,
-                articulated_contact_response=response,
+                **_response(response),
                 iterations=64,
                 friction_anchor_beta=0.0,
                 contact_friction_gap_max=0.001,
@@ -1694,10 +1692,10 @@ def _analytic_H_and_X(model, state):
     return H, X
 
 
-def test_scissor_scene_produces_same_articulation_contact(test, device, solve_mode="matrix_free"):
+def test_scissor_scene_produces_same_articulation_contact(test, device):
     """Route a contact between two links of one articulation to the dense articulated rows."""
     model = _build_scissor_model(device)
-    solver = SolverSteel(model, solve_mode=solve_mode, iterations=0, cfm=PGS_CFM)
+    solver = SolverSteel(model, iterations=0, cfm=PGS_CFM)
     _, contact_count = _step_once(model, solver)
     test.assertGreater(contact_count, 0, "scissor scene produced no link-link contact")
     paths = solver._contact_path.numpy()[:contact_count]
@@ -1707,10 +1705,10 @@ def test_scissor_scene_produces_same_articulation_contact(test, device, solve_mo
     test.assertEqual(int(solver._mf_constraint_count.numpy()[0]), 0)
 
 
-def test_scissor_dense_diagonal_matches_reference(test, device, solve_mode="matrix_free"):
+def test_scissor_dense_diagonal_matches_reference(test, device):
     """Match each dense row's effective mass to ``J H^-1 J^T`` from an analytic joint-space inertia."""
     model = _build_scissor_model(device)
-    solver = SolverSteel(model, solve_mode=solve_mode, iterations=0, cfm=PGS_CFM)
+    solver = SolverSteel(model, iterations=0, cfm=PGS_CFM)
     state, _ = _step_once(model, solver)
     H, _ = _analytic_H_and_X(model, state)
     count = int(solver._constraint_count.numpy()[0])
@@ -1743,10 +1741,10 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
 def test_flag_requires_propagation_mode(test, device):
     """Reject same-articulation propagation rows without the response that solves them."""
     model = _build_scissor_model(device)
-    for response in ("immediate", "propagation_colored"):
+    for response in ("immediate", "colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
-                SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
+                SolverSteel(model, **_response(response), propagation_same_articulation_rows=True)
 
 
 def test_cross_response_effective_mass_matches_reference_operator(test, device):
@@ -1813,9 +1811,13 @@ class TestPropagationSameArticulation(unittest.TestCase):
     pass
 
 
+# The dense reference rows run on every device; the propagation response is checked on CUDA.
 for _name in (
     "test_scissor_scene_produces_same_articulation_contact",
     "test_scissor_dense_diagonal_matches_reference",
+):
+    add_function_test(TestPropagationSameArticulation, _name, globals()[_name], devices=get_test_devices())
+for _name in (
     "test_default_routing_keeps_same_articulation_rows_dense",
     "test_flag_requires_propagation_mode",
     "test_cross_response_effective_mass_matches_reference_operator",
@@ -1823,26 +1825,13 @@ for _name in (
     add_function_test(TestPropagationSameArticulation, _name, globals()[_name], devices=devices)
 
 
-# The dense reference rows also run in the split solve; the propagation responses are matrix-free only.
-for _name in (
-    "test_scissor_scene_produces_same_articulation_contact",
-    "test_scissor_dense_diagonal_matches_reference",
-):
-    add_function_test(
-        TestPropagationSameArticulation,
-        f"{_name}_split",
-        globals()[_name],
-        devices=get_test_devices(),
-        solve_mode="split",
-    )
-
-
 def _colored_variant_solver(model, regularization, **overrides):
     """Build the colored solver with the given sweep-variant overrides."""
     with kernel_overrides(overrides):
         return SolverSteel(
             model,
-            articulated_contact_response="propagation_colored",
+            solve_mode="colored",
+            articulated_contact_response="propagation",
             iterations=8,
             free_body_constraint_max=CONTACT_MAX,
             articulation_constraint_max=64,
@@ -1957,7 +1946,8 @@ for _fn in (test_sweep_variants_match_the_reference_bitwise, test_straight_line_
 
 def _colored_solver(model, **kwargs):
     options = {
-        "articulated_contact_response": "propagation_colored",
+        "solve_mode": "colored",
+        "articulated_contact_response": "propagation",
         "iterations": 6,
         "free_body_constraint_max": CONTACT_MAX,
         "articulation_constraint_max": 64,
@@ -2137,7 +2127,7 @@ def test_kinematic_free_body_is_recorded_as_static(test, device):
 def test_colored_result_matches_the_immediate_response(test, device):
     """Settle the heap like the immediate response in either color order."""
     variants = {
-        "immediate": {"articulated_contact_response": "immediate"},
+        "immediate": {"solve_mode": "serial", "articulated_contact_response": "immediate"},
         "contact": {"propagation_color_order": "contact"},
         "longest_first": {"propagation_color_order": "longest_first"},
     }
@@ -2343,7 +2333,7 @@ def _unit_capacity_solver(model, response):
     """Six propagation rows; friction only on the penetrating contact."""
     return SolverSteel(
         model,
-        articulated_contact_response=response,
+        **_response(response),
         iterations=8,
         propagation_cached_response=False,
         friction_anchor_beta=0.0,
@@ -2399,7 +2389,7 @@ def test_mixed_units_match_serial_propagation(test, device):
     """Match the serial sweep's impulses, twists and trajectory with units of mixed row counts."""
     model = _mixed_gap_model(device)
     runs = {}
-    for response in ("propagation_colored", "propagation"):
+    for response in ("colored", "propagation"):
         solver = _unit_capacity_solver(model, response)
         state_in, state_out = model.state(), model.state()
         _seed(model, state_in)
@@ -2411,7 +2401,7 @@ def test_mixed_units_match_serial_propagation(test, device):
             pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, DT)
             runs[response] = (solver, state_out, state_in, pipeline, contacts)
-        colored, colored_state, _, _, colored_contacts = runs["propagation_colored"]
+        colored, colored_state, _, _, colored_contacts = runs["colored"]
         serial, serial_state, _, _, serial_contacts = runs["propagation"]
         if step == 0:
             _assert_mixed_topology(test, colored, colored_contacts)
@@ -2431,7 +2421,7 @@ def test_mixed_units_graph_matches_eager(test, device):
     model = _mixed_gap_model(device)
     finals = []
     for capture in (False, True):
-        solver = _unit_capacity_solver(model, "propagation_colored")
+        solver = _unit_capacity_solver(model, "colored")
         state, output = model.state(), model.state()
         _seed(model, state)
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
@@ -2831,7 +2821,7 @@ def test_serial_selection_skips_tree_setup(test, device):
     for options in ({}, {"parallel_tree": False}):
         with test.subTest(options=options):
             with patch.object(_SteelTreePlan, "build", wraps=_SteelTreePlan.build) as build:
-                solver = SolverSteel(model, solve_mode="matrix_free", **options)
+                solver = SolverSteel(model, **options)
             build.assert_not_called()
             test.assertIsNone(solver._tree_plan)
             test.assertEqual(solver._tree_net_wrenches, ())
@@ -2847,13 +2837,13 @@ def test_explicit_parallel_preserves_eligibility_fallback(test, device):
     """Build a plan for branched trees and fall back to serial traversal for an unbranched chain."""
     model = _build_fingers(device, articulations=1)
     with patch.object(_SteelTreePlan, "build", wraps=_SteelTreePlan.build) as build:
-        solver = SolverSteel(model, solve_mode="matrix_free", parallel_tree=True)
+        solver = SolverSteel(model, parallel_tree=True)
     build.assert_called_once()
     test.assertIsNotNone(solver._tree_plan)
     test.assertTrue(any(group.lanes > 1 for group in solver._tree_plan.groups))
     test.assertEqual(len(solver._tree_net_wrenches), len(solver._tree_plan.groups))
     model = _build_model(device, chain=True)[0]
-    solver = SolverSteel(model, solve_mode="matrix_free", parallel_tree=True)
+    solver = SolverSteel(model, parallel_tree=True)
     test.assertIsNone(solver._tree_plan)
     test.assertEqual(solver._tree_net_wrenches, ())
 
@@ -2978,9 +2968,9 @@ def test_contact_trajectory_matches_serial(test, device):
         )
 
 
-def _run_split_fingers(device, parallel_tree):
+def _run_fingers(device, parallel_tree):
     model = _build_fingers(device, articulations=2, ragged=True)
-    solver = SolverSteel(model, solve_mode="split", parallel_tree=parallel_tree)
+    solver = SolverSteel(model, parallel_tree=parallel_tree)
     state, next_state = model.state(), model.state()
     control = model.control()
     for _ in range(10):
@@ -2990,15 +2980,15 @@ def _run_split_fingers(device, parallel_tree):
     return solver, state.body_q.numpy(), state.body_qd.numpy()
 
 
-class TestSteelSplitCpuTree(unittest.TestCase):
-    def test_branched_split_cpu_keeps_serial_passes(self):
-        """Run branched split trees on CPU with the serial traversal and scalar composite inertia.
+class TestSteelCpuTree(unittest.TestCase):
+    def test_branched_cpu_keeps_serial_passes(self):
+        """Run branched trees on CPU with the serial traversal and scalar composite inertia.
 
         A requested parallel traversal falls back to the serial one bitwise, and the CPU trajectory
-        matches the CUDA split solve, whose cooperative kernels do not run on CPU.
+        matches the CUDA solve, whose cooperative kernels do not run on CPU.
         """
-        serial = _run_split_fingers("cpu", False)
-        parallel = _run_split_fingers("cpu", True)
+        serial = _run_fingers("cpu", False)
+        parallel = _run_fingers("cpu", True)
         for solver in (serial[0], parallel[0]):
             self.assertIsNone(solver._tree_plan)
             self.assertIsNone(solver._composite_inertia_warp_kernel)
@@ -3007,7 +2997,7 @@ class TestSteelSplitCpuTree(unittest.TestCase):
             self.assertTrue(np.isfinite(cpu).all())
             np.testing.assert_array_equal(cpu, fallback)
         if wp.is_cuda_available():
-            cuda = _run_split_fingers("cuda:0", False)
+            cuda = _run_fingers("cuda:0", False)
             for cpu, gpu in zip(serial[1:], cuda[1:], strict=True):
                 np.testing.assert_allclose(cpu, gpu, rtol=1.0e-4, atol=1.0e-4)
 
@@ -3128,20 +3118,11 @@ def test_schedule_validation(test, device):
             set_torsion_radius(model, 0.0)
             with test.assertRaisesRegex(NotImplementedError, "contact_compliance.*row_schedule='interleaved'"):
                 SolverSteel(model, row_schedule=schedule, contact_compliance=True, friction_anchor_beta=0.0)
-    for response in ("propagation", "propagation_colored"):
+    for response in RESPONSES:
         for schedule in SCHEDULES[1:]:
             with test.subTest(response=response, schedule=schedule):
-                solver = SolverSteel(model, row_schedule=schedule, articulated_contact_response=response)
+                solver = SolverSteel(model, row_schedule=schedule, **_response(response))
                 test.assertEqual(solver.row_schedule, schedule)
-
-
-def test_split_rejects_schedules(test, device):
-    """Reject every schedule but the interleaved one in the split solve."""
-    model = _schedule_scene(device)
-    for schedule in SCHEDULES[1:]:
-        with test.subTest(schedule=schedule):
-            with test.assertRaisesRegex(NotImplementedError, "row_schedule.*requires solve_mode='matrix_free'"):
-                SolverSteel(model, solve_mode="split", row_schedule=schedule)
 
 
 def test_row_phases_touch_only_their_row_families(test, device):
@@ -3286,11 +3267,6 @@ for _fn in (
     test_captured_schedules_match_eager,
 ):
     add_function_test(TestSteelSchedule, _fn.__name__, _fn, devices=cuda_devices)
-
-
-add_function_test(
-    TestSteelSchedule, "test_split_rejects_schedules", test_split_rejects_schedules, devices=get_test_devices()
-)
 
 
 if __name__ == "__main__":
