@@ -4226,6 +4226,7 @@ def Xform "Articulation" (
         float physics:upperLimit = 30
         float drive:angular:physics:stiffness = 5000.0
         float drive:angular:physics:damping = 1000.0
+        uniform double[] mjc:springdamper = [0.2, 1.5]
     }
 
     def Xform "Body3" (
@@ -4306,6 +4307,11 @@ def Xform "Articulation" (
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+        springdamper = model.mujoco.dof_springdamper.numpy()
+        expected_springdamper = np.zeros_like(springdamper)
+        expected_springdamper[joint_qd_start[joint_names.index("/Articulation/Joint2")]] = [0.2, 1.5]
+        np.testing.assert_allclose(springdamper, expected_springdamper)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_damping_respects_schema_resolver_priority(self):
