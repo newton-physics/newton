@@ -3476,7 +3476,8 @@ def test_colored_sleeping_islands_drop_their_torsion_rows(test, device):
 
     def hosted_articulations():
         rows = _propagation_torsion_rows(solver)
-        bodies = solver._propagation_body_a.numpy()[0]
+        # The ground side of a member row has no body.
+        bodies = np.maximum(solver._propagation_body_a.numpy()[0], solver._propagation_body_b.numpy()[0])
         return sorted({int(body_art[bodies[n]]) for members in rows.values() for n in members}), len(rows)
 
     step()

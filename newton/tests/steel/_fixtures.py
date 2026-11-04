@@ -1069,11 +1069,12 @@ def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
     return b, j_leader, j_follower
 
 
-def _build_scissor_model(device):
+def _build_scissor_model(device, sibling_axis=(0.0, 0.0, 1.0)):
     """One articulation: base link + two sibling links whose boxes overlap.
 
     The siblings are not directly jointed, so collision produces a
     link-link contact within a single articulation (common ancestor = base).
+    ``sibling_axis`` is the siblings' hinge axis; along the contact normal (y) it lets them spin against each other.
     """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.default_shape_cfg.density = 1000.0
@@ -1101,7 +1102,7 @@ def _build_scissor_model(device):
             builder.add_joint_revolute(
                 parent=base,
                 child=link,
-                axis=wp.vec3(0.0, 0.0, 1.0),
+                axis=wp.vec3(*sibling_axis),
                 parent_xform=wp.transform(wp.vec3(0.06, side * 0.028, 0.0), wp.quat_identity()),
                 child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
             )
