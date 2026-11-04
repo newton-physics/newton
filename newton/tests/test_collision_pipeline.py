@@ -3343,7 +3343,7 @@ class TestShapePairsMaxScaling(unittest.TestCase):
                 self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
     def test_finite_plane_pair_keeps_generic_convex_stage(self):
-        """Generate contacts for two intersecting finite planes."""
+        """Preserve finite-plane intersections and reject hulls beyond the plane edges."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_shape_plane(body=-1, width=1.0, length=1.0)
         kinematic_body = builder.add_body(
@@ -3358,8 +3358,10 @@ class TestShapePairsMaxScaling(unittest.TestCase):
             width=1.0,
             length=1.0,
         )
+        hull_body = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.05)))
+        hull_shape = builder.add_shape_convex_hull(hull_body, mesh=newton.Mesh.create_box(0.1))
         model = builder.finalize(device="cpu")
-        shape_pairs = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.vec2i, device="cpu")
+        shape_pairs = wp.array(np.array([[0, 1], [0, hull_shape]], dtype=np.int32), dtype=wp.vec2i, device="cpu")
         pipeline = newton.CollisionPipeline(
             model,
             broad_phase="explicit",
@@ -3368,8 +3370,18 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         contacts = pipeline.contacts()
 
         self.assertTrue(pipeline.narrow_phase.has_generic_convex_pairs)
-        pipeline.collide(model.state(), contacts)
-        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+        state = model.state()
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertNotIn(hull_shape, contacts.rigid_contact_shape1.numpy()[:count])
+
+        poses = state.body_q.numpy()
+        poses[hull_body, 0] = 0.25
+        state.body_q.assign(poses)
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertIn(hull_shape, contacts.rigid_contact_shape1.numpy()[:count])
 
     def test_zero_capacity_mesh_stages_preserve_mesh_convex_contacts(self):
         """Keep mesh-convex contacts when unrelated mesh stages have zero capacity."""
@@ -4522,23 +4534,26 @@ def test_deterministic_pipeline_500_steps(test, device):
                         test.assertTrue(False, msg)
 
 
-def test_static_empty_gjk_specialization_under_graph_capture(test, device):
+def test_static_empty_gjk_specialization_under_graph_capture(test, device, broad_phase):
     """Preserve contacts when graph capture omits a provably empty GJK stage."""
     builder = newton.ModelBuilder()
-    body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.15)))
-    builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
     builder.add_ground_plane()
+    for _ in range(2):
+        builder.begin_world()
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.15)))
+        builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
+        builder.end_world()
     model = builder.finalize(device=device)
 
     specialized = newton.CollisionPipeline(
         model,
-        broad_phase="explicit",
+        broad_phase=broad_phase,
         deterministic=True,
         rigid_contact_max=64,
     )
     reference = newton.CollisionPipeline(
         model,
-        broad_phase="explicit",
+        broad_phase=broad_phase,
         deterministic=True,
         rigid_contact_max=64,
     )
@@ -4574,13 +4589,15 @@ def test_static_empty_gjk_specialization_under_graph_capture(test, device):
         )
 
 
-add_function_test(
-    TestDeterministicPipeline,
-    "test_static_empty_gjk_specialization_under_graph_capture",
-    test_static_empty_gjk_specialization_under_graph_capture,
-    devices=get_cuda_test_devices(),
-    check_output=False,
-)
+for broad_phase in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestDeterministicPipeline,
+        f"test_static_empty_gjk_specialization_under_graph_capture_{broad_phase}",
+        test_static_empty_gjk_specialization_under_graph_capture,
+        devices=get_cuda_test_devices(),
+        check_output=False,
+        broad_phase=broad_phase,
+    )
 
 
 def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
@@ -7701,6 +7718,101 @@ def test_mesh_midphase_many_pairs(test, device):
 
 add_function_test(
     TestCollisionPipeline, "test_mesh_midphase_many_pairs", test_mesh_midphase_many_pairs, devices=get_test_devices()
+)
+
+
+def test_plane_convex_support(test, device):
+    """Preserve analytic plane normals and support depths in the fused narrow phase."""
+    builder = newton.ModelBuilder()
+    rotation_plane = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4)
+    normal = np.asarray(wp.quat_rotate(rotation_plane, wp.vec3(0.0, 0.0, 1.0)))
+    expected = []
+    for scale, segments, tilt in itertools.product((0.001, 0.1), (32, 128), (0.0, 0.5)):
+        mesh = newton.Mesh.create_cylinder(scale, 0.4 * scale, up_axis=newton.Axis.Z, segments=segments)
+        # Exercise hulls whose authoring origin is outside their bounds.
+        vertices = np.asarray(mesh.vertices) + np.array([0.3, -0.2, 0.7], dtype=np.float32) * scale
+        hull = newton.Mesh(vertices, mesh.indices)
+        rotation = rotation_plane * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), tilt)
+        shape_scale = (0.75, 1.25, 0.6) if tilt else (1.0, 1.0, 1.0)
+        surface_vertices = vertices.astype(np.float64) * shape_scale
+        rotated = surface_vertices @ np.asarray(wp.quat_to_matrix(rotation)).reshape(3, 3).T
+        triangles = surface_vertices[np.asarray(mesh.indices).reshape(-1, 3)]
+        face_normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        face_normals /= np.linalg.norm(face_normals, axis=1)[:, None]
+        inward = np.sum(face_normals * (surface_vertices.mean(axis=0) - triangles[:, 0]), axis=1) > 0
+        face_normals[inward] *= -1
+        support_height = -float(np.min(rotated @ normal))
+        margin = 0.0005 * scale
+        cfg = builder.ShapeConfig(gap=0.002 * scale, margin=margin)
+        for clearance, plane_first in itertools.product((-0.001 * scale, 0.001 * scale, 0.02 * scale), (True, False)):
+            builder.begin_world()
+            if plane_first:
+                builder.add_shape_plane(
+                    xform=wp.transform(wp.vec3(0.0), rotation_plane), width=0.0, length=0.0, cfg=cfg
+                )
+            body = builder.add_body(
+                xform=wp.transform(wp.vec3(*(normal * (support_height + clearance))), rotation),
+                mass=1.0,
+                inertia=wp.mat33(np.eye(3)),
+                lock_inertia=True,
+            )
+            builder.add_shape_convex_hull(body, mesh=hull, scale=shape_scale, cfg=cfg)
+            if not plane_first:
+                builder.add_shape_plane(
+                    xform=wp.transform(wp.vec3(0.0), rotation_plane), width=0.0, length=0.0, cfg=cfg
+                )
+            builder.end_world()
+            expected.append((scale, clearance - 2 * margin, clearance < 0.005 * scale, triangles[:, 0], face_normals))
+    model = builder.finalize(device=device)
+    test.assertGreater(model._convex_support_lut.shape[0], 1)
+    state = model.state()
+    for deterministic in (False, True):
+        pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
+        pipeline.narrow_phase.split_gjk_mpr = False
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        if wp.get_device(device).is_cuda:
+            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
+            try:
+                with wp.ScopedCapture(device=device) as capture:
+                    pipeline.collide(state, contacts)
+            finally:
+                if gc_was_enabled:
+                    gc.enable()
+            wp.capture_launch(capture.graph)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        shapes = contacts.rigid_contact_shape1.numpy()[:count]
+        plane_shapes = contacts.rigid_contact_shape0.numpy()[:count]
+        shape_types = model.shape_type.numpy()
+        # Narrow-phase routing orders by type, regardless of shape creation order.
+        np.testing.assert_array_equal(shape_types[plane_shapes], GeoType.PLANE)
+        np.testing.assert_array_equal(shape_types[shapes], GeoType.CONVEX_MESH)
+        normals = contacts.rigid_contact_normal.numpy()[:count]
+        points_plane = contacts.rigid_contact_point0.numpy()[:count]
+        points_hull = contacts.rigid_contact_point1.numpy()[:count]
+        distances = distance.numpy()[:count]
+        worlds = model.shape_world.numpy()[shapes]
+        np.testing.assert_allclose(normals, np.broadcast_to(normal, normals.shape), atol=2.0e-6, rtol=0.0)
+        for world, (scale, separation, admitted, face_points, face_normals) in enumerate(expected):
+            values = distances[worlds == world]
+            with test.subTest(world=world, deterministic=deterministic):
+                test.assertEqual(len(values) > 0, admitted)
+                if admitted:
+                    test.assertAlmostEqual(float(values.min()), separation, delta=2.0e-5 * scale)
+                    np.testing.assert_allclose(points_plane[worlds == world] @ normal, 0.0, atol=2.0e-5 * scale)
+                    signed_faces = np.sum((points_hull[worlds == world, None] - face_points) * face_normals, axis=-1)
+                    np.testing.assert_allclose(signed_faces.max(axis=1), 0.0, atol=2.0e-5 * scale)
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_plane_convex_support",
+    test_plane_convex_support,
+    devices=get_test_devices(),
 )
 
 
