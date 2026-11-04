@@ -865,13 +865,16 @@ see :ref:`Geometry Pair Contact Behavior`.
 
 **Margin zeroing.** ``mujoco_warp`` rejects non-zero geom margins on
 box-box pairs (its default NATIVECCD path) and on any box/mesh pair
-when ``enable_multiccd=True``. To stay compatible :class:`~newton.solvers.SolverMuJoCo` zeroes
+when ``enable_multiccd=True``. To stay compatible, the MuJoCo Warp backend of
+:class:`~newton.solvers.SolverMuJoCo` zeroes
 ``geom_margin`` model-wide at compile time whenever a box geom exists,
 or whenever ``enable_multiccd=True`` is combined with mesh geoms; geoms
 with non-zero authored margins emit a warning when
 ``use_mujoco_contacts=True``. The Newton model's :attr:`~newton.Model.shape_margin` array
 is left untouched, and when ``use_mujoco_contacts=False`` the authored
 margins are restored at runtime through ``update_geom_properties_kernel``.
+The CPU backend (``use_mujoco_cpu=True``) keeps the authored geom and pair
+margins, so its contacts can differ from the MuJoCo Warp backend's for such models.
 
 
 Contact pairs
