@@ -1024,23 +1024,19 @@ Supported reference types:
   replaced with the destination builder's ``current_world`` during merging
 * Custom frequency keys (e.g., ``"mujoco:pair"``) — offset by that frequency's count
 
-Merge and Collapse Handlers
----------------------------
+Row-Dependent References and Collapse Handlers
+----------------------------------------------
 
 ``references`` covers values that always point at one entity type. Some rows store
 data that depends on other columns of the same row or on body frames, such as a
 target whose entity type is selected by a ``kind`` column, or a point expressed in
-a body's local frame. A custom frequency can register two callbacks for these
-cases:
+a body's local frame. Two callbacks cover these cases:
 
-* :attr:`~newton.ModelBuilder.CustomFrequency.merge_handler` runs once per copy made by
-  :meth:`~newton.ModelBuilder.add_builder`, :meth:`~newton.ModelBuilder.add_world`, or
-  :meth:`~newton.ModelBuilder.replicate` when the source builder has rows of the
-  frequency. It runs after the generic copy and ``references`` remapping and receives
-  the destination builder, the source builder, and a context with the copy's
-  ``entity_offsets``, ``custom_frequency_offsets``, ``row_start``, ``row_count``,
-  ``world``, and ``label_prefix``. Source row ``i`` is stored at destination row
-  ``row_start + i``.
+* :attr:`~newton.ModelBuilder.CustomAttribute.reference_value_transformer` remaps an
+  attribute's values for each copy made by :meth:`~newton.ModelBuilder.add_builder`,
+  :meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate`.
+  Its context includes the source ``builder``, the copy's ``entity_offsets``, and the
+  ``row_indices`` of the values, so it can read companion columns of the same row.
 * :attr:`~newton.ModelBuilder.CustomFrequency.collapse_fixed_joints_handler` runs once
   per :meth:`~newton.ModelBuilder.collapse_fixed_joints` call. It runs before attributes
   declaring ``references="body"`` or ``references="joint"`` are remapped, so it still
@@ -1048,8 +1044,8 @@ cases:
   ``joint_remap``, ``articulation_remap``, ``body_merged_parent``,
   ``body_merged_transform``, and ``verbose``.
 
-Handlers are part of the frequency registration. Re-registering a frequency with
-different handlers raises an error, and merging copies the source builder's
+The collapse handler is part of the frequency registration. Re-registering a frequency
+with a different handler raises an error, and merging copies the source builder's
 registration into a destination that lacks it.
 
 .. testcode:: custom-handlers
@@ -1057,14 +1053,14 @@ registration into a destination that lacks it.
    import newton
    import warp as wp
 
-   def merge_targets(destination, source, context):
+   def remap_targets(values, context):
        # kind 0 targets a body, kind 1 targets a joint.
        offsets = {0: context["entity_offsets"]["body"], 1: context["entity_offsets"]["joint"]}
-       kinds = source.custom_attributes["demo:link_kind"].values
-       targets = destination.custom_attributes["demo:link_target"].values
-       for row, target in enumerate(source.custom_attributes["demo:link_target"].values):
-           if target is not None and target >= 0:
-               targets[context["row_start"] + row] = target + offsets[kinds[row]]
+       kinds = context["builder"].custom_attributes["demo:link_kind"].values
+       return [
+           target + offsets[kinds[row]] if target is not None and target >= 0 else target
+           for row, target in zip(context["row_indices"], values)
+       ]
 
    def collapse_points(builder, context):
        # Re-express each point in the frame of the body its body was merged into.
@@ -1077,21 +1073,23 @@ registration into a destination that lacks it.
        builder = newton.ModelBuilder()
        builder.add_custom_frequency(
            newton.ModelBuilder.CustomFrequency(
-               name="link",
-               namespace="demo",
-               merge_handler=merge_targets,
-               collapse_fixed_joints_handler=collapse_points,
+               name="link", namespace="demo", collapse_fixed_joints_handler=collapse_points
            )
        )
-       for name, dtype, references in (
-           ("link_kind", wp.int32, None),
-           ("link_target", wp.int32, None),
-           ("link_body", wp.int32, "body"),
-           ("link_point", wp.vec3, None),
+       for name, dtype, references, transformer in (
+           ("link_kind", wp.int32, None, None),
+           ("link_target", wp.int32, None, remap_targets),
+           ("link_body", wp.int32, "body", None),
+           ("link_point", wp.vec3, None, None),
        ):
            builder.add_custom_attribute(
                newton.ModelBuilder.CustomAttribute(
-                   name=name, namespace="demo", frequency="demo:link", dtype=dtype, references=references
+                   name=name,
+                   namespace="demo",
+                   frequency="demo:link",
+                   dtype=dtype,
+                   references=references,
+                   reference_value_transformer=transformer,
                )
            )
        base = builder.add_link(mass=1.0)

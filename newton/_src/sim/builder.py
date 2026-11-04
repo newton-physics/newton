@@ -1810,43 +1810,6 @@ class ModelBuilder:
         these values like other entity labels.
         """
 
-        merge_handler: Callable[[ModelBuilder, ModelBuilder, dict[str, Any]], None] | None = None
-        """Optional callback that fixes up rows copied by :meth:`ModelBuilder.add_builder`.
-
-        Use this when a row stores values that :attr:`CustomAttribute.references`
-        cannot remap, for example an index whose entity type depends on another
-        column of the same row. The callback is invoked as
-        ``merge_handler(destination_builder, source_builder, context)`` once per
-        copy whose source builder contributes at least one row of this frequency,
-        including every copy made by :meth:`ModelBuilder.add_world` and
-        :meth:`ModelBuilder.replicate`. It runs after all custom attributes of the
-        copy were merged and their ``references`` remapped, so the destination rows
-        already hold the copied values. ``context`` contains these keys:
-
-        - ``"entity_offsets"`` (``dict[str, int]``): Index offsets for this copy's
-          built-in entities, keyed like the ``entity_offsets`` passed to
-          :attr:`CustomAttribute.reference_value_transformer` (for example,
-          ``"body"``, ``"joint"``, or ``"constraint_mimic"``).
-        - ``"custom_frequency_offsets"`` (``dict[str, int]``): Destination row
-          counts before this copy was merged, keyed by full frequency name.
-          Missing keys have offset zero.
-        - ``"row_start"`` (``int``): Destination index of this copy's first row
-          of this frequency. Source row ``i`` is stored at destination row
-          ``row_start + i``.
-        - ``"row_count"`` (``int``): Number of rows of this frequency copied
-          from the source builder.
-        - ``"world"`` (``int``): Destination world for this copy, or ``-1`` for
-          global entities.
-        - ``"label_prefix"`` (``str | None``): Optional label prefix for this copy.
-
-        Read original values from the source builder and write fixed-up values to
-        the destination rows ``[row_start, row_start + row_count)``. Custom
-        attribute value lists may be shorter than the row count or contain
-        ``None`` for rows that use the attribute default. Treat the source builder
-        as read-only. Replication invokes the callback separately for each copy
-        with its own offsets.
-        """
-
         collapse_fixed_joints_handler: Callable[[ModelBuilder, dict[str, Any]], None] | None = None
         """Optional callback that fixes up rows when fixed joints are collapsed.
 
@@ -1884,10 +1847,11 @@ class ModelBuilder:
 
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
-            for field_name in ("merge_handler", "collapse_fixed_joints_handler"):
-                handler = getattr(self, field_name)
-                if handler is not None and not callable(handler):
-                    raise TypeError(f"{field_name} must be callable or None, got {type(handler).__name__}")
+            if self.collapse_fixed_joints_handler is not None and not callable(self.collapse_fixed_joints_handler):
+                raise TypeError(
+                    "collapse_fixed_joints_handler must be callable or None, "
+                    f"got {type(self.collapse_fixed_joints_handler).__name__}"
+                )
             if not self.name or ":" in self.name:
                 raise ValueError(f"name must be non-empty and colon-free, got '{self.name}'")
             if self.namespace is not None and (not self.namespace or ":" in self.namespace):
@@ -2717,7 +2681,6 @@ class ModelBuilder:
             and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
             and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
             and existing.label_attribute == incoming.label_attribute
-            and existing.merge_handler is incoming.merge_handler
             and existing.collapse_fixed_joints_handler is incoming.collapse_fixed_joints_handler
         )
 
@@ -5788,26 +5751,6 @@ class ModelBuilder:
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
-
-        # Frequency-specific fixups run last so they observe fully merged destination rows.
-        for freq_key, frequency in builder.custom_frequencies.items():
-            if frequency.merge_handler is None:
-                continue
-            row_count = builder._custom_frequency_counts.get(freq_key, 0)
-            if row_count == 0:
-                continue
-            frequency.merge_handler(
-                self,
-                builder,
-                {
-                    "entity_offsets": entity_offsets,
-                    "custom_frequency_offsets": custom_frequency_offsets,
-                    "row_start": custom_frequency_offsets.get(freq_key, 0),
-                    "row_count": row_count,
-                    "world": world,
-                    "label_prefix": label_prefix,
-                },
-            )
 
     def _merge_builder_actuators(
         self,

@@ -66,7 +66,6 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
         type(builder).CustomFrequency(
             name="equality_constraint",
             namespace="mujoco",
-            merge_handler=_merge_equality_constraints,
             collapse_fixed_joints_handler=_collapse_equality_constraints,
         )
     )
@@ -232,6 +231,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             dtype=wp.int32,
             default=-1,
             namespace="mujoco",
+            reference_value_transformer=_remap_equality_targets,
         )
     )
     # MuJoCo solver reference parameters, parsed from USD/MJCF and read back by SolverMuJoCo.
@@ -293,36 +293,28 @@ def _target_kind(value: Any) -> int:
         return int(MjcEqualityTargetKind.NONE)
 
 
-def _merge_equality_constraints(destination: ModelBuilder, source: ModelBuilder, context: dict[str, Any]) -> None:
-    """Offset ``equality_constraint_target`` rows copied by :meth:`ModelBuilder.add_builder`.
+def _remap_equality_targets(values: list[Any], context: dict[str, Any]) -> list[Any]:
+    """Offset ``equality_constraint_target`` values copied by :meth:`ModelBuilder.add_builder`.
 
     The target indexes a joint or a mimic constraint depending on the row's
     ``equality_constraint_target_kind``, so a single ``references`` offset cannot remap it.
     """
-    source_target = source.custom_attributes.get("mujoco:equality_constraint_target")
-    if source_target is None or not source_target.values:
-        return
-    destination_target = destination.custom_attributes["mujoco:equality_constraint_target"]
-    kind_attr = source.custom_attributes.get("mujoco:equality_constraint_target_kind")
+    kind_attr = context["builder"].custom_attributes.get("mujoco:equality_constraint_target_kind")
     kind_values = (kind_attr.values or []) if kind_attr is not None else []
     entity_offsets = context["entity_offsets"]
     offsets = {
         int(MjcEqualityTargetKind.JOINT): entity_offsets["joint"],
         int(MjcEqualityTargetKind.MIMIC): entity_offsets["constraint_mimic"],
     }
-    row_start = context["row_start"]
-    for row, value in enumerate(source_target.values):
-        if value is None:
-            continue
+    remapped = []
+    for row, value in zip(context["row_indices"], values, strict=True):
         try:
-            target = int(value)
+            target = int(value) if value is not None else -1
         except (TypeError, ValueError):
-            continue
-        if target < 0:
-            continue
+            target = -1
         offset = offsets.get(_target_kind(_value_at(kind_values, row, None)))
-        if offset is not None:
-            destination_target.values[row_start + row] = target + offset
+        remapped.append(target + offset if target >= 0 and offset is not None else value)
+    return remapped
 
 
 def _collapse_equality_constraints(builder: ModelBuilder, context: dict[str, Any]) -> None:

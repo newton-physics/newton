@@ -2593,22 +2593,21 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertTrue(all(v == 7 for v in arr))
 
     @staticmethod
-    def _add_link_frequency(builder, merge_handler=None, collapse_fixed_joints_handler=None):
+    def _add_link_frequency(builder, target_transformer=None, collapse_fixed_joints_handler=None):
         """Register a ``test:link`` frequency whose target index depends on the row's kind."""
         builder.add_custom_frequency(
             ModelBuilder.CustomFrequency(
                 name="link",
                 namespace="test",
-                merge_handler=merge_handler,
                 collapse_fixed_joints_handler=collapse_fixed_joints_handler,
             )
         )
-        for name, dtype, default, references in (
-            ("link_kind", wp.int32, 0, None),
-            ("link_target", wp.int32, -1, None),
-            ("link_body", wp.int32, -1, "body"),
-            ("link_joint", wp.int32, -1, "joint"),
-            ("link_point", wp.vec3, wp.vec3(), None),
+        for name, dtype, default, references, transformer in (
+            ("link_kind", wp.int32, 0, None, None),
+            ("link_target", wp.int32, -1, None, target_transformer),
+            ("link_body", wp.int32, -1, "body", None),
+            ("link_joint", wp.int32, -1, "joint", None),
+            ("link_point", wp.vec3, wp.vec3(), None, None),
         ):
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
@@ -2618,40 +2617,43 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
                     default=default,
                     namespace="test",
                     references=references,
+                    reference_value_transformer=transformer,
                 )
             )
 
     def test_custom_frequency_handlers_validation(self):
         """Reject non-callable handlers and re-registration with different handlers."""
-        with self.assertRaisesRegex(TypeError, "merge_handler"):
-            ModelBuilder.CustomFrequency(name="link", namespace="test", merge_handler=1)
         with self.assertRaisesRegex(TypeError, "collapse_fixed_joints_handler"):
             ModelBuilder.CustomFrequency(name="link", namespace="test", collapse_fixed_joints_handler="x")
 
         builder = ModelBuilder()
         builder.add_custom_frequency(
-            ModelBuilder.CustomFrequency(name="link", namespace="test", merge_handler=lambda *_args: None)
+            ModelBuilder.CustomFrequency(
+                name="link", namespace="test", collapse_fixed_joints_handler=lambda *_args: None
+            )
         )
         with self.assertRaisesRegex(ValueError, "different callbacks"):
             builder.add_custom_frequency(
-                ModelBuilder.CustomFrequency(name="link", namespace="test", merge_handler=lambda *_args: None)
+                ModelBuilder.CustomFrequency(
+                    name="link", namespace="test", collapse_fixed_joints_handler=lambda *_args: None
+                )
             )
 
-    def test_custom_frequency_merge_handler(self):
-        """Fix up kind-dependent indices with the merge handler across add_builder and replicate."""
-        calls = []
+    def test_custom_frequency_kind_dependent_reference_transformer(self):
+        """Remap kind-dependent indices with a reference transformer across add_builder and replicate."""
+        contexts = []
 
-        def merge(destination, source, context):
-            calls.append((destination, source, dict(context)))
-            kinds = source.custom_attributes["test:link_kind"].values
+        def remap(values, context):
+            contexts.append(dict(context))
+            kinds = context["builder"].custom_attributes["test:link_kind"].values
             offsets = {0: context["entity_offsets"]["body"], 1: context["entity_offsets"]["joint"]}
-            destination_targets = destination.custom_attributes["test:link_target"].values
-            for row, target in enumerate(source.custom_attributes["test:link_target"].values):
-                if target is not None and target >= 0:
-                    destination_targets[context["row_start"] + row] = target + offsets[kinds[row]]
+            return [
+                target + offsets[kinds[row]] if target is not None and target >= 0 else target
+                for row, target in zip(context["row_indices"], values, strict=True)
+            ]
 
         sub = ModelBuilder()
-        self._add_link_frequency(sub, merge_handler=merge)
+        self._add_link_frequency(sub, target_transformer=remap)
         sub.add_body(mass=1.0)
         body1 = sub.add_body(mass=1.0)
         sub.add_custom_values(**{"test:link_kind": 0, "test:link_target": body1})
@@ -2660,27 +2662,24 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         sub.add_custom_values(**{"test:link_kind": 1})
         source_targets = list(sub.custom_attributes["test:link_target"].values)
 
-        # Neither destination registers the frequency; the handler comes from the source.
+        # The destination does not register the frequency; the transformer comes from the source.
         scene = ModelBuilder()
         self.assertNotIn("test:link", scene.custom_frequencies)
         scene.add_body(mass=1.0)
         scene.add_builder(sub)
 
-        # A source without rows does not invoke the handler.
+        # A source without rows does not invoke the transformer.
         empty = ModelBuilder()
-        self._add_link_frequency(empty, merge_handler=merge)
+        self._add_link_frequency(empty, target_transformer=remap)
         scene.add_builder(empty)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(contexts), 1)
 
         scene.replicate(sub, 2)
 
-        self.assertEqual(len(calls), 3)
-        for destination, source, _context in calls:
-            self.assertIs(destination, scene)
-            self.assertIs(source, sub)
-        contexts = [context for _destination, _source, context in calls]
-        self.assertEqual([context["row_start"] for context in contexts], [0, 3, 6])
-        self.assertEqual([context["row_count"] for context in contexts], [3, 3, 3])
+        self.assertEqual(len(contexts), 3)
+        for context in contexts:
+            self.assertIs(context["builder"], sub)
+            self.assertIs(context["destination_builder"], scene)
         self.assertEqual([context["entity_offsets"]["body"] for context in contexts], [1, 3, 5])
         self.assertEqual([context["entity_offsets"]["joint"] for context in contexts], [1, 3, 5])
         self.assertEqual([context["world"] for context in contexts], [-1, 0, 1])
