@@ -1739,7 +1739,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise ValueError(
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
-                "universal and gimbal axes must be unit length and orthogonal"
+                "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
             )
 
         if gimbal_handedness_joint != sentinel:

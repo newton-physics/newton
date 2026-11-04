@@ -296,13 +296,20 @@ class TestGimbal(unittest.TestCase):
         axes[qd_start + 1] = [1.0, 0.0, 0.0]
         model.joint_axis.assign(axes)
 
-        with self.assertRaisesRegex(ValueError, "universal and gimbal axes must be unit length and orthogonal"):
+        with self.assertRaisesRegex(
+            ValueError, "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
+        ):
             SolverKamino(model)
 
-    def test_cartesian_rejects_left_handed_axes(self):
-        """Reject three translational axes that form a left-handed set, such as (-X, -Y, -Z)."""
-        for sign, accepted in ((1.0, True), (-1.0, False)):
-            with self.subTest(sign=sign):
+    def test_cartesian_rejects_invalid_axes(self):
+        """Reject three translational axes that are not orthonormal or form a left-handed set."""
+        cases = {
+            "right-handed": (1.0, None),
+            "left-handed": (-1.0, "three translational axes must form a right-handed set"),
+            "not orthogonal": (1.0, "Cartesian, and gimbal axes must be unit length and orthogonal"),
+        }
+        for name, (sign, error) in cases.items():
+            with self.subTest(name):
                 builder = newton.ModelBuilder()
                 inertia = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
                 parent = builder.add_link(mass=1.0, inertia=inertia)
@@ -318,11 +325,16 @@ class TestGimbal(unittest.TestCase):
                 )
                 builder.add_articulation([root, cartesian])
                 model = builder.finalize(device=self.default_device)
-                if accepted:
+                if name == "not orthogonal":
+                    qd_start = model.joint_qd_start.numpy()[cartesian]
+                    axes = model.joint_axis.numpy()
+                    axes[qd_start + 2] = axes[qd_start]
+                    model.joint_axis.assign(axes)
+                if error is None:
                     solver = SolverKamino(model)
                     self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], JointDoFType.CARTESIAN)
                 else:
-                    with self.assertRaisesRegex(ValueError, "three translational axes must form a right-handed set"):
+                    with self.assertRaisesRegex(ValueError, error):
                         SolverKamino(model)
 
     def test_from_newton_derives_gimbal_handedness(self):

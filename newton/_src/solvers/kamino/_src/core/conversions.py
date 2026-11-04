@@ -392,11 +392,6 @@ def validate_joint_axes_kernel(
         return
 
     dof_start = joint_qd_start[joint]
-    if is_cartesian:
-        # The Cartesian joint frame is built from the three axes, so they must form a rotation.
-        if wp.dot(wp.cross(joint_axis[dof_start], joint_axis[dof_start + 1]), joint_axis[dof_start + 2]) < 0.0:
-            wp.atomic_min(violations, StructuralUpdateViolation.CARTESIAN_HANDEDNESS, joint)
-        return
     axis_0 = joint_axis[dof_start]
     axis_1 = joint_axis[dof_start + 1]
     valid = (
@@ -410,7 +405,7 @@ def validate_joint_axes_kernel(
         and wp.abs(wp.dot(axis_1, axis_1) - 1.0) <= 1.0e-6
         and wp.abs(wp.dot(axis_0, axis_1)) <= 1.0e-6
     )
-    if is_gimbal:
+    if is_gimbal or is_cartesian:
         axis_2 = joint_axis[dof_start + 2]
         valid = (
             valid
@@ -423,8 +418,12 @@ def validate_joint_axes_kernel(
         )
         if valid:
             left_handed = wp.dot(wp.cross(axis_0, axis_1), axis_2) < 0.0
-            expected_left_handed = dof_type == JointDoFType.GIMBAL_LEFT_HANDED
-            if left_handed != expected_left_handed:
+            if is_cartesian:
+                # The Cartesian joint frame is built from the three axes, so they must form a rotation.
+                if left_handed:
+                    wp.atomic_min(violations, StructuralUpdateViolation.CARTESIAN_HANDEDNESS, joint)
+                    return
+            elif left_handed != (dof_type == JointDoFType.GIMBAL_LEFT_HANDED):
                 wp.atomic_min(violations, StructuralUpdateViolation.GIMBAL_HANDEDNESS, joint)
                 return
     if not valid:
@@ -1128,7 +1127,7 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.LIMIT_FINITE`: finite-limit state changed
     - :attr:`StructuralUpdateViolation.ACTUATION_PARTITION`: passive/actuated partition changed
     - :attr:`StructuralUpdateViolation.INVALID_TARGET_MODE`: unsupported target-mode combination
-    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
+    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/Cartesian/gimbal axes
     - :attr:`StructuralUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
     - :attr:`StructuralUpdateViolation.IMMOVABILITY_FLIP`: a body's Kamino immovability status changed
     - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
@@ -1294,7 +1293,7 @@ def _validate_joint_axes(
         raise ValueError(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
-            "universal and gimbal axes must be unit length and orthogonal"
+            "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
         )
     invalid_joint = int(violations_np[StructuralUpdateViolation.GIMBAL_HANDEDNESS])
     if invalid_joint < model.joint_count:
