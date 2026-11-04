@@ -2809,15 +2809,20 @@ f 4 5 8
     <geom name="g" type="sphere" size="0.1" mass="1" solref="0.003"/>
 </body></worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")  # no "invalid components" warning for the shorthand
-            builder.add_mjcf(mjcf_content)
-            model = builder.finalize()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.005, 1.0], rtol=1.0e-6)
         np.testing.assert_allclose(model.mujoco.solreffriction.numpy()[0], [0.004, 1.0], rtol=1.0e-6)
         np.testing.assert_allclose(model.mujoco.solref.numpy()[0], [0.003, 1.0], rtol=1.0e-6)
         self.assertEqual(model.mujoco.solreflimit_mode.numpy()[0], SOLREF_MODE_RAW)
+
+        # The solver passes the values on without an "invalid components" warning.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        self.assertFalse([w for w in caught if "invalid components" in str(w.message)])
+        np.testing.assert_allclose(solver.mj_model.jnt_solref[0], [0.005, 1.0], rtol=1.0e-6)
+        np.testing.assert_allclose(solver.mj_model.geom_solref[0], [0.003, 1.0], rtol=1.0e-6)
 
     def test_single_mujoco_fixed_tendon_parsing(self):
         """Test that tendon parameters can be parsed from mjcf"""

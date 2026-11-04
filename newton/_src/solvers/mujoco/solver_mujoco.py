@@ -1059,6 +1059,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         The generic custom-attribute parser pads from the attribute's registered default
         instead, which for ``mujoco:solref`` and ``mujoco:solreflimit`` is the ``(0, 0)``
         "not authored" sentinel: the shorthand would become dampratio 0.
+
+        ``parse_vec`` in ``import_mjcf.py`` applies the same rule to ``_SOLREF_SHORTHAND_KEYS``;
+        keep the two in step.
         """
         parts = [float(x) for x in str(value).split()]
         if not 1 <= len(parts) <= 2:
