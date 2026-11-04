@@ -8874,6 +8874,17 @@ class ModelBuilder:
         if scale is None:
             scale = (1.0, 1.0, 1.0)
 
+        # TODO: Remove this compatibility path with the deprecated attribute.
+        site_size_is_display = False
+        if cfg.is_site and custom_attributes and "mujoco:site_size_is_display" in custom_attributes:
+            warnings.warn(
+                "The 'mujoco:site_size_is_display' attribute is deprecated; "
+                "set scale[2] of a cylinder site to 0.0 instead.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            site_size_is_display = bool(custom_attributes["mujoco:site_size_is_display"])
+
         # Normalize / validate negative scale components by shape type. Symmetric
         # primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian)
         # are point-symmetric and produce identical geometry under sign flip of any
@@ -8894,16 +8905,8 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
-            # TODO: Remove this compatibility path with the deprecated attribute.
-            if cfg.is_site and custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False):
-                warnings.warn(
-                    "The 'mujoco:site_size_is_display' attribute is deprecated; "
-                    "set scale[2] of a cylinder site to 0.0 instead.",
-                    NewtonDeprecationWarning,
-                    stacklevel=_external_warning_stacklevel(),
-                )
-                if type == GeoType.CYLINDER:
-                    scale = (scale[0], scale[1], 0.0)
+            if type == GeoType.CYLINDER and site_size_is_display:
+                scale = (scale[0], scale[1], 0.0)
             if type == GeoType.CYLINDER and scale[2] != 0.0 and scale[2] < scale[1]:
                 raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
