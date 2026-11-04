@@ -915,7 +915,7 @@ class Model:
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
-                warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
+                warn_deprecation(message)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -927,7 +927,7 @@ class Model:
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
-                    warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
+                    warn_deprecation(message)
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)

@@ -140,10 +140,14 @@ An explicit ``rest_q=0.0`` also takes precedence over that default; use
 ``rest_q=None`` to leave it unspecified. Conflicting explicitly configured
 core rest coordinates and authored legacy rest values raise an error.
 
-Runtime ``model.mujoco.dof_springref`` is removed in Newton 1.8 without a
-deprecation period. It cannot directly alias :attr:`~newton.Model.joint_rest_q`:
-the reference changes from absolute MuJoCo coordinates in DOF layout to
-relative Newton coordinates in coordinate layout. Reads, assignments, and
+Runtime ``model.mujoco.dof_springref`` is deprecated since Newton 1.8. When the
+model has no joints with more coordinates than DOFs (free, ball, distance, or
+rod) and no nonzero ``mujoco:dof_ref`` at finalization, the DOF and coordinate
+layouts coincide and ``springref`` equals ``rest_q``, so the old name remains a
+warning alias to :attr:`~newton.Model.joint_rest_q` for at least one minor
+release. The alias
+tracks ``rest_q``, so it no longer reports the absolute spring reference if
+``dof_ref`` is edited later. For other models, reads, assignments, and
 deletions raise an ``AttributeError`` with migration guidance. Replace runtime
 accesses with ``joint_rest_q``, subtract ``ref`` from legacy values, and index
 by :attr:`~newton.Model.joint_q_start`.
