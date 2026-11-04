@@ -362,9 +362,10 @@ repository examples spend tuning effort, not a shared solver API.
        order can converge more slowly on stacks at a fixed iteration count, so measure the
        full step at the target world count before switching. ``"propagation"`` solves contact
        torsion with ``contact_torsion_device=True`` and ``velocity_iterations=0``;
-       ``"propagation_colored"`` rejects it. The propagation responses reject contact compliance,
-       sleeping and loop-closing joints, and fall back from bilateral pre-elimination to iterative
-       mimic rows with a warning.
+       ``"propagation_colored"`` rejects it. ``"propagation"`` rejects contact compliance and
+       ``"propagation_colored"`` accepts it without contact torsion. The propagation responses
+       reject sleeping and loop-closing joints, and fall back from bilateral pre-elimination to
+       iterative mimic rows with a warning.
        ``"propagation_colored"`` supports the ``friction_mode`` values other than
        ``"fixed_normal"`` and applies them to the articulated contacts on its propagation rows
        as well. ``"propagation"`` requires ``"fixed_normal"``.
