@@ -3,6 +3,7 @@
 
 """Tests for frame-to-frame contact matching."""
 
+import math
 import unittest
 from functools import partial
 
@@ -1437,6 +1438,112 @@ def test_sticky_soft_contact_saves_buffer_without_mesh_features(test, device):
         test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
 
 
+def test_sticky_soft_contact_drops_point_of_opposing_surface(test, device):
+    """A record that moves to the opposing wall of the same mesh takes that wall's point, not the old one.
+
+    A particle touches the lower of two facing walls of one mesh, then the upper one. The record keeps its
+    key, so replay must see that the old point no longer lies on the surface the fresh normal belongs to.
+    """
+    gap = 0.028
+    lower = newton.Mesh.create_box(0.5, 0.5, 0.05, compute_inertia=False)
+    lower_vertices = np.asarray(lower.vertices) + np.array([0.0, 0.0, -0.05])
+    upper_vertices = np.asarray(lower.vertices) + np.array([0.0, 0.0, gap + 0.05])
+    indices = np.asarray(lower.indices)
+    walls = newton.Mesh(
+        np.vstack([lower_vertices, upper_vertices]),
+        np.concatenate([indices, indices + len(lower_vertices)]),
+        compute_inertia=False,
+    )
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(body=-1, mesh=walls)
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.009), vel=wp.vec3(0.0), mass=1.0, radius=0.01)
+    with wp.ScopedDevice(device):
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[0], [0.0, 0.0, 1.0], atol=1.0e-6)
+
+        state.particle_q.assign([[0.0, 0.0, gap - 0.009]])
+        pipeline.collide(state, contacts)
+        np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[0], [0.0, 0.0, -1.0], atol=1.0e-6)
+        np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[0], [0.0, 0.0, gap], atol=1.0e-6)
+
+
+def test_sticky_soft_contact_point_stays_near_thin_wall_plane(test, device):
+    """A record that crosses a thin wall keeps its old point only while it lies near the fresh contact plane.
+
+    A particle touches the top of a plate, then its bottom, still within reach of the top point. Keeping the
+    top point is harmless for a plate thinner than ``contact_matching_pos_threshold`` and wrong for a thicker one.
+    """
+    pos_threshold = 0.0005
+    for thickness in (0.0003, 0.0008):
+        plate = newton.Mesh.create_box(0.5, 0.5, 0.5 * thickness, compute_inertia=False)
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.5 * thickness)), mesh=plate)
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.009), vel=wp.vec3(0.0), mass=1.0, radius=0.01)
+        with wp.ScopedDevice(device):
+            model = builder.finalize(device=device)
+            state = model.state()
+            pipeline = newton.CollisionPipeline(
+                model, soft_contact_gap=0.01, contact_matching="sticky", contact_matching_pos_threshold=pos_threshold
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+
+            state.particle_q.assign([[0.0, 0.0, -thickness - 0.009]])
+            pipeline.collide(state, contacts)
+            np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[0], [0.0, 0.0, -1.0], atol=1.0e-6)
+            plane_distance = abs(contacts.soft_contact_body_pos.numpy()[0][2] + thickness)
+            test.assertLessEqual(plane_distance, pos_threshold, f"plate {thickness} m")
+
+
+def test_sticky_soft_contact_keeps_point_on_tilting_body(test, device):
+    """A record keeps its point while the body turns under it, though its normal turns along.
+
+    The particle rides on a box that tilts 20 degrees between passes and slides a little along it.
+    """
+    builder = newton.ModelBuilder()
+    body = builder.add_body()
+    builder.add_shape_box(body=body, xform=wp.transform(wp.vec3(0.0, 0.0, -0.1)), hx=0.5, hy=0.5, hz=0.1)
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.009), vel=wp.vec3(0.0), mass=1.0, radius=0.01)
+    with wp.ScopedDevice(device):
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        tilt = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.radians(20.0))
+        state.body_q.assign([wp.transform(wp.vec3(0.0), tilt)])
+        state.particle_q.assign([wp.quat_rotate(tilt, wp.vec3(0.0002, 0.0, 0.009))])
+        pipeline.collide(state, contacts)
+        np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[0], [0.0, 0.0, 0.0], atol=1.0e-6)
+
+
+def test_sticky_soft_contact_keeps_point_on_curved_surface(test, device):
+    """A record keeps its point while it slides a little over a strongly curved surface.
+
+    Sliding 0.2 mm over a sphere of 1 mm radius turns the normal by more than 11 degrees.
+    """
+    radius = 0.001
+    builder = newton.ModelBuilder()
+    builder.add_shape_sphere(body=-1, radius=radius)
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, radius + 0.009), vel=wp.vec3(0.0), mass=1.0, radius=0.01)
+    with wp.ScopedDevice(device):
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        angle = 0.0002 / radius
+        state.particle_q.assign([[(radius + 0.009) * math.sin(angle), 0.0, (radius + 0.009) * math.cos(angle)]])
+        pipeline.collide(state, contacts)
+        np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[0], [0.0, 0.0, radius], atol=1.0e-6)
+
+
 def test_sticky_soft_contact_reset_reaches_handed_over_buffer(test, device):
     """A sticky pipeline does not replay points that a reset made before it first saw the buffer.
 
@@ -1687,6 +1794,30 @@ add_function_test(
     TestContactMatchingSticky,
     "test_sticky_soft_contact_saves_buffer_without_mesh_features",
     test_sticky_soft_contact_saves_buffer_without_mesh_features,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_drops_point_of_opposing_surface",
+    test_sticky_soft_contact_drops_point_of_opposing_surface,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_point_stays_near_thin_wall_plane",
+    test_sticky_soft_contact_point_stays_near_thin_wall_plane,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_keeps_point_on_tilting_body",
+    test_sticky_soft_contact_keeps_point_on_tilting_body,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_keeps_point_on_curved_surface",
+    test_sticky_soft_contact_keeps_point_on_curved_surface,
     devices=devices,
 )
 add_function_test(

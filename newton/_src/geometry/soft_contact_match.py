@@ -11,11 +11,12 @@ through a few short lists per first corner.
 Sticky replay keeps a matched record's contact points where they were: the soft-side material point
 (``soft_contact_barycentric``) and the body-frame surface point (``soft_contact_body_pos``). A record
 keeps them while they still touch and have slipped apart tangentially by at most the matching
-position threshold. Records on a moving surface (nonzero ``soft_contact_body_vel``) keep fresh points,
-since the surface material moves away from any body-frame point. The fresh normal is kept, so a
-rotating body still pushes along its current surface normal. Consumers can then measure tangential
-slip as the drift between the two replayed points, which persists across collision passes, rather
-than as the motion since the last one.
+position threshold, and while the body point lies within that threshold of this pass's contact plane,
+so a record that moves to an opposing wall of the same mesh starts over. Records on a moving surface
+(nonzero ``soft_contact_body_vel``) keep fresh points, since the surface material moves away from any
+body-frame point. The fresh normal is kept, so a rotating body still pushes along its current surface
+normal. Consumers can then measure tangential slip as the drift between the two replayed points, which
+persists across collision passes, rather than as the motion since the last one.
 
 The matcher saves a buffer's records as the consumers left them, so a solver may move the kept points
 between passes; VBD drags them along once a contact slides. Each buffer therefore replays its own
@@ -99,7 +100,7 @@ def _record_feature(features: wp.array[wp.vec3i], index: int):
 def _replay_soft_contacts_kernel(
     thread_count: int,
     world_count: int,
-    pos_threshold_sq: float,
+    pos_threshold: float,
     particle_q: wp.array[wp.vec3],
     particle_radius: wp.array[float],
     particle_world: wp.array[wp.int32],
@@ -150,24 +151,28 @@ def _replay_soft_contacts_kernel(
         if shape_margin.shape[0] > 0:
             contact_distance += shape_margin[shape]
 
+        fresh_surface = wp.transform_point(X_wb, contact_body_pos[i])
         best = int(-1)
-        best_slip_sq = float(pos_threshold_sq)
+        best_slip_sq = pos_threshold * pos_threshold
         node = prev_head[_key_slot(corners, shape, feature)]
         while node >= 0:
             prev_feature = _record_feature(prev_features, node)
             if prev_reset_stamp[node] == stamp and _same_key(
                 corners, shape, feature, prev_indices[node], prev_shape[node], prev_feature
             ):
-                # The previous points still describe this contact if they still touch and have not slipped
-                # apart. Fresh points are no reference: a soft edge or face lying flat on a surface has no
-                # unique closest point, so detection may pick another point on it every pass.
-                d = _soft_point(corners, prev_barycentric[node], particle_q) - wp.transform_point(
-                    X_wb, prev_body_pos[node]
-                )
+                # The previous points still describe this contact if the body point lies on the surface this
+                # pass touches, they still touch, and they have not slipped apart. Only the fresh point's plane
+                # is a reference: a soft edge or face lying flat on a surface has no unique closest point, so
+                # detection may pick another point on it every pass.
+                surface = wp.transform_point(X_wb, prev_body_pos[node])
+                d = _soft_point(corners, prev_barycentric[node], particle_q) - surface
                 normal_distance = wp.dot(n, d)
                 slip_sq = wp.length_sq(d - normal_distance * n)
-                if normal_distance < contact_distance and (
-                    slip_sq < best_slip_sq or (slip_sq == best_slip_sq and (best < 0 or node < best))
+                on_surface = wp.abs(wp.dot(n, surface - fresh_surface)) <= pos_threshold
+                if (
+                    on_surface
+                    and normal_distance < contact_distance
+                    and (slip_sq < best_slip_sq or (slip_sq == best_slip_sq and (best < 0 or node < best)))
                 ):
                     best = node
                     best_slip_sq = slip_sq
@@ -227,8 +232,9 @@ class SoftContactMatcher:
         particle_count: Number of particles in the model.
         owner: The pipeline's history id; a buffer's records are saved only if this pipeline wrote them.
         resets: The pipeline's world reset epochs; records are saved stamped with them.
-        pos_threshold: Largest tangential slip [m] between a record's previous soft and body points
-            for the record to keep them.
+        pos_threshold: Largest tangential slip [m] between a record's previous soft and body points,
+            and largest distance [m] of the previous body point from this pass's contact plane, for the
+            record to keep them.
         mesh_features: Whether records carry full-surface mesh feature ids, which then join the key.
         device: Device to allocate on.
     """
@@ -250,7 +256,7 @@ class SoftContactMatcher:
             self._thread_count = min(capacity, wp.get_device().sm_count * 2048) if cuda else capacity
             self._owner = owner
             self._resets = resets
-            self._pos_threshold_sq = pos_threshold * pos_threshold
+            self._pos_threshold = pos_threshold
             self._prev_head = wp.full(particle_count * SLOTS_PER_PARTICLE, -1, dtype=wp.int32)
             self._prev_next = wp.full(capacity, -1, dtype=wp.int32)
             self._prev_indices = wp.full(capacity, wp.vec3i(-1, -1, -1), dtype=wp.vec3i)
@@ -311,7 +317,7 @@ class SoftContactMatcher:
             inputs=[
                 self._thread_count,
                 self._resets.world_count,
-                self._pos_threshold_sq,
+                self._pos_threshold,
                 state.particle_q,
                 model.particle_radius,
                 model.particle_world,

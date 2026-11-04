@@ -2644,9 +2644,12 @@ pass's record with the same key: its soft feature
 records, its mesh feature pair.  A matched record keeps its previous soft-side
 material point (:attr:`Contacts.soft_contact_barycentric`) and body-frame point
 (:attr:`Contacts.soft_contact_body_pos`) while the two still touch and have
-slipped apart tangentially by at most ``contact_matching_pos_threshold``.  The
-test compares the saved points with each other rather than with the fresh ones,
-because a soft edge or face lying flat on a surface has no unique closest point.
+slipped apart tangentially by at most ``contact_matching_pos_threshold``, and
+the body point lies within that distance of the fresh contact plane.  A record
+that moves to an opposing wall of the same mesh therefore starts over.  Along
+the surface the test compares the saved points with each other rather than with
+the fresh ones, because a soft edge or face lying flat on a surface has no
+unique closest point.
 The normal stays fresh.  Records on a surface with surface velocity, and all
 records of a pipeline with ``requires_grad``, keep fresh points.  The pipeline
 saves a buffer's records as its consumers left them before the next pass, so

@@ -1736,8 +1736,9 @@ class CollisionPipeline:
                 non-disabled mode implies ``deterministic=True`` and
                 populates :attr:`Contacts.rigid_contact_match_index`.
                 ``"sticky"`` also keeps each rigid-soft contact's soft-side and
-                body-side points while they touch and have slipped apart by at
-                most ``contact_matching_pos_threshold``, unless the surface moves
+                body-side points while they touch the same surface and have
+                slipped apart by at most ``contact_matching_pos_threshold``,
+                unless the surface moves
                 (``Contacts.soft_contact_body_vel``); :class:`~newton.solvers.SolverVBD`
                 then measures body-particle friction slip from them. Not applied with
                 ``requires_grad``.
