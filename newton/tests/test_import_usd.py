@@ -5747,7 +5747,7 @@ def Xform "Articulation" (
         self.assertEqual(get_mesh.call_count, 1)
         np.testing.assert_allclose(visual_mesh.normals, np.array([(0.0, 1.0, 0.0)] * 3), atol=1e-6, rtol=1e-6)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "PIL")
     def test_visual_mesh_material_subset_with_loaded_texture_array(self):
         """Import a material-subset mesh whose subset texture decodes to an image array.
 
@@ -12578,7 +12578,7 @@ def Mesh "cube"
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return stage, mesh.GetPrim()
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "PIL")
     def test_get_mesh_converts_linear_texture_to_display_space(self):
         """Decode a ``raw``-color-space texture and convert its RGB to sRGB, leaving alpha unchanged."""
         from PIL import Image
@@ -14496,7 +14496,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return mesh.GetPrim()
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "PIL")
     def test_acescg_color_and_texture_are_converted_from_linear(self):
         """Treat ``acescg`` scalar colors and textures as linear and convert them to display/sRGB."""
         from PIL import Image
@@ -14524,7 +14524,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         expected_rgb = np.round(np.asarray(color_linear_to_srgb(source_rgba[0, 0, :3] / 255.0)) * 255.0)
         np.testing.assert_array_equal(np.asarray(mesh.texture)[0, 0, :3], expected_rgb.astype(np.uint8))
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "PIL")
     def test_non_rec709_color_spaces_warn_for_colors_textures_and_gaussians(self):
         """Log the same warning for scalar colors, textures and Gaussians in spaces Newton does not convert."""
         from PIL import Image

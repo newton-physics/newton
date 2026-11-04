@@ -890,7 +890,7 @@ def Xform "World"
         builder.add_usd(path, **add_usd_kwargs)
         return stage, builder.finalize()
 
-    @requires("ovrtx", "ovstage")
+    @requires("ovrtx", "ovstage", "pxr.Usd")
     def test_borrowed_stage_writes_above_caller_advanced_floor(self):
         """Keep writing to a borrowed stage after its owner advances the write floor."""
         import ovstage
@@ -909,7 +909,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @requires("ovrtx", "ovstage")
+    @requires("ovrtx", "ovstage", "pxr.Usd")
     def test_borrowed_stage_keeps_authored_poses_until_first_state(self):
         """Render bound bodies at their authored poses on frames before the first logged state."""
         stage, model = self._borrowed_scene()
@@ -923,7 +923,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @requires("ovrtx", "ovstage")
+    @requires("ovrtx", "ovstage", "pxr.Usd")
     def test_borrowed_stage_renders_reoriented_import_in_stage_frame(self):
         """Keep bodies at their stage poses when the import rotated a Y-up stage and applied an ``xform``."""
         xform = wp.transform((5.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
@@ -946,7 +946,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @requires("ovrtx", "ovstage")
+    @requires("ovrtx", "ovstage", "pxr.Usd")
     def test_borrowed_stage_binds_replicated_clones(self):
         """Bind each replicated world's bodies to the prims the stage cloned into its environment."""
         envs = [f"/World/envs/env_{i}" for i in range(3)]

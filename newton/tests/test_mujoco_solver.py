@@ -6733,8 +6733,7 @@ class TestMuJoCoValidation(unittest.TestCase):
         self.assertIn("not belonging to any articulation", str(ctx.exception))
 
 
-@requires(*MUJOCO_MODULES)
-class TestMuJoCoConversion(unittest.TestCase):
+class TestMuJoCoKernels(unittest.TestCase):
     def test_small_rotated_inertia_update(self):
         """Preserve principal moments and orientation when updating tiny rotated inertias."""
         rotation = np.array(
@@ -6760,6 +6759,9 @@ class TestMuJoCoConversion(unittest.TestCase):
         frame = np.array(wp.quat_to_matrix(wp.quat(x, y, z, w))).reshape(3, 3)
         np.testing.assert_allclose(frame @ np.diag(principal.numpy()[0, 0]) @ frame.T, inertia, rtol=1e-5, atol=1e-23)
 
+
+@requires(*MUJOCO_MODULES)
+class TestMuJoCoConversion(unittest.TestCase):
     def test_cone_is_converted_to_mesh(self):
         """Convert Newton cones to meshes because MuJoCo has no cone primitive."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -15244,6 +15246,33 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
                     worlds, dist = self._step_once(model, solver, native)
                     np.testing.assert_array_equal(worlds[dist < 0.0], 1)
                     np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
+
+    def test_cone_size_drives_contacts(self):
+        """Collide each world with a cone mesh tessellated from its own radius and half-height."""
+        for native in (False, True):
+            with self.subTest(native=native):
+                builder = newton.ModelBuilder()
+                builder.add_ground_plane()
+                # Only world 1's longer cone reaches 0.05 below the ground at this height.
+                for half_height in (0.1, 0.2):
+                    world = newton.ModelBuilder()
+                    body = world.add_link(
+                        xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
+                        mass=1.0,
+                        inertia=wp.mat33(np.eye(3) * 0.01),
+                    )
+                    joint = world.add_joint_free(child=body)
+                    world.add_articulation([joint])
+                    world.add_shape_cone(
+                        body, radius=0.1, half_height=half_height, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
+                    )
+                    builder.add_world(world)
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_contacts=native, nconmax=32, njmax=64)
+                self.assertEqual(solver.mjw_model.nmesh, 2)
+                worlds, dist = self._step_once(model, solver, native)
+                np.testing.assert_array_equal(worlds[dist < 0.0], 1)
+                np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
 
     def test_mesh_scale_change_with_newton_contacts(self):
         """Allow mesh resizing when Newton generates contacts."""

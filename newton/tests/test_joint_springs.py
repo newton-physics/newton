@@ -401,19 +401,25 @@ class TestJointSprings(unittest.TestCase):
 
 
 class TestJointSpringDynamics(unittest.TestCase):
-    @requires(*MUJOCO_MODULES)
+    def _check_imported_spring_force(self, solver_cls, **kwargs):
+        model = _slider_builder(register=True).finalize(device="cpu")
+        solver = solver_cls(model, **kwargs)
+        state, out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        solver.step(state, out, model.control(), None, 0.001)
+        newton.eval_ik(model, out, out.joint_q, out.joint_qd)
+        np.testing.assert_allclose(out.joint_qd.numpy(), [0.0005], rtol=1e-4, atol=1e-7)
+
     def test_imported_spring_force(self):
         """Accelerate an undriven unit-mass slider using its imported spring."""
-        for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
+        for solver_cls in (SolverFeatherstone, SolverSemiImplicit):
             with self.subTest(solver=solver_cls.__name__):
-                model = _slider_builder(register=True).finalize(device="cpu")
-                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
-                solver = solver_cls(model, **kwargs)
-                state, out = model.state(), model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                solver.step(state, out, model.control(), None, 0.001)
-                newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy(), [0.0005], rtol=1e-4, atol=1e-7)
+                self._check_imported_spring_force(solver_cls)
+
+    @requires(*MUJOCO_MODULES)
+    def test_imported_spring_force_mujoco(self):
+        """Accelerate an undriven unit-mass slider using its imported spring in MuJoCo."""
+        self._check_imported_spring_force(SolverMuJoCo, use_mujoco_cpu=True)
 
     @requires(*MUJOCO_MODULES)
     def test_coupled_spring_updates(self):
