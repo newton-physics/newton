@@ -2650,9 +2650,10 @@ because a soft edge or face lying flat on a surface has no unique closest point.
 The normal stays fresh.  Records on a surface with surface velocity, and all
 records of a pipeline with ``requires_grad``, keep fresh points.  The pipeline
 saves a buffer's records as its consumers left them before the next pass, so
-each :class:`~newton.Contacts` buffer replays its own records.  A reset that
-selects the world of the particle or of the shape restarts the record in every
-buffer.
+each :class:`~newton.Contacts` buffer replays its own records.  It replays only
+records that it wrote itself, so a buffer last filled by another pipeline starts
+from fresh points.  A reset that selects the world of the particle or of the
+shape restarts the record in every buffer.
 
 :class:`~newton.solvers.SolverVBD` measures body-particle friction slip as the
 drift between the kept points, so soft bodies hold static tangential loads that
@@ -2668,9 +2669,10 @@ closest point by up to the threshold.
 Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
-``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 44 bytes
-per ``soft_contact_max`` slot (56 with full-surface mesh records) and 16 bytes per
-particle for rigid-soft records, plus 4 bytes per world per buffer.
+``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 48 bytes
+per ``soft_contact_max`` slot (60 with full-surface mesh records) and 16 bytes per
+particle for rigid-soft records.  Every :class:`~newton.Contacts` buffer carries
+4 bytes per ``soft_contact_max`` slot for the reset stamp of its records.
 ``"disabled"`` allocates no matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,

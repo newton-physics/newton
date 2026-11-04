@@ -17,11 +17,13 @@ def reset_world_selected(world: int, world_mask: wp.array[wp.bool], world_count:
 
 
 @wp.func
-def world_reset_since(world: int, epochs: wp.array[wp.int32], cursor: wp.array[wp.int32], world_count: int) -> bool:
-    """Return whether an entity world has been reset since ``cursor`` last caught up with ``epochs``."""
+def world_reset_epoch(world: int, epochs: wp.array[wp.int32], world_count: int) -> wp.int32:
+    """Return how many times an entity world has been reset."""
     if world >= 0 and world < world_count:
-        return epochs[world] != cursor[world]
-    return world == -1 and epochs[world_count] != cursor[world_count]
+        return epochs[world]
+    if world == -1:
+        return epochs[world_count]
+    return wp.int32(0)
 
 
 @wp.kernel(enable_backward=False)
@@ -32,10 +34,10 @@ def _advance_world_reset_epochs_kernel(world_mask: wp.array[wp.bool], epochs: wp
 
 
 class WorldResetEpochs:
-    """Per-world reset counts that each holder of contact history catches up on by itself.
+    """Per-world reset counts that contact history is stamped with.
 
-    A single consumed reset mask reaches only the first holder that reads it. Each holder instead keeps
-    a :meth:`cursor` and treats a world as reset while its epoch differs from the cursor.
+    A single consumed reset mask reaches only the first holder of history that reads it. History instead
+    records the counts it was written at and is stale once they have moved on, wherever it is kept.
 
     Args:
         world_count: Number of local worlds.
@@ -55,14 +57,6 @@ class WorldResetEpochs:
             inputs=[self._all_worlds if world_mask is None else world_mask, self.epochs],
             device=self.epochs.device,
         )
-
-    def cursor(self) -> wp.array[wp.int32]:
-        """Return a new cursor that has seen every reset so far."""
-        return wp.clone(self.epochs)
-
-    def catch_up(self, cursor: wp.array[wp.int32]) -> None:
-        """Mark every reset so far as seen by ``cursor``."""
-        wp.copy(cursor, self.epochs)
 
 
 def normalize_reset_world_mask(

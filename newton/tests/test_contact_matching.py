@@ -1437,6 +1437,54 @@ def test_sticky_soft_contact_saves_buffer_without_mesh_features(test, device):
         test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
 
 
+def test_sticky_soft_contact_reset_reaches_handed_over_buffer(test, device):
+    """A sticky pipeline does not replay points that a reset made before it first saw the buffer.
+
+    One buffer is filled by another sticky pipeline that is then reset, the other by a non-sticky pipeline
+    after this one is reset. Either way the buffer's points predate a reset.
+    """
+    with wp.ScopedDevice(device):
+        model, state = _build_soft_particle_scene(device)
+
+        def body_point_at(pipeline, contacts, x):
+            state.particle_q.assign([[x, 0.0, 0.009]])
+            pipeline.collide(state, contacts)
+            return _soft_body_points(contacts, 1)[0][0]
+
+        previous = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        contacts = previous.contacts()
+        body_point_at(previous, contacts, 0.0)
+        previous.reset_contact_matching()
+        test.assertAlmostEqual(body_point_at(pipeline, contacts, 0.0002), 0.0002, delta=1.0e-7)
+
+        latest = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="latest")
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        contacts = latest.contacts()
+        body_point_at(latest, contacts, 0.0)
+        pipeline.reset_contact_matching()
+        test.assertAlmostEqual(body_point_at(pipeline, contacts, 0.0002), 0.0002, delta=1.0e-7)
+
+
+def test_sticky_soft_contact_external_buffer_cuda_graph(test, device):
+    """A sticky pass over a buffer from another pipeline can be captured without a memory pool."""
+    mempool_enabled = wp.is_mempool_enabled(device)
+    wp.set_mempool_enabled(device, False)
+    try:
+        with wp.ScopedDevice(device):
+            model, state = _build_soft_particle_scene(device)
+            pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+            pipeline.collide(state, pipeline.contacts())
+            latest = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="latest")
+            contacts = latest.contacts()
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(_soft_body_points(contacts, 1)[0], [0.0, 0.0, 0.0], atol=1.0e-7)
+    finally:
+        wp.set_mempool_enabled(device, mempool_enabled)
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1640,6 +1688,18 @@ add_function_test(
     "test_sticky_soft_contact_saves_buffer_without_mesh_features",
     test_sticky_soft_contact_saves_buffer_without_mesh_features,
     devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_reset_reaches_handed_over_buffer",
+    test_sticky_soft_contact_reset_reaches_handed_over_buffer,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_external_buffer_cuda_graph",
+    test_sticky_soft_contact_external_buffer_cuda_graph,
+    devices=cuda_devices,
 )
 
 if __name__ == "__main__":

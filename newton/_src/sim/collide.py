@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import warnings
 from typing import TYPE_CHECKING, Literal
 
@@ -1559,6 +1560,9 @@ def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
     )
 
 
+_soft_contact_history_ids = itertools.count()
+
+
 class CollisionPipeline:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -2469,12 +2473,14 @@ class CollisionPipeline:
             )
         else:
             self._contact_matcher = None
-        # Contact history kept per Contacts buffer catches up on resets through these.
+        # Contact history kept per Contacts buffer is stamped with these.
         self._world_resets = WorldResetEpochs(model.world_count, device=device) if matching_sticky else None
+        self._soft_contact_history_id = next(_soft_contact_history_ids)
         if matching_sticky and not requires_grad and model.particle_count > 0 and soft_contact_max > 0:
             self._soft_contact_matcher = SoftContactMatcher(
                 soft_contact_max,
                 model.particle_count,
+                self._soft_contact_history_id,
                 self._world_resets,
                 pos_threshold=contact_matching_pos_threshold,
                 mesh_features=self._soft_mesh_contact_data is not None,
@@ -2599,9 +2605,6 @@ class CollisionPipeline:
         )
         contacts._contact_matching_mode = self.contact_matching
         contacts._soft_contact_points_persist = self._soft_contact_matcher is not None
-        if self._soft_contact_matcher is not None:
-            # Created here rather than on first replay, which may run inside a graph capture.
-            self._soft_contact_matcher.reset_cursor(contacts)
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2888,6 +2891,8 @@ class CollisionPipeline:
         # rewrites them.
         if self._soft_contact_matcher is not None:
             self._soft_contact_matcher.save(contacts)
+        # Any pass that rewrites the soft records makes them its own history.
+        contacts._soft_contact_history_owner.fill_(self._soft_contact_history_id)
 
         # A reused buffer can retain mesh tags from a full-surface pipeline. The mesh pass
         # resets them itself; without that pass, replacement particle rows need invalid tags.

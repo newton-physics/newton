@@ -247,8 +247,6 @@ class Contacts:
         self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
         # Whether the producing pipeline keeps rigid-soft contact points across passes (sticky soft matching).
         self._soft_contact_points_persist = False
-        # World reset epochs this buffer's sticky soft contact points have seen.
-        self._soft_contact_reset_cursor: wp.array[wp.int32] | None = None
         with wp.ScopedDevice(device):
             # Two contact counts, [0] rigid and [1] soft, plus overflow flags:
             # [2] global contact reduction and [3] a coupled source's soft-contact buffer.
@@ -463,6 +461,10 @@ class Contacts:
             """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
+            # Sticky soft matching replays only history that the replaying pipeline wrote (owner) since
+            # the last reset of the record's worlds (stamp).
+            self._soft_contact_history_owner = wp.full(1, -1, dtype=wp.int32)
+            self._soft_contact_reset_stamp = wp.zeros(soft_contact_max, dtype=wp.int32)
             # Replay index array for differentiable backward: recorded per launch *thread*, not per
             # contact, so it must span the full particle+edge+face candidate-pair space -- which can
             # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a
