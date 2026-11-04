@@ -63,7 +63,10 @@ _SMALL_LENGTH_EPS = wp.constant(1.0e-9)
 """Small length tolerance (e.g., segment length checks)"""
 
 _USE_SMALL_ANGLE_APPROX = wp.constant(True)
-"""If True use first-order small-angle rotation approximation; if False use closed-form rotation update"""
+"""If True use first-order small-angle rotation approximation; if False use closed-form rotation update.
+
+Keep enabled when using fast math: the closed form needs accurate small-angle sin/cos.
+"""
 
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 """Deadband threshold for hysteresis direction selection"""
@@ -174,7 +177,8 @@ def _material_force_terms(rho: float, material_k: float, dual: Any, use_complian
 # Each policy maps inverse-Delassus row support (scaled by 1/dt^2), plus any
 # row-specific material or structural inputs, to an ALM rho. Joint and contact
 # supports are computed by step_joint_C0_lambda_rho and
-# step_body_body_contact_C0_lambda. Separate wrappers keep each row class's
+# step_body_body_contact_C0_lambda; attachment supports by
+# step_particle_body_attachment_lambda_rho. Separate wrappers keep each row class's
 # policy explicit even when formulas currently coincide.
 
 
@@ -204,6 +208,14 @@ def _limit_auto_rho(axis_support: float, material_k: float):
     if axis_support <= 0.0 or material_k <= 0.0:
         return 0.0
     return axis_support
+
+
+@wp.func
+def _attachment_auto_rho(row_support: float, material_k: float):
+    """Return support as particle-body attachment rho, or zero if the row is off."""
+    if row_support <= 0.0 or material_k <= 0.0:
+        return 0.0
+    return row_support
 
 
 @wp.func
@@ -1725,24 +1737,65 @@ def evaluate_body_particle_attachment_particle_force_hessian(
     body_pose: wp.transform,
     body_pose_prev: wp.transform,
     body_point: wp.vec3,
+    rho: float,
     stiffness: float,
     damping: float,
+    attachment_lambda: wp.vec3,
     dt: float,
 ):
-    """Evaluate the particle-side force and Hessian of a compliant attachment."""
+    """Evaluate the particle-side compliant-ALM force and Hessian of an attachment.
+
+    Infinite ``stiffness`` is the hard limit of the same row; its damping is ignored.
+    """
     anchor = wp.transform_point(body_pose, body_point)
     anchor_prev = wp.transform_point(body_pose_prev, body_point)
 
     C = particle_pos - anchor
     C_prev = particle_pos_prev - anchor_prev
-    force_body = stiffness * C
-    hessian = stiffness * wp.identity(3, float)
-    if damping > 0.0:
+    k_eff, lambda_eff = _material_force_terms(rho, stiffness, attachment_lambda, 1)
+    force_body = k_eff * C + lambda_eff
+    hessian = k_eff * wp.identity(3, float)
+    if damping > 0.0 and not wp.isinf(stiffness):
         inv_dt = 1.0 / dt
         force_body = force_body + damping * (C - C_prev) * inv_dt
         hessian = hessian + (damping * inv_dt) * wp.identity(3, float)
 
     return -force_body, hessian
+
+
+@wp.kernel
+def update_duals_particle_body_attachments(
+    attachment_body: wp.array[int],
+    attachment_particle: wp.array[int],
+    attachment_body_point: wp.array[wp.vec3],
+    attachment_stiffness: wp.array[float],
+    attachment_enabled: wp.array[bool],
+    particle_q: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    rho: wp.array[float],
+    attachment_lambda: wp.array[wp.vec3],
+):
+    """Advance attachment multipliers after both primal blocks of an iteration."""
+    i = wp.tid()
+    if not attachment_enabled[i]:
+        return
+    anchor = wp.transform_point(body_q[attachment_body[i]], attachment_body_point[i])
+    C = particle_q[attachment_particle[i]] - anchor
+    attachment_lambda[i] = _alm_relaxed_ascent(attachment_lambda[i], C, attachment_stiffness[i], rho[i])
+
+
+@wp.kernel
+def reset_particle_body_attachment_state(
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+    attachment_world: wp.array[int],
+    attachment_lambda: wp.array[wp.vec3],
+):
+    """Clear selected worlds' retained attachment multipliers."""
+    i = wp.tid()
+    if _reset_world_selected(attachment_world[i], world_mask, reset_all, world_count):
+        attachment_lambda[i] = wp.vec3(0.0)
 
 
 @wp.func
@@ -4289,8 +4342,8 @@ def _joint_axis_angular_support(
 @wp.kernel
 def init_rod_rest_bend_twist(
     joint_type: wp.array[int],
-    joint_target_q_start: wp.array[int],
-    joint_target_q: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_rest_q: wp.array[float],
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
@@ -4302,12 +4355,12 @@ def init_rod_rest_bend_twist(
     if joint_type[j] != JointType.ROD:
         return
 
-    target_start = joint_target_q_start[j]
+    q_start = joint_q_start[j]
     q_wc_rest = wp.quat(
-        joint_target_q[target_start + 3],
-        joint_target_q[target_start + 4],
-        joint_target_q[target_start + 5],
-        joint_target_q[target_start + 6],
+        joint_rest_q[q_start + 3],
+        joint_rest_q[q_start + 4],
+        joint_rest_q[q_start + 5],
+        joint_rest_q[q_start + 6],
     )
     q_wc_rest = wp.normalize(q_wc_rest)
 
@@ -5824,6 +5877,8 @@ def accumulate_body_particle_attachments_per_body(
     attachment_stiffness: wp.array[float],
     attachment_damping: wp.array[float],
     attachment_enabled: wp.array[bool],
+    attachment_rho: wp.array[float],
+    attachment_lambda: wp.array[wp.vec3],
     body_attachment_offsets: wp.array[int],
     body_attachment_indices: wp.array[int],
     body_forces: wp.array[wp.vec3],
@@ -5859,8 +5914,10 @@ def accumulate_body_particle_attachments_per_body(
             body_q[body_id],
             body_q_prev[body_id],
             body_point,
+            attachment_rho[attachment],
             attachment_stiffness[attachment],
             attachment_damping[attachment],
+            attachment_lambda[attachment],
             dt,
         )
         force_body = -force_particle
@@ -6207,6 +6264,7 @@ def compute_body_particle_contact_forces(
 def create_solve_rigid_body(has_tendons: bool):
     """Specialize the body solve to exclude tendon assembly for tendon-free models."""
 
+    # Separate module so SolverVBD can enable fast math; keep small-angle sin/cos out of reachable code
     @wp.kernel(module="unique", enable_backward=False)
     def solve_rigid_body(
         dt: float,
@@ -6536,7 +6594,8 @@ def create_solve_rigid_body(has_tendons: bool):
     return solve_rigid_body
 
 
-@wp.kernel
+# Separate module for fast math, same constraint as solve_rigid_body
+@wp.kernel(module="unique", enable_backward=False)
 def update_duals_joint(
     # Inputs
     joint_type: wp.array[int],
@@ -8488,3 +8547,19 @@ def apply_body_truncation_ts(
             half_w = axis * (ta * 0.5)
             q_new = wp.normalize(wp.quat(half_w[0], half_w[1], half_w[2], 1.0) * q_rot)
         body_q[b] = wp.transform(c_new - wp.quat_rotate(q_new, com), q_new)
+
+
+@wp.kernel(enable_backward=False)
+def select_variant_bounding_radius(
+    body_variant: wp.array[wp.int32],
+    variant_radius_start: wp.array[wp.int32],
+    variant_radius: wp.array[float],
+    # outputs
+    rigid_dat_body_bounding_radius: wp.array[float],
+):
+    """Set each body's DAT bounding radius to that of its selected variant."""
+    b = wp.tid()
+    variant = body_variant[b]
+    start = variant_radius_start[b]
+    if variant >= 0 and start >= 0:
+        rigid_dat_body_bounding_radius[b] = variant_radius[start + variant]

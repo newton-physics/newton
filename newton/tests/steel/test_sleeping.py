@@ -14,8 +14,9 @@ import warp as wp
 
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
+from newton._src.solvers.steel.friction_patches import _FLOOD_MIN_CONTACTS
 from newton.solvers import SolverSteel
-from newton.tests.steel._fixtures import PROFILE, _advance, _articulations
+from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DT = 0.005
@@ -195,36 +196,39 @@ def test_cuda_graph_sleep_and_wake(test, device):
     np.testing.assert_array_equal(observables.body_awake.numpy(), [True, False])
 
 
-def _parent_wrench_scene(device):
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    for x in (0.0, 0.5):
-        body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
-        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
-    return model, pipeline
+def _assert_resting_wrench(test, model, wrench):
+    """Free roots transmit nothing; each weld carries its top box's weight."""
+    weight = model.body_mass.numpy() * 9.81
+    np.testing.assert_allclose(wrench[0::2], 0.0, atol=1.0e-3)
+    np.testing.assert_allclose(wrench[1::2, 2], weight[1::2], rtol=1.0e-4)
+    np.testing.assert_allclose(wrench[1::2, [0, 1, 3, 4, 5]], 0.0, atol=1.0e-3)
 
 
 def test_sleeping_body_keeps_its_parent_wrench(test, device):
     """Publish the last awake joint wrench of a sleeping body instead of a skipped dynamics result."""
     model, pipeline = _parent_wrench_scene(device)
     solver = SolverSteel(
-        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
     )
-    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
+    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0, articulation_constraint_max=128)
     kinds = {newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}
     observables, reference_observables = solver.observables(kinds), reference.observables(kinds)
     states, reference_states = [model.state(), model.state()], [model.state(), model.state()]
     control = model.control()
     _advance_boxes(pipeline, solver, states, control, 120, observables=observables)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     asleep = observables.body_parent_f.numpy().copy()
     _advance_boxes(pipeline, solver, states, control, 10, observables=observables)
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), asleep)
     # The frozen value is the resting value an always-awake solver publishes.
     _advance_boxes(pipeline, reference, reference_states, control, 130, observables=reference_observables)
     np.testing.assert_allclose(asleep, reference_observables.body_parent_f.numpy(), rtol=0.0, atol=1.0e-3)
+    _assert_resting_wrench(test, model, asleep)
 
 
 def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
@@ -233,13 +237,18 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
     with test.assertWarns(DeprecationWarning):
         model.request_state_attributes("body_parent_f")
     solver = SolverSteel(
-        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
     )
     states = [model.state(), model.state()]
     test.assertIsNotNone(states[0].body_parent_f)
     control = model.control()
     _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     asleep = states[0].body_parent_f.numpy().copy()
     _advance_boxes(pipeline, solver, states, control, 10)
     np.testing.assert_array_equal(states[0].body_parent_f.numpy(), asleep)
@@ -248,9 +257,14 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
 
 def _sleeping_wrench_solvers(model):
     solver = SolverSteel(
-        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
     )
-    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
+    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0, articulation_constraint_max=128)
     return solver, reference
 
 
@@ -269,10 +283,10 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
     first = solver.observables(kinds)
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120, observables=first)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     asleep = first.body_parent_f.numpy().copy()
     np.testing.assert_allclose(asleep, _resting_wrench(model, pipeline, reference, control), rtol=0.0, atol=1.0e-3)
-    test.assertGreater(np.abs(asleep[:, 2]).min(), 1.0)
+    _assert_resting_wrench(test, model, asleep)
 
     second = solver.observables(kinds)
     _advance_boxes(pipeline, solver, states, control, 1, observables=second)
@@ -296,7 +310,7 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
         step(third)
     for _ in range(3):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     np.testing.assert_array_equal(third.body_parent_f.numpy(), asleep)
 
 
@@ -306,16 +320,87 @@ def test_parent_wrench_first_requested_after_sleep(test, device):
     solver, reference = _sleeping_wrench_solvers(model)
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     resting = _resting_wrench(model, pipeline, reference, control)
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
     # A reset wakes the bodies, which then publish freshly computed wrenches.
     solver.reset(states[0])
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
+
+
+def test_unrequested_parent_wrench_history_skips_moving_articulations(test, device):
+    """Keep the unrequested wrench history only for articulations that can fall asleep by the next step."""
+    model, pipeline = _parent_wrench_scene(device)
+    solver, reference = _sleeping_wrench_solvers(model)
+    states, control = [model.state(), model.state()], model.control()
+    # Slide the second pair along the ground so it never turns quiet.
+    push = np.zeros((model.body_count, 6), dtype=np.float32)
+    push[2, 0] = 500.0
+    for state in states:
+        state.body_f.assign(push)
+    _advance_boxes(pipeline, solver, states, control, 20, clear=False)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 1, 1])
+    history = solver._sleeping.parent_wrenches.numpy()
+    np.testing.assert_array_equal(history[2:], 0.0)
+    np.testing.assert_allclose(history[0], 0.0, atol=1.0e-3)
+    np.testing.assert_allclose(history[1], [0.0, 0.0, model.body_mass.numpy()[1] * 9.81, 0.0, 0.0, 0.0], atol=1.0e-3)
+
+    # With a quiet time of one step an island can sleep two steps after it turns quiet.
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=DT,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
+    )
+    states = [model.state(), model.state()]
+    _advance_boxes(pipeline, solver, states, control, 120)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
+    _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
+    resting = _resting_wrench(model, pipeline, reference, control)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
+
+    # A gravity change wakes the pairs. Short steps run until both turn quiet, which skips their wrenches, and one
+    # long step puts them back to sleep.
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.01,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
+    )
+    states = [model.state(), model.state()]
+    contacts = pipeline.contacts()
+
+    def step(dt, observables=None):
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, dt, observables=observables)
+        states.reverse()
+
+    for _ in range(120):
+        step(0.004)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    model.set_gravity((0.0, 0.0, -4.905))
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    for _ in range(200):
+        step(0.004)
+        np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 1, 1])
+        if (solver._sleeping.quiet_age.numpy() > 0.0).all():
+            break
+    test.assertTrue(np.isclose(solver._sleeping.quiet_age.numpy(), 0.004).any())
+    step(0.007)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
+    step(0.004, observables)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), 0.5 * resting, rtol=0.0, atol=1.0e-3)
 
 
 def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
@@ -326,7 +411,7 @@ def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
     solver, _reference = _sleeping_wrench_solvers(model)
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     legacy = states[0].body_parent_f.numpy().copy()
     observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
@@ -355,6 +440,7 @@ for _name in (
     "test_sleeping_body_keeps_its_legacy_parent_wrench",
     "test_sleeping_parent_wrench_is_independent_of_the_output",
     "test_parent_wrench_first_requested_after_sleep",
+    "test_unrequested_parent_wrench_history_skips_moving_articulations",
     "test_sleeping_parent_wrench_from_legacy_to_observable",
 ):
     add_function_test(TestSteelSleeping, _name, globals()[_name], devices=devices)
@@ -866,6 +952,127 @@ def test_masked_reset_wakes_only_selected_worlds(test, device):
     np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
 
 
+def test_masked_reset_restarts_only_selected_history(test, device):
+    """Restart the selected world's state-change history from the reset state and keep the other world's."""
+    _model, _pipeline, solver, states = _two_world_boxes(device)
+    sleeping = solver._sleeping
+    for name in _HISTORY:
+        history = getattr(sleeping, name)
+        history.assign(np.full_like(history.numpy(), 7.0))
+    sleeping.asleep_steps.assign(np.array([11, 11], dtype=np.int32))
+    sleeping.quiet_age.assign(np.array([3.0, 3.0], dtype=np.float32))
+    sleeping.art_awake.assign(np.array([0, 0], dtype=np.int32))
+    sleeping.valid.fill_(1)
+    previous_root = sleeping.previous_root.numpy().copy()
+    state = states[0]
+    solver.reset(state, world_mask=wp.array([True, False, False], dtype=wp.bool, device=device))
+    sources = {"last_q": state.joint_q, "last_qd": state.joint_qd, "last_body_q": state.body_q}
+    sources["last_body_qd"] = state.body_qd
+    for name in _HISTORY:
+        history = getattr(sleeping, name).numpy()
+        half = history.shape[0] // 2
+        np.testing.assert_array_equal(history[:half], sources[name].numpy()[:half], err_msg=name)
+        np.testing.assert_array_equal(history[half:], np.full_like(history[half:], 7.0), err_msg=name)
+    np.testing.assert_array_equal(sleeping.asleep_steps.numpy(), [0, 11])
+    np.testing.assert_array_equal(sleeping.quiet_age.numpy(), [0.0, 3.0])
+    np.testing.assert_array_equal(sleeping.art_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(sleeping.valid.numpy(), [1])
+    np.testing.assert_array_equal(sleeping.previous_root.numpy(), previous_root)
+
+
+def test_masked_reset_restarts_state_change_history(test, device):
+    """Continue bitwise like the world whose sleeping state another world was given, after a masked reset of both."""
+    model, pipeline, solver, states = _two_world_boxes(device)
+    q = model.joint_q.numpy()
+    q[model.joint_q_start.numpy()[1] + 2] = 0.3
+    model.joint_q.assign(q)
+    for state in states:
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    control = model.control()
+    _advance(pipeline, solver, states, control, 400)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    # World 1 takes world 0's state; only world 0's history matches it.
+    for state in states:
+        for name in ("body_q", "body_qd", "joint_q", "joint_qd"):
+            values = getattr(state, name).numpy()
+            half = values.shape[0] // 2
+            values[half:] = values[:half]
+            getattr(state, name).assign(values)
+    solver.reset(states[0], world_mask=wp.array([True, True, False], dtype=wp.bool, device=device))
+    force = np.zeros((model.body_count, 6), dtype=np.float32)
+    force[:, 2] = 30.0
+    contacts = pipeline.contacts()
+    for step in range(150):
+        states[0].clear_forces()
+        if step == 60:
+            states[0].body_f.assign(force)
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, 0.005)
+        states.reverse()
+    body_q = states[0].body_q.numpy()
+    np.testing.assert_array_equal(body_q[0], body_q[1])
+
+
+def test_global_reset_keeps_shared_support_history(test, device):
+    """Wake two worlds' sleepers whose global kinematic support moved before a reset of only the global entry."""
+    builder = newton.ModelBuilder()
+    support = _add_slab(builder)
+    box = newton.ModelBuilder()
+    _add_box(box)
+    builder.replicate(box, 2)
+    _expect_support_move_wakes(builder, support, [1, 2], [False, False, True], device)
+
+
+def test_world_reset_keeps_shared_support_history(test, device):
+    """Wake a global sleeper whose world's kinematic support moved before a reset of only that world."""
+    builder = newton.ModelBuilder()
+    _add_box(builder)
+    slab = newton.ModelBuilder()
+    _add_slab(slab)
+    builder.replicate(slab, 1)
+    _expect_support_move_wakes(builder, 1, [0], [True, False], device)
+
+
+def test_world_reset_keeps_support_history_read_through_another_world_shape(test, device):
+    """Wake a world-1 sleeper on a fixed world-0 support carrying a world-1 slab, after a world-0 reset."""
+    builder = newton.ModelBuilder()
+    builder.begin_world()
+    support = _add_fixed_support(builder)
+    builder.end_world()
+    builder.begin_world()
+    builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
+    _add_box(builder)
+    builder.end_world()
+    _expect_support_move_wakes(builder, support, [1], [True, False, False], device)
+
+
+def test_world_reset_keeps_support_history_read_through_a_global_shape(test, device):
+    """Wake a world-1 sleeper on a fixed world-0 support carrying a global slab, after a world-0 reset."""
+    builder = newton.ModelBuilder()
+    builder.begin_world()
+    support = _add_fixed_support(builder)
+    builder.end_world()
+    builder.begin_world()
+    _add_box(builder)
+    builder.end_world()
+    builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
+    _expect_support_move_wakes(builder, support, [1], [True, False, False], device)
+
+
+def test_world_reset_keeps_support_history_read_by_a_global_shape(test, device):
+    """Wake a world-1 sleeper whose box shape is global on a fixed world-0 support, after a world-0 reset."""
+    builder = newton.ModelBuilder()
+    builder.begin_world()
+    support = _add_fixed_support(builder)
+    builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
+    builder.end_world()
+    builder.begin_world()
+    box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.end_world()
+    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
+    _expect_support_move_wakes(builder, support, [box], [True, False, False], device)
+
+
 def test_property_notification_wakes_only_changed_islands(test, device):
     """Wake the island whose mass changed, and nothing for a notification without a change."""
     model, pipeline, solver, states = _two_world_boxes(device)
@@ -962,6 +1169,125 @@ def test_frozen_patch_carry_copies_the_previous_history(test, device):
     _advance(pipeline, solver, states, control, 1, contacts=contacts)
     for name in names:
         np.testing.assert_array_equal(getattr(current, name).numpy()[:count], before[name], err_msg=name)
+
+
+def _frozen_plates(device):
+    """Settled plates of box tiles on the ground, each pair large enough for the warp flood."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.rigid_gap = 0.002
+    builder.add_ground_plane()
+    tile = 0.03
+    for level in range(3):
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.01 + 0.0205 * level), wp.quat_identity()))
+        for ix in range(4):
+            for iy in range(4):
+                offset = wp.vec3((ix - 1.5) * 2 * tile, (iy - 1.5) * 2 * tile, 0.0)
+                builder.add_shape_box(body, xform=wp.transform(offset, wp.quat_identity()), hx=tile, hy=tile, hz=0.01)
+    model = builder.finalize(device=device)
+    model.rigid_contact_max = 1024
+    solver = SolverSteel(model, solve_mode="matrix_free", iterations=8, free_body_constraint_max=2048)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=1024)
+    contacts = pipeline.contacts()
+    control = model.control()
+    state_0, state_1 = model.state(), model.state()
+    for _ in range(10):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    pipeline.collide(state_0, contacts)
+    model.body_q.assign(state_0.body_q)
+    return model, contacts, solver
+
+
+_CONTACT_FIELDS = ("shape0", "shape1", "point0", "point1", "normal", "margin0", "margin1")
+
+
+def test_frozen_pair_floods_on_device_when_its_carry_fails(test, device):
+    """A frozen pair whose contacts no longer repeat floods on a warp and matches the serial flood exactly.
+
+    Reversing the contact order breaks the carry, as an unordered collision pipeline does every step.
+    """
+    model, contacts, solver = _frozen_plates(device)
+    patches = solver._friction_patches
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    original = {name: getattr(contacts, "rigid_contact_" + name).numpy().copy() for name in _CONTACT_FIELDS}
+    reversed_order = {}
+    for name, values in original.items():
+        reversed_order[name] = values.copy()
+        reversed_order[name][:count] = values[:count][::-1]
+    state = model.state()
+    frozen = wp.ones(model.body_count, dtype=int, device=model.device)
+
+    def run(device_flood):
+        patches.device_flood = device_flood
+        patches.previous.valid.zero_()
+        patches.build(model, state, contacts, shape_material_mu=solver._shape_mu)
+        patches.store(state)
+        for name, values in reversed_order.items():
+            getattr(contacts, "rigid_contact_" + name).assign(values)
+        patches.build(model, state, contacts, shape_material_mu=solver._shape_mu, frozen_bodies=frozen)
+        listed = int(patches._flood_pair_count.numpy()[0])
+        for name, values in original.items():
+            getattr(contacts, "rigid_contact_" + name).assign(values)
+        outputs = {"frame." + name: getattr(patches.current, name) for name in _PATCH_FRAME_OUTPUTS}
+        outputs.update({"view." + name: getattr(patches.view, name) for name in _PATCH_VIEW_OUTPUTS})
+        return listed, {name: array.numpy().copy() for name, array in outputs.items()}
+
+    _, serial = run(False)
+    listed, flooded = run(True)
+    _, sizes = np.unique(patches.current.keys.numpy()[:count], return_counts=True)
+    large_pairs = int(np.count_nonzero(sizes > _FLOOD_MIN_CONTACTS))
+    test.assertGreater(large_pairs, 0, "no body pair was large enough for the warp flood")
+    test.assertEqual(listed, large_pairs, "a frozen pair skipped the warp flood")
+    source = flooded["frame.source"][:count]
+    test.assertLess(int(np.count_nonzero(source >= 0)), count, "the frozen pairs carried their history")
+    for name, value in serial.items():
+        np.testing.assert_array_equal(flooded[name], value, err_msg=f"{name} differs between the floods")
+
+
+_PATCH_FRAME_OUTPUTS = ("owner", "members", "valid", "source", "anchor_a", "anchor_b", "displacement")
+_PATCH_VIEW_OUTPUTS = ("weight", "next_contact", "point_a", "point_b", "phi")
+
+
+def test_frozen_pair_carry_maps_regions_across_frames(test, device):
+    """Carry each frozen contact's source and region owner after its buffer slot and sorted position move.
+
+    The pairs' buffer blocks are reversed, and the first sorted pair loses a contact, so it rebuilds and
+    every later pair starts one sorted position earlier than in the previous frame.
+    """
+    model, contacts, solver = _frozen_plates(device)
+    patches = solver._friction_patches
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    state = model.state()
+    patches.previous.valid.zero_()
+    patches.build(model, state, contacts, shape_material_mu=solver._shape_mu)
+    patches.store(state)
+    previous_owner = patches.previous.owner.numpy()[:count].copy()
+    keys = patches.previous.keys.numpy()[:count]
+    _, starts = np.unique(keys, return_index=True)
+    pairs = np.split(patches.previous.indices.numpy()[:count], starts[1:])
+    # New slot i holds the previous frame's contact perm[i]; each pair keeps its contacts' relative order.
+    perm = np.concatenate([*pairs[:0:-1], pairs[0][:-1]])
+    new_count = count - 1
+    for name in _CONTACT_FIELDS:
+        array = getattr(contacts, "rigid_contact_" + name)
+        values = array.numpy().copy()
+        values[:new_count] = values[perm]
+        array.assign(values)
+    contacts.rigid_contact_count.fill_(new_count)
+    frozen = wp.ones(model.body_count, dtype=int, device=model.device)
+    patches.build(model, state, contacts, shape_material_mu=solver._shape_mu, frozen_bodies=frozen)
+    test.assertEqual(int(patches._flood_pair_count.numpy()[0]), int(len(pairs[0]) - 1 > _FLOOD_MIN_CONTACTS))
+    slot = np.full(count, -1)
+    slot[perm] = np.arange(new_count)
+    carried = np.arange(new_count - (len(pairs[0]) - 1))
+    source = patches.current.source.numpy()[carried]
+    owner = patches.current.owner.numpy()[carried]
+    np.testing.assert_array_equal(source, perm[carried])
+    np.testing.assert_array_equal(owner, slot[previous_owner[perm[carried]]])
+    regions = np.unique(owner)
+    test.assertGreater(len(regions), 4, "too few friction regions to exercise the carry")
+    test.assertLess(len(regions), len(carried), "no region spans several contacts")
 
 
 def test_successive_notifications_keep_every_wake(test, device):
@@ -1107,9 +1433,57 @@ def _two_world_boxes(device):
     builder.add_ground_plane()
     builder.replicate(box, 2)
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
     solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **PROFILE)
     return model, pipeline, solver, [model.state(), model.state()]
+
+
+def _add_box(builder):
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+
+def _add_slab(builder):
+    slab = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    builder.add_shape_box(slab, hx=1.0, hy=1.0, hz=0.05)
+    return slab
+
+
+def _add_fixed_support(builder):
+    """Add a prescribed link welded to the world, without a shape."""
+    xform = wp.transform((0.0, 0.0, -0.05), wp.quat_identity())
+    support = builder.add_link(xform=xform)
+    builder.add_articulation([builder.add_joint_fixed(-1, support, parent_xform=xform)])
+    return support
+
+
+def _expect_support_move_wakes(builder, support, sleepers, world_mask, device):
+    """Let ``sleepers`` sleep on ``support``, slide it, reset with ``world_mask``, and require them awake a step later."""
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **PROFILE)
+    states = [model.state(), model.state()]
+    for state in states:
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    control = model.control()
+    _advance(pipeline, solver, states, control, 400)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[sleepers], 0)
+    # The contact stays closed under a slide, so only the support's pose history shows the move.
+    q_start = model.joint_q_start.numpy()
+    joints = np.flatnonzero(model.joint_child.numpy() == support)
+    coords = [q_start[j] for j in joints if q_start[j + 1] > q_start[j]]
+    for state in states:
+        body_q, joint_q = state.body_q.numpy(), state.joint_q.numpy()
+        body_q[support, 0] += 0.05
+        joint_q[coords] += 0.05
+        state.body_q.assign(body_q)
+        state.joint_q.assign(joint_q)
+    solver.reset(states[0], world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
+    _advance(pipeline, solver, states, control, 1)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[sleepers], 1)
+
+
+_HISTORY = ("last_q", "last_qd", "last_body_q", "last_body_qd")
 
 
 def _expect_one_warning(test, category, pattern, call):
@@ -1131,10 +1505,19 @@ for _name in (
     "test_anchored_articulations_sleep_and_wake",
     "test_graph_replay_sleeps_and_wakes",
     "test_masked_reset_wakes_only_selected_worlds",
+    "test_masked_reset_restarts_only_selected_history",
+    "test_masked_reset_restarts_state_change_history",
+    "test_global_reset_keeps_shared_support_history",
+    "test_world_reset_keeps_shared_support_history",
+    "test_world_reset_keeps_support_history_read_through_another_world_shape",
+    "test_world_reset_keeps_support_history_read_through_a_global_shape",
+    "test_world_reset_keeps_support_history_read_by_a_global_shape",
     "test_property_notification_wakes_only_changed_islands",
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",
     "test_frozen_patch_carry_copies_the_previous_history",
+    "test_frozen_pair_floods_on_device_when_its_carry_fails",
+    "test_frozen_pair_carry_maps_regions_across_frames",
     "test_successive_notifications_keep_every_wake",
     "test_replaced_property_array_wakes_its_island",
     "test_resized_property_array_is_rejected",

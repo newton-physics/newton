@@ -695,7 +695,7 @@ def Xform "World" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
-        """Broadcast NewtonJointAPI attributes across a D6 joint's linear and angular DOFs."""
+        """Broadcast joint properties, including registered MuJoCo stiffness, across D6 DOFs."""
         from pxr import Usd
 
         deg2rad = math.pi / 180.0
@@ -760,6 +760,7 @@ def Xform "Articulation" (
         float newton:velocityLimit = 100.0
         float newton:limitStiffness = 200.0
         float newton:limitDamping = 5.0
+        float mjc:stiffness = 3.0
     }
 }
 """
@@ -767,6 +768,7 @@ def Xform "Articulation" (
         stage.GetRootLayer().ImportFromString(usd_content)
 
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
         model = builder.finalize()
 
@@ -776,6 +778,7 @@ def Xform "Articulation" (
         # The linear transX DOF is created before the angular rotX DOF.
         d_lin = dof_start
         d_ang = dof_start + 1
+        np.testing.assert_array_equal(model.joint_stiffness.numpy()[d_lin : d_ang + 1], [3.0, 3.0])
 
         limit_ke = model.joint_limit_ke.numpy()
         limit_kd = model.joint_limit_kd.numpy()

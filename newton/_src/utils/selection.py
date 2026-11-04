@@ -2256,6 +2256,8 @@ class ArticulationView:
         self,
         target: Model | State,
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
+        *,
+        joint_mask: wp.array[bool] | None = None,
     ) -> None:
         """
         Evaluates forward kinematics given the joint coordinates and updates the body information.
@@ -2266,10 +2268,14 @@ class ArticulationView:
         Args:
             target: The target where to evaluate forward kinematics (Model or State).
             mask: Mask of articulations in this ArticulationView (all by default).
+            joint_mask: Optional model-wide joint write mask on ``model.device``, shape [model.joint_count].
+                Uses model joint indices, not view indices, and intersects with this view's articulation mask.
+                This allows the same branch selection to be reused with :func:`newton.eval_fk` and across views.
+                See :func:`newton.eval_fk` for branch-editing and state-preservation semantics.
         """
         # translate view mask to Model articulation mask
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        eval_fk(self.model, target.joint_q, target.joint_qd, target, mask=articulation_mask)
+        eval_fk(self.model, target.joint_q, target.joint_qd, target, mask=articulation_mask, joint_mask=joint_mask)
 
     def eval_jacobian(self, state: State, J=None, joint_S_s=None, mask=None):
         """Evaluate spatial Jacobian for articulations in this view.

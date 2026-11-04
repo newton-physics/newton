@@ -17,6 +17,7 @@ import warp as wp
 import newton
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
 from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
+from newton._src.solvers.vbd import particle_vbd_kernels, rigid_vbd_kernels
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -75,6 +76,7 @@ from newton._src.solvers.vbd.solver_vbd import (
 )
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
     add_function_test,
     configure_sdf_for_collision_shapes,
     get_test_devices,
@@ -103,8 +105,10 @@ def _evaluate_body_particle_attachment_kernel(
         body_pose,
         body_pose,
         body_point,
+        wp.inf,
         stiffness,
         0.0,
+        wp.vec3(0.0),
         1.0,
     )
     f_body = -f_particle
@@ -1706,28 +1710,6 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
     test.assertIsNotNone(capture.graph)
 
 
-def _rigid_contact_stick_eps_are_deprecated(test, device):
-    """Verify deprecated stick options warn and are ignored."""
-    builder = newton.ModelBuilder()
-    model = builder.finalize(device=device)
-
-    with test.assertWarnsRegex(DeprecationWarning, "deprecated and ignored") as warning:
-        solver = newton.solvers.SolverVBD(
-            model,
-            rigid_compliant_alm=True,
-            rigid_contact_stick_motion_eps=1.0e-4,
-            rigid_contact_stick_freeze_translation_eps=1.0e-5,
-            rigid_contact_stick_freeze_angular_eps=1.0e-5,
-        )
-
-    test.assertEqual(warning.filename, __file__)
-
-    # "and ignored": the solver retains no state derived from the deprecated epsilons.
-    test.assertFalse(hasattr(solver, "rigid_contact_stick_motion_eps"))
-    test.assertFalse(hasattr(solver, "rigid_contact_stick_freeze_translation_eps"))
-    test.assertFalse(hasattr(solver, "rigid_contact_stick_freeze_angular_eps"))
-
-
 def _rigid_compliant_alm_defaults_to_compliant(test, device):
     """Use compliant ALM by default, warn for legacy options, and reject a None mode."""
     builder = newton.ModelBuilder()
@@ -1738,6 +1720,8 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         solver = newton.solvers.SolverVBD(model)
+        test.assertTrue(solver.rigid_compliant_alm)
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     test.assertTrue(solver.rigid_compliant_alm)
     with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False") as warning:
         legacy_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
@@ -1764,6 +1748,15 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
             newton.solvers.SolverVBD(model, rigid_avbd_beta=-1.0)
     with test.assertRaisesRegex(TypeError, "rigid_compliant_alm"):
         newton.solvers.SolverVBD(model, rigid_compliant_alm=None)
+    with test.assertWarnsRegex(
+        newton.exceptions.NewtonDeprecationWarning, "rigid_compliant_alm=False.*rigid_avbd_beta"
+    ):
+        newton.solvers.SolverVBD(
+            model,
+            rigid_compliant_alm=False,
+            rigid_avbd_beta=0.0,
+            integrate_with_external_rigid_solver=True,
+        )
 
 
 def _rigid_contact_dual_update_computes_lambda(test, device):
@@ -3425,7 +3418,7 @@ def _rigid_compliant_drive_preserves_material_equilibrium(test, device):
         -1,
         body,
         axis=(1.0, 0.0, 0.0),
-        target_pos=0.1,
+        target_q=0.1,
         target_ke=1000.0,
         target_kd=120.0,
         limit_lower=-1.0,
@@ -3572,7 +3565,7 @@ def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(te
         -1,
         body,
         axis=(1.0, 0.0, 0.0),
-        target_vel=0.0,
+        target_qd=0.0,
         target_ke=0.0,
         target_kd=120.0,
     )
@@ -3614,7 +3607,7 @@ def _rigid_drive_ignores_disabled_limit_bounds(test, device):
         -1,
         body,
         axis=(1.0, 0.0, 0.0),
-        target_pos=0.5,
+        target_q=0.5,
         target_ke=1000.0,
         target_kd=50.0,
         limit_lower=-0.1,
@@ -4489,6 +4482,147 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
         newton.solvers.SolverVBD.register_custom_attributes(newton.ModelBuilder(), dahl_defaults_enabled=True)
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires USD (pxr)")
+class TestVBDUsdParsing(unittest.TestCase):
+    def test_scene_attributes_configure_solver(self):
+        """Parse authored VBD scene values while preserving explicit solver overrides."""
+        model = self._build_scene_model(
+            {
+                "newton:vbd:rigid:contactHistory": True,
+                "newton:vbd:rigid:jointLinearStiffness": 120000.0,
+                "newton:vbd:rigid:jointAngularStiffness": 130000.0,
+                "newton:vbd:rigid:jointLinearDamping": 14.0,
+                "newton:vbd:rigid:jointAngularDamping": 15.0,
+            },
+            with_body=True,
+        )
+
+        self.assertTrue(bool(model.vbd.rigid_contact_history.numpy()[0]))
+        self.assertAlmostEqual(float(model.vbd.rigid_joint_linear_ke.numpy()[0]), 120000.0)
+        self.assertAlmostEqual(float(model.vbd.rigid_joint_angular_ke.numpy()[0]), 130000.0)
+        self.assertAlmostEqual(float(model.vbd.rigid_joint_linear_kd.numpy()[0]), 14.0)
+        self.assertAlmostEqual(float(model.vbd.rigid_joint_angular_kd.numpy()[0]), 15.0)
+
+        solver = newton.solvers.SolverVBD(model)
+        self.assertTrue(solver.rigid_contact_history)
+        self.assertAlmostEqual(solver.rigid_joint_linear_ke, 120000.0)
+        self.assertAlmostEqual(solver.rigid_joint_angular_ke, 130000.0)
+        self.assertAlmostEqual(solver.rigid_joint_linear_kd, 14.0)
+        self.assertAlmostEqual(solver.rigid_joint_angular_kd, 15.0)
+
+        solver = newton.solvers.SolverVBD(
+            model,
+            rigid_contact_history=False,
+            rigid_joint_linear_ke=220000.0,
+            rigid_joint_angular_ke=230000.0,
+            rigid_joint_linear_kd=24.0,
+            rigid_joint_angular_kd=25.0,
+        )
+        self.assertFalse(solver.rigid_contact_history)
+        self.assertAlmostEqual(solver.rigid_joint_linear_ke, 220000.0)
+        self.assertAlmostEqual(solver.rigid_joint_angular_ke, 230000.0)
+        self.assertAlmostEqual(solver.rigid_joint_linear_kd, 24.0)
+        self.assertAlmostEqual(solver.rigid_joint_angular_kd, 25.0)
+
+    def _build_scene_model(self, authored_values, with_body=False, schema="NewtonVbdSceneAPI"):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
+        scene.ApplyAPI(schema)
+        if with_body:
+            body = UsdGeom.Cube.Define(stage, "/Body").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(body)
+            UsdPhysics.CollisionAPI.Apply(body)
+        for name, value in authored_values.items():
+            scene.GetAttribute(name).Set(value)
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
+        builder.add_usd(stage, load_visual_shapes=False)
+        if with_body:
+            builder.color()
+        return builder.finalize(device="cpu")
+
+    def test_scene_iterations_precedence(self):
+        """Resolve USD iterations and reject invalid scene counts unless overridden."""
+        for authored, expected in ((None, 10), (-1, 10), (23, 23)):
+            values = {} if authored is None else {"newton:maxSolverIterations": authored}
+            model = self._build_scene_model(values, schema="NewtonSceneAPI")
+            with self.subTest(authored=authored):
+                self.assertEqual(newton.solvers.SolverVBD(model).iterations, expected)
+        self.assertEqual(newton.solvers.SolverVBD(model, iterations=None).iterations, 23)
+        # An explicit default must override a different scene value.
+        self.assertEqual(newton.solvers.SolverVBD(model, iterations=10).iterations, 10)
+
+        for invalid in (0, -2):
+            model = self._build_scene_model({"newton:maxSolverIterations": invalid}, schema="NewtonSceneAPI")
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "newton:maxSolverIterations"):
+                    newton.solvers.SolverVBD(model)
+                self.assertEqual(newton.solvers.SolverVBD(model, iterations=10).iterations, 10)
+
+        # Python-built models need neither USD nor custom-attribute registration.
+        model = newton.ModelBuilder().finalize(device="cpu")
+        self.assertEqual(newton.solvers.SolverVBD(model).iterations, 10)
+
+    def test_registered_defaults_match_schema_fallbacks(self):
+        """With the API applied but nothing authored, registered defaults match the schema's fallbacks."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
+        scene.ApplyAPI("NewtonVbdSceneAPI")
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
+        for key, attribute in builder.custom_attributes.items():
+            if attribute.namespace != "vbd" or not attribute.usd_attribute_name.startswith("newton:vbd:rigid:"):
+                continue
+            with self.subTest(attribute=key):
+                fallback = scene.GetAttribute(attribute.usd_attribute_name).Get()
+                self.assertIsNotNone(fallback)
+                self.assertAlmostEqual(float(attribute.default), float(fallback), places=3)
+
+    def test_invalid_scene_values_are_rejected(self):
+        """Negative or non-finite scene stiffness/damping raises; an explicit argument overrides it."""
+        for usd_name, arg in (
+            ("newton:vbd:rigid:jointLinearStiffness", "rigid_joint_linear_ke"),
+            ("newton:vbd:rigid:jointAngularStiffness", "rigid_joint_angular_ke"),
+            ("newton:vbd:rigid:jointLinearDamping", "rigid_joint_linear_kd"),
+            ("newton:vbd:rigid:jointAngularDamping", "rigid_joint_angular_kd"),
+        ):
+            for bad in (-1.0, float("inf"), float("nan")):
+                with self.subTest(attribute=usd_name, value=bad):
+                    model = self._build_scene_model({usd_name: bad})
+                    with self.assertRaisesRegex(ValueError, usd_name):
+                        newton.solvers.SolverVBD(model)
+                    newton.solvers.SolverVBD(model, **{arg: 1.0})
+
+    def test_scene_contact_history_ignored_without_rigid_integration(self):
+        """A body-free model ignores scene history even when given a collision pipeline."""
+        model = self._build_scene_model({"newton:vbd:rigid:contactHistory": True})
+        self.assertEqual(model.body_count, 0)
+        solver = newton.solvers.SolverVBD(model, collision_pipeline=newton.CollisionPipeline(model))
+        self.assertFalse(solver.rigid_contact_history)
+
+    def test_scene_contact_history_ignored_with_external_rigid_solver(self):
+        """External rigid integration disables scene-authored contact history."""
+        model = self._build_scene_model({"newton:vbd:rigid:contactHistory": True}, with_body=True)
+        self.assertGreater(model.body_count, 0)
+        solver = newton.solvers.SolverVBD(
+            model,
+            collision_pipeline=newton.CollisionPipeline(model),
+            integrate_with_external_rigid_solver=True,
+        )
+        self.assertFalse(solver.rigid_contact_history)
+
+    def test_scene_contact_history_error_names_scene_attribute(self):
+        """The matching error identifies a scene-authored contact-history value."""
+        model = self._build_scene_model({"newton:vbd:rigid:contactHistory": True}, with_body=True)
+        self.assertGreater(model.body_count, 0)
+        with self.assertRaisesRegex(ValueError, "newton:vbd:rigid:contactHistory"):
+            newton.solvers.SolverVBD(model, collision_pipeline=newton.CollisionPipeline(model))
+
+
 def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder)
@@ -5022,10 +5156,14 @@ def _body_particle_attachment_validates_inputs(test, device):
         builder.add_attachment_particle_body(particle, body + 1)
     with test.assertRaises(IndexError):
         builder.add_attachment_particle_body(particle + 1, body)
-    with test.assertRaises(ValueError):
-        builder.add_attachment_particle_body(particle, body, stiffness=-1.0)
-    with test.assertRaises(ValueError):
-        builder.add_attachment_particle_body(particle, body, damping=-1.0)
+    for stiffness in (-1.0, -math.inf, math.nan, 2.0 * float(np.finfo(np.float32).max)):
+        with test.subTest(stiffness=stiffness), test.assertRaises(ValueError):
+            builder.add_attachment_particle_body(particle, body, stiffness=stiffness)
+    for damping in (-1.0, math.inf, math.nan, 2.0 * float(np.finfo(np.float32).max)):
+        with test.subTest(damping=damping), test.assertRaises(ValueError):
+            builder.add_attachment_particle_body(particle, body, damping=damping)
+    attachment = builder.add_attachment_particle_body(particle, body, stiffness=math.inf)
+    test.assertEqual(builder.attachment_particle_body_stiffness[attachment], math.inf)
 
     body_world = newton.ModelBuilder()
     body_world.add_body()
@@ -5052,13 +5190,13 @@ def _body_particle_attachment_rejects_external_rigid_solver(test, device):
 
 
 def _body_particle_attachment_composes_with_worlds(test, device):
-    """Remap native attachment endpoints when composing builder worlds."""
-    template = newton.ModelBuilder()
+    """Remap hard attachment endpoints and isolate reset and enabled histories by world."""
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body()
-    particle = template.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
-    template.add_attachment_particle_body(particle, body)
+    particle = template.add_particle(pos=wp.vec3(), vel=wp.vec3(1.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    template.add_attachment_particle_body(particle, body, stiffness=math.inf)
 
-    builder = newton.ModelBuilder()
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
@@ -5068,6 +5206,151 @@ def _body_particle_attachment_composes_with_worlds(test, device):
     np.testing.assert_array_equal(model.attachment_particle_body_body.numpy(), [0, 1])
     np.testing.assert_array_equal(model.attachment_particle_body_particle.numpy(), [0, 1])
     np.testing.assert_array_equal(model.attachment_particle_body_world.numpy(), [0, 1])
+
+    solver = newton.solvers.SolverVBD(model, iterations=30)
+    state_in, state_out = model.state(), model.state()
+    solver.step(state_in, state_out, None, None, 2.0e-3)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), model.particle_q.numpy(), atol=2.0e-6)
+    reactions = solver._attachment_particle_body_lambda.numpy().copy()
+    test.assertGreater(np.linalg.norm(reactions[0]), 1.0)
+    test.assertGreater(np.linalg.norm(reactions[1]), 1.0)
+    solver.reset(state_out, world_mask=wp.array([True, False, False], dtype=wp.bool, device=device), flags=0)
+    reset_reactions = solver._attachment_particle_body_lambda.numpy()
+    np.testing.assert_array_equal(reset_reactions[0], np.zeros(3))
+    np.testing.assert_array_equal(reset_reactions[1], reactions[1])
+
+    # A disabled loaded row must release its particle and discard the previous reaction.
+    model.attachment_particle_body_enabled.assign([True, False])
+    velocities = np.zeros((2, 3), dtype=np.float32)
+    velocities[1, 0] = 1.0
+    state_out.particle_qd.assign(velocities)
+    state_out.clear_forces()
+    solver.step(state_out, state_in, None, None, 2.0e-3)
+    np.testing.assert_allclose(state_in.particle_q.numpy()[1], [1.002, 0.0, 0.0], atol=2.0e-6)
+    np.testing.assert_array_equal(solver._attachment_particle_body_lambda.numpy()[1], np.zeros(3))
+    model.attachment_particle_body_enabled.fill_(True)
+    state_in.clear_forces()
+    solver.step(state_in, state_out, None, None, 2.0e-3)
+    np.testing.assert_allclose(state_out.particle_q.numpy()[1], [1.0, 0.0, 0.0], atol=2.0e-6)
+
+
+def _hard_particle_body_attachment_preserves_free_pair_momentum(test, device):
+    """Constrain free pairs at two mass scales without creating linear momentum."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    masses = (1.0e-3, 1.0)
+    for index, mass in enumerate(masses):
+        builder.begin_world()
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(float(index), 0.0, 0.0), wp.quat_identity()),
+            mass=mass,
+            inertia=wp.mat33(np.eye(3) * mass),
+            lock_inertia=True,
+        )
+        particle = builder.add_particle(
+            pos=wp.vec3(float(index), 0.0, 0.0), vel=wp.vec3(1.0, 0.0, 0.0), mass=mass, radius=0.0
+        )
+        builder.add_attachment_particle_body(particle, body, stiffness=math.inf, damping=100.0)
+        builder.end_world()
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    dt = 1.0 / 60.0
+    newton.solvers.SolverVBD(model, iterations=50).step(state_in, state_out, None, None, dt)
+
+    particle_q = state_out.particle_q.numpy()
+    body_q = state_out.body_q.numpy()
+    particle_v = state_out.particle_qd.numpy()
+    body_v = state_out.body_qd.numpy()
+    np.testing.assert_allclose(particle_q, body_q[:, :3], atol=2.0e-5)
+    np.testing.assert_allclose(particle_v[:, 0], [0.5, 0.5], atol=2.0e-4)
+    np.testing.assert_allclose(body_v[:, 0], [0.5, 0.5], atol=2.0e-4)
+    np.testing.assert_allclose(particle_v[:, 0] + body_v[:, 0], [1.0, 1.0], atol=2.0e-4)
+
+
+def _hard_particle_body_attachment_supports_load(test, device):
+    """Support a static load with zero hard offset while preserving finite spring compliance."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for offset, stiffness in ((0.0, math.inf), (1.0, 1.0e4)):
+        body = builder.add_body(xform=wp.transform(wp.vec3(offset, 0.0, 0.0), wp.quat_identity()))
+        particle = builder.add_particle(pos=wp.vec3(offset, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+        builder.add_attachment_particle_body(particle, body, stiffness=stiffness)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, iterations=30)
+    state_in, state_out = model.state(), model.state()
+    loads = wp.array([[0.0, 0.0, -100.0], [0.0, 0.0, -100.0]], dtype=wp.vec3, device=device)
+    for _ in range(20):
+        state_in.clear_forces()
+        state_in.particle_f.assign(loads)
+        solver.step(state_in, state_out, None, None, 1.0e-2)
+        state_in, state_out = state_out, state_in
+
+    positions = state_in.particle_q.numpy()
+    np.testing.assert_allclose(positions[0], [0.0, 0.0, 0.0], atol=2.0e-6)
+    test.assertAlmostEqual(float(positions[1, 2]), -1.0e-2, delta=2.0e-5)
+    # Lambda is the body-side reaction: the particle receives its opposite.
+    np.testing.assert_allclose(solver._attachment_particle_body_lambda.numpy()[0], [0.0, 0.0, -100.0], atol=1.0e-2)
+
+
+def _hard_particle_body_attachment_preserves_elastic_motion(test, device):
+    """Preserve translating cloth momentum when its small anchor gap stops decreasing."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1), lock_inertia=True)
+    builder.body_qd[body] = wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    particles = [
+        builder.add_particle(pos=wp.vec3(i * 0.1, j * 0.1, 0.0), vel=wp.vec3(), mass=0.25, radius=0.0)
+        for i in range(2)
+        for j in range(2)
+    ]
+    # The four points form a spring square with both diagonals. Distinct colors
+    # keep each material solve independent of simultaneous neighboring updates.
+    for i, particle in enumerate(particles):
+        for other in particles[i + 1 :]:
+            builder.add_spring(particle, other, 1.0e4, 0.0, 0.0)
+    for j in range(2):
+        builder.add_attachment_particle_body(particles[j], body, body_point=(0.0, j * 0.1, 0.0), stiffness=math.inf)
+    builder.color()
+    builder.set_coloring([[particle] for particle in particles])
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    newton.solvers.SolverVBD(model, iterations=100).step(state_in, state_out, None, None, 1.0 / 60.0)
+
+    particle_q = state_out.particle_q.numpy()
+    body_q = state_out.body_q.numpy()[body]
+    momentum = 0.25 * state_out.particle_qd.numpy().sum(axis=0) + state_out.body_qd.numpy()[body, :3]
+    np.testing.assert_allclose(momentum, [1.0, 0.0, 0.0], atol=1.0e-3)
+    for j in range(2):
+        anchor = _transform_point_np(body_q, np.array([0.0, j * 0.1, 0.0]))
+        np.testing.assert_allclose(particle_q[particles[j]], anchor, atol=2.0e-5)
+
+
+def _hard_particle_body_attachment_transfers_offset_torque(test, device):
+    """Transfer hard attachment reactions through an offset COM and rotate the rigid body."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(
+        com=wp.vec3(0.2, 0.0, 0.0),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3) * 0.5),
+        lock_inertia=True,
+    )
+    anchor = wp.vec3(0.2, 1.0, 0.0)
+    particle = builder.add_particle(pos=anchor, vel=wp.vec3(1.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    builder.add_attachment_particle_body(particle, body, body_point=anchor, stiffness=math.inf)
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    newton.solvers.SolverVBD(model, iterations=50).step(state_in, state_out, None, None, 2.0e-3)
+
+    p = state_out.particle_q.numpy()[particle]
+    v_particle = state_out.particle_qd.numpy()[particle]
+    pose = state_out.body_q.numpy()[body]
+    velocity = state_out.body_qd.numpy()[body]
+    np.testing.assert_allclose(p, _transform_point_np(pose, np.asarray(anchor)), atol=2.0e-5)
+    np.testing.assert_allclose(v_particle + velocity[:3], [1.0, 0.0, 0.0], atol=2.0e-3)
+    test.assertLess(float(velocity[5]), -0.1)
+    com_world = _transform_point_np(pose, np.array([0.2, 0.0, 0.0]))
+    angular_momentum = np.cross(p, v_particle) + np.cross(com_world, velocity[:3]) + 0.5 * velocity[3:]
+    np.testing.assert_allclose(angular_momentum, [0.0, 0.0, -1.0], atol=2.0e-3)
 
 
 def _body_particle_attachment_force_balance(test, device):
@@ -5137,6 +5420,8 @@ def _body_particle_attachment_accumulates_body_csr(test, device):
             model.attachment_particle_body_stiffness,
             model.attachment_particle_body_damping,
             model.attachment_particle_body_enabled,
+            wp.full(model.attachment_particle_body_count, math.inf, dtype=float, device=device),
+            solver._attachment_particle_body_lambda,
             solver.body_particle_attachment_offsets,
             solver.body_particle_attachment_indices,
         ],
@@ -5217,6 +5502,25 @@ def _body_particle_attachment_deformable_under_load(test, device, deformable_kin
     anchor_pos = _transform_point_np(body_q[body], np.zeros(3))
     test.assertTrue(np.isfinite(particle_q).all())
     test.assertLess(np.linalg.norm(particle_q[particle] - anchor_pos), 2.0e-2)
+    test.assertLess(np.mean(particle_q[1:, 2]), np.mean(initial_q[1:, 2]))
+
+    # Reuse the geometry to exercise hard constraints against much stiffer material,
+    # with a longer step that makes an arbitrary fixed penalty insufficient.
+    model.attachment_particle_body_stiffness.fill_(math.inf)
+    material = model.tri_materials if deformable_kind == "cloth" else model.tet_materials
+    coefficients = material.numpy()
+    coefficients[:, :2] = 1.0e6
+    material.assign(coefficients)
+    state_in, state_out = model.state(), model.state()
+    solver = newton.solvers.SolverVBD(model, iterations=30)
+    for _ in range(3):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+    particle_q = state_in.particle_q.numpy()
+    anchor_pos = _transform_point_np(state_in.body_q.numpy()[body], np.zeros(3))
+    test.assertTrue(np.isfinite(particle_q).all())
+    test.assertLess(np.linalg.norm(particle_q[particle] - anchor_pos), 2.0e-5)
     test.assertLess(np.mean(particle_q[1:, 2]), np.mean(initial_q[1:, 2]))
 
 
@@ -5993,13 +6297,13 @@ def _rigid_hinge_multiturn_limits(test, device):
 
 class TestSolverVBD(unittest.TestCase):
     def test_contact_kernel_modules_follow_deterministic_mode(self):
-        """Apply VBD deterministic options to rigid contact kernels."""
+        """Apply VBD deterministic options to the separately compiled rigid kernels."""
         builder = newton.ModelBuilder()
         builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.color()
         model = builder.finalize(device="cpu")
 
-        newton.solvers.SolverVBD(
+        solver = newton.solvers.SolverVBD(
             model,
             deterministic=wp.DeterministicMode.RUN_TO_RUN,
             rigid_compliant_alm=True,
@@ -6009,11 +6313,44 @@ class TestSolverVBD(unittest.TestCase):
             accumulate_body_body_contacts_per_body,
             compute_rigid_contact_forces,
             update_duals_body_body_contacts,
+            update_duals_joint,
+            solver._solve_rigid_body_kernel,
         )
         for kernel in kernels:
-            options = wp.get_module_options(module=kernel.module)
+            # Kernel-level options override module options at build time.
+            options = wp.get_module_options(module=kernel.module) | kernel.options
             self.assertEqual(options["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
             self.assertFalse(options["enable_backward"])
+
+    def test_enable_fast_math_sets_module_options(self):
+        """Apply ``enable_fast_math`` to exactly the opted-in kernel modules."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+        )
+        builder.color()
+        model = builder.finalize()
+
+        for enable_fast_math in (True, False):
+            solver = newton.solvers.SolverVBD(model, enable_fast_math=enable_fast_math)
+            fast_modules = [
+                particle_vbd_kernels,
+                solver._solve_rigid_body_kernel.module,
+                update_duals_joint.module,
+            ]
+            if solver._tiled_elasticity_kernel is not None:
+                fast_modules.append(solver._tiled_elasticity_kernel.module)
+            for module in fast_modules:
+                self.assertEqual(wp.get_module_options(module=module)["fast_math"], enable_fast_math)
+            self.assertFalse(wp.get_module_options(module=rigid_vbd_kernels)["fast_math"])
 
     def test_rigid_block_dim(self):
         """Validate adaptive block sizes and the CPU fallback."""
@@ -6056,6 +6393,30 @@ add_function_test(
     TestSolverVBD,
     "test_body_particle_attachment_composes_with_worlds",
     _body_particle_attachment_composes_with_worlds,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_preserves_free_pair_momentum",
+    _hard_particle_body_attachment_preserves_free_pair_momentum,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_supports_load",
+    _hard_particle_body_attachment_supports_load,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_preserves_elastic_motion",
+    _hard_particle_body_attachment_preserves_elastic_motion,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_transfers_offset_torque",
+    _hard_particle_body_attachment_transfers_offset_torque,
     devices=devices,
 )
 add_function_test(
@@ -6164,12 +6525,6 @@ add_function_test(
     "test_rigid_contact_history_capture_requires_preallocation",
     _rigid_contact_history_capture_requires_preallocation,
     devices=cuda_devices,
-)
-add_function_test(
-    TestSolverVBD,
-    "test_rigid_contact_stick_eps_are_deprecated",
-    _rigid_contact_stick_eps_are_deprecated,
-    devices=devices,
 )
 add_function_test(
     TestSolverVBD,

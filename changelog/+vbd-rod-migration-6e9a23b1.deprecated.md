@@ -1,0 +1,1 @@
+Deprecate `ModelBuilder.add_rod(body_frame_origin="start")`; it emits a `NewtonDeprecationWarning`. Use the default `"com"` origin. For manually authored body-local anchors, subtract the old `body_com` offset.

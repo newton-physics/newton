@@ -12,6 +12,7 @@ import warp as wp
 
 import newton
 import newton.usd
+from newton.exceptions import NewtonDeprecationWarning
 from newton.sensors import SensorTiledCamera
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
@@ -171,6 +172,12 @@ class TestUsdMeshHelpers(unittest.TestCase):
                 source = _define_folded_mesh(stage, scheme=scheme)
                 mesh = newton.usd.get_mesh(source.GetPrim(), load_normals=True, compute_inertia=False)
                 self.assertIsNotNone(mesh.normals)
+                mapped, _, point_indices = newton.usd.get_mesh(
+                    source.GetPrim(), load_normals=True, return_source_point_indices=True, compute_inertia=False
+                )
+                np.testing.assert_array_equal(mapped.vertices, mesh.vertices)
+                np.testing.assert_array_equal(mapped.normals, mesh.normals)
+                np.testing.assert_array_equal(point_indices[mesh.indices], [0, 1, 2, 0, 3, 1])
                 corners = mesh.normals[mesh.indices].reshape(2, 3, 3)
                 if scheme in (UsdGeom.Tokens.none, UsdGeom.Tokens.bilinear):
                     np.testing.assert_allclose(corners, np.repeat([[(0, 0, 1)], [(0, 1, 0)]], 3, axis=1))
@@ -217,14 +224,19 @@ class TestUsdMeshHelpers(unittest.TestCase):
             ("vertex_splitting", 100, 4),
         ):
             with self.subTest(policy=policy, threshold=threshold):
-                mesh = newton.usd.get_mesh(
-                    source.GetPrim(),
-                    load_normals=True,
-                    compute_inertia=False,
-                    face_varying_normal_conversion=policy,
-                    vertex_splitting_angle_threshold_deg=threshold,
-                )
+                options = {
+                    "load_normals": True,
+                    "compute_inertia": False,
+                    "face_varying_normal_conversion": policy,
+                    "vertex_splitting_angle_threshold_deg": threshold,
+                }
+                mesh = newton.usd.get_mesh(source.GetPrim(), **options)
                 self.assertEqual(len(mesh.vertices), vertices)
+                mapped, _, point_indices = newton.usd.get_mesh(
+                    source.GetPrim(), return_source_point_indices=True, **options
+                )
+                np.testing.assert_array_equal(mapped.vertices, mesh.vertices)
+                np.testing.assert_array_equal(point_indices[mapped.indices], [0, 1, 2, 0, 3, 1])
 
     def test_sensor_renders_resolved_shading(self):
         """Render sharp and smooth imported normals through the camera sensor."""
@@ -268,7 +280,19 @@ class TestUsdMeshHelpers(unittest.TestCase):
             source.CreateSubdivisionSchemeAttr(scheme)
             for preserve in (False, True):
                 with self.subTest(scheme=scheme, preserve=preserve):
-                    mesh, uv_indices = newton.usd.get_mesh(
+                    mesh, uv_indices, point_indices = newton.usd.get_mesh(
+                        source.GetPrim(),
+                        load_normals=True,
+                        load_uvs=True,
+                        preserve_facevarying_uvs=preserve,
+                        return_uv_indices=True,
+                        return_source_point_indices=True,
+                        compute_inertia=False,
+                    )
+                    np.testing.assert_allclose(mesh.uvs[uv_indices], corner_uvs)
+                    np.testing.assert_array_equal(point_indices[mesh.indices], [0, 1, 2, 0, 3, 1])
+                    # Requesting the mapping must not change the released (mesh, uv_indices) result.
+                    plain_mesh, plain_uv_indices = newton.usd.get_mesh(
                         source.GetPrim(),
                         load_normals=True,
                         load_uvs=True,
@@ -276,7 +300,8 @@ class TestUsdMeshHelpers(unittest.TestCase):
                         return_uv_indices=True,
                         compute_inertia=False,
                     )
-                    np.testing.assert_allclose(mesh.uvs[uv_indices], corner_uvs)
+                    np.testing.assert_array_equal(plain_uv_indices, uv_indices)
+                    np.testing.assert_array_equal(plain_mesh.vertices, mesh.vertices)
                     if scheme == "catmullClark":
                         np.testing.assert_allclose(
                             mesh.normals[mesh.indices[[0, 3]]], np.tile([0, 2**-0.5, 2**-0.5], (2, 1)), atol=1e-6
@@ -337,13 +362,47 @@ class TestUsdMeshHelpers(unittest.TestCase):
             stage.GetRootLayer().Save()
 
             mesh = newton.usd.get_mesh(stage_path, root_path="/Root", compute_inertia=False)
+            # The positional shim maps arguments by position; a new trailing option must not shift them.
+            for source in (stage_path, stage.GetPrimAtPath("/Root/A")):
+                with self.subTest(source=type(source).__name__), self.assertWarns(NewtonDeprecationWarning):
+                    positional = newton.usd.get_mesh(
+                        source,
+                        False,
+                        False,
+                        None,
+                        "vertex_splitting",
+                        25.0,
+                        False,
+                        False,
+                        "/Root",
+                        compute_inertia=False,
+                    )
+                np.testing.assert_array_equal(positional.vertices, mesh.vertices)
+                np.testing.assert_array_equal(positional.indices, mesh.indices)
 
         self.assertEqual(len(mesh.vertices), 6)
         assert_np_equal(mesh.indices, np.array([0, 1, 2, 3, 4, 5], dtype=np.int32))
         assert_np_equal(mesh.vertices[3:], np.array([[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 1.0, 0.0]]))
 
-    def test_get_mesh_rejects_preserved_facevarying_uvs_for_merged_sources(self):
-        """Reject merged-source loads that request face-varying UV preservation."""
+    def test_get_mesh_requires_default_geometry(self):
+        """Reject points or face topology authored only at an animation sample."""
+        from pxr import Usd
+
+        for attribute in ("points", "faceVertexIndices", "faceVertexCounts"):
+            with self.subTest(attribute=attribute):
+                stage = Usd.Stage.CreateInMemory()
+                mesh = _define_triangle_mesh(stage)
+                attr = mesh.GetPrim().GetAttribute(attribute)
+                values = attr.Get()
+                attr.Clear()
+                attr.Set(values, Usd.TimeCode(1.0))
+                with self.assertRaisesRegex(ValueError, "default-time points"):
+                    newton.usd.get_mesh(mesh.GetPrim(), compute_inertia=False)
+
+    def test_get_mesh_rejects_per_prim_indices_for_merged_sources(self):
+        """Reject per-prim index and UV-preservation options when loading merged geometry."""
+        from pxr import Usd
+
         with tempfile.TemporaryDirectory() as tmpdir:
             stage_path = _create_referenced_mesh_stage(tmpdir)
 
@@ -354,6 +413,56 @@ class TestUsdMeshHelpers(unittest.TestCase):
                     preserve_facevarying_uvs=True,
                     compute_inertia=False,
                 )
+            stage = Usd.Stage.Open(str(stage_path))
+            for source in (stage_path, stage, stage.GetPrimAtPath("/Marker")):
+                for option in ("return_uv_indices", "return_source_point_indices"):
+                    with self.subTest(source=type(source).__name__, option=option):
+                        with self.assertRaisesRegex(ValueError, f"{option} is only supported"):
+                            newton.usd.get_mesh(source, **{option: True}, compute_inertia=False)
+
+    def test_source_point_indices_follow_triangulated_corners(self):
+        """Retain source point IDs through triangulation, winding, and UV splits."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        source = UsdGeom.Mesh.Define(stage, "/Quad")
+        points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (9, 9, 9)]
+        source.CreatePointsAttr(points)
+        source.CreateFaceVertexCountsAttr([4])
+        source.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        uvs = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        UsdGeom.PrimvarsAPI(source).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "faceVarying").Set(uvs)
+        for orientation, corners in (("rightHanded", [0, 1, 2, 0, 2, 3]), ("leftHanded", [2, 1, 0, 3, 2, 0])):
+            source.CreateOrientationAttr(orientation)
+            for load_uvs in (False, True):
+                for return_uv_indices in (False, True):
+                    with self.subTest(orientation=orientation, load_uvs=load_uvs, return_uv_indices=return_uv_indices):
+                        mesh, uv_indices, point_indices = newton.usd.get_mesh(
+                            source.GetPrim(),
+                            load_uvs=load_uvs,
+                            return_uv_indices=return_uv_indices,
+                            return_source_point_indices=True,
+                            compute_inertia=False,
+                        )
+                        self.assertEqual(point_indices.dtype, np.dtype(np.int32))
+                        np.testing.assert_array_equal(point_indices[mesh.indices], corners)
+                        np.testing.assert_array_equal(mesh.vertices, np.asarray(points)[point_indices])
+                        if load_uvs and return_uv_indices:
+                            np.testing.assert_array_equal(mesh.uvs[uv_indices], np.asarray(uvs)[corners])
+                        else:
+                            self.assertIsNone(uv_indices)
+                        if not load_uvs:
+                            # No split: include even the unused point in the identity map.
+                            np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
+
+        mesh, uv_indices, point_indices = newton.usd.get_mesh(
+            prim=source.GetPrim(), return_uv_indices=True, return_source_point_indices=True, compute_inertia=False
+        )
+        self.assertIsNone(uv_indices)
+        np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
+        mesh, uv_indices = newton.usd.get_mesh(source.GetPrim(), return_uv_indices=True, compute_inertia=False)
+        self.assertIsNone(uv_indices)
+        np.testing.assert_array_equal(mesh.indices, [2, 1, 0, 3, 2, 0])
 
     def test_get_mesh_applies_root_relative_transform_and_stage_units(self):
         """Apply root-relative transforms and authored stage units."""

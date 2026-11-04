@@ -479,6 +479,52 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.assertEqual(material["alphaMode"], "BLEND")
                 self.assertAlmostEqual(material["pbrMetallicRoughness"]["baseColorFactor"][3], opacity)
 
+    def test_deformable_visual_meshes_are_unsupported(self):
+        """Reject visible skins, but let Viser display their simulation geometry."""
+        for texture in (None, np.full((2, 2, 3), 255, dtype=np.uint8)):
+            builder = newton.ModelBuilder()
+            builder.begin_world()
+            vertices = ((0, 0, 0), (1, 0, 0), (0, 1, 0))
+            for point in vertices:
+                builder.add_particle(point, (0, 0, 0), mass=1.0)
+            builder.add_deformable_visual_mesh(
+                vertices,
+                (0, 1, 2),
+                kind="particle",
+                parent=(0, 1, 2),
+                uvs=((0, 0), (1, 0), (0, 1)),
+                texture=texture,
+            )
+            builder.end_world()
+            model = builder.finalize(device="cpu")
+            state = model.state()
+            self.viewer.activate("skin")
+            self.viewer.set_model(model)
+            name = "/layers/skin/model/deformable_visual_meshes/mesh_0"
+            self.viewer.show_deformable_visual_meshes = True
+            with self.assertRaisesRegex(NotImplementedError, "ViewerViser does not draw"):
+                self.viewer.log_state(state)
+            self.assertIsNone(self.viewer._deformable_visuals)
+
+            # Supplying evaluated output must not bypass the backend limitation.
+            self.viewer.set_deformable_visuals(newton.geometry.DeformableVisuals(model))
+            with self.assertRaisesRegex(NotImplementedError, "ViewerViser does not draw"):
+                self.viewer.log_state(state)
+            self.viewer.set_deformable_visuals(None)
+
+            self.viewer.show_deformable_visual_meshes = False
+            self.viewer.log_state(state)
+            self.viewer.show_deformable_visual_meshes = True
+            self.viewer.set_visible_worlds([])
+            self.viewer.log_state(state)
+            self.viewer.set_visible_worlds(None)
+            self.viewer.set_layer_visible("skin", False)
+            self.viewer.log_state(state)
+            self.viewer.set_layer_visible("skin", True)
+            self.assertIsNone(self.server.scene.get_handle_by_name(name))
+            self.assertIsNone(self.viewer._deformable_visuals)
+        self.assertNotIn("show_deformable_visual_meshes", self.viewer._viewer_option_handles)
+
     def test_textured_batches_update_uniform_opacity(self):
         """Keep opaque textured models quiet and update their real GLB material on opacity changes."""
         builder = newton.ModelBuilder()
@@ -561,7 +607,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     modifier=None,
                 )
                 self.wait_for(self.viewer.picking.is_picking)
-                self.assertEqual(int(self.viewer.picking.pick_body.numpy()[0]), 0)
+                self.assertEqual(self.viewer.picking.pick_body, 0)
                 handle = self.viewer._picking_controls[self.viewer.layer.layer_id]
                 self.send(
                     "TransformControlsUpdateMessage",
@@ -569,9 +615,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     position=(0.0, -1.0, 1.0),
                     wxyz=(1.0, 0.0, 0.0, 0.0),
                 )
-                self.wait_for(
-                    lambda: np.isclose(self.viewer.picking.pick_state.numpy()[0]["picking_target_world"][1], -1.0)
-                )
+                self.wait_for(lambda: np.isclose(self.viewer.picking.pick_target[1], -1.0))
                 state.clear_forces()
                 if graph is None:
                     self.viewer.apply_forces(state)
