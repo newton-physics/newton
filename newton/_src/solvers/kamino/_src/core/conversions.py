@@ -16,7 +16,6 @@ from .....sim import JointTargetMode
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
-from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -43,6 +42,9 @@ from .types import mat63f, to_warp_int32_array, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
+import logging
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -1582,7 +1584,7 @@ def _warn_ignored_free_joint_friction(
         > positive_friction_prefix[qd_start_np[free_joint_ids]]
     )
     for jid in free_joint_ids[free_joint_has_friction].tolist():
-        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+        logger.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
 def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
@@ -2099,6 +2101,8 @@ def convert_joints(
         X_Fj=joint_X_F,
         q_j_min=model.joint_limit_lower,
         q_j_max=model.joint_limit_upper,
+        limit_ke=model.joint_limit_ke,
+        limit_kd=model.joint_limit_kd,
         dq_j_max=model.joint_velocity_limit,
         tau_j_max=model.joint_effort_limit,
         a_j=model.joint_armature,
@@ -2264,6 +2268,8 @@ def convert_geometries(
         params=model.shape_scale,
         offset=offset,
         material=geom_material,
+        stiffness=model.shape_material_ke,
+        damping=model.shape_material_kd,
         torsional_friction=model.shape_material_mu_torsional,
         rolling_friction=model.shape_material_mu_rolling,
         group=model.shape_collision_group,

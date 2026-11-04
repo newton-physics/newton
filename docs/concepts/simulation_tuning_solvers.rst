@@ -300,7 +300,13 @@ repository examples spend tuning effort, not a shared solver API.
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
-       capacity and reset the world when it reports a world. The same check
+       capacity and reset the world when it reports a world. To check a step
+       without waiting for the steps queued after it, call
+       ``snapshot_constraint_status()`` after that step and
+       ``check_constraint_capacity(snapshot=True)`` later; check the last
+       snapshot when you stop stepping. A reset retakes a checked snapshot and
+       keeps an unchecked one, so its check still reports the steps before the
+       reset. The same check
        reports a tree joint disabled through ``Model.joint_enabled`` after
        construction, which no capacity fixes: discard those steps' output,
        re-enable the joint and reset the world. Contacts of a
@@ -310,7 +316,7 @@ repository examples spend tuning effort, not a shared solver API.
        damping and free-body velocity bounds are model attributes registered by
        ``register_custom_attributes()``. Passive joint springs are not applied
        yet; a model with nonzero MuJoCo spring stiffness warns at construction.
-       Mimic joints and loop-closing BALL
+       Mimic joints and loop-closing BALL and REVOLUTE
        joints are bilateral rows that converge with ``iterations`` like the
        other rows; ``enable_bilateral_preelimination`` eliminates them before
        the sweep with a regularized Schur complement, which keeps closed chains

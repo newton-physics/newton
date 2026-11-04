@@ -22,7 +22,7 @@ from newton.tests.steel._fixtures import (
     _parent_wrench_scene,
     set_torsion_radius,
 )
-from newton.tests.steel.test_articulation import _prescribe_carrier
+from newton.tests.steel.test_articulation import _build_world_hinged_swing, _prescribe_carrier
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 FLAGS = {SolverBase.ObservableKind.BODY_PARENT_F}
@@ -495,6 +495,31 @@ def test_parent_wrench_of_a_load_held_by_closures(test, device):
             np.testing.assert_allclose(observables.body_parent_f.numpy()[load], 0.0, atol=2.0e-3)
 
 
+def test_parent_wrench_of_a_body_hung_by_a_revolute_closure(test, device):
+    """A FREE body swinging on a REVOLUTE closure to the world transmits nothing through its free joint.
+
+    A non-finite hinge axis leaves the hinge rows inert, and the closure acts like a BALL joint.
+    """
+    for axis in ((1.0, 0.0, 0.0), (np.nan, 0.0, 0.0), (np.inf, 0.0, 0.0)):
+        with test.subTest(axis=axis):
+            builder, joint = _build_world_hinged_swing(test, "revolute")
+            builder.joint_axis[builder.joint_qd_start[joint]] = axis
+            model = builder.finalize(device=device)
+            if np.isfinite(axis).all():
+                solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
+            else:
+                with test.assertWarnsRegex(NewtonWarning, "zero or non-finite axis"):
+                    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
+            observables = solver.observables(FLAGS)
+            state_0, state_1 = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+            for _ in range(120):
+                solver.step(state_0, state_1, None, None, 1.0 / 500.0, observables=observables)
+                state_0, state_1 = state_1, state_0
+            # Gravity twists the body about the hinge's perpendicular, which only the hinge rows hold.
+            np.testing.assert_allclose(observables.body_parent_f.numpy()[0], 0.0, atol=2.0e-3)
+
+
 NEAR_REDUNDANT_LEVERS = (0.02, 0.001, 0.0002, 0.00015)
 
 
@@ -538,6 +563,8 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     zero,  # connect_joint
                     zero,  # connect_body_p
                     ints([1]),  # connect_body_c
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
                     anchor_xform,
                     anchor_xform,
                     zero,  # connect_parent_prescribed
@@ -565,6 +592,9 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     zero,  # connect_body_p
                     ints([1]),  # connect_body_c
                     zero,  # connect_joint
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
+                    zero,  # joint_qd_start
                     anchor_xform,
                     anchor_xform,
                     at_midpoint,
@@ -625,6 +655,8 @@ def test_open_closure_force_acts_where_the_rows_do(test, device):
                     zero,  # connect_joint
                     zero,  # connect_body_p
                     ints([1]),  # connect_body_c
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
                     parent_xform,
                     child_xform,
                     ints([prescribed]),
@@ -657,6 +689,9 @@ def test_open_closure_force_acts_where_the_rows_do(test, device):
                     zero,  # connect_body_p
                     ints([1]),  # connect_body_c
                     zero,  # connect_joint
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
+                    zero,  # joint_qd_start
                     parent_xform,
                     child_xform,
                     at_midpoint,
@@ -1039,6 +1074,7 @@ for _name in (
     "test_parent_wrench_excludes_velocity_limit_prescaling",
     "test_parent_wrench_includes_loop_closure_reactions",
     "test_parent_wrench_of_a_load_held_by_closures",
+    "test_parent_wrench_of_a_body_hung_by_a_revolute_closure",
     "test_parent_wrench_warns_without_preeliminated_closures",
 ):
     add_function_test(TestSteelParentWrench, _name, globals()[_name], devices=get_cuda_test_devices())
