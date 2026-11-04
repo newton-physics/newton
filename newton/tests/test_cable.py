@@ -7567,11 +7567,13 @@ class TestCable(unittest.TestCase):
         """Use separate rest frames and lengths for prepared chains and graphs."""
         initial_points = np.array([(0.0, 0.0, z) for z in (0.0, 1.0, 3.0, 6.0)])
         rest_points = initial_points * 0.5
+        radius = 0.05
         frames = [wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), roll) for roll in (0.0, 0.1, 0.3)]
         for edges in (None, [(1, 2), (0, 1), (2, 3)]):
             with self.subTest(edges=edges):
                 rod = newton.Rod(
                     initial_points,
+                    radius=radius,
                     edges=edges,
                     rest_points=rest_points,
                     rest_quaternions=frames,
@@ -7594,6 +7596,8 @@ class TestCable(unittest.TestCase):
                     )
                     shape = builder.body_shapes[body][0]
                     self.assertAlmostEqual(2.0 * builder.shape_scale[shape][1], rest_lengths[edge])
+                    mass = builder.default_shape_cfg.density * np.pi * radius**2 * rest_lengths[edge]
+                    self.assertAlmostEqual(builder.body_mass[body], mass, delta=mass * 1.0e-6)
                 for joint in joints:
                     parent_edge = edge_by_body[builder.joint_parent[joint]]
                     child_edge = edge_by_body[builder.joint_child[joint]]
@@ -7615,6 +7619,30 @@ class TestCable(unittest.TestCase):
                 if edges is not None:
                     with self.assertRaisesRegex(ValueError, "rest_straight requires an ordered chain"):
                         newton.Rod(initial_points, edges=edges, rest_straight=True)
+
+    def test_rod_mass_under_refinement(self):
+        """Preserve rod mass under refinement and scale capsule inertia to each segment's mass."""
+        length, radius, density = 0.4, 0.025, 400.0
+        cfg = newton.ModelBuilder.ShapeConfig(density=density)
+        total_mass = density * np.pi * radius**2 * length
+        for segments in (2, 8):
+            with self.subTest(segments=segments):
+                builder = newton.ModelBuilder()
+                rod = newton.Rod.create_straight((0, 0, 0), (1, 0, 0), length, segment_count=segments, radius=radius)
+                bodies, _ = builder.add_rod(rod=rod, cfg=cfg)
+                capsule = builder.add_body()
+                builder.add_shape_capsule(capsule, radius=radius, half_height=0.5 * length / segments, cfg=cfg)
+                model = builder.finalize(device="cpu")
+                masses = model.body_mass.numpy()
+                np.testing.assert_allclose(masses[bodies].sum(), total_mass, rtol=1.0e-6)
+                capsule_mass = total_mass / segments + density * (4.0 / 3.0) * np.pi * radius**3
+                np.testing.assert_allclose(masses[capsule], capsule_mass, rtol=1.0e-6)
+                segment = bodies[0]
+                self.assertEqual(builder.shape_type[builder.body_shapes[segment][0]], newton.GeoType.CAPSULE)
+                inertia = model.body_inertia.numpy()
+                np.testing.assert_allclose(
+                    inertia[segment], inertia[capsule] * (total_mass / segments / capsule_mass), rtol=1.0e-6
+                )
 
     def test_cable_omitted_rest_snapshots_initial_rotation(self):
         """Use the authored initial relative rotation when Rod angular rest is omitted."""
