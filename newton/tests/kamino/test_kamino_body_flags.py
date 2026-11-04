@@ -18,6 +18,8 @@ bodies like any other body. This module exercises the resulting behavior end-to-
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
+from itertools import product
 
 import numpy as np
 import warp as wp
@@ -509,7 +511,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         self.assertGreater(int(kamino_model.joints.num_kinematic_cts.numpy().sum()), 0)
 
     def test_piles_rest_on_mujoco_proxies(self):
-        """Keep piles of MuJoCo and Kamino cubes at rest when Kamino is the proxy destination.
+        """Settle piles of MuJoCo and Kamino cubes when Kamino is the proxy destination.
 
         One pile has the MuJoCo cube at the bottom and the other has it at the top. Kamino simulates the
         MuJoCo proxies as dynamic bodies, and the proxy collision pipeline passes the contacts between the
@@ -524,8 +526,11 @@ class TestKaminoBodyFlags(unittest.TestCase):
             ),
         }
         half, time_step = 0.1, 1.0 / 240.0
-        for dynamics_solver, config in configs.items():
-            with self.subTest(dynamics_solver=dynamics_solver):
+        # Also exercise settling without exactly coplanar face contacts.
+        for (dynamics_solver, default_config), tilt in product(configs.items(), (0.0, 1.0e-6)):
+            with self.subTest(dynamics_solver=dynamics_solver, tilt=tilt):
+                config = deepcopy(default_config)
+                orientation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), tilt)
                 builder = newton.ModelBuilder()
                 SolverKamino.register_custom_attributes(builder)
                 builder.add_ground_plane()
@@ -533,7 +538,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
                 for pile, owners in enumerate((("mjc", "kamino"), ("kamino", "mjc"))):
                     for level, owner in enumerate(owners):
                         position = wp.vec3(float(pile), 0.0, half * (2.0 * level + 1.0))
-                        body = builder.add_body(xform=wp.transform(position, wp.quat_identity()))
+                        body = builder.add_body(xform=wp.transform(position, orientation))
                         builder.add_shape_box(body, hx=half, hy=half, hz=half)
                         bodies[owner].append(body)
                 model = builder.finalize(device=self.default_device)
@@ -581,19 +586,30 @@ class TestKaminoBodyFlags(unittest.TestCase):
                 state_in, state_out, control = model.state(), model.state(), model.control()
                 start = state_in.body_q.numpy().copy()
 
-                for _ in range(30):
+                # Bound settling to one second while retaining the original minimum duration.
+                min_steps, max_steps, required_rest_steps = 30, 240, 10
+                rest_steps = 0
+                for step in range(max_steps):
                     pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, control, contacts, time_step)
                     state_in, state_out = state_out, state_in
+                    if step + 1 < min_steps:
+                        continue
 
-                np.testing.assert_allclose(state_in.body_q.numpy(), start, rtol=0.0, atol=1.0e-3)
-                body_twists = state_in.body_qd.numpy()
-                max_twist_norm = float(np.max(np.linalg.norm(body_twists, axis=1)))
+                    np.testing.assert_allclose(state_in.body_q.numpy(), start, rtol=0.0, atol=1.0e-3)
+                    body_twists = state_in.body_qd.numpy()
+                    max_twist_norm = float(np.max(np.linalg.norm(body_twists, axis=1)))
+                    # Require sustained rest after the initial proxy-coupling transient.
+                    rest_steps = rest_steps + 1 if max_twist_norm < 1.0e-3 else 0
+                    if rest_steps == required_rest_steps:
+                        break
+
                 details = None
-                if not max_twist_norm < 1.0e-3:
+                if rest_steps < required_rest_steps:
                     details = (
                         f"device={self.default_device}, Warp={wp.__version__}, MuJoCo bodies={bodies['mjc']}, "
-                        f"Kamino bodies={bodies['kamino']}, body twists={body_twists.tolist()}"
+                        f"Kamino bodies={bodies['kamino']}, body twists={body_twists.tolist()}, "
+                        f"steps={step + 1}, consecutive rest steps={rest_steps}/{required_rest_steps}"
                     )
                     if dynamics_solver == "dvi":
                         status = solver.solver("kamino")._solver_kamino.solver_fd.data.status.numpy()[0]
@@ -603,6 +619,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
                         }
                         details += f", DVI status={residuals}"
                 self.assertLess(max_twist_norm, 1.0e-3, msg=details)
+                self.assertEqual(rest_steps, required_rest_steps, msg=details)
 
     def test_newton_arrays_not_mutated(self):
         """SolverKamino must not mutate Newton's body_inv_mass / body_inv_inertia."""
