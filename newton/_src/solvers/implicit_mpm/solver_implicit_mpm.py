@@ -2645,13 +2645,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             state_in: The input state.
             state_out: The output state. Only particle_q, particle_qd, and particle_qd_grad are written.
             dt: The time step, for extrapolating the collider end-of-step positions from its current position and velocity.
-            gap: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
+            gap: Maximum distance for closest-point queries. With particle collider bases (``"pic"`` and
+                ``"picN"``), it is measured from particle surfaces, so queries reach one particle radius further
+                from particle centers. If None, the default is the voxel size times sqrt(3).
         """
 
         collider = self._mpm_model.collider
         prev_gap = collider.query_max_dist
         # Particle contacts measure distances from the particle surface, one radius closer than its center
-        collider.query_max_dist = (gap if gap is not None else prev_gap) + self._contact_radius_reach()
+        query_gap = gap if gap is not None else self._default_query_distance()
+        collider.query_max_dist = query_gap + self._contact_radius_reach()
 
         self._last_step_data.require_collider_previous_position(state_in.body_q)
         try:
@@ -3612,11 +3615,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         speculative = self.collider_basis[:3] == "pic"
 
         with self._timer("Rasterize collider"):
-            self._mpm_model.collider.query_max_dist = max(
-                self._mpm_model.collider.query_max_dist,
-                self._contact_radius_reach()
-                + max(self._collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size)),
-            )
+            # Rasterization, the rigidity operator, and force harvesting share this distance during the step
+            self._mpm_model.collider.query_max_dist = self._collider_query_distance()
             # volume associated to each collider node
             fem.integrate(
                 integrate_fraction,
@@ -3964,6 +3964,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if self.collider_basis[:3] != "pic":
             return 0.0
         return self._mpm_model.max_particle_radius
+
+    def _default_query_distance(self) -> float:
+        """Default closest-point query distance [m] from particle centers or surfaces: one cell diagonal."""
+        return self._mpm_model.voxel_size * math.sqrt(3.0)
+
+    def _collider_query_distance(self) -> float:
+        """Closest-point query distance [m] for collider rasterization.
+
+        Covers one cell diagonal, and for particle collider bases the largest
+        particle radius plus the predictive contact gap or the contact band.
+        """
+        contact_reach = self._contact_radius_reach() + max(
+            self._collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size)
+        )
+        return max(self._default_query_distance(), contact_reach)
 
     def _measures_density(self) -> bool:
         """Whether critical packing or density feedback needs a density measurement."""
