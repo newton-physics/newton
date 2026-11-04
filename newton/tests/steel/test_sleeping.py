@@ -2480,7 +2480,7 @@ def test_colored_sleeping_rollout_is_independent_of_world_order(test, device):
 def test_colored_captured_sleep_and_wake_match_eager(test, device):
     """Cold-capture one step, then match an eager twin bitwise, with identical worlds, through sleeping and a force wake.
 
-    The joint wrenches match too, including the ones sleeping bodies keep.
+    The joint wrenches match to rounding, including the ones sleeping bodies keep.
     """
     captured, eager = _Heap(device), _Heap(device)
     for scene in (captured, eager):
@@ -2509,7 +2509,10 @@ def test_colored_captured_sleep_and_wake_match_eager(test, device):
             captured.solver._sleeping.art_awake.numpy(), eager.solver._sleeping.art_awake.numpy()
         )
         wrench = eager.observables.body_parent_f.numpy()
-        np.testing.assert_array_equal(captured.observables.body_parent_f.numpy(), wrench, err_msg=f"replay {k}")
+        # The wrench sums are not ordered, so replay and eager agree to rounding, as in the parent-wrench tests.
+        np.testing.assert_allclose(
+            captured.observables.body_parent_f.numpy(), wrench, rtol=1.0e-5, atol=1.0e-5, err_msg=f"replay {k}"
+        )
         if k == COLORED_STEPS - 1:
             # Sleeping bodies keep nonzero wrenches, so the match is not trivial.
             sleeping = eager.solver._sleeping.body_awake.numpy() == 0
