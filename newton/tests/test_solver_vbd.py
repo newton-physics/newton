@@ -5146,13 +5146,16 @@ def _body_particle_attachment_is_native_vbd(test, device):
     test.assertGreater(anchor_pos[0], 1.0e-3)
 
 
-def _simulate_cloth_hung_by_attachments(device, deterministic):
-    """Hang a cloth from a static body by two corner attachments, passing contacts to every step."""
+def _simulate_cloth_hung_by_attachments(device, deterministic, height):
+    """Hang a cloth from a static body by two corner attachments, passing contacts to every step.
+
+    Returns the final particle positions and the largest soft contact count seen.
+    """
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()), mass=0.0)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()), mass=0.0)
     builder.add_cloth_grid(
-        pos=wp.vec3(0.0, 0.0, 0.3),
+        pos=wp.vec3(0.0, 0.0, height),
         rot=wp.quat_identity(),
         vel=wp.vec3(0.0, 0.0, 0.0),
         dim_x=4,
@@ -5175,21 +5178,25 @@ def _simulate_cloth_hung_by_attachments(device, deterministic):
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out, control = model.state(), model.state(), model.control()
+    max_contact_count = 0
     for _ in range(50):
         state_in.clear_forces()
         pipeline.collide(state_in, contacts)
+        max_contact_count = max(max_contact_count, int(contacts.soft_contact_count.numpy()[0]))
         solver.step(state_in, state_out, control, contacts, 1.0e-3)
         state_in, state_out = state_out, state_in
-    return state_in.particle_q.numpy()
+    return state_in.particle_q.numpy(), max_contact_count
 
 
 def _body_particle_attachment_survives_deterministic_contact_gather(test, device):
     """Particle-body attachments must act the same in a deterministic mode when contacts are passed to step()."""
-    reference = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.NOT_GUARANTEED)
-    gathered = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.RUN_TO_RUN)
-    # The cloth is far above the ground, so no contact acts and the two modes match. Without the attachment forces
-    # the whole cloth falls freely instead of swinging from its corners.
-    np.testing.assert_allclose(gathered, reference, atol=1.0e-4)
+    # At 0.3 m no contact acts: without the attachment forces the whole cloth falls freely. At 1 mm the anchors lie
+    # inside the particle radius, so the attachment and the ground contact act on the same particles.
+    for height, expect_contacts in ((0.3, False), (1.0e-3, True)):
+        reference, _ = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.NOT_GUARANTEED, height)
+        gathered, contact_count = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.RUN_TO_RUN, height)
+        test.assertEqual(contact_count > 0, expect_contacts)
+        np.testing.assert_allclose(gathered, reference, atol=1.0e-4, err_msg=f"cloth hung at {height} m")
 
 
 def _body_particle_attachment_validates_inputs(test, device):
