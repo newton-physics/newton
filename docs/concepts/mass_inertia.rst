@@ -212,7 +212,11 @@ The MJCF ``<compiler>`` attributes ``boundmass``, ``boundinertia``, and
 :meth:`~newton.ModelBuilder.add_mjcf` applies them to each imported body as
 MuJoCo does: it raises the mass and each principal moment to their bounds and
 replaces unbalanced principal moments with their mean. Finalize validation then
-runs on the bounded values.
+runs on the bounded values. With ``scale``, ``boundinertia`` scales by
+``scale**2`` like authored inertia, while ``boundmass`` is not scaled. A body
+whose mass stays zero keeps zero inertia, because Newton treats zero-mass
+bodies as massless; the importer logs a warning for such bodies when
+``boundinertia`` is set, since MuJoCo would give them that inertia.
 
 Small-inertia models
 ^^^^^^^^^^^^^^^^^^^^

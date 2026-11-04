@@ -10465,11 +10465,11 @@ class TestZeroMassBodies(unittest.TestCase):
 class TestMjcfCompilerInertiaBounds(unittest.TestCase):
     """``<compiler boundmass boundinertia balanceinertia>`` bound every body like native MuJoCo."""
 
-    def assert_bodies_match_native(self, mjcf: str):
+    def assert_bodies_match_native(self, mjcf: str, native_mjcf: str | None = None, scale: float = 1.0):
         mujoco, _ = SolverMuJoCo.import_mujoco()
-        native = mujoco.MjModel.from_xml_string(mjcf)
+        native = mujoco.MjModel.from_xml_string(native_mjcf or mjcf)
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
+        builder.add_mjcf(mjcf, scale=scale)
         model = builder.finalize(device="cpu")
         self.assertEqual(model.body_count, native.nbody - 1)
         for body in range(1, native.nbody):
@@ -10503,14 +10503,77 @@ class TestMjcfCompilerInertiaBounds(unittest.TestCase):
         )
 
     def test_balance_keeps_valid_inertia(self):
-        """Balance only violations of A + B >= C; an exact tie and each bound apply alone."""
+        """Balance only violations of A + B >= C; exact ties, also rotated or full, and each bound apply alone."""
+        inertials = (
+            'diaginertia="1e-6 2e-6 3e-6"',
+            # Rotating and re-diagonalizing these moments would break the tie; MuJoCo checks them as authored.
+            'quat="0.1 0.1 0.1 0.3" diaginertia="1e-6 2e-6 3e-6"',
+            'fullinertia="1e-6 2e-6 3e-6 0 0 0"',
+        )
         for compiler in ('balanceinertia="true"', 'boundmass="0.001"', 'boundinertia="2e-6"'):
-            with self.subTest(compiler=compiler):
+            for inertial in inertials:
+                with self.subTest(compiler=compiler, inertial=inertial):
+                    self.assert_bodies_match_native(
+                        f"""<mujoco><compiler {compiler}/><worldbody><body name="tie"><joint/>
+                          <inertial pos="0 0 0" mass="0.0001" {inertial}/>
+                        </body></worldbody></mujoco>"""
+                    )
+
+    def test_balance_keeps_thin_plate(self):
+        """Keep a thin plate's geom inertia, whose float32 moments can round A + B = C into a violation."""
+        self.assert_bodies_match_native(
+            """<mujoco><compiler balanceinertia="true"/><worldbody><body name="plate"><joint/>
+              <geom type="box" size="0.1 0.2 1e-5"/>
+            </body></worldbody></mujoco>"""
+        )
+
+    def test_balance_near_tie_violations(self):
+        """Balance violations below float32 resolution, as MuJoCo's double-precision check does."""
+        for inertial in ('diaginertia="1e-6 1e-6 2.0000001e-6"', 'fullinertia="1e-6 1e-6 2.0000001e-6 0 0 0"'):
+            with self.subTest(inertial=inertial):
                 self.assert_bodies_match_native(
-                    f"""<mujoco><compiler {compiler}/><worldbody><body name="tie"><joint/>
-                      <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-6 2e-6 3e-6"/>
+                    f"""<mujoco><compiler balanceinertia="true"/><worldbody><body name="small"><joint/>
+                      <inertial pos="0 0 0" mass="0.0001" {inertial}/>
                     </body></worldbody></mujoco>"""
                 )
+
+    def test_bounds_follow_import_scale(self):
+        """Scale boundinertia like authored inertia; native MuJoCo compiles the model scaled by hand."""
+
+        def model(s: float) -> str:
+            return f"""<mujoco><compiler boundmass="0.001" boundinertia="{1e-4 * s**2!r}" balanceinertia="true"/>
+              <worldbody>
+                <body name="sphere" pos="0 0 {0.5 * s!r}"><joint/><geom type="sphere" size="{0.1 * s!r}"/></body>
+                <body name="light" pos="{s!r} 0 0"><joint/>
+                  <inertial pos="{0.1 * s!r} 0 0" mass="0.01" diaginertia="{1e-5 * s**2!r} {1e-3 * s**2!r} {1e-3 * s**2!r}"/>
+                </body>
+                <body name="unbalanced" pos="{2 * s!r} 0 0"><joint/>
+                  <inertial pos="0 {0.1 * s!r} 0" quat="0.9 0.1 0.2 0.3" mass="1"
+                            diaginertia="{1e-3 * s**2!r} {2e-3 * s**2!r} {3e-2 * s**2!r}"/>
+                </body>
+              </worldbody></mujoco>"""
+
+        self.assert_bodies_match_native(model(1.0), native_mjcf=model(0.01), scale=0.01)
+
+    def test_massless_body_keeps_zero_inertia(self):
+        """A body that stays massless keeps zero inertia, which MuJoCo would bound, and the importer logs it."""
+        mjcf = """<mujoco model="massless"><compiler boundinertia="1e-4"/><worldbody>
+          <body name="arm"><joint/><geom type="sphere" size="0.1"/>
+            <body name="marker" pos="0 0 0.2"><site name="tip"/></body>
+          </body></worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as logs, warnings.catch_warnings():
+            # Finalize must not need to correct the inertia of the massless body.
+            warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+            builder.add_mjcf(mjcf)
+            model = builder.finalize(device="cpu")
+        self.assertEqual(
+            [record.getMessage() for record in logs.records],
+            ["MJCF model 'massless': boundinertia not applied to massless bodies, which keep zero inertia: marker."],
+        )
+        marker = next(i for i, label in enumerate(model.body_label) if label.endswith("marker"))
+        self.assertEqual(model.body_mass.numpy()[marker], 0.0)
+        np.testing.assert_array_equal(model.body_inertia.numpy()[marker], np.zeros((3, 3)))
 
 
 class TestMjcfIncludeMeshdir(unittest.TestCase):

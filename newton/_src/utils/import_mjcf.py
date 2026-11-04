@@ -187,13 +187,19 @@ def _join_asset_dir(asset_dir: str | None, file_path: str) -> str:
 
 
 def _bound_body_inertia(
-    mass: float, inertia: np.ndarray, bound_mass: float, bound_inertia: float, balance_inertia: bool
+    mass: float,
+    inertia: np.ndarray,
+    bound_mass: float,
+    bound_inertia: float,
+    balance_inertia: bool,
+    principal: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[float, np.ndarray] | None:
     """Apply MJCF ``<compiler boundmass boundinertia balanceinertia>`` to one body.
 
     Follows ``mjCBody::Compile`` in MuJoCo's ``user_objects.cc``: the mass and each principal
     moment are raised to their bound, and with ``balanceinertia`` principal moments that violate
-    ``A + B >= C`` are replaced by their mean.
+    ``A + B >= C`` are replaced by their mean. A body whose mass stays zero keeps its inertia,
+    because Newton treats zero-mass bodies as massless and finalize zeroes their inertia.
 
     Args:
         mass: Body mass [kg].
@@ -201,6 +207,9 @@ def _bound_body_inertia(
         bound_mass: Lower bound on the mass [kg].
         bound_inertia: Lower bound on each principal moment [kg*m^2].
         balance_inertia: Whether to balance principal moments that violate ``A + B >= C``.
+        principal: Authored float64 principal moments [kg*m^2] and principal axes (matrix
+            columns). If given, they replace the eigendecomposition of ``inertia`` and the balance
+            check is exact, as in MuJoCo.
 
     Returns:
         The bounded mass [kg] and inertia tensor [kg*m^2], or ``None`` when neither changes.
@@ -208,15 +217,21 @@ def _bound_body_inertia(
     bounded_mass = max(mass, bound_mass)
     inertia = np.asarray(inertia, dtype=np.float64).reshape(3, 3)
     bounded_inertia = None
-    if bound_inertia > 0.0 or balance_inertia:
-        principal, axes = np.linalg.eigh(inertia)
-        moments = np.maximum(principal, bound_inertia) if bound_inertia > 0.0 else principal.copy()
-        # eigh sorts the moments in ascending order, so only the largest can exceed the others' sum.
-        # The relative tolerance keeps A + B = C ties, which float32 storage can round either way.
-        if balance_inertia and moments[0] + moments[1] < moments[2] * (1.0 - 1e-6):
-            moments[:] = moments.mean()
-        if not np.array_equal(moments, principal):
-            bounded_inertia = axes @ np.diag(moments) @ axes.T
+    if bounded_mass > 0.0 and (bound_inertia > 0.0 or balance_inertia):
+        if principal is None:
+            moments, axes = np.linalg.eigh(inertia)
+            # Moments of the float32 tensor accumulated from geoms carry ~1e-7 relative rounding,
+            # which can turn an A + B = C tie into a violation that MuJoCo's double check never sees.
+            tie_tolerance = 1e-6
+        else:
+            moments, axes = principal
+            tie_tolerance = 0.0
+        bounded_moments = np.maximum(moments, bound_inertia) if bound_inertia > 0.0 else moments.copy()
+        smallest, middle, largest = np.sort(bounded_moments)
+        if balance_inertia and smallest + middle < largest * (1.0 - tie_tolerance):
+            bounded_moments[:] = bounded_moments.sum() / 3.0
+        if not np.array_equal(bounded_moments, moments):
+            bounded_inertia = axes @ np.diag(bounded_moments) @ axes.T
     if bounded_mass == mass and bounded_inertia is None:
         return None
     return bounded_mass, inertia if bounded_inertia is None else bounded_inertia
@@ -653,8 +668,9 @@ def parse_mjcf(
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
     # MuJoCo's per-body lower bounds on mass and principal inertia, applied in parse_body().
+    # Like authored <inertial> moments, the inertia bound scales with length squared; mass does not.
     mjcf_bound_mass = float(compiler_attribs.get("boundmass", "0"))
-    mjcf_bound_inertia = float(compiler_attribs.get("boundinertia", "0"))
+    mjcf_bound_inertia = float(compiler_attribs.get("boundinertia", "0")) * scale**2
     mjcf_balance_inertia = compiler_attribs.get("balanceinertia", "false").lower() == "true"
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
@@ -2677,6 +2693,7 @@ def parse_mjcf(
                     label_prefix=body_label_path,
                 )
 
+        explicit_principal = None
         if not infer_body_inertia_from_geoms and not ignore_inertial_definitions and has_inertial_definition:
             inertial = body.find("inertial")
             if "inertial" in defaults:
@@ -2699,9 +2716,12 @@ def parse_mjcf(
                 I_m[0, 0] = diaginertia[0] * scale**2
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
+                authored = np.array(inertial_attrib["diaginertia"].split(), dtype=np.float64)
+                authored = np.repeat(authored, 3) if authored.size == 1 else authored
+                principal_moments, principal_axes = authored * scale**2, np.eye(3)
             else:
-                fullinertia = inertial_attrib.get("fullinertia", "0 0 0 0 0 0")
-                fullinertia = np.array(fullinertia.split(), dtype=np.float32)
+                authored = inertial_attrib.get("fullinertia", "0 0 0 0 0 0")
+                fullinertia = np.array(authored.split(), dtype=np.float32)
                 if fullinertia.shape[0] != 6:
                     raise ValueError(
                         f"MJCF fullinertia for body '{body_label_path}' must contain 6 values; "
@@ -2717,9 +2737,16 @@ def parse_mjcf(
                 I_m[1, 0] = I_m[0, 1]
                 I_m[2, 0] = I_m[0, 2]
                 I_m[2, 1] = I_m[1, 2]
+                xx, yy, zz, xy, xz, yz = np.array(authored.split(), dtype=np.float64) * scale**2
+                principal_moments, principal_axes = np.linalg.eigh([[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]])
 
             rot = wp.quat_to_matrix(inertial_frame.q)
             rot_np = np.array(rot).reshape(3, 3)
+            # balanceinertia compares the authored moments in double precision, as MuJoCo does, and
+            # bounded moments are rebuilt on float64 axes; unbounded bodies keep the tensor above.
+            quat = np.array(inertial_frame.q, dtype=np.float64)
+            rot64 = np.array(wp.quat_to_matrix(wp.quatd(*(quat / np.linalg.norm(quat)))), dtype=np.float64)
+            explicit_principal = (principal_moments, rot64.reshape(3, 3) @ principal_axes)
             I_m = rot_np @ I_m @ rot_np.T
             I_m = wp.mat33(I_m)
             m = float(inertial_attrib.get("mass", "0"))
@@ -2771,12 +2798,15 @@ def parse_mjcf(
         )
 
         # Bound the final mass properties, after the geoms of <frame> children contributed.
+        if mjcf_bound_inertia > 0.0 and max(builder.body_mass[link], mjcf_bound_mass) == 0.0:
+            massless_bodies.append(body_attrib.get("name", body_label_path))
         bounded = _bound_body_inertia(
             builder.body_mass[link],
             builder.body_inertia[link],
             mjcf_bound_mass,
             mjcf_bound_inertia,
             mjcf_balance_inertia,
+            principal=explicit_principal,
         )
         if bounded is not None:
             mass, inertia = bounded
@@ -3119,6 +3149,7 @@ def parse_mjcf(
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
     approximated_spring_rest = False
+    massless_bodies = []  # Bodies that stay massless, so boundinertia does not apply to them
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
     # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
     # Maps individual MJCF joint names to their specific DOF index.
@@ -3220,6 +3251,12 @@ def parse_mjcf(
             "set convert_3d_hinge_to_ball_joints=False to preserve scalar spring rest coordinates.",
             NewtonWarning,
             stacklevel=3,
+        )
+    if massless_bodies:
+        logger.warning(
+            "MJCF model %r: boundinertia not applied to massless bodies, which keep zero inertia: %s.",
+            root.get("model", ""),
+            ", ".join(massless_bodies),
         )
 
     # add equality constraints
