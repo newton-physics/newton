@@ -924,12 +924,13 @@ class DeviceTorsionPreparation:
                     device=self.solver.model.device,
                 )
 
-    def validate(self):
-        """Synchronously raise latched input errors; they stay latched until :meth:`clear_status`.
+    def validate(self, status: int | None = None):
+        """Raise latched input errors, read synchronously unless ``status`` gives them; they stay latched until :meth:`clear_status`.
 
         Rows beyond the capacity flag their worlds in ``constraint_overflow`` instead.
         """
-        status = int(self.work.status.numpy()[0])
+        if status is None:
+            status = int(self.work.status.numpy()[0])
         if status & 1:
             raise RuntimeError("Contact input overflow before contact torsion")
         if status & 2:
