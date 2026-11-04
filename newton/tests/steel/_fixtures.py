@@ -17,6 +17,7 @@ from newton._src.solvers.steel.friction_patches import (
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
 )
+from newton._src.solvers.steel.solver_steel import _get_pgs_solve_propagation_colored_block_kernel
 from newton.solvers import SolverBase, SolverSteel
 
 CONTACT_MAX = 8192
@@ -277,6 +278,40 @@ def run_fixture(
 # Persistent friction patches (the default friction law).
 PATCH_OPTIONS = {"friction_anchor_beta": 0.2}
 
+# Each colored sweep variant: its kernel overrides and a tag of the kernel it must build.
+COLORED_VARIANTS = {
+    "packed": ({"colored_packed": True}, "_pf1_st0_pk1"),
+    "prefetch": ({"colored_packed": False}, "_pf1_st0_pk0"),
+    "staged": ({"colored_staged": True}, "_pf1_st1"),
+    "reference": ({"colored_prefetch": False}, "_pf0_st0_pk0_sl1"),
+    "row loop": ({"colored_prefetch": False, "colored_straight_line": False}, "_sl0"),
+    "block": ({}, "_sb"),
+    "block global": ({}, "_gb"),
+}
+
+
+def select_colored_variant(test, solver, variant):
+    """Give ``solver`` the block sweeps of ``variant`` and check the kernel it runs."""
+    if variant.startswith("block"):
+        # More bodies than the staging cap keep the twists in global memory.
+        bodies = 385 if variant == "block global" else solver._max_propagation_bodies
+        solver._pgs_solve_propagation_colored_block_kernel = _get_pgs_solve_propagation_colored_block_kernel(
+            solver._propagation_max_constraints,
+            solver._color_world_offsets.shape[0] // solver._world_count,
+            64,
+            bodies,
+            solver.model.device.arch,
+            contact_compliance=solver._contact_compliance,
+            friction_mode=solver._friction_mode,
+        )
+        solver._pgs_solve_propagation_colored_warp_kernel = None
+    warp_kernel = solver._pgs_solve_propagation_colored_warp_kernel
+    kernel = solver._pgs_solve_propagation_colored_block_kernel if warp_kernel is None else warp_kernel
+    test.assertIn(COLORED_VARIANTS[variant][1], kernel.key)
+    test.assertEqual("_cc" in kernel.key, solver._contact_compliance, kernel.key)
+    mode = solver._friction_mode
+    test.assertEqual(kernel.key.endswith(mode), mode != "fixed_normal", kernel.key)
+
 
 def set_torsion_radius(model, radius, shapes=None):
     """Set ``steel:min_torsional_patch_radius`` [m] of ``shapes`` (every shape for ``None``), zero elsewhere.
@@ -452,7 +487,7 @@ def _build_v_jaws(tilt_deg: float, geometry: str = "box", device=None):
                 axis=newton.Axis.X,
                 limit_lower=-0.05,
                 limit_upper=0.05,
-                target_pos=-0.01 * sign,
+                target_q=-0.01 * sign,
                 target_ke=100.0,
                 target_kd=10.0,
             )
@@ -538,6 +573,7 @@ def _patch_fixture(
         ),
         rigid_contact_margin0=wp.zeros(n, dtype=float, device=device),
         rigid_contact_margin1=wp.zeros(n, dtype=float, device=device),
+        rigid_contact_surface_velocity=None,
     )
     patches = _FrictionPatchState(model, max(n, 8), True, wp.zeros(max(n, 8), dtype=wp.vec2, device=device))
     patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
@@ -564,7 +600,7 @@ def _tree(device, links, *, branched=False, worlds=2, loop=False):
                 child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
                 target_ke=20.0 + i,
                 target_kd=1.0,
-                target_pos=0.2,
+                target_q=0.2,
                 armature=0.01,
             )
         )
@@ -626,7 +662,7 @@ def _build_contact_scene(device, *, mu=0.6, restitution=0.0, worlds=2):
                 child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.12), wp.quat_identity()),
                 target_ke=20.0,
                 target_kd=1.0,
-                target_pos=0.4,
+                target_q=0.4,
             ),
         ]
     )
@@ -666,8 +702,11 @@ def _friction_impulses(solver):
     return np.concatenate(values) if values else np.zeros(0)
 
 
-def _run(model, *, steps=12, init=None, overrides=None, capture=False, **options):
-    """Step ``model`` and return the solver, the final joint state and each step's friction impulses."""
+def _run(model, *, steps=12, init=None, overrides=None, capture=False, before_step=None, **options):
+    """Step ``model`` and return the solver, the final joint state and each step's friction impulses.
+
+    ``before_step(model, index)`` runs on the host before each eager step or graph replay.
+    """
     with kernel_overrides(overrides or {}):
         solver = SolverSteel(model, **options)
     state_in, state_out = model.state(), model.state()
@@ -690,15 +729,21 @@ def _run(model, *, steps=12, init=None, overrides=None, capture=False, **options
             wp.copy(dst, src)
 
     if capture:
+        if before_step is not None:
+            before_step(model, 0)
         step()
         friction.append(_friction_impulses(solver))
         with wp.ScopedCapture(model.device) as graph:
             step()
-        for _ in range(steps - 1):
+        for index in range(1, steps):
+            if before_step is not None:
+                before_step(model, index)
             wp.capture_launch(graph.graph)
             friction.append(_friction_impulses(solver))
     else:
-        for _ in range(steps):
+        for index in range(steps):
+            if before_step is not None:
+                before_step(model, index)
             step()
             friction.append(_friction_impulses(solver))
     return solver, state_in.joint_q.numpy(), state_in.joint_qd.numpy(), friction

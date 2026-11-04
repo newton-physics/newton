@@ -14,6 +14,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
+from newton._src.solvers.steel.friction_patches import _FLOOD_MIN_CONTACTS
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -1170,6 +1171,125 @@ def test_frozen_patch_carry_copies_the_previous_history(test, device):
         np.testing.assert_array_equal(getattr(current, name).numpy()[:count], before[name], err_msg=name)
 
 
+def _frozen_plates(device):
+    """Settled plates of box tiles on the ground, each pair large enough for the warp flood."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.rigid_gap = 0.002
+    builder.add_ground_plane()
+    tile = 0.03
+    for level in range(3):
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.01 + 0.0205 * level), wp.quat_identity()))
+        for ix in range(4):
+            for iy in range(4):
+                offset = wp.vec3((ix - 1.5) * 2 * tile, (iy - 1.5) * 2 * tile, 0.0)
+                builder.add_shape_box(body, xform=wp.transform(offset, wp.quat_identity()), hx=tile, hy=tile, hz=0.01)
+    model = builder.finalize(device=device)
+    model.rigid_contact_max = 1024
+    solver = SolverSteel(model, solve_mode="matrix_free", iterations=8, free_body_constraint_max=2048)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=1024)
+    contacts = pipeline.contacts()
+    control = model.control()
+    state_0, state_1 = model.state(), model.state()
+    for _ in range(10):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    pipeline.collide(state_0, contacts)
+    model.body_q.assign(state_0.body_q)
+    return model, contacts, solver
+
+
+_CONTACT_FIELDS = ("shape0", "shape1", "point0", "point1", "normal", "margin0", "margin1")
+
+
+def test_frozen_pair_floods_on_device_when_its_carry_fails(test, device):
+    """A frozen pair whose contacts no longer repeat floods on a warp and matches the serial flood exactly.
+
+    Reversing the contact order breaks the carry, as an unordered collision pipeline does every step.
+    """
+    model, contacts, solver = _frozen_plates(device)
+    patches = solver._friction_patches
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    original = {name: getattr(contacts, "rigid_contact_" + name).numpy().copy() for name in _CONTACT_FIELDS}
+    reversed_order = {}
+    for name, values in original.items():
+        reversed_order[name] = values.copy()
+        reversed_order[name][:count] = values[:count][::-1]
+    state = model.state()
+    frozen = wp.ones(model.body_count, dtype=int, device=model.device)
+
+    def run(device_flood):
+        patches.device_flood = device_flood
+        patches.previous.valid.zero_()
+        patches.build(model, state, contacts, shape_material_mu=solver._shape_mu)
+        patches.store(state)
+        for name, values in reversed_order.items():
+            getattr(contacts, "rigid_contact_" + name).assign(values)
+        patches.build(model, state, contacts, shape_material_mu=solver._shape_mu, frozen_bodies=frozen)
+        listed = int(patches._flood_pair_count.numpy()[0])
+        for name, values in original.items():
+            getattr(contacts, "rigid_contact_" + name).assign(values)
+        outputs = {"frame." + name: getattr(patches.current, name) for name in _PATCH_FRAME_OUTPUTS}
+        outputs.update({"view." + name: getattr(patches.view, name) for name in _PATCH_VIEW_OUTPUTS})
+        return listed, {name: array.numpy().copy() for name, array in outputs.items()}
+
+    _, serial = run(False)
+    listed, flooded = run(True)
+    _, sizes = np.unique(patches.current.keys.numpy()[:count], return_counts=True)
+    large_pairs = int(np.count_nonzero(sizes > _FLOOD_MIN_CONTACTS))
+    test.assertGreater(large_pairs, 0, "no body pair was large enough for the warp flood")
+    test.assertEqual(listed, large_pairs, "a frozen pair skipped the warp flood")
+    source = flooded["frame.source"][:count]
+    test.assertLess(int(np.count_nonzero(source >= 0)), count, "the frozen pairs carried their history")
+    for name, value in serial.items():
+        np.testing.assert_array_equal(flooded[name], value, err_msg=f"{name} differs between the floods")
+
+
+_PATCH_FRAME_OUTPUTS = ("owner", "members", "valid", "source", "anchor_a", "anchor_b", "displacement")
+_PATCH_VIEW_OUTPUTS = ("weight", "next_contact", "point_a", "point_b", "phi")
+
+
+def test_frozen_pair_carry_maps_regions_across_frames(test, device):
+    """Carry each frozen contact's source and region owner after its buffer slot and sorted position move.
+
+    The pairs' buffer blocks are reversed, and the first sorted pair loses a contact, so it rebuilds and
+    every later pair starts one sorted position earlier than in the previous frame.
+    """
+    model, contacts, solver = _frozen_plates(device)
+    patches = solver._friction_patches
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    state = model.state()
+    patches.previous.valid.zero_()
+    patches.build(model, state, contacts, shape_material_mu=solver._shape_mu)
+    patches.store(state)
+    previous_owner = patches.previous.owner.numpy()[:count].copy()
+    keys = patches.previous.keys.numpy()[:count]
+    _, starts = np.unique(keys, return_index=True)
+    pairs = np.split(patches.previous.indices.numpy()[:count], starts[1:])
+    # New slot i holds the previous frame's contact perm[i]; each pair keeps its contacts' relative order.
+    perm = np.concatenate([*pairs[:0:-1], pairs[0][:-1]])
+    new_count = count - 1
+    for name in _CONTACT_FIELDS:
+        array = getattr(contacts, "rigid_contact_" + name)
+        values = array.numpy().copy()
+        values[:new_count] = values[perm]
+        array.assign(values)
+    contacts.rigid_contact_count.fill_(new_count)
+    frozen = wp.ones(model.body_count, dtype=int, device=model.device)
+    patches.build(model, state, contacts, shape_material_mu=solver._shape_mu, frozen_bodies=frozen)
+    test.assertEqual(int(patches._flood_pair_count.numpy()[0]), int(len(pairs[0]) - 1 > _FLOOD_MIN_CONTACTS))
+    slot = np.full(count, -1)
+    slot[perm] = np.arange(new_count)
+    carried = np.arange(new_count - (len(pairs[0]) - 1))
+    source = patches.current.source.numpy()[carried]
+    owner = patches.current.owner.numpy()[carried]
+    np.testing.assert_array_equal(source, perm[carried])
+    np.testing.assert_array_equal(owner, slot[previous_owner[perm[carried]]])
+    regions = np.unique(owner)
+    test.assertGreater(len(regions), 4, "too few friction regions to exercise the carry")
+    test.assertLess(len(regions), len(carried), "no region spans several contacts")
+
+
 def test_successive_notifications_keep_every_wake(test, device):
     """Keep the first notification's wake through a second notification before the next step."""
     model, pipeline, solver, states = _two_world_boxes(device)
@@ -1396,6 +1516,8 @@ for _name in (
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",
     "test_frozen_patch_carry_copies_the_previous_history",
+    "test_frozen_pair_floods_on_device_when_its_carry_fails",
+    "test_frozen_pair_carry_maps_regions_across_frames",
     "test_successive_notifications_keep_every_wake",
     "test_replaced_property_array_wakes_its_island",
     "test_resized_property_array_is_rejected",

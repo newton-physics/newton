@@ -230,8 +230,8 @@ def Xform "World"
     }
 }
 """,
-            ordinal=self.viewer._ovstage_ordinal,
-            time_code=0.0,
+            self.viewer._ovstage_ordinal,
+            0.0,
         )
         self.viewer._ovstage.advance_write_floor(self.viewer._ovstage_ordinal, self.ovstage.Scope.ALL).wait()
 
@@ -274,7 +274,7 @@ def Xform "World"
             ["inherited", "invisible"],
         )
 
-    def test_write_array_attribute_preserves_vector_lanes(self):
+    def test_write_array_attribute_preserves_vector_layout(self):
         """Write a runtime vector array with its element layout intact."""
         points = np.asarray(
             [
@@ -295,10 +295,11 @@ def Xform "World"
             self.ovstage.OrdinalRange.latest(self.viewer._ovstage_ordinal),
         ) as read:
             group = read.fetch_next()
-            self.assertEqual(group.tensor(0).dtype.lanes, 3)
             values = np.from_dlpack(group.dlpack(0)).copy()
             self.viewer._ovstage.release_group(group)
 
+        self.assertEqual(values.shape, points.shape)
+        self.assertEqual(values.dtype, points.dtype)
         np.testing.assert_allclose(values, points)
 
     def test_runtime_prim_population_uses_ovstage(self):
