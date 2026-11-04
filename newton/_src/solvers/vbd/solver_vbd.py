@@ -207,6 +207,32 @@ def _rigid_lambda_retention(alpha: float, gamma: float, use_compliant_alm: bool)
     return gamma if use_compliant_alm else alpha * gamma
 
 
+def _self_contact_record_bounds(
+    vertex_pair_capacity: int, edge_pair_capacity: int, launch_size: int
+) -> tuple[int, int]:
+    """Per-thread record bounds of the strided self-contact kernels for Warp's deterministic lowering.
+
+    The per-pair kernels launch ``launch_size`` threads and stride each
+    thread over the stored pairs of both families, so a thread visits at
+    most ``ceil(capacity / launch_size)`` pairs of a family. Every visit can
+    execute each atomic call site of the loop body once per target array:
+    the truncation kernel takes a minimum for the four particles of a pair
+    of either family, the force kernel adds to the two edge particles or
+    the four vertex-triangle particles, and the coupling harvest adds to
+    the two edge particles or the vertex and the three triangle particles.
+    Warp sizes its record buffers as the launch size times this bound.
+
+    Returns:
+        The bound for the particle module (force and truncation kernels)
+        and the bound for the coupling module (harvest kernel).
+    """
+    edge_visits = -(-edge_pair_capacity // launch_size)
+    vertex_visits = -(-vertex_pair_capacity // launch_size)
+    particle_bound = 4 * (edge_visits + vertex_visits)
+    coupling_bound = 2 * edge_visits + 4 * vertex_visits
+    return particle_bound, coupling_bound
+
+
 class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
@@ -760,19 +786,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
                 atomics in every other mode. Self-contact forces are
-                accumulated with atomics in every mode; the deterministic
-                lowering covers them while every stored pair has its own
-                thread, that is while each family stores at most as many
-                pairs as the per-pair launch size (2048 threads per SM on
-                CUDA, about 290k pairs on an L40). Above that the strided pair
-                loops revisit the atomic sites and exceed Warp's static record
-                bound: a direct launch raises ``wp.WarpDeterminismError``, and
-                a captured graph replays with dropped records, which Warp
-                reports only with ``wp.config.deterministic_debug`` enabled.
-                The solver sets the record bound of its particle kernel module
-                itself, so ``wp.config.deterministic_max_records`` does not
-                reach these kernels; keep the default ``NOT_GUARANTEED`` mode
-                for scenes that store more self-contact pairs than that.
+                accumulated with atomics in every mode; in the deterministic
+                modes the solver bounds the records per thread of its particle
+                and coupling kernel modules from the pooled self-contact pair
+                capacity and the per-pair launch size, so Warp's lowering
+                covers every stored pair. That module option replaces
+                ``wp.config.deterministic_max_records`` for these modules. The
+                bound and the record buffers grow with the pair capacity; the
+                bound is recomputed when the self-contact storage grows, which
+                compiles the two modules once more per new value.
             enable_fast_math: Compile the particle kernels, the rigid body
                 solve, and the joint dual update with Warp's ``fast_math``
                 (approximate division and square root). Results change at the
@@ -1053,14 +1075,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     particle_deterministic_max_records,
                     attachment_records,
                 )
-        # Self-contact forces are accumulated with atomics in every mode. The
-        # deterministic lowering sizes its record buffers from the static count
-        # of atomic sites per thread, which holds while every stored pair has
-        # its own thread (stored pairs per family within the launch size, see
-        # _update_self_contact_launch_size); denser scenes revisit the atomic
-        # sites and overflow (see the ``deterministic`` argument docstring).
-        # The bound set here replaces wp.config.deterministic_max_records for
-        # the module; the pooled rows give no per-thread bound to derive.
+        # Self-contact forces are accumulated with atomics in every mode. In
+        # the deterministic modes the strided per-pair kernels need a record
+        # bound per thread that covers their revisits of the atomic sites;
+        # _update_self_contact_record_bounds derives it from the pooled pair
+        # capacity and the launch size once the self-contact storage is bound,
+        # and again whenever the storage grows. The module option replaces
+        # wp.config.deterministic_max_records for these modules.
+        self._effective_deterministic = effective_deterministic
+        self._attachment_deterministic_max_records = particle_deterministic_max_records
         if model.particle_count > 0:
             self._set_module_options(
                 {
@@ -1315,6 +1338,30 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         else:
             occupancy_target = capacity
         self.particle_self_contact_evaluation_kernel_launch_size = min(capacity, occupancy_target)
+        self._update_self_contact_record_bounds(collision_info)
+
+    def _update_self_contact_record_bounds(self, collision_info: TriMeshCollisionInfo) -> None:
+        """Set the deterministic record bounds of the self-contact kernel modules.
+
+        Only the deterministic modes read the bound, and Warp hashes every
+        module option into the module key, so the default mode keeps the bound
+        at zero and a storage change never recompiles it. In a deterministic
+        mode each new bound is a new module variant, compiled once; the bound
+        changes only when the self-contact storage grows.
+        """
+        if self._effective_deterministic == wp.DeterministicMode.NOT_GUARANTEED:
+            return
+        particle_bound, coupling_bound = _self_contact_record_bounds(
+            collision_info.vertex_colliding_triangles.shape[0] // 2,
+            collision_info.edge_colliding_edges.shape[0] // 2,
+            self.particle_self_contact_evaluation_kernel_launch_size,
+        )
+        particle_bound = max(particle_bound, self._attachment_deterministic_max_records)
+        for module, bound in ((particle_vbd_kernels, particle_bound), (vbd_coupling_kernels, coupling_bound)):
+            options = self._module_options.get(module)
+            if options is None or options.get("deterministic_max_records") == bound:
+                continue
+            self._set_module_options(options | {"deterministic_max_records": bound}, module=module)
 
     def _self_contact_detector(self) -> TriMeshCollisionDetector:
         """The detector serving this solver's self-contact detection."""

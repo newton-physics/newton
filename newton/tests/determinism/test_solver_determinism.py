@@ -18,6 +18,7 @@ import newton.tests.unittest_utils
 from newton._src.solvers.semi_implicit import kernels_particle as semi_implicit_particle_kernels
 from newton._src.solvers.solver import _set_module_options_if_changed
 from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
+from newton._src.solvers.vbd.solver_vbd import _self_contact_record_bounds
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
 from newton._src.solvers.xpbd import tendon_kernels as xpbd_tendon_kernels
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, warp_version_at_least
@@ -98,6 +99,16 @@ def _build_soft_body(device):
     )
     builder.color()
     return builder.finalize(device=device)
+
+
+def _expected_self_contact_record_bounds(solver):
+    """The record bounds SolverVBD derives for its live self-contact storage."""
+    info = solver.particle_self_contact_info()
+    return _self_contact_record_bounds(
+        info.vertex_colliding_triangles.shape[0] // 2,
+        info.edge_colliding_edges.shape[0] // 2,
+        solver.particle_self_contact_evaluation_kernel_launch_size,
+    )
 
 
 def _make_particle_solver(model, solver_name):
@@ -410,7 +421,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
         """Verify SolverVBD construction resets inherited deterministic module options."""
         with wp.ScopedDevice("cpu"):
             model = _build_soft_body("cpu")
-            newton.solvers.SolverVBD(
+            solver = newton.solvers.SolverVBD(
                 model,
                 particle_enable_self_contact=True,
                 particle_enable_tile_solve=False,
@@ -420,10 +431,12 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             )
             options = wp.get_module_options(module=particle_vbd_kernels)
             self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
-            # The shared self-contact pair arrays have no per-element record
-            # bound, so the solver no longer derives a deterministic-atomics
-            # record budget from the contact buffer sizes.
-            self.assertEqual(options["deterministic_max_records"], 0)
+            # The record bound follows the pooled pair capacity and the launch
+            # size of the strided self-contact kernels, not the per-element
+            # buffer sizes.
+            particle_bound, _coupling_bound = _expected_self_contact_record_bounds(solver)
+            self.assertGreater(particle_bound, 0)
+            self.assertEqual(options["deterministic_max_records"], particle_bound)
 
             wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
             newton.solvers.SolverVBD(
@@ -461,7 +474,9 @@ class TestSolverDeterminismOptions(unittest.TestCase):
 
             options = wp.get_module_options(module=vbd_coupling_kernels)
             self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
-            self.assertEqual(options["deterministic_max_records"], 0)
+            _particle_bound, coupling_bound = _expected_self_contact_record_bounds(deterministic_solver)
+            self.assertGreater(coupling_bound, 0)
+            self.assertEqual(options["deterministic_max_records"], coupling_bound)
 
 
 devices = get_cuda_test_devices(mode="basic")
