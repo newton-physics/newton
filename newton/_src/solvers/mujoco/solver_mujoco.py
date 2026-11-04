@@ -11449,6 +11449,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ratios = springdamper.numpy()
         if not np.any(np.all(ratios > 0.0, axis=1)):
             return
+        ratios = ratios.copy()
 
         mapping = self.mjc_dof_to_newton_dof.numpy()
         locked = self._kinematic_weld_eq is not None and np.any(
@@ -11465,18 +11466,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if locked:
             self._set_const_0()
 
-        stiffness = self.model.joint_stiffness.numpy()
-        damping = self.model.joint_damping.numpy()
+        stiffness = self.model.joint_stiffness.numpy().copy()
+        damping = self.model.joint_damping.numpy().copy()
         starts = self.mj_model.jnt_dofadr
         minval = self._mujoco.mjMINVAL
         for joint, start in enumerate(starts):
             end = starts[joint + 1] if joint + 1 < len(starts) else self.mj_model.nv
             indices = mapping[:, start:end]
-            pairs = ratios[np.maximum(indices[:, 0], 0)]
-            enabled = np.all(indices >= 0, axis=1) & np.all(pairs > 0.0, axis=1)
+            pairs = ratios[np.maximum(indices, 0)]
+            enabled = np.all(indices >= 0, axis=1) & np.any(np.all(pairs > 0.0, axis=2), axis=1)
+            if np.any(enabled & np.any(pairs != pairs[:, :1], axis=(1, 2))):
+                raise ValueError("springdamper must be uniform across all DOFs of a joint")
             if not np.any(enabled):
                 continue
-            timeconst, dampratio = pairs[enabled].T
+            timeconst, dampratio = pairs[enabled, 0].T
             # Match MuJoCo's joint-wise averaging and minimum denominators, including BALL joints.
             inertia = (end - start) / np.maximum(minval, np.sum(invweight[enabled, start:end], axis=1))
             selected = indices[enabled]

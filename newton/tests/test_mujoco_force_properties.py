@@ -95,7 +95,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.dof_damping, native.dof_damping, rtol=2e-5)
         np.testing.assert_array_equal(model.joint_rest_q.numpy(), rest)
         np.testing.assert_array_equal(model.mujoco.dof_springdamper.numpy(), 0.0)
-        stiffness = model.joint_stiffness.numpy()
+        stiffness = model.joint_stiffness.numpy().copy()
         stiffness[6:] = 0.4
         model.joint_stiffness.assign(stiffness)
         model.joint_damping.zero_()
@@ -105,6 +105,17 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         for current in (solver, SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)):
             np.testing.assert_allclose(current.mj_model.jnt_stiffness, [0, 0.4, 0.4, 0.4, 0.4], rtol=1e-6)
             np.testing.assert_array_equal(current.mj_model.dof_damping, 0.0)
+
+        ball = np.flatnonzero(model.joint_type.numpy() == newton.JointType.BALL)[0]
+        ratios = model.mujoco.dof_springdamper.numpy().copy()
+        ratios[6] = [0.2, 1.5]
+        ratios[model.joint_qd_start.numpy()[ball] + 1] = [0.2, 1.5]
+        model.mujoco.dof_springdamper.assign(ratios)
+        with self.assertRaisesRegex(ValueError, "springdamper.*uniform"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_array_equal(model.mujoco.dof_springdamper.numpy(), ratios)
+        np.testing.assert_array_equal(model.joint_stiffness.numpy(), stiffness)
+        np.testing.assert_array_equal(model.joint_damping.numpy(), 0.0)
 
     def test_imported_springdamper_per_world_physical_inertia(self):
         """Resolve heterogeneous worlds without kinematic-lock armature on either backend."""
