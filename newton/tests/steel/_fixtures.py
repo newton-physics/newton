@@ -667,8 +667,11 @@ def _friction_impulses(solver):
     return np.concatenate(values) if values else np.zeros(0)
 
 
-def _run(model, *, steps=12, init=None, overrides=None, capture=False, **options):
-    """Step ``model`` and return the solver, the final joint state and each step's friction impulses."""
+def _run(model, *, steps=12, init=None, overrides=None, capture=False, before_step=None, **options):
+    """Step ``model`` and return the solver, the final joint state and each step's friction impulses.
+
+    ``before_step(model, index)`` runs on the host before each eager step or graph replay.
+    """
     with kernel_overrides(overrides or {}):
         solver = SolverSteel(model, **options)
     state_in, state_out = model.state(), model.state()
@@ -691,15 +694,21 @@ def _run(model, *, steps=12, init=None, overrides=None, capture=False, **options
             wp.copy(dst, src)
 
     if capture:
+        if before_step is not None:
+            before_step(model, 0)
         step()
         friction.append(_friction_impulses(solver))
         with wp.ScopedCapture(model.device) as graph:
             step()
-        for _ in range(steps - 1):
+        for index in range(1, steps):
+            if before_step is not None:
+                before_step(model, index)
             wp.capture_launch(graph.graph)
             friction.append(_friction_impulses(solver))
     else:
-        for _ in range(steps):
+        for index in range(steps):
+            if before_step is not None:
+                before_step(model, index)
             step()
             friction.append(_friction_impulses(solver))
     return solver, state_in.joint_q.numpy(), state_in.joint_qd.numpy(), friction
