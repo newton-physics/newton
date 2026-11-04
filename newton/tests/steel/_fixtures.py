@@ -17,6 +17,7 @@ from newton._src.solvers.steel.friction_patches import (
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
 )
+from newton._src.solvers.steel.solver_steel import _get_pgs_solve_propagation_colored_block_kernel
 from newton.solvers import SolverBase, SolverSteel
 
 CONTACT_MAX = 8192
@@ -276,6 +277,40 @@ def run_fixture(
 
 # Persistent friction patches (the default friction law).
 PATCH_OPTIONS = {"friction_anchor_beta": 0.2}
+
+# Each colored sweep variant: its kernel overrides and a tag of the kernel it must build.
+COLORED_VARIANTS = {
+    "packed": ({"colored_packed": True}, "_pf1_st0_pk1"),
+    "prefetch": ({"colored_packed": False}, "_pf1_st0_pk0"),
+    "staged": ({"colored_staged": True}, "_pf1_st1"),
+    "reference": ({"colored_prefetch": False}, "_pf0_st0_pk0_sl1"),
+    "row loop": ({"colored_prefetch": False, "colored_straight_line": False}, "_sl0"),
+    "block": ({}, "_sb"),
+    "block global": ({}, "_gb"),
+}
+
+
+def select_colored_variant(test, solver, variant):
+    """Give ``solver`` the block sweeps of ``variant`` and check the kernel it runs."""
+    if variant.startswith("block"):
+        # More bodies than the staging cap keep the twists in global memory.
+        bodies = 385 if variant == "block global" else solver._max_propagation_bodies
+        solver._pgs_solve_propagation_colored_block_kernel = _get_pgs_solve_propagation_colored_block_kernel(
+            solver._propagation_max_constraints,
+            solver._color_world_offsets.shape[0] // solver._world_count,
+            64,
+            bodies,
+            solver.model.device.arch,
+            contact_compliance=solver._contact_compliance,
+            friction_mode=solver._friction_mode,
+        )
+        solver._pgs_solve_propagation_colored_warp_kernel = None
+    warp_kernel = solver._pgs_solve_propagation_colored_warp_kernel
+    kernel = solver._pgs_solve_propagation_colored_block_kernel if warp_kernel is None else warp_kernel
+    test.assertIn(COLORED_VARIANTS[variant][1], kernel.key)
+    test.assertEqual("_cc" in kernel.key, solver._contact_compliance, kernel.key)
+    mode = solver._friction_mode
+    test.assertEqual(kernel.key.endswith(mode), mode != "fixed_normal", kernel.key)
 
 
 def set_torsion_radius(model, radius, shapes=None):

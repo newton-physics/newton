@@ -29,15 +29,16 @@ from newton._src.solvers.steel.kernels import (
 from newton._src.solvers.steel.solver_steel import (
     _colored_staging_supported,
     _get_pgs_solve_mf_gs_kernel,
-    _get_pgs_solve_propagation_colored_block_kernel,
 )
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import (
     _DEVICE,
     _SQUEEZE_SOLVER,
+    COLORED_VARIANTS,
     _build_v_jaws,
     _patch_fixture,
     fixture,
+    select_colored_variant,
     set_torsion_radius,
 )
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
@@ -2613,38 +2614,6 @@ _MODE_MU = 0.5
 _MODE_SLIP = math.atan(_MODE_MU)
 _MODE_TOLERANCE = 1.0e-4
 
-# Each colored sweep variant: its kernel overrides and a tag of the kernel it must build.
-_COLORED_VARIANTS = {
-    "packed": ({"colored_packed": True}, "_pf1_st0_pk1"),
-    "prefetch": ({"colored_packed": False}, "_pf1_st0_pk0"),
-    "staged": ({"colored_staged": True}, "_pf1_st1"),
-    "reference": ({"colored_prefetch": False}, "_pf0_st0_pk0_sl1"),
-    "row loop": ({"colored_prefetch": False, "colored_straight_line": False}, "_sl0"),
-    "block": ({}, "_sb"),
-    "block global": ({}, "_gb"),
-}
-
-
-def _select_colored_variant(test, solver, variant):
-    """Give ``solver`` the block sweeps of ``variant`` and check the kernel it runs."""
-    if variant.startswith("block"):
-        # More bodies than the staging cap keep the twists in global memory.
-        bodies = 385 if variant == "block global" else solver._max_propagation_bodies
-        solver._pgs_solve_propagation_colored_block_kernel = _get_pgs_solve_propagation_colored_block_kernel(
-            solver._propagation_max_constraints,
-            solver._color_world_offsets.shape[0] // solver._world_count,
-            64,
-            bodies,
-            solver.model.device.arch,
-            friction_mode=solver._friction_mode,
-        )
-        solver._pgs_solve_propagation_colored_warp_kernel = None
-    warp_kernel = solver._pgs_solve_propagation_colored_warp_kernel
-    kernel = solver._pgs_solve_propagation_colored_block_kernel if warp_kernel is None else warp_kernel
-    test.assertIn(_COLORED_VARIANTS[variant][1], kernel.key)
-    mode = solver._friction_mode
-    test.assertEqual(kernel.key.endswith(mode), mode != "fixed_normal", kernel.key)
-
 
 class _ModeScene:
     """One box on an incline or one sliding sphere per world, stepped in place so steps can be captured."""
@@ -2700,11 +2669,11 @@ class _ModeScene:
             "deterministic": wp.DeterministicMode.RUN_TO_RUN,
         }
         args.update(solver_kwargs)
-        overrides = _COLORED_VARIANTS[variant][0] if variant else {}
+        overrides = COLORED_VARIANTS[variant][0] if variant else {}
         with kernel_overrides(overrides):
             self.solver = SolverSteel(self.model, **args)
         if variant:
-            _select_colored_variant(test, self.solver, variant)
+            select_colored_variant(test, self.solver, variant)
         self.pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=16 * worlds, deterministic=True)
         self.contacts = self.pipeline.contacts()
         self.state_in, self.state_out = self.model.state(), self.model.state()
@@ -2813,7 +2782,7 @@ def test_every_colored_variant_agrees(test, device):
     the block sweeps, which the other tests never select.
     """
     for mode, variants in (
-        ("bisection_desaxce", tuple(_COLORED_VARIANTS)),
+        ("bisection_desaxce", tuple(COLORED_VARIANTS)),
         ("coulomb_newton", ("packed", "block", "block global")),
     ):
         reference = None
