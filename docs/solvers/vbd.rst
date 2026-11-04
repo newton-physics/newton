@@ -304,7 +304,7 @@ Key Constructor Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
-``dat_conservative_bound_relaxation``,
+``contact_damping_bidirectional``, ``dat_conservative_bound_relaxation``,
 ``integrate_with_external_rigid_solver``, and ``collision_pipeline`` with
 ``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
 self-contact on or off, margin and gap, the candidate buffer sizes, the

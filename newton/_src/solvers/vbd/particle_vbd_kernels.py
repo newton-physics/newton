@@ -891,9 +891,16 @@ def damp_collision(
     collision_normal: wp.vec3,
     collision_damping: float,
     dt: float,
+    contact_damping_bidirectional: bool,
 ):
-    """Damp collision with the contact gap rate, not absolute vertex motion."""
-    if gap_rate < -1.0e-6:
+    """Damp collision with the contact gap rate, not absolute vertex motion.
+
+    By default only a closing gap (``gap_rate < 0``) is damped. With
+    ``contact_damping_bidirectional`` the same linear damper and its Hessian also
+    act while the gap opens, so the force resists the relative normal motion in
+    both directions.
+    """
+    if gap_rate < -1.0e-6 or (contact_damping_bidirectional and gap_rate > 1.0e-6):
         n_outer = wp.outer(collision_normal, collision_normal)
         damping_force = -collision_damping * gap_rate * b_i * collision_normal
         damping_hessian = (collision_damping / dt) * b_i * b_i * n_outer
@@ -918,6 +925,7 @@ def evaluate_edge_edge_contact(
     friction_epsilon: float,
     dt: float,
     edge_edge_parallel_epsilon: float,
+    contact_damping_bidirectional: bool,
 ):
     r"""
     Returns the edge-edge contact force and hessian, including the friction force.
@@ -1010,7 +1018,9 @@ def evaluate_edge_edge_contact(
 
         gap_rate = wp.dot(collision_normal, dx) / dt
 
-        damping_force, damping_hessian = damp_collision(gap_rate, v_bary, collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, v_bary, collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force = collision_force + damping_force
         collision_hessian = collision_hessian + damping_hessian
 
@@ -1037,6 +1047,7 @@ def evaluate_edge_edge_contact_2_vertices(
     friction_epsilon: float,
     dt: float,
     edge_edge_parallel_epsilon: float,
+    contact_damping_bidirectional: bool,
 ):
     r"""
     Returns the edge-edge contact force and hessian, including the friction force.
@@ -1130,12 +1141,16 @@ def evaluate_edge_edge_contact_2_vertices(
         collision_hessian_0 = collision_hessian * bs[0] * bs[0]
         collision_hessian_1 = collision_hessian * bs[1] * bs[1]
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[0], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[0], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[1], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[1], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
 
@@ -1161,6 +1176,7 @@ def evaluate_vertex_triangle_collision_force_hessian(
     friction_coefficient: float,
     friction_epsilon: float,
     dt: float,
+    contact_damping_bidirectional: bool,
 ):
     a = pos[tri_indices[tri, 0]]
     b = pos[tri_indices[tri, 1]]
@@ -1215,7 +1231,9 @@ def evaluate_vertex_triangle_collision_force_hessian(
 
         gap_rate = wp.dot(collision_normal, dx) / dt
 
-        damping_force, damping_hessian = damp_collision(gap_rate, v_bary, collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, v_bary, collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force = collision_force + damping_force
         collision_hessian = collision_hessian + damping_hessian
 
@@ -1241,6 +1259,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
     friction_coefficient: float,
     friction_epsilon: float,
     dt: float,
+    contact_damping_bidirectional: bool,
 ):
     a = pos[tri_indices[tri, 0]]
     b = pos[tri_indices[tri, 1]]
@@ -1305,20 +1324,28 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
         collision_hessian_2 = collision_hessian * bs[2] * bs[2]
         collision_hessian_3 = collision_hessian * bs[3] * bs[3]
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[0], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[0], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[1], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[1], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[2], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[2], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_2 += damping_force + bs[2] * friction_force
         collision_hessian_2 += damping_hessian + bs[2] * bs[2] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(gap_rate, bs[3], collision_normal, collision_damping, dt)
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, bs[3], collision_normal, collision_damping, dt, contact_damping_bidirectional
+        )
         collision_force_3 += damping_force + bs[3] * friction_force
         collision_hessian_3 += damping_hessian + bs[3] * bs[3] * friction_hessian
         return (
@@ -1578,6 +1605,7 @@ def accumulate_self_contact_force_and_hessian(
     soft_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     edge_edge_parallel_epsilon: float,
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
@@ -1618,6 +1646,7 @@ def accumulate_self_contact_force_and_hessian(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            contact_damping_bidirectional,
                         )
                     )
 
@@ -1680,6 +1709,7 @@ def accumulate_self_contact_force_and_hessian(
                         friction_mu,
                         friction_epsilon,
                         dt,
+                        contact_damping_bidirectional,
                     )
 
                     if has_contact:
@@ -2122,6 +2152,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     particle_colors: wp.array[int],
     # body-particle contact
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_particle: wp.array[int],
     body_particle_contact_count: wp.array[int],
@@ -2181,6 +2212,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 shape_margin,
                 dt,
                 False,
+                contact_damping_bidirectional,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
@@ -2473,6 +2505,7 @@ def gather_particle_body_contact_force_and_hessian(
     # body-particle contact
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     particle_contact_head: wp.array[int],
@@ -2554,6 +2587,7 @@ def gather_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                contact_damping_bidirectional,
             )
             force += contact_force
             hessian += contact_hessian
@@ -2582,6 +2616,7 @@ def gather_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                contact_damping_bidirectional,
             )
             weight = bary[corner]
             force += weight * contact_force
@@ -2605,6 +2640,7 @@ def scatter_particle_body_contact_force_and_hessian(
     # body-particle contact
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_count: wp.array[int],
@@ -2677,6 +2713,7 @@ def scatter_particle_body_contact_force_and_hessian(
                     shape_margin,
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
+                    contact_damping_bidirectional,
                 )
                 wp.atomic_add(particle_forces, particle_index, contact_force)
                 wp.atomic_add(particle_hessians, particle_index, contact_hessian)
@@ -2713,6 +2750,7 @@ def scatter_particle_body_contact_force_and_hessian(
                     shape_margin,
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
+                    contact_damping_bidirectional,
                 )
                 for i in range(3):
                     corner_index = corners[i]
@@ -3047,6 +3085,7 @@ def accumulate_contact_force_and_hessian(
     soft_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     edge_edge_parallel_epsilon: float,
     # body-particle contact
     particle_radius: wp.array[float],
@@ -3103,6 +3142,7 @@ def accumulate_contact_force_and_hessian(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            contact_damping_bidirectional,
                         )
                     )
 
@@ -3165,6 +3205,7 @@ def accumulate_contact_force_and_hessian(
                         friction_mu,
                         friction_epsilon,
                         dt,
+                        contact_damping_bidirectional,
                     )
 
                     if has_contact:

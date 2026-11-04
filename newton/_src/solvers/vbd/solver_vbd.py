@@ -443,6 +443,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Common parameters
         iterations: int | None = None,
         friction_epsilon: float = 1e-2,
+        contact_damping_bidirectional: bool = False,
         dat_conservative_bound_relaxation: float = 0.85,
         integrate_with_external_rigid_solver: bool = False,
         # Particle parameters
@@ -506,6 +507,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Explicit values override the scene.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
+            contact_damping_bidirectional: Whether contact damping also acts while a contact separates. By default
+                (``False``) the normal damping of every contact type (soft self-contact, rigid-soft and rigid-rigid)
+                acts only while the gap closes. With ``True`` the same linear damper and its Hessian also resist the
+                opening of the gap, for every contact that is still within its contact radius.
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
                 (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
                 (``rigid_soft_enable_dat``). It scales every truncation scalar, and each side's motion
@@ -1087,6 +1092,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
+        self.contact_damping_bidirectional = bool(contact_damping_bidirectional)
         self.rigid_soft_contact_use_log_barrier = bool(rigid_soft_contact_use_log_barrier)
         self._joint_mode_deprecation_warned = False
 
@@ -1811,6 +1817,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.model.body_com,
                     float(self.friction_epsilon),
                     self.rigid_soft_contact_use_log_barrier,
+                    self.contact_damping_bidirectional,
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
                     self.body_particle_contact_material_mu,
@@ -1892,6 +1899,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     int(ParticleFlags.PROXY),
                     self.friction_epsilon,
                     self.rigid_soft_contact_use_log_barrier,
+                    self.contact_damping_bidirectional,
                     self.model.particle_radius,
                     contacts.soft_contact_count,
                     _make_soft_contact_filter_data(self.model, contacts, state_out.particle_q, body_q_for_particles),
@@ -1938,6 +1946,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.model.soft_contact_kd,
                     self.model.soft_contact_mu,
                     self.friction_epsilon,
+                    self.contact_damping_bidirectional,
                     self._self_contact_edge_edge_parallel_epsilon,
                     out_particle_f,
                 ],
@@ -4365,6 +4374,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             state_in.particle_q,
                             self.friction_epsilon,
                             self.rigid_soft_contact_use_log_barrier,
+                            self.contact_damping_bidirectional,
                             model.particle_radius,
                             contacts.soft_contact_indices,
                             self._particle_contact_head,
@@ -4392,6 +4402,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self.model.particle_colors,
                             self.friction_epsilon,
                             self.rigid_soft_contact_use_log_barrier,
+                            self.contact_damping_bidirectional,
                             model.particle_radius,
                             contacts.soft_contact_indices,
                             contacts.soft_contact_count,
@@ -4446,6 +4457,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
+                        self.contact_damping_bidirectional,
                         self._self_contact_edge_edge_parallel_epsilon,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
@@ -4793,6 +4805,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.shape_body,
                         self.friction_epsilon,
                         self.rigid_soft_contact_use_log_barrier,
+                        self.contact_damping_bidirectional,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
@@ -4834,6 +4847,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.body_com,
                         self.body_inv_mass_effective,
                         self.friction_epsilon,
+                        self.contact_damping_bidirectional,
                         self.body_body_contact_penalty_k,
                         self.body_body_contact_normal_rho,
                         self.body_body_contact_material_ke,
@@ -5143,6 +5157,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.rigid_contact_hard,
                 self.rigid_compliant_alm,
                 float(self.friction_epsilon),
+                self.contact_damping_bidirectional,
             ],
             outputs=[contact_f],
             device=self.device,
@@ -5181,6 +5196,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.body_com,
                 self.friction_epsilon,
                 self.rigid_soft_contact_use_log_barrier,
+                self.contact_damping_bidirectional,
                 self.body_particle_contact_penalty_k,
                 self.body_particle_contact_material_kd,
                 self.body_particle_contact_material_mu,
@@ -5329,6 +5345,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.rigid_contact_hard,
                 self.rigid_compliant_alm,
                 float(self.friction_epsilon),
+                self.contact_damping_bidirectional,
             ],
             outputs=[
                 self._rigid_contact_body0,

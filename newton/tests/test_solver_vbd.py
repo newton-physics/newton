@@ -40,6 +40,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
     _alm_relaxed_ascent,
     _compliant_alm_coefficients,
+    _compute_body_particle_contact_force,
     _contact_tangent_conditioning_scale,
     _eval_body_particle_contact,
     _eval_soft_ef_contact,
@@ -423,6 +424,7 @@ def _eval_compliant_sliding_contact_metric_kernel(
             1,
             0.01,
             wp.vec3(0.0),
+            False,
         )
     )
     force_out[0] = force_a
@@ -594,6 +596,7 @@ def accumulate_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
                 use_log_barrier,
+                False,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
@@ -623,6 +626,7 @@ def accumulate_particle_body_contact_force_and_hessian(
             shape_margin,
             dt,
             use_log_barrier,
+            False,
         )
         for i in range(3):
             ci = corners[i]
@@ -710,9 +714,151 @@ def _eval_vertex_triangle_uniform_motion_kernel(
         0.0,
         0.01,
         0.1,
+        False,
     )
     forces[i] = force_3
     hessians[i] = hessian_3
+
+
+@wp.kernel
+def _eval_separating_contact_damping_kernel(
+    soft_pos: wp.array[wp.vec3],
+    soft_pos_prev: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    damping_forces: wp.array2d[wp.vec3],
+    damping_hessians: wp.array2d[wp.mat33],
+):
+    """Row 0 uses the default one-sided damping, row 1 the bidirectional option.
+
+    Columns: soft-soft vertex-triangle, rigid-soft body-particle, rigid-rigid body-body.
+    Every contact separates along +z, so one-sided damping must stay zero.
+    """
+    mode = wp.tid()
+    bidirectional = mode == 1
+    dt = 0.1
+    normal = wp.vec3(0.0, 0.0, 1.0)
+
+    # Soft-soft: vertex 3 moves away from triangle (0, 1, 2) while inside the contact radius.
+    (
+        _has_contact_damped,
+        _soft_force_0_damped,
+        _soft_force_1_damped,
+        _soft_force_2_damped,
+        soft_force_damped,
+        _soft_hessian_0_damped,
+        _soft_hessian_1_damped,
+        _soft_hessian_2_damped,
+        soft_hessian_damped,
+    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+        3, 0, soft_pos, soft_pos_prev, tri_indices, 0.1, 100.0, 50.0, 0.0, 0.01, dt, bidirectional
+    )
+    (
+        _has_contact_undamped,
+        _soft_force_0_undamped,
+        _soft_force_1_undamped,
+        _soft_force_2_undamped,
+        soft_force_undamped,
+        _soft_hessian_0_undamped,
+        _soft_hessian_1_undamped,
+        _soft_hessian_2_undamped,
+        soft_hessian_undamped,
+    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+        3, 0, soft_pos, soft_pos_prev, tri_indices, 0.1, 100.0, 0.0, 0.0, 0.01, dt, bidirectional
+    )
+    damping_forces[mode, 0] = soft_force_damped - soft_force_undamped
+    damping_hessians[mode, 0] = soft_hessian_damped - soft_hessian_undamped
+
+    # Rigid-soft: the shared body-particle force law with a separating relative translation.
+    relative_translation = wp.vec3(0.0, 0.0, 0.01)
+    body_particle_force_damped, body_particle_hessian_damped = _compute_body_particle_contact_force(
+        0.05, 0.1, normal, relative_translation, 100.0, 20.0, 0.0, 0.01, dt, False, bidirectional
+    )
+    body_particle_force_undamped, body_particle_hessian_undamped = _compute_body_particle_contact_force(
+        0.05, 0.1, normal, relative_translation, 100.0, 0.0, 0.0, 0.01, dt, False, bidirectional
+    )
+    damping_forces[mode, 1] = body_particle_force_damped - body_particle_force_undamped
+    damping_hessians[mode, 1] = body_particle_hessian_damped - body_particle_hessian_undamped
+
+    # Rigid-rigid: body 0 lifts off a static shape (body index -1) along the contact normal.
+    (
+        _force_a_damped,
+        _torque_a_damped,
+        _h_ll_a_damped,
+        _h_al_a_damped,
+        _h_aa_a_damped,
+        force_b_damped,
+        _torque_b_damped,
+        h_ll_b_damped,
+        _h_al_b_damped,
+        _h_aa_b_damped,
+    ) = evaluate_rigid_contact_from_collision(
+        -1,
+        0,
+        body_q,
+        body_q_prev,
+        body_com,
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        normal,
+        0.06,
+        100.0,
+        100.0,
+        100.0,
+        20.0,
+        wp.vec3(0.0),
+        0.0,
+        0.01,
+        0,
+        0,
+        dt,
+        wp.vec3(0.0),
+        bidirectional,
+    )
+    (
+        _force_a_undamped,
+        _torque_a_undamped,
+        _h_ll_a_undamped,
+        _h_al_a_undamped,
+        _h_aa_a_undamped,
+        force_b_undamped,
+        _torque_b_undamped,
+        h_ll_b_undamped,
+        _h_al_b_undamped,
+        _h_aa_b_undamped,
+    ) = evaluate_rigid_contact_from_collision(
+        -1,
+        0,
+        body_q,
+        body_q_prev,
+        body_com,
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        normal,
+        0.06,
+        100.0,
+        100.0,
+        100.0,
+        0.0,
+        wp.vec3(0.0),
+        0.0,
+        0.01,
+        0,
+        0,
+        dt,
+        wp.vec3(0.0),
+        bidirectional,
+    )
+    damping_forces[mode, 2] = force_b_damped - force_b_undamped
+    damping_hessians[mode, 2] = h_ll_b_damped - h_ll_b_undamped
 
 
 @wp.kernel
@@ -988,6 +1134,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         0,
         dt,
         wp.vec3(0.0),
+        False,
     )
     (
         force_a_undamped,
@@ -1024,6 +1171,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         0,
         dt,
         wp.vec3(0.0),
+        False,
     )
     rigid_delta = wp.max(wp.length(force_a_damped - force_a_undamped), wp.length(force_b_damped - force_b_undamped))
     rigid_delta = wp.max(rigid_delta, wp.length(torque_a_damped - torque_a_undamped))
@@ -1063,6 +1211,7 @@ def _eval_vertex_triangle_contact_rigid_motion_kernel(
         0.0,
         0.01,
         dt,
+        False,
     )
     (
         _has_contact_undamped,
@@ -1086,6 +1235,7 @@ def _eval_vertex_triangle_contact_rigid_motion_kernel(
         0.0,
         0.01,
         dt,
+        False,
     )
     soft_delta = wp.max(wp.length(force_0_damped - force_0_undamped), wp.length(force_1_damped - force_1_undamped))
     soft_delta = wp.max(soft_delta, wp.length(force_2_damped - force_2_undamped))
@@ -2222,6 +2372,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 particle_q,
                 0.01,
                 False,  # legacy quadratic rigid-soft normal law
+                False,  # one-sided contact damping
                 particle_radius,
                 contact_indices,
                 contact_head,
@@ -2359,6 +2510,7 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
                 data["particle_q"],
                 1.0,
                 False,  # rigid_body_particle_contact_use_log_barrier
+                False,  # contact_damping_bidirectional
                 data["particle_radius"],
                 data["contact_indices"],
                 contact_head,
@@ -2421,6 +2573,7 @@ def _particle_contact_gather_order_pinned(test, device):
                     data["particle_q"],
                     1.0,
                     False,  # rigid_body_particle_contact_use_log_barrier
+                    False,  # contact_damping_bidirectional
                     data["particle_radius"],
                     data["contact_indices"],
                     rev_head_wp,
@@ -2663,6 +2816,7 @@ def _launch_particle_contact_scatter(data, contact_count, worker_count, forces, 
                 data["particle_colors"],
                 1.0,
                 False,  # rigid_body_particle_contact_use_log_barrier
+                False,  # contact_damping_bidirectional
                 data["particle_radius"],
                 data["contact_indices"],
                 contact_count,
@@ -3035,6 +3189,7 @@ def _body_body_contact_damping_ignores_penalty_ramp(test, device):
                 0,
                 0,
                 0.01,
+                False,
             ],
             outputs=[body0, body1, point0_world, point1_world, force_on_body1],
             device=device,
@@ -3369,6 +3524,62 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
 
         np.testing.assert_allclose(forces.numpy()[1], forces.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
         np.testing.assert_allclose(hessians.numpy()[1], hessians.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
+
+
+def _contact_damping_bidirectional_damps_separation(test, device):
+    """Separating contacts receive damping only with ``contact_damping_bidirectional=True``."""
+    with wp.ScopedDevice(device):
+        soft_pos_np = np.array(
+            [
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.05],
+            ],
+            dtype=np.float32,
+        )
+        soft_pos_prev_np = soft_pos_np.copy()
+        soft_pos_prev_np[3, 2] = 0.02  # the vertex rises by 0.03 over dt = 0.1
+        soft_pos = wp.array(soft_pos_np, dtype=wp.vec3, device=device)
+        soft_pos_prev = wp.array(soft_pos_prev_np, dtype=wp.vec3, device=device)
+        tri_indices = wp.array(np.array([[0, 1, 2]], dtype=np.int32), dtype=wp.int32, ndim=2, device=device)
+        body_q = wp.array(
+            [wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        body_q_prev = wp.array(
+            [wp.transform(wp.vec3(0.0, 0.0, 0.04), wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        body_com = wp.zeros(1, dtype=wp.vec3, device=device)
+        damping_forces = wp.zeros((2, 3), dtype=wp.vec3, device=device)
+        damping_hessians = wp.zeros((2, 3), dtype=wp.mat33, device=device)
+
+        wp.launch(
+            _eval_separating_contact_damping_kernel,
+            dim=2,
+            inputs=[soft_pos, soft_pos_prev, tri_indices, body_q, body_q_prev, body_com],
+            outputs=[damping_forces, damping_hessians],
+            device=device,
+        )
+
+        forces = damping_forces.numpy()
+        hessians = damping_hessians.numpy()
+        # Default: one-sided damping ignores every separating contact.
+        np.testing.assert_allclose(forces[0], 0.0, rtol=0.0, atol=1.0e-6)
+        np.testing.assert_allclose(hessians[0], 0.0, rtol=0.0, atol=1.0e-6)
+        # Bidirectional: -kd * gap_rate * n with the matching (kd / dt) n n^T Hessian.
+        # Soft-soft: kd 50, gap rate 0.3 m/s; rigid-soft: kd 20, gap 0.01 m per dt; rigid-rigid: kd 20, 0.1 m/s.
+        n_outer = np.outer([0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        expected_forces = np.array([[0.0, 0.0, -15.0], [0.0, 0.0, -2.0], [0.0, 0.0, -2.0]])
+        expected_hessians = np.stack([500.0 * n_outer, 200.0 * n_outer, 200.0 * n_outer])
+        np.testing.assert_allclose(forces[1], expected_forces, rtol=1.0e-5, atol=1.0e-6)
+        np.testing.assert_allclose(hessians[1], expected_hessians, rtol=1.0e-5, atol=1.0e-6)
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertFalse(newton.solvers.SolverVBD(model).contact_damping_bidirectional)
+    test.assertTrue(newton.solvers.SolverVBD(model, contact_damping_bidirectional=True).contact_damping_bidirectional)
 
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):
@@ -6755,6 +6966,12 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
+    "test_contact_damping_bidirectional_damps_separation",
+    _contact_damping_bidirectional_damps_separation,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
     "test_d6_fully_free_structural_slots_are_inactive",
     _d6_fully_free_structural_slots_are_inactive,
     devices=devices,
@@ -7219,6 +7436,7 @@ def _run_face_section2(device, shape_margin):
             state.particle_q,
             1.0,  # friction_epsilon
             False,  # rigid_body_particle_contact_use_log_barrier
+            False,  # contact_damping_bidirectional
             model.particle_radius,
             contacts.soft_contact_indices,
             contact_head,

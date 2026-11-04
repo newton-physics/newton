@@ -1,0 +1,1 @@
+Add `contact_damping_bidirectional` to `SolverVBD` so contact damping can also resist separating relative normal motion, with a matching Hessian, for soft self-contact, rigid-soft and rigid-rigid contacts. The default keeps the existing one-sided (closing only) damping.

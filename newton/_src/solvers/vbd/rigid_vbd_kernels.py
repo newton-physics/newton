@@ -1941,11 +1941,14 @@ def evaluate_rigid_contact_from_collision(
     contact_compliant_alm: int,
     dt: float,
     friction_c0: wp.vec3,
+    contact_damping_bidirectional: bool,
 ):
     """Compute rigid-contact forces and 3x3 Hessian blocks for a contact pair.
 
     Legacy hard and compliant ALM contacts use displacement-based projected
     Coulomb friction; legacy soft contact uses velocity-based IPC friction.
+    Normal damping acts on a closing gap only, or in both directions when
+    ``contact_damping_bidirectional`` is set.
 
     Returns:
         10-tuple: (force_a, torque_a, H_ll_a, H_al_a, H_aa_a,
@@ -2022,7 +2025,7 @@ def evaluate_rigid_contact_from_collision(
     v_rel_t = (x_c_b_now - x_c_b_prev - x_c_a_now + x_c_a_prev) / dt + contact_surface_velocity
     v_t = v_rel_t - contact_normal * wp.dot(contact_normal, v_rel_t)
 
-    # Normal block (force + optional approach damping), applied at the geometric lever.
+    # Normal block (force + optional normal damping), applied at the geometric lever.
     f_n_vec = contact_normal * f_n
     K_n = normal_primal_k * n_outer
 
@@ -2064,7 +2067,7 @@ def evaluate_rigid_contact_from_collision(
             f_t_vec = f_friction
             K_t = K_friction
 
-    if contact_kd > 0.0 and v_dot_n < 0.0 and f_n > 0.0:
+    if contact_kd > 0.0 and f_n > 0.0 and (contact_damping_bidirectional or v_dot_n < 0.0):
         f_n_vec = f_n_vec - contact_kd * v_dot_n * contact_normal
         K_n = K_n + (contact_kd / dt) * n_outer
 
@@ -2148,19 +2151,21 @@ def _compute_body_particle_contact_force(
     friction_epsilon: float,
     dt: float,
     use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
 ):
     """Pure force law for body-particle contacts: normal elasticity + damping + friction.
 
     All geometry and kinematics (distance, contact radius, normal, relative displacement) are
     resolved by the caller.  This function only computes the contact force and
-    Hessian from those scalar/vector inputs.
+    Hessian from those scalar/vector inputs. Damping acts on a closing gap only, or in both
+    directions when ``contact_damping_bidirectional`` is set.
     """
     dE_dD, d2E_dDdD = _evaluate_rigid_soft_contact_force_norm(distance, collision_radius, ke, use_log_barrier)
     f_n = -dE_dD
     force = n * f_n
     hessian = d2E_dDdD * wp.outer(n, n)
 
-    if wp.dot(n, relative_translation) < 0.0:
+    if contact_damping_bidirectional or wp.dot(n, relative_translation) < 0.0:
         damping_hessian = (kd / dt) * wp.outer(n, n)
         hessian = hessian + damping_hessian
         force = force - damping_hessian * relative_translation
@@ -2196,6 +2201,7 @@ def _eval_body_particle_contact(
     shape_margin: wp.array[float],
     dt: float,
     use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
 ):
     """Particle-rigid contact force/Hessian - resolves geometry from arrays then
     delegates to ``_compute_body_particle_contact_force``.
@@ -2250,6 +2256,7 @@ def _eval_body_particle_contact(
             friction_epsilon,
             dt,
             use_log_barrier,
+            contact_damping_bidirectional,
         )
     else:
         return wp.vec3(0.0), wp.mat33(0.0)
@@ -2279,6 +2286,7 @@ def _eval_soft_ef_contact(
     shape_margin: wp.array[float],
     dt: float,
     use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
 ):
     """Soft-contact force/Hessian at a barycentric contact point over a record's soft particles.
 
@@ -2360,6 +2368,7 @@ def _eval_soft_ef_contact(
             friction_epsilon,
             dt,
             use_log_barrier,
+            contact_damping_bidirectional,
         )
 
     return force, hessian, bx
@@ -2393,7 +2402,8 @@ def evaluate_body_particle_contact(
 
     VBD rigid-side uses ``_eval_body_particle_contact`` directly (mu is
     pre-averaged per contact).  This wrapper is kept for other solvers
-    that pass raw mu and need per-shape mixing.
+    that pass raw mu and need per-shape mixing. It keeps the quadratic
+    normal law and one-sided (closing only) damping.
     """
     shape_index = contact_shape[contact_index]
     mixed_mu = wp.sqrt(friction_mu * shape_material_mu[shape_index])
@@ -2418,6 +2428,7 @@ def evaluate_body_particle_contact(
         contact_normal,
         shape_margin,
         dt,
+        False,
         False,
     )
 
@@ -5311,6 +5322,7 @@ def create_accumulate_body_body_contacts_per_body():
         body_com: wp.array[wp.vec3],
         body_inv_mass: wp.array[float],
         friction_epsilon: float,
+        contact_damping_bidirectional: bool,
         contact_penalty_k: wp.array[float],
         contact_normal_rho: wp.array[float],
         contact_material_ke: wp.array[float],
@@ -5478,6 +5490,7 @@ def create_accumulate_body_body_contacts_per_body():
                 contact_compliant_alm,
                 dt,
                 friction_c0,
+                contact_damping_bidirectional,
             )
 
             if body_id == b0:
@@ -5539,6 +5552,7 @@ def _evaluate_body_body_contact_slot(
     legacy_hard_contacts: int,
     contact_compliant_alm: int,
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
 ):
     """Evaluate one active body-body contact slot at the given poses.
 
@@ -5644,6 +5658,7 @@ def _evaluate_body_body_contact_slot(
         contact_compliant_alm,
         dt,
         friction_c0,
+        contact_damping_bidirectional,
     )
 
     return b0, b1, point0_world, point1_world, force_0, torque_0, force_1
@@ -5686,6 +5701,7 @@ def create_compute_rigid_contact_forces():
         legacy_hard_contacts: int,
         contact_compliant_alm: int,
         friction_epsilon: float,
+        contact_damping_bidirectional: bool,
         # Outputs (length = rigid_contact_max)
         out_body0: wp.array[wp.int32],
         out_body1: wp.array[wp.int32],
@@ -5735,6 +5751,7 @@ def create_compute_rigid_contact_forces():
             legacy_hard_contacts,
             contact_compliant_alm,
             friction_epsilon,
+            contact_damping_bidirectional,
         )
         out_body0[contact_idx] = b0
         out_body1[contact_idx] = b1
@@ -5783,6 +5800,7 @@ def compute_body_body_contact_forces(
     legacy_hard_contacts: int,
     contact_compliant_alm: int,
     friction_epsilon: float,
+    contact_damping_bidirectional: bool,
     # Output (length >= rigid_contact_max)
     contact_force: wp.array[wp.spatial_vector],
 ):
@@ -5829,6 +5847,7 @@ def compute_body_body_contact_forces(
         legacy_hard_contacts,
         contact_compliant_alm,
         friction_epsilon,
+        contact_damping_bidirectional,
     )
     contact_force[contact_idx] = wp.spatial_vector(force_0, torque_0)
 
@@ -5960,6 +5979,7 @@ def accumulate_body_particle_contacts_per_body(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
@@ -6088,6 +6108,7 @@ def accumulate_body_particle_contacts_per_body(
                 friction_epsilon,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                contact_damping_bidirectional,
             )
         else:
             # Edge/face: barycentric contact point over the record's 2-3 soft particles. Uses the
@@ -6116,6 +6137,7 @@ def accumulate_body_particle_contacts_per_body(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                contact_damping_bidirectional,
             )
 
         # Equal-and-opposite reaction on the body at the rigid contact point (shared by both kinds).
@@ -6152,6 +6174,7 @@ def compute_body_particle_contact_forces(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -6227,6 +6250,7 @@ def compute_body_particle_contact_forces(
             shape_margin,
             dt,
             rigid_body_particle_contact_use_log_barrier,
+            contact_damping_bidirectional,
         )
         cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[tid])
     else:
@@ -6254,6 +6278,7 @@ def compute_body_particle_contact_forces(
             shape_margin,
             dt,
             rigid_body_particle_contact_use_log_barrier,
+            contact_damping_bidirectional,
         )
 
     f_body = -f_soft
