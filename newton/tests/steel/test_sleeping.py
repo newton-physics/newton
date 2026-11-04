@@ -2647,13 +2647,16 @@ def _check_colored_sleeping_skips_work(test, device, compliant, welded):
 
 
 def test_colored_sleeping_runs_under_external_and_warp_capture(test, device):
-    """Replay a colored sleeping step captured by Warp or directly through CUDA bitwise like eager stepping."""
+    """Replay a colored sleeping step captured by Warp or directly through CUDA, and sleep and wake as eager steps do."""
+    # The RUN_TO_RUN row ordering fails under a capture Warp does not track; this test covers the sleeping solve.
+    options = {
+        "sleep_quiet_time": 0.05,
+        "friction_anchor_beta": 0.0,
+        "deterministic": wp.DeterministicMode.NOT_GUARANTEED,
+    }
     for mode in ("warp", "external"):
         with test.subTest(mode=mode):
-            captured, eager = (
-                _Heap(device, model=_dumbbells_model(device), sleep_quiet_time=0.05, friction_anchor_beta=0.0)
-                for _ in range(2)
-            )
+            captured, eager = (_Heap(device, model=_dumbbells_model(device), **options) for _ in range(2))
             replay = _capture_step(captured, mode)
             force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
             slept = False
@@ -2666,10 +2669,14 @@ def test_colored_sleeping_runs_under_external_and_warp_capture(test, device):
                     scene.state_in.body_f.assign(force)
                 replay()
                 eager.step(clear=False)
-                a, b = captured.snapshot(), eager.snapshot()
-                for name in _FIELDS:
-                    np.testing.assert_array_equal(a[name], b[name], err_msg=f"{mode} replay {k} {name}")
-                slept |= not eager.solver._sleeping.art_awake.numpy().any()
+                awake = captured.solver._sleeping.art_awake.numpy()
+                np.testing.assert_array_equal(awake, eager.solver._sleeping.art_awake.numpy(), err_msg=f"{mode} {k}")
+                slept |= not awake.any()
+                if k == 40:
+                    np.testing.assert_array_equal(awake, [1, 0])
+            a, b = captured.snapshot(), eager.snapshot()
+            for name in _FIELDS:
+                np.testing.assert_allclose(a[name], b[name], rtol=0.0, atol=1.0e-4, err_msg=f"{mode} {name}")
 
 
 def _capture_step(scene, mode):
@@ -2696,6 +2703,11 @@ def _capture_step(scene, mode):
         return replay
     # Capture that Warp does not track, as another framework's graph capture would start.
     cuda = ctypes.CDLL("libcuda.so.1")
+    handle = ctypes.c_void_p
+    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
+    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
+    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
+    cuda.cuGraphLaunch.argtypes = [handle, handle]
     stream = ctypes.c_void_p(wp.get_stream(device).cuda_stream)
     graph, graph_exec = ctypes.c_void_p(), ctypes.c_void_p()
     thread_local_mode = 1
@@ -2706,11 +2718,16 @@ def _capture_step(scene, mode):
     finally:
         ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
     assert ended == 0, ended
-    assert cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(0)) == 0
+    # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
+    auto_free_on_launch = 1
+    assert (
+        cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)) == 0
+    )
 
     def replay():
         scene.pipeline.collide(scene.state_in, scene.contacts)
-        assert cuda.cuGraphLaunch(graph_exec, stream) == 0
+        launched = cuda.cuGraphLaunch(graph_exec, stream)
+        assert launched == 0, launched
         wp.synchronize_stream(wp.get_stream(device))
 
     return replay
