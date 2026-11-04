@@ -2839,6 +2839,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
+        # Allocated by the first snapshot_constraint_status(): device copies, host copies and the snapshot's event.
+        self._status_snapshot = None
+        self._status_snapshot_host = None
+        self._status_snapshot_event = None
+        self._status_snapshot_checked = False
+        self._status_readback_stream = None
 
     def _refresh_shape_materials(self) -> None:
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
@@ -3307,6 +3313,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
+            self._retake_status_snapshot()
             return
 
         # One launch covers both the status entries (world_count + 1, including the
@@ -3328,6 +3335,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._friction_anchors_enabled:
             self._friction_patches.reset(world_mask, int(self.model.world_count))
         self._clear_warmstart_history(world_mask)
+        self._retake_status_snapshot()
+
+    def _retake_status_snapshot(self) -> None:
+        """Replace a checked status snapshot taken before a reset, so it does not report what the reset cleared."""
+        if self._status_snapshot_checked and not self.model.device.is_capturing:
+            self.snapshot_constraint_status()
+            self._status_snapshot_checked = True
 
     # ------------------------------------------------------------------
     # Coupling hooks (experimental)
@@ -8274,7 +8288,40 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
         return 0 if self._compliance is None else _contact_compliance.counts(self)[1]
 
-    def check_constraint_capacity(self) -> None:
+    def snapshot_constraint_status(self) -> None:
+        """Copy the status that :meth:`check_constraint_capacity` reports on the device, without waiting.
+
+        Call outside capture, on the stream that steps the solver, after the steps to observe.
+        ``check_constraint_capacity(snapshot=True)`` then raises from this copy, waiting only for the work
+        enqueued on that stream before this call. A new snapshot replaces the previous one, so check it first,
+        and check the last one when stepping stops. A :meth:`reset` outside capture retakes a checked snapshot
+        and keeps an unchecked one, so a check after the reset still reports the steps before it.
+
+        Raises:
+            RuntimeError: If called during CUDA graph capture.
+        """
+        device = self.model.device
+        if device.is_capturing:
+            raise RuntimeError("snapshot_constraint_status() must run outside CUDA graph capture")
+        sources = self._status_sources()
+        # Torsion prepared on the device after the last snapshot adds a source.
+        if self._status_snapshot is None or self._status_snapshot.keys() != sources.keys():
+            self._status_snapshot = {name: wp.empty_like(array) for name, array in sources.items()}
+            # Pageable host copies: freeing pinned memory while another stream captures invalidates that capture.
+            self._status_snapshot_host = (
+                {name: wp.empty_like(array, device="cpu") for name, array in sources.items()}
+                if device.is_cuda
+                else self._status_snapshot
+            )
+        for name, array in sources.items():
+            wp.copy(self._status_snapshot[name], array)
+        if device.is_cuda:
+            if self._status_snapshot_event is None:
+                self._status_snapshot_event = wp.Event(device)
+            wp.get_stream(device).record_event(self._status_snapshot_event)
+        self._status_snapshot_checked = False
+
+    def check_constraint_capacity(self, *, snapshot: bool = False) -> None:
         """Raise if any world or the global entry lost contacts or rows, or rejected input, since its last reset.
 
         Also raises if a step saw a joint of an articulation tree disabled in
@@ -8299,36 +8346,57 @@ class SolverSteel(SolverBase, CouplingInterface):
         worlds. Contacts that couple a dynamic global body, or a kinematic global articulation
         with joints, with another world are flagged too; no capacity can solve them.
 
+        Args:
+            snapshot: Report the status copied by the last :meth:`snapshot_constraint_status`, as it was after
+                the work enqueued before that call, instead of reading the live status synchronously.
+
         Raises:
-            RuntimeError: If called during graph capture, or if any entry is flagged.
+            RuntimeError: If called during graph capture, if ``snapshot`` is set before any snapshot, or if
+                any entry is flagged.
         """
         if self.model.device.is_capturing:
             raise RuntimeError("check_constraint_capacity() must run outside CUDA graph capture")
-        if self._device_torsion is not None:
+        if not snapshot:
+            arrays = self._status_sources()
+        elif self._status_snapshot is None:
+            raise RuntimeError("check_constraint_capacity(snapshot=True) needs snapshot_constraint_status() first")
+        else:
+            arrays = self._status_snapshot_host
+            if self._status_snapshot_event is not None:
+                # A side stream orders the readback after the snapshot only, not after later steps.
+                if self._status_readback_stream is None:
+                    self._status_readback_stream = wp.Stream(self.model.device)
+                stream = self._status_readback_stream
+                stream.wait_event(self._status_snapshot_event)
+                for name, array in self._status_snapshot.items():
+                    wp.copy(arrays[name], array, stream=stream)
+                wp.synchronize_stream(stream)
+            self._status_snapshot_checked = True
+        if self._device_torsion is not None and "torsion" in arrays:
             try:
-                self._device_torsion.validate()
+                self._device_torsion.validate(int(arrays["torsion"].numpy()[0]))
             except (RuntimeError, ValueError) as error:
                 raise RuntimeError(f"Steel contact torsion rejected its input: {error}") from error
         if self._compliance is not None:
             try:
-                _contact_compliance.validate(self._compliance.status, clear=False)
+                _contact_compliance.validate(arrays["compliance"], clear=False)
             except (RuntimeError, ValueError) as error:
                 raise RuntimeError(f"Steel contact compliance rejected its input: {error}") from error
-        disabled = np.flatnonzero(self._disabled_tree_joint.numpy())
+        disabled = np.flatnonzero(arrays["disabled_tree_joint"].numpy())
         if disabled.size:
             worlds = np.where(disabled == self.model.world_count, -1, disabled)
             raise RuntimeError(
                 f"Steel: Model.joint_enabled disables an articulation tree joint in worlds "
                 f"{worlds[:16].tolist()}; only loop-closing joints can be disabled."
             )
-        invalid = np.flatnonzero(self._joint_friction_invalid.numpy())
+        invalid = np.flatnonzero(arrays["joint_friction_invalid"].numpy())
         if invalid.size:
             worlds = np.where(invalid == self.model.world_count, -1, invalid)
             names = "Model.joint_friction"
             if self._namespaced_attribute("joint_friction_load_coefficient") is not None:
                 names += " or steel:joint_friction_load_coefficient"
             raise RuntimeError(f"Steel: {names} was invalid at a step in worlds {worlds[:16].tolist()}.")
-        flags = self.constraint_overflow.numpy()
+        flags = arrays["constraint_overflow"].numpy()
         worlds = np.flatnonzero(flags[:-1])
         global_flagged = bool(flags[-1])
         if worlds.size or global_flagged:
@@ -8345,6 +8413,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 "be solved per world at any capacity and need a different scene layout. Reset the "
                 "affected worlds before accepting transitions."
             )
+
+    def _status_sources(self) -> dict[str, wp.array]:
+        """Return the device status arrays :meth:`check_constraint_capacity` reports."""
+        sources = {
+            "disabled_tree_joint": self._disabled_tree_joint,
+            "joint_friction_invalid": self._joint_friction_invalid,
+            "constraint_overflow": self.constraint_overflow,
+        }
+        if self._device_torsion is not None:
+            sources["torsion"] = self._device_torsion.work.status
+        if self._compliance is not None:
+            sources["compliance"] = self._compliance.status
+        return sources
 
     def _contact_force_inputs(self, contacts: Contacts, inv_dt: float) -> list:
         """Return the inputs shared by the contact-force kernels."""
