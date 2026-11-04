@@ -111,8 +111,10 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         ratios[6] = [0.2, 1.5]
         ratios[model.joint_qd_start.numpy()[ball] + 1] = [0.2, 1.5]
         model.mujoco.dof_springdamper.assign(ratios)
-        with self.assertRaisesRegex(ValueError, "springdamper.*uniform"):
+        with self.assertRaisesRegex(ValueError, "springdamper.*uniform") as error:
             SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        self.assertIn(model.joint_label[ball], str(error.exception))
+        self.assertIn("world 0", str(error.exception))
         np.testing.assert_array_equal(model.mujoco.dof_springdamper.numpy(), ratios)
         np.testing.assert_array_equal(model.joint_stiffness.numpy(), stiffness)
         np.testing.assert_array_equal(model.joint_damping.numpy(), 0.0)
