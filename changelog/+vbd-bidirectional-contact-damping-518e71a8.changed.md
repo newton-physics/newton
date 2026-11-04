@@ -1,0 +1,1 @@
+`SolverVBD` contact damping now acts while a contact closes and while it opens, for soft self-contact, rigid-soft and rigid-rigid contacts, with the matching Hessian. The new constructor option `contact_damping_bidirectional=False` restores the previous closing-only damping.

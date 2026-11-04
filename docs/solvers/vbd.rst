@@ -706,9 +706,12 @@ relative displacement of the two closest points over the step and
 with :math:`\mu = \mathtt{soft\_contact\_mu}`. Unlike IPC, the contact normal
 is held constant inside the block solve; the kernel notes that this improves
 stability. Damping (``damp_collision``) acts on the gap rate :math:`\dot d =
-\mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h`, only while the gap closes:
-:math:`\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}`. A
-separating pair is not damped.
+\mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h`:
+:math:`\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}` with the
+Hessian :math:`(\mathtt{soft\_contact\_kd}/h)\,\mathbf{n}\mathbf{n}^T`. By default
+(``contact_damping_bidirectional=True``) it acts while the gap closes and while
+it opens. ``contact_damping_bidirectional=False`` restores the closing-only
+damping, which leaves a separating pair undamped.
 
 *Rigid-soft contact* acts between a soft contact point and one shape of a
 rigid or static body. The point is a particle, or, with full-surface mesh
@@ -728,8 +731,9 @@ quadratic penalty :math:`E = \tfrac{k}{2}(r - d)^2` for :math:`d < r`;
 ``rigid_soft_contact_use_log_barrier=True`` switches it to the self-contact
 barrier law. Damping and friction have the same form as for self-contact,
 written in world space (``compute_projected_isotropic_friction``): the damping force
-:math:`-k_d\,\dot d\,\mathbf{n}` acts only while the point approaches the
-shape, and the friction force is :math:`-\mu\, f_n\,
+:math:`-k_d\,\dot d\,\mathbf{n}` acts on the normal rate in both directions by
+default, or only while the point approaches the shape with
+``contact_damping_bidirectional=False``, and the friction force is :math:`-\mu\, f_n\,
 f_1(\lVert\mathbf{u}_t\rVert)\,\hat{\mathbf{u}}_t`, with :math:`\mathbf{u}_t`
 the tangential slip of the point relative to the shape surface over the step.
 The force is distributed to the particles by their barycentric weights, and
@@ -784,8 +788,10 @@ points and :math:`\rho_t` the tangent metric, is projected onto the disk
 :math:`\lVert\mathbf{f}_t\rVert \le \mu f_n`,
 and :math:`\boldsymbol{\lambda}_t` is advanced and projected onto the disk of
 radius :math:`\mu\lambda_n` in the same dual step. Damping is
-:math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the
-bodies approach and the row carries load. The multipliers start from zero in
+:math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the row
+carries load, in both directions of the normal relative velocity by default and
+only while the bodies approach with ``contact_damping_bidirectional=False``.
+The multipliers start from zero in
 every step unless ``rigid_contact_history=True`` warm-starts them from the
 matched contacts of the previous step. The legacy AVBD path
 (``rigid_compliant_alm=False``, deprecated) uses the pair stiffness as a fixed

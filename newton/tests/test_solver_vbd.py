@@ -731,7 +731,7 @@ def _eval_separating_contact_damping_kernel(
     damping_forces: wp.array2d[wp.vec3],
     damping_hessians: wp.array2d[wp.mat33],
 ):
-    """Row 0 uses the default one-sided damping, row 1 the bidirectional option.
+    """Row 0 uses one-sided damping, row 1 the bidirectional damping that is the default.
 
     Columns: soft-soft vertex-triangle, rigid-soft body-particle, rigid-rigid body-body.
     Every contact separates along +z, so one-sided damping must stay zero.
@@ -3527,7 +3527,7 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
 
 
 def _contact_damping_bidirectional_damps_separation(test, device):
-    """Separating contacts receive damping only with ``contact_damping_bidirectional=True``."""
+    """Separating contacts receive damping only with ``contact_damping_bidirectional=True`` (the default)."""
     with wp.ScopedDevice(device):
         soft_pos_np = np.array(
             [
@@ -3578,8 +3578,8 @@ def _contact_damping_bidirectional_damps_separation(test, device):
     builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     builder.color()
     model = builder.finalize(device=device)
-    test.assertFalse(newton.solvers.SolverVBD(model).contact_damping_bidirectional)
-    test.assertTrue(newton.solvers.SolverVBD(model, contact_damping_bidirectional=True).contact_damping_bidirectional)
+    test.assertTrue(newton.solvers.SolverVBD(model).contact_damping_bidirectional)
+    test.assertFalse(newton.solvers.SolverVBD(model, contact_damping_bidirectional=False).contact_damping_bidirectional)
 
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):

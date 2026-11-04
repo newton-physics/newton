@@ -443,7 +443,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Common parameters
         iterations: int | None = None,
         friction_epsilon: float = 1e-2,
-        contact_damping_bidirectional: bool = False,
+        contact_damping_bidirectional: bool = True,
         dat_conservative_bound_relaxation: float = 0.85,
         integrate_with_external_rigid_solver: bool = False,
         # Particle parameters
@@ -507,10 +507,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Explicit values override the scene.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
-            contact_damping_bidirectional: Whether contact damping also acts while a contact separates. By default
-                (``False``) the normal damping of every contact type (soft self-contact, rigid-soft and rigid-rigid)
-                acts only while the gap closes. With ``True`` the same linear damper and its Hessian also resist the
-                opening of the gap, for every contact that is still within its contact radius.
+            contact_damping_bidirectional: Whether contact damping also acts while a contact separates. With the
+                default ``True`` the normal damper of every contact type (soft self-contact, rigid-soft and
+                rigid-rigid) and its Hessian act while the gap closes and while it opens, for every contact that is
+                still within its contact radius, so a contact removes energy on approach and on rebound and stacked
+                layers come to rest. With ``False`` the damper acts only while the gap closes, which in the implicit
+                step behaves like a restitution spring and can keep a stack of thin layers bouncing (the
+                ``example_cloth_poker_cards`` deck). Two-sided damping also opposes the opening motion, so a contact
+                releases more slowly and a large ``soft_contact_kd`` can hold a separating pair briefly.
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
                 (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
                 (``rigid_soft_enable_dat``). It scales every truncation scalar, and each side's motion
