@@ -2111,8 +2111,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 or ``velocity_iterations``, or for a model without articulations, and
                 :class:`NotImplementedError` with ``articulated_contact_response="propagation"``;
                 with ``"propagation_colored"`` the contacts of skipped islands are left out of
-                the coloring and the colored sweep. :meth:`step` raises :class:`ValueError` for a nonpositive or nonfinite
-                ``dt`` and when ``state_in`` and ``state_out`` share arrays. The sleeping
+                the coloring and the colored sweep, but the propagation trees of sleeping
+                articulations are still factored every step and walked every iteration. :meth:`step` raises :class:`ValueError` for a
+                nonpositive or nonfinite ``dt`` and when ``state_in`` and ``state_out`` share
+                arrays. The sleeping
                 options are runtime solver settings with no USD schema.
             sleep_linear_threshold: Body center-of-mass speed below which a body is quiet
                 [m/s], finite and positive.
@@ -2487,6 +2489,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._contact_torsion_enabled and articulated_contact_response != "propagation",
                     ),
                     ("contact_compliance=True", self._contact_compliance),
+                    # Sleeping is tested only with the colored sweep, not with the plain sweep's
+                    # torsion and same-articulation rows.
                     (
                         "enable_sleeping=True",
                         bool(enable_sleeping) and articulated_contact_response != "propagation_colored",
