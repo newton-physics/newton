@@ -741,11 +741,20 @@ class _CompliantScene:
 
 
 def test_captured_steps_match_eager_steps(test, device):
-    """Replay a compliant step captured cold, before any eager step, bitwise like eager stepping."""
+    """Replay a compliant step captured cold, before any eager step, bitwise like eager stepping.
+
+    The compliance counts raise when read during the capture, which stays usable.
+    """
     for colored, articulated in ((False, True), (False, False), (True, True), (True, False)):
         options = _COLORED if colored else None
         eager, captured = (_CompliantScene(device, articulated=articulated, solver_options=options) for _ in range(2))
-        graph = captured.capture()
+        with wp.ScopedCapture(device=captured.model.device) as capture:
+            captured.step()
+            for name in ("compliance_contact_count", "compliance_skipped_contact_count"):
+                with test.subTest(colored=colored, articulated=articulated, name=name):
+                    with test.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
+                        getattr(captured.solver, name)
+        graph = capture.graph
         # The capture records the step without running it.
         np.testing.assert_array_equal(captured.pose(), eager.pose())
         for step in range(40):
@@ -755,6 +764,7 @@ def test_captured_steps_match_eager_steps(test, device):
                 np.testing.assert_array_equal(captured.pose(), eager.pose())
         test.assertEqual(captured.solver.compliance_contact_count, 1)
         test.assertEqual(captured.solver.compliance_contact_count, eager.solver.compliance_contact_count)
+        test.assertEqual(captured.solver.compliance_skipped_contact_count, 0)
         captured.solver.check_constraint_capacity()
 
 

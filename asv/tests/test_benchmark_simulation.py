@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 from asv_runner.benchmarks.time import TimeBenchmark
+from asv_runner.statistics import compute_stats
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -218,7 +219,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
-        """Keep nightly collision cases out of the gate and preserve fast sampling."""
+        """Keep nightly collisions out of the gate with finite timing statistics."""
         benchmark_names = (
             "simulation.bench_cloth.DeformableRigidCollision.time_collide",
             "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
@@ -229,8 +230,11 @@ class TestSimulationBenchmarks(unittest.TestCase):
             with self.subTest(benchmark_name=benchmark_name):
                 self.assertIn(benchmark_name, inventory)
                 self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
-        self.assertEqual(bench_cloth.DeformableRigidCollision.repeat, 3)
-        self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
+                benchmark = inventory[benchmark_name]
+                sample_count = benchmark["rounds"] * benchmark["repeat"]
+                samples = [0.01 + 0.001 * index for index in range(sample_count)]
+                _, stats = compute_stats(samples, number=1)
+                self.assertTrue(np.isfinite([stats["ci_99_a"], stats["ci_99_b"]]).all())
         coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
         self.assertIn(coarse_name, inventory)
         self.assertEqual(inventory[coarse_name]["rounds"], 2)
