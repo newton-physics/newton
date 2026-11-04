@@ -1279,14 +1279,13 @@ def test_colored_replay_reports_row_capacity_loss(test, device):
 
 
 def test_colored_incompatible_options_rejected(test, device):
-    """Reject compliance on plain propagation, and sleeping or contact torsion with colored compliance."""
+    """Reject compliance on plain propagation and contact torsion with colored compliance; accept sleeping."""
     _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=False, steps=0)
     model = solver.model
     base = {"solve_mode": "matrix_free", "contact_compliance": True, "friction_anchor_beta": 0.0}
     with test.assertRaisesRegex(NotImplementedError, "contact_compliance=True.*'propagation'"):
         SolverSteel(model, **base, articulated_contact_response="propagation")
-    with test.assertRaisesRegex(NotImplementedError, "enable_sleeping=True"):
-        SolverSteel(model, **base, **_COLORED, enable_sleeping=True)
+    test.assertIsNotNone(SolverSteel(model, **base, **_COLORED, enable_sleeping=True)._sleeping)
     set_torsion_radius(model, 0.01)
     with test.assertRaisesRegex(NotImplementedError, "^contact torsion is not supported"):
         SolverSteel(model, **base, **_COLORED, contact_torsion_device=True)
