@@ -1474,6 +1474,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         array. Runtime ``dof_springref`` is a deprecated alias to ``Model.joint_rest_q`` when
         their layouts and values coincide and raises an error otherwise; see
         :ref:`mujoco-joint-spring-migration`.
+        ``dof_springdamper`` holds construction-time pairs (time constant [s], damping ratio).
+        Solver construction resolves positive pairs into ``Model.joint_stiffness`` and
+        ``Model.joint_damping`` and clears the consumed pairs to zero. Notifications do not
+        read this input; use the core gains for runtime edits, or assign new pairs before
+        constructing another solver to resolve them again.
         Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
         to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
@@ -11475,8 +11480,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             indices = mapping[:, start:end]
             pairs = ratios[np.maximum(indices, 0)]
             enabled = np.all(indices >= 0, axis=1) & np.any(np.all(pairs > 0.0, axis=2), axis=1)
-            if np.any(enabled & np.any(pairs != pairs[:, :1], axis=(1, 2))):
-                raise ValueError("springdamper must be uniform across all DOFs of a joint")
+            inconsistent = enabled & np.any(pairs != pairs[:, :1], axis=(1, 2))
+            if np.any(inconsistent):
+                world = np.flatnonzero(inconsistent)[0]
+                newton_joint = self.mjc_jnt_to_newton_jnt.numpy()[world, joint]
+                label = self.model.joint_label[newton_joint]
+                raise ValueError(
+                    f"springdamper must be uniform across all DOFs of joint {label!r} (MuJoCo world {world})"
+                )
             if not np.any(enabled):
                 continue
             timeconst, dampratio = pairs[enabled, 0].T
