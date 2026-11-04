@@ -9227,8 +9227,9 @@ def factor_propagation_tree_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active[art] == 0:
-        return
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
@@ -9574,8 +9575,9 @@ def compute_propagation_tree_body_response_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active[art] == 0:
-        return
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     world = art_to_world[art]
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
@@ -9733,8 +9735,9 @@ def refresh_propagation_tree_body_qd_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active[art] == 0:
-        return
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     if force_refresh == 0:
         world = art_to_world[art]
         if world >= 0 and dense_contact_world_flag[world] == 0:
@@ -9825,8 +9828,9 @@ def propagate_tree_impulses_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
-    if articulation_active[art] == 0:
-        return
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
