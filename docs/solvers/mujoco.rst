@@ -248,9 +248,10 @@ cylinder sites to ``0.0``.
 
     The ``mujoco:site_size_is_display`` shape attribute is no longer populated
     by the MJCF importer. Passing it to :meth:`~newton.ModelBuilder.add_site`
-    emits a ``NewtonDeprecationWarning`` and sets ``scale[2]`` of a cylinder
-    site to ``0.0``. Set ``scale[2]`` to ``0.0`` directly instead. The
-    attribute will be removed in a future release.
+    emits a ``NewtonDeprecationWarning``; if it is ``True``, ``scale[2]`` of a
+    cylinder site is set to ``0.0``. Remove the attribute, and set ``scale[2]``
+    to ``0.0`` directly where it was ``True``. The attribute will be removed in
+    a future release.
 
 Several Newton collision features — for example non-convex trimesh,
 SDF-based contacts, and hydroelastic contacts — are not part of the

@@ -8878,8 +8878,8 @@ class ModelBuilder:
         site_size_is_display = False
         if cfg.is_site and custom_attributes and "mujoco:site_size_is_display" in custom_attributes:
             warnings.warn(
-                "The 'mujoco:site_size_is_display' attribute is deprecated; "
-                "set scale[2] of a cylinder site to 0.0 instead.",
+                "The 'mujoco:site_size_is_display' attribute is deprecated; remove it, "
+                "and set scale[2] of a cylinder site to 0.0 directly where it was True.",
                 NewtonDeprecationWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
