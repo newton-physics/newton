@@ -3508,6 +3508,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
             template_world: The world index to use as the template (typically first_group).
         """
+        self._spec_pairs = []
         pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if pair_count == 0:
             return
@@ -3599,7 +3600,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if pair_friction is not None:
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
-            spec.add_pair(**pair_kwargs)
+            self._spec_pairs.append(spec.add_pair(**pair_kwargs))
 
     @staticmethod
     def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
@@ -9069,6 +9070,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_welds.append(eq)
 
         self.mj_model = spec.compile()
+        self._mjc_pair_spec_index = self._compiled_pair_spec_index(model.device)
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "
@@ -10991,6 +10993,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
             self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
 
+    def _compiled_pair_spec_index(self, device) -> wp.array | None:
+        """Return, for each compiled MuJoCo pair, its position among the pairs added by :meth:`_init_pairs`.
+
+        The MuJoCo compiler groups explicit pairs by body pair, so compiled pair ``j``
+        is not necessarily the ``j``-th pair added to the spec. After ``spec.compile()``,
+        each spec pair's ``id`` is its compiled index.
+        """
+        npair = self.mj_model.npair
+        if npair == 0:
+            return None
+        index = np.arange(npair, dtype=np.int32)
+        for position, pair in enumerate(getattr(self, "_spec_pairs", ())):
+            index[pair.id] = position
+        self._spec_pairs = []
+        return wp.array(index, dtype=wp.int32, device=device)
+
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.
 
@@ -11043,6 +11061,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dim=(world_count, npair),
                 inputs=[
                     pairs_per_world,
+                    self._mjc_pair_spec_index,
                     pair_solref,
                     pair_solreffriction,
                     pair_solimp,
