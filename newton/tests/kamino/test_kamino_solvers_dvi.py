@@ -22,7 +22,13 @@ from newton._src.solvers.kamino._src.geometry.keying import KeySorter
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions, update_constraints_info
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
-from newton._src.solvers.kamino._src.linalg import LDLBlockSparseSolver, LLTBlockedRCMSolver, LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg import (
+    DenseLinearOperatorData,
+    DenseSquareMultiLinearInfo,
+    LDLBlockSparseSolver,
+    LLTBlockedRCMSolver,
+    LLTBlockedSolver,
+)
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver, sparse_factor
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
@@ -1441,6 +1447,9 @@ class TestDVISolver(NewtonTestCase):
             config=configs,
             warmstart=WarmStartMode.NONE,
         )
+        self.assertIsInstance(solver._bilateral_solver, LDLBlockSparseSolver if backend == "LDL" else LLTBlockedSolver)
+        if ordering is not None:
+            self.assertEqual(solver._bilateral_solver.ordering, ordering)
         active_dim_updates = []
         set_bilateral_active_dim = solver._sparse_path.set_bilateral_active_dim
 
@@ -2067,68 +2076,119 @@ class TestDVISolver(NewtonTestCase):
         np.testing.assert_array_equal(layout["columns"], dim - njc)
 
     def test_03i3_sparse_ldl_response_skips_discarded_passes(self):
-        """Run full-response passes only for worlds whose full response is kept."""
-        device = self.device
+        """Match mixed compact/full LDL responses to dense references, including reuse and graph replay."""
+        rng = np.random.default_rng(4925)
+        basis = rng.normal(size=(8, 8))
+        matrices = [
+            (basis @ basis.T + 2.0 * np.eye(8)).astype(np.float32),
+            np.array([[3.0, 0.7], [0.7, 2.5]], dtype=np.float32),
+        ]
+        right_hand_sides = [[rng.normal(size=shape).astype(np.float32) for shape in ((8, 2), (2, 4))] for _ in range(2)]
+        # World 0 fits compact Schur; the coupled two-row world 1 must use a
+        # full response. World 2 is inactive, with a reserved sentinel entry.
+        njc, nu, capacity = [8, 2, 0], [2, 4, 0], [3, 4, 1]
+        offsets = [0, 24, 32]
+        block_rows = [[[0, 2, 5], [1, 3], [4, 6, 7]], [[0], [1]], [[0]]]
+        block_edges = [[(0, 1), (1, 2), (0, 2)], [(0, 1)], []]
+        for device in (wp.get_device("cpu"), *wp.get_cuda_devices()[:1]):
 
-        def i32(values):
-            return wp.array(values, dtype=wp.int32, device=device)
+            def i32(values, device=device):
+                """Copy the response layout to the selected device."""
+                return wp.array(values, dtype=wp.int32, device=device)
 
-        # World 0 fits compact Schur, world 1 does not, world 2 is empty.
-        njc, nu, capacity = [4, 1, 0], [2, 3, 0], [2, 3, 0]
-        mio = [0, 8, 11]
-        rows = [0, 4, 5]
-        size = mio[-1] + 1
-        state = SimpleNamespace(
-            bilateral_response_mio=i32(mio),
-            bilateral_response_stride=i32(capacity),
-            bilateral_preconditioner=wp.ones(sum(njc), dtype=wp.float32, device=device),
-            bilateral_coupling=wp.ones(size, dtype=wp.float32, device=device),
-            bilateral_response_factor=wp.zeros(size, dtype=wp.float32, device=device),
-            bilateral_response=wp.zeros(size, dtype=wp.float32, device=device),
-        )
-        sparse_factor.allocate_response(state, 3, device)
-        calls = []
-
-        def solve(name):
-            def record(b, x, **layout):
-                pass_name = "whiten" if layout.get("inverse_sqrt") else name
-                if name == "triangular":
-                    pass_name = "forward" if layout["forward"] else "backward"
-                calls.append((pass_name, layout["columns"].numpy().copy()))
-
-            return record
-
-        bilateral_solver = SimpleNamespace(
-            operator=SimpleNamespace(info=SimpleNamespace(vio=i32(rows))),
-            solve_triangular=solve("triangular"),
-            solve_diagonal=solve("diagonal"),
-        )
-        path = SimpleNamespace(
-            bilateral_solver=bilateral_solver,
-            data=SimpleNamespace(state=state),
-            size=SimpleNamespace(num_worlds=3, max_of_num_bilateral_joint_cts=max(njc)),
-            unilateral_strides_host=capacity,
-            device=device,
-        )
-        problem = SimpleNamespace(
-            data=SimpleNamespace(
-                dim=i32([a + b for a, b in zip(njc, nu, strict=True)]),
-                njc=i32(njc),
-                mio=i32([0, 36, 52]),
+            info = DenseSquareMultiLinearInfo()
+            info.finalize([8, 2, 1], dtype=wp.float32, device=device)
+            info.dim.assign(njc)
+            scale = np.linspace(0.5, 1.6, info.total_vec_size).astype(np.float32)
+            normalized = [
+                a * scale[o : o + n, None] * scale[None, o : o + n]
+                for a, o, n in zip(matrices, (0, 8), njc[:2], strict=True)
+            ]
+            matrix = wp.array(
+                np.concatenate([*(a.ravel() for a in normalized), [0.0]]).astype(np.float32), device=device
             )
-        )
-
-        for compact in (False, True):
-            with self.subTest(compact=compact):
-                calls.clear()
-                sparse_factor.response_sparse(path, problem, compact)
-                full = [2, 3, 0] if not compact else [0, 3, 0]
-                expected = [("forward", [2, 3, 0]), ("diagonal", full), ("backward", full)]
-                if compact:
-                    expected.append(("whiten", [2, 0, 0]))
-                self.assertEqual([name for name, _ in calls], [name for name, _ in expected])
-                for (name, columns), (_, expected_columns) in zip(calls, expected, strict=True):
-                    np.testing.assert_array_equal(columns, expected_columns, err_msg=name)
+            state = DVIState()
+            state.bilateral_response_mio = i32(offsets)
+            state.bilateral_response_stride = i32(capacity)
+            state.bilateral_preconditioner = wp.array(scale, device=device)
+            state.bilateral_coupling = wp.zeros(33, device=device)
+            state.bilateral_response_factor = wp.zeros(33, device=device)
+            state.bilateral_response = wp.zeros(33, device=device)
+            sparse_factor.allocate_response(state, 3, device)
+            problem = SimpleNamespace(data=SimpleNamespace(dim=i32([10, 6, 0]), njc=i32(njc), mio=i32([0, 100, 136])))
+            for ordering in ("meca", "rcm"):
+                solver = LDLBlockSparseSolver(
+                    operator=DenseLinearOperatorData(info=info, mat=matrix),
+                    block_rows=block_rows,
+                    block_edges=block_edges,
+                    ordering=ordering,
+                )
+                solver.compute(matrix)
+                path = SimpleNamespace(
+                    bilateral_solver=solver,
+                    data=SimpleNamespace(state=state),
+                    size=SimpleNamespace(num_worlds=3, max_of_num_bilateral_joint_cts=max(njc)),
+                    unilateral_strides_host=capacity,
+                    device=device,
+                )
+                # Observe pass selection while every call performs the real solve.
+                with (
+                    mock.patch.object(solver, "solve_triangular", wraps=solver.solve_triangular) as triangular,
+                    mock.patch.object(solver, "solve_diagonal", wraps=solver.solve_diagonal) as diagonal,
+                ):
+                    for compact in (False, True):
+                        graph = None
+                        triangular.reset_mock()
+                        diagonal.reset_mock()
+                        full_columns = [0 if compact else 2, 4, 0]
+                        whitened_columns = [2 if compact else 0, 0, 0]
+                        for rhs_index, rhs in enumerate(right_hand_sides):
+                            with self.subTest(device=device, ordering=ordering, compact=compact, rhs=rhs_index):
+                                strides = [2 if compact else capacity[0], capacity[1]]
+                                coupling = np.full(33, -123.0, dtype=np.float32)
+                                written = np.zeros(33, dtype=bool)
+                                for b, offset, stride in zip(rhs, offsets[:2], strides, strict=True):
+                                    rows, columns = b.shape
+                                    coupling[offset : offset + rows * stride].reshape(rows, stride)[:, :columns] = b
+                                    written[offset : offset + rows * stride].reshape(rows, stride)[:, :columns] = True
+                                state.bilateral_coupling.assign(coupling)
+                                state.bilateral_response.fill_(-321.0)
+                                if graph is not None:
+                                    wp.capture_launch(graph)
+                                else:
+                                    sparse_factor.response_sparse(path, problem, compact)
+                                if device.is_cuda and graph is None:
+                                    with wp.ScopedCapture(device=device) as capture:
+                                        sparse_factor.response_sparse(path, problem, compact)
+                                    graph = capture.graph
+                                    wp.capture_launch(graph)
+                                response = state.bilateral_response.numpy()
+                                for world, (a, b, offset, stride) in enumerate(
+                                    zip(matrices, rhs, offsets[:2], strides, strict=True)
+                                ):
+                                    actual = response[offset : offset + len(a) * stride].reshape(len(a), stride)[
+                                        :, : b.shape[1]
+                                    ]
+                                    expected = np.linalg.solve(a.astype(np.float64), b)
+                                    if compact and world == 0:
+                                        actual, expected = actual.T @ actual, b.T @ expected
+                                    np.testing.assert_allclose(actual, expected, atol=3e-6, rtol=3e-6)
+                                np.testing.assert_array_equal(response[~written], -321.0)
+                                np.testing.assert_array_equal(state.bilateral_response_columns.numpy(), nu)
+                                np.testing.assert_array_equal(
+                                    state.bilateral_response_full_columns.numpy(), full_columns
+                                )
+                                np.testing.assert_array_equal(
+                                    state.bilateral_response_whitened_columns.numpy(), whitened_columns
+                                )
+                                for call in triangular.call_args_list:
+                                    expected_columns = nu if call.kwargs["forward"] else full_columns
+                                    np.testing.assert_array_equal(call.kwargs["columns"].numpy(), expected_columns)
+                                for call in diagonal.call_args_list:
+                                    expected_columns = (
+                                        whitened_columns if call.kwargs.get("inverse_sqrt") else full_columns
+                                    )
+                                    np.testing.assert_array_equal(call.kwargs["columns"].numpy(), expected_columns)
 
     def test_04_dvi_solve_active_joint_limit(self):
         """Resolve an active joint limit through the inequality solver."""

@@ -511,16 +511,10 @@ add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices
 add_basic_example_test(
     name="basic.example_basic_pendulum",
     devices=cuda_test_devices,
+    test_options={"solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
-    variants=[
-        {
-            "test_suffix": f"kamino_ldl_{ordering}",
-            "test_options": {"solver": "kamino", "ldl": True, "ldl-ordering": ordering},
-            "allow_output_regexes": [(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
-        }
-        for ordering in ("meca", "rcm")
-    ],
+    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
 )
 
 add_basic_example_test(
@@ -548,20 +542,11 @@ add_example_batch(
             "test_options_cuda": {"world_count": 64},
             "test_suffix": "vbd",
         },
-        *[
-            {
-                "devices": cuda_test_devices,
-                "test_options": {
-                    "num-frames": 200,
-                    "solver": "kamino",
-                    "world-count": 4,
-                    "ldl": True,
-                    "ldl-ordering": ordering,
-                },
-                "test_suffix": f"kamino_ldl_{ordering}",
-            }
-            for ordering in ("meca", "rcm")
-        ],
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"num-frames": 200, "solver": "kamino", "world-count": 4},
+            "test_suffix": "kamino",
+        },
     ],
 )
 
@@ -573,15 +558,12 @@ add_example_batch(
     variants=[
         {"devices": test_devices, "test_suffix": "xpbd"},
         {"devices": test_devices, "test_options": {"solver": "vbd"}, "test_suffix": "vbd"},
-        *[
-            {
-                "devices": cuda_test_devices,
-                "test_options": {"solver": "kamino", "ldl": True, "ldl-ordering": ordering},
-                "test_suffix": f"kamino_ldl_{ordering}",
-                "allow_output_regexes": [(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
-            }
-            for ordering in ("meca", "rcm")
-        ],
+        {
+            "devices": cuda_test_devices,
+            "test_options": {"solver": "kamino"},
+            "test_suffix": "kamino",
+            "allow_output_regexes": [(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
+        },
     ],
 )
 
@@ -997,22 +979,9 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_d",
     devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
-    variants=[
-        {
-            "test_suffix": f"kamino_ldl_{ordering}",
-            "test_options": {
-                "usd_required": True,
-                "num-frames": 500,
-                "world-count": 1,
-                "solver": "kamino",
-                "ldl": True,
-                "ldl-ordering": ordering,
-            },
-        }
-        for ordering in ("meca", "rcm")
-    ],
 )
 add_example_test(
     TestRobotExamples,
@@ -1039,7 +1008,7 @@ add_example_test(
                 **({"ldl-ordering": ordering} if ordering else {}),
             },
         }
-        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm"))
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"))
     ],
 )
 add_example_test(
@@ -1067,7 +1036,7 @@ add_example_test(
                 **({"ldl-ordering": ordering} if ordering else {}),
             },
         }
-        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm"))
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "rcm"))
     ],
 )
 add_example_test(
@@ -1119,22 +1088,9 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
-    variants=[
-        {
-            "test_suffix": f"kamino_ldl_{ordering}",
-            "test_options": {
-                "usd_required": True,
-                "num-frames": 500,
-                "world-count": 1,
-                "solver": "kamino",
-                "ldl": True,
-                "ldl-ordering": ordering,
-            },
-        }
-        for ordering in ("meca", "rcm")
-    ],
 )
 add_example_test(
     TestRobotExamples,
@@ -1912,17 +1868,6 @@ class TestKaminoExamples(unittest.TestCase):
     pass
 
 
-def _kamino_ldl_variants(num_frames, **options):
-    """Exercise the real example with both block orderings at its existing frame budget."""
-    return [
-        {
-            "test_suffix": f"{options.get('dynamics-solver', 'default')}_ldl_{ordering}",
-            "test_options": {"num-frames": num_frames, "ldl": True, "ldl-ordering": ordering, **options},
-        }
-        for ordering in ("meca", "rcm")
-    ]
-
-
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_earworm_flowers",
@@ -1940,28 +1885,37 @@ add_example_test(
             # At 220 frames the opening is about -0.15 rad, past the 0.04 rad check.
             "test_options": {"num-frames": 220, "world-count": 1, "stage-count": 2, "flower-resolution": 3},
         },
-        *_kamino_ldl_variants(120, **{"world-count": 2, "mute": True}),
     ],
 )
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
     devices=cuda_test_devices,
-    variants=[{"test_options": {"num-frames": 120}}, *_kamino_ldl_variants(120)],
+    # Cover both orderings for dense PADMM on one representative closed loop.
+    variants=[
+        {"test_options": {"num-frames": 120}},
+        *[
+            {
+                "test_suffix": f"ldl_{ordering}",
+                "test_options": {"num-frames": 120, "ldl": True, "ldl-ordering": ordering},
+            }
+            for ordering in ("meca", "rcm")
+        ],
+    ],
     use_viewer=True,
 )
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_heterogeneous",
     devices=cuda_test_devices,
-    variants=[{"test_options": {"num-frames": 120}}, *_kamino_ldl_variants(120)],
+    test_options={"num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_dr_testmech",
     devices=cuda_test_devices,
-    variants=[{"test_options": {"num-frames": 120}}, *_kamino_ldl_variants(120)],
+    test_options={"num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
@@ -1970,8 +1924,10 @@ add_example_test(
     devices=cuda_test_devices,
     variants=[
         {"test_options": {"num-frames": 120}},
-        *_kamino_ldl_variants(120),
-        *_kamino_ldl_variants(120, **{"dynamics-solver": "dvi", "use-kamino-contacts": True}),
+        {
+            "test_suffix": "dvi_ldl_meca",
+            "test_options": {"num-frames": 120, "dynamics-solver": "dvi", "use-kamino-contacts": True, "ldl": True},
+        },
     ],
     use_viewer=True,
 )
@@ -1979,9 +1935,7 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
-    # Retain the long baseline; each LDL ordering covers the drop and settling
-    # over 960 physics steps with the same final pose and velocity assertions.
-    variants=[{"test_options": {"num-frames": 500}}, *_kamino_ldl_variants(120)],
+    test_options={"num-frames": 500},
     use_viewer=True,
 )
 for example_name, num_frames in (

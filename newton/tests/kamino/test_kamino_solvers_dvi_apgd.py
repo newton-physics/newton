@@ -6,6 +6,7 @@
 import math
 import tempfile
 import unittest
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,7 +17,7 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
-from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg import LDLBlockSparseSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.apgd import UnilateralAPGD
@@ -101,7 +102,7 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
     return UnilateralAPGD(owner), SimpleNamespace(data=data, sparse=False)
 
 
-def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, iterations=24):
+def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, iterations=24, ordering=None):
     """Assemble an actual Kamino model with rigid, unpreconditioned dynamics."""
     model = ModelKamino.from_newton(builder.finalize(device=device))
     model, data, state, limits, detector, jacobians = make_containers(
@@ -130,6 +131,8 @@ def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, ite
         jacobians=jacobians,
         problem=problem,
         config=DVISolverConfig(
+            bilateral_solver_type="LDL" if ordering else "LLTB",
+            bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
             unilateral_solver="apgd",
             use_schur_complement=schur,
             max_alternating_iterations=iterations,
@@ -803,8 +806,10 @@ class TestDVIAPGD(unittest.TestCase):
                 np.testing.assert_allclose(outputs[0], outputs[1], atol=2e-5)
 
     def test_schur_operator_and_recovered_bilaterals(self):
-        """Match dense and sparse Schur solves and independently eliminate bilateral rows."""
-        for device in _devices():
+        """Match LLT and both LDL orderings to independent Schur elimination and graph replay."""
+        # Reuse this small closed loop for ordering coverage instead of repeating
+        # the 580-frame DR Legs support/reset rollout for each factorization.
+        for device, ordering in product(_devices(), (None, "meca", "rcm")):
             outputs = []
             for sparse in (False, True):
                 solver, problem = _model_problem(
@@ -812,7 +817,11 @@ class TestDVIAPGD(unittest.TestCase):
                     device,
                     sparse,
                     schur=True,
+                    ordering=ordering,
                 )
+                self.assertIsInstance(solver._bilateral_solver, LDLBlockSparseSolver if ordering else LLTBlockedSolver)
+                if ordering is not None:
+                    self.assertEqual(solver._bilateral_solver.ordering, ordering)
                 solver.coldstart()
                 solver.solve(problem)
                 if solver.device.is_cuda:
@@ -845,7 +854,7 @@ class TestDVIAPGD(unittest.TestCase):
                     actual = solver._apgd.product.numpy()[nb:n]
                     expected = schur_matrix @ x[nb:n]
                     np.testing.assert_allclose(actual, expected, atol=1e-4, rtol=1e-4)
-            with self.subTest(device=device):
+            with self.subTest(device=device, ordering=ordering):
                 np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=3e-4)
 
     def test_heterogeneous_schur_worlds(self):
@@ -983,12 +992,6 @@ class TestDVIAPGDDynamics(unittest.TestCase):
         """Support DR Legs after impact and remain stable after a tipped-pose reset."""
         if not wp.is_cuda_available():
             self.skipTest("DR Legs acceptance exercises the CUDA graph path")
-        for ordering in ("meca", "rcm"):
-            with self.subTest(ordering=ordering):
-                self._check_dr_legs_support_and_reset(ordering)
-
-    def _check_dr_legs_support_and_reset(self, ordering):
-        """Check DR Legs APGD support, effort limits, and reset with the requested LDL ordering."""
         from newton.examples.kamino.example_kamino_robot_dr_legs import Example  # noqa: PLC0415
 
         with wp.ScopedDevice("cuda:0"):
@@ -998,8 +1001,6 @@ class TestDVIAPGDDynamics(unittest.TestCase):
                 dynamics_solver="dvi",
                 unilateral_solver="apgd",
                 use_schur_complement=True,
-                bilateral_solver_type="LDL",
-                ldl_ordering=ordering,
                 # Match the upstream support test; bounded rows have separate tests.
                 joint_effort_limit=math.inf,
             )
@@ -1013,7 +1014,6 @@ class TestDVIAPGDDynamics(unittest.TestCase):
 
             with patch.object(SolverKamino.Config, "from_model", side_effect=make_accuracy_config):
                 example = Example(ViewerNull(num_frames=1), args)
-            self.assertEqual(example.solver._solver_kamino.solver_fd._bilateral_solver.ordering, ordering)
             base_z = []
             for _ in range(180):
                 example.step()
