@@ -9105,14 +9105,6 @@ def compute_propagation_cache_world_flag(
 
 
 @wp.kernel
-def flag_any_sleepable_active(active: wp.array[int], sleepable: wp.array[int], flag: wp.array[int]):
-    """Set ``flag[0]`` to one when an articulation that can sleep is active this step."""
-    i = wp.tid()
-    if active[i] != 0 and sleepable[i] != 0:
-        flag[0] = 1
-
-
-@wp.kernel
 def snapshot_propagation_cache_qd_base(
     propagation_cache_world_flag: wp.array[int],
     propagation_body_count: wp.array[int],

@@ -144,7 +144,6 @@ from .kernels import (
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
     find_contact_family_segments,
-    flag_any_sleepable_active,
     flag_invalid_joint_friction,
     flatten_propagation_joint_S,
     flush_propagation_free_body_qd_to_vout,
@@ -11724,20 +11723,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Run ``solve``; a step captured with sleeping runs it only while an articulation that can sleep is awake.
 
         A step whose articulations all sleep keeps their frozen state, so skipping ``solve`` there
-        leaves the same outputs as an eager step. Prescribed articulations, which never sleep, own no rows.
+        leaves the same outputs as an eager step. The sleeping update sets the flag this reads.
         """
         device = self.model.device
         if not (self._sleep_skips_dynamics and device.is_capturing and wp.is_conditional_graph_supported()):
             solve()
             return
-        self._propagation_dynamics_active.zero_()
-        wp.launch(
-            flag_any_sleepable_active,
-            dim=self.model.articulation_count,
-            inputs=[self._dynamics_art_active, self._sleeping.art_skippable],
-            outputs=[self._propagation_dynamics_active],
-            device=device,
-        )
         wp.capture_if(self._propagation_dynamics_active, on_true=solve)
 
     def _propagation_refresh_twists(self, *, force: bool) -> None:
