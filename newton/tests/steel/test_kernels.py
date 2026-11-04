@@ -844,7 +844,14 @@ def test_propagation_rejects_unsupported_options(test, device):
                 SolverSteel(model, articulated_contact_response=response)
         set_torsion_radius(model, 0.0)
         compliance = {"contact_compliance": True, "friction_anchor_beta": 0.0}
-        options = [({"enable_sleeping": True}, "enable_sleeping")]
+        options = []
+        if response == "propagation":
+            options.append(({"enable_sleeping": True}, "enable_sleeping"))
+        else:
+            with test.subTest(response=response, option="enable_sleeping"):
+                test.assertIsNotNone(
+                    SolverSteel(model, articulated_contact_response=response, enable_sleeping=True)._sleeping
+                )
         accepted = [
             {"drive_mode": "rows"},
             {"contact_regularization": 0.02},
