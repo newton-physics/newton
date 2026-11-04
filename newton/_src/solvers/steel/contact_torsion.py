@@ -444,6 +444,8 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
         )
     solver._torsion_stats["rows"] = len(solver._torsion_stats["groups"])
     _flag_torsion_overflow(solver, requested, count)
+    # The row watermarks read the slot counter as the world's requested rows.
+    solver._slot_counter.assign(np.maximum(solver._slot_counter.numpy(), requested))
     if not solver._torsion_stats["rows"]:
         return
     for name, values in fields.items():
@@ -452,7 +454,6 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     for size, values in jacobians.items():
         solver._J_by_size[size].assign(values)
     solver._constraint_count.assign(count)
-    solver._slot_counter.assign(count)
     solver._contact_torsion_group.assign(membership)
 
 
@@ -478,7 +479,7 @@ def _flag_torsion_overflow(solver, requested, count):
         f"limit {solver._articulation_constraint_max}; dropped {int(requested[world] - count[world])} torsion rows. "
         "Increase articulation_constraint_max.",
         NewtonWarning,
-        stacklevel=3,
+        stacklevel=5,
     )
 
 

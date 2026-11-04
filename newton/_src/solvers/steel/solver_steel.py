@@ -1863,7 +1863,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 1; rejected with ``articulated_contact_response="immediate"``.
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
-                compatible with CUDA graph capture.
+                compatible with CUDA graph capture. The host contact torsion preparation
+                emits its overflow warning as a :class:`~newton.exceptions.NewtonWarning`
+                through :mod:`warnings` instead.
             row_watermark: Accumulate the high-water marks of the per-world row counts of
                 every row family and of the contact count on the device in every step,
                 including captured ones; read them with :meth:`constraint_row_watermarks`.
