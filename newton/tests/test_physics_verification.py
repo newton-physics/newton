@@ -1318,7 +1318,7 @@ def test_ball_loop_joint(test, device, solver_fn):
             parent=-1,
             child=link,
             parent_xform=wp.transform_identity(),
-            child_xform=wp.transform(wp.vec3(0.0, 0.25, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.5, 0.0), wp.quat_identity()),
         )
     builder.joint_articulation[j_loop] = -1
 

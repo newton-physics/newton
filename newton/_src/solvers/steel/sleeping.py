@@ -356,6 +356,7 @@ class _SleepState:
                     contacts.rigid_contact_normal,
                     contacts.rigid_contact_margin0,
                     contacts.rigid_contact_margin1,
+                    contacts.rigid_contact_surface_velocity,
                     state.body_q,
                     state.body_qd,
                     self.last_body_q,
@@ -928,6 +929,7 @@ def _contact_boundaries(
     normal: wp.array[wp.vec3],
     margin0: wp.array[float],
     margin1: wp.array[float],
+    surface_velocity: wp.array[wp.vec3],
     q: wp.array[wp.transform],
     qd: wp.array[wp.spatial_vector],
     last: wp.array[wp.transform],
@@ -937,6 +939,11 @@ def _contact_boundaries(
 ):
     i = wp.tid()
     if i < count[0] and shape0[i] >= 0 and shape1[i] >= 0:
+        # A moving contact surface drives its friction rows, so neither side may sleep.
+        surface_moving = False
+        if surface_velocity:
+            sv = surface_velocity[i]
+            surface_moving = _nonzero(wp.length(sv - normal[i] * wp.dot(normal[i], sv)))
         bodies = wp.vec2i(shape_body[shape0[i]], shape_body[shape1[i]])
         pa = wp.vec3(point0[i])
         pb = wp.vec3(point1[i])
@@ -948,6 +955,8 @@ def _contact_boundaries(
         for side in range(2):
             a = _node(bodies[side], nodes, flags)
             b = _node(bodies[1 - side], nodes, flags)
+            if a >= 0 and surface_moving:
+                wp.atomic_max(veto, parent[a], 1)
             if a >= 0 and b < 0:
                 if gap <= 1.0e-5:
                     wp.atomic_max(supported, parent[a], 1)
@@ -1298,13 +1307,13 @@ def _entity_arrays(model, frequency, size):
     """Model arrays declared at ``frequency`` with one row per entity, so coincident counts never mix owners."""
     arrays = []
     for name, spec in model.attribute_specs.items():
-        value = _model_array(model, name)
         if (
             spec.frequency != frequency
             or spec.assignment not in (None, Model.AttributeAssignment.MODEL)
             or spec.deprecated
         ):
             continue
+        value = _model_array(model, name)
         if isinstance(value, wp.array) and value.ndim >= 1 and value.shape[0] == size and size > 0:
             arrays.append((name, value))
     return arrays
