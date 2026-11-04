@@ -3489,6 +3489,9 @@ def test_colored_sleeping_islands_drop_their_torsion_rows(test, device):
         if not solver._sleeping.art_awake.numpy().any():
             break
     np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [0, 0])
+    # The step that put the islands to sleep still solved them; the next one skips them.
+    step()
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [0, 0])
     test.assertEqual(hosted_articulations(), ([], 0))
     frozen = state.body_q.numpy().copy()
     force = np.zeros((model.body_count, 6), dtype=np.float32)
