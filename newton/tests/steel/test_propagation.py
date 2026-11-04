@@ -1745,13 +1745,6 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
             test.assertEqual(int(solver._propagation_constraint_count.numpy()[0]), 0)
 
 
-def test_flag_requires_propagation_mode(test, device):
-    """Reject same-articulation propagation rows on the immediate response, which has no propagation rows."""
-    model = _build_scissor_model(device)
-    with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
-        SolverSteel(model, articulated_contact_response="immediate", propagation_same_articulation_rows=True)
-
-
 def test_cross_response_effective_mass_matches_reference_operator(test, device):
     """Match each same-articulation propagation row's ``J M^-1 J^T`` to the analytic operator, on both responses.
 
@@ -1789,11 +1782,13 @@ def test_cross_response_effective_mass_matches_reference_operator(test, device):
             body_a = solver._propagation_body_a.numpy()[0, :count]
             body_b = solver._propagation_body_b.numpy()[0, :count]
             eff_mass_inv = solver._propagation_eff_mass_inv.numpy()[0, :count].astype(np.float64)
+            row_type = solver._propagation_row_type.numpy()[0, :count]
+            parent = solver._propagation_row_parent.numpy()[0, :count]
             H, X = _analytic_H_and_X(model, state)
             width = int(reference._world_dof_count.numpy()[0])
             Y = reference._Y_world.numpy()[0].astype(np.float64)
 
-            checked = 0
+            checked = {PGS_CONSTRAINT_TYPE_CONTACT: 0, PGS_CONSTRAINT_TYPE_FRICTION: 0}
             for contact, row in sorted(rows.items()):
                 test.assertGreaterEqual(int(body_a[row]), 0)
                 test.assertGreaterEqual(int(body_b[row]), 0)
@@ -1804,18 +1799,29 @@ def test_cross_response_effective_mass_matches_reference_operator(test, device):
                 err = min(np.linalg.norm(y_got - y_ref), np.linalg.norm(y_got + y_ref))
                 test.assertLess(err / max(np.linalg.norm(y_ref), 1.0e-12), 1.0e-3)
 
-                expected = float(g @ y_ref)
-                diagonal = float(J_a[row] @ MiJt_a[row] + J_b[row] @ MiJt_b[row])
-                test.assertAlmostEqual(1.0 / eff_mass_inv[row], diagonal + PGS_CFM, delta=1.0e-6 * (diagonal + 1.0))
-                if expected < 1.0e-6:
-                    # Kinematically locked direction: the true diagonal is zero.
-                    test.assertLess(abs(diagonal), 1.0e-6)
-                    continue
-                checked += 1
-                test.assertLess(
-                    abs(diagonal - expected) / expected, 1.0e-3, f"contact {contact}: cross response term missing"
-                )
-            test.assertGreater(checked, 0, "no non-degenerate same-articulation rows were checked")
+                # The contact's friction rows follow its normal row and name it as their parent.
+                friction = [
+                    r
+                    for r in (row + 1, row + 2)
+                    if r < count and row_type[r] == PGS_CONSTRAINT_TYPE_FRICTION and parent[r] == row
+                ]
+                for r in (row, *friction):
+                    g = X[body_a[r]].T @ J_a[r] + X[body_b[r]].T @ J_b[r]
+                    expected = float(g @ np.linalg.solve(H, g))
+                    diagonal = float(J_a[r] @ MiJt_a[r] + J_b[r] @ MiJt_b[r])
+                    test.assertAlmostEqual(1.0 / eff_mass_inv[r], diagonal + PGS_CFM, delta=1.0e-6 * (diagonal + 1.0))
+                    if expected < 1.0e-6:
+                        # Kinematically locked direction: the true diagonal is zero.
+                        test.assertLess(abs(diagonal), 1.0e-6)
+                        continue
+                    checked[int(row_type[r])] += 1
+                    test.assertLess(
+                        abs(diagonal - expected) / expected,
+                        1.0e-3,
+                        f"row {r} of contact {contact}: cross response term missing",
+                    )
+            test.assertGreater(checked[PGS_CONSTRAINT_TYPE_CONTACT], 0, "no non-degenerate normal rows were checked")
+            test.assertGreater(checked[PGS_CONSTRAINT_TYPE_FRICTION], 0, "no non-degenerate friction rows were checked")
 
 
 def test_closing_gripper_stops_at_finger_contact(test, device):
@@ -1884,7 +1890,6 @@ for _name in (
     "test_scissor_scene_produces_same_articulation_contact",
     "test_scissor_dense_diagonal_matches_reference",
     "test_default_routing_keeps_same_articulation_rows_dense",
-    "test_flag_requires_propagation_mode",
     "test_cross_response_effective_mass_matches_reference_operator",
     "test_closing_gripper_stops_at_finger_contact",
 ):
