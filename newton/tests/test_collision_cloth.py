@@ -30,11 +30,13 @@ from newton._src.geometry.tri_mesh_collision import (
     get_vertex_colliding_triangles_count,
     get_vertex_collision_buffer_vertex_index,
 )
+from newton._src.solvers.vbd import particle_vbd_kernels
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     accumulate_self_contact_force_and_hessian,
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
+from newton._src.solvers.vbd.solver_vbd import _self_contact_record_bounds
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices, set_to_csr
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import (
@@ -2290,10 +2292,55 @@ def test_self_contact_step_repeatable_under_deterministic_mode(test, device):
     np.testing.assert_array_equal(positions_a, positions_b)
 
 
+def test_self_contact_step_repeatable_with_revisited_pairs(test, device):
+    """A per-pair launch far smaller than the stored pair count makes every
+    thread revisit the atomic sites many times; the derived record bound keeps
+    the deterministic lowering covering them, so two RUN_TO_RUN solvers still
+    agree bitwise and no record overflow is raised."""
+    launch_size = 2
+
+    def run():
+        model, solver = _build_two_layer_cloth(device, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+        info = solver.particle_self_contact_info()
+        solver.particle_self_contact_evaluation_kernel_launch_size = launch_size
+        solver._update_self_contact_record_bounds(info)
+        expected_bound, _ = _self_contact_record_bounds(
+            info.vertex_colliding_triangles.shape[0] // 2,
+            info.edge_colliding_edges.shape[0] // 2,
+            launch_size,
+        )
+        test.assertEqual(
+            wp.get_module_options(module=particle_vbd_kernels)["deterministic_max_records"], expected_bound
+        )
+        states = [model.state(), model.state()]
+        control = model.control()
+        for i in range(4):
+            solver.step(states[i % 2], states[(i + 1) % 2], control, None, 1e-3)
+        wp.synchronize_device(wp.get_device(device))
+        counts = solver.particle_self_contact_info().global_pair_counts.numpy()
+        return states[0].particle_q.numpy().copy(), int(counts[0]) + int(counts[2])
+
+    positions_a, stored_pairs = run()
+    positions_b, _ = run()
+    test.assertGreater(stored_pairs, launch_size)
+    test.assertFalse(np.isnan(positions_a).any())
+    np.testing.assert_array_equal(positions_a, positions_b)
+
+
 devices = get_test_devices()
 
 
 class TestCollision(unittest.TestCase):
+    def test_self_contact_record_bounds(self):
+        """The record bounds count the atomic call sites of one visit times the visits per thread."""
+        # one visit per family: the call sites of one visit (8 truncation minima, 2 + 4 harvest adds)
+        self.assertEqual(_self_contact_record_bounds(100, 400, 400), (8, 6))
+        # 10k particles and 30k edges at the default budgets on an L40-sized
+        # launch: 2 vertex-triangle and 7 edge-edge visits per thread
+        self.assertEqual(_self_contact_record_bounds(320_000, 1_920_000, 290_816), (36, 22))
+        # a single thread visits every stored pair
+        self.assertEqual(_self_contact_record_bounds(3, 5, 1), (32, 22))
+
     def test_collision_detection_block_size_policy(self):
         """Honor explicit block sizes and select bounded automatic values."""
         detector = object.__new__(TriMeshCollisionDetector)
@@ -2386,6 +2433,12 @@ add_function_test(
     "test_self_contact_step_repeatable_under_deterministic_mode",
     test_self_contact_step_repeatable_under_deterministic_mode,
     devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_self_contact_step_repeatable_with_revisited_pairs",
+    test_self_contact_step_repeatable_with_revisited_pairs,
+    devices=get_cuda_test_devices(),
 )
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 add_function_test(
