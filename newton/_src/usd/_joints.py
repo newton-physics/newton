@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonWarning
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
@@ -110,7 +111,7 @@ def _warn_irreversible_joint(description: str) -> None:
         "state of this joint may act in the mirrored direction. To avoid this, author the joint with the rigid "
         "body as physics:body1.",
         NewtonWarning,
-        stacklevel=2,
+        stacklevel=_external_warning_stacklevel(),
     )
 
 
