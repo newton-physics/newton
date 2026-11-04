@@ -131,8 +131,9 @@ can inherit ``model.vbd`` settings.
      - More candidate pairs, larger buffers.
    * - ``particle_vertex_contact_buffer_size`` (32),
        ``particle_edge_contact_buffer_size`` (64)
-     - Candidate pairs stored per vertex and per edge. Pairs beyond the
-       capacity are dropped silently.
+     - Average candidate pairs per vertex and per edge; each sizes one pooled
+       buffer shared by all elements. Pairs beyond the capacity are dropped
+       and flagged.
      - Many layers or a large gap; tunneling. See
        :ref:`vbd-fail-tunneling`.
      - Memory, detection time.
@@ -1232,25 +1233,26 @@ Self-contact tunneling
 **Symptom.** Cloth passes through itself, or one layer of a stack drops
 through another, although self-contact is enabled.
 
-**Cause.** The candidate buffers overflow, or a filter excludes the pair. Each
-vertex stores at most ``particle_vertex_contact_buffer_size`` vertex-triangle
-candidates (default 32) and each edge at most
-``particle_edge_contact_buffer_size`` edge-edge candidates (default 64). Pairs
-beyond the capacity are dropped silently, and a dropped pair has no force and
-no division plane; only the radius cap still limits its vertices. The
-topological filter and the rest-shape exclusion radius also
-remove pairs, by design.
+**Cause.** The candidate buffers overflow, or a filter excludes the pair. The
+vertex-triangle candidates of all vertices share one pooled buffer of
+``particle_vertex_contact_buffer_size`` entries per vertex (default 32), and
+the edge-edge candidates of all edges share one of
+``particle_edge_contact_buffer_size`` entries per edge (default 64); a single
+element can use far more than its average. Pairs beyond a pool's capacity are
+dropped and flagged, and a dropped pair has no force and no division plane;
+only the radius cap still limits its vertices. The topological filter and the
+rest-shape exclusion radius also remove pairs, by design.
 
-**Fix.** Raise the two buffer sizes, and lower the gap if it is far above the
-margin. The detector records the number of pairs found per vertex and per edge,
-including the dropped ones, next to the buffer sizes. A count above the buffer
-size is a measured overflow. The result struct is reachable as
-``solver.trimesh_collision_info`` (fields ``vertex_colliding_triangles_count``,
-``vertex_colliding_triangles_buffer_sizes``, ``edge_colliding_edges_count`` and
-``edge_colliding_edges_buffer_sizes``); it is an experimental type and can
-change. If a filter is the cause, lower
-``particle_rest_shape_contact_exclusion_radius`` or check the external filter
-maps you passed.
+**Fix.** Call ``solver.check_and_grow_self_contact_buffers()`` between steps:
+it reads the overflow flags of the last detection, warns, and grows an
+overflowed pool in place to 1.5x the measured demand. Or raise the two buffer
+sizes up front, and lower the gap if it is far above the margin. The live
+result struct is reachable as ``solver.particle_self_contact_info()``; its
+``global_pair_counts`` array holds each family's demand cursor and overflow
+flag, and its ``*_count`` fields hold the stored pairs per vertex and per
+edge. It is an experimental type and can change. If a filter is the cause,
+lower ``particle_rest_shape_contact_exclusion_radius`` or check the external
+filter maps you passed.
 
 .. _vbd-rigid-problems:
 

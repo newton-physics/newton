@@ -260,9 +260,10 @@ The contact stack has three layers.
 
 **Detection.** Self-contact pairs come from the triangle-mesh self-contact
 detector: vertex-triangle and edge-edge candidates within
-``particle_self_contact_margin + particle_self_contact_gap``, stored in fixed
-buffers of ``particle_vertex_contact_buffer_size`` and
-``particle_edge_contact_buffer_size`` entries, and filtered by topological
+``particle_self_contact_margin + particle_self_contact_gap``, stored in two
+pooled buffers of ``particle_vertex_contact_buffer_size`` and
+``particle_edge_contact_buffer_size`` entries per element shared by all
+elements (grown between steps on request), and filtered by topological
 distance (``particle_topological_contact_filter_threshold``) and rest-shape
 distance (``particle_rest_shape_contact_exclusion_radius``). It runs on the
 schedule of the ``SOFT_SELF_CONTACT`` collision slot, by default before and
