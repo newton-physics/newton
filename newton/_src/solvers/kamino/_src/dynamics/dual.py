@@ -1813,7 +1813,7 @@ class DualProblem:
             inputs=[
                 # Inputs:
                 model.time.dt,
-                model.gravity.vector,
+                model.gravity,
                 model.bodies.wid,
                 model.bodies.m_i,
                 data.bodies.u_i,
@@ -1836,7 +1836,7 @@ class DualProblem:
             inputs=[
                 # Inputs:
                 model.time.dt,
-                model.gravity.vector,
+                model.gravity,
                 model.bodies.wid,
                 model.bodies.m_i,
                 model.bodies.inv_m_i,

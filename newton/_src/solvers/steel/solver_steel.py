@@ -2174,9 +2174,13 @@ class SolverSteel(SolverBase, CouplingInterface):
                 every island). Driven articulations (nonzero drive gains)
                 stay awake. Sleeping is configured at construction; rebuild captured graphs
                 to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
-                or ``velocity_iterations``, or for a model without articulations;
-                :meth:`step` raises :class:`ValueError` for a nonpositive or nonfinite
-                ``dt`` and when ``state_in`` and ``state_out`` share arrays. The sleeping
+                or ``velocity_iterations``, or for a model without articulations, and
+                :class:`NotImplementedError` with ``articulated_contact_response="propagation"``;
+                with ``"propagation_colored"`` the contacts of skipped islands are left out of
+                the coloring and the colored sweep, but the propagation trees of sleeping
+                articulations are still factored every step and walked every iteration. :meth:`step` raises :class:`ValueError` for a
+                nonpositive or nonfinite ``dt`` and when ``state_in`` and ``state_out`` share
+                arrays. The sleeping
                 options are runtime solver settings with no USD schema.
             sleep_linear_threshold: Body center-of-mass speed below which a body is quiet
                 [m/s], finite and positive.
@@ -2557,7 +2561,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                         and self._contact_compliance
                         and articulated_contact_response == "propagation_colored",
                     ),
-                    ("enable_sleeping=True", bool(enable_sleeping)),
+                    # Sleeping is tested only with the colored sweep, not with the plain sweep's
+                    # torsion and same-articulation rows.
+                    (
+                        "enable_sleeping=True",
+                        bool(enable_sleeping) and articulated_contact_response != "propagation_colored",
+                    ),
                     (
                         f"friction_mode={self._friction_mode!r}",
                         self._friction_mode != "fixed_normal" and articulated_contact_response != "propagation_colored",
@@ -8338,12 +8347,20 @@ class SolverSteel(SolverBase, CouplingInterface):
 
     @property
     def compliance_contact_count(self) -> int:
-        """Compliant contacts prepared by the last step (``contact_compliance`` only; synchronous readback)."""
+        """Compliant contacts prepared by the last step (``contact_compliance`` only).
+
+        With ``contact_compliance``, reads the device on the host and raises :class:`RuntimeError`
+        during CUDA graph capture.
+        """
         return 0 if self._compliance is None else _contact_compliance.counts(self)[0]
 
     @property
     def compliance_skipped_contact_count(self) -> int:
-        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
+        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only).
+
+        With ``contact_compliance``, reads the device on the host and raises :class:`RuntimeError`
+        during CUDA graph capture.
+        """
         return 0 if self._compliance is None else _contact_compliance.counts(self)[1]
 
     def snapshot_constraint_status(self) -> None:
