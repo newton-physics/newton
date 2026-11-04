@@ -17,10 +17,8 @@ from newton._src.solvers.mujoco.constants import (
 )
 from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
-
-devices = get_test_devices("basic")
 
 
 class TestImportUsdJoints(unittest.TestCase):
@@ -1300,30 +1298,30 @@ def Xform "Articulation" (
                 self.assertAlmostEqual(builder.joint_q[q_index], position * scale, places=6)
                 self.assertAlmostEqual(builder.joint_qd[dof], velocity * scale, places=6)
 
-            for device in devices:
-                with self.subTest(kind=kind, device=device):
-                    body_q, joint_q = {}, {}
-                    for reverse, builder in builders.items():
-                        model = builder.finalize(device=device)
-                        solver = newton.solvers.SolverFeatherstone(model)
-                        state_0, state_1, control = model.state(), model.state(), model.control()
-                        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-                        body_q[reverse] = [state_0.body_q.numpy().copy()]
-                        joint_q[reverse] = [state_0.joint_q.numpy()[q_index]]
-                        for _ in range(150):
-                            solver.step(state_0, state_1, control, None, 2.0e-3)
-                            state_0, state_1 = state_1, state_0
-                            body_q[reverse].append(state_0.body_q.numpy().copy())
-                            joint_q[reverse].append(state_0.joint_q.numpy()[q_index])
+            # The fix is host-side import logic, so one device covers it.
+            with self.subTest(kind=kind):
+                body_q, joint_q = {}, {}
+                for reverse, builder in builders.items():
+                    model = builder.finalize(device="cpu")
+                    solver = newton.solvers.SolverFeatherstone(model)
+                    state_0, state_1, control = model.state(), model.state(), model.control()
+                    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+                    body_q[reverse] = [state_0.body_q.numpy().copy()]
+                    joint_q[reverse] = [state_0.joint_q.numpy()[q_index]]
+                    for _ in range(150):
+                        solver.step(state_0, state_1, control, None, 2.0e-3)
+                        state_0, state_1 = state_1, state_0
+                        body_q[reverse].append(state_0.body_q.numpy().copy())
+                        joint_q[reverse].append(state_0.joint_q.numpy()[q_index])
 
-                    np.testing.assert_allclose(body_q[True], body_q[False], atol=1.0e-5)
-                    np.testing.assert_allclose(joint_q[True], np.negative(joint_q[False]), atol=1.0e-5)
-                    # The reversed joint stops at its authored limit: the lower one for the
-                    # revolute joint and the upper one for the prismatic joint.
-                    if kind == "revolute":
-                        self.assertAlmostEqual(min(joint_q[True]), lower * scale, delta=0.01)
-                    else:
-                        self.assertAlmostEqual(max(joint_q[True]), upper, delta=0.01)
+                np.testing.assert_allclose(body_q[True], body_q[False], atol=1.0e-5)
+                np.testing.assert_allclose(joint_q[True], np.negative(joint_q[False]), atol=1.0e-5)
+                # The reversed joint stops at its authored limit: the lower one for the
+                # revolute joint and the upper one for the prismatic joint.
+                if kind == "revolute":
+                    self.assertAlmostEqual(min(joint_q[True]), lower * scale, delta=0.01)
+                else:
+                    self.assertAlmostEqual(max(joint_q[True]), upper, delta=0.01)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_world_multi_axis_joints(self):
@@ -1402,8 +1400,12 @@ def Xform "Articulation" (
                 ):
                     with self.subTest(merged=merged, axes=axes, body1=body1, limits=limits):
                         builder = newton.ModelBuilder()
-                        with self.assertWarnsRegex(NewtonWarning, "physics:body1 is not an imported rigid body"):
+                        with self.assertWarnsRegex(
+                            NewtonWarning, "physics:body1 is not an imported rigid body"
+                        ) as caught:
                             builder.add_usd(create_stage(axes, merged, body1, limits))
+                        # The warning points at the add_usd() call, not at Newton internals.
+                        self.assertEqual(caught.filename, __file__)
                         self.assertEqual(builder.joint_type, [newton.JointType.D6])
                         self.assertEqual(builder.joint_parent, [-1])
                         for dof, axis in enumerate(axes):
