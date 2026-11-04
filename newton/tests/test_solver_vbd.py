@@ -5146,6 +5146,52 @@ def _body_particle_attachment_is_native_vbd(test, device):
     test.assertGreater(anchor_pos[0], 1.0e-3)
 
 
+def _simulate_cloth_hung_by_attachments(device, deterministic):
+    """Hang a cloth from a static body by two corner attachments, passing contacts to every step."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()), mass=0.0)
+    builder.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 0.3),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.02,
+        cell_y=0.02,
+        mass=1.0e-3,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=0.0,
+        particle_radius=2.0e-3,
+    )
+    corners = [0, 4]
+    for particle in corners:
+        builder.add_attachment_particle_body(particle, body, stiffness=1.0e4)
+    builder.color()
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10, deterministic=deterministic)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out, control = model.state(), model.state(), model.control()
+    for _ in range(50):
+        state_in.clear_forces()
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 1.0e-3)
+        state_in, state_out = state_out, state_in
+    return state_in.particle_q.numpy()
+
+
+def _body_particle_attachment_survives_deterministic_contact_gather(test, device):
+    """Particle-body attachments must act the same in a deterministic mode when contacts are passed to step()."""
+    reference = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.NOT_GUARANTEED)
+    gathered = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.RUN_TO_RUN)
+    # The cloth is far above the ground, so no contact acts and the two modes match. Without the attachment forces
+    # the whole cloth falls freely instead of swinging from its corners.
+    np.testing.assert_allclose(gathered, reference, atol=1.0e-4)
+
+
 def _body_particle_attachment_validates_inputs(test, device):
     """Reject invalid native particle-body attachment endpoints and coefficients."""
     builder = newton.ModelBuilder()
@@ -6375,6 +6421,12 @@ add_function_test(
     TestSolverVBD,
     "test_body_particle_attachment_is_native_vbd",
     _body_particle_attachment_is_native_vbd,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_survives_deterministic_contact_gather",
+    _body_particle_attachment_survives_deterministic_contact_gather,
     devices=devices,
 )
 add_function_test(
