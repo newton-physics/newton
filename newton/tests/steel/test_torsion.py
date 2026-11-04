@@ -1712,6 +1712,39 @@ def test_cuda_cold_capture_reports_errors_until_reset(test, device):
     test.assertFalse(np.array_equal(output.joint_q.numpy(), state.joint_q.numpy()))
 
 
+def test_cuda_status_snapshot_reports_a_replay_error(test, device):
+    """Report a replay's torsion error from a snapshot taken after it, and not from an earlier one."""
+    _, solver, model, state, contacts = fixture(0.01, device=device, contact_torsion_device=True, iterations=16)
+    output = model.state()
+    with wp.ScopedCapture(device=model.device) as capture:
+        solver.step(state, output, model.control(), contacts, 0.0025)
+    wp.capture_launch(capture.graph)
+    solver.snapshot_constraint_status()
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity(snapshot=True)
+    solver.snapshot_constraint_status()
+    with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
+        solver.check_constraint_capacity(snapshot=True)
+    np.testing.assert_array_equal(output.joint_q.numpy(), state.joint_q.numpy())
+    solver.reset(state)
+    wp.capture_launch(capture.graph)
+    solver.snapshot_constraint_status()
+    solver.check_constraint_capacity(snapshot=True)
+
+
+def test_cuda_status_snapshot_takes_device_torsion_prepared_later(test, device):
+    """Check and retake a status snapshot taken before device torsion was prepared."""
+    _, solver, *_ = fixture(0.01, device=device, iterations=16, step=False)
+    solver.snapshot_constraint_status()
+    enable_device_torsion(solver)
+    solver.check_constraint_capacity(snapshot=True)
+    solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+    solver.snapshot_constraint_status()
+    with test.assertRaisesRegex(RuntimeError, "contact torsion rejected its input: .*load ring"):
+        solver.check_constraint_capacity(snapshot=True)
+
+
 def test_cuda_full_solver_graph(test, device):
     """Match captured and eager solves through the default-off public device API."""
 
@@ -1790,6 +1823,8 @@ for _fn in (
     test_cuda_captured_capacity_errors,
     test_public_api_noop_and_fail_stop,
     test_cuda_cold_capture_reports_errors_until_reset,
+    test_cuda_status_snapshot_reports_a_replay_error,
+    test_cuda_status_snapshot_takes_device_torsion_prepared_later,
     test_cuda_full_solver_graph,
 ):
     add_function_test(TestDeviceTorsionPreparation, _fn.__name__, _fn, devices=get_cuda_test_devices())
