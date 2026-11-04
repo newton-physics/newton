@@ -1782,7 +1782,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 as a fraction of the position error removed per step.
             cfm: Constraint force mixing added to every row's effective-mass diagonal,
                 which regularizes redundant rows. Drive rows of ``drive_mode="rows"`` use
-                their exact unit response instead.
+                their exact unit response instead, and the coupled contact solves of a
+                ``friction_mode`` other than ``"fixed_normal"`` leave it off their contact blocks.
             relaxation: Successive over-relaxation factor of the PGS sweep.
             update_mass_matrix_interval: Rebuild and refactor the mass matrix every this many
                 calls to :meth:`step`; ``1`` rebuilds it every step. Larger values reuse a
@@ -23409,8 +23410,8 @@ _MF_COULOMB_NEWTON_FRICTION_SOURCE = """
 
                                 float rT0 = -last_s0;
                                 float rT1 = -last_s1;
-                                float rN = -(wNT0 * rT0 + wNT1 * rT1 + bN) / WN;
-                                new_lambda_n = rN;
+                                // The finite search can end just below zero load; the exact root is non-negative.
+                                new_lambda_n = fmaxf(-(wNT0 * rT0 + wNT1 * rT1 + bN) / WN, 0.0f);
                                 new_lambda_t1 = rT0;
                                 new_lambda_t2 = rT1;
                                 // The root search stops within a tolerance and leaves a residual tangent at mu = 0.
