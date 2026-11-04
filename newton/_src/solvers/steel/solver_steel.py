@@ -11755,7 +11755,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         leaves the same outputs as an eager step. The sleeping update sets the flag this reads.
         """
         device = self.model.device
-        if not (self._sleep_skips_dynamics and device.is_capturing and wp.is_conditional_graph_supported()):
+        # capture_if builds a conditional node only in a capture Warp started; under another framework's
+        # capture it would read the flag back on the host, so the solve runs unconditionally there.
+        warp_capture = device.is_cuda and device.captures.get(device.stream) is not None
+        if not (self._sleep_skips_dynamics and warp_capture and wp.is_conditional_graph_supported()):
             solve()
             return
         wp.capture_if(self._propagation_dynamics_active, on_true=solve)
