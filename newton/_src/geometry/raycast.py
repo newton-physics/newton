@@ -220,9 +220,6 @@ def ray_intersect_ellipsoid(ray_origin: wp.vec3, ray_direction: wp.vec3, semi_ax
     return t_hit, normal
 
 
-_IFACE = wp.types.matrix((3, 2), dtype=wp.int32)(1, 2, 0, 2, 0, 1)
-
-
 @wp.func
 def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3) -> tuple[float, wp.vec3]:
     """Computes ray-box intersection in the box's local frame.
