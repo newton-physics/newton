@@ -8233,6 +8233,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
         model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
         model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
+        model.mujoco.noslip_iterations.assign(np.array([5], dtype=np.int32))
+        model.mujoco.noslip_tolerance.assign(np.array([1e-10], dtype=np.float32))
 
         # Nonzero density/viscosity require fluid dynamics, which MuJoCo Warp does not support.
         solver = SolverMuJoCo(
@@ -8249,6 +8251,8 @@ class TestMuJoCoOptions(unittest.TestCase):
             jacobian="dense",
             iterations=5,
             ls_iterations=3,
+            noslip_iterations=12,
+            noslip_tolerance=1e-8,
             disable_contacts=True,
         )
         mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
@@ -8290,6 +8294,10 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.jacobian, SolverMuJoCo._mujoco.mjtJacobian.mjJAC_DENSE)
         self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.noslip_iterations, 12, "Constructor should override custom attribute")
+        np.testing.assert_allclose(solver.mj_model.opt.noslip_tolerance, 1e-8, rtol=1e-6)
+        self.assertEqual(solver.mjw_model.opt.noslip_iterations, 12)
+        np.testing.assert_allclose(solver.mjw_model.opt.noslip_tolerance.numpy(), 1e-8, rtol=1e-6)
 
     def test_options_use_defaults(self):
         """
