@@ -135,6 +135,7 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
+from .sensors import _add_imported_sensors, _register_sensor_attributes
 from .utils import solref_invalid_mask
 
 if TYPE_CHECKING:
@@ -1486,6 +1487,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
 
         _register_equality_constraint_attributes(builder)
+        _register_sensor_attributes(builder)
 
         def parse_solreflimit_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
             prim = context.get("prim")
@@ -9068,6 +9070,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.solref = (0.0, 0.0)
             kinematic_welds.append(eq)
 
+        _add_imported_sensors(spec, model, first_world, separate_worlds, get_body_name, site_mapping)
         self.mj_model = spec.compile()
         if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
             warnings.warn(

@@ -1,0 +1,1 @@
+Add `parse_sensors` to `ModelBuilder.add_mjcf()` to import MJCF `touch` sensors and body, xbody, and site frame sensors, which `SolverMuJoCo` adds to its MuJoCo model with their cutoff, noise, user data, history, delay, and interval. Other sensor types are skipped and logged once per file.

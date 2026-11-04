@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -32,6 +33,7 @@ from ..solvers.mujoco.constants import (
 )
 from ..solvers.mujoco.enums import EqType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint
+from ..solvers.mujoco.sensors import FRAME_SENSOR_TYPES, INTERPOLATION_ORDERS, SENSOR_OBJECT_TYPES
 from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
@@ -336,6 +338,7 @@ def parse_mjcf(
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
     parse_sites: bool = True,
+    parse_sensors: bool = False,
     parse_visuals: bool = True,
     parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
@@ -458,6 +461,7 @@ def parse_mjcf(
         parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_sensors: Whether MJCF ``touch`` sensors and body/site frame sensors are stored as ``mujoco:sensor_*`` custom attributes, which :class:`~newton.solvers.SolverMuJoCo` adds to its MuJoCo model. Other sensor types, geom and camera frames, and sensors on a body or site that is not imported are skipped and logged once per file. Cannot be combined with collapsing fixed joints. Default is False.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -502,6 +506,10 @@ def parse_mjcf(
 
     if override_root_xform and xform is None:
         raise ValueError("override_root_xform=True requires xform to be set")
+
+    if parse_sensors and (collapse_fixed_joints or collapse_massless_fixed_root):
+        # Collapsing does not remap custom attribute body references, so sensors would name merged bodies.
+        raise ValueError("parse_sensors=True cannot be combined with collapsing fixed joints.")
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -3994,6 +4002,60 @@ def parse_mjcf(
                 joint_indices=root_joints,
                 parent_body=-1,
                 articulation_label=label,
+            )
+
+    if parse_sensors:
+        # Sensors are optional metadata: skip unsupported ones and log them once per file.
+        skipped: dict[str, int] = {}
+
+        def sensor_target(kind: str, name: str | None) -> tuple[int, int] | None:
+            """Return the (body, site) indices a sensor names, or None when it was not imported."""
+            if kind == "site":
+                site = raw_site_name_to_idx.get(name)
+                return None if site is None else (-1, site)
+            body = body_name_to_idx.get(sanitize_name(name)) if name else None
+            return None if body is None else (body, -1)
+
+        for section in root.findall("sensor"):
+            for sensor in section:
+                if sensor.tag == "touch":
+                    kind, name = "site", sensor.get("site")
+                elif sensor.tag in FRAME_SENSOR_TYPES:
+                    kind, name = sensor.get("objtype", ""), sensor.get("objname")
+                else:
+                    skipped[f"<{sensor.tag}>"] = skipped.get(f"<{sensor.tag}>", 0) + 1
+                    continue
+                if sensor.get("interp", "zoh") not in INTERPOLATION_ORDERS:
+                    raise ValueError(
+                        f"MJCF sensor {sensor.get('name', sensor.tag)!r} has invalid interp {sensor.get('interp')!r}; "
+                        f"expected one of {sorted(INTERPOLATION_ORDERS)}."
+                    )
+                reference_kind, reference_name = sensor.get("reftype", ""), sensor.get("refname")
+                unsupported = [t for t in (kind, reference_kind) if t and t not in SENSOR_OBJECT_TYPES]
+                target = None if unsupported else sensor_target(kind, name)
+                reference = sensor_target(reference_kind, reference_name) if reference_kind else (-1, -1)
+                if unsupported or target is None or reference is None:
+                    reason = f"<{sensor.tag}> on {unsupported[0] if unsupported else 'a body or site not imported'}"
+                    skipped[reason] = skipped.get(reason, 0) + 1
+                    continue
+                builder.add_custom_values(
+                    **{
+                        "mujoco:sensor_type": sensor.tag,
+                        "mujoco:sensor_attributes": json.dumps(sensor.attrib),
+                        "mujoco:sensor_objtype": kind,
+                        "mujoco:sensor_body": target[0],
+                        "mujoco:sensor_site": target[1],
+                        "mujoco:sensor_reftype": reference_kind,
+                        "mujoco:sensor_refbody": reference[0],
+                        "mujoco:sensor_refsite": reference[1],
+                        "mujoco:sensor_world": builder.current_world,
+                    }
+                )
+        if skipped:
+            logger.warning(
+                "MJCF model %r: sensors not imported: %s.",
+                root.get("model", ""),
+                ", ".join(f"{count} x {reason}" for reason, count in skipped.items()),
             )
 
     if collapse_fixed_joints:

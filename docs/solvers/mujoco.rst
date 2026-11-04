@@ -1038,6 +1038,27 @@ all solvers and content already added to the shared builder. Inside
 outside a world, the global/default gravity is changed. A later import
 with ``gravity="enable"`` does not restore the previous gravity vector.
 
+Imported sensors
+----------------
+
+``add_mjcf(..., parse_sensors=True)`` stores MJCF ``touch`` sensors and frame
+sensors (``framepos``, ``framequat``, ``framexaxis``, ``frameyaxis``,
+``framezaxis``, ``framelinvel``, ``frameangvel``, ``framelinacc``, and
+``frameangacc``) on bodies, xbodies, and sites as ``mujoco:sensor`` custom
+attributes. :class:`~newton.solvers.SolverMuJoCo` adds them to its MuJoCo model
+with their ``cutoff``, ``noise``, ``user``, ``nsample``, ``interp``, ``delay``,
+and ``interval`` values, so ``mj_data.sensordata`` matches native MuJoCo.
+Newton does not read these sensors; they cost MuJoCo time on every step. Other
+sensor types, geom and camera frames, and sensors on a body or site that is not
+imported are skipped and logged once per file. Sensor import is off by default,
+cannot be combined with collapsing fixed joints, and has no USD counterpart.
+
+The converted model may order a body's principal axes of inertia differently
+from native MuJoCo. Sensors that use the inertial frame (``objtype`` or
+``reftype`` ``"body"``) therefore report the same world-frame velocities, but
+orientations and reference-frame components can differ. Use ``"xbody"`` frames
+for such comparisons.
+
 Sleeping
 --------
 
