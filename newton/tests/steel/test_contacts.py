@@ -490,6 +490,7 @@ def _launch_dense_contact_builders(
                 dtype=wp.spatial_vector,
                 device=device,
             ),
+            None,
             wp.zeros((1,), dtype=wp.int32, device=device),
             articulation_origin,
             wp.array([0.6, 0.8], dtype=wp.float32, device=device),
@@ -839,7 +840,7 @@ def test_overflow_warning_enabled_after_construction_latches(test, device):
     solver = SolverSteel(model, solve_mode="split", articulation_constraint_max=1, warn_constraint_overflow=False)
     solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
     test.assertTrue(solver.constraint_overflow.numpy().any())
-    test.assertEqual(solver._row_overflow_warning_emitted.numpy().tolist(), [0, 0, 0, 0])
+    test.assertEqual(solver._row_overflow_warning_emitted.numpy().tolist(), [0, 0, 0, 0, 0])
     solver.warn_constraint_overflow = True
     capture = StdOutCapture()
     capture.begin()

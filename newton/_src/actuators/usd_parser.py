@@ -13,11 +13,11 @@ from typing import Any
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonWarning
-from ..utils.deprecation import RemovedAttribute
+from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
-from .utils import _looks_like_torch_checkpoint, load_metadata
+from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
 
 
 class ComponentKind(enum.Enum):
@@ -221,6 +221,9 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             checkpoints: ``torch.export.load`` may execute code during model
             finalization. Defaults to ``False``.
 
+            .. deprecated:: 1.8
+                Torch checkpoints are deprecated; export the network to ONNX.
+
     Raises:
         ValueError: If the prim is a ``NewtonActuator`` but:
             - has no authored ``newton:targets`` relationship,
@@ -231,6 +234,13 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
               unapproved Torch checkpoint.
     """
+    if allow_unsafe_torch_checkpoints:
+        warn_deprecation(_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG)
+    return _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints)
+
+
+def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> ActuatorParsed | None:
+    """Parse a USD Actuator prim like :func:`parse_actuator_prim`, without the deprecation warning."""
     if prim.GetTypeName() != SchemaNames.ACTUATOR:
         return None
 
@@ -283,7 +293,8 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
         ):
             raise ValueError(
                 f"Actuator prim '{prim.GetPath()}' references a Torch checkpoint via newton:modelPath; "
-                "pass allow_unsafe_torch_checkpoints=True only for trusted USD assets and checkpoints"
+                "export the network to ONNX (.onnx), or pass the deprecated allow_unsafe_torch_checkpoints=True "
+                "only for trusted USD assets and checkpoints"
             )
 
         if isinstance(entry.component_class, type):
