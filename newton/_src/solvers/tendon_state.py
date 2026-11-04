@@ -10,6 +10,9 @@ mapping before applying their own numerical solve.
 
 from __future__ import annotations
 
+import math
+import operator
+
 import numpy as np
 import warp as wp
 
@@ -29,6 +32,8 @@ from .tendon_kernels import (
     update_tendon_cone_rows,
     update_tendon_guide_active,
 )
+from .tendon_material import TendonMaterialStatus
+from .tendon_material_state import _create_tendon_material_workspace, solve_tendon_material_direct
 
 _TENDON_SEGMENT_STATE_FIELDS = (
     "tendon_segment_rest_length",
@@ -65,6 +70,7 @@ _TENDON_GUIDE_STATE_FIELDS = (
 _TENDON_STATE_FIELDS = (
     "tendon_cone_sweep_count",
     "tendon_total_cable",
+    "_tendon_material_failure",
 )
 
 
@@ -151,6 +157,7 @@ _TENDON_HISTORY_FIELDS = (
     "tendon_segment_attachment_l_local",
     "tendon_segment_attachment_r_local",
     "tendon_guide_active",
+    "_tendon_material_failure",
 )
 
 _TENDON_FIXED_MODEL_FIELDS = (
@@ -168,6 +175,117 @@ _TENDON_FIXED_MODEL_FIELDS = (
 
 class TendonStateMixin:
     """Shared routing workspace; persistent material history belongs to State."""
+
+    def _solve_tendon_material(
+        self,
+        body_q: wp.array[wp.transform],
+        body_qd: wp.array[wp.spatial_vector],
+        body_q_prev: wp.array[wp.transform],
+        dt: float,
+        *,
+        damping_from_pose_delta: bool,
+        accepted_pose: bool,
+    ) -> None:
+        """Dispatch material projection with identical geometry and damping inputs."""
+        model = self.model
+        inputs = [
+            body_q,
+            body_qd,
+            body_q_prev,
+            model.body_com,
+            model.tendon_start,
+            model.tendon_guide_body,
+            model.tendon_guide_type,
+            model.tendon_guide_radius,
+            model.tendon_guide_offset,
+            model.tendon_guide_axis,
+            self.tendon_segment_rest_length,
+            self.tendon_segment_rest_length_step,
+            self.tendon_segment_route_rest_length,
+            self.tendon_segment_stretch,
+            self.tendon_segment_damping_tension,
+            self.tendon_segment_active,
+            self.tendon_segment_active_guide_l,
+            self.tendon_segment_active_guide_r,
+            self.tendon_segment_active_compliance,
+            self.tendon_segment_active_damping,
+            self.tendon_guide_active,
+            self.tendon_guide_active_step,
+            self.tendon_guide_route_rest_length,
+            self.tendon_segment_attachment_l,
+            self.tendon_segment_attachment_r,
+            self.tendon_segment_length,
+            self.tendon_segment_attachment_l_local,
+            self.tendon_segment_attachment_r_local,
+            self.tendon_segment_rolling_delta_l,
+            self.tendon_segment_rolling_delta_r,
+            self.tendon_guide_cone_seg_l,
+            self.tendon_guide_cone_seg_r,
+            self.tendon_guide_cap_ratio,
+            self.tendon_cone_sweep_count,
+            int(damping_from_pose_delta),
+            dt,
+            1,
+            1,
+        ]
+        if self.tendon_material_direct:
+            kernel = solve_tendon_material_direct
+            inputs.extend(
+                [
+                    self._tendon_guide_material_transfer,
+                    self._tendon_material_workspace,
+                    model.tendon_segment_compliance,
+                    self._tendon_material_failure,
+                    int(accepted_pose),
+                ]
+            )
+        else:
+            kernel = solve_tendon_material
+            inputs.extend(
+                [
+                    1,
+                    self.tendon_max_sweeps,
+                    self.tendon_settle_tol,
+                    self.tendon_settle_atol,
+                    self._tendon_guide_material_transfer,
+                ]
+            )
+        wp.launch(kernel, dim=model.tendon_count, inputs=inputs, device=model.device)
+
+    def _validate_tendon_material_states(self, state_in: State, state_out: State) -> None:
+        if self.tendon_material_direct != self._tendon_material_direct_enabled:
+            raise ValueError("Reconstruct the solver to change tendon_material_direct")
+        if self.tendon_material_direct and (state_in.requires_grad or state_out.requires_grad):
+            raise NotImplementedError("The direct tendon material solve is not differentiable")
+
+    def check_tendon_material(self, state: State) -> None:
+        """Raise if a direct material projection rejected an accepted pose in this trajectory.
+
+        This experimental check synchronizes with the device. Call it outside CUDA
+        graph capture after stepping or replay, before consuming the result. A
+        failure remains in the State through subsequent steps and State.assign().
+        Discard the affected trajectory; correct its input and reset its tendon
+        history before trying again. No material-sweep fallback is used.
+
+        Args:
+            state: Trajectory to inspect, belonging to this solver's model.
+
+        Raises:
+            RuntimeError: A linear direct material projection failed on an accepted pose.
+        """
+        if state._tendon_material_failure is None:
+            return
+        failure = state._tendon_material_failure.numpy()
+        failed = np.flatnonzero(failure[:, 0])
+        if failed.size:
+            tendon = int(failed[0])
+            code, component = map(int, failure[tendon])
+            reason = TendonMaterialStatus(code).name
+            raise RuntimeError(
+                f"Direct tendon material solve failed: {reason} ({code}), tendon {tendon}, "
+                f"component starting at segment {component}. Discard the affected trajectory, "
+                "correct its input, and reset its tendon history before retrying."
+            )
 
     def _load_tendon_history(self, state: State) -> None:
         """Restore the input trajectory before updating its route or material."""
@@ -187,6 +305,10 @@ class TendonStateMixin:
             device=self.model.device,
         )
         wp.copy(self._tendon_pose_rebaseline_mask, state._tendon_rebaseline)
+        if self._tendon_material_workspace is not None:
+            # Cache guesses must not depend on which trajectory last used this solver.
+            # Keep warm starts within the step, but replay each State from the same cold start.
+            self._tendon_material_workspace.valid.zero_()
 
     def _save_tendon_history(self, state: State) -> None:
         """Write persistent history to the output trajectory, including under graph capture."""
@@ -232,6 +354,8 @@ class TendonStateMixin:
             if name != "tendon_segment_rest_length" and (value < 0).any():
                 raise ValueError(f"{name} must be non-negative")
         rest = model.tendon_segment_rest_length.numpy()
+        if self.tendon_material_direct and (model.tendon_segment_compliance.numpy() < 1.0e-25).any():
+            raise ValueError("The direct tendon material solve requires compliance >= 1e-25 m/N")
         if np.array_equal(rest, self._tendon_authored_rest_length):
             return
 
@@ -241,6 +365,7 @@ class TendonStateMixin:
         initial.model = model
         initial.tendon_max_sweeps = self.tendon_max_sweeps
         initial.tendon_settle_tol = self.tendon_settle_tol
+        initial.tendon_settle_atol = self.tendon_settle_atol
         initial.tendon_activation_tol = self.tendon_activation_tol
         initial._init_tendon_state(model)
         for name, array in self._tendon_initial_state.items():
@@ -261,17 +386,31 @@ class TendonStateMixin:
         self._tendon_guide_world = None
         self._tendon_world = None
         self._tendon_pose_rebaseline_mask = None
+        self.tendon_material_direct = getattr(self, "tendon_material_direct", False)
+        self._tendon_material_direct_enabled = self.tendon_material_direct
+        self._tendon_material_workspace = None
+        self._tendon_material_failure = None
+        if self.tendon_material_direct:
+            self._tendon_material_workspace = _create_tendon_material_workspace(model)
         # Solver-level cable cone parameters (a solver may override before calling this).
         if not hasattr(self, "tendon_max_sweeps"):
             self.tendon_max_sweeps = 256
         if not hasattr(self, "tendon_settle_tol"):
             self.tendon_settle_tol = 1.0e-3
+        if not hasattr(self, "tendon_settle_atol"):
+            self.tendon_settle_atol = 1.0e-6
         if not hasattr(self, "tendon_activation_tol"):
             self.tendon_activation_tol = 2.0e-3
-        if not 1 <= self.tendon_max_sweeps <= 256:
-            raise ValueError(f"tendon_max_sweeps must be between 1 and 256, got {self.tendon_max_sweeps}")
-        if self.tendon_settle_tol < 0.0:
-            raise ValueError(f"tendon_settle_tol must be non-negative, got {self.tendon_settle_tol}")
+        try:
+            self.tendon_max_sweeps = operator.index(self.tendon_max_sweeps)
+        except TypeError as error:
+            raise ValueError("tendon_max_sweeps must be a positive 32-bit integer") from error
+        if not 1 <= self.tendon_max_sweeps <= 2147483647:
+            raise ValueError("tendon_max_sweeps must be a positive 32-bit integer")
+        for name in ("tendon_settle_tol", "tendon_settle_atol"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative")
         if not 0.0 <= self.tendon_activation_tol < 1.0:
             raise ValueError(
                 f"tendon_activation_tol must be between 0 (inclusive) and 1 (exclusive), "
@@ -310,6 +449,7 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = None
             self.tendon_guide_cone_seg_r = None
             self.tendon_guide_cap_ratio = None
+            self._tendon_guide_material_transfer = None
             self.tendon_total_cable = None
             return
 
@@ -345,7 +485,10 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cone_seg_r = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cap_ratio = wp.ones(model.tendon_guide_count, dtype=float)
+            # Per-call scratch, reset by solve_tendon_material; not trajectory history.
+            self._tendon_guide_material_transfer = wp.zeros(model.tendon_guide_count, dtype=float)
             self.tendon_total_cable = wp.zeros(model.tendon_count, dtype=float)
+            self._tendon_material_failure = wp.full(model.tendon_count, wp.vec2i(0, -1), dtype=wp.vec2i)
 
             tendon_start_np = model.tendon_start.numpy()
             seg_guide_l = []
@@ -743,6 +886,8 @@ class TendonStateMixin:
                 0,
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
+                self.tendon_settle_atol,
+                self._tendon_guide_material_transfer,
             ],
             device=model.device,
         )
@@ -869,7 +1014,12 @@ class TendonStateMixin:
             if world_mask is None:
                 wp.copy(current, initial)
             else:
-                entity_world = self._tendon_guide_world if name == "tendon_guide_active" else self._tendon_segment_world
+                if name == "_tendon_material_failure":
+                    entity_world = self._tendon_world
+                elif name == "tendon_guide_active":
+                    entity_world = self._tendon_guide_world
+                else:
+                    entity_world = self._tendon_segment_world
                 wp.launch(
                     reset_tendon_state_array,
                     dim=current.size,

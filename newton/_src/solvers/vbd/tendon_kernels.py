@@ -129,65 +129,132 @@ def update_tendon_segment_diagnostics(
 
 
 @wp.func
-def _rolling_spin_axis_component(
+def _tendon_span_tension(
+    seg: int,
+    dt: float,
     body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     tendon_guide_body: wp.array[int],
     tendon_guide_type: wp.array[int],
-    tendon_guide_radius: wp.array[float],
-    tendon_guide_mu: wp.array[float],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
+    seg_rest_length: wp.array[float],
+    seg_attachment_l_local: wp.array[wp.vec3],
+    seg_attachment_r_local: wp.array[wp.vec3],
+    seg_active_compliance: wp.array[float],
+    seg_active_damping: wp.array[float],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
+) -> float:
+    """Evaluate the selected VBD material law at the current trial poses."""
+    guide_l = seg_active_guide_l[seg]
+    guide_r = seg_active_guide_r[seg]
+    attachment_l = wp.transform_point(tendon_body_pose(body_q, tendon_guide_body[guide_l]), seg_attachment_l_local[seg])
+    attachment_r = wp.transform_point(tendon_body_pose(body_q, tendon_guide_body[guide_r]), seg_attachment_r_local[seg])
+    length = wp.length(attachment_r - attachment_l)
+    rest_length = seg_rest_length[seg]
+    if length <= 1.0e-8:
+        return 0.0
+    compliance = wp.max(seg_active_compliance[seg], _MIN_TENDON_COMPLIANCE)
+    length_rate = tendon_segment_length_rate_from_poses(
+        dt,
+        body_q,
+        body_q_prev,
+        body_com,
+        tendon_guide_body,
+        tendon_guide_type,
+        tendon_guide_offset,
+        tendon_guide_axis,
+        guide_l,
+        guide_r,
+        seg_attachment_l_local[seg],
+        seg_attachment_r_local[seg],
+        attachment_l,
+        attachment_r,
+    )
+    stiffness = 1.0 / compliance
+    material_tension = stiffness * (length - rest_length)
+    return wp.max(material_tension + seg_active_damping[seg] * length_rate, 0.0)
+
+
+@wp.func
+def _rolling_spin_axis_component(
+    dt: float,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
     tendon_guide_offset: wp.array[wp.vec3],
     tendon_guide_axis: wp.array[wp.vec3],
     tendon_guide_cone_seg_l: wp.array[int],
     tendon_guide_cone_seg_r: wp.array[int],
+    tendon_guide_cap_ratio: wp.array[float],
+    seg_rest_length: wp.array[float],
     seg_attachment_l_local: wp.array[wp.vec3],
     seg_attachment_r_local: wp.array[wp.vec3],
+    seg_active_compliance: wp.array[float],
+    seg_active_damping: wp.array[float],
     seg_active: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
     guide: int,
+    seg: int,
+    tension: float,
     attachment: wp.vec3,
     direction: wp.vec3,
 ) -> wp.vec3:
-    """Return the roller-axis moment removed from a unit-tension span.
+    """Remove only the rim moment forbidden by the material cone.
 
-    Returns ``(1 - spin_scale) * dot(cross(radial, direction), normal) * normal``
-    — the roller-axis part of the span's moment that an ideal (or partially
-    slipping) pulley cannot transmit through its rim. Returns zero for
-    non-rolling guides and when the current wrap geometry is unavailable.
+    Sticking transmits the full tension difference. A body trial outside the
+    cone is limited by its current adjacent span forces; cached diagnostic
+    tensions would be stale after a preceding VBD body update.
     """
     if tendon_guide_type[guide] != int(TendonGuideType.ROLLER):
         return wp.vec3(0.0)
     seg_left = tendon_guide_cone_seg_l[guide]
     seg_right = tendon_guide_cone_seg_r[guide]
-    if seg_left < 0 or seg_right < 0:
+    if seg_left < 0 or seg_right < 0 or seg_left >= seg_active.shape[0] or seg_right >= seg_active.shape[0]:
         return wp.vec3(0.0)
-    if seg_right >= seg_active.shape[0] or seg_active[seg_left] == 0 or seg_active[seg_right] == 0:
+    if seg_active[seg_left] == 0 or seg_active[seg_right] == 0:
+        return wp.vec3(0.0)
+    if seg_active_guide_r[seg_left] != guide or seg_active_guide_l[seg_right] != guide:
         return wp.vec3(0.0)
 
-    body = tendon_guide_body[guide]
-    pose = tendon_body_pose(body_q, body)
+    spin_scale = float(0.0)
+    # Contact points stay fixed in the roller's local frame across all colors,
+    # so their angle stays valid for this frozen route. Retangent next iteration
+    # and at the accepted pose; forces below still use current body trial poses.
+    cap_ratio = tendon_guide_cap_ratio[guide]
+    if cap_ratio > 1.0:
+        # The caller already evaluated this span at the same trial poses.
+        neighbor = seg_right if seg == seg_left else seg_left
+        neighbor_tension = _tendon_span_tension(
+            neighbor,
+            dt,
+            body_q,
+            body_q_prev,
+            body_com,
+            tendon_guide_body,
+            tendon_guide_type,
+            tendon_guide_offset,
+            tendon_guide_axis,
+            seg_rest_length,
+            seg_attachment_l_local,
+            seg_attachment_r_local,
+            seg_active_compliance,
+            seg_active_damping,
+            seg_active_guide_l,
+            seg_active_guide_r,
+        )
+        beta = (cap_ratio - 1.0) / (cap_ratio + 1.0)
+        allowed_difference = beta * (tension + neighbor_tension)
+        spin_scale = wp.min(1.0, allowed_difference / wp.max(wp.abs(tension - neighbor_tension), 1.0e-8))
+
+    pose = tendon_body_pose(body_q, tendon_guide_body[guide])
     center = wp.transform_point(pose, tendon_guide_offset[guide])
     normal = wp.normalize(wp.transform_vector(pose, tendon_guide_axis[guide]))
-    point_left = wp.transform_point(pose, seg_attachment_r_local[seg_left])
-    point_right = wp.transform_point(pose, seg_attachment_l_local[seg_right])
-    radial_left = point_left - center
-    radial_right = point_right - center
-    radial_left = radial_left - wp.dot(radial_left, normal) * normal
-    radial_right = radial_right - wp.dot(radial_right, normal) * normal
-    radial_left_length = wp.length(radial_left)
-    radial_right_length = wp.length(radial_right)
-
-    theta = float(0.0)
-    if tendon_guide_radius[guide] > 0.0 and radial_left_length > 1.0e-8 and radial_right_length > 1.0e-8:
-        unit_left = radial_left / radial_left_length
-        unit_right = radial_right / radial_right_length
-        theta = wp.abs(
-            wp.atan2(
-                wp.dot(wp.cross(unit_left, unit_right), normal),
-                wp.dot(unit_left, unit_right),
-            )
-        )
-
-    cap_ratio = wp.exp(wp.min(wp.max(tendon_guide_mu[guide], 0.0) * theta, 20.0))
-    spin_scale = (cap_ratio - 1.0) / (cap_ratio + 1.0)
     radial = attachment - center
     return (1.0 - spin_scale) * wp.dot(wp.cross(radial, direction), normal) * normal
 
@@ -202,12 +269,11 @@ def evaluate_tendon_force_hessians(
     adjacency: TendonForceElementAdjacencyInfo,
     tendon_guide_body: wp.array[int],
     tendon_guide_type: wp.array[int],
-    tendon_guide_radius: wp.array[float],
-    tendon_guide_mu: wp.array[float],
     tendon_guide_offset: wp.array[wp.vec3],
     tendon_guide_axis: wp.array[wp.vec3],
     tendon_guide_cone_seg_l: wp.array[int],
     tendon_guide_cone_seg_r: wp.array[int],
+    tendon_guide_cap_ratio: wp.array[float],
     seg_rest_length: wp.array[float],
     seg_attachment_l_local: wp.array[wp.vec3],
     seg_attachment_r_local: wp.array[wp.vec3],
@@ -217,7 +283,11 @@ def evaluate_tendon_force_hessians(
     seg_active_guide_l: wp.array[int],
     seg_active_guide_r: wp.array[int],
 ):
-    """Evaluate unilateral tendon spring-damper forces for one VBD body."""
+    """Evaluate unilateral tendon spring-damper forces for one VBD body.
+
+    Freeze the capstan limiter in the positive-semidefinite local Hessian
+    approximation; its derivative is not included.
+    """
     force = wp.vec3(0.0)
     torque = wp.vec3(0.0)
     h_ll = wp.mat33(0.0)
@@ -280,36 +350,54 @@ def evaluate_tendon_force_hessians(
             # asymmetric. Retain that net roller-axis row, matching XPBD's
             # combined same-body Jacobian.
             fix_l = _rolling_spin_axis_component(
+                dt,
                 body_q,
+                body_q_prev,
+                body_com,
                 tendon_guide_body,
                 tendon_guide_type,
-                tendon_guide_radius,
-                tendon_guide_mu,
                 tendon_guide_offset,
                 tendon_guide_axis,
                 tendon_guide_cone_seg_l,
                 tendon_guide_cone_seg_r,
+                tendon_guide_cap_ratio,
+                seg_rest_length,
                 seg_attachment_l_local,
                 seg_attachment_r_local,
+                seg_active_compliance,
+                seg_active_damping,
                 seg_active,
+                seg_active_guide_l,
+                seg_active_guide_r,
                 guide_l,
+                seg,
+                tension,
                 attachment_l,
                 direction,
             )
             fix_r = _rolling_spin_axis_component(
+                dt,
                 body_q,
+                body_q_prev,
+                body_com,
                 tendon_guide_body,
                 tendon_guide_type,
-                tendon_guide_radius,
-                tendon_guide_mu,
                 tendon_guide_offset,
                 tendon_guide_axis,
                 tendon_guide_cone_seg_l,
                 tendon_guide_cone_seg_r,
+                tendon_guide_cap_ratio,
+                seg_rest_length,
                 seg_attachment_l_local,
                 seg_attachment_r_local,
+                seg_active_compliance,
+                seg_active_damping,
                 seg_active,
+                seg_active_guide_l,
+                seg_active_guide_r,
                 guide_r,
+                seg,
+                tension,
                 attachment_r,
                 direction,
             )
@@ -338,19 +426,28 @@ def evaluate_tendon_force_hessians(
             # Free-span tension still loads the body, but only capstan friction
             # transmits the rolling-axis part of its moment.
             moment_axis = moment_axis - _rolling_spin_axis_component(
+                dt,
                 body_q,
+                body_q_prev,
+                body_com,
                 tendon_guide_body,
                 tendon_guide_type,
-                tendon_guide_radius,
-                tendon_guide_mu,
                 tendon_guide_offset,
                 tendon_guide_axis,
                 tendon_guide_cone_seg_l,
                 tendon_guide_cone_seg_r,
+                tendon_guide_cap_ratio,
+                seg_rest_length,
                 seg_attachment_l_local,
                 seg_attachment_r_local,
+                seg_active_compliance,
+                seg_active_damping,
                 seg_active,
+                seg_active_guide_l,
+                seg_active_guide_r,
                 guide,
+                seg,
+                tension,
                 attachment,
                 direction,
             )
