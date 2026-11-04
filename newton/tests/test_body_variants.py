@@ -8,7 +8,13 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices, requires
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 def _variant(kind: str, mu: float = 1.0, tag: int = 0) -> newton.ModelBuilder:
@@ -497,18 +503,26 @@ def test_steel_torsion_covers_variants(test, device):
 
 devices = get_test_devices()
 add_function_test(TestBodyVariants, "test_contacts_follow_selection", test_contacts_follow_selection, devices=devices)
-add_function_test(TestBodyVariants, "test_rows_keep_their_role", test_rows_keep_their_role, devices=devices)
+add_function_test(
+    TestBodyVariants,
+    "test_rows_keep_their_role",
+    test_rows_keep_their_role,
+    devices=devices,
+    requires=MUJOCO_MODULES,
+)
 add_function_test(
     TestBodyVariants,
     "test_selection_replays_from_cuda_graph",
     test_selection_replays_from_cuda_graph,
     devices=get_cuda_test_devices(),
+    requires=MUJOCO_MODULES,
 )
 add_function_test(
     TestBodyVariants,
     "test_mujoco_rest_height_follows_selection",
     test_mujoco_rest_height_follows_selection,
     devices=devices,
+    requires=MUJOCO_MODULES,
 )
 add_function_test(
     TestBodyVariants,

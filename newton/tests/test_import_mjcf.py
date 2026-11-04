@@ -9289,6 +9289,8 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         self.assertEqual(actlimited[0], 2)
 
 
+@requires(*MUJOCO_MODULES)
+@requires(*MUJOCO_MODULES)
 class TestMjcfJointLimited(unittest.TestCase):
     """Compare MJCF joint ``limited`` resolution against native MuJoCo."""
 
