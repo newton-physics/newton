@@ -45,6 +45,7 @@ _NATIVE_ACTUATOR_FIELDS = {
 
 
 _NATIVE_OPTION_FIELDS = {
+    "timestep": (wp.float32, 0.002),
     "enableflags": (wp.int32, 0),
     "disableflags": (wp.int32, 0),
     "disableactuator": (wp.int32, 0),

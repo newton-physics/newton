@@ -1098,6 +1098,65 @@ class TestImportMjcfNative(unittest.TestCase):
                     ),
                 )
 
+    def test_native_joint_target_history(self):
+        """Match delayed commands after interpolation, buffer wrap, and ball expansion."""
+        import mujoco
+
+        ball = '<position joint="ball" kp="4" delay=".0015" nsample="4" interp="cubic"/>'
+        xml = f"""<mujoco><compiler angle="radian"/><option gravity="0 0 0" timestep=".001" integrator="Euler"/>
+            <worldbody><body><joint name="j" ref=".2"/>
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/></body>
+            <body><joint name="ball" type="ball"/>
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/></body></worldbody>
+            <actuator><velocity joint="j" kv="3" delay=".00325" nsample="4" interp="zoh"/>
+            <position joint="j" kp="10" delay=".0025" nsample="4" interp="linear"/>{ball}</actuator></mujoco>"""
+        expanded = xml.replace(
+            ball, "".join(ball.replace("/>", f' gear="{gear}"/>') for gear in ("1 0 0", "0 1 0", "0 0 1"))
+        )
+        reference = mujoco.MjModel.from_xml_string(expanded)
+        for direct, cpu in product((False, True), (False, True)):
+            with self.subTest(direct=direct, cpu=cpu):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf_native(expanded if direct else xml, ctrl_direct=direct)
+                model = builder.finalize()
+                np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), int(direct))
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                order = [0, 1, 2, 3, 4] if direct else [1, 0, 2, 3, 4]
+                for field in ("actuator_delay", "actuator_history"):
+                    np.testing.assert_allclose(getattr(solver.mj_model, field), getattr(reference, field)[order])
+                expected = mujoco.MjData(reference)
+                expected.qvel[:] = [0.4, 0.1, -0.2, 0.3]
+                state, state_out = model.state(), model.state()
+                state.joint_qd.assign(expected.qvel)
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                control = model.control()
+                observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
+                for step in range(16):
+                    position, velocity = (0.1, -0.3) if step % 5 < 2 else (-0.2, 0.5)
+                    angular = np.array([0.1, -0.2, 0.3]) * (1 if step % 3 else -1)
+                    target = wp.quat_from_axis_angle(
+                        wp.vec3(*angular / np.linalg.norm(angular)), float(np.linalg.norm(angular))
+                    )
+                    expected.ctrl[:] = [velocity, position + 0.2, *angular]
+                    if direct:
+                        control.mujoco.ctrl.assign(expected.ctrl)
+                    else:
+                        control.joint_target_q.assign([position, *target])
+                        control.joint_target_qd.assign([velocity, 0, 0, 0])
+                    mujoco.mj_step(reference, expected)
+                    solver.step(state, state_out, control, None, 0.001, observables=observables)
+                    output = state_out.joint_q.numpy()
+                    np.testing.assert_allclose(output[0] + 0.2, expected.qpos[0], atol=2e-6)
+                    np.testing.assert_allclose(output[1:][[3, 0, 1, 2]], expected.qpos[1:], atol=2e-6)
+                    forces = [
+                        expected.qfrc_actuator[0],
+                        *wp.quat_rotate(wp.quat(*output[1:]), wp.vec3(*expected.qfrc_actuator[1:])),
+                    ]
+                    np.testing.assert_allclose(
+                        observables.qfrc_actuator.numpy().reshape(-1), forces, rtol=2e-5, atol=2e-6
+                    )
+                    state, state_out = state_out, state
+
     def test_native_dcmotor_control_ranges(self):
         """Scale linear position and velocity controls while retaining voltage units."""
         for signature, code, factor in (("pos", 1, 2), ("vel", 2, 2), ("voltage", 8, 1)):

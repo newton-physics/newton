@@ -218,8 +218,13 @@ control; inherited ranges resolve from the assembled joint limits during solver
 construction. Control limits apply to both control sources. MuJoCo-Warp does not
 support group disabling; the solver warns when it is requested on that backend.
 Use ``use_mujoco_cpu=True`` to honor ``actuatorgroupdisable``.
-Other actuators, including those with activation dynamics or control history
-and additional servos that cannot share target gains, use ``control.mujoco.ctrl``.
+Control history (``delay``, ``nsample``, and ``interp``) also preserves joint-target
+control. MuJoCo records the converted scalar commands and applies their delay
+and interpolation through its existing history buffers.
+The imported timestep initializes history timestamps; ``step(..., dt=...)``
+still determines the timestep used for simulation.
+Other actuators, including those with activation dynamics and additional servos
+that cannot share target gains, use ``control.mujoco.ctrl``.
 Use ``ctrl_direct=True`` for native actuator control throughout.
 
 Native import preserves actuator damping, armature, and single-input DC motors
@@ -229,8 +234,8 @@ and replicated-world restrictions. Linear position/velocity control ranges
 scale with the import; voltage ranges do not. Actuator armature retains the
 solver's CPU-only support and warning on the Warp backend.
 
-Ball position/velocity servos without activation dynamics or control history
-also use Newton joint targets by default. Their groups, gains, and
+Ball position/velocity servos without activation dynamics also use Newton joint
+targets by default. Their history settings, groups, gains, and
 authored control/force ranges apply to all three angular axes, replacing the authored
 ``gear`` transmission. Position targets use a quaternion and velocity targets
 use a three-component angular velocity. A compatible position/velocity pair
@@ -244,6 +249,10 @@ first servo uses joint targets and the second uses its MJCF-order slot in
 ``control.mujoco.ctrl``. Set that direct-control slot for the second command;
 it does not read the corresponding joint target. The legacy importer instead
 shares joint-target damping between these servos.
+This pair needs three independent coefficients: position stiffness, position
+damping, and velocity gain. Newton's joint-target model provides only ``ke`` and
+``kd``; combining the damping terms changes the response to a velocity command
+and can also change per-actuator force limiting.
 
 Other Newton solvers do not evaluate ``control.mujoco.ctrl``. For unit-gear
 hinge/slide position and velocity servos, an external actuator pipeline can
