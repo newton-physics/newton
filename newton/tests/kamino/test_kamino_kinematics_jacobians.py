@@ -842,6 +842,7 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         )
 
     def test_06_allocate_heterogeneous_sparse_system_jacobians(self):
+        """Verify sparse Jacobian allocation sizes and offsets for heterogeneous worlds."""
         # Construct the test problem
         model, _data, _state, limits, contacts = make_test_problem_heterogeneous(
             device=self.default_device,

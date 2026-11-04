@@ -248,6 +248,7 @@ def make_unilateral_constraints_info(
     num_joints = model.size.sum_of_num_joints
 
     def total_cts_offsets(local_offsets: np.ndarray, world_prefix: np.ndarray, group_offsets: np.ndarray) -> np.ndarray:
+        """Map joint offsets within a constraint group to the packed total-constraint layout."""
         world_offsets = world_ctsio[:num_worlds] + group_offsets - world_prefix
         return world_offsets[joints_world] + local_offsets[:num_joints]
 
