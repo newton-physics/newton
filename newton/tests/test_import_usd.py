@@ -8880,6 +8880,73 @@ def Xform "Articulation" (
         self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_equality_site_anchor_precision(self):
+        """Small local offsets survive placed, scaled and reset USD hierarchies."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        offset = Gf.Vec3d(0.013579135, 0.024680246, -0.051234567)
+        for placed in (False, True):
+            for scaled in (False, True):
+                for reset in (False, True):
+                    with self.subTest(placed=placed, scaled=scaled, reset=reset):
+                        stage = Usd.Stage.CreateInMemory()
+                        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                        root = UsdGeom.Xform.Define(stage, "/World")
+                        stage.SetDefaultPrim(root.GetPrim())
+                        if placed:
+                            root.AddTranslateOp().Set(Gf.Vec3d(7.123456789, -4.234567891, 9.345678912))
+                            root.AddRotateZOp().Set(90.0)
+                        body = UsdGeom.Xform.Define(stage, "/World/Body")
+                        body.AddTranslateOp().Set(Gf.Vec3d(0.123456789, 0.234567891, 3.123456789))
+                        scale = Gf.Vec3d(1.25, 0.75, 1.5) if scaled else Gf.Vec3d(1.0)
+                        body.AddScaleOp().Set(scale)
+                        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                        mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                        mass.CreateMassAttr(1.0)
+                        mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+                        frame = UsdGeom.Xform.Define(stage, "/World/Body/Frame")
+                        frame.AddTranslateOp().Set(Gf.Vec3d(0.001, 0.002, 0.003))
+                        frame.AddRotateZOp().Set(90.0)
+                        site = UsdGeom.Xform.Define(stage, "/World/Body/Frame/Site")
+                        site.AddTranslateOp().Set(offset)
+                        site.SetResetXformStack(reset)
+                        site.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcSiteAPI"]))
+                        connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Connect")
+                        connect.CreateBody0Rel().SetTargets([site.GetPath()])
+                        connect.CreateExcludeFromArticulationAttr(True)
+                        connect.GetPrim().SetMetadata(
+                            "apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityConnectAPI"])
+                        )
+
+                        if reset:
+                            # A reset site is positioned in world space, independently
+                            # of its body ancestry; retain that authored meaning.
+                            cache = UsdGeom.XformCache()
+                            rigid_world = cache.GetLocalToWorldTransform(body.GetPrim()).RemoveScaleShear()
+                            expected = rigid_world.GetInverse().Transform(offset)
+                        else:
+                            # Independent local-space oracle: Frame rotates Site by
+                            # 90 degrees, then the body scales its translated offset.
+                            expected = Gf.Vec3d(
+                                scale[0] * (0.001 - offset[1]),
+                                scale[1] * (0.002 + offset[0]),
+                                scale[2] * (0.003 + offset[2]),
+                            )
+                        builder = newton.ModelBuilder()
+                        SolverMuJoCo.register_custom_attributes(builder)
+                        builder.add_usd(
+                            stage,
+                            xform=wp.transform((1.25, -2.5, 3.75), wp.quat_identity()),
+                            convert_mjc_equality_constraints=False,
+                        )
+                        model = builder.finalize(device="cpu")
+                        np.testing.assert_array_equal(
+                            model.mujoco.equality_constraint_anchor.numpy()[0],
+                            np.asarray(expected, dtype=np.float32),
+                        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_connect_site_parsing(self):
         """Test that MjcEqualityConnectAPI on a spherical joint is parsed as a connect equality constraint."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
