@@ -2673,12 +2673,27 @@ def test_colored_sleeping_runs_under_external_and_warp_capture(test, device):
 
 
 def _capture_step(scene, mode):
-    """Capture one step of ``scene`` with Warp or with the CUDA driver alone; return a replay function."""
+    """Capture one solver step of ``scene`` with Warp or with the CUDA driver alone; return a replay function.
+
+    Collision runs eagerly before each replay, so only the solver step is captured.
+    """
     device = scene.model.device
+
+    def solve():
+        scene.solver.step(scene.state_in, scene.state_out, scene.control, scene.contacts, 1.0 / 240.0)
+        for name in _FIELDS:
+            wp.copy(getattr(scene.state_in, name), getattr(scene.state_out, name))
+
+    scene.pipeline.collide(scene.state_in, scene.contacts)
     if mode == "warp":
         with wp.ScopedCapture(device) as capture:
-            scene.step(clear=False)
-        return lambda: wp.capture_launch(capture.graph)
+            solve()
+
+        def replay():
+            scene.pipeline.collide(scene.state_in, scene.contacts)
+            wp.capture_launch(capture.graph)
+
+        return replay
     # Capture that Warp does not track, as another framework's graph capture would start.
     cuda = ctypes.CDLL("libcuda.so.1")
     stream = ctypes.c_void_p(wp.get_stream(device).cuda_stream)
@@ -2687,13 +2702,14 @@ def _capture_step(scene, mode):
     began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
     assert began == 0, began
     try:
-        scene.step(clear=False)
+        solve()
     finally:
         ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
     assert ended == 0, ended
     assert cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(0)) == 0
 
     def replay():
+        scene.pipeline.collide(scene.state_in, scene.contacts)
         assert cuda.cuGraphLaunch(graph_exec, stream) == 0
         wp.synchronize_stream(wp.get_stream(device))
 
