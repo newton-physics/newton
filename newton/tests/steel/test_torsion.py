@@ -36,6 +36,7 @@ from newton._src.solvers.steel.kernels import (
 )
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import (
+    COLORED_VARIANTS,
     PATCH_OPTIONS,
     _assert_budget,
     _build_four_bar,
@@ -44,7 +45,6 @@ from newton.tests.steel._fixtures import (
     fixture,
     set_torsion_radius,
 )
-from newton.tests.steel.test_friction import _COLORED_VARIANTS
 from newton.tests.steel.test_propagation import _add_fixed_chain
 from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -3130,7 +3130,7 @@ def test_colored_spin_decelerates_at_the_coulomb_rate_and_sticks(test, device):
 def test_colored_variants_track_plain_and_converge_to_immediate(test, device):
     """Match plain's three-foot spinner on every variant, close immediate's gap as sweeps rise, and act."""
     expected, _ = _spinner(device, "propagation", 32, 0.01, spin=4.0)
-    for variant in _COLORED_VARIANTS:
+    for variant in COLORED_VARIANTS:
         with test.subTest(variant=variant):
             actual, _ = _spinner(device, "propagation_colored", 32, 0.01, spin=4.0, variant=variant)
             np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1.0e-6)
@@ -3256,7 +3256,7 @@ def test_colored_dropped_members_leave_the_highest_kept_host(test, device):
 def test_colored_two_row_units_host_their_group(test, device):
     """Solve a patch group hosted in a contact-and-torsion-row unit on every variant, with the same result."""
     expected = None
-    for variant in _COLORED_VARIANTS:
+    for variant in COLORED_VARIANTS:
         with test.subTest(variant=variant):
             with _colored_variant(variant):
                 _, solver, model, state, contacts = fixture(
@@ -3468,14 +3468,14 @@ for _fn in (
 
 @contextlib.contextmanager
 def _colored_variant(variant):
-    """Build the colored sweep of ``variant`` (a ``test_friction`` colored variant) in solvers constructed inside.
+    """Build the colored sweep of ``variant`` (a key of ``COLORED_VARIANTS``) in solvers constructed inside.
 
     Fails if a solver built another sweep, and skips a staged variant the device cannot stage.
     """
     if variant is None:
         yield
         return
-    overrides, suffix = _COLORED_VARIANTS[variant]
+    overrides, suffix = COLORED_VARIANTS[variant]
     kernels, staging = [], []
 
     def record(function, results):

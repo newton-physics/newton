@@ -303,6 +303,7 @@ def select_colored_variant(test, solver, variant):
             solver.model.device.arch,
             contact_compliance=solver._contact_compliance,
             friction_mode=solver._friction_mode,
+            contact_torsion=solver._propagation_torsion_rows,
         )
         solver._pgs_solve_propagation_colored_warp_kernel = None
     warp_kernel = solver._pgs_solve_propagation_colored_warp_kernel
