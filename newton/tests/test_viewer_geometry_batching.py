@@ -263,6 +263,21 @@ class TestViewerGeometryBatching(unittest.TestCase):
 
         self.assertEqual(len(viewer._geometry_cache), 2)
 
+    def test_deprecated_site_size_is_display_zeroes_cylinder_barrel(self):
+        """Keep the deprecated display-size tag working on cylinder sites."""
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        body = builder.add_body()
+        with self.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "site_size_is_display"):
+            site = builder.add_site(
+                body,
+                type=newton.GeoType.CYLINDER,
+                scale=(0.1, 0.2, 0.05),
+                custom_attributes={"mujoco:site_size_is_display": True},
+            )
+
+        np.testing.assert_allclose(builder.shape_scale[site], [0.1, 0.2, 0.0], atol=1.0e-6)
+
     def test_capsule_geometry_is_batched_across_scales(self):
         """Varying capsule dimensions should share one cached capsule geometry."""
         builder = newton.ModelBuilder()

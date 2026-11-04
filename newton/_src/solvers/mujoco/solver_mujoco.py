@@ -1481,14 +1481,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         :ref:`mujoco-joint-spring-migration`.
         Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
         to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
-
-        .. deprecated:: 1.8
-            The ``mujoco:site_size_is_display`` shape attribute is no longer populated
-            by the MJCF importer. The importer now sets ``scale[2]`` of cylinder sites
-            to zero instead, because MuJoCo ignores their third size component. Passing
-            the attribute to :meth:`~newton.ModelBuilder.add_site` emits a deprecation
-            warning and zeroes ``scale[2]`` of a cylinder site. The attribute will be
-            removed in a future release.
         """
         # Register custom frequencies before adding attributes that use them
         # This is required as custom frequencies must be registered before use

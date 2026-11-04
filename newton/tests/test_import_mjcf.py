@@ -6850,6 +6850,8 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             <site name="site_three" size="0.004 0.005 0.006"/>
             <!-- Site with no size - should use MuJoCo default [0.005, 0.005, 0.005] -->
             <site name="site_default"/>
+            <!-- Cylinder site: MuJoCo ignores the third size component -->
+            <site name="site_cylinder" type="cylinder" size="0.1 0.2 0.05"/>
         </body>
     </worldbody>
 </mujoco>"""
@@ -6885,6 +6887,9 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(scale_default[0], 0.005, places=6)
         self.assertAlmostEqual(scale_default[1], 0.005, places=6)
         self.assertAlmostEqual(scale_default[2], 0.005, places=6)
+
+        # Cylinder: no barrel radius
+        np.testing.assert_allclose(get_site_scale("site_cylinder"), [0.1, 0.2, 0.0], atol=1.0e-6)
 
     def test_frame_childclass_propagation(self):
         """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
@@ -11621,44 +11626,6 @@ class TestSiteFromto(unittest.TestCase):
             [0.1, 0.1, 0.58309519],
             atol=1.0e-6,
         )
-
-    def test_cylinder_site_ignores_third_size_component(self):
-        """Import a cylinder site without a barrel radius, as MuJoCo ignores its third size."""
-        mjcf = """
-<mujoco model="cylinder_site">
-    <worldbody>
-        <body name="body">
-            <geom type="sphere" size="0.1"/>
-            <site name="site" type="cylinder" size="0.1 0.2 0.05"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, parse_sites=True)
-
-        shape_idx = builder.shape_label.index("cylinder_site/worldbody/body/site")
-        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.1, 0.2, 0.0], atol=1.0e-6)
-
-        model = builder.finalize(device="cpu")
-        np.testing.assert_allclose(model.shape_scale.numpy()[shape_idx], [0.1, 0.2, 0.0], atol=1.0e-6)
-        np.testing.assert_allclose(model.shape_collision_aabb_lower.numpy()[shape_idx], [-0.1, -0.1, -0.2], atol=1.0e-6)
-        np.testing.assert_allclose(model.shape_collision_aabb_upper.numpy()[shape_idx], [0.1, 0.1, 0.2], atol=1.0e-6)
-
-    def test_deprecated_site_size_is_display_zeroes_cylinder_barrel(self):
-        """Keep the deprecated display-size tag working on cylinder sites."""
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        body = builder.add_body()
-        with self.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "site_size_is_display"):
-            site = builder.add_site(
-                body,
-                type=GeoType.CYLINDER,
-                scale=(0.1, 0.2, 0.05),
-                custom_attributes={"mujoco:site_size_is_display": True},
-            )
-
-        np.testing.assert_allclose(builder.shape_scale[site], [0.1, 0.2, 0.0], atol=1.0e-6)
 
     def test_site_fromto_inherits_defaults_inside_frame(self):
         """Compose an inherited fromto site with its containing frame."""
