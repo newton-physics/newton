@@ -483,7 +483,7 @@ def _drive_scene(device, sleeping):
     return model, newton.CollisionPipeline(model, rigid_contact_max=64), solver, control, link, box
 
 
-def _compliance_scene(device, sleeping):
+def _compliance_scene(device, sleeping, response="immediate"):
     """Two independent spheres resting on implicit spring-damper contacts."""
     builder = newton.ModelBuilder()
     builder.rigid_gap = 0.005
@@ -508,6 +508,8 @@ def _compliance_scene(device, sleeping):
         baumgarte=0.05,
         articulation_constraint_max=32,
         free_body_constraint_max=32,
+        articulated_contact_response=response,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         **(SLEEP if sleeping else {}),
     )
     return model, pipeline, contacts, solver
@@ -2261,6 +2263,66 @@ def test_colored_separated_boxes_sleep_and_wake_like_immediate(test, device):
     np.testing.assert_array_equal(immediate[0][-1], [0, 0])
 
 
+def test_colored_compliant_contacts_sleep_and_wake_like_immediate(test, device):
+    """Sleep and push-wake spheres on compliant contacts at the steps immediate does, eager and captured."""
+    stiffness = 3000.0
+    force = np.zeros((2, 6), dtype=np.float32)
+    force[0, 0] = 5.0
+    traces = {}
+    for response, graph in (("immediate", False), ("propagation_colored", False), ("propagation_colored", True)):
+        model, pipeline, contacts, solver = _compliance_scene(device, sleeping=True, response=response)
+        states = [model.state(), model.state()]
+        control = model.control()
+        pushes = [wp.zeros_like(states[0].body_f), wp.array(force, dtype=wp.spatial_vector, device=device)]
+
+        def step(push, pipeline=pipeline, contacts=contacts, solver=solver, states=states, control=control):
+            # Fixed buffers, so the same work can be captured.
+            wp.copy(states[0].body_f, push)
+            pipeline.collide(states[0], contacts)
+            contacts.rigid_contact_stiffness.fill_(stiffness)
+            contacts.rigid_contact_damping.fill_(20.0)
+            contacts.rigid_contact_friction.fill_(1.0)
+            solver.step(states[0], states[1], control, contacts, DT)
+            for name in _FIELDS:
+                wp.copy(getattr(states[0], name), getattr(states[1], name))
+
+        if graph:
+            graphs = []
+            for push in pushes:
+                with wp.ScopedCapture(device=model.device) as capture:
+                    step(push)
+                graphs.append(capture.graph)
+
+            def run(push, graphs=graphs):
+                wp.capture_launch(graphs[push])
+        else:
+
+            def run(push, step=step, pushes=pushes):
+                step(pushes[push])
+
+        awake, poses = [], []
+        for k in range(420):
+            run(1 if 400 <= k < 405 else 0)
+            awake.append(solver._sleeping.body_awake.numpy().copy())
+            poses.append(states[0].body_q.numpy().copy())
+        solver.check_constraint_capacity()
+        traces[response, graph] = (np.array(awake), np.array(poses))
+    awake, poses = traces["propagation_colored", False]
+    slept = int(np.argmax(awake.sum(axis=1) == 0))
+    test.assertGreater(slept, 0, "both spheres must fall asleep before the push")
+    test.assertLess(slept, 400)
+    np.testing.assert_array_equal(awake, traces["immediate", False][0])
+    np.testing.assert_allclose(poses, traces["immediate", False][1], atol=1.0e-4, rtol=0)
+    # Asleep, the spheres stay frozen; the push wakes and moves sphere 0 only.
+    np.testing.assert_array_equal(poses[slept:400], np.broadcast_to(poses[slept], poses[slept:400].shape))
+    np.testing.assert_array_equal(awake[404], [1, 0])
+    test.assertGreater(float(poses[-1, 0, 0]), float(poses[399, 0, 0]))
+    np.testing.assert_array_equal(poses[400:, 1], np.broadcast_to(poses[399, 1], poses[400:, 1].shape))
+    # Captured replay matches eager stepping bitwise.
+    np.testing.assert_array_equal(traces["propagation_colored", True][0], awake)
+    np.testing.assert_array_equal(traces["propagation_colored", True][1], poses)
+
+
 def test_colored_units_omit_exactly_the_sleeping_islands(test, device):
     """Color every contact of an awake island and none of a skipped one; keep all of them with skipping off."""
     for skip in (True, False):
@@ -2491,6 +2553,7 @@ for _name in (
     "test_colored_sleeping_rollout_is_independent_of_world_order",
     "test_colored_captured_sleep_and_wake_match_eager",
     "test_colored_separated_stacks_sleep_like_immediate",
+    "test_colored_compliant_contacts_sleep_and_wake_like_immediate",
 ):
     add_function_test(TestSteelSleepingColoredPropagation, _name, globals()[_name], devices=devices)
 
