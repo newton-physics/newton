@@ -2591,9 +2591,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._model_plan.prescribed_articulation, dtype=wp.int32, device=model.device
         )
         self._has_prescribed_response = bool(np.any(self._model_plan.prescribed_articulation != 0))
-        shape_mesh_properties = model._shape_mesh_properties
-        self._has_surface_velocity = shape_mesh_properties is not None and bool(
-            np.any(shape_mesh_properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+        # A body variant row can take a surface-velocity mesh after construction.
+        self._has_surface_velocity = any(
+            properties is not None and bool(np.any(properties.numpy() & int(MeshProperties.SURFACE_VELOCITY)))
+            for properties in (
+                model._shape_mesh_properties,
+                model._variant_shape_geometry.get("_shape_mesh_properties"),
+            )
         )
         # Kinematic bodies and moving mesh surfaces both enter contact rows as target velocities.
         self._has_contact_target_velocity = self._has_prescribed_response or self._has_surface_velocity

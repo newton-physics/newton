@@ -1090,6 +1090,39 @@ def test_surface_velocity_leaves_the_normal_response_alone(test, device):
     test.assertAlmostEqual(vx, 0.5, delta=5.0e-3)
 
 
+def test_surface_velocity_of_a_body_variant_mesh_drives_the_body(test, device):
+    """Verify that a free box whose surface-velocity mesh is selected as a body variant after construction drives itself."""
+    meshes = [newton.Mesh.create_box(0.1, 0.1, 0.05, compute_inertia=False) for _ in range(2)]
+    meshes[1].enable_surface_velocity = True
+    variants = []
+    for mesh in meshes:
+        variant = newton.ModelBuilder()
+        variant.add_shape_mesh(variant.add_body(), mesh=mesh, cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0))
+        variants.append(variant)
+    builder = newton.ModelBuilder()
+    box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+    builder.add_body_variants(box, variants)
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0))
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, friction_anchor_beta=0.2)
+    solver.notify_model_changed(model.select_body_variants(wp.array([1], dtype=wp.int32, device=device)))
+    meshes[1].mesh.velocities.fill_(wp.vec3(0.5, 0.0, 0.0))
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=True)
+    contacts = pipeline.contacts()
+    states = [model.state(), model.state()]
+    control = model.control()
+    x = []
+    for _ in range(2):
+        for _ in range(30):
+            pipeline.collide(states[0], contacts)
+            solver.step(states[0], states[1], control, contacts, DT)
+            states.reverse()
+        x.append(float(states[0].body_q.numpy()[box, 0]))
+    # The mesh's bottom face moves along +x against the ground, so the box moves along -x.
+    test.assertAlmostEqual((x[1] - x[0]) / (30 * DT), -0.5, delta=5.0e-3)
+    test.assertLess(float(np.abs(solver._friction_patches.view.phi.numpy()).max()), 1.0e-5)
+
+
 class TestSteelSurfaceVelocity(unittest.TestCase):
     pass
 
@@ -1099,6 +1132,7 @@ for _fn in (
     test_surface_velocity_anchor_history_follows_a_timestep_change,
     test_surface_velocity_wakes_a_sleeping_box,
     test_surface_velocity_leaves_the_normal_response_alone,
+    test_surface_velocity_of_a_body_variant_mesh_drives_the_body,
 ):
     add_function_test(TestSteelSurfaceVelocity, _fn.__name__, _fn, devices=cuda_devices)
 
@@ -1172,23 +1206,34 @@ class TestFrictionPatchHistory(unittest.TestCase):
         theta, dt = 0.01, 1.0 / 240.0
         rot = np.array([[np.cos(theta), -np.sin(theta), 0.0], [np.sin(theta), np.cos(theta), 0.0], [0.0, 0.0, 1.0]])
         points = np.array([[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]], dtype=np.float32)
-        model, state, contacts, patches = _patch_fixture(points.tolist())
-        # Shape 1's surface rotates about z; the body follows it exactly over the step.
-        contacts.rigid_contact_surface_velocity = wp.array(
-            (points @ rot.T - points) / dt, dtype=wp.vec3, device=_DEVICE
-        )
-        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
-        patches.store(state)
-        q = state.body_q.numpy()
-        q[0, 3:] = (0.0, 0.0, np.sin(theta / 2), np.cos(theta / 2))
-        state.body_q.assign(q)
         moved = 0.8 * points
-        contacts.rigid_contact_point0.assign(moved)
-        contacts.rigid_contact_point1.assign((moved @ rot.T).astype(np.float32))
-        contacts.rigid_contact_surface_velocity.assign(((moved @ rot.T - moved) / dt).astype(np.float32))
-        patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
-        np.testing.assert_array_equal(patches.current.source.numpy()[:2] >= 0, True)
-        self.assertLess(float(np.abs(patches.view.phi.numpy()).max()), 5.0e-6)
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                # Reversing the contact order swaps the points and negates the normal and the surface velocity.
+                sign = -1.0 if reverse else 1.0
+                model, state, contacts, patches = _patch_fixture(
+                    points.tolist(),
+                    shape0=[1, 1] if reverse else None,
+                    normals=[[0.0, 0.0, -sign]] * 2,
+                )
+                if reverse:
+                    contacts.rigid_contact_shape1.zero_()
+                # The surface of the body-1 shape rotates about z; body 0 follows it exactly over the step.
+                contacts.rigid_contact_surface_velocity = wp.array(
+                    sign * (points @ rot.T - points) / dt, dtype=wp.vec3, device=_DEVICE
+                )
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
+                patches.store(state)
+                q = state.body_q.numpy()
+                q[0, 3:] = (0.0, 0.0, np.sin(theta / 2), np.cos(theta / 2))
+                state.body_q.assign(q)
+                on_body0, on_body1 = moved, (moved @ rot.T).astype(np.float32)
+                contacts.rigid_contact_point0.assign(on_body1 if reverse else on_body0)
+                contacts.rigid_contact_point1.assign(on_body0 if reverse else on_body1)
+                contacts.rigid_contact_surface_velocity.assign((sign * (moved @ rot.T - moved) / dt).astype(np.float32))
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, dt=dt)
+                np.testing.assert_array_equal(patches.current.source.numpy()[:2] >= 0, True)
+                self.assertLess(float(np.abs(patches.view.phi.numpy()).max()), 5.0e-6)
 
     def test_surface_motion_keeps_only_its_tangential_part_when_the_normal_turns(self):
         """Carry a surface step's tangential displacement at full length, and none of its normal part, across a turned normal."""

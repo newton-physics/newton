@@ -943,7 +943,7 @@ def _contact_boundaries(
         surface_moving = False
         if surface_velocity:
             sv = surface_velocity[i]
-            surface_moving = wp.length(sv - normal[i] * wp.dot(normal[i], sv)) > 0.0
+            surface_moving = _nonzero(wp.length(sv - normal[i] * wp.dot(normal[i], sv)))
         bodies = wp.vec2i(shape_body[shape0[i]], shape_body[shape1[i]])
         pa = wp.vec3(point0[i])
         pb = wp.vec3(point1[i])

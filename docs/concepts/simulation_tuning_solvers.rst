@@ -286,6 +286,10 @@ repository examples spend tuning effort, not a shared solver API.
        Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
        a uniformly loaded disk of radius ``R``). ``contact_torsion_device``
        prepares these rows on the device, which CUDA graph capture requires.
+       Contacts with a mesh that has ``enable_surface_velocity`` drive the
+       tangential surface velocity through the friction rows; contacts carry
+       only a linear surface velocity per point, so the torsion rows treat a
+       spinning surface as still and resist bodies co-rotating with it.
        The experimental ``contact_compliance`` option solves hydroelastic
        contacts with positive stiffness as implicit spring-dampers instead; it
        uses point friction and prepares its rows on the device, so a compliant
@@ -327,9 +331,10 @@ repository examples spend tuning effort, not a shared solver API.
        worth measuring on broad trees such as hands. The
        experimental ``enable_sleeping`` freezes settled, supported islands of
        articulations and skips their rows and dynamics until a force, state
-       change, contact with a moving body, reset or model notification wakes
-       them; it saves work on scenes where many objects rest, and costs a few
-       extra launches per step when nothing sleeps. ``articulated_contact_response``
+       change, contact with a moving body or a tangentially moving mesh
+       surface, reset or model notification wakes them; it saves work on
+       scenes where many objects rest, and costs a few extra launches per
+       step when nothing sleeps. ``articulated_contact_response``
        selects how contacts of articulated bodies are solved: ``"immediate"`` rows of
        the generalized coordinates, or the matrix-free ``"propagation"`` responses,
        which solve them as body-space rows and propagate their impulses through each
