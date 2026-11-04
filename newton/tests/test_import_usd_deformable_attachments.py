@@ -1224,18 +1224,29 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             atol=1e-6,
         )
 
-    def test_hard_cloth_and_solid_attachments_are_preserved_not_imported(self):
-        """Warn and preserve hard cloth/volume attachments without creating a finite spring."""
+    def test_hard_cloth_and_solid_attachments_match_builder_api(self):
+        """Import hard USD defaults and explicit infinity like the builder's hard attachments."""
+
+        def geometry(source):
+            stage = _deformable_stage()
+            _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 1.0))
+            if source == "Cloth":
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            else:
+                _author_unit_tet(stage, "/World/Solid", sim_api=True)
+            return stage
+
         for source in ("Cloth", "Solid"):
+            expected = newton.ModelBuilder()
+            reference = expected.add_usd(geometry(source), return_deformable_results=True)
+            body = reference["path_body_map"]["/World/Body"]
+            ranges = reference["path_cloth_map"] if source == "Cloth" else reference["path_soft_map"]
+            particle = ranges[f"/World/{source}"]["particle"][0]
             for stiffness in (None, math.inf):
                 for enabled in (True, False):
                     with self.subTest(source=source, stiffness=stiffness, enabled=enabled):
-                        stage = _deformable_stage()
-                        _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 2.0))
-                        if source == "Cloth":
-                            _add_cloth_mesh(stage, "/World/Cloth")
-                        else:
-                            _author_unit_tet(stage, "/World/Solid", sim_api=True)
+                        stage = geometry(source)
                         _add_physics_attachment(
                             stage,
                             "/World/Attach",
@@ -1248,17 +1259,22 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                             enabled=enabled,
                         )
                         builder = newton.ModelBuilder()
-                        with self.assertWarnsRegex(UserWarning, "hard.*not supported"):
-                            result = builder.add_usd(stage, return_deformable_results=True)
-                        self.assertEqual(builder.attachment_particle_body_count, 0)
+                        result = builder.add_usd(stage, return_deformable_results=True)
+                        row = expected.add_attachment_particle_body(
+                            particle, body, stiffness=math.inf, damping=2.0, enabled=enabled
+                        )
+                        self.assertEqual(builder.attachment_particle_body_count, 1)
                         self.assertNotIn("/World/Attach", result["path_attachment_map"])
                         attrs = result["path_attachment_attrs"]["/World/Attach"]
+                        self.assertEqual(attrs["attachment_particle_body_indices"], [0])
                         self.assertEqual(attrs["stiffness"], math.inf)
                         self.assertEqual(attrs["damping"], 2.0)
                         self.assertEqual(attrs["enabled"], enabled)
-                        self.assertIn("unsupported_reason", attrs)
-                        self.assertNotIn("attachment_particle_body_indices", attrs)
+                        self.assertNotIn("unsupported_reason", attrs)
                         self.assertNotIn("approximated_stiffness", attrs)
+                        for name in ("particle", "body", "body_point", "stiffness", "damping", "enabled", "world"):
+                            attr = f"attachment_particle_body_{name}"
+                            np.testing.assert_array_equal(getattr(builder, attr)[0], getattr(expected, attr)[row])
 
     def test_attachment_anchors_survive_root_override(self):
         """Preserve body-local particle and cable attachment anchors when rebasing an articulation root."""
