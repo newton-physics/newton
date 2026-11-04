@@ -8168,6 +8168,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
         model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
         model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
+        model.mujoco.noslip_iterations.assign(np.array([5], dtype=np.int32))
+        model.mujoco.noslip_tolerance.assign(np.array([1e-10], dtype=np.float32))
 
         solver = SolverMuJoCo(model, disable_contacts=True)
         mujoco = SolverMuJoCo._mujoco
@@ -8194,6 +8196,10 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.ccd_iterations, 25)
         self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
         self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
+        self.assertEqual(solver.mj_model.opt.noslip_iterations, 5)
+        np.testing.assert_allclose(solver.mj_model.opt.noslip_tolerance, 1e-10, rtol=1e-6)
+        self.assertEqual(solver.mjw_model.opt.noslip_iterations, 5)
+        np.testing.assert_allclose(solver.mjw_model.opt.noslip_tolerance.numpy(), 1e-10, rtol=1e-6)
 
         model.mujoco.integrator.fill_(mujoco.mjtIntegrator.mjINT_RK4)
         with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "RK4.*intermediate"):

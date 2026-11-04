@@ -4474,6 +4474,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         2. **Newton model custom attribute** (``model.mujoco.<option>``) - Supports per-world values.
         3. **MuJoCo default** - Used if neither of the above is set.
 
+        ``noslip_iterations`` and ``noslip_tolerance`` have no constructor argument: they come from
+        ``model.mujoco.noslip_iterations`` and ``model.mujoco.noslip_tolerance`` (set by the MJCF ``<option>``
+        element or the USD ``mjc:option:noslip_*`` attributes), or MuJoCo's defaults (0, noslip off, and 1e-6).
+
         For imported MJCF position drives using joint-target control and ``dampratio``,
         construction writes resolved damping into zero entries of ``model.joint_target_kd``
         and consumes the placeholders in ``model.mujoco.actuator_biasprm``. These coefficients
