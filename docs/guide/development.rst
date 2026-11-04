@@ -919,6 +919,10 @@ Commit hashes can be used instead of relative references:
 Running benchmarks standalone
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+For deformable-contact measurements and task outcomes, see
+:doc:`collision_fidelity`. That suite supports both standalone execution and
+ASV tracks, with a separate smoke profile for short checks.
+
 Benchmark files can also be run directly as Python scripts, without the airspeed velocity
 harness. This is useful for quick iteration during development since it skips the
 environment setup that airspeed velocity performs. Each benchmark file under
@@ -1037,3 +1041,4 @@ branching strategy, testing criteria, and publication steps.
    :hidden:
 
    release
+   collision_fidelity

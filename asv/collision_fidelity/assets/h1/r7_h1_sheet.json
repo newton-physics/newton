@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "case_id": "r7_h1_sheet",
+  "source_input_npz_sha256": "3efb9fd45e5d202e959cffb2e6c99847c11cedcd7c74cd70bd51e0af92983fa6",
+  "source_input_metadata_sha256": "2a4de73c5808322714d487cad4e5c02d04fda17a1b8b3c679524c0ab779b456b",
+  "source_state_sha256": "cfdfd0e5795eeec618cabce314fdfb229aa0a8c45100b1ca5cf32f637ca119e8",
+  "source_command_sha256": "f37f48373f7e99fc4fdacb2eb563151bfef558b5f667f2075dda8c68866a9332",
+  "source_archive_relative_path": "comparison/common-starts/r7_h1_sheet/common-start",
+  "scope": "Explicit public State and Control initialization and prescribed hand keyframes. No solver histories or scoring reference trajectory.",
+  "license": "Apache-2.0 generated state/commands; BSD-3-Clause source geometry",
+  "duration_s": 15.53436829769565,
+  "hold_window": [
+    6.442184148847824,
+    7.942184148847824
+  ],
+  "initial_hold_prepared": false,
+  "cloth_transform": {
+    "scale": 1.0,
+    "position": [
+      0,
+      0,
+      0
+    ],
+    "jacket_rotation": false
+  },
+  "table": {
+    "center": [
+      0,
+      0.39,
+      0.2375
+    ],
+    "half": [
+      0.65,
+      0.31,
+      0.0125
+    ],
+    "margin": 0.001,
+    "friction": 1.0
+  },
+  "material": {
+    "radius": 0.003,
+    "friction": 1.0,
+    "hand_friction": 1.0,
+    "sdf_resolution": 128
+  },
+  "hands": [
+    {
+      "side": "left",
+      "root_pos": [
+        -0.4181899130344391,
+        -0.4,
+        0.45
+      ],
+      "rotation": [
+        0.9930249466525313,
+        -0.04451669895438087,
+        0.017717946110308844,
+        -0.10773018716021458
+      ],
+      "controls": [
+        1.25,
+        0.008686668469377504,
+        1.0,
+        0,
+        0,
+        0
+      ],
+      "label": "original_h1_left"
+    },
+    {
+      "side": "right",
+      "root_pos": [
+        0.4172186702489853,
+        -0.4,
+        0.45
+      ],
+      "rotation": [
+        -0.05337212020859754,
+        0.9982015008565991,
+        -0.02613958116903868,
+        0.007867831237327764
+      ],
+      "controls": [
+        1.25,
+        0.009059418357859632,
+        1.0,
+        0,
+        0,
+        0
+      ],
+      "label": "original_h1_right"
+    }
+  ],
+  "camera": {
+    "position": [
+      1.35,
+      -1.7,
+      1.45
+    ],
+    "target": [
+      0.1,
+      0.25,
+      0.52
+    ],
+    "fov": 48.0
+  },
+  "arrays": {
+    "state0.particle_q": {
+      "shape": [
+        5806,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "fbce1a925ff641f9dbf11786aa0cc76af777dce0f0aa4f6e6d5e2cf015035cb4"
+    },
+    "state0.particle_qd": {
+      "shape": [
+        5806,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "23affa888f238d887acbe74efea21ad8139e9dfe57fd5cc43695db5943f37876"
+    },
+    "state0.particle_f": {
+      "shape": [
+        5806,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "bc0b840d7b25f35b955a97a06f76a35f833ee2cb77026d3ef85dde3ad3e82e42"
+    },
+    "state0.body_q": {
+      "shape": [
+        26,
+        7
+      ],
+      "dtype": "float32",
+      "sha256": "4a83fa25ceffa464a2c02bbcb54f7a67e44dd5ee7242e748363bed460103bace"
+    },
+    "state0.body_qd": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state0.body_f": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state0.joint_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "7c9db5a53aaf36110184d2c6703cd6184353c5764b750c0139fc11bf93738970"
+    },
+    "state0.joint_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "state1.particle_q": {
+      "shape": [
+        5806,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "fbce1a925ff641f9dbf11786aa0cc76af777dce0f0aa4f6e6d5e2cf015035cb4"
+    },
+    "state1.particle_qd": {
+      "shape": [
+        5806,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "9565b7f9d909b844145ef46d49daa74be283600c78074a3855653d67f6de9019"
+    },
+    "state1.particle_f": {
+      "shape": [
+        5806,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "bc0b840d7b25f35b955a97a06f76a35f833ee2cb77026d3ef85dde3ad3e82e42"
+    },
+    "state1.body_q": {
+      "shape": [
+        26,
+        7
+      ],
+      "dtype": "float32",
+      "sha256": "4a83fa25ceffa464a2c02bbcb54f7a67e44dd5ee7242e748363bed460103bace"
+    },
+    "state1.body_qd": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state1.body_f": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state1.joint_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "7c9db5a53aaf36110184d2c6703cd6184353c5764b750c0139fc11bf93738970"
+    },
+    "state1.joint_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_f": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_target_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "5109f89d6d435f3ddc77d579cd3e68db9f4f60a340fa882d8b9faf04e760c1aa"
+    },
+    "control.joint_target_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_act": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.tri_activations": {
+      "shape": [
+        11344
+      ],
+      "dtype": "float32",
+      "sha256": "0cfa6260144d7ddc9ff3b3ed0896a583050094bc2d507b599def261362b160ee"
+    },
+    "driver0.times": {
+      "shape": [
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "396f31731ea05ead406206b587be06adf260d748ea02a8b0496f23fc0aa4313e"
+    },
+    "driver0.positions": {
+      "shape": [
+        12,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "63a4b62c48a458e3ac4cf0684efe70ac91c013efe17d5b687667c587eefd2df9"
+    },
+    "driver0.rotations": {
+      "shape": [
+        12,
+        4
+      ],
+      "dtype": "float32",
+      "sha256": "96d6495c4c2a915f51179be323ecb4ecf8f14d7f6b344a01138bacbf883c8868"
+    },
+    "driver0.fingers": {
+      "shape": [
+        12,
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "edbcdd139373d51df3d7b8f32c650c4eee61729ce22fe8ad8c5d7a4f551b7c95"
+    },
+    "driver1.times": {
+      "shape": [
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "396f31731ea05ead406206b587be06adf260d748ea02a8b0496f23fc0aa4313e"
+    },
+    "driver1.positions": {
+      "shape": [
+        12,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "67335a5c8a221b866971199561995122bfbfbb577d85ab4ecda4c07f95fdccad"
+    },
+    "driver1.rotations": {
+      "shape": [
+        12,
+        4
+      ],
+      "dtype": "float32",
+      "sha256": "1383231f0bb7d3c18c9cdd94ddb18edd7c7885a6ae491268ad03e737255e265f"
+    },
+    "driver1.fingers": {
+      "shape": [
+        12,
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "969163161e3e5b4f62486bc22233c0ab2bb3b2d6d592ca718f2c32bcd203b672"
+    },
+    "rest.vertices": {
+      "shape": [
+        5806,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "556d0310ffbc2eefb4080071285bd8ddcc832672804214f304c1944f94f6b994"
+    },
+    "rest.triangles": {
+      "shape": [
+        11344,
+        3
+      ],
+      "dtype": "int32",
+      "sha256": "5606e5bd69b83e5286ffcff75d82acff7f81c482da03d97e651789e07e259fa5"
+    }
+  },
+  "npz_sha256": "910916b290ff698691fd3483f31ebbff9da24c7093147a2274936ba85d1b190e",
+  "license_notices": [
+    "Pinned unitree_h1/LICENSE"
+  ]
+}

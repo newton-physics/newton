@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/AnkaChan/newton",
+  "source_commit": "50045b89b546a9a791812fa8d22413e04be4f416",
+  "procedural_geometry_sha256": {
+    "patch": "921eff0f1f3300d4a2bc1324cc70df1317bb72df25ede5f310dec2600323624d",
+    "towel": "b5dcb71b3568d7992d6eebc6e30fccc58dc32699658d06ae884f04c607871a1d",
+    "sheet": "714cc687856bbe0e671a568825a80a9aee9d8b4fb7d1ac2e74b18709ff56b41b",
+    "trousers": "0688a796b155321918c5dda1437aeb20acf67ea1e6fe85f349cd098bdff83954",
+    "dress": "069309c300cc92e8f08f075aad55f65e145cb3cb121fb7f4f26014c2710a6598",
+    "tshirt": "ffe20dff621d8ea8c7b419917babb923a49dd52b5a2f3bc6788f1f64214f7ae2",
+    "skirt": "efa46e83547051d198a225dd79b654b8d5e389ea71dc04f7bf6613b904ba9239",
+    "tote": "7b1badba62b94eb2cefd99ccd8ef723a87825154b844c9d17785649709dcb55e",
+    "pouch": "2dfb2e5eb0e9e43ba9403d1cc86ed7037e7a49725bd42535f7dec7f0cbca0f87",
+    "gusset_bag": "2781d0134d731009f8f961b3a76be2300989298c0961823c33ebbeec74003267",
+    "block": "a0c71ce3382f801399e497bdf7526a7c09b5cb0925fa7f1746ad887354f39126",
+    "pad": "8952c1e7ad368f726c315ceac279b6ebcb284ef5200384f02c267d29de21509e",
+    "sphere": "74263561b888d47af55608946a3ceef7f1064eebb1a1967f342dbb0f365067f1",
+    "capsule": "bc42b9e4e46fe23a8068e034ee357836268cf90c754ec931c1eddf5584679218",
+    "torus": "c8455dc9a0825fe8bb9bd2370acb9db155559b7a2e6a78321c567287d489f91e",
+    "branched": "0c3d94651d2f4aa2c4111a71b5cf79e5fe456248e04cc7c2fe63093bdc1ae3f1"
+  },
+  "external_assets": [
+    {
+      "folder": "franka_emika_panda",
+      "repository": "https://github.com/newton-physics/newton-assets",
+      "revision": "f8fb7abcbeba2318814a74f3eeb02780ad7925d6",
+      "license": "Apache-2.0",
+      "license_path": "franka_emika_panda/LICENSE",
+      "download": "newton.utils.download_asset"
+    },
+    {
+      "folder": "wonik_allegro",
+      "repository": "https://github.com/newton-physics/newton-assets",
+      "revision": "f8fb7abcbeba2318814a74f3eeb02780ad7925d6",
+      "license": "BSD-2-Clause",
+      "license_path": "wonik_allegro/LICENSE",
+      "download": "newton.utils.download_asset"
+    },
+    {
+      "folder": "unitree_h1",
+      "repository": "https://github.com/newton-physics/newton-assets",
+      "revision": "f8fb7abcbeba2318814a74f3eeb02780ad7925d6",
+      "license": "BSD-3-Clause",
+      "license_path": "unitree_h1/LICENSE",
+      "download": "newton.utils.download_asset"
+    },
+    {
+      "folder": "manipulation_objects/rubber_duck",
+      "repository": "https://github.com/newton-physics/newton-assets",
+      "revision": "f8fb7abcbeba2318814a74f3eeb02780ad7925d6",
+      "license": "Apache-2.0",
+      "license_path": "manipulation_objects/rubber_duck/LICENSE",
+      "download": "newton.utils.download_asset",
+      "catalog_reference": "external:manipulation_objects/rubber_duck"
+    }
+  ],
+  "bundled_assets": {
+    "cached_jacket_native.npz": {
+      "sha256": "e03aef1d114cfc9e5beadaa295635fdf2df6f7ad019f157dfd21bb8d93bba4e7",
+      "geometry_sha256": "5aaf165379f3b3bfab613c05719ea98da3e73dc16252873a852db5d33294b8e8",
+      "license": "BSD-3-Clause",
+      "notice": "STYLE3D-LICENSE.txt"
+    }
+  },
+  "scope": "Runtime geometry and explicit initial conditions only; historical galleries and outputs remain archived.",
+  "initial_state_fixtures": {
+    "j3_h1_jacket": {
+      "path": "h1/j3_h1_jacket.npz",
+      "sha256": "53b9988b3eecd45ece6682809d8642a59386e0ea81afb7374ca08be30af5c804",
+      "metadata_path": "h1/j3_h1_jacket.json",
+      "metadata_sha256": "f0e3c4c8be1e2d5409e50985a32c850e55ce0df7028d5da97e68097ed265200c",
+      "license": "Apache-2.0; BSD-3-Clause source geometry",
+      "notice": "STYLE3D-LICENSE.txt and pinned unitree_h1/LICENSE"
+    },
+    "r7_h1_gusset_bag": {
+      "path": "h1/r7_h1_gusset_bag.npz",
+      "sha256": "90c540bb6fcbba9a04f660366a10069778ae7b717dd44031ae754e3a99bed0ee",
+      "metadata_path": "h1/r7_h1_gusset_bag.json",
+      "metadata_sha256": "3cec395d8fac8f6f92b98693936200ef5f1672273079ade994065f116f86d088",
+      "license": "Apache-2.0; BSD-3-Clause source geometry",
+      "notice": "STYLE3D-LICENSE.txt and pinned unitree_h1/LICENSE"
+    },
+    "r7_h1_sheet": {
+      "path": "h1/r7_h1_sheet.npz",
+      "sha256": "910916b290ff698691fd3483f31ebbff9da24c7093147a2274936ba85d1b190e",
+      "metadata_path": "h1/r7_h1_sheet.json",
+      "metadata_sha256": "66b398ef2ca4fe9e338001c5c21856c217ed967ee0c828640f9c24be89ac03bd",
+      "license": "Apache-2.0; BSD-3-Clause source geometry",
+      "notice": "STYLE3D-LICENSE.txt and pinned unitree_h1/LICENSE"
+    },
+    "r7_h1_towel": {
+      "path": "h1/r7_h1_towel.npz",
+      "sha256": "a34373c5c7b37b5121501a5f2c3bc7b144034074cdf2a4427a66251a1286cbe2",
+      "metadata_path": "h1/r7_h1_towel.json",
+      "metadata_sha256": "18223b9e55f08be1d9c93dcc2d66883a73f586a26b9b4f1e766ad9c30f266fb3",
+      "license": "Apache-2.0; BSD-3-Clause source geometry",
+      "notice": "STYLE3D-LICENSE.txt and pinned unitree_h1/LICENSE"
+    }
+  },
+  "runtime_generator_sources": {
+    "assets.py": {
+      "sha256": "993cc7731bd17423f3029942a5fb7c1f93efb7d4e995d5d9667c119ea4179c71",
+      "license": "Apache-2.0"
+    },
+    "pouch_mesh.py": {
+      "sha256": "0f2f7493cff07307b2ce4e26673e5f5f5f7f5471eb5d892fdbb9eb5fa3ff3c47",
+      "license": "Apache-2.0"
+    }
+  }
+}
