@@ -295,10 +295,9 @@ class DeformableRigidCollision:
 
 
 class DeformableRigidCollisionScale(DeformableRigidCollision):
-    """Sample GPU-saturating deformable-rigid scales once per revision."""
+    """Benchmark GPU-saturating deformable-rigid scales."""
 
     params = (DEFORMABLE_RIGID_SCALE_CASES,)
-    repeat = 1
     warmup_count = 1
     launch_count = 3
 
