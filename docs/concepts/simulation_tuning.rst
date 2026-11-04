@@ -109,6 +109,55 @@ failure evidence points to an interaction, test the smallest justified
 combination in a scripted reproduction and keep it only if the target metric and
 guardrails improve.
 
+.. _tuning-adaptive-collision-detection:
+
+Tunneling and Adaptive Collision Detection
+------------------------------------------
+
+If fast objects pass through thin geometry, first reduce the solver timestep
+and refresh collisions every substep. Increasing solver iterations cannot
+recover a collision that was never detected. Once this baseline works,
+consider **velocity-adapted speculative contacts with conditional collision
+refreshes** as a practical alternative to full continuous collision detection
+(CCD) for rigid contacts.
+
+Enable velocity-adapted gaps with a positive
+``CollisionPipeline(speculative_contact_gap_max=...)`` limit in meters. The
+pipeline uses relative linear and angular velocity at candidate contact points
+to retain separated contacts that can close within the collision-update
+horizon, subject to that limit. Pass the time until the next planned collision
+refresh as ``pipeline.collide(..., dt=collision_dt)``; this may span several
+solver substeps. Increasing the detection gap alone is insufficient if the
+solver does not act on separated contacts. For MuJoCo Warp, this requires
+``use_mujoco_contacts=False`` and the experimental
+``use_speculative_contacts=True`` option with Euler or implicitfast integration;
+see :doc:`/solvers/mujoco` for its response and capacity requirements.
+
+The experimental :class:`CollisionSubstepScheduler` varies collision frequency
+while keeping the number and duration of solver substeps fixed. It refreshes
+contacts at frame start, when the conservative relative-travel estimate would
+exhaust the speculative distance, when a collidable shape's velocity changes,
+or when the previous prediction horizon expires. Selection stays on the device
+and supports conditional execution inside CUDA graphs. Use the callback setup
+in :ref:`speculative-contacts` to pass the scheduler's collision horizon to
+the pipeline. The scheduler requires two distinct state buffers, an even
+substep count, and capture-safe callbacks with preallocated storage.
+
+Tune ``collision_dt_max`` to cap the time between refreshes, then measure
+collision cost and tunneling at the fastest expected motion. A larger
+``speculative_contact_gap_max`` allows longer intervals but can admit more
+contacts. Inspect ``schedule.interval_overflow`` after a frame: if set, increase
+the substep count or the speculative distance limit. Keep penetration and
+contact/constraint capacity within the task's bounds.
+
+This combination can mitigate tunneling while avoiding collision detection on
+every substep during steady motion. It does not compute a time of impact or
+advance bodies to an impact pose, and it does not guarantee that tunneling is
+eliminated. Acceleration and impulses are observed only after a substep, so
+abrupt motion can still cross thin geometry within that substep; choose its
+duration accordingly. The scheduler does not support particles, and
+velocity-adapted speculative contacts apply to rigid, non-hydroelastic contacts.
+
 Solver and Backend Changes
 --------------------------
 
@@ -149,6 +198,12 @@ Symptom Table
        limits or armature when physically justified; reduce mass and inertia
        ratios.
      - Fidelity
+   * - Fast objects tunnel through geometry
+     - Reduce ``dt``; refresh collisions every substep; verify collision geometry.
+     - Use :ref:`velocity-adapted speculative contacts and conditional refreshes
+       <tuning-adaptive-collision-detection>` with a solver that acts on separated
+       contacts; monitor travel overflow.
+     - Collision and solver runtime
    * - Weak grasp or object slip
      - Check friction coefficients, contact locations, contact count, and
        gripper force limits.
