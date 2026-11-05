@@ -1078,8 +1078,42 @@ def parse_mjcf(
     # meshes loaded from files, keyed by file and load arguments, so a mesh asset
     # referenced by several geoms (e.g. visual and collision, or mirrored links) is parsed once
     mesh_file_cache: dict[tuple, list[Mesh]] = {}
-    # per-submesh unit-density mass properties of non-exact inertia modes, keyed by mesh asset and load arguments
-    mesh_inertia_cache: dict[tuple, list[tuple[float, np.ndarray, np.ndarray]]] = {}
+    # unit-density mass properties of each mesh asset and scale in its inertia mode, or None where MuJoCo rejects it
+    mesh_inertia_cache: dict[tuple, tuple[float, np.ndarray, np.ndarray] | None] = {}
+
+    def mesh_inertia(
+        mesh_name: str, scaling: np.ndarray, maxhullvert: int
+    ) -> tuple[float, np.ndarray, np.ndarray] | None:
+        """Return a mesh asset's unit-density mass properties in its ``inertia`` mode, as MuJoCo computes them.
+
+        Args:
+            mesh_name: Name of the ``<mesh>`` asset.
+            scaling: Per-axis scale of the asset times the import scale.
+            maxhullvert: Collision hull vertex limit.
+
+        Returns:
+            Mass [kg], center of mass [m] and inertia tensor about it [kg*m^2], or ``None`` when the mesh
+            has too little surface area or volume for its mode, where MuJoCo rejects it.
+        """
+        key = (mesh_name, tuple(float(v) for v in np.asarray(scaling, dtype=np.float64).reshape(-1)))
+        if key not in mesh_inertia_cache:
+            mesh_asset = mesh_assets[mesh_name]
+            mode = mesh_asset["inertia"]
+            # MuJoCo reads a mesh file as one mesh, so combine its submeshes, loaded without
+            # material overrides so that every geom gets the same properties.
+            vertices, faces = _combine_meshes(load_mesh_asset_geometry(mesh_name, scaling, maxhullvert))
+            hull_vertices = _undo_mesh_ref_pose(vertices, mesh_asset["refpos"], mesh_asset["refquat"], scaling)
+            properties = _mesh_mass_properties(vertices, faces, mode, mesh_asset["inertia_hullvert"], hull_vertices)
+            if properties is None:
+                logger.warning(
+                    'MJCF mesh %r has too little surface area or volume for inertia="%s" and adds no mass; '
+                    "MuJoCo rejects it.%s",
+                    mesh_name,
+                    mode,
+                    "" if mode == "shell" else ' Use inertia="shell" to give a surface mesh mass.',
+                )
+            mesh_inertia_cache[key] = properties
+        return mesh_inertia_cache[key]
 
     def load_mesh_asset(
         mesh_name: str,
@@ -1101,47 +1135,25 @@ def parse_mjcf(
             Submeshes whose mass properties add up to the whole mesh.
         """
         meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert, override_color, override_texture)
-        mesh_asset = mesh_assets[mesh_name]
-        mode = mesh_asset["inertia"]
-        if mode == "exact":
+        if mesh_assets[mesh_name]["inertia"] == "exact":
             # Newton's mesh mass properties already use the exact signed volume.
             return meshes
-        key = (
-            mesh_name,
-            tuple(float(v) for v in np.asarray(scaling, dtype=np.float64).reshape(-1)),
-            maxhullvert,
-            # A color or texture override loads a mesh file as one submesh instead of one per material.
-            None if override_color is None else tuple(float(v) for v in override_color),
-            override_texture,
-        )
-        properties = mesh_inertia_cache.get(key)
+        properties = mesh_inertia(mesh_name, scaling, maxhullvert)
         if properties is None:
-            # MuJoCo reads a mesh file as one mesh, so combine its submeshes.
-            vertices, faces = _combine_meshes(meshes)
-            hull_vertices = _undo_mesh_ref_pose(vertices, mesh_asset["refpos"], mesh_asset["refquat"], scaling)
-            whole = _mesh_mass_properties(vertices, faces, mode, mesh_asset["inertia_hullvert"], hull_vertices)
-            if whole is None:
-                # MuJoCo rejects such a mesh; give it no mass rather than another mode's mass.
-                logger.warning(
-                    'MJCF mesh %r has too little surface area or volume for inertia="%s" and adds no mass; '
-                    "MuJoCo rejects it.%s",
-                    mesh_name,
-                    mode,
-                    "" if mode == "shell" else ' Use inertia="shell" to give a surface mesh mass.',
-                )
-                properties = [(0.0, np.zeros(3), np.zeros((3, 3)))] * len(meshes)
-            else:
-                mass, com, inertia = whole
-                # Split the properties by surface area so the submeshes add up to the whole mesh.
-                areas = np.array(
-                    [
-                        np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum()
-                        for t in (mesh.vertices[mesh.indices.reshape(-1, 3)] for mesh in meshes)
-                    ]
-                )
-                properties = [(mass * float(share), com, inertia * float(share)) for share in areas / areas.sum()]
-            mesh_inertia_cache[key] = properties
-        for mesh, (mass, com, inertia) in zip(meshes, properties, strict=True):
+            # MuJoCo rejects such a mesh; give it no mass rather than another mode's mass.
+            shares = [(0.0, np.zeros(3), np.zeros((3, 3)))] * len(meshes)
+        else:
+            mass, com, inertia = properties
+            # Split the properties by surface area so the submeshes add up to the whole mesh. A color or
+            # texture override loads a mesh file as one submesh instead of one per material.
+            areas = np.array(
+                [
+                    np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum()
+                    for t in (mesh.vertices[mesh.indices.reshape(-1, 3)] for mesh in meshes)
+                ]
+            )
+            shares = [(mass * float(share), com, inertia * float(share)) for share in areas / areas.sum()]
+        for mesh, (mass, com, inertia) in zip(meshes, shares, strict=True):
             mesh.mass = mass
             mesh.com = wp.vec3(com)
             mesh.inertia = wp.mat33(inertia)
