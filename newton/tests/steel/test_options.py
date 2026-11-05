@@ -520,6 +520,10 @@ def test_disabled_restitution_lets_compliance_accept_restitution(test, device):
     np.testing.assert_array_equal(trace, reference)
 
 
+# solve_mode="colored" on CPU warns that it runs the serial propagation sweep.
+_CPU_COLORED_WARNING = "SolverSteel: solve_mode='colored' runs"
+
+
 class TestSteelAngularDamping(unittest.TestCase):
     pass
 
@@ -1180,6 +1184,9 @@ class TestSteelSolveModeOptions(unittest.TestCase):
         for kwargs, message, expected in deprecated:
             with self.subTest(**kwargs):
                 with self.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, re.escape(message)) as caught:
+                    warnings.filterwarnings(
+                        "ignore", message=_CPU_COLORED_WARNING, category=newton.exceptions.NewtonWarning
+                    )
                     solver = SolverSteel(model, **kwargs)
                 self.assertEqual(Path(caught.filename).resolve(), Path(__file__).resolve())
                 self.assertEqual((solver.solve_mode, solver.articulated_contact_response), expected)
@@ -1189,6 +1196,7 @@ class TestSteelSolveModeOptions(unittest.TestCase):
         model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
         with warnings.catch_warnings():
             warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.exceptions.NewtonWarning)
             solver = SolverSteel(model)
             self.assertEqual((solver.solve_mode, solver.articulated_contact_response), ("serial", "immediate"))
             solver = SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation")
@@ -1203,7 +1211,8 @@ class TestSteelSolveModeOptions(unittest.TestCase):
     def test_colored_sleeping_requires_cuda(self):
         """On CPU the colored mode runs the serial propagation sweep, so sleeping with it names CUDA, not the mode."""
         model = _floor_model("cpu", "static")
-        with self.assertRaisesRegex(NotImplementedError, "requires CUDA"):
+        with warnings.catch_warnings(), self.assertRaisesRegex(NotImplementedError, "requires CUDA"):
+            warnings.filterwarnings("ignore", message=_CPU_COLORED_WARNING, category=newton.exceptions.NewtonWarning)
             SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation", enable_sleeping=True)
 
 

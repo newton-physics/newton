@@ -2289,6 +2289,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         solve_mode, articulated_contact_response = _normalize_solve_mode(solve_mode, articulated_contact_response)
         _validate_solve_mode(solve_mode, articulated_contact_response)
+        if solve_mode == "colored" and not model.device.is_cuda:
+            warnings.warn(
+                "SolverSteel: solve_mode='colored' runs the serial propagation sweep on CPU (the colored row "
+                "solve is CUDA-only), so its row order and results differ from CUDA.",
+                NewtonWarning,
+                stacklevel=2,
+            )
         self._kernel_overrides = current_kernel_overrides()
         if contact_compliance:
             # Reject unsupported combinations before any allocation.
@@ -8971,7 +8978,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mimic_world_index = None
         self._connect_world_index = None
         self._rigid_velocity_limit_world_index = None
-        self._world_groups_by_size = {}
         if not self._ordered_rows or self._art_to_world is None:
             return
 
@@ -9004,8 +9010,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         # One family's row counts in world-element order, then a zero, and their exclusive scan.
         self._row_requests = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
         self._row_offsets = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
-        for size in self._size_groups:
-            self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])[:2]
 
         sort_capacity = 2 * self._max_contacts_alloc
         self._contact_sort_keys = wp.zeros(sort_capacity, dtype=wp.int32, device=device)

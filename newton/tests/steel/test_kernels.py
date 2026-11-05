@@ -702,7 +702,8 @@ class TestSteelLaunchConfig(unittest.TestCase):
         self.assertEqual(
             (solver._cholesky_kernel, solver._trisolve_kernel, solver._hinv_jt_kernel), ("loop", "loop", "par_row")
         )
-        colored = SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation")
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "serial propagation sweep on CPU"):
+            colored = SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation")
         self.assertEqual(colored.solve_mode, "colored")
         self.assertFalse(colored._propagation_colored)
 

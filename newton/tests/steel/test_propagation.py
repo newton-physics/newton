@@ -1744,6 +1744,13 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
             test.assertEqual(int(solver._propagation_constraint_count.numpy()[0]), 0)
 
 
+def test_flag_requires_propagation_mode(test, device):
+    """Reject same-articulation propagation rows without the response that solves them."""
+    model = _build_scissor_model(device)
+    with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
+        SolverSteel(model, **_response("immediate"), propagation_same_articulation_rows=True)
+
+
 def test_cross_response_effective_mass_matches_reference_operator(test, device):
     """Match each same-articulation propagation row's ``J M^-1 J^T`` to the analytic operator, on both responses.
 
@@ -1935,6 +1942,7 @@ for _name in (
     add_function_test(TestPropagationSameArticulation, _name, globals()[_name], devices=get_test_devices())
 for _name in (
     "test_default_routing_keeps_same_articulation_rows_dense",
+    "test_flag_requires_propagation_mode",
     "test_cross_response_effective_mass_matches_reference_operator",
     "test_same_articulation_torsion_rows_carry_the_cross_response",
     "test_closing_gripper_stops_at_finger_contact",

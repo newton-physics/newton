@@ -3,13 +3,17 @@
 
 """The matrix-free solve on CPU (portable row kernels) tracks the CUDA solve."""
 
+import functools
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverSteel
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 _STEPS = 40
 _DT = 1.0 / 240.0
@@ -83,10 +87,17 @@ def _mixed(world):
 
 _SCENES = {
     "arm_on_boxes": (_arm_on_boxes, {}),
-    "box_stack": (_box_stack, {}),
+    # Regularized updates and the unbiased velocity-only passes.
+    "box_stack": (_box_stack, {"contact_regularization": 0.02, "velocity_iterations": 2}),
+    # Velocity-only passes freeze the drive rows (velocity_drive_mode="freeze").
     "arm_velocity_limits": (
         _arm_velocity_limits,
-        {"enable_joint_velocity_limits": True, "drive_mode": "rows", "velocity_limit_activation_fraction": 0.0},
+        {
+            "enable_joint_velocity_limits": True,
+            "drive_mode": "rows",
+            "velocity_limit_activation_fraction": 0.0,
+            "velocity_iterations": 2,
+        },
     ),
     "mixed": (_mixed, {"row_schedule": "phased"}),
 }
@@ -106,18 +117,21 @@ def _build(device, scene):
 
 def _rollout(device, scene, mode):
     model = _build(device, scene)
-    solver = SolverSteel(
-        model,
-        solve_mode=mode[0],
-        articulated_contact_response=mode[1],
-        iterations=12,
-        enable_joint_limits=True,
-        articulation_constraint_max=64,
-        free_body_constraint_max=64,
-        # Fixed contact and row order, so the two devices solve the same rows in the same sequence.
-        deterministic=wp.DeterministicMode.RUN_TO_RUN,
-        **_SCENES[scene][1],
-    )
+    with warnings.catch_warnings():
+        # solve_mode="colored" on CPU warns that it runs the serial sweep; that is what this module covers.
+        warnings.filterwarnings("ignore", message="SolverSteel: solve_mode='colored' runs", category=NewtonWarning)
+        solver = SolverSteel(
+            model,
+            solve_mode=mode[0],
+            articulated_contact_response=mode[1],
+            iterations=12,
+            enable_joint_limits=True,
+            articulation_constraint_max=64,
+            free_body_constraint_max=64,
+            # Fixed contact and row order, so the two devices solve the same rows in the same sequence.
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
+            **_SCENES[scene][1],
+        )
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
     state_a, state_b, control = model.state(), model.state(), model.control()
@@ -131,7 +145,13 @@ def _rollout(device, scene, mode):
         state_a, state_b = state_b, state_a
         q.append(state_a.body_q.numpy().copy())
         qd.append(state_a.body_qd.numpy().copy())
-    return solver, start, np.asarray(q), np.asarray(qd)
+    return solver._propagation_colored, start, np.asarray(q), np.asarray(qd)
+
+
+@functools.cache
+def _cpu_rollout(scene, mode):
+    """CPU rollouts are the expensive half of this module; both tests share them."""
+    return _rollout("cpu", scene, mode)
 
 
 # (solve_mode, articulated_contact_response); "colored" runs the serial propagation sweep on CPU.
@@ -143,24 +163,17 @@ class TestSteelCpuFallback(unittest.TestCase):
         for scene in _SCENES:
             for mode in _MODES:
                 with self.subTest(scene=scene, mode=mode):
-                    solver, start, q, qd = _rollout("cpu", scene, mode)
+                    colored, start, q, qd = _cpu_rollout(scene, mode)
                     self.assertTrue(np.isfinite(q).all() and np.isfinite(qd).all())
                     # Not a silent no-op: contacts hold the bodies above the ground and the drives swing the arms.
                     self.assertGreater(np.abs(q[-1, :, :3] - start[:, :3]).max(), 1.0e-3)
                     self.assertGreater(q[-1, :, 2].min(), 0.0)
-                    self.assertFalse(solver._propagation_colored)
+                    self.assertFalse(colored)
 
-    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
-    def test_cpu_tracks_cuda(self):
-        for scene in _SCENES:
-            for mode in _MODES:
-                with self.subTest(scene=scene, mode=mode):
-                    _, _, q_cpu, qd_cpu = _rollout("cpu", scene, mode)
-                    _, _, q_gpu, qd_gpu = _rollout("cuda:0", scene, mode)
-                    # Same rows in the same order; only the dot-product summation order differs. Velocities
-                    # see isolated stick/slip flips at impacts, positions stay within float round-off growth.
-                    np.testing.assert_allclose(q_cpu[..., :3], q_gpu[..., :3], atol=1.0e-4)
-                    np.testing.assert_allclose(qd_cpu, qd_gpu, atol=0.15)
+    def test_colored_warns_on_cpu(self):
+        model = _build("cpu", "box_stack")
+        with self.assertWarnsRegex(NewtonWarning, "serial propagation sweep on CPU"):
+            SolverSteel(model, solve_mode="colored", articulated_contact_response="propagation")
 
     def test_cuda_only_features_raise_on_cpu(self):
         model = _build("cpu", "box_stack")
@@ -171,6 +184,29 @@ class TestSteelCpuFallback(unittest.TestCase):
         ):
             with self.subTest(options=options), self.assertRaisesRegex(NotImplementedError, "require CUDA"):
                 SolverSteel(model, **options)
+
+
+def test_cpu_tracks_cuda(test, device):
+    for scene in _SCENES:
+        for mode in _MODES:
+            with test.subTest(scene=scene, mode=mode):
+                _, _, q_cpu, qd_cpu = _cpu_rollout(scene, mode)
+                _, _, q_gpu, qd_gpu = _rollout(device, scene, mode)
+                # Serial modes visit the same rows in the same order and differ only in summation order. "colored"
+                # runs the serial index-order sweep on CPU and the color-bucket sweep on CUDA, so conflicting rows
+                # can run in a different order. Measured worst cases: position 1e-4, 1 - |dot| 3e-7.
+                np.testing.assert_allclose(q_cpu[..., :3], q_gpu[..., :3], atol=2.0e-4)
+                # q and -q are the same rotation; 1 - |dot| grows with the square of the angle error.
+                dot = np.abs(np.sum(q_cpu[..., 3:] * q_gpu[..., 3:], axis=-1))
+                np.testing.assert_array_less(1.0 - dot, 1.0e-5)
+                # Velocities resolve impacts differently for a step or two (up to ~1 m/s in the regularized box
+                # stack, measured), then agree again: bound those steps and the final velocities.
+                velocity_gap = np.abs(qd_cpu - qd_gpu).max(axis=(1, 2))
+                test.assertLessEqual(int((velocity_gap > 0.15).sum()), 2)
+                test.assertLess(velocity_gap[-1], 0.1)
+
+
+add_function_test(TestSteelCpuFallback, "test_cpu_tracks_cuda", test_cpu_tracks_cuda, devices=get_cuda_test_devices())
 
 
 if __name__ == "__main__":
