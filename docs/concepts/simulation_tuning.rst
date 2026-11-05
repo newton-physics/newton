@@ -170,10 +170,10 @@ Symptom Table
        constraints.
      - Runtime
    * - Simulation is too slow
-     - Capture the frame in a CUDA graph (see :ref:`performance-guide`);
-       reduce substeps, contact refresh rate, and expensive contact models.
-     - Lower iterations if available; simplify collision geometry; reduce
-       contact buffers or contact count when safe.
+     - Profile the simulation and address execution overhead first (see
+       :ref:`performance-guide`).
+     - Reduce substeps, iterations, or contact refresh rate; simplify
+       collision geometry or contact models, and validate accuracy.
      - Accuracy
 
 Going Deeper

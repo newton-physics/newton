@@ -1,1 +1,1 @@
-Add a performance guide covering CUDA graph capture, odd substep counts, buffer sizing, and benchmarking.
+Add a performance guide covering measurement and profiling, CUDA graph capture, buffer sizing, and simulation accuracy tradeoffs.
