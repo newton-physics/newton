@@ -65,7 +65,9 @@ Profiling
 ---------
 
 Profile startup and steady-state stepping separately to distinguish setup costs
-from work that repeats every frame.
+from work that repeats every frame. This section covers what is specific to
+Newton; for the profiling tools themselves, see Warp's `profiling guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html>`__.
 
 Startup
 ^^^^^^^
@@ -99,19 +101,59 @@ record timed CUDA events during capture to measure regions within the graph
 To check what a graph contains,
 :func:`warp.capture_debug_dot_print` writes it as a Graphviz file.
 
-For a full picture, run the application under NVIDIA Nsight Systems. Its
-timeline shows kernels, memory copies, host synchronization, and gaps where the
-GPU waits for the CPU, which is often the most direct evidence of launch
-overhead or a hidden synchronization. Pass ``use_nvtx=True`` to
-:class:`warp.ScopedTimer` to label regions on the timeline. By default, Nsight
-Systems shows a captured graph as one range; its ``--cuda-graph-trace=node``
-option traces the individual kernels. To analyze a single kernel's memory
-throughput, occupancy, or SM utilization, use Nsight Compute. Reading GPU
-performance counters can require administrator privileges.
-
 Profilers and synchronizing timers add overhead and change the timing they
 measure. Use them to find the expensive parts, and compare configurations with
 the same instrumentation, or none, on both sides.
+
+Nsight Systems
+^^^^^^^^^^^^^^
+
+For a timeline of the whole application, run it under NVIDIA Nsight Systems
+without a viewer:
+
+.. code-block:: console
+
+    nsys profile -o h1 --trace=cuda,nvtx,osrt \
+        uv run -m newton.examples robot_h1 --viewer null --num-frames 300
+
+Open ``h1.nsys-rep`` in the Nsight Systems GUI, or print summaries with
+``nsys stats h1.nsys-rep``. In the report, check:
+
+- **Gaps on the GPU row** between kernels during steady-state stepping. Gaps
+  mean the GPU waits for the CPU, usually because of launch overhead or a host
+  synchronization.
+- **Synchronization and memory copies** in the CUDA API row, such as
+  ``cudaStreamSynchronize`` or device-to-host copies inside the step. Each one
+  points to a host read in the loop.
+- **Kernel time summary** (``cuda_gpu_kern_sum`` in ``nsys stats``) to see
+  which kernels dominate the step.
+- **Startup**: compilation, module loading, and graph capture before the first
+  replay, kept separate from the steady state.
+
+Pass ``use_nvtx=True`` to :class:`warp.ScopedTimer` to label regions on the
+timeline. By default, Nsight Systems shows each graph launch as one range. To
+see the kernels inside the graph, add ``--cuda-graph-trace=node``. Node-level
+tracing adds overhead to every kernel in the graph and can hide the benefit of
+capture, so use it to see what runs inside the graph, not to measure how long
+the step takes.
+
+Nsight Compute
+^^^^^^^^^^^^^^
+
+Once you know which kernel dominates, use Nsight Compute to analyze it.
+Profile only a few launches of that kernel, because Nsight Compute replays each
+profiled kernel many times:
+
+.. code-block:: console
+
+    ncu -o h1_kernel --set full -k regex:<kernel_name> -c 5 \
+        uv run -m newton.examples robot_h1 --viewer null --num-frames 20
+
+In the report, compare the kernel's achieved memory throughput and compute
+throughput with the device's peak, and check occupancy and warp stall reasons.
+A kernel far below both peaks is often limited by latency or launch
+configuration rather than by the hardware. Reading GPU performance counters
+can require administrator privileges.
 
 Memory
 ^^^^^^
@@ -342,9 +384,21 @@ For supported in-place model edits, such as changes to masses or gains, call
 :meth:`~solvers.SolverBase.notify_model_changed` outside the graph with the
 :class:`ModelFlags` that describe the change. Prefer the narrowest applicable
 flags to avoid unnecessary updates. Setters such as :meth:`Model.set_gravity`
-name the flag to use in their docstrings. Existing graphs can read updated
-array contents, but changes that replace buffers or alter the launch sequence
-require recapture; check the solver's requirements.
+name the flag to use in their docstrings.
+
+Whether an existing graph picks up the change depends on what the solver does
+in response. If it only rewrites the contents of existing device arrays, the
+graph reads the new values on its next replay. If the solver replaces buffers,
+or decides on the host which kernels to launch, the graph keeps replaying what
+it recorded and you need to capture it again. For example,
+:class:`~solvers.SolverFeatherstone` reacts to inertial changes by recomputing
+the mass matrix on its next :meth:`~solvers.SolverBase.step`, but that decision
+is made in Python. With ``update_mass_matrix_interval`` greater than 1, a graph
+captured before the change can keep using the old mass matrix on the substeps
+where the update was skipped during capture. Use an interval of 1 or recapture
+after notifying the solver. If a solver's documentation does not say that its
+model updates are capture-safe, recapture after calling
+:meth:`~solvers.SolverBase.notify_model_changed`.
 
 Sensors, actuators, selection views, and some solvers have further capture
 requirements, described on their own pages: :ref:`solver_observables`,
@@ -418,9 +472,8 @@ Collision Detection
 
 Reduce candidate pairs before changing collision accuracy. Use collision groups
 and filters to exclude pairs that should not interact, and choose a broad phase
-suited to the scene. Shared shapes (world ``-1``) participate in collision
-detection across worlds, so include their cost when sizing buffers. See
-:ref:`Collision Pipeline Details`.
+suited to the scene. Shared shapes (world ``-1``) collide with every world, so
+their cost grows with the world count. See :ref:`Collision Pipeline Details`.
 
 Simpler geometry and less frequent collision detection can reduce cost further,
 but may change contact locations or miss collisions. The next section describes
@@ -481,6 +534,16 @@ Solver choice and solver options
     :class:`~solvers.SolverImplicitMPM` can transfer velocities with PIC, which
     is cheaper but more dissipative than the default APIC scheme. See the
     :doc:`solver overview </solvers/index>` and the solver's API reference.
+
+Physically implausible behavior
+    Do not keep lowering the timestep or raising iterations to keep a scene
+    stable while it does something a real system could not, such as a policy
+    commanding joint torques or contact forces that would break the robot.
+    Making that motion stable costs time and does not make it meaningful.
+    Define limits from the task and the hardware, such as maximum joint
+    torque, contact force, body velocity, or penetration depth, check them on
+    the device, and end or reset the affected episode when a world exceeds
+    them. :ref:`Per-world reset masks` let you reset only those worlds.
 
 Multiple Worlds
 ---------------
