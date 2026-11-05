@@ -4899,6 +4899,45 @@ class TestParentCollisionFilterWeldGroups(unittest.TestCase):
                 pairs = self._pairs(builder.finalize(device="cpu"))
                 self.assertEqual(pairs, {(s_hand, s_finger), (s_hand, s_thumb), (s_finger, s_thumb)})
 
+    def test_non_filtering_weld_splits_its_group(self):
+        """A weld with ``collision_filter_parent=False`` keeps its parent and child in separate groups."""
+        for weld in ("fixed", "d6"):
+            with self.subTest(weld=weld):
+                builder = newton.ModelBuilder()
+                base, s_base = self._link(builder, 1.0)
+                mount, s_mount = self._link(builder, 1.05)
+                lid, s_lid = self._link(builder, 1.1)
+                flap, s_flap = self._link(builder, 1.15)
+                root = builder.add_joint_free(base)
+                if weld == "fixed":
+                    welds = [
+                        builder.add_joint_fixed(base, mount),
+                        builder.add_joint_fixed(mount, lid, collision_filter_parent=False),
+                    ]
+                else:
+                    welds = [
+                        builder.add_joint_d6(base, mount, linear_axes=[], angular_axes=[]),
+                        builder.add_joint_d6(
+                            mount, lid, linear_axes=[], angular_axes=[], collision_filter_parent=False
+                        ),
+                    ]
+                hinge = builder.add_joint_revolute(lid, flap, axis=newton.Axis.Z)
+                builder.add_articulation([root, *welds, hinge])
+                pairs = self._pairs(builder.finalize(device="cpu"))
+                # base and mount are one group; the lid is not part of it, so it collides with both
+                # and the hinge filters the flap against the lid alone
+                self.assertEqual(pairs, {(s_base, s_mount), (s_lid, s_flap)})
+
+    def test_weld_cycle_is_rejected(self):
+        """Fixed joints that close a ring of bodies make finalize() raise instead of loop."""
+        for ring in (2, 3, 5):
+            with self.subTest(ring=ring):
+                builder = newton.ModelBuilder()
+                bodies = [self._link(builder, 1.0 + 0.1 * i)[0] for i in range(ring)]
+                builder.add_articulation([builder.add_joint_fixed(bodies[i - 1], bodies[i]) for i in range(ring)])
+                with self.assertRaisesRegex(ValueError, "form a cycle"):
+                    builder.finalize(device="cpu")
+
     def test_world_weld_is_not_a_group(self):
         """Bodies welded to the world filter only their direct joints, as in MuJoCo."""
         builder = newton.ModelBuilder()

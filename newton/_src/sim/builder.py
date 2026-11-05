@@ -16485,9 +16485,11 @@ class ModelBuilder:
 
         A joint with ``collision_filter_parent=True`` filters the colliding shapes of its
         child's weld group against those of its parent's weld group. Weld groups are the
-        bodies connected by FIXED or zero-DOF tree joints, so a filtering weld joint filters
-        its whole group against itself. Tree joints come from
-        :func:`~newton._src.utils.topology.tree_joint_mask`, shared with
+        bodies connected by filtering FIXED or zero-DOF tree joints, so a filtering weld joint
+        filters its whole group against itself, while a weld with
+        ``collision_filter_parent=False`` leaves its parent and child in separate groups: they
+        keep colliding, and a joint below one of them filters that side alone. Tree joints come
+        from :func:`~newton._src.utils.topology.tree_joint_mask`, shared with
         :class:`~newton.solvers.SolverMuJoCo`: the joints of articulations and the first world
         joint of every other body, never a joint an imported MuJoCo equality constraint targets.
         Loop-closure joints (MJCF equality welds among them) neither weld nor expand, they keep
@@ -16510,18 +16512,34 @@ class ModelBuilder:
         is_tree = tree_joint_mask(
             joint_parent, joint_child, self.joint_articulation, body_count, self._equality_loop_joint_mask()
         )
+        joint_filters = np.asarray(self.joint_collision_filter_parent, dtype=bool)
         is_weld = is_tree & ((joint_type == JointType.FIXED) | (dof_count == 0))
-        welded = is_weld & (joint_parent >= 0)
+        # A weld with collision_filter_parent=False keeps its two bodies in separate groups.
+        welded = is_weld & joint_filters & (joint_parent >= 0)
         if not np.any(welded):
             # Every weld group is a single body: the direct pairs already cover the rule.
             return empty
 
-        # Weld root per body: follow the tree welds upward to the topmost body of the group, which
-        # is MuJoCo's weld id. A body has one tree joint, so at most one weld leads up from it.
+        # Weld root per body: follow the filtering welds upward to the topmost body of the group,
+        # MuJoCo's weld id. A body has one tree joint, so at most one weld leads up from it, and
+        # pointer jumping over a forest settles within log2(body_count) + 1 rounds. Welds that
+        # close a cycle (add_articulation() rejects a body with two parents, not a ring of them)
+        # never settle, or settle every body of the ring on itself.
+        children = joint_child[welded]
         root = np.arange(body_count, dtype=np.int64)
-        root[joint_child[welded]] = joint_parent[welded]
-        while not np.array_equal(next_root := root[root], root):
+        root[children] = joint_parent[welded]
+        for _ in range(int(np.log2(body_count)) + 2):
+            next_root = root[root]
+            if np.array_equal(next_root, root):
+                break
             root = next_root
+        looped = root[root] != root
+        looped[children[root[children] == children]] = True
+        if np.any(looped):
+            raise ValueError(
+                f"Fixed or zero-DOF joints form a cycle among bodies {np.flatnonzero(looped).tolist()}; "
+                "the tree joints of an articulation must form a tree"
+            )
 
         # A group welded to the world is no group: each of its bodies stands for itself. The body
         # welded to the world is such a group's root.

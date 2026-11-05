@@ -706,10 +706,12 @@ Filter pairs are automatically populated in several cases:
 
 - **Adjacent bodies**: Parent-child body pairs connected by joints (when
   ``collision_filter_parent=True``). The filter works on weld groups, like MuJoCo's: the
-  bodies joined by fixed and zero-DOF tree joints count as one, so a joint filters its child's
-  weld group against its parent's weld group, and a filtering weld joint filters its whole
-  group against itself. Loop-closure joints keep their direct pair only, and bodies welded to
-  the world form no group. The pairs are completed in
+  bodies joined by filtering fixed and zero-DOF tree joints count as one, so a joint filters its
+  child's weld group against its parent's weld group, and a filtering weld joint filters its
+  whole group against itself. A weld with ``collision_filter_parent=False`` keeps its parent and
+  child in separate groups: they collide, and a joint below one of them filters that side
+  alone. Loop-closure joints keep their direct pair only, and bodies welded to the world form no
+  group. The pairs are completed in
   :meth:`~ModelBuilder.finalize`, so the order in which joints and shapes are added does not
   matter, and shapes with ``ShapeConfig(collision_filter_parent=False)`` take no part. For USD
   joints with two explicit bodies, ``physics:collisionEnabled`` controls this filter with
@@ -1409,7 +1411,7 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``collision_group``
      - Collision group ID. 0 disables collisions. Default: 1.
    * - ``collision_filter_parent``
-     - Whether the shape takes part in parent-child filtering: a filtering joint of its body filters it against the shapes of the body on the joint's other side and of that body's weld group, whichever is added first. ``False`` keeps it colliding with them. Default: True.
+     - Whether the shape takes part in parent-child filtering: a filtering joint of its body filters it against the shapes of the body on the joint's other side and of that body's weld group, in whichever order shape and joint are added. ``False`` keeps it colliding with them. Default: True.
    * - ``has_shape_collision``
      - Whether shape collides with other shapes. Default: True.
    * - ``has_particle_collision``

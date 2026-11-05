@@ -1062,7 +1062,8 @@ from MJCF or USD, or coming from a USD joint with
 as well. This does not extend to welds: MuJoCo merges the bodies of a fixed or
 zero-DOF tree joint into one weld body whose geoms never collide with each
 other, whatever the joint's flag, so such a pair touches only in Newton's own
-collision pipeline.
+collision pipeline, where a weld with ``collision_filter_parent=False`` also
+keeps its two bodies in separate weld groups.
 
 ``gravity="disable"`` sets Newton's builder gravity to zero, affecting
 all solvers and content already added to the shared builder. Inside
