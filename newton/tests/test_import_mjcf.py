@@ -2331,7 +2331,8 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
             newton.ModelBuilder().add_mjcf(self.inline_mjcf('inertia="solid"'))
 
     def test_convex_inertia_with_maxhullvert(self):
-        """A limited convex hull keeps the vertices MuJoCo's qhull options select."""
+        """A limited convex hull keeps the vertices MuJoCo's qhull options select before scale and pose."""
+        import trimesh
         from scipy.spatial import ConvexHull
 
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -2354,6 +2355,19 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
             masses.append(mujoco.MjModel.from_xml_string(mjcf).body_mass[1])
         # The limits must change the native mass, or the test would not cover them.
         self.assertGreater(min(abs(masses[0] - masses[1]), abs(masses[0] - masses[2])), 0.01 * masses[0])
+        # MuJoCo builds the limited hull before a non-uniform or mirrored scale and a reference pose.
+        for pose in ('scale="2 0.5 1.5"', 'scale="-2 0.5 1.5"', 'refpos="0.1 0.2 0.3" refquat="0.9 0.1 0.3 0.2"'):
+            mjcf = self.inline_mjcf(f'inertia="convex" maxhullvert="12" {pose}', vertices=vertices, faces=faces)
+            with self.subTest(pose=pose):
+                self.assert_matches_native(mjcf)
+        # A mesh file, as in #3754's test: Newton's loader scales its vertices on load.
+        with tempfile.TemporaryDirectory() as directory:
+            trimesh.creation.icosphere(subdivisions=2).export(os.path.join(directory, "sphere.obj"))
+            mjcf = """<mujoco><asset>
+              <mesh name="mesh" file="sphere.obj" inertia="convex" maxhullvert="12" scale="2 0.5 1.5"/></asset>
+              <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh"/></body></worldbody></mujoco>"""
+            with self.subTest(file="sphere.obj"):
+                self.assert_matches_native(mjcf, directory)
 
     def test_mesh_without_volume_adds_no_mass(self):
         """A mesh that its mode gives no volume adds no mass, where MuJoCo rejects it; ``shell`` gives it mass."""

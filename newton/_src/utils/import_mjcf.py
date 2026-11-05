@@ -137,37 +137,47 @@ def _combine_meshes(meshes: Sequence[Mesh]) -> tuple[np.ndarray, np.ndarray]:
     return vertices, faces
 
 
-def _mesh_hull_triangles(vertices: np.ndarray, maxhullvert: int) -> np.ndarray | None:
-    """Return the outward-facing triangles of the convex hull MuJoCo uses for ``inertia="convex"``.
+def _mesh_hull_faces(
+    vertices: np.ndarray, maxhullvert: int, hull_vertices: np.ndarray | None = None
+) -> np.ndarray | None:
+    """Return the outward-facing triangles of the convex hull that MuJoCo builds for a mesh.
 
     Uses the qhull options of ``mjCMesh::MakeGraph`` in MuJoCo's ``user_mesh.cc``, including ``Q9``
-    when the hull is limited, so a limited hull keeps the same vertices as in MuJoCo.
+    when the hull is limited. Like MuJoCo, qhull runs before the mesh's scale and reference pose,
+    because they change which vertices a limited hull keeps.
 
     Args:
         vertices: Mesh vertices [m], shape (N, 3).
         maxhullvert: Hull vertex limit; 0 means no limit.
+        hull_vertices: The same vertices before the mesh's scale and reference pose, shape (N, 3).
+            Defaults to ``vertices``.
 
     Returns:
-        Hull triangle corners [m], shape (F, 3, 3), or ``None`` when the vertices are colocated,
-        collinear or coplanar.
+        Hull triangle vertex indices, outward-facing in the frame of ``vertices``, shape (F, 3), or
+        ``None`` when the vertices are colocated, collinear or coplanar.
     """
     from scipy.spatial import ConvexHull, QhullError
 
     options = f"Qt Q9 TA{maxhullvert - 4}" if maxhullvert > 0 else "Qt"
     try:
-        hull = ConvexHull(vertices, qhull_options=options)
+        hull = ConvexHull(vertices if hull_vertices is None else hull_vertices, qhull_options=options)
     except QhullError:
         return None
-    triangles = vertices[hull.simplices]
-    # qhull does not orient simplices; flip those whose normal opposes the facet's outward normal.
-    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-    flip = np.einsum("fi,fi->f", normals, hull.equations[:, :3]) < 0.0
-    triangles[flip] = triangles[flip][:, ::-1]
-    return triangles
+    faces = hull.simplices.copy()
+    # qhull does not orient simplices; flip those that face the centroid of the hull's vertices,
+    # which stays inside the hull under the scale and reference pose.
+    relative = vertices[faces] - vertices[np.unique(faces)].mean(axis=0)
+    flip = np.einsum("fi,fi->f", relative[:, 0], np.cross(relative[:, 1], relative[:, 2])) < 0.0
+    faces[flip] = faces[flip][:, ::-1]
+    return faces
 
 
 def _mesh_mass_properties(
-    vertices: np.ndarray, faces: np.ndarray, mode: str, maxhullvert: int
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    mode: str,
+    maxhullvert: int,
+    hull_vertices: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray, np.ndarray] | None:
     """Return a mesh's unit-density mass, center of mass and inertia for an MJCF ``inertia`` mode.
 
@@ -181,6 +191,8 @@ def _mesh_mass_properties(
         faces: Triangle vertex indices, shape (F, 3).
         mode: ``"legacy"``, ``"exact"``, ``"convex"``, or ``"shell"``.
         maxhullvert: Hull vertex limit for ``convex``; 0 means no limit.
+        hull_vertices: ``vertices`` before the mesh's scale and reference pose, on which MuJoCo
+            builds the ``convex`` hull. Defaults to ``vertices``.
 
     Returns:
         Mass [kg] (volume [m^3] or area [m^2] at unit density), center of mass [m] and inertia
@@ -195,9 +207,10 @@ def _mesh_mass_properties(
         return None
     facecen = (areas[:, None] * triangles.mean(axis=1)).sum(axis=0) / total_area
     if mode == "convex":
-        triangles = _mesh_hull_triangles(vertices, maxhullvert)
-        if triangles is None:
+        hull_faces = _mesh_hull_faces(vertices, maxhullvert, hull_vertices)
+        if hull_faces is None:
             return None
+        triangles = vertices[hull_faces]
 
     def volumes(apex: np.ndarray) -> np.ndarray:
         """Return the volumes of the tetrahedra between ``apex`` and each triangle."""
@@ -263,6 +276,17 @@ def _apply_mesh_ref_pose(
         lengths = np.linalg.norm(normals, axis=1, keepdims=True)
         normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
     return vertices, normals
+
+
+def _undo_mesh_ref_pose(
+    vertices: np.ndarray, refpos: np.ndarray, refquat: np.ndarray, scaling: np.ndarray
+) -> np.ndarray:
+    """Map vertices from :func:`_apply_mesh_ref_pose` back to the frame of the mesh asset."""
+    rotation = np.asarray(
+        wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+        dtype=np.float64,
+    ).reshape(3, 3)
+    return (np.asarray(vertices, dtype=np.float64) / scaling) @ rotation.T + refpos
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -1094,7 +1118,8 @@ def parse_mjcf(
         if properties is None:
             # MuJoCo reads a mesh file as one mesh, so combine its submeshes.
             vertices, faces = _combine_meshes(meshes)
-            whole = _mesh_mass_properties(vertices, faces, mode, mesh_asset["inertia_hullvert"])
+            hull_vertices = _undo_mesh_ref_pose(vertices, mesh_asset["refpos"], mesh_asset["refquat"], scaling)
+            whole = _mesh_mass_properties(vertices, faces, mode, mesh_asset["inertia_hullvert"], hull_vertices)
             if whole is None:
                 # MuJoCo rejects such a mesh; give it no mass rather than another mode's mass.
                 logger.warning(
