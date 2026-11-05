@@ -319,14 +319,17 @@ kernel covers every world.
   at ``state_in``, and discontinuity-aware truncation does not sweep the kinematic path.
   Keep per-step target motion within the contact margin; a fast kinematic particle can
   tunnel through cloth, as with kinematic bodies.
-- **Input state.** :class:`~newton.solvers.SolverVBD` writes the targets into
-  ``state_in.particle_q`` at the start of the step.
+- **Input state.** Kinematic particles are driven only through
+  ``control.particle_target_q``; a position written to ``state.particle_q`` is replaced
+  by the target on the next step. :class:`~newton.solvers.SolverVBD` writes the targets
+  into ``state_in.particle_q`` at the start of the step.
 - **Support.** :class:`~newton.solvers.SolverVBD`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`, and
   :class:`~newton.solvers.SolverFeatherstone`. :class:`~newton.solvers.SolverStyle3D`
   and :class:`~newton.solvers.SolverImplicitMPM` raise ``NotImplementedError`` if a
   particle is kinematic at construction; they ignore the flag if it is set later.
   :class:`~newton.solvers.SolverCoupled` entries copy particle flags at construction,
-  so set the flag before building the coupled solver.
+  so set the flag before building the coupled solver. An entry with kinematic particles
+  must use ``substeps=1``, and kinematic particles cannot be coupling proxies.
 
 Legacy pins with zero mass or a cleared ``ACTIVE`` flag keep their previous behavior.
