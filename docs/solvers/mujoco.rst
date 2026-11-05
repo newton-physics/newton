@@ -240,7 +240,18 @@ Geometry types
 non-colliding reference frames used for sensor attachment and spatial
 tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``CYLINDER``, and
 ``BOX`` are MuJoCo-native site geom types; other types silently fall
-back to ``SPHERE``.
+back to ``SPHERE``. MuJoCo ignores the third size component of a cylinder
+site, so the MJCF importer sets ``scale[2]`` (Newton's barrel radius) of
+cylinder sites to ``0.0``.
+
+.. deprecated:: 1.8
+
+    The ``mujoco:site_size_is_display`` shape attribute is no longer populated
+    by the MJCF importer. Passing it to :meth:`~newton.ModelBuilder.add_site`
+    emits a ``NewtonDeprecationWarning``; if it is ``True``, ``scale[2]`` of a
+    cylinder site is set to ``0.0``. Remove the attribute, and set ``scale[2]``
+    to ``0.0`` directly where it was ``True``. The attribute will be removed in
+    a future release.
 
 Several Newton collision features — for example non-convex trimesh,
 SDF-based contacts, and hydroelastic contacts — are not part of the

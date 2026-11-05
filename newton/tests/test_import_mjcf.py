@@ -6850,6 +6850,8 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             <site name="site_three" size="0.004 0.005 0.006"/>
             <!-- Site with no size - should use MuJoCo default [0.005, 0.005, 0.005] -->
             <site name="site_default"/>
+            <!-- Cylinder site: MuJoCo ignores the third size component -->
+            <site name="site_cylinder" type="cylinder" size="0.1 0.2 0.05"/>
         </body>
     </worldbody>
 </mujoco>"""
@@ -6885,6 +6887,9 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(scale_default[0], 0.005, places=6)
         self.assertAlmostEqual(scale_default[1], 0.005, places=6)
         self.assertAlmostEqual(scale_default[2], 0.005, places=6)
+
+        # Cylinder: no barrel radius
+        np.testing.assert_allclose(get_site_scale("site_cylinder"), [0.1, 0.2, 0.0], atol=1.0e-6)
 
     def test_frame_childclass_propagation(self):
         """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
@@ -11872,7 +11877,7 @@ class TestSiteFromto(unittest.TestCase):
         )
         np.testing.assert_allclose(
             builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/cylinder")],
-            [0.1, 1.0, 0.3],
+            [0.1, 1.0, 0.0],
             atol=1.0e-6,
         )
         model = builder.finalize(device="cpu")
@@ -11935,7 +11940,7 @@ class TestSiteFromto(unittest.TestCase):
         shape_idx = builder.shape_label.index("site_fromto_frame/worldbody/site")
         shape_xform = builder.shape_transform[shape_idx]
         np.testing.assert_allclose(shape_xform[:3], [1.0, 3.0, 3.0], atol=1.0e-6)
-        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.005], atol=1.0e-6)
+        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.0], atol=1.0e-6)
 
         shape_quat = wp.quat(*shape_xform[3:])
         rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
