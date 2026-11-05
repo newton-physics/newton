@@ -2844,10 +2844,6 @@ class ViewerBase(ABC):
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
-        mujoco_attributes = getattr(self.model, "mujoco", None)
-        site_size_is_display = getattr(mujoco_attributes, "site_size_is_display", None)
-        if site_size_is_display is not None:
-            site_size_is_display = site_size_is_display.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
         shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
@@ -2868,9 +2864,6 @@ class ViewerBase(ABC):
             geo_type = shape_geo_type[s]
             geo_scale = [float(v) for v in shape_geo_scale[s]]
             geo_src = shape_geo_src[s]
-
-            if geo_type == newton.GeoType.CYLINDER and site_size_is_display is not None and site_size_is_display[s]:
-                geo_scale[2] = 0.0
 
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
@@ -2976,12 +2969,6 @@ class ViewerBase(ABC):
             solids = geometry["shape_is_solid"].numpy()
             flags = geometry["shape_flags"].numpy()
             sdf_index = geometry["_shape_sdf_index"].numpy()
-            site_size = model._variant_shape_custom.get("mujoco:site_size_is_display")
-            site_size = site_size[0].numpy() if site_size is not None else np.zeros(len(types), dtype=bool)
-            # Display-sized cylinder sites render without their half-height, as regular shapes do.
-            scales = np.where(
-                ((types == newton.GeoType.CYLINDER) & site_size.astype(bool))[:, None], scales * (1.0, 1.0, 0.0), scales
-            )
             self._variant_shape_render = {}
             self._variant_shape_render_args = (types, scales, margins, solids, flags, sdf_index)
             self._variant_shape_types = types
