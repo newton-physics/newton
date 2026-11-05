@@ -150,55 +150,6 @@ fresh command if yours was cancelled. The script does not retry failed approval
 API calls: if a response is lost, inspect reviews before posting another command.
 Membership changes after a completed approval do not automatically revoke it.
 
-## Restricted installation-token experiment
-
-The token action explicitly requests `contents: read`, `pull_requests: write`,
-and `members: read` for `newton`. GitHub includes Metadata read automatically.
-The Python approval script receives only this installation token through
-`GH_TOKEN`; it does not receive the App private key. The token is revoked at job
-completion and otherwise expires after one hour. Unspecified permissions are not
-inherited from the installation.
-
-This separates the installation's permission grant from the token's effective
-permissions. In particular, an installation with Contents write can issue a token
-with Contents read. Whether GitHub counts a review from that restricted token as
-a required approval is **unverified**. Do not infer eligibility from a successful
-review API call or change the production App's permissions based on this
-prototype.
-
-To test the hypothesis, use a separate sandbox App installed only on a sandbox
-repository, adapting the workflow and script as described above. Keep the
-production installation unchanged. Reproduce the review and merge-queue rules,
-grant the sandbox App no bypass, and compare fresh PRs with these configurations:
-
-| Installation Contents permission | Requested token Contents permission | Purpose |
-| --- | --- | --- |
-| Read | Read | Establish the baseline review and merge-eligibility state. |
-| Write | Read | Test whether the installation's write grant makes the restricted-token review count. |
-
-Keep PR write and Members read unchanged. Verify the new installation grant was
-accepted before minting the second token. For each case, record the exact PR
-head, App review, `reviewDecision`, and merge-queue eligibility with all other
-requirements satisfied. Reproduce the intended last-pusher scenario: the human
-maintainer pushes and provides any required CODEOWNER approval, so their review
-alone cannot satisfy the latest-push requirement. An independent human approval
-would invalidate this experiment by satisfying the requirement without the App.
-
-Also verify that the restricted token can read a known sandbox file but cannot
-update it on an otherwise writable, disposable sandbox branch. Record the
-permission-denied result without logging the token. Testing against a protected
-branch alone would not distinguish token restrictions from branch protection.
-If write access succeeds, reject the prototype. If the review does not count,
-stop the experiment without weakening the review or queue rules.
-
-The restriction limits a leaked installation token. It does not protect against
-the App private key being stolen: that key can mint a token with the full
-installation grant. The token action sees the key on the same runner, so this
-is not a security boundary against a compromised job or runner. Isolating the
-key in a separate token service would be a different design.
-
-Reference: [GitHub installation-token permission subsets](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
-
 ## Disable and recover
 
 Set `MAINTAINER_APPROVAL_ENABLED=false` to stop new runs, cancel any in-flight run,
@@ -213,8 +164,7 @@ The workflow checks out only its trusted default-branch event SHA, disables
 persisted checkout credentials, and reads command data from `GITHUB_EVENT_PATH`.
 It never checks out or executes PR code and never interpolates comment text into
 a shell command. The official token action creates a short-lived installation
-token scoped to `newton` with explicit Contents read, PR write, and Members read
-permissions, and revokes it at job completion.
+token scoped to `newton` and revokes it at job completion.
 
 The privileged step invokes the Ubuntu runner's `/usr/bin/python3` directly in
 isolated mode (`-I`). It uses only the standard library and ignores repository
