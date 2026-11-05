@@ -129,8 +129,9 @@ from .implicit_mpm_solver_kernels import (
     voxel_coordinates,
 )
 
-# Disabled until Warp includes the fix for NVIDIA/warp#2036 (see #4506).
-_ROW_COMPRESSED_CONTACT_CONSTRUCTION = False
+# Features that need Warp 1.19 check this gate; remove it with their fallbacks once
+# Newton requires Warp 1.19.
+_WARP_AT_LEAST_1_19 = tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 19)
 
 
 def _as_2d_array(array, shape, dtype):
@@ -240,17 +241,20 @@ def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polyn
     )
 
 
-class _PicQuadrature(fem.PicQuadrature):
+class _DomainNamedPicQuadrature(fem.PicQuadrature):
     """PIC quadrature whose cache name includes its domain.
 
     Warp 1.18 names PIC quadratures by index scope only, so point bases built on
-    different geometries share generated kernels. Remove once Newton requires
-    Warp 1.19, which includes the domain name itself (GH-1984).
+    different geometries share generated kernels. Warp 1.19 includes the domain
+    name itself (GH-1984).
     """
 
     @property
     def name(self):
         return f"{super().name}_{self.domain.name}"
+
+
+_PicQuadrature = fem.PicQuadrature if _WARP_AT_LEAST_1_19 else _DomainNamedPicQuadrature
 
 
 def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
@@ -3742,8 +3746,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Prefer row compression for validated CUDA contact-map layouts."""
         # Compact maps with many inactive partition rows can still favor triplets,
         # even when Warp packs active-row candidate capacity.
+        # Row compression resizes padded BSR rows after the matrix shrinks, which
+        # Warp 1.19 supports (NVIDIA/warp#2036, see #4506).
         return (
-            _ROW_COMPRESSED_CONTACT_CONSTRUCTION
+            _WARP_AT_LEAST_1_19
             and self.model.device.is_cuda
             and self.velocity_basis == "Q1"
             and self.collider_basis in ("S2", "S3")
