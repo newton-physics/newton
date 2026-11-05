@@ -6313,7 +6313,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # the welds parallel the hinges
+            # The welds parallel the hinges.
+            warnings.filterwarnings(
+                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
+            )
             builder.add_mjcf(mjcf)
 
         def pose(body):
@@ -6386,7 +6389,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         scale = 2.0
         builder = newton.ModelBuilder()
         with self.assertLogs("newton", level="WARNING"), warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # the welds parallel the hinges
+            # The welds parallel the hinges.
+            warnings.filterwarnings(
+                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
+            )
             builder.add_mjcf(mjcf, xform=xform, scale=scale)
 
         def frames(label):
@@ -6452,7 +6458,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
         with self.assertLogs("newton", level="WARNING") as logs, warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # the welds parallel the hinges
+            # The welds parallel the hinges.
+            warnings.filterwarnings(
+                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
+            )
             builder.add_mjcf(mjcf)
         torquescale_warnings = [line for line in logs.output if "torquescale" in line]
         self.assertEqual(len(torquescale_warnings), 2, torquescale_warnings)

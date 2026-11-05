@@ -812,9 +812,11 @@ def test_imported_weld_with_zero_torquescale_leaves_rotation_free(test, device):
     </mujoco>
     """
     b = newton.ModelBuilder()
-    with test.assertLogs("newton", level="WARNING") as logs, warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # the BALL loop joint parallels the hinge
-        b.add_mjcf(mjcf)
+    # The BALL loop joint parallels the hinge.
+    with test.assertLogs("newton", level="WARNING") as logs:
+        _expect_one_warning(
+            test, newton.exceptions.NewtonWarning, "another joint already connects", lambda: b.add_mjcf(mjcf)
+        )
     test.assertTrue(any("torquescale=0" in line for line in logs.output))
     model = b.finalize(device=device)
     solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
@@ -867,9 +869,13 @@ def test_imported_weld_with_unnormalized_relpose_holds_the_same_pose(test, devic
     for label, quat in (("unit", "0.9238795 0 -0.3826834 0"), ("scaled", "1.847759 0 -0.7653668 0")):
         b = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(b)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # the FIXED loop joint parallels the hinge
-            b.add_mjcf(mjcf.format(quat=quat))
+        # The FIXED loop joint parallels the hinge.
+        _expect_one_warning(
+            test,
+            newton.exceptions.NewtonWarning,
+            "another joint already connects",
+            lambda b=b, quat=quat: b.add_mjcf(mjcf.format(quat=quat)),
+        )
         model = b.finalize(device=device)
         solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
         state_0, state_1, control = model.state(), model.state(), model.control()
