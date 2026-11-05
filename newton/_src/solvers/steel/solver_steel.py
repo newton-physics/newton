@@ -971,12 +971,16 @@ def _use_resident_mfgs_metadata(
     Resident row metadata removes repeated global loads across PGS iterations,
     but larger shapes lose more throughput from the resulting occupancy drop.
     Keep at most one 4-KiB metadata working set resident and stream larger sets.
-    Drive rows add four per-row arrays and the fused velocity-limit clamp one more.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    total_shared_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes
+    metadata_bytes = _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    total_shared_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=True,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+    )
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
 
 
@@ -997,13 +1001,15 @@ def _use_mfgs_pair_cache(
     The caches shorten each world's serial chain but lower blocks per SM; once worlds queue for SMs, the extra waves
     cost more than they save. The estimate ignores register, block-count and carveout limits.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
-    cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
-    if not shared_metadata:
-        cache_bytes += 3 * max_constraints
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    block_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes + cache_bytes
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=True,
+    )
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
     # Row parents are cached as short, and the kernel's arrays are static shared memory.
     return (
@@ -1028,22 +1034,49 @@ def _use_mfgs_torsion_links(
 
     Otherwise the sweep scans every dense row for torsion groups, with identical results.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
-    cache_bytes = 0
-    if pair_cache:
-        cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
-        if not shared_metadata:
-            cache_bytes += 3 * max_constraints
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    block_bytes = (
-        _MFGS_TILE_SHARED_STORAGE_BYTES
-        + base_shared_bytes
-        + metadata_bytes
-        + cache_bytes
-        + torque_links_shared_bytes(max_constraints)
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=pair_cache,
+        torsion_links=True,
     )
-    return block_bytes + _WARP_STATIC_SHARED_RESERVE_BYTES <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
+    return block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
+
+
+def _mfgs_block_shared_bytes(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool = False,
+    torsion_links: bool = False,
+) -> int:
+    """Return the static shared memory [B] of one matrix-free Gauss-Seidel kernel block, up to 4-byte alignment.
+
+    Every ``__shared__`` array of :func:`_get_pgs_solve_mf_gs_kernel` is counted here.
+    """
+    total = _MFGS_TILE_SHARED_STORAGE_BYTES + 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    if shared_metadata:
+        total += _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    if pair_cache:
+        total += 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
+        if not shared_metadata:
+            total += 3 * max_constraints
+    if torsion_links:
+        total += torque_links_shared_bytes(max_constraints)
+    return total
+
+
+def _mfgs_metadata_bytes(max_constraints: int, has_drive_rows: bool, fuse_vel_limits: bool) -> int:
+    """Return the resident dense-row metadata [B]; drive rows add four per-row arrays and the fused clamp one more."""
+    return 4 * max_constraints * (4 + 4 * int(has_drive_rows) + int(fuse_vel_limits))
 
 
 def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
@@ -16381,8 +16414,6 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
 
 # Static shared memory available to a CUDA block without opt-in [B].
 _STATIC_SHARED_MEMORY_BYTES = 48 * 1024
-# Headroom for the static shared storage Warp adds to a kernel beyond the solver's own arrays [B].
-_WARP_STATIC_SHARED_RESERVE_BYTES = 2048
 # Shared-memory budget of the streaming Delassus kernel's J and Y row chunks [B].
 _DELASSUS_SHARED_MEMORY_BYTES = 45000
 _DELASSUS_MAX_CHUNK_SIZE = 64

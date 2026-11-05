@@ -3964,8 +3964,8 @@ class TestTorsionLinkSharedMemory(unittest.TestCase):
             _use_mfgs_torsion_links(8192, 512, 32, device_limit, shared_metadata=False, pair_cache=False, **options)
         )
         self.assertFalse(_use_mfgs_torsion_links(64, 16, 12, 0, shared_metadata=False, pair_cache=False, **options))
-        # 128 + 4 * (16 + 8 + rows) + 4 * rows plus the 2-KiB Warp reserve is 48 KiB at rows = 5860.
-        for rows, limit, admitted in ((5860, device_limit, True), (5861, device_limit, False), (5860, 49151, False)):
+        # 128 + 4 * (16 + 8 + rows) + 4 * rows is 48 KiB at rows = 6116.
+        for rows, limit, admitted in ((6116, device_limit, True), (6117, device_limit, False), (6116, 49151, False)):
             with self.subTest(rows=rows, limit=limit):
                 self.assertEqual(
                     _use_mfgs_torsion_links(rows, 8, 16, limit, shared_metadata=False, pair_cache=False, **options),
@@ -3978,10 +3978,10 @@ class TestTorsionLinkSharedMemory(unittest.TestCase):
             _use_mfgs_torsion_links(2048, 0, 16, device_limit, shared_metadata=False, pair_cache=False, **options)
         )
         self.assertTrue(
-            _use_mfgs_torsion_links(2400, 0, 16, device_limit, shared_metadata=False, pair_cache=False, **options)
+            _use_mfgs_torsion_links(2500, 0, 16, device_limit, shared_metadata=False, pair_cache=False, **options)
         )
         self.assertFalse(
-            _use_mfgs_torsion_links(2400, 0, 16, device_limit, shared_metadata=False, pair_cache=True, **options)
+            _use_mfgs_torsion_links(2500, 0, 16, device_limit, shared_metadata=False, pair_cache=True, **options)
         )
 
 
@@ -4059,7 +4059,7 @@ class TestTorsionSweepLinks(unittest.TestCase):
         device = wp.get_device("cuda:0")
         self.assertTrue(
             _use_mfgs_torsion_links(
-                5860,
+                6116,
                 8,
                 16,
                 device.max_shared_memory_per_block,
@@ -4070,7 +4070,7 @@ class TestTorsionSweepLinks(unittest.TestCase):
             )
         )
         kernel = _get_pgs_solve_mf_gs_kernel(
-            5860,
+            6116,
             8,
             16,
             device.arch,
