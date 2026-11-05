@@ -842,6 +842,49 @@ class TestImportUsdPhysics(unittest.TestCase):
         np.testing.assert_allclose(visual_sources[2].color, (1.0, 0.0, 0.0), atol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_instanced_colliders_keep_per_instance_properties(self):
+        """Give every instance proxy its prototype collider's attributes and physics material."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        UsdGeom.Xform.Define(stage, "/Prototype")
+        cube = UsdGeom.Cube.Define(stage, "/Prototype/Cube")
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().CreateAttribute("newton:contactMargin", Sdf.ValueTypeNames.Float).Set(0.01)
+
+        slippery = UsdShade.Material.Define(stage, "/Physics/Slippery")
+        UsdPhysics.MaterialAPI.Apply(slippery.GetPrim()).CreateDynamicFrictionAttr().Set(0.2)
+
+        binding = UsdShade.MaterialBindingAPI.Apply(cube.GetPrim())
+        binding.Bind(slippery, materialPurpose="physics")
+
+        UsdGeom.Xform.Define(stage, "/World")
+        paths = []
+        for index in range(3):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{index}")
+            instance.GetPrim().GetReferences().AddInternalReference("/Prototype")
+            instance.GetPrim().SetInstanceable(True)
+            paths.append(f"/World/Instance{index}/Cube")
+        self.assertTrue(stage.GetPrimAtPath(paths[0]).IsInstanceProxy())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World", schema_resolvers=[SchemaResolverNewton()])
+        shapes = [result["path_shape_map"][path] for path in paths]
+
+        for shape in shapes:
+            self.assertAlmostEqual(builder.shape_margin[shape], 0.01, places=6)
+            self.assertAlmostEqual(builder.shape_material_mu[shape], 0.2, places=6)
+        # Every instance path keeps its collected schema attributes.
+        newton_attrs = result["schema_attrs"]["newton"]
+        for path in paths:
+            self.assertAlmostEqual(newton_attrs[path]["newton:contactMargin"], 0.01, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
         """Preserve the authored mesh for a disabled collider."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
