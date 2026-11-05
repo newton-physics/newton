@@ -6,6 +6,7 @@
 import ctypes
 import functools
 import inspect
+import sys
 import unittest
 import warnings
 from pathlib import Path
@@ -2656,33 +2657,41 @@ def test_colored_sleeping_runs_under_external_and_warp_capture(test, device):
     }
     for mode in ("warp", "external"):
         with test.subTest(mode=mode):
+            if mode == "external" and not sys.platform.startswith("linux"):
+                test.skipTest("the CUDA driver capture loads libcuda.so.1")
             captured, eager = (_Heap(device, model=_dumbbells_model(device), **options) for _ in range(2))
-            replay = _capture_step(captured, mode)
-            force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
-            slept = False
-            for k in range(60):
-                force[:] = 0.0
-                if k == 40:
-                    test.assertTrue(slept, "both chains must sleep before the force")
-                    force[0, 2] = 5.0
-                for scene in (captured, eager):
-                    scene.state_in.body_f.assign(force)
-                replay()
-                eager.step(clear=False)
-                awake = captured.solver._sleeping.art_awake.numpy()
-                np.testing.assert_array_equal(awake, eager.solver._sleeping.art_awake.numpy(), err_msg=f"{mode} {k}")
-                slept |= not awake.any()
-                if k == 40:
-                    np.testing.assert_array_equal(awake, [1, 0])
-            a, b = captured.snapshot(), eager.snapshot()
-            for name in _FIELDS:
-                np.testing.assert_allclose(a[name], b[name], rtol=0.0, atol=1.0e-4, err_msg=f"{mode} {name}")
+            replay, release = _capture_step(captured, mode)
+            try:
+                force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+                slept = False
+                for k in range(60):
+                    force[:] = 0.0
+                    if k == 40:
+                        test.assertTrue(slept, "both chains must sleep before the force")
+                        force[0, 2] = 5.0
+                    for scene in (captured, eager):
+                        scene.state_in.body_f.assign(force)
+                    replay()
+                    eager.step(clear=False)
+                    awake = captured.solver._sleeping.art_awake.numpy()
+                    np.testing.assert_array_equal(
+                        awake, eager.solver._sleeping.art_awake.numpy(), err_msg=f"{mode} {k}"
+                    )
+                    slept |= not awake.any()
+                    if k == 40:
+                        np.testing.assert_array_equal(awake, [1, 0])
+                a, b = captured.snapshot(), eager.snapshot()
+                for name in _FIELDS:
+                    np.testing.assert_allclose(a[name], b[name], rtol=0.0, atol=1.0e-4, err_msg=f"{mode} {name}")
+            finally:
+                release()
 
 
 def _capture_step(scene, mode):
     """Capture one solver step of ``scene`` with Warp or with the CUDA driver alone; return a replay function.
 
-    Collision runs eagerly before each replay, so only the solver step is captured.
+    Collision runs eagerly before each replay, so only the solver step is captured. Call the returned
+    release function when done; the CUDA driver capture loads ``libcuda.so.1`` and runs only on Linux.
     """
     device = scene.model.device
 
@@ -2700,7 +2709,7 @@ def _capture_step(scene, mode):
             scene.pipeline.collide(scene.state_in, scene.contacts)
             wp.capture_launch(capture.graph)
 
-        return replay
+        return replay, lambda: None
     # Capture that Warp does not track, as another framework's graph capture would start.
     cuda = ctypes.CDLL("libcuda.so.1")
     handle = ctypes.c_void_p
@@ -2708,6 +2717,8 @@ def _capture_step(scene, mode):
     cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
     cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
     cuda.cuGraphLaunch.argtypes = [handle, handle]
+    cuda.cuGraphExecDestroy.argtypes = [handle]
+    cuda.cuGraphDestroy.argtypes = [handle]
     stream = ctypes.c_void_p(wp.get_stream(device).cuda_stream)
     graph, graph_exec = ctypes.c_void_p(), ctypes.c_void_p()
     thread_local_mode = 1
@@ -2720,9 +2731,10 @@ def _capture_step(scene, mode):
     assert ended == 0, ended
     # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
     auto_free_on_launch = 1
-    assert (
-        cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)) == 0
+    instantiated = cuda.cuGraphInstantiateWithFlags(
+        ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)
     )
+    assert instantiated == 0, instantiated
 
     def replay():
         scene.pipeline.collide(scene.state_in, scene.contacts)
@@ -2730,7 +2742,11 @@ def _capture_step(scene, mode):
         assert launched == 0, launched
         wp.synchronize_stream(wp.get_stream(device))
 
-    return replay
+    def release():
+        cuda.cuGraphExecDestroy(graph_exec)
+        cuda.cuGraphDestroy(graph)
+
+    return replay, release
 
 
 class TestSteelSleepingColoredPropagation(unittest.TestCase):
