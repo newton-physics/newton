@@ -8866,7 +8866,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_weld_holds_its_authored_pose(self):
-        """SolverMuJoCo's row for a USD weld authored at a satisfied pose holds both free bodies still."""
+        """Verify SolverMuJoCo holds two free bodies still under a USD weld authored at a satisfied pose."""
         for target in ("body", "site", "rotated site"):
             with self.subTest(target=target):
                 builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
