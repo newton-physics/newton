@@ -1602,7 +1602,11 @@ def _tangent_response_rho(a: float, b: float, c: float, scale: float):
 
 @wp.func
 def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit: float):
-    """Project onto the Coulomb disk ``||f|| <= limit`` in the ``R^-1`` metric; return ``(f, K_secant)``."""
+    """Project a trial force/torque onto the Coulomb disk in the inverse conditioning metric.
+
+    ``R`` is packed by :func:`_pack_tangent_metric`. Return the projected
+    reaction and a positive-semidefinite secant metric for the body solve.
+    """
     if limit <= 0.0:
         return wp.vec3(0.0), wp.mat33(0.0)
     tangent = trial - n * wp.dot(n, trial)
@@ -1614,9 +1618,11 @@ def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit
     if high == low or low <= 0.0:
         scale = limit / wp.sqrt(length_sq)
         return scale * tangent, scale * _world_tangent_metric(R, n)
-    # In the eigenbasis (eh, el) of R, the R^-1-nearest point on ||f|| = limit has components
-    # f_h = vh / (1 + root) and f_l = vl / (1 + root * ratio), where root = alpha * high > 0
-    # and ratio = low / high. Solve norm_sq(root) = (f_h / limit)^2 + (f_l / limit)^2 = 1.
+    # In the metric's eigenbasis, vh/vl are the trial force/torque components.
+    # The projection multiplier alpha gives f_i = v_i / (1 + alpha * rho_i).
+    # Set root = alpha * high and ratio = low / high, so
+    # f_h = vh / (1 + root) and f_l = vl / (1 + root * ratio).
+    # Solve norm_sq(root) = (f_h / limit)^2 + (f_l / limit)^2 = 1 to enforce the limit.
     ratio = low / high
     t0, t1 = orthonormal_basis(n)
     eh = t0 * R[1, 0] + t1 * R[1, 1]
@@ -1627,9 +1633,9 @@ def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit
     low_sq = vl * vl / (limit * limit)
     total = high_sq + low_sq
     mean_ratio = (high_sq + ratio * low_sq) / total
-    # Analytic lower bound on root from Jensen's inequality and the low-axis bound.
+    # Initialize with the larger lower bound from Jensen's inequality and |f_l| <= limit.
     root = wp.max(wp.max((wp.sqrt(total) - 1.0) / mean_ratio, (wp.sqrt(low_sq) - 1.0) / ratio), 0.0)
-    # Monotone Newton iteration on 1 / sqrt(norm_sq(root)) - 1 = 0.
+    # Advance from the lower bound with Newton's method on 1 / sqrt(norm_sq(root)) - 1 = 0.
     for _ in range(24):
         ih = 1.0 / (1.0 + root)
         il = 1.0 / (1.0 + root * ratio)
@@ -1645,7 +1651,7 @@ def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit
             break
         root = next_root
     f = eh * (vh / (1.0 + root)) + el * (vl / (1.0 + root * ratio))
-    # Enforce capacity after float32 roundoff.
+    # Enforce the limit after the finite-precision solve.
     f *= limit / wp.max(limit, wp.length(f))
     metric = (high / (1.0 + root)) * wp.outer(eh, eh) + (low / (1.0 + root * ratio)) * wp.outer(el, el)
     return f, metric
