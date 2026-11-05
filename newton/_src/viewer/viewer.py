@@ -22,7 +22,12 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.host_transform import transform_add_translation, transform_from_array, transform_multiply
+from ..core.host_transform import (
+    transform_add_translation,
+    transform_from_array,
+    transform_multiply,
+    transform_to_matrix,
+)
 from ..core.types import MAXVAL, Axis
 from ..exceptions import NewtonWarning
 from .kernels import (
@@ -692,6 +697,7 @@ class ViewerBase(ABC):
         """
         layer.model = None
         layer.model_changed = True
+        layer._last_state = None
 
         # Shape instance batches (shape hash -> ShapeInstances)
         layer._shape_instances = {}
@@ -1329,6 +1335,7 @@ class ViewerBase(ABC):
             state: The current state of the simulation.
         """
 
+        self._last_state = state
         if self.model is None:
             return
 
@@ -2593,26 +2600,99 @@ class ViewerBase(ABC):
     def _hash_shape(self, geo_hash, shape_static, shape_flags, shape_transparent: bool = False) -> int:
         return hash((geo_hash, shape_static, shape_flags, bool(shape_transparent)))
 
-    def _should_show_shape(self, flags: int, is_static: bool, geo_type: int | None = None) -> bool:
+    def _get_scene_bounds(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Bound displayed model geometry, excluding infinite planes.
+
+        Read device data only on demand when framing the camera. Shape batches
+        apply body, shape, world and layer transforms, and their model indices
+        already exclude hidden worlds.
+        """
+        self._save_active_layer_state()
+        lower = np.full(3, np.inf)
+        upper = np.full(3, -np.inf)
+        corners = np.array([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)])
+
+        def include(points):
+            nonlocal lower, upper
+            points = points[np.isfinite(points).all(axis=1)]
+            if len(points):
+                lower = np.minimum(lower, points.min(axis=0))
+                upper = np.maximum(upper, points.max(axis=0))
+
+        for layer in self.layers.values():
+            model = layer.model
+            if model is None or not layer.visible:
+                continue
+            state = layer._last_state
+            if model.shape_count:
+                if state is None:
+                    state = model.state()
+                local_lower = model.shape_collision_aabb_lower.numpy()
+                local_upper = model.shape_collision_aabb_upper.numpy()
+                shape_scales = model.shape_scale.numpy()
+                for shapes in layer._shape_instances.values():
+                    if not self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type, layer=layer):
+                        continue
+                    # Some backends update their own packed transforms instead
+                    # of these batches during rendering. Refresh only on F.
+                    shapes.update(state, layer.world_offsets, layer.xform)
+                    transforms = shapes.world_xforms.numpy()
+                    opacities = shapes.opacities.numpy()
+                    for i, shape in enumerate(shapes.model_shapes):
+                        if opacities[i] <= 0.0:
+                            continue
+                        lo, hi = local_lower[shape], local_upper[shape]
+                        if shapes.geo_type == newton.GeoType.PLANE:
+                            scale = shape_scales[shape]
+                            if scale[0] <= 0.0 or scale[1] <= 0.0:
+                                continue
+                            # Finite rendered planes use full width/length.
+                            hi = np.array((scale[0] * 0.5, scale[1] * 0.5, 0.0))
+                            lo = -hi
+                        points = lo + corners * (hi - lo)
+                        matrix = transform_to_matrix(transform_from_array(transforms[i]))
+                        include(points @ matrix[:3, :3].T + matrix[:3, 3])
+
+            if (
+                state is not None
+                and model.particle_count
+                and (layer.show_particles or (layer.show_triangles and model.tri_count))
+            ):
+                points = state.particle_q.numpy()
+                radii = model.particle_radius.numpy()[:, None] if layer.show_particles else np.zeros((len(points), 1))
+                if model.particle_flags is not None:
+                    active = (model.particle_flags.numpy() & int(newton.ParticleFlags.ACTIVE)) != 0
+                    points, radii = points[active], radii[active]
+                matrix = transform_to_matrix(layer.xform)
+                points = points @ matrix[:3, :3].T + matrix[:3, 3]
+                include(points - radii)
+                include(points + radii)
+
+        return (lower, upper) if np.isfinite(lower).all() else None
+
+    def _should_show_shape(
+        self, flags: int, is_static: bool, geo_type: int | None = None, *, layer: Layer | None = None
+    ) -> bool:
         """Determine if a shape should be visible based on current settings."""
+        settings = self if layer is None else layer
 
         # A dedicated ground toggle hides plane shapes (e.g. the ground plane).
-        if geo_type is not None and int(geo_type) == int(newton.GeoType.PLANE) and not self.show_ground:
+        if geo_type is not None and int(geo_type) == int(newton.GeoType.PLANE) and not settings.show_ground:
             return False
 
         has_collide_flag = bool(flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
         has_visible_flag = bool(flags & int(newton.ShapeFlags.VISIBLE))
 
         # Static shapes override (e.g., for debugging)
-        if is_static and self.show_static:
+        if is_static and settings.show_static:
             return True
 
         # Shapes can be both collision AND visual (e.g., ground plane).
         # Show if either relevant toggle is enabled.
-        if has_collide_flag and self.show_collision:
+        if has_collide_flag and settings.show_collision:
             return True
 
-        if has_visible_flag and self.show_visual:
+        if has_visible_flag and settings.show_visual:
             return True
 
         # Hide if shape has no enabled flags

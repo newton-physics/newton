@@ -248,48 +248,39 @@ class ViewerGui:
         viewer = self._viewer
         if viewer.is_rendering_paused():
             return
-        if getattr(viewer, "model", None) is None:
-            return
         from pyglet.math import Vec3 as PyVec3
 
         camera = getattr(viewer, "camera", None)
         if camera is None:
             return
 
-        min_bounds = np.array([float("inf")] * 3)
-        max_bounds = np.array([float("-inf")] * 3)
-        found_objects = False
-
-        state = getattr(viewer, "_last_state", None)
-        if state is not None:
-            if getattr(state, "body_q", None) is not None:
-                body_q = state.body_q.numpy()
-                if len(body_q) > 0:
-                    positions = body_q[:, :3]
-                    min_bounds = np.minimum(min_bounds, positions.min(axis=0))
-                    max_bounds = np.maximum(max_bounds, positions.max(axis=0))
-                    found_objects = True
-            if getattr(state, "particle_q", None) is not None:
-                pq = state.particle_q.numpy()
-                if len(pq) > 0:
-                    min_bounds = np.minimum(min_bounds, pq.min(axis=0))
-                    max_bounds = np.maximum(max_bounds, pq.max(axis=0))
-                    found_objects = True
-
-        if not found_objects:
-            min_bounds = np.array([-5.0, -5.0, -5.0])
-            max_bounds = np.array([5.0, 5.0, 5.0])
+        bounds = viewer._get_scene_bounds()
+        if bounds is None:
+            return
+        min_bounds, max_bounds = bounds
 
         center = (min_bounds + max_bounds) * 0.5
-        size = max_bounds - min_bounds
-        max_extent = float(np.max(size))
-        if max_extent < 1.0:
-            max_extent = 1.0
-
-        fov_rad = np.radians(camera.fov)
-        padding = 1.5
-        distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
+        corners = (
+            np.array(
+                [
+                    [x, y, z]
+                    for x in (min_bounds[0], max_bounds[0])
+                    for y in (min_bounds[1], max_bounds[1])
+                    for z in (min_bounds[2], max_bounds[2])
+                ]
+            )
+            - center
+        )
         front = camera.get_front()
+        depth = corners @ np.asarray(front)
+        tan_vertical = np.tan(np.radians(camera.fov) * 0.5)
+        aspect = max(camera.width, 1) / max(camera.height, 1)
+        # Fit every corner at its own depth in both viewport dimensions.
+        padding = 1.1
+        horizontal = padding * np.abs(corners @ np.asarray(camera.get_right())) / (tan_vertical * aspect)
+        vertical = padding * np.abs(corners @ np.asarray(camera.get_up())) / tan_vertical
+        distance = max(float(np.max(np.maximum(horizontal, vertical) - depth)), camera.near - depth.min(), 0.1)
+        camera.far = max(camera.far, float(distance + depth.max()) * padding)
         camera.pos = PyVec3(
             center[0] - front.x * distance,
             center[1] - front.y * distance,

@@ -3,13 +3,15 @@
 
 import math
 import unittest
+from itertools import product
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton._src.viewer.camera import Camera
-from newton.viewer import ViewerGL
+from newton._src.viewer.viewer_gui import ViewerGui
+from newton.viewer import ViewerGL, ViewerNull
 
 
 def _as_np(value):
@@ -18,6 +20,96 @@ def _as_np(value):
 
 def _assert_vec_close(test, actual, expected, tol=1.0e-6):
     np.testing.assert_allclose(_as_np(actual), np.array(expected, dtype=float), atol=tol, rtol=0.0)
+
+
+class TestViewerCameraFraming(unittest.TestCase):
+    def _frame(self, viewer, points, width=1280, height=720, up_axis="Z"):
+        viewer.camera = Camera(width=width, height=height, up_axis=up_axis)
+        viewer.camera.yaw = 37.0
+        viewer.camera.pitch = -25.0
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer = viewer
+        gui.frame_camera_on_model()
+
+        # Check the actual perspective projection, including near/far clipping.
+        view = viewer.camera.get_view_matrix().reshape(4, 4).T
+        projection = viewer.camera.get_projection_matrix().reshape(4, 4).T
+        clip = np.c_[points, np.ones(len(points))] @ view.T @ projection.T
+        self.assertTrue(np.all(clip[:, 3] > 0.0))
+        ndc = clip[:, :3] / clip[:, 3, None]
+        self.assertLessEqual(np.abs(ndc).max(), 1.0 + 1.0e-5)
+        self.assertEqual(viewer.camera.yaw, 37.0)
+        self.assertEqual(viewer.camera.pitch, -25.0)
+        return viewer.camera
+
+    def test_frame_offset_geometry_in_narrow_viewport(self):
+        """Fit long, offset shapes at different aspect ratios and up axes."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_box(body, xform=wp.transform((12.0, 0.0, 0.0), wp.quat_identity()), hx=8.0, hy=0.2, hz=0.2)
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        state = model.state()
+        viewer.log_state(state)
+        corners = np.array(list(product((4.0, 20.0), (-0.2, 0.2), (-0.2, 0.2))))
+        for width, height in ((1280, 720), (320, 1000)):
+            for up_axis in ("X", "Y", "Z"):
+                with self.subTest(width=width, height=height, up_axis=up_axis):
+                    camera = self._frame(viewer, corners, width, height, up_axis)
+                    _assert_vec_close(self, camera.pivot, (12.0, 0.0, 0.0))
+
+    def test_frame_displayed_worlds(self):
+        """Fit replicated worlds at their displayed offsets after filtering."""
+        world = newton.ModelBuilder()
+        body = world.add_body()
+        world.add_shape_box(body, hx=0.5, hy=0.5, hz=2.0)
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 100)
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        state = model.state()
+        for visible in (None, [1, 50, 99]):
+            with self.subTest(visible=visible):
+                viewer.set_visible_worlds(visible)
+                viewer.set_world_offsets((100.0, 100.0, 0.0))
+                viewer.log_state(state)
+                offsets = viewer.world_offsets.numpy()[visible if visible is not None else slice(None)]
+                corners = np.array(list(product((-0.5, 0.5), (-0.5, 0.5), (-2.0, 2.0))))
+                self._frame(viewer, (corners[None] + offsets[:, None]).reshape(-1, 3))
+
+    def test_frame_static_mesh_with_signed_scale(self):
+        """Frame off-origin static mesh vertices under a signed nonuniform scale."""
+        vertices = np.array(((3.0, 0.0, 0.0), (8.0, 0.0, 0.0), (3.0, 2.0, 0.0)), dtype=np.float32)
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=newton.Mesh(vertices, [0, 1, 2], compute_inertia=False), scale=(-2.0, 3.0, 1.0))
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        viewer.log_state(model.state())
+        camera = self._frame(viewer, vertices * (-2.0, 3.0, 1.0))
+        _assert_vec_close(self, camera.pivot, (-11.0, 3.0, 0.0))
+
+    def test_frame_visible_layers_and_particles(self):
+        """Frame transformed visible layers and particle radii without hidden outliers."""
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=2.0)
+        builder.add_particle(pos=(10000.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, flags=0)
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        for name, offset in (("left", -20.0), ("right", 20.0), ("hidden", 10000.0)):
+            layer = viewer.activate(name)
+            layer.xform = wp.transform((offset, 0.0, 0.0), wp.quat_identity())
+            layer.visible = name != "hidden"
+            viewer.set_model(model)
+            viewer.show_particles = True
+            viewer.log_state(model.state())
+        corners = np.array(list(product((-22.0, 22.0), (-2.0, 2.0), (-2.0, 2.0))))
+        camera = self._frame(viewer, corners)
+        _assert_vec_close(self, camera.pivot, (0.0, 0.0, 0.0))
 
 
 class TestViewerCameraOrbit(unittest.TestCase):
