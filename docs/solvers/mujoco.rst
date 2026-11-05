@@ -1052,7 +1052,10 @@ Newton does not read these sensors; they cost MuJoCo time on every step. Other
 sensor types, geom and camera frames, and sensors on a body or site that is not
 imported are skipped and logged once per file. Sites that imported sensors use
 are exported even with ``include_sites=False``, and duplicate sensor names get a
-numeric suffix, as tendon names do.
+numeric suffix, as tendon names do. The import ``scale`` also scales the
+``cutoff`` and ``noise`` of ``framepos`` and ``framelinvel`` sensors, which
+read positions and linear velocities. Other sensors keep their values;
+``framelinacc`` also reads gravity, which ``scale`` does not change.
 
 Sensor import is off by default and cannot be combined with collapsing fixed
 joints, because merging bodies changes the frames and contacts that sensors

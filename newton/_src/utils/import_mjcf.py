@@ -4047,10 +4047,17 @@ def parse_mjcf(
                     reason = f"<{sensor.tag}> on {unsupported[0] if unsupported else 'a body or site not imported'}"
                     skipped[reason] = skipped.get(reason, 0) + 1
                     continue
+                attributes = dict(sensor.attrib)
+                if sensor.tag in ("framepos", "framelinvel") and scale != 1.0:
+                    # Positions and linear velocities scale with the model, so their limits do too.
+                    # framelinacc also reads gravity, which the scale does not change.
+                    for key in ("cutoff", "noise"):
+                        if key in attributes:
+                            attributes[key] = str(float(attributes[key]) * scale)
                 builder.add_custom_values(
                     **{
                         "mujoco:sensor_type": sensor.tag,
-                        "mujoco:sensor_attributes": json.dumps(sensor.attrib),
+                        "mujoco:sensor_attributes": json.dumps(attributes),
                         "mujoco:sensor_objtype": kind,
                         "mujoco:sensor_body": target[0],
                         "mujoco:sensor_site": target[1],

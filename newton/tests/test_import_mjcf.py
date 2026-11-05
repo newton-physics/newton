@@ -8989,6 +8989,27 @@ class TestImportMjcfSensors(unittest.TestCase):
         """Export the sites that sensors use when include_sites=False."""
         self.assert_sensors_match_native(self.mjcf(self.SENSORS), ([0.0] * 7,), include_sites=False)
 
+    def test_scale_applies_to_position_and_linear_velocity_limits(self):
+        """Scale the cutoff and noise of framepos and framelinvel sensors with the imported model."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        sensors = """<framepos objtype="site" objname="tip" cutoff="0.25" noise="0.01"/>
+          <framelinvel objtype="site" objname="tip" cutoff="0.5" noise="0.02"/>
+          <frameangvel objtype="site" objname="tip" cutoff="3" noise="0.03"/>
+          <framelinacc objtype="site" objname="tip" cutoff="20" noise="0.04"/>"""
+        native = mujoco.MjModel.from_xml_string(self.mjcf(sensors))
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.mjcf(sensors), parse_sensors=True, scale=2.0)
+        converted = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True).mj_model
+        # framelinacc also reads gravity, which the import scale does not change.
+        factors = np.array([2.0, 2.0, 1.0, 1.0])
+        np.testing.assert_allclose(converted.sensor_cutoff, native.sensor_cutoff * factors)
+        np.testing.assert_allclose(converted.sensor_noise, native.sensor_noise * factors)
+        # The tip lies beyond the cutoff, so both models clip framepos at the same scaled position.
+        expected, actual = mujoco.MjData(native), mujoco.MjData(converted)
+        mujoco.mj_forward(native, expected)
+        mujoco.mj_forward(converted, actual)
+        np.testing.assert_allclose(actual.sensordata[:3], 2.0 * expected.sensordata[:3], atol=1e-6)
+
     def test_sensor_bodies_use_authored_names(self):
         """Resolve sensor bodies by their MJCF names, which can sanitize to the same label."""
         mjcf = """<mujoco><worldbody>
