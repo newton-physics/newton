@@ -15,8 +15,8 @@ from ._authoring import _add_custom_frequency_row, _ensure_mujoco_attributes, _v
 
 def add_contact_pair(
     builder: ModelBuilder,
-    shape0: int,
-    shape1: int,
+    geom1: int,
+    geom2: int,
     *,
     condim: int = 3,
     solref: Sequence[float] = (0.02, 1.0),
@@ -34,8 +34,8 @@ def add_contact_pair(
 
     Args:
         builder: Model builder receiving the pair.
-        shape0: First Newton shape index.
-        shape1: Second Newton shape index.
+        geom1: First Newton shape index.
+        geom2: Second Newton shape index.
         condim: MuJoCo contact dimensionality.
         solref: Normal constraint reference parameters.
         solreffriction: Friction constraint reference parameters.
@@ -50,15 +50,15 @@ def add_contact_pair(
     """
     _ensure_mujoco_attributes(builder, "mujoco:pair_geom1")
     shape_count = len(builder.shape_body)
-    for name, shape in (("shape0", shape0), ("shape1", shape1)):
+    for name, shape in (("geom1", geom1), ("geom2", geom2)):
         if shape < 0 or shape >= shape_count:
             raise IndexError(f"{name} index {shape} is outside [0, {shape_count}).")
         if builder.shape_flags[shape] & ShapeFlags.SITE:
             raise ValueError(f"{name} index {shape} identifies a site, not a contact geometry.")
-    if shape0 == shape1:
+    if geom1 == geom2:
         raise ValueError("A MuJoCo contact pair requires two distinct shapes.")
     world = builder.current_world
-    for name, shape in (("shape0", shape0), ("shape1", shape1)):
+    for name, shape in (("geom1", geom1), ("geom2", geom2)):
         shape_world = int(builder.shape_world[shape])
         if shape_world not in (-1, world):
             raise ValueError(
@@ -69,8 +69,8 @@ def add_contact_pair(
 
     values = {
         "mujoco:pair_world": builder.current_world,
-        "mujoco:pair_geom1": int(shape0),
-        "mujoco:pair_geom2": int(shape1),
+        "mujoco:pair_geom1": int(geom1),
+        "mujoco:pair_geom2": int(geom2),
         "mujoco:pair_condim": int(condim),
         "mujoco:pair_solref": _vector(builder, "mujoco:pair_solref", solref, 2),
         "mujoco:pair_solreffriction": _vector(builder, "mujoco:pair_solreffriction", solreffriction, 2),

@@ -8,7 +8,7 @@ import enum
 import re
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
 from importlib import metadata
 from typing import Any, Literal
@@ -284,6 +284,15 @@ class ViewerGL(ViewerBase):
         self.camera_slowdown = 2.0
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
+        try:
+            self._setup_viewer(headless, paused, num_frames, legacy_gui=legacy_gui)
+        except BaseException:
+            # Close the renderer's window, as RendererGL does when its own setup fails.
+            self.renderer.close()
+            raise
+
+    def _setup_viewer(self, headless: bool, paused: bool, num_frames: int | None, *, legacy_gui: bool) -> None:
+        """Set up the camera, input handling, and UI around the new renderer."""
         self.renderer.set_title("Newton Viewer")
         self._image_logger = ImageLogger(device=self.device)
 
@@ -598,7 +607,6 @@ class ViewerGL(ViewerBase):
         self.wind = None
 
         # State caching for selection panel
-        self._last_state = None
         self._last_control = None
 
         # Packed GPU arrays for batched shape transform computation
@@ -755,7 +763,7 @@ class ViewerGL(ViewerBase):
 
         for key, shapes in self._shape_instances.items():
             n = shapes.xforms.shape[0] if isinstance(shapes.xforms, wp.array) else len(shapes.xforms)
-            if n == 0:
+            if n == 0 and shapes.name not in self.objects:
                 continue
             groups.append((key, shapes, total, n))
             total += n
@@ -776,14 +784,20 @@ class ViewerGL(ViewerBase):
             model_shapes = np.asarray(shapes.model_shapes, dtype=np.int32)
             write_np[model_shapes] = np.arange(offset, offset + n, dtype=np.int32)
 
-            shapes.world_xforms = all_world_xforms[offset : offset + n]
+            # Empty variant batches already own empty arrays; Warp disallows empty slices.
+            if n:
+                shapes.world_xforms = all_world_xforms[offset : offset + n]
             mesh_path = self._get_capsule_mesh() if shapes.geo_type == nt.GeoType.CAPSULE else shapes.mesh
             mesh = self.objects.get(mesh_path)
             instancer = self.objects.get(shapes.name)
             # A visibility change can reuse this batch name for another geometry.
-            if isinstance(mesh, MeshGL) and (instancer is None or instancer.mesh is not mesh):
+            if isinstance(mesh, MeshGL) and (
+                instancer is None or instancer.mesh is not mesh or instancer.num_instances < n
+            ):
+                # Variant rows change batch sizes; preserve capacity when they shrink.
+                grown = 2 * instancer.num_instances if instancer is not None and instancer.mesh is mesh else 0
                 instancer = MeshInstancerGL(
-                    max(n, 1),
+                    max(n, grown, 1),
                     mesh,
                     enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
                 )
@@ -876,7 +890,8 @@ class ViewerGL(ViewerBase):
         current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
         rendered_shapes = self._shape_to_slot >= 0
         current_mask[rendered_shapes] = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
-        return bool(np.any(current_mask != self._shape_transparent_mask))
+        # Inactive body-variant shapes are not rendered and must not count as changed.
+        return bool(np.any(current_mask[rendered_shapes] != self._shape_transparent_mask[rendered_shapes]))
 
     def _rebuild_shape_batches_for_opacity_groups(self):
         """Rebuild shape batches after opacity changes move shapes between render passes."""
@@ -907,6 +922,12 @@ class ViewerGL(ViewerBase):
         self._populate_shapes()
         self._rebuild_gl_shape_caches()
         self.model_changed = True
+
+    @override
+    def notify_model_changed(self, flags: nt.ModelFlags | int) -> None:
+        super().notify_model_changed(flags)
+        if self.model is not None and flags & nt.ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            self._rebuild_gl_shape_caches()
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None, *, reflow: bool = True) -> None:
@@ -1605,6 +1626,28 @@ class ViewerGL(ViewerBase):
             super()._log_particles(state)
 
     @override
+    def _get_deformable_framing_points(
+        self, layer: Layer, state: nt.State
+    ) -> Iterator[tuple[np.ndarray, np.ndarray | float]]:
+        """Frame GL's world-spaced particles and visibility-filtered surfaces."""
+        display = layer._workspace_deformables
+        if display is None or display.model is not layer.model:
+            yield from super()._get_deformable_framing_points(layer, state)
+            return
+        if not (layer.show_triangles or layer.show_particles):
+            return
+        # These positions already include world offsets and the layer transform.
+        points = display.points.numpy()
+        if layer.show_triangles:
+            for _, indices, _, opacity in display.groups:
+                if opacity > 0.0:
+                    yield points[indices.numpy().reshape(-1)], 0.0
+        if layer.show_particles:
+            radii = display.radii.numpy()
+            visible = radii > 0.0
+            yield points[visible], radii[visible, None]
+
+    @override
     def log_points(
         self,
         name: str,
@@ -2017,7 +2060,11 @@ class ViewerGL(ViewerBase):
 
             layer_hidden = self._layer_force_hidden()
             for _key, shapes, offset, count in self._packed_groups:
-                visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+                visible = (
+                    self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                    and not layer_hidden
+                    and count > 0
+                )
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
                 opacities = (
                     shapes.opacities

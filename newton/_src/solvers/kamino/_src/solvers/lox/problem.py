@@ -486,7 +486,7 @@ class LOXProblem:
             self.body_velocity_begin,
             data.bodies.w_e_i.view(dtype=vec6f),
             data.bodies.w_a_i.view(dtype=vec6f),
-            self.model.gravity.vector,
+            self.model.gravity,
             time_step,
         )
         if self._data.dynamic_rows.count > 0:

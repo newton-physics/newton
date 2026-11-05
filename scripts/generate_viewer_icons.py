@@ -67,7 +67,8 @@ def main() -> None:
         rgb = np.ones((height, width, 3), dtype=np.float32) * 255
         np.divide(images[0][..., :3] * 255, alpha[..., None], out=rgb, where=alpha[..., None] > 0)
         pixels = np.round(np.clip(np.dstack((rgb, alpha)), 0, 255)).astype(np.uint8)
-        from pyglet.image import ImageData
+        # Import after RendererGL has configured pyglet's headless context.
+        from pyglet.image import ImageData  # noqa: PLC0415
 
         path = Path(__file__).resolve().parents[1] / "newton/_src/viewer/gui/icons.png"
         ImageData(width, height, "RGBA", pixels.tobytes(), pitch=-width * 4).save(str(path))

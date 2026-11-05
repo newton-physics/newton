@@ -34,9 +34,9 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
-    from pxr import Gf, UsdGeom
+    from pxr import Gf, Sdf, UsdGeom
 except ImportError:
-    Gf = UsdGeom = None
+    Gf = Sdf = UsdGeom = None
 
 if TYPE_CHECKING:
     import ovstage
@@ -148,6 +148,8 @@ class ViewerRTX(ViewerUSD):
     and custom mesh instances can also be added after rendering starts.
     """
 
+    # Runtime updates assume mesh prototypes.
+    _export_gprims = False
     _PHASE_BUILD = 0
     _PHASE_RENDER = 1
     _PICKING_LINE_NAME = "picking_line"
@@ -296,6 +298,7 @@ class ViewerRTX(ViewerUSD):
         self._displayed_pixels = None
         self._last_frame_is_fullscreen = False
         self._uses_fractional_opacity = False
+        self._pending_fractional_opacity = False
         self._ovstage = None
         self._ovstage_attached = False
         self._ovstage_paths = None
@@ -341,9 +344,9 @@ class ViewerRTX(ViewerUSD):
         # ``(name, fullscreen)``.
         self._pending_images: dict[tuple[str, bool], Any] = {}
 
-        # Generate a temporary USD path to share with OVRTX renderer
-        fd, output_path = tempfile.mkstemp(suffix=".usd")
-        os.close(fd)
+        # Keep content-addressed textures private to this viewer's lifetime.
+        self._stage_directory = tempfile.TemporaryDirectory(prefix="newton-rtx-")
+        output_path = os.path.join(self._stage_directory.name, "scene.usd")
 
         # Initializing the base class calls clear_model(), which
         # is used to initialize/reset model-specific state.
@@ -727,6 +730,7 @@ void main() {
         rp.CreateAttribute("omni:rtx:rt:ambientLight:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.1, 0.1, 0.1))
         rp.CreateAttribute("omni:rtx:rt:demoire", Sdf.ValueTypeNames.Bool).Set(False)
         rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(self._uses_fractional_opacity)
+        self._pending_fractional_opacity = False
         rp.CreateAttribute("omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts", Sdf.ValueTypeNames.Bool).Set(
             True
         )
@@ -951,11 +955,12 @@ void main() {
                 self._ovstage_attached = True
                 self._ovstage_paths = ovstage.PathDictionary(self._ovstage)
                 self._ovstage_ordinal = 1
+                # ovstage 0.3 renamed the time_code keyword to time.
                 ovstage.population.open_usd(
                     self._ovstage,
                     ovrtx_usd_path,
-                    ordinal=self._ovstage_ordinal,
-                    time_code=0.0,
+                    self._ovstage_ordinal,
+                    0.0,
                 )
                 self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
             self._runtime_prim_paths = {
@@ -1274,7 +1279,14 @@ void main() {
 
         import ovstage
 
-        self._evict_ovstage_queries(self._runtime_prim_paths.get(path, path))
+        previous_path = self._runtime_prim_paths.get(path, path)
+        self._evict_ovstage_queries(previous_path)
+        if path in self._runtime_prim_paths:
+            self._runtime_material_bindings = {
+                prim: material
+                for prim, material in self._runtime_material_bindings.items()
+                if prim != previous_path and not prim.startswith(previous_path + "/")
+            }
         handle = self._runtime_prim_handles.pop(path, None)
         if handle is not None:
             ovstage.population.remove_usd(self._ovstage, handle)
@@ -1807,7 +1819,17 @@ void main() {
         self._update_ovrtx_shape_opacities()
         self._update_ovrtx_instance_visibility()
         self._update_ovrtx_point_batches()
+        self._update_ovrtx_mesh_materials()
         self._update_ovrtx_mesh_points()
+        if self._pending_fractional_opacity:
+            # Materials and shape opacities can both enable transparency.
+            if "omni:rtx:rt:fractionalOpacity" not in self._rtx_render_settings:
+                self._write_runtime_attribute(
+                    [self._render_product_path], "omni:rtx:rt:fractionalOpacity", np.array([True], dtype=np.bool_)
+                )
+            self._pending_fractional_opacity = False
+        if self._runtime_scene_changed:
+            self._retire_runtime_materials()
         self._apply_ovstage_population_changes()
         self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
         if self._runtime_scene_changed:
@@ -1819,6 +1841,8 @@ void main() {
         self._pending_mesh_normals.clear()
         self._pending_mesh_topology.clear()
         self._pending_mesh_visibility.clear()
+        self._pending_mesh_materials.clear()
+        self._pending_instance_materials.clear()
         self._pending_point_batches.clear()
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
@@ -1830,8 +1854,9 @@ void main() {
     def _preview_surface_opacity_value(self, requested_opacity: float) -> float:
         """Map object opacity to RTX PreviewSurface per-hit opacity."""
         requested_opacity = float(np.clip(requested_opacity, 0.0, 1.0))
-        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD and not self._uses_fractional_opacity:
             self._uses_fractional_opacity = True
+            self._pending_fractional_opacity = True
         if requested_opacity <= 0.0 or requested_opacity >= OPAQUE_OPACITY_THRESHOLD:
             return requested_opacity
         return 1.0 - math.pow(1.0 - requested_opacity, 1.0 / self._PREVIEW_SURFACE_OPACITY_LAYERS)
@@ -1869,6 +1894,13 @@ void main() {
         opacity: float | None = None,
     ) -> None:
         """Log a mesh for rendering.
+
+        Pass a new texture array or path to replace an image. In-place image
+        edits are not detected. A call that omits ``texture`` or ``uvs`` removes
+        a texture bound by an earlier call, as in ViewerGL. Texture changes
+        update the material at the next render; paused rendering keeps them
+        until rendering resumes. UV-only changes with the same texture object
+        or file path are not applied; supply a replacement image to update UVs.
 
         Args:
             name: Unique name for the mesh.
@@ -1911,6 +1943,50 @@ void main() {
             if self._phase == self._PHASE_RENDER:
                 self._mesh_prim_paths[name] = self._replace_runtime_prim(self._get_path(name))
         elif name in self._mesh_prim_paths:
+            previous_texture = self._mesh_appearance.get(name, {}).get("texture")
+            next_texture = texture if uvs is not None else None
+            same_texture = next_texture is previous_texture or (
+                isinstance(next_texture, str) and isinstance(previous_texture, str) and next_texture == previous_texture
+            )
+            if next_texture is not None and not isinstance(next_texture, str):
+                # Failed exports return an untextured material; retry the image next time.
+                exported = self._texture_paths.get(name)
+                same_texture = same_texture and exported is not None and exported[0] is next_texture
+            if not same_texture:
+                appearance = self._mesh_appearance.setdefault(name, {})
+                appearance["texture_path"] = (
+                    self._resolve_texture_path(name, next_texture) if next_texture is not None else None
+                )
+                for key, value in (
+                    ("color", color),
+                    ("roughness", roughness),
+                    ("metallic", metallic),
+                    ("opacity", opacity),
+                ):
+                    if value is not None:
+                        appearance[key] = value
+                material = self._get_preview_surface_material(
+                    name,
+                    texture=appearance["texture_path"],
+                    color=appearance.get("color"),
+                    roughness=appearance.get("roughness"),
+                    metallic=appearance.get("metallic"),
+                    opacity=appearance.get("opacity"),
+                )
+                appearance["texture"] = next_texture
+                material_path = str(material.GetPath())
+                # Equal pixels reuse the material, but supplied UVs may still differ.
+                if material_path != appearance.get("material_path"):
+                    self._bind_material(self._meshes[name].GetPrim(), material)
+                    appearance["material_path"] = material_path
+                uv_values = uvs.numpy() if isinstance(uvs, wp.array) else uvs
+                if uv_values is not None:
+                    # Rebuilt instances read their UVs from the source stage.
+                    UsdGeom.PrimvarsAPI(self._meshes[name]).CreatePrimvar(
+                        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+                    ).Set(uv_values)
+                self._pending_mesh_materials[name] = (material_path, uv_values)
+                self._refresh_mesh_instance_materials(name)
             pts = (
                 points.numpy().astype(np.float32)
                 if isinstance(points, wp.array)
@@ -1974,6 +2050,11 @@ void main() {
             changed |= any(not np.array_equal(old, new) for old, new in zip(previous[2], appearance, strict=True))
 
         if self._phase == self._PHASE_BUILD or (xforms is not None and changed):
+            # Rebuilt instances get their current materials from the stage below.
+            # Queued bindings refer to the old indices or the old prototype.
+            self._pending_instance_materials = {
+                key: value for key, value in self._pending_instance_materials.items() if key[0] != name
+            }
             if previous is not None and (previous[0] != mesh or previous[1] != count):
                 self.stage.RemovePrim(self._get_path(name))
             super().log_instances(
@@ -2329,6 +2410,11 @@ void main() {
                 mat[np.newaxis, ...],
                 is_matrix=True,
             )
+            self._write_runtime_attribute(
+                [self._camera_prim_path],
+                "clippingRange",
+                np.array([[self.camera.near, self.camera.far]], dtype=np.float32),
+            )
             self._camera_dirty = False
 
     def _update_ovrtx_transforms(self):
@@ -2429,7 +2515,6 @@ void main() {
             if not self._shape_opacities_changed_device.numpy()[0]:
                 return
         opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
-        had_fractional_opacity = self._uses_fractional_opacity
         for name, shape_indices in self._shape_opacity_batches.items():
             batch_opacities = opacities[shape_indices]
             previous = self._instance_specs.get(name)
@@ -2446,14 +2531,6 @@ void main() {
                 tensors = [np.array([value], dtype=np.float32) for value in values]
                 self._write_runtime_attribute(paths, f"primvars:{attribute}", tensors, is_array=True)
             self._instance_specs[name] = (previous[0], previous[1], (*previous[2][:2], batch_opacities.copy()))
-        if (
-            self._uses_fractional_opacity
-            and not had_fractional_opacity
-            and "omni:rtx:rt:fractionalOpacity" not in self._rtx_render_settings
-        ):
-            self._write_runtime_attribute(
-                [self._render_product_path], "omni:rtx:rt:fractionalOpacity", np.array([True], dtype=np.bool_)
-            )
         if self._model_shape_opacities_device is None:
             self._model_shape_opacities_device = wp.empty_like(self.model.shape_opacity)
             self._shape_opacities_changed_device = wp.zeros(1, dtype=wp.int32, device=self.model.device)
@@ -2525,6 +2602,62 @@ void main() {
         produces scalar float32 elements (4 bytes), causing an element-size mismatch.
         """
         return self._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
+
+    def _refresh_mesh_instance_materials(self, mesh: str) -> list[tuple[str, int, str]]:
+        updated = super()._refresh_mesh_instance_materials(mesh)
+        if self._phase == self._PHASE_RENDER:
+            for name, index, material_path in updated:
+                self._pending_instance_materials[(name, index)] = material_path
+        return updated
+
+    def _update_ovrtx_mesh_materials(self):
+        """Publish changed materials without replacing their mesh geometry."""
+        if not self._pending_mesh_materials and not self._pending_instance_materials:
+            return
+        import ovstage
+
+        updates = [
+            (self._mesh_prim_paths[name], material_path, uvs)
+            for name, (material_path, uvs) in self._pending_mesh_materials.items()
+        ]
+        updates.extend(
+            (
+                self._instance_prim_paths[name][index],
+                material_path,
+                self._pending_mesh_materials.get(self._instance_specs[name][0], (None, None))[1],
+            )
+            for (name, index), material_path in self._pending_instance_materials.items()
+        )
+        for _, material_path, _ in updates:
+            if material_path not in self._runtime_prim_paths:
+                self._replace_runtime_prim(material_path)
+                self._runtime_material_paths.add(material_path)
+        self._apply_ovstage_population_changes()
+        for mesh_path, material_path, uvs in updates:
+            target = self._runtime_prim_paths[material_path]
+            self._ovstage.write_attribute(
+                self._get_ovstage_query([mesh_path]),
+                "material:binding",
+                ordinal=self._ovstage_ordinal,
+                tensors=np.array([self._ovstage_paths.intern_path(target)], dtype=np.uint64),
+                is_array=True,
+                semantic=ovstage.AttributeSemantic.RELATIONSHIP_PATH_ID,
+            ).wait()
+            self._runtime_material_bindings[mesh_path] = material_path
+            if uvs is not None:
+                self._write_runtime_array_attribute(mesh_path, "primvars:st", np.asarray(uvs, dtype=np.float32))
+        self._runtime_scene_changed = True
+
+    def _retire_runtime_materials(self) -> None:
+        """Remove runtime materials once their last mesh or instance rebinds."""
+        import ovstage
+
+        unused = self._runtime_material_paths - set(self._runtime_material_bindings.values())
+        for path in unused:
+            self._evict_ovstage_queries(self._runtime_prim_paths.pop(path))
+            ovstage.population.remove_usd(self._ovstage, self._runtime_prim_handles.pop(path))
+            self._ovstage_population_dirty = True
+        self._runtime_material_paths.difference_update(unused)
 
     def _update_ovrtx_mesh_points(self):
         if self._rtx is None or (
@@ -2998,6 +3131,8 @@ void main() {
         self._instance_specs = {}
         self._runtime_prim_handles = {}
         self._runtime_prim_paths = {}
+        self._runtime_material_bindings = {}
+        self._runtime_material_paths = set()
         self._runtime_prim_serial = 0
         self._runtime_scene_changed = False
         self._segment_meshes = {}
@@ -3014,6 +3149,8 @@ void main() {
         self._pending_mesh_normals = {}
         self._pending_mesh_topology = {}
         self._pending_mesh_visibility = {}
+        self._pending_mesh_materials = {}
+        self._pending_instance_materials = {}
         self._pending_point_batches = {}
         self._point_batch_frame_defaults = {}
         self._deferred_prims = set()
@@ -3037,6 +3174,7 @@ void main() {
         self._shape_opacities_changed_device = None
         self._shape_opacity_batches = {}
         self._uses_fractional_opacity = False
+        self._pending_fractional_opacity = False
 
         self._last_state = None
         self._last_control = None
@@ -3220,3 +3358,5 @@ void main() {
                 os.unlink(self.output_path)
             except OSError:
                 pass
+        if hasattr(self, "_stage_directory"):
+            self._stage_directory.cleanup()

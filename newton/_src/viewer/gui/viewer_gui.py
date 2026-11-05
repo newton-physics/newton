@@ -427,12 +427,10 @@ class ViewerGui:
         if hasattr(self._viewer, "_camera_dirty"):
             self._viewer._camera_dirty = True
 
-    def frame_camera_on_model(self, *, selection: bool = True, contacts: bool = True):
+    def frame_camera_on_model(self, *, selection: bool = True, contacts: bool = True) -> None:
         """Frame the selection, or all visible objects when nothing is selected."""
         viewer = self._viewer
         if viewer.is_rendering_paused():
-            return
-        if getattr(viewer, "model", None) is None:
             return
         from pyglet.math import Vec3 as PyVec3
 
@@ -474,52 +472,64 @@ class ViewerGui:
                 # the camera in place instead of unexpectedly framing the scene.
                 return
 
-        min_bounds = np.array([float("inf")] * 3)
-        max_bounds = np.array([float("-inf")] * 3)
-        found_objects = False
-
-        state = getattr(viewer, "_last_state", None)
-        if state is not None:
-            offsets = viewer.world_offsets.numpy() if viewer.world_offsets is not None else None
-            for kind in ("body", "particle"):
-                q = getattr(state, f"{kind}_q", None)
-                if q is None or len(q) == 0:
-                    continue
-                positions = q.numpy()[:, :3].copy()
-                worlds = getattr(viewer.model, f"{kind}_world").numpy()
-                if offsets is not None:
-                    valid = worlds >= 0
-                    positions[valid] += offsets[worlds[valid]]
-                visible = getattr(viewer, "_visible_worlds", None)
-                if visible is not None:
-                    positions = positions[(worlds < 0) | np.isin(worlds, list(visible))]
-                if len(positions):
-                    min_bounds = np.minimum(min_bounds, positions.min(axis=0))
-                    max_bounds = np.maximum(max_bounds, positions.max(axis=0))
-                    found_objects = True
-
+        bounds = viewer._get_scene_bounds()
         if workspace is not None and workspace.tree is not None and len(workspace.tree.deformables.sources) > 1:
-            bounds = workspace.tree.deformables.external_bounds()
-            if np.isfinite(bounds).all() and (bounds[1] >= bounds[0]).all():
-                min_bounds = np.minimum(min_bounds, bounds[0])
-                max_bounds = np.maximum(max_bounds, bounds[1])
-                found_objects = True
-
-        if not found_objects:
-            min_bounds = np.array([-5.0, -5.0, -5.0])
-            max_bounds = np.array([5.0, 5.0, 5.0])
+            # Coupled examples may log particles from an auxiliary Model rather
+            # than a viewer layer. Its catalog already tracks displayed bounds.
+            external = workspace.tree.deformables.external_bounds()
+            if np.isfinite(external).all() and (external[1] >= external[0]).all():
+                bounds = (
+                    external
+                    if bounds is None
+                    else (np.minimum(bounds[0], external[0]), np.maximum(bounds[1], external[1]))
+                )
+        if bounds is None:
+            if viewer.model is None:
+                return
+            # Preserve framing for callers that draw through log_points/log_mesh
+            # instead of the model's display toggles or log_state().
+            positions = []
+            state = viewer._last_state
+            if state is not None:
+                if state.body_q is not None and len(state.body_q):
+                    positions.append(state.body_q.numpy()[:, :3])
+                if state.particle_q is not None and len(state.particle_q):
+                    points = state.particle_q.numpy()
+                    if viewer.model.particle_flags is not None:
+                        points = points[(viewer.model.particle_flags.numpy() & int(nt.ParticleFlags.ACTIVE)) != 0]
+                    positions.append(points)
+            points = np.vstack(positions) if positions else np.empty((0, 3))
+            points = points[np.isfinite(points).all(axis=1)]
+            if len(points):
+                center = (points.min(axis=0) + points.max(axis=0)) * 0.5
+                extent = np.maximum(np.ptp(points, axis=0), 1.0) * 0.5
+                bounds = (center - extent, center + extent)
+            else:
+                bounds = (np.full(3, -5.0), np.full(3, 5.0))
+        min_bounds, max_bounds = bounds
 
         center = (min_bounds + max_bounds) * 0.5
-        size = max_bounds - min_bounds
-        max_extent = float(np.max(size))
-        if max_extent < 1.0:
-            max_extent = 1.0
-
-        fov_rad = np.radians(camera.fov)
-        padding = 1.5
-        half_fov = np.arctan(np.tan(fov_rad / 2.0) * min(1.0, camera.width / max(1, camera.height)))
-        distance = max_extent / (2.0 * np.tan(half_fov)) * padding
+        corners = (
+            np.array(
+                [
+                    [x, y, z]
+                    for x in (min_bounds[0], max_bounds[0])
+                    for y in (min_bounds[1], max_bounds[1])
+                    for z in (min_bounds[2], max_bounds[2])
+                ]
+            )
+            - center
+        )
         front = camera.get_front()
+        depth = corners @ np.asarray(front)
+        tan_vertical = np.tan(np.radians(camera.fov) * 0.5)
+        aspect = max(camera.width, 1) / max(camera.height, 1)
+        # Fit every corner at its own depth in both viewport dimensions.
+        padding = 1.1
+        horizontal = padding * np.abs(corners @ np.asarray(camera.get_right())) / (tan_vertical * aspect)
+        vertical = padding * np.abs(corners @ np.asarray(camera.get_up())) / tan_vertical
+        distance = max(float(np.max(np.maximum(horizontal, vertical) - depth)), camera.near - depth.min(), 0.1)
+        camera.far = max(camera.far, float(distance + depth.max()) * padding)
         camera.pos = PyVec3(
             center[0] - front.x * distance,
             center[1] - front.y * distance,

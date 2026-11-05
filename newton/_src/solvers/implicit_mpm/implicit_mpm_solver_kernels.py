@@ -148,6 +148,8 @@ def integrate_velocity(
     dt: float,
     gravity: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
+    particle_f: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
     inv_cell_volume: float,
     particle_density: wp.array[float],
     particle_flags: wp.array[wp.int32],
@@ -157,12 +159,14 @@ def integrate_velocity(
 
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
-    world_g = gravity[world_idx]
+    accel = gravity[world_idx]
+    if particle_f:
+        accel += particle_f[s.qp_index] * particle_inv_mass[s.qp_index]
 
     rho = particle_density[s.qp_index]
     vel_adv = wp.where(
         rho > 0.0,
-        rho * (vel_adv + dt * world_g),
+        rho * (vel_adv + dt * accel),
         INFINITY * vel_adv,
     )
     return wp.dot(u(s), vel_adv) * inv_cell_volume

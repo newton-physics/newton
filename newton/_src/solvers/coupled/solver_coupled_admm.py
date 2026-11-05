@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -953,6 +954,9 @@ class SolverCoupledADMM(SolverCoupled):
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         return set(self._admm_joint_proxy_joint_keep.get(name, ()))
 
+    def _iteration_restarts_possible(self) -> bool:
+        return int(self._coupling.iterations) > 1
+
     def _after_entries_constructed(self) -> None:
         self._refresh_admm_joint_proxy_view_maps()
         self._cache_admm_joint_proxy_effective_masses()
@@ -1012,7 +1016,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     def notify_model_changed(self, flags: int) -> None:
         super().notify_model_changed(flags)
-        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
+        if int(flags) & self._effective_mass_refresh_flags():
             self._refresh_admm_body_effective_mass_buffers()
             self._cache_admm_joint_proxy_effective_masses()
             self._apply_cached_admm_joint_proxy_effective_masses()
@@ -2280,6 +2284,9 @@ class SolverCoupledADMM(SolverCoupled):
     def _discover_rigid_particle_contact_specs(self) -> list[_AdmmRigidParticleContactSpec]:
         shape_body = self.model.shape_body.numpy() if self.model.shape_body is not None else []
         shape_flags = self.model.shape_flags.numpy() if getattr(self.model, "shape_flags", None) is not None else None
+        if shape_flags is not None and self.model._has_variant_rows:
+            # A body variant row can hold a particle-colliding shape after construction.
+            shape_flags = self.model._shape_option_flags()
         shapes_by_owner: dict[str, list[int]] = {}
         for shape in range(self.model.shape_count):
             if not self._shape_flagged(shape_flags, shape, ShapeFlags.COLLIDE_PARTICLES):
@@ -2868,6 +2875,11 @@ class SolverCoupledADMM(SolverCoupled):
                 stiffness = float(stiffness_np[row])
                 if stiffness < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative stiffness")
+                if math.isinf(stiffness) and not is_model_source:
+                    raise ValueError(
+                        f"ADMM particle-body attachment {name} is hard; use "
+                        "ModelBuilder.add_attachment_particle_body() for hard attachments"
+                    )
                 damping = float(damping_np[row])
                 if damping < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative damping")
@@ -2902,6 +2914,15 @@ class SolverCoupledADMM(SolverCoupled):
         for name, body, particle, point, stiffness, damping in rows:
             body_entry = self._entry_name_for_body(body)
             particle_entry = self._entry_name_for_particle(particle)
+            if math.isinf(stiffness) and (
+                body_entry is None
+                or particle_entry != body_entry
+                or not isinstance(self._entries[body_entry].solver, SolverVBD)
+            ):
+                raise ValueError(
+                    "Hard particle-body attachments require both endpoints in the same SolverVBD entry; "
+                    f"attachment {name} has body entry {body_entry!r} and particle entry {particle_entry!r}"
+                )
             if body_entry is None or particle_entry is None:
                 unowned.append(name)
                 continue

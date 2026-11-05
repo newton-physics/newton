@@ -1,18 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Steel Sleeping
-#
-# Drops four box towers from different heights and visualizes Steel's
-# passive-island sleeping. The towers do not touch, so each one is its own
-# island and falls asleep once it has settled. A block is then thrown into
-# one tower and wakes only that tower. Awake bodies use their tower's
-# color and sleeping bodies are slate blue.
-#
-# Command: python -m newton.examples steel_sleeping
-#
-###########################################################################
+"""Example Steel Sleeping
+
+Drops four box towers from different heights and visualizes Steel's
+passive-island sleeping. The towers do not touch, so each one is its own
+island and falls asleep once it has settled. A block is then thrown into
+one tower and wakes only that tower. Awake bodies use their tower's
+color and sleeping bodies are slate blue.
+
+Requires a CUDA device. Use the GL viewer to observe the live sleeping colors.
+
+Success criteria:
+- Four separate box towers fall and settle on the ground.
+- Settled towers turn slate blue and remain still while asleep.
+- After about five seconds, the block strikes one tower; only that tower wakes and regains its color.
+- The other towers stay asleep and stationary, without persistent jitter or explosive motion.
+
+Runs:
+- `python -m newton.examples steel_sleeping`
+"""
 
 import math
 import warnings
