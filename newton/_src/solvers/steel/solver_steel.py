@@ -19,6 +19,7 @@ from ...core.reset import reset_world_selected
 from ...core.types import MAXVAL, override
 from ...exceptions import NewtonWarning
 from ...geometry.flags import MeshProperties, ShapeFlags
+from ...geometry.utils import _scan_scratch_size, scan_with_total
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..coupled.interface import CouplingInterface
@@ -441,8 +442,9 @@ def _validate_equality_constraints(model: Model) -> None:
         raise NotImplementedError(
             f"SolverSteel does not enforce MuJoCo equality constraints: model.mujoco.equality_constraint "
             f"rows {rows[:16].tolist()} are enabled and not converted to a Newton loop joint or mimic "
-            "constraint. Import with convert_mjc_equality_constraints=True, model the constraint with Newton "
-            "joints, or disable the rows (equality_constraint_enabled)."
+            "constraint. Import with convert_mjc_equality_constraints=True (joint equalities that omit joint2 or "
+            "target a multi-DoF joint, such as joints sharing a body, stay MuJoCo rows even then), model the "
+            "constraint with Newton joints, or disable the rows (equality_constraint_enabled)."
         )
 
 
@@ -2836,6 +2838,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._dummy_mf_slot_counter = wp.zeros((self._world_count,), dtype=wp.int32, device=model.device)
         self._dummy_contact_count = wp.zeros((1,), dtype=wp.int32, device=model.device)
         self._init_ordered_rows(model)
+        # Allocated here so a captured first step records no allocations.
+        self._allocate_state_aux_vars(model, self)
 
         # Capacity status is allocated before any CUDA graph capture.
         self._row_overflow_warning_emitted = wp.zeros(5, dtype=wp.int32, device=model.device)
@@ -8551,7 +8555,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         ]
 
     def _prepare_augmented_state(self, state_in: State) -> "SolverSteel":
-        """Allocate the solver-owned per-step dynamics buffers on first use."""
+        """Return the solver, which holds the per-step dynamics buffers the constructor allocates."""
         if not getattr(self, "_featherstone_augmented", False):
             self._allocate_state_aux_vars(self.model, self)
         return self
@@ -9546,6 +9550,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         # Row counts of the sorted contacts, then a zero, and their exclusive scan.
         self._sorted_contact_slots_needed = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
         self._sorted_contact_slot_offsets = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
+        # Scans run on preallocated scratch, so a capture Warp does not track can record them.
+        scan_length = max(cursor_size, self._max_contacts_alloc) + 1
+        self._ordered_scan_scratch = wp.zeros(_scan_scratch_size(scan_length, device), dtype=wp.int32, device=device)
+        # scan_with_total clips this length to each scanned view, so every scan covers its whole view.
+        self._ordered_scan_length = wp.full(1, scan_length, dtype=wp.int32, device=device)
+        self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
 
     def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
@@ -9566,7 +9576,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             outputs=[requests],
             device=device,
         )
-        wp.utils.array_scan(requests, offsets, inclusive=False)
+        scan_with_total(
+            requests, offsets, self._ordered_scan_length, self._ordered_scan_total, self._ordered_scan_scratch
+        )
         wp.launch(
             assign_world_row_slots,
             dim=element_count,
@@ -9617,7 +9629,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             outputs=[segment_start, segment_end, slots_needed],
             device=device,
         )
-        wp.utils.array_scan(slots_needed, slot_offsets, inclusive=False)
+        scan_with_total(
+            slots_needed,
+            slot_offsets,
+            self._ordered_scan_length,
+            self._ordered_scan_total,
+            self._ordered_scan_scratch,
+        )
         wp.launch(
             assign_world_contact_slots,
             dim=count,
