@@ -100,7 +100,8 @@ class TestExampleRendering(unittest.TestCase):
                     capture_output=True,
                     text=True,
                     env=env,
-                    timeout=120,
+                    # Match the example harness's allowance for cold Warp compilation.
+                    timeout=600,
                     check=False,
                 )
                 self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
