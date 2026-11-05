@@ -3,8 +3,10 @@
 
 """Experimental passive-island sleeping of SolverSteel."""
 
+import ctypes
 import functools
 import inspect
+import sys
 import unittest
 import warnings
 from pathlib import Path
@@ -2554,6 +2556,212 @@ def test_colored_separated_stacks_sleep_like_immediate(test, device):
     test.assertLessEqual(int(delta.max()), 6)
 
 
+def _dumbbells_model(device, count=2, welded=False):
+    """Two-link floating chains resting apart on a ground plane, so their trees go through propagation.
+
+    ``welded`` adds a box welded to the world away from the chains, an articulation that never sleeps.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_ground_plane()
+    for i in range(count):
+        x = 0.6 * i
+        a = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(a, hx=0.08, hy=0.04, hz=0.04)
+        b = builder.add_link(xform=wp.transform(wp.vec3(x + 0.16, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.08, hy=0.04, hz=0.04)
+        root = builder.add_joint_free(child=a, parent_xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        hinge = builder.add_joint_revolute(
+            parent=a,
+            child=b,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(-0.08, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([root, hinge])
+    if welded:
+        pose = wp.transform(wp.vec3(-1.0, 0.0, 0.2), wp.quat_identity())
+        post = builder.add_link(xform=pose)
+        builder.add_shape_box(post, hx=0.05, hy=0.05, hz=0.05)
+        builder.add_articulation([builder.add_joint_fixed(-1, post, parent_xform=pose)])
+    model = builder.finalize(device=device)
+    model.rigid_contact_max = 128
+    return model
+
+
+def test_colored_sleeping_skips_tree_and_solve_work(test, device):
+    """Leave sleeping trees unfactored, and skip the captured propagation solve while all sleep, bitwise like eager.
+
+    With contact compliance the propagation setup still runs while all sleep, since compliance replaces its rows.
+    A welded box, which never sleeps, does not keep the solve running.
+    """
+    for tree_kernel, compliant, welded in (
+        ("auto", False, False),
+        ("generic", False, False),
+        ("auto", True, False),
+        ("auto", False, True),
+    ):
+        with (
+            test.subTest(tree_kernel=tree_kernel, compliant=compliant, welded=welded),
+            kernel_overrides({"propagation_tree_kernel": tree_kernel}),
+        ):
+            _check_colored_sleeping_skips_work(test, device, compliant, welded)
+
+
+def _check_colored_sleeping_skips_work(test, device, compliant, welded):
+    options = {"sleep_quiet_time": 0.05, "friction_anchor_beta": 0.0}
+    if compliant:
+        options.update(contact_compliance=True, contact_regularization=0.0, compliance_stiffness=2.0e4)
+    captured, eager = (_Heap(device, model=_dumbbells_model(device, welded=welded), **options) for _ in range(2))
+    test.assertTrue(captured.solver._propagation_tree_sizes)
+    with wp.ScopedCapture(device) as capture:
+        captured.step(clear=False)
+    gated = wp.is_conditional_graph_supported()
+    joint_art = captured.model.joint_articulation.numpy()
+    sleepable = captured.solver._sleeping.art_skippable.numpy()
+    test.assertEqual(sleepable.tolist(), [1, 1, 0] if welded else [1, 1])
+    body_art = captured.solver._body_to_articulation.numpy()
+    tree_bodies = np.flatnonzero(sleepable[body_art] == 1)
+    force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+    all_asleep = 0
+    for k in range(60):
+        force[:] = 0.0
+        if k == 40:
+            test.assertGreater(all_asleep, 0, "both chains must sleep before the force")
+            force[0, 2] = 5.0
+        for scene in (captured, eager):
+            scene.state_in.body_f.assign(force)
+            for name in ("_propagation_tree_D_inv", "_propagation_body_com_rel", "_propagation_body_response"):
+                getattr(scene.solver, name).fill_(np.nan)
+            scene.solver._propagation_body_qd.fill_(np.nan)
+        wp.capture_launch(capture.graph)
+        eager.step(clear=False)
+        a, b = captured.snapshot(), eager.snapshot()
+        for name in _FIELDS:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"replay {k} {name}")
+        active = eager.solver._dynamics_art_active.numpy()
+        np.testing.assert_array_equal(captured.solver._dynamics_art_active.numpy(), active)
+        awake = active * sleepable
+        for scene in (captured, eager):
+            factored = ~np.isnan(scene.solver._propagation_tree_D_inv.numpy()[:, 0, 0])
+            np.testing.assert_array_equal(factored, awake[joint_art] == 1, err_msg=f"step {k}")
+            # The response, twist refresh and impulse propagation kernels leave sleeping trees untouched.
+            asleep = tree_bodies[awake[body_art[tree_bodies]] == 0]
+            for name in ("_propagation_body_response", "_propagation_body_qd"):
+                values = getattr(scene.solver, name).numpy()[asleep]
+                test.assertTrue(np.isnan(values).all(), f"step {k} {name}")
+        moving = tree_bodies[awake[body_art[tree_bodies]] == 1]
+        for name in ("_propagation_body_response", "_propagation_body_qd"):
+            test.assertTrue(np.isfinite(getattr(eager.solver, name).numpy()[moving]).all(), f"step {k} {name}")
+        solved = ~np.isnan(captured.solver._propagation_body_com_rel.numpy()[tree_bodies]).any(axis=1)
+        test.assertEqual(bool(solved.all()), bool(awake.any() or not gated or compliant), f"step {k}")
+        test.assertTrue(bool(solved.all()) or not solved.any())
+        if k == 40:
+            test.assertEqual(awake[:2].tolist(), [1, 0], "the force must wake its chain only")
+        all_asleep += int(not awake.any())
+
+
+def test_colored_sleeping_runs_under_external_and_warp_capture(test, device):
+    """Replay a colored sleeping step captured by Warp or directly through CUDA, and sleep and wake as eager steps do."""
+    # The RUN_TO_RUN row ordering fails under a capture Warp does not track; this test covers the sleeping solve.
+    options = {
+        "sleep_quiet_time": 0.05,
+        "friction_anchor_beta": 0.0,
+        "deterministic": wp.DeterministicMode.NOT_GUARANTEED,
+    }
+    for mode in ("warp", "external"):
+        with test.subTest(mode=mode):
+            if mode == "external" and not sys.platform.startswith("linux"):
+                test.skipTest("the CUDA driver capture loads libcuda.so.1")
+            captured, eager = (_Heap(device, model=_dumbbells_model(device), **options) for _ in range(2))
+            replay, release = _capture_step(captured, mode)
+            try:
+                force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+                slept = False
+                for k in range(60):
+                    force[:] = 0.0
+                    if k == 40:
+                        test.assertTrue(slept, "both chains must sleep before the force")
+                        force[0, 2] = 5.0
+                    for scene in (captured, eager):
+                        scene.state_in.body_f.assign(force)
+                    replay()
+                    eager.step(clear=False)
+                    awake = captured.solver._sleeping.art_awake.numpy()
+                    np.testing.assert_array_equal(
+                        awake, eager.solver._sleeping.art_awake.numpy(), err_msg=f"{mode} {k}"
+                    )
+                    slept |= not awake.any()
+                    if k == 40:
+                        np.testing.assert_array_equal(awake, [1, 0])
+                a, b = captured.snapshot(), eager.snapshot()
+                for name in _FIELDS:
+                    np.testing.assert_allclose(a[name], b[name], rtol=0.0, atol=1.0e-4, err_msg=f"{mode} {name}")
+            finally:
+                release()
+
+
+def _capture_step(scene, mode):
+    """Capture one solver step of ``scene`` with Warp or with the CUDA driver alone; return a replay function.
+
+    Collision runs eagerly before each replay, so only the solver step is captured. Call the returned
+    release function when done; the CUDA driver capture loads ``libcuda.so.1`` and runs only on Linux.
+    """
+    device = scene.model.device
+
+    def solve():
+        scene.solver.step(scene.state_in, scene.state_out, scene.control, scene.contacts, 1.0 / 240.0)
+        for name in _FIELDS:
+            wp.copy(getattr(scene.state_in, name), getattr(scene.state_out, name))
+
+    scene.pipeline.collide(scene.state_in, scene.contacts)
+    if mode == "warp":
+        with wp.ScopedCapture(device) as capture:
+            solve()
+
+        def replay():
+            scene.pipeline.collide(scene.state_in, scene.contacts)
+            wp.capture_launch(capture.graph)
+
+        return replay, lambda: None
+    # Capture that Warp does not track, as another framework's graph capture would start.
+    cuda = ctypes.CDLL("libcuda.so.1")
+    handle = ctypes.c_void_p
+    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
+    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
+    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
+    cuda.cuGraphLaunch.argtypes = [handle, handle]
+    cuda.cuGraphExecDestroy.argtypes = [handle]
+    cuda.cuGraphDestroy.argtypes = [handle]
+    stream = ctypes.c_void_p(wp.get_stream(device).cuda_stream)
+    graph, graph_exec = ctypes.c_void_p(), ctypes.c_void_p()
+    thread_local_mode = 1
+    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
+    assert began == 0, began
+    try:
+        solve()
+    finally:
+        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    assert ended == 0, ended
+    # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
+    auto_free_on_launch = 1
+    instantiated = cuda.cuGraphInstantiateWithFlags(
+        ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)
+    )
+    assert instantiated == 0, instantiated
+
+    def replay():
+        scene.pipeline.collide(scene.state_in, scene.contacts)
+        launched = cuda.cuGraphLaunch(graph_exec, stream)
+        assert launched == 0, launched
+        wp.synchronize_stream(wp.get_stream(device))
+
+    def release():
+        cuda.cuGraphExecDestroy(graph_exec)
+        cuda.cuGraphDestroy(graph)
+
+    return replay, release
+
+
 class TestSteelSleepingColoredPropagation(unittest.TestCase):
     pass
 
@@ -2566,6 +2774,8 @@ for _name in (
     "test_colored_sleeping_rollout_is_independent_of_world_order",
     "test_colored_captured_sleep_and_wake_match_eager",
     "test_colored_separated_stacks_sleep_like_immediate",
+    "test_colored_sleeping_skips_tree_and_solve_work",
+    "test_colored_sleeping_runs_under_external_and_warp_capture",
     "test_colored_compliant_contacts_sleep_and_wake_like_immediate",
 ):
     add_function_test(TestSteelSleepingColoredPropagation, _name, globals()[_name], devices=devices)
@@ -2575,7 +2785,15 @@ class _Heap:
     """Colored-propagation solver on arm-on-heap worlds, stepped in place so steps can be captured."""
 
     def __init__(
-        self, device, response="propagation_colored", *, model=None, worlds=4, heap=(5, 2, 2), **solver_kwargs
+        self,
+        device,
+        response="propagation_colored",
+        *,
+        model=None,
+        worlds=4,
+        heap=(5, 2, 2),
+        compliance_stiffness=None,
+        **solver_kwargs,
     ):
         self.model = model if model is not None else _arm_heap_model(device, worlds=worlds, heap=heap)
         args = {
@@ -2598,6 +2816,10 @@ class _Heap:
             self.model, rigid_contact_max=self.model.rigid_contact_max, deterministic=True
         )
         self.contacts = self.pipeline.contacts()
+        self.compliance_stiffness = compliance_stiffness
+        if compliance_stiffness is not None:
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(self.contacts, name, wp.zeros(self.model.rigid_contact_max, dtype=float, device=device))
         self.state_in, self.state_out = self.model.state(), self.model.state()
         self.control = self.model.control()
 
@@ -2606,6 +2828,10 @@ class _Heap:
             if clear:
                 self.state_in.clear_forces()
             self.pipeline.collide(self.state_in, self.contacts)
+            if self.compliance_stiffness is not None:
+                self.contacts.rigid_contact_stiffness.fill_(self.compliance_stiffness)
+                self.contacts.rigid_contact_damping.fill_(200.0)
+                self.contacts.rigid_contact_friction.fill_(1.0)
             self.solver.step(
                 self.state_in, self.state_out, self.control, self.contacts, 1.0 / 240.0, observables=self.observables
             )
