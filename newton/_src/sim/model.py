@@ -475,8 +475,17 @@ class Model:
         """:class:`~newton.StateFlags` announcing an edit of the built-in :class:`~newton.State` or
         :class:`~newton.Control` attribute of this name, or ``None`` when solvers read it at every step.
         """
+        differentiable: bool | None = field(default=None, compare=False)
+        """Whether :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` allocates gradients for
+        the attribute when called with ``requires_grad=True``.
+
+        ``None`` resolves to whether :attr:`dtype` has a floating-point scalar type.
+        """
 
         def __post_init__(self) -> None:
+            if self.differentiable is None:
+                scalar_dtype = getattr(self.dtype, "_wp_scalar_type_", self.dtype)
+                object.__setattr__(self, "differentiable", wp.types.type_is_float(scalar_dtype))
             if self.row_width < 1:
                 raise ValueError(f"Attribute row_width must be positive, got {self.row_width}")
             if self.compaction_policy not in {
@@ -665,8 +674,8 @@ class Model:
         "shape_source": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_scale": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.vec3, update_flags=ModelFlags.SHAPE_PROPERTIES),
-        "shape_color": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.vec3),
-        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_color": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.vec3, differentiable=False),
+        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32, differentiable=False),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.int32),
         "shape_collision_radius": AttributeSpec(
@@ -752,8 +761,8 @@ class Model:
         "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
         "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
         "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
-        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.vec3),
-        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
+        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.vec3, differentiable=False),
+        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32, differentiable=False),
         "edge_indices": AttributeSpec(AttributeFrequency.EDGE, references=AttributeFrequency.PARTICLE, dtype=wp.int32),
         "edge_rest_angle": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
         "edge_rest_length": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
@@ -968,10 +977,16 @@ class Model:
             AttributeFrequency.CONSTRAINT_MIMIC, references=AttributeFrequency.JOINT, dtype=wp.int32
         ),
         "constraint_mimic_coef0": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC, dtype=wp.float32, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+            AttributeFrequency.CONSTRAINT_MIMIC,
+            dtype=wp.float32,
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
+            differentiable=False,
         ),
         "constraint_mimic_coef1": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC, dtype=wp.float32, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+            AttributeFrequency.CONSTRAINT_MIMIC,
+            dtype=wp.float32,
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
+            differentiable=False,
         ),
         "constraint_mimic_enabled": AttributeSpec(
             AttributeFrequency.CONSTRAINT_MIMIC, dtype=wp.bool, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
