@@ -611,6 +611,7 @@ class TestSplitCornersIntoVertices(unittest.TestCase):
     """Batched clustering of split vertices must reproduce the sequential greedy loop exactly."""
 
     def test_matches_sequential_greedy_clustering(self):
+        """Reproduce the sequential greedy loop bit for bit on fuzzed corner sets."""
         from newton._src.usd import _mesh_loading  # noqa: PLC0415
 
         rng = np.random.default_rng(11)
@@ -636,9 +637,14 @@ class TestSplitCornersIntoVertices(unittest.TestCase):
 
             with mock.patch.object(_mesh_loading, "_cluster_split_groups", _scalar_cluster_split_groups):
                 expected = _mesh_loading._split_corners_into_vertices(points, indices, dirs, uvs, threshold)
-            # A tiny batch budget also exercises splitting the groups across many batches.
+            # Vary the batch budget and the sequential-tail cutoff so groups run across many
+            # batches, entirely in lockstep rounds, entirely one corner at a time, or both.
             slots = 8 if case % 2 else _mesh_loading._CLUSTER_CHUNK_SLOTS
-            with mock.patch.object(_mesh_loading, "_CLUSTER_CHUNK_SLOTS", slots):
+            sequential_groups = (0, 2, _mesh_loading._CLUSTER_SEQUENTIAL_GROUPS, 1 << 30)[(case // 2) % 4]
+            with (
+                mock.patch.object(_mesh_loading, "_CLUSTER_CHUNK_SLOTS", slots),
+                mock.patch.object(_mesh_loading, "_CLUSTER_SEQUENTIAL_GROUPS", sequential_groups),
+            ):
                 actual = _mesh_loading._split_corners_into_vertices(points, indices, dirs, uvs, threshold)
             for name, want, got in zip(
                 ("points", "indices", "normals", "uvs", "sources"), expected, actual, strict=True

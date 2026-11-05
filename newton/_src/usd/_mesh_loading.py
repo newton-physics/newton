@@ -958,6 +958,8 @@ def _expand_indexed_primvar(
 
 # Upper bound on per-chunk cluster slots (groups x largest group size) in the batched pass.
 _CLUSTER_CHUNK_SLOTS = 1 << 20
+# Below this many active groups, a lockstep round costs more than clustering corners one by one.
+_CLUSTER_SEQUENTIAL_GROUPS = 16
 
 
 def _cluster_split_groups(
@@ -1044,6 +1046,60 @@ def _cluster_split_groups(
     return split_creation, split_vertices, split_dir_sums, split_uvs
 
 
+def _cluster_group_tail(
+    corner_begin: int,
+    corner_end: int,
+    sums: list[list[float]],
+    uvs: list[list[float]] | None,
+    creators: list[int],
+    order: np.ndarray,
+    dirs: np.ndarray,
+    grouped_uvs: np.ndarray | None,
+    cos_thresh: float,
+) -> tuple[list[list[float]], list[list[float]] | None, list[int], list[int]]:
+    """Cluster one group's remaining corners one by one, continuing from its current clusters.
+
+    Uses the same float64 arithmetic and operation order as the lockstep rounds.
+
+    Args:
+        corner_begin: First remaining grouped-corner index.
+        corner_end: One past the group's last grouped-corner index.
+        sums: Direction sum [3] of each existing cluster, updated in place.
+        uvs: UV of each existing cluster, updated in place, or ``None``.
+        creators: Original index of each existing cluster's creating corner, updated in place.
+        order: Original corner index of every grouped corner.
+        dirs: Unit corner normals in grouped order as float64, shape [corner_count, 3].
+        grouped_uvs: Corner UVs in grouped order, or ``None``.
+        cos_thresh: Cosine of the clustering threshold angle.
+
+    Returns:
+        The updated cluster sums, UVs, and creators, and the cluster index of each remaining corner.
+    """
+    joined = []
+    corner_uvs = None if grouped_uvs is None else grouped_uvs[corner_begin:corner_end].tolist()
+    for offset, (dir_x, dir_y, dir_z) in enumerate(dirs[corner_begin:corner_end].tolist()):
+        corner_uv = None if corner_uvs is None else corner_uvs[offset]
+        for cluster, cluster_sum in enumerate(sums):
+            sum_x, sum_y, sum_z = cluster_sum
+            scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
+            if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
+                continue
+            if corner_uv is not None and uvs[cluster] != corner_uv:
+                continue
+            cluster_sum[0] = sum_x + dir_x
+            cluster_sum[1] = sum_y + dir_y
+            cluster_sum[2] = sum_z + dir_z
+            joined.append(cluster)
+            break
+        else:
+            joined.append(len(sums))
+            sums.append([dir_x, dir_y, dir_z])
+            if uvs is not None:
+                uvs.append(corner_uv)
+            creators.append(int(order[corner_begin + offset]))
+    return sums, uvs, creators, joined
+
+
 def _cluster_group_batch(
     group_begin: np.ndarray,
     sizes: np.ndarray,
@@ -1083,6 +1139,43 @@ def _cluster_group_batch(
     for rank in range(max_clusters):
         # Sizes descend, so the groups that still have a corner at this rank form a prefix.
         active = np.arange(int(np.searchsorted(-sizes, -rank, side="left")))
+        if len(active) <= _CLUSTER_SEQUENTIAL_GROUPS:
+            # Few high-valence groups remain; finish them corner by corner from their current clusters.
+            tails = []
+            for group in active.tolist():
+                tails.append(
+                    _cluster_group_tail(
+                        int(group_begin[group]) + rank,
+                        int(group_begin[group]) + int(sizes[group]),
+                        cluster_sums[group, : cluster_count[group]].tolist(),
+                        None if cluster_uvs is None else cluster_uvs[group, : cluster_count[group]].tolist(),
+                        cluster_creator[group, : cluster_count[group]].tolist(),
+                        order,
+                        dirs,
+                        grouped_uvs,
+                        cos_thresh,
+                    )
+                )
+            needed = max([capacity, *(len(tail[0]) for tail in tails)])
+            if needed > capacity:
+                grow = needed - capacity
+                capacity = needed
+                cluster_sums = np.concatenate([cluster_sums, np.zeros((group_count, grow, 3), np.float64)], axis=1)
+                cluster_creator = np.concatenate([cluster_creator, np.zeros((group_count, grow), np.int64)], axis=1)
+                if cluster_uvs is not None:
+                    cluster_uvs = np.concatenate(
+                        [cluster_uvs, np.zeros((group_count, grow, uv_channels), cluster_uvs.dtype)], axis=1
+                    )
+            for group, (sums, uvs, creators, joined) in zip(active.tolist(), tails, strict=True):
+                count = len(sums)
+                cluster_sums[group, :count] = sums
+                cluster_creator[group, :count] = creators
+                if cluster_uvs is not None:
+                    cluster_uvs[group, :count] = uvs
+                cluster_count[group] = count
+                start = int(corner_offset[group]) + rank
+                cluster_of_corner[start : start + len(joined)] = joined
+            break
         corner = group_begin[active] + rank
         dir_x, dir_y, dir_z = dirs[corner, 0], dirs[corner, 1], dirs[corner, 2]
         counts = cluster_count[active]
