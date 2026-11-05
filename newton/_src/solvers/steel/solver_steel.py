@@ -5997,6 +5997,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._crba_cholesky_kernels_by_size = {}
         self._crba_cholesky_warp_kernels_by_size = {}
         self._inverse_cholesky_kernels_by_size = {}
+        self._inverse_lower_kernels_by_size = {}
         self._init_paired_response_kernels(model)
         self._fused_drive_dof_K = (
             wp.zeros(max(model.joint_dof_count, 1), dtype=wp.float32, device=model.device)
@@ -6035,6 +6036,14 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._inverse_cholesky_kernels_by_size[size] = (
                 _get_inverse_cholesky_register_kernel(size, device_arch)
                 if size == self._paired_response_secondary_size and not self._paired_factor_coordinates
+                else None
+            )
+            # The factor-coordinate paired response reads L^-1 of both sizes; one lane per column replaces the
+            # serial per-articulation inversion, which dominated the factor stage of the 23-DOF Kuka with patches.
+            self._inverse_lower_kernels_by_size[size] = (
+                _get_inverse_cholesky_register_kernel(size, device_arch, lower_only=True)
+                if self._paired_factor_coordinates
+                and size in (self._paired_response_primary_size, self._paired_response_secondary_size)
                 else None
             )
             self._triangular_solve_kernels_by_size[size] = (
@@ -6979,13 +6988,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._stage2_cholesky_loop(size)
             if size in self._Linv_by_size:
-                wp.launch(
-                    invert_lower_factor_grouped,
-                    dim=self._n_arts_by_size[size],
-                    inputs=[self._group_to_art[size], self._mass_update_mask, size, self._L_by_size[size]],
-                    outputs=[self._Linv_by_size[size]],
-                    device=model.device,
-                )
+                self._stage2_invert_lower_factor(size)
             if self._inverse_cholesky_kernels_by_size[size] is not None:
                 wp.launch(
                     self._inverse_cholesky_kernels_by_size[size],
@@ -8783,6 +8786,29 @@ class SolverSteel(SolverBase, CouplingInterface):
             ],
             outputs=[self._sparse_Linv, self._sparse_mass_matrix_status],
             block_dim=32 * self._sparse_factor_warps_per_block,
+            device=model.device,
+        )
+
+    def _stage2_invert_lower_factor(self, size: int) -> None:
+        """Form L^-1 of the group's refreshed factors, one warp lane per column where the paired response reads it."""
+        model = self.model
+        n_arts = self._n_arts_by_size[size]
+        lower_kernel = self._inverse_lower_kernels_by_size[size]
+        if lower_kernel is not None:
+            wp.launch(
+                lower_kernel,
+                dim=n_arts * 32,
+                inputs=[self._L_by_size[size], self._group_to_art[size], self._mass_update_mask],
+                outputs=[self._Linv_by_size[size]],
+                block_dim=256,
+                device=model.device,
+            )
+            return
+        wp.launch(
+            invert_lower_factor_grouped,
+            dim=n_arts,
+            inputs=[self._group_to_art[size], self._mass_update_mask, size, self._L_by_size[size]],
+            outputs=[self._Linv_by_size[size]],
             device=model.device,
         )
 
