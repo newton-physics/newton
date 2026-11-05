@@ -304,7 +304,7 @@ kernel covers every world.
 - **Missing targets.** Without a Control or with ``particle_target_q`` set to ``None``,
   kinematic particles hold their ``state_in`` position with zero velocity.
   :meth:`Model.control() <newton.Model.control>` allocates the target only if a particle
-  is kinematic at that time, and ``clone_variables=False`` leaves it ``None``. To set
+  was kinematic at :meth:`~newton.ModelBuilder.finalize`, and ``clone_variables=False`` leaves it ``None``. To set
   the flag later, allocate it yourself:
   ``control.particle_target_q = wp.clone(state.particle_q)``.
 - **Substeps.** The target is the end pose of one ``step()`` call; nothing is
@@ -322,8 +322,8 @@ kernel covers every world.
   Keep per-step target motion within the contact margin; a fast kinematic particle can
   tunnel through cloth, as with kinematic bodies.
 - **Input state.** Kinematic particles are driven only through
-  ``control.particle_target_q``; a position written to ``state.particle_q`` is replaced
-  by the target on the next step. :class:`~newton.solvers.SolverVBD` writes the targets
+  ``control.particle_target_q``. When a target is given, a position written to
+  ``state.particle_q`` is replaced by it on the next step. :class:`~newton.solvers.SolverVBD` writes the targets
   into ``state_in.particle_q`` at the start of the step.
 - **Support.** :class:`~newton.solvers.SolverVBD`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`, and

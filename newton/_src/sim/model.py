@@ -19,7 +19,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
-from ..geometry.flags import ParticleFlags, ShapeFlags
+from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -788,6 +788,7 @@ class Model:
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array[wp.int32] | None = None
         """Particle flags (:class:`~newton.ParticleFlags`), shape [particle_count], int."""
+        self._has_kinematic_particles: bool = False
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array[wp.int32] | None = None
@@ -2198,9 +2199,9 @@ class Model:
             requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
             clone_variables: If True, clone the control input arrays; if False, use references.
-                :attr:`Control.particle_target_q` is cloned only if a particle sets
-                :attr:`ParticleFlags.KINEMATIC <newton.ParticleFlags.KINEMATIC>`;
-                otherwise, and with ``False``, it is ``None``.
+                :attr:`Control.particle_target_q` is cloned only if a particle set
+                :attr:`ParticleFlags.KINEMATIC <newton.ParticleFlags.KINEMATIC>` at
+                finalize; otherwise, and with ``False``, it is ``None``.
 
         Returns:
             The initialized control object.
@@ -2222,7 +2223,7 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
-            if self.particle_count and (self.particle_flags.numpy() & int(ParticleFlags.KINEMATIC)).any():
+            if self._has_kinematic_particles:
                 c.particle_target_q = wp.clone(self.particle_q, requires_grad=requires_grad)
         else:
             c.joint_target_q = self.joint_target_q
