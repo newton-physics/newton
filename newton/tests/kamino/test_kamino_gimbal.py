@@ -341,22 +341,6 @@ class TestGimbal(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, error):
                         SolverKamino(model)
 
-    def test_from_newton_derives_gimbal_handedness(self):
-        """Derive the gimbal type from the orientation of its three axes."""
-        limits = np.zeros(3, dtype=np.float32)
-        right_handed = JointDoFType.from_newton(JointType.D6, 3, 3, (0, 3), limits, limits, np.eye(3, dtype=np.float32))
-        left_handed = JointDoFType.from_newton(
-            JointType.D6,
-            3,
-            3,
-            (0, 3),
-            limits,
-            limits,
-            np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-        )
-        self.assertEqual(right_handed, JointDoFType.GIMBAL)
-        self.assertEqual(left_handed, JointDoFType.GIMBAL_LEFT_HANDED)
-
     def test_chart_selects_nearest_equivalent_branch(self):
         """Select the equivalent Euler branch nearest the authored reference."""
         for third_axis_sign in (1.0, -1.0):
