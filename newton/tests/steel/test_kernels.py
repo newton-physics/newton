@@ -555,12 +555,17 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
         )
         return builder.finalize(device=device)
 
-    # Mismatched projections: a WELD row linking a ball joint, and a row whose bodies are not
-    # the linked joint's endpoints. Each is an unenforced equality, not a loop joint.
-    for eq_type, joint_kind, row_names_world in ((1, "ball", False), (0, "ball", True)):
+    # Mismatched projections: a WELD row linking a ball joint, a rotation-free WELD row linking a
+    # fixed joint, and a row whose bodies are not the linked joint's endpoints. Each is an
+    # unenforced equality, not a loop joint.
+    for eq_type, joint_kind, row_names_world, torquescale in (
+        (1, "ball", False, 1.0),
+        (1, "fixed", False, 0.0),
+        (0, "ball", True, 1.0),
+    ):
         with test.subTest(eq_type=eq_type, joint_kind=joint_kind, row_names_world=row_names_world):
             with test.assertRaisesRegex(NotImplementedError, "equality"):
-                SolverSteel(build_pendulum_with_connect(eq_type, joint_kind, row_names_world))
+                SolverSteel(build_pendulum_with_connect(eq_type, joint_kind, row_names_world, torquescale))
     # A tree joint between the row's bodies is not a projection either: the row's anchor is
     # not enforced by it.
     builder = newton.ModelBuilder()

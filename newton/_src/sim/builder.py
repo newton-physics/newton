@@ -7859,7 +7859,7 @@ class ModelBuilder:
                 "drop them, which opens their loops. Build or import link-break models without collapsing fixed "
                 "joints (collapse_fixed_joints=False).",
                 NewtonWarning,
-                stacklevel=2,
+                stacklevel=_external_warning_stacklevel(),
             )
 
         original_counts = self._builder_merge_counts(self)

@@ -372,7 +372,7 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
     (or rejected) through that entity. A row without a valid link is MuJoCo-only physics.
 
     A link is valid only when the target is structurally the row's projection, as the importers
-    build it: a CONNECT row links a ball joint and a WELD row a fixed joint (or a ball joint when its
+    build it: a CONNECT row links a ball joint and a WELD row a fixed joint (a ball joint when its
     torquescale is 0) outside any articulation that joins the row's two bodies (or its body and the
     world), and a JOINT row links a mimic constraint between the row's two joints. Anchors and
     coefficients are not compared.
@@ -415,9 +415,9 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
         for row in range(count):
             kind, index = int(target_kind[row]), int(target[row])
             if kind == int(MjcEqualityTargetKind.JOINT) and 0 <= index < joint_count:
-                expected_types = set(loop_joint_types.get(int(eq_type[row]), ()))
+                expected_types = loop_joint_types.get(int(eq_type[row]), set())
                 if int(eq_type[row]) == int(EqType.WELD) and float(torquescale[row]) == 0.0:
-                    expected_types.add(int(JointType.BALL))  # rotation-free weld, as the importers convert it
+                    expected_types = {int(JointType.BALL)}  # rotation-free weld, as the importers convert it
                 in_tree = joint_articulation is not None and int(joint_articulation[index]) >= 0
                 # The importers make body1 the parent and body2 the child, or the world the
                 # parent of body1; compare the endpoints as a set so either order is accepted.
