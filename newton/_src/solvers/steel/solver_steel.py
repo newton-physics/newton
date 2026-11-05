@@ -262,7 +262,7 @@ _MAX_CONTACT_REGULARIZATION = 1.0e6
 _PROPAGATION_WORLDS_PER_BLOCK = 2
 _SOLVE_MODES = ("serial", "colored")
 _ARTICULATED_CONTACT_RESPONSES = ("immediate", "propagation")
-# Pre-1.9 solve_mode spellings, accepted with a deprecation warning until their removal.
+# solve_mode spellings from the 1.8 prereleases, accepted with a deprecation warning until their removal.
 _DEPRECATED_SOLVE_MODE_SPELLINGS = {
     "matrix_free": "solve_mode='matrix_free' is deprecated; use solve_mode='serial' (the default)",
     "split": (
@@ -315,7 +315,7 @@ def _velocity_drive_mode(name: str, value) -> str:
 
 
 def _normalize_solve_mode(solve_mode, articulated_contact_response) -> tuple[str, str]:
-    """Map the pre-1.9 spellings onto ``(solve_mode, articulated_contact_response)``, warning for each one used."""
+    """Map the 1.8-prerelease spellings onto ``(solve_mode, articulated_contact_response)``, warning for each one used."""
     message = _DEPRECATED_SOLVE_MODE_SPELLINGS.get(solve_mode) if isinstance(solve_mode, str) else None
     if message is not None:
         warnings.warn(f"SolverSteel: {message}.", NewtonDeprecationWarning, stacklevel=3)
@@ -1276,7 +1276,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     each body's response from the articulated-body factorization of its tree, and
     propagates the impulses of each iteration through the tree to the joint velocities.
 
-    .. deprecated:: 1.9
+    .. deprecated:: 1.8
         ``solve_mode="matrix_free"`` maps to ``"serial"``; ``solve_mode="split"``, whose
         dense Delassus solve was removed, runs ``"serial"``; and
         ``articulated_contact_response="propagation_colored"`` maps to
@@ -1800,7 +1800,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 portable kernels (``"colored"`` sweeps in serial order), and the CUDA-only features
                 listed in the class description raise :class:`NotImplementedError`.
 
-                .. deprecated:: 1.9
+                .. deprecated:: 1.8
                     ``"matrix_free"`` maps to ``"serial"``, and ``"split"``, whose dense Delassus
                     solve was removed, runs ``"serial"``; each emits a
                     :class:`~newton.exceptions.NewtonDeprecationWarning`.
@@ -2238,7 +2238,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 tree factorization is rebuilt every step, independently of
                 ``update_mass_matrix_interval``.
 
-                .. deprecated:: 1.9
+                .. deprecated:: 1.8
                     ``"propagation_colored"`` maps to ``solve_mode="colored"`` with
                     ``"propagation"`` and emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
             propagation_same_articulation_rows: Solve contacts between two links of the same

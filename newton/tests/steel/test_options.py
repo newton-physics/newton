@@ -1165,7 +1165,7 @@ class TestSteelSolveModeOptions(unittest.TestCase):
     """Construction-only checks of the solve modes; they run on CPU, where Steel needs no CUDA device."""
 
     def test_deprecated_spellings_map_to_the_new_options(self):
-        """Map each pre-1.9 spelling with a deprecation warning attributed to the caller."""
+        """Map each 1.8-prerelease spelling with a deprecation warning attributed to the caller."""
         model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
         deprecated = (
             ({"solve_mode": "split"}, "solve_mode='serial'", ("serial", "immediate")),
