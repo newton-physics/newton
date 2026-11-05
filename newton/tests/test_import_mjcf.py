@@ -12233,9 +12233,14 @@ class TestImportMjcfSensors(unittest.TestCase):
         builder.add_mjcf(self.TOUCH_MJCF, parse_sensors=True)
         model = builder.finalize()
 
+        # The CPU backend always runs MuJoCo collision, so Newton contacts need MuJoCo Warp.
         for use_mujoco_contacts in (True, False):
             with self.subTest(use_mujoco_contacts=use_mujoco_contacts):
-                solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=use_mujoco_contacts)
+                if not use_mujoco_contacts and not wp.is_cuda_available():
+                    self.skipTest("Newton contacts with SolverMuJoCo require MuJoCo Warp on CUDA")
+                solver = SolverMuJoCo(
+                    model, use_mujoco_cpu=use_mujoco_contacts, use_mujoco_contacts=use_mujoco_contacts
+                )
                 self.assertEqual(solver.mj_model.nsensor, 1)
                 state0, state1, control = model.state(), model.state(), model.control()
                 pipeline = None if use_mujoco_contacts else newton.CollisionPipeline(model)
@@ -12245,7 +12250,8 @@ class TestImportMjcfSensors(unittest.TestCase):
                         pipeline.collide(state0, contacts)
                     solver.step(state0, state1, control, contacts, 0.002)
                     state0, state1 = state1, state0
-                np.testing.assert_allclose(solver.mj_data.sensordata, [9.81], rtol=1e-3)
+                sensordata = solver.mj_data.sensordata if use_mujoco_contacts else solver.mjw_data.sensordata.numpy()
+                np.testing.assert_allclose(sensordata, [[9.81]] if not use_mujoco_contacts else [9.81], rtol=1e-3)
 
     def test_sensors_are_opt_in(self):
         """Without parse_sensors, the <sensor> section adds no sensors and no solver cost."""
@@ -12291,6 +12297,147 @@ class TestImportMjcfSensors(unittest.TestCase):
         with self.assertNoLogs("newton._src.utils.import_mjcf", level="WARNING"):
             builder.add_mjcf(self.TOUCH_MJCF, parse_sensors=True, parse_sites=False)
         self.assertEqual(builder._custom_frequency_counts.get("mujoco:sensor", 0), 0)
+
+    def test_unsupported_frame_types_are_skipped(self):
+        """Frame sensors on or relative to cameras are skipped instead of losing their frame."""
+        mjcf = """
+<mujoco model="frames">
+  <worldbody>
+    <camera name="cam" pos="0 0 1"/>
+    <body name="b"><freejoint/><geom size=".1"/></body>
+  </worldbody>
+  <sensor>
+    <framepos name="rel_cam" objtype="xbody" objname="b" reftype="camera" refname="cam"/>
+    <framepos name="on_cam" objtype="camera" objname="cam"/>
+    <framepos name="ok" objtype="xbody" objname="b"/>
+  </sensor>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton._src.utils.import_mjcf", level="WARNING") as logs:
+            builder.add_mjcf(mjcf, parse_sensors=True)
+        message = logs.records[0].getMessage()
+        self.assertIn("<framepos> with reftype 'camera' is not supported", message)
+        self.assertIn("<framepos> with objtype 'camera' is not supported", message)
+        self.assertEqual(list(builder.finalize().mujoco.sensor_label), ["ok"])
+
+    def test_actuator_sensors_resolve_authored_names(self):
+        """Actuator names that sanitize to the same key still resolve to their own actuators."""
+        mjcf = """
+<mujoco>
+  <worldbody>
+    <body name="b"><joint name="j" type="hinge"/><geom size=".1"/></body>
+  </worldbody>
+  <actuator>
+    <motor name="motor-left" joint="j"/>
+    <motor name="motor_left" joint="j" gear="2"/>
+  </actuator>
+  <sensor>
+    <actuatorfrc name="dash" actuator="motor-left"/>
+    <actuatorfrc name="underscore" actuator="motor_left"/>
+  </sensor>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sensors=True)
+        model = builder.finalize()
+        np.testing.assert_array_equal(model.mujoco.sensor_objid.numpy(), [0, 1])
+
+    def test_ball_joint_position_actuator_sensor_is_skipped(self):
+        """A sensor on an actuator that expands into several MuJoCo actuators is skipped and logged."""
+        mjcf = """
+<mujoco>
+  <worldbody>
+    <body name="b"><joint name="j" type="ball"/><geom size=".1"/></body>
+  </worldbody>
+  <actuator><position name="a" joint="j" kp="10"/></actuator>
+  <sensor><actuatorfrc name="f" actuator="a"/></sensor>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sensors=True)
+        with self.assertLogs("newton._src.solvers.mujoco.solver_mujoco", level="WARNING") as logs:
+            solver = SolverMuJoCo(builder.finalize(), use_mujoco_cpu=True)
+        self.assertEqual(solver.mj_model.nsensor, 0)
+        self.assertIn("expands into several MuJoCo actuators", logs.records[0].getMessage())
+
+    def test_touch_on_ellipsoid_site_matches_native_mujoco(self):
+        """Ellipsoid sites keep their shape, so touch sensors measure the authored volume."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        mjcf = """
+<mujoco>
+  <worldbody>
+    <geom type="plane" size="1 1 .1"/>
+    <body name="b" pos="0 0 .1">
+      <freejoint/>
+      <geom type="box" size=".3 .05 .05" mass="1"/>
+      <site name="s" type="ellipsoid" size=".35 .02 .2"/>
+    </body>
+  </worldbody>
+  <sensor><touch name="t" site="s"/></sensor>
+</mujoco>
+"""
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        native_data = mujoco.MjData(native)
+        for _ in range(300):
+            mujoco.mj_step(native, native_data)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sensors=True)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        np.testing.assert_array_equal(solver.mj_model.site_type, native.site_type)
+        state0, state1, control = model.state(), model.state(), model.control()
+        for _ in range(300):
+            solver.step(state0, state1, control, None, native.opt.timestep)
+            state0, state1 = state1, state0
+        np.testing.assert_allclose(solver.mj_data.sensordata, native_data.sensordata, atol=1e-3)
+
+    def test_sensors_reject_fixed_joint_collapse(self):
+        """Sensors cannot be combined with collapsing fixed joints, which moves their frames."""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "collapse_fixed_joints"):
+            builder.add_mjcf(self.TOUCH_MJCF, parse_sensors=True, collapse_fixed_joints=True)
+        self.assertEqual(builder.body_count, 0)
+
+        builder.add_mjcf(self.TOUCH_MJCF, parse_sensors=True)
+        with self.assertRaisesRegex(NotImplementedError, "MuJoCo sensors"):
+            builder.collapse_fixed_joints()
+
+    def test_separate_worlds_require_matching_sensors(self):
+        """Worlds whose sensors differ from the template world are rejected."""
+        for case in ("missing", "scale"):
+            with self.subTest(case=case):
+                blueprint = newton.ModelBuilder()
+                blueprint.add_mjcf(self.TOUCH_MJCF, parse_sensors=True)
+                builder = newton.ModelBuilder()
+                builder.add_world(blueprint)
+                if case == "missing":
+                    other = newton.ModelBuilder()
+                    other.add_mjcf(self.TOUCH_MJCF)
+                    builder.add_world(other)
+                    expected = "has 0 and world 0 has 1"
+                else:
+                    builder.add_world(blueprint)
+                    site = next(
+                        i
+                        for i in range(builder.shape_count)
+                        if builder.shape_world[i] == 1 and builder.shape_flags[i] & ShapeFlags.SITE
+                    )
+                    builder.shape_scale[site] = (0.2, 0.2, 0.2)
+                    expected = "MuJoCo Warp shares site sizes"
+                with self.assertRaisesRegex(ValueError, expected):
+                    SolverMuJoCo(builder.finalize(), separate_worlds=True, use_mujoco_cpu=False)
+
+    def test_sensor_labels_receive_builder_prefix(self):
+        """Sensor labels are prefixed like actuator and tendon labels during composition."""
+        blueprint = newton.ModelBuilder()
+        blueprint.add_mjcf(self.TOUCH_MJCF, parse_sensors=True)
+        builder = newton.ModelBuilder()
+        builder.add_builder(blueprint, label_prefix="robot")
+        model = builder.finalize()
+        self.assertEqual(list(model.mujoco.sensor_label), ["robot/t"])
+        self.assertEqual(SolverMuJoCo(model, use_mujoco_cpu=True).mj_model.sensor("robot/t").id, 0)
 
     def test_replicated_sensors_map_per_world(self):
         """Replicated MJCF sensors reference each world's own entities."""

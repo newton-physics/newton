@@ -622,6 +622,12 @@ def parse_mjcf(
     if path_resolver is None:
         path_resolver = _default_path_resolver
 
+    if parse_sensors and (collapse_fixed_joints or collapse_massless_fixed_root):
+        raise ValueError(
+            "parse_sensors=True cannot be combined with collapse_fixed_joints or collapse_massless_fixed_root, "
+            "because merging bodies changes the frames that sensors measure."
+        )
+
     # Convert Path objects to string
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
 
@@ -3197,7 +3203,7 @@ def parse_mjcf(
     raw_site_name_to_idx: dict[str, int] = {}
     raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
-    # Maps sanitized MJCF actuator names to their mujoco:actuator row.
+    # Maps authored MJCF actuator names to their mujoco:actuator row.
     actuator_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
@@ -3687,7 +3693,7 @@ def parse_mjcf(
             if kind == obj.TENDON:
                 return tendon_name_to_idx.get(sanitize_name(name))
             if kind == obj.ACTUATOR:
-                return actuator_name_to_idx.get(sanitize_name(name))
+                return actuator_name_to_idx.get(name)
             return None
 
         frame_objtypes = {"body": obj.BODY, "xbody": obj.XBODY, "geom": obj.GEOM, "site": obj.SITE}
@@ -3735,13 +3741,19 @@ def parse_mjcf(
             elif stype in _MJCF_SUBTREE_SENSORS:
                 objtype, objname = int(obj.BODY), attrib.get("body")
             elif stype in _MJCF_FRAME_SENSORS or stype == SensorType.INSIDESITE:
-                objtype = int(frame_objtypes.get(attrib.get("objtype", ""), obj.UNKNOWN))
-                objname = attrib.get("objname")
+                frame_objtype = attrib.get("objtype", "")
+                if frame_objtype not in frame_objtypes:
+                    skip_sensor(tag, f"with objtype '{frame_objtype}' is not supported")
+                    continue
+                objtype, objname = int(frame_objtypes[frame_objtype]), attrib.get("objname")
                 if stype == SensorType.INSIDESITE:
                     reftype, refname = int(obj.SITE), attrib.get("site")
                 elif "reftype" in attrib or "refname" in attrib:
-                    reftype = int(frame_objtypes.get(attrib.get("reftype", ""), obj.UNKNOWN))
-                    refname = attrib.get("refname")
+                    frame_reftype = attrib.get("reftype", "")
+                    if frame_reftype not in frame_objtypes:
+                        skip_sensor(tag, f"with reftype '{frame_reftype}' is not supported")
+                        continue
+                    reftype, refname = int(frame_objtypes[frame_reftype]), attrib.get("refname")
             elif stype in (SensorType.GEOMDIST, SensorType.GEOMNORMAL, SensorType.GEOMFROMTO):
                 objtype, objname = first_of(attrib, (("geom1", obj.GEOM), ("body1", obj.BODY)))
                 reftype, refname = first_of(attrib, (("geom2", obj.GEOM), ("body2", obj.BODY)))
@@ -4117,7 +4129,8 @@ def parse_mjcf(
 
             actuator_row = builder.add_custom_values(**actuator_values)["mujoco:actuator_trnid"]
             if "name" in merged_attrib:
-                actuator_name_to_idx[sanitize_name(merged_attrib["name"])] = actuator_row
+                # Keyed by authored name: sanitize_name can map distinct MJCF names to one key.
+                actuator_name_to_idx[merged_attrib["name"]] = actuator_row
 
             if verbose:
                 source_name = (

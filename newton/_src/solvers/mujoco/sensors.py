@@ -460,7 +460,9 @@ def _register_sensor_attributes(builder: ModelBuilder) -> None:
     freq = "mujoco:sensor"
     model_assignment = Model.AttributeAssignment.MODEL
 
-    builder.add_custom_frequency(type(builder).CustomFrequency(name="sensor", namespace="mujoco"))
+    builder.add_custom_frequency(
+        type(builder).CustomFrequency(name="sensor", namespace="mujoco", label_attribute="mujoco:sensor_label")
+    )
 
     def add(name: str, dtype: Any, default: Any, **kwargs: Any) -> None:
         builder.add_custom_attribute(
@@ -625,7 +627,9 @@ def add_sensor(
         obj: Observed object. Required for all types except contact, energy,
             and clock sensors.
         ref: Reference object for frame, in-site, distance, and contact sensors.
-        label: MuJoCo sensor name. Empty labels receive a generated name.
+        label: MuJoCo sensor name. A sensor with an empty label is exported
+            without a name. :meth:`~newton.ModelBuilder.add_builder` prefixes
+            labels with its ``label_prefix``.
         noise: Standard deviation of the sensor noise. MuJoCo stores this value
             but does not apply it.
         cutoff: Absolute output limit, or ``0`` for no limit.

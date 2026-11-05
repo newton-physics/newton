@@ -7826,6 +7826,10 @@ class ModelBuilder:
         """
         if self._body_variants:
             raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
+        if self._custom_frequency_counts.get("mujoco:sensor", 0):
+            # Merging bodies changes the frames and contacts MuJoCo sensors measure, and
+            # their object ids depend on the object type, so they cannot be remapped.
+            raise NotImplementedError("collapse_fixed_joints() does not support builders with MuJoCo sensors.")
         joints_to_keep = set(joints_to_keep or ())
 
         original_counts = self._builder_merge_counts(self)

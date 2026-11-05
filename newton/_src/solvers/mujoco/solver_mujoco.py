@@ -3669,9 +3669,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sensor_user = [""] * sensor_count
 
         # Actuator sensors refer to actuators by name; name unnamed targets on demand.
-        actuator_row_to_mjc = {
-            int(row): mjc_idx for mjc_idx, row in enumerate(actuator_custom_attr_idx.tolist()) if row >= 0
-        }
+        actuator_row_to_mjc: dict[int, int] = {}
+        expanded_actuator_rows: set[int] = set()
+        for mjc_idx, row in enumerate(actuator_custom_attr_idx.tolist()):
+            if row < 0:
+                continue
+            if row in actuator_row_to_mjc:
+                # e.g. ball-joint position actuators or position actuators with kv expand into
+                # several MuJoCo actuators; no single one reproduces the authored actuator.
+                expanded_actuator_rows.add(int(row))
+            actuator_row_to_mjc.setdefault(int(row), mjc_idx)
         used_actuator_names = {act.name for act in spec.actuators if act.name}
 
         def actuator_name(row: int) -> str | None:
@@ -3733,6 +3740,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 continue
 
             objtype, reftype = int(sensor_objtype[row]), int(sensor_reftype[row])
+            if int(_SensorObjType.ACTUATOR) in (objtype, reftype) and (
+                int(sensor_objid[row]) in expanded_actuator_rows or int(sensor_refid[row]) in expanded_actuator_rows
+            ):
+                skipped.append(f"{row} ('{label}'): its actuator expands into several MuJoCo actuators")
+                continue
             obj_ok, objname = resolve(objtype, int(sensor_objid[row]))
             ref_ok, refname = resolve(reftype, int(sensor_refid[row]))
             if not (obj_ok and ref_ok):
@@ -3771,6 +3783,114 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if skipped:
             logger.warning("Skipped %d MuJoCo sensors: %s", len(skipped), "; ".join(skipped))
         return exported_rows
+
+    @staticmethod
+    def _validate_sensor_worlds(
+        model: Model, template_world: int, nworld: int, rows_by_world: dict[int, list[int]]
+    ) -> None:
+        """Require every world to define the template world's sensors.
+
+        Only the template world's sensors are exported, so each world must have
+        the same sensors, in the same order, with the same parameters and
+        world-local objects. Sensors that measure a site volume also require
+        that site to have the same scale in every world, because ``site_size``
+        is shared by all worlds.
+
+        Raises:
+            ValueError: If a world's sensors differ from the template world's.
+        """
+        mujoco_attrs = model.mujoco
+        columns = {
+            name: getattr(mujoco_attrs, f"sensor_{name}").numpy()
+            for name in (
+                "type",
+                "objtype",
+                "objid",
+                "reftype",
+                "refid",
+                "intprm",
+                "noise",
+                "cutoff",
+                "nsample",
+                "interp",
+                "delay",
+                "interval",
+            )
+        }
+        user = getattr(mujoco_attrs, "sensor_user", None)
+        world_starts = {
+            int(_SensorObjType.BODY): model.body_world_start.numpy(),
+            int(_SensorObjType.XBODY): model.body_world_start.numpy(),
+            int(_SensorObjType.JOINT): model.joint_dof_world_start.numpy(),
+            int(_SensorObjType.GEOM): model.shape_world_start.numpy(),
+            int(_SensorObjType.SITE): model.shape_world_start.numpy(),
+        }
+        row_worlds = {}
+        for key in ("tendon", "actuator"):
+            world_attr = getattr(mujoco_attrs, f"{key}_world", None)
+            row_worlds[key] = [] if world_attr is None else world_attr.numpy().tolist()
+        custom_rows = {int(_SensorObjType.TENDON): "tendon", int(_SensorObjType.ACTUATOR): "actuator"}
+
+        def local(objtype: int, objid: int) -> tuple[int, int]:
+            """Return ``(world, world-local index)`` of a sensor object; world ``-1`` is global."""
+            if objid < 0 or objtype == int(_SensorObjType.UNKNOWN):
+                return -1, objid
+            starts = world_starts.get(objtype)
+            if starts is not None:
+                for world in range(model.world_count):
+                    if starts[world] <= objid < starts[world + 1]:
+                        return world, objid - int(starts[world])
+                return -1, objid
+            worlds = row_worlds[custom_rows[objtype]]
+            world = int(worlds[objid]) if objid < len(worlds) else -1
+            if world < 0:
+                return -1, objid
+            return world, sum(1 for other in worlds[:objid] if int(other) == world)
+
+        def signature(row: int, world: int) -> tuple:
+            values = []
+            for name, column in columns.items():
+                if name in ("objid", "refid"):
+                    kind = int(columns["objtype" if name == "objid" else "reftype"][row])
+                    obj_world, obj_local = local(kind, int(column[row]))
+                    values.append(("world" if obj_world == world else obj_world, obj_local))
+                else:
+                    values.append(np.asarray(column[row]).tolist())
+            values.append(str(user[row]) if user is not None else "")
+            return tuple(values)
+
+        volume_sensors = {int(SensorType.TOUCH), int(SensorType.CONTACT)}
+        shape_scale = model.shape_scale.numpy()
+        template_rows = rows_by_world.get(template_world, [])
+        for offset in range(1, nworld):
+            world = template_world + offset
+            rows = rows_by_world.get(world, [])
+            if len(rows) != len(template_rows):
+                raise ValueError(
+                    f"SolverMuJoCo with separate_worlds=True requires every world to define the template world's "
+                    f"MuJoCo sensors, but world {world} has {len(rows)} and world {template_world} has "
+                    f"{len(template_rows)}."
+                )
+            for template_row, row in zip(template_rows, rows, strict=True):
+                if signature(row, world) != signature(template_row, template_world):
+                    raise ValueError(
+                        f"SolverMuJoCo with separate_worlds=True requires matching MuJoCo sensors in every world, "
+                        f"but sensor row {row} in world {world} differs from row {template_row} in world "
+                        f"{template_world}."
+                    )
+                stype = int(columns["type"][row])
+                site_ids = []
+                if stype in volume_sensors and int(columns["objtype"][row]) == int(_SensorObjType.SITE):
+                    site_ids.append((int(columns["objid"][template_row]), int(columns["objid"][row])))
+                if stype == int(SensorType.INSIDESITE):
+                    site_ids.append((int(columns["refid"][template_row]), int(columns["refid"][row])))
+                for template_site, site in site_ids:
+                    if not np.allclose(shape_scale[template_site], shape_scale[site]):
+                        raise ValueError(
+                            f"MuJoCo sensor row {row} uses the volume of site shape {site}, whose scale differs "
+                            f"from site shape {template_site} in world {template_world}. MuJoCo Warp shares site "
+                            f"sizes across worlds, so this sensor would measure the template world's volume."
+                        )
 
     @staticmethod
     def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
@@ -8118,8 +8238,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         continue
 
                     # Map unsupported site types to SPHERE
-                    # MuJoCo sites only support: SPHERE, CAPSULE, CYLINDER, BOX
-                    supported_site_types = {GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX}
+                    # MuJoCo sites only support: SPHERE, CAPSULE, ELLIPSOID, CYLINDER, BOX
+                    supported_site_types = {
+                        GeoType.SPHERE,
+                        GeoType.CAPSULE,
+                        GeoType.ELLIPSOID,
+                        GeoType.CYLINDER,
+                        GeoType.BOX,
+                    }
                     site_geom_type = stype if stype in supported_site_types else GeoType.SPHERE
 
                     tf = wp.transform(*shape_transform[shape])
@@ -9724,6 +9850,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     rows_by_world.setdefault(int(world), []).append(row)
                 template_rows = rows_by_world.get(int(first_world), [])
                 template_position = {row: k for k, row in enumerate(template_rows)}
+                if separate_worlds and nworld > 1:
+                    self._validate_sensor_worlds(model, int(first_world), nworld, rows_by_world)
                 mjc_sensor_to_newton_sensor_np = np.full((nworld, len(sensor_rows)), -1, dtype=np.int32)
                 for mjc_sensor, row in enumerate(sensor_rows):
                     if int(sensor_world[row]) < 0:

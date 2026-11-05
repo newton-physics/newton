@@ -238,9 +238,9 @@ Geometry types
 
 **Sites** (shapes with the ``SITE`` flag) are converted to MuJoCo sites —
 non-colliding reference frames used for sensor attachment and spatial
-tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``CYLINDER``, and
-``BOX`` are MuJoCo-native site geom types; other types silently fall
-back to ``SPHERE``.
+tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``ELLIPSOID``,
+``CYLINDER``, and ``BOX`` are MuJoCo-native site geom types; other types
+silently fall back to ``SPHERE``.
 
 Several Newton collision features — for example non-convex trimesh,
 SDF-based contacts, and hydroelastic contacts — are not part of the
@@ -926,6 +926,22 @@ For example, with ``use_mujoco_cpu=False``:
     adr, dim = sensor.adr[0], sensor.dim[0]
     values = solver.mjw_data.sensordata[:, adr : adr + dim]  # [world_count, dim]
 
+With ``separate_worlds=True``, every world must define the template world's
+sensors in the same order, and sites whose volume a touch, contact, or
+in-site sensor measures must have the same scale in every world; otherwise
+the solver raises ``ValueError``. ``parse_sensors=True`` cannot be combined
+with ``collapse_fixed_joints`` or ``collapse_massless_fixed_root``, and
+:meth:`~newton.ModelBuilder.collapse_fixed_joints` rejects builders with
+sensors, because merging bodies changes the frames that sensors measure.
+
+Sensors with ``objtype="body"`` or ``reftype="body"`` use the body's inertial
+frame. The converted model can orient a body's principal axes of inertia
+differently from native MuJoCo, so orientations and reference-frame
+components of such sensors can differ, while positions and world-frame
+velocities match. Use ``xbody`` frames for orientations. An actuator sensor
+whose actuator expands into several MuJoCo actuators, for example a
+ball-joint position actuator, is skipped.
+
 As in native MuJoCo, :meth:`~newton.solvers.SolverMuJoCo.step` evaluates
 sensors before it integrates, so after ``step(state_in, state_out, ...)`` the
 values describe ``state_in``, not ``state_out``.
@@ -1253,8 +1269,10 @@ other direction, MuJoCo has several modeling concepts that are not
 imported when loading an MJCF or USD asset into Newton, and that
 :class:`~newton.solvers.SolverMuJoCo` does not reconstruct during conversion:
 
-- **Sensors** (``<sensor>`` — force/torque, IMU, gyro, accelerometer,
-  rangefinder, touch, camera-based, …). Newton has its own sensor
+- **Some sensors.** ``<sensor>`` elements are imported only with
+  ``add_mjcf(..., parse_sensors=True)`` (see `Sensors`_). Camera-projection,
+  tactile, plugin, and user sensors, rangefinders on cameras, and frame
+  sensors on cameras are not supported. Newton also has its own sensor
   pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo
   solver.
 - **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
