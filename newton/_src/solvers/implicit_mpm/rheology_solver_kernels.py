@@ -1062,6 +1062,7 @@ def make_solve_strain_rows(
     cache_cell_velocity: bool,
     batched: bool,
     max_entries: int,
+    pipeline_viscous: bool,
 ):
     """Share the local stress solve and velocity updates across all GS layouts."""
     key = (
@@ -1072,6 +1073,7 @@ def make_solve_strain_rows(
         cache_cell_velocity,
         batched,
         max_entries,
+        pipeline_viscous,
     )
 
     @fem.cache.dynamic_func(suffix=key, allow_overloads=True)
@@ -1114,14 +1116,151 @@ def make_solve_strain_rows(
             entries = n
             if wp.static(max_entries > 0):
                 entries = wp.static(max_entries)
-            for k in range(entries):
-                node, weight = _strain_row_entry(rows, row, k)
-                v = wp.vec3(0.0)
-                if wp.static(cache_cell_velocity):
-                    v = wp.vec3(cache.vx[k], cache.vy[k], cache.vz[k])
-                else:
-                    v = velocity[node]
-                tau += _symmetric_part_op(weight, v)
+            if wp.static(pipeline_viscous):
+                # Stage independent loads before consuming them, retaining row order.
+                row_begin = rows.offsets[row]
+                row_end = rows.offsets[row + 1]
+                batch_end = row_end - (row_end - row_begin) % 16
+                for entry in range(row_begin, batch_end, 16):
+                    neighbor_0_node = rows.columns[entry + 0]
+                    neighbor_1_node = rows.columns[entry + 1]
+                    neighbor_2_node = rows.columns[entry + 2]
+                    neighbor_3_node = rows.columns[entry + 3]
+                    neighbor_4_node = rows.columns[entry + 4]
+                    neighbor_5_node = rows.columns[entry + 5]
+                    neighbor_6_node = rows.columns[entry + 6]
+                    neighbor_7_node = rows.columns[entry + 7]
+                    neighbor_8_node = rows.columns[entry + 8]
+                    neighbor_9_node = rows.columns[entry + 9]
+                    neighbor_10_node = rows.columns[entry + 10]
+                    neighbor_11_node = rows.columns[entry + 11]
+                    neighbor_12_node = rows.columns[entry + 12]
+                    neighbor_13_node = rows.columns[entry + 13]
+                    neighbor_14_node = rows.columns[entry + 14]
+                    neighbor_15_node = rows.columns[entry + 15]
+                    neighbor_0_gradient = rows.values[entry + 0]
+                    neighbor_1_gradient = rows.values[entry + 1]
+                    neighbor_2_gradient = rows.values[entry + 2]
+                    neighbor_3_gradient = rows.values[entry + 3]
+                    neighbor_4_gradient = rows.values[entry + 4]
+                    neighbor_5_gradient = rows.values[entry + 5]
+                    neighbor_6_gradient = rows.values[entry + 6]
+                    neighbor_7_gradient = rows.values[entry + 7]
+                    neighbor_8_gradient = rows.values[entry + 8]
+                    neighbor_9_gradient = rows.values[entry + 9]
+                    neighbor_10_gradient = rows.values[entry + 10]
+                    neighbor_11_gradient = rows.values[entry + 11]
+                    neighbor_12_gradient = rows.values[entry + 12]
+                    neighbor_13_gradient = rows.values[entry + 13]
+                    neighbor_14_gradient = rows.values[entry + 14]
+                    neighbor_15_gradient = rows.values[entry + 15]
+                    neighbor_0_velocity = velocity[neighbor_0_node]
+                    neighbor_1_velocity = velocity[neighbor_1_node]
+                    neighbor_2_velocity = velocity[neighbor_2_node]
+                    neighbor_3_velocity = velocity[neighbor_3_node]
+                    neighbor_4_velocity = velocity[neighbor_4_node]
+                    neighbor_5_velocity = velocity[neighbor_5_node]
+                    neighbor_6_velocity = velocity[neighbor_6_node]
+                    neighbor_7_velocity = velocity[neighbor_7_node]
+                    neighbor_8_velocity = velocity[neighbor_8_node]
+                    neighbor_9_velocity = velocity[neighbor_9_node]
+                    neighbor_10_velocity = velocity[neighbor_10_node]
+                    neighbor_11_velocity = velocity[neighbor_11_node]
+                    neighbor_12_velocity = velocity[neighbor_12_node]
+                    neighbor_13_velocity = velocity[neighbor_13_node]
+                    neighbor_14_velocity = velocity[neighbor_14_node]
+                    neighbor_15_velocity = velocity[neighbor_15_node]
+                    tau += _symmetric_part_op(neighbor_0_gradient, neighbor_0_velocity)
+                    tau += _symmetric_part_op(neighbor_1_gradient, neighbor_1_velocity)
+                    tau += _symmetric_part_op(neighbor_2_gradient, neighbor_2_velocity)
+                    tau += _symmetric_part_op(neighbor_3_gradient, neighbor_3_velocity)
+                    tau += _symmetric_part_op(neighbor_4_gradient, neighbor_4_velocity)
+                    tau += _symmetric_part_op(neighbor_5_gradient, neighbor_5_velocity)
+                    tau += _symmetric_part_op(neighbor_6_gradient, neighbor_6_velocity)
+                    tau += _symmetric_part_op(neighbor_7_gradient, neighbor_7_velocity)
+                    tau += _symmetric_part_op(neighbor_8_gradient, neighbor_8_velocity)
+                    tau += _symmetric_part_op(neighbor_9_gradient, neighbor_9_velocity)
+                    tau += _symmetric_part_op(neighbor_10_gradient, neighbor_10_velocity)
+                    tau += _symmetric_part_op(neighbor_11_gradient, neighbor_11_velocity)
+                    tau += _symmetric_part_op(neighbor_12_gradient, neighbor_12_velocity)
+                    tau += _symmetric_part_op(neighbor_13_gradient, neighbor_13_velocity)
+                    tau += _symmetric_part_op(neighbor_14_gradient, neighbor_14_velocity)
+                    tau += _symmetric_part_op(neighbor_15_gradient, neighbor_15_velocity)
+                gather_tail = batch_end
+                if row_end - gather_tail >= 8:
+                    tail_8_0_node = rows.columns[gather_tail + 0]
+                    tail_8_1_node = rows.columns[gather_tail + 1]
+                    tail_8_2_node = rows.columns[gather_tail + 2]
+                    tail_8_3_node = rows.columns[gather_tail + 3]
+                    tail_8_4_node = rows.columns[gather_tail + 4]
+                    tail_8_5_node = rows.columns[gather_tail + 5]
+                    tail_8_6_node = rows.columns[gather_tail + 6]
+                    tail_8_7_node = rows.columns[gather_tail + 7]
+                    tail_8_0_gradient = rows.values[gather_tail + 0]
+                    tail_8_1_gradient = rows.values[gather_tail + 1]
+                    tail_8_2_gradient = rows.values[gather_tail + 2]
+                    tail_8_3_gradient = rows.values[gather_tail + 3]
+                    tail_8_4_gradient = rows.values[gather_tail + 4]
+                    tail_8_5_gradient = rows.values[gather_tail + 5]
+                    tail_8_6_gradient = rows.values[gather_tail + 6]
+                    tail_8_7_gradient = rows.values[gather_tail + 7]
+                    tail_8_0_velocity = velocity[tail_8_0_node]
+                    tail_8_1_velocity = velocity[tail_8_1_node]
+                    tail_8_2_velocity = velocity[tail_8_2_node]
+                    tail_8_3_velocity = velocity[tail_8_3_node]
+                    tail_8_4_velocity = velocity[tail_8_4_node]
+                    tail_8_5_velocity = velocity[tail_8_5_node]
+                    tail_8_6_velocity = velocity[tail_8_6_node]
+                    tail_8_7_velocity = velocity[tail_8_7_node]
+                    tau += _symmetric_part_op(tail_8_0_gradient, tail_8_0_velocity)
+                    tau += _symmetric_part_op(tail_8_1_gradient, tail_8_1_velocity)
+                    tau += _symmetric_part_op(tail_8_2_gradient, tail_8_2_velocity)
+                    tau += _symmetric_part_op(tail_8_3_gradient, tail_8_3_velocity)
+                    tau += _symmetric_part_op(tail_8_4_gradient, tail_8_4_velocity)
+                    tau += _symmetric_part_op(tail_8_5_gradient, tail_8_5_velocity)
+                    tau += _symmetric_part_op(tail_8_6_gradient, tail_8_6_velocity)
+                    tau += _symmetric_part_op(tail_8_7_gradient, tail_8_7_velocity)
+                    gather_tail += 8
+                if row_end - gather_tail >= 4:
+                    tail_4_0_node = rows.columns[gather_tail + 0]
+                    tail_4_1_node = rows.columns[gather_tail + 1]
+                    tail_4_2_node = rows.columns[gather_tail + 2]
+                    tail_4_3_node = rows.columns[gather_tail + 3]
+                    tail_4_0_gradient = rows.values[gather_tail + 0]
+                    tail_4_1_gradient = rows.values[gather_tail + 1]
+                    tail_4_2_gradient = rows.values[gather_tail + 2]
+                    tail_4_3_gradient = rows.values[gather_tail + 3]
+                    tail_4_0_velocity = velocity[tail_4_0_node]
+                    tail_4_1_velocity = velocity[tail_4_1_node]
+                    tail_4_2_velocity = velocity[tail_4_2_node]
+                    tail_4_3_velocity = velocity[tail_4_3_node]
+                    tau += _symmetric_part_op(tail_4_0_gradient, tail_4_0_velocity)
+                    tau += _symmetric_part_op(tail_4_1_gradient, tail_4_1_velocity)
+                    tau += _symmetric_part_op(tail_4_2_gradient, tail_4_2_velocity)
+                    tau += _symmetric_part_op(tail_4_3_gradient, tail_4_3_velocity)
+                    gather_tail += 4
+                if row_end - gather_tail >= 2:
+                    tail_2_0_node = rows.columns[gather_tail + 0]
+                    tail_2_1_node = rows.columns[gather_tail + 1]
+                    tail_2_0_gradient = rows.values[gather_tail + 0]
+                    tail_2_1_gradient = rows.values[gather_tail + 1]
+                    tail_2_0_velocity = velocity[tail_2_0_node]
+                    tail_2_1_velocity = velocity[tail_2_1_node]
+                    tau += _symmetric_part_op(tail_2_0_gradient, tail_2_0_velocity)
+                    tau += _symmetric_part_op(tail_2_1_gradient, tail_2_1_velocity)
+                    gather_tail += 2
+                if gather_tail < row_end:
+                    node = rows.columns[gather_tail]
+                    tau += _symmetric_part_op(rows.values[gather_tail], velocity[node])
+            else:
+                for k in range(entries):
+                    node, weight = _strain_row_entry(rows, row, k)
+                    v = wp.vec3(0.0)
+                    if wp.static(cache_cell_velocity):
+                        v = wp.vec3(cache.vx[k], cache.vy[k], cache.vz[k])
+                    else:
+                        v = velocity[node]
+                    tau += _symmetric_part_op(weight, v)
             if wp.static(has_compliance_mat):
                 for b in range(compliance_offsets[tau_i], compliance_offsets[tau_i + 1]):
                     tau += compliance_values[b] @ stress[compliance_columns[b]]
@@ -1132,7 +1271,171 @@ def make_solve_strain_rows(
             if wp.static(not (batched and has_compliance_mat)):
                 stress[tau_i] += ds
             delta[tau_i] = ds
-            if wp.static(not batched):
+            if wp.static(pipeline_viscous):
+                tensor = fem.SymmetricTensorMapper.dof_to_value_3d(ds)
+                for entry in range(row_begin, batch_end, 16):
+                    neighbor_0_node = rows.columns[entry + 0]
+                    neighbor_1_node = rows.columns[entry + 1]
+                    neighbor_2_node = rows.columns[entry + 2]
+                    neighbor_3_node = rows.columns[entry + 3]
+                    neighbor_4_node = rows.columns[entry + 4]
+                    neighbor_5_node = rows.columns[entry + 5]
+                    neighbor_6_node = rows.columns[entry + 6]
+                    neighbor_7_node = rows.columns[entry + 7]
+                    neighbor_8_node = rows.columns[entry + 8]
+                    neighbor_9_node = rows.columns[entry + 9]
+                    neighbor_10_node = rows.columns[entry + 10]
+                    neighbor_11_node = rows.columns[entry + 11]
+                    neighbor_12_node = rows.columns[entry + 12]
+                    neighbor_13_node = rows.columns[entry + 13]
+                    neighbor_14_node = rows.columns[entry + 14]
+                    neighbor_15_node = rows.columns[entry + 15]
+                    neighbor_0_gradient = rows.values[entry + 0]
+                    neighbor_1_gradient = rows.values[entry + 1]
+                    neighbor_2_gradient = rows.values[entry + 2]
+                    neighbor_3_gradient = rows.values[entry + 3]
+                    neighbor_4_gradient = rows.values[entry + 4]
+                    neighbor_5_gradient = rows.values[entry + 5]
+                    neighbor_6_gradient = rows.values[entry + 6]
+                    neighbor_7_gradient = rows.values[entry + 7]
+                    neighbor_8_gradient = rows.values[entry + 8]
+                    neighbor_9_gradient = rows.values[entry + 9]
+                    neighbor_10_gradient = rows.values[entry + 10]
+                    neighbor_11_gradient = rows.values[entry + 11]
+                    neighbor_12_gradient = rows.values[entry + 12]
+                    neighbor_13_gradient = rows.values[entry + 13]
+                    neighbor_14_gradient = rows.values[entry + 14]
+                    neighbor_15_gradient = rows.values[entry + 15]
+                    neighbor_0_mass = inv_mass[neighbor_0_node]
+                    neighbor_1_mass = inv_mass[neighbor_1_node]
+                    neighbor_2_mass = inv_mass[neighbor_2_node]
+                    neighbor_3_mass = inv_mass[neighbor_3_node]
+                    neighbor_4_mass = inv_mass[neighbor_4_node]
+                    neighbor_5_mass = inv_mass[neighbor_5_node]
+                    neighbor_6_mass = inv_mass[neighbor_6_node]
+                    neighbor_7_mass = inv_mass[neighbor_7_node]
+                    neighbor_8_mass = inv_mass[neighbor_8_node]
+                    neighbor_9_mass = inv_mass[neighbor_9_node]
+                    neighbor_10_mass = inv_mass[neighbor_10_node]
+                    neighbor_11_mass = inv_mass[neighbor_11_node]
+                    neighbor_12_mass = inv_mass[neighbor_12_node]
+                    neighbor_13_mass = inv_mass[neighbor_13_node]
+                    neighbor_14_mass = inv_mass[neighbor_14_node]
+                    neighbor_15_mass = inv_mass[neighbor_15_node]
+                    neighbor_0_increment = neighbor_0_mass * (tensor @ neighbor_0_gradient)
+                    neighbor_1_increment = neighbor_1_mass * (tensor @ neighbor_1_gradient)
+                    neighbor_2_increment = neighbor_2_mass * (tensor @ neighbor_2_gradient)
+                    neighbor_3_increment = neighbor_3_mass * (tensor @ neighbor_3_gradient)
+                    neighbor_4_increment = neighbor_4_mass * (tensor @ neighbor_4_gradient)
+                    neighbor_5_increment = neighbor_5_mass * (tensor @ neighbor_5_gradient)
+                    neighbor_6_increment = neighbor_6_mass * (tensor @ neighbor_6_gradient)
+                    neighbor_7_increment = neighbor_7_mass * (tensor @ neighbor_7_gradient)
+                    neighbor_8_increment = neighbor_8_mass * (tensor @ neighbor_8_gradient)
+                    neighbor_9_increment = neighbor_9_mass * (tensor @ neighbor_9_gradient)
+                    neighbor_10_increment = neighbor_10_mass * (tensor @ neighbor_10_gradient)
+                    neighbor_11_increment = neighbor_11_mass * (tensor @ neighbor_11_gradient)
+                    neighbor_12_increment = neighbor_12_mass * (tensor @ neighbor_12_gradient)
+                    neighbor_13_increment = neighbor_13_mass * (tensor @ neighbor_13_gradient)
+                    neighbor_14_increment = neighbor_14_mass * (tensor @ neighbor_14_gradient)
+                    neighbor_15_increment = neighbor_15_mass * (tensor @ neighbor_15_gradient)
+                    velocity[neighbor_0_node] += neighbor_0_increment
+                    velocity[neighbor_1_node] += neighbor_1_increment
+                    velocity[neighbor_2_node] += neighbor_2_increment
+                    velocity[neighbor_3_node] += neighbor_3_increment
+                    velocity[neighbor_4_node] += neighbor_4_increment
+                    velocity[neighbor_5_node] += neighbor_5_increment
+                    velocity[neighbor_6_node] += neighbor_6_increment
+                    velocity[neighbor_7_node] += neighbor_7_increment
+                    velocity[neighbor_8_node] += neighbor_8_increment
+                    velocity[neighbor_9_node] += neighbor_9_increment
+                    velocity[neighbor_10_node] += neighbor_10_increment
+                    velocity[neighbor_11_node] += neighbor_11_increment
+                    velocity[neighbor_12_node] += neighbor_12_increment
+                    velocity[neighbor_13_node] += neighbor_13_increment
+                    velocity[neighbor_14_node] += neighbor_14_increment
+                    velocity[neighbor_15_node] += neighbor_15_increment
+                scatter_tail = batch_end
+                if row_end - scatter_tail >= 8:
+                    tail_8_0_node = rows.columns[scatter_tail + 0]
+                    tail_8_1_node = rows.columns[scatter_tail + 1]
+                    tail_8_2_node = rows.columns[scatter_tail + 2]
+                    tail_8_3_node = rows.columns[scatter_tail + 3]
+                    tail_8_4_node = rows.columns[scatter_tail + 4]
+                    tail_8_5_node = rows.columns[scatter_tail + 5]
+                    tail_8_6_node = rows.columns[scatter_tail + 6]
+                    tail_8_7_node = rows.columns[scatter_tail + 7]
+                    tail_8_0_gradient = rows.values[scatter_tail + 0]
+                    tail_8_1_gradient = rows.values[scatter_tail + 1]
+                    tail_8_2_gradient = rows.values[scatter_tail + 2]
+                    tail_8_3_gradient = rows.values[scatter_tail + 3]
+                    tail_8_4_gradient = rows.values[scatter_tail + 4]
+                    tail_8_5_gradient = rows.values[scatter_tail + 5]
+                    tail_8_6_gradient = rows.values[scatter_tail + 6]
+                    tail_8_7_gradient = rows.values[scatter_tail + 7]
+                    tail_8_0_mass = inv_mass[tail_8_0_node]
+                    tail_8_1_mass = inv_mass[tail_8_1_node]
+                    tail_8_2_mass = inv_mass[tail_8_2_node]
+                    tail_8_3_mass = inv_mass[tail_8_3_node]
+                    tail_8_4_mass = inv_mass[tail_8_4_node]
+                    tail_8_5_mass = inv_mass[tail_8_5_node]
+                    tail_8_6_mass = inv_mass[tail_8_6_node]
+                    tail_8_7_mass = inv_mass[tail_8_7_node]
+                    tail_8_0_increment = tail_8_0_mass * (tensor @ tail_8_0_gradient)
+                    tail_8_1_increment = tail_8_1_mass * (tensor @ tail_8_1_gradient)
+                    tail_8_2_increment = tail_8_2_mass * (tensor @ tail_8_2_gradient)
+                    tail_8_3_increment = tail_8_3_mass * (tensor @ tail_8_3_gradient)
+                    tail_8_4_increment = tail_8_4_mass * (tensor @ tail_8_4_gradient)
+                    tail_8_5_increment = tail_8_5_mass * (tensor @ tail_8_5_gradient)
+                    tail_8_6_increment = tail_8_6_mass * (tensor @ tail_8_6_gradient)
+                    tail_8_7_increment = tail_8_7_mass * (tensor @ tail_8_7_gradient)
+                    velocity[tail_8_0_node] += tail_8_0_increment
+                    velocity[tail_8_1_node] += tail_8_1_increment
+                    velocity[tail_8_2_node] += tail_8_2_increment
+                    velocity[tail_8_3_node] += tail_8_3_increment
+                    velocity[tail_8_4_node] += tail_8_4_increment
+                    velocity[tail_8_5_node] += tail_8_5_increment
+                    velocity[tail_8_6_node] += tail_8_6_increment
+                    velocity[tail_8_7_node] += tail_8_7_increment
+                    scatter_tail += 8
+                if row_end - scatter_tail >= 4:
+                    tail_4_0_node = rows.columns[scatter_tail + 0]
+                    tail_4_1_node = rows.columns[scatter_tail + 1]
+                    tail_4_2_node = rows.columns[scatter_tail + 2]
+                    tail_4_3_node = rows.columns[scatter_tail + 3]
+                    tail_4_0_gradient = rows.values[scatter_tail + 0]
+                    tail_4_1_gradient = rows.values[scatter_tail + 1]
+                    tail_4_2_gradient = rows.values[scatter_tail + 2]
+                    tail_4_3_gradient = rows.values[scatter_tail + 3]
+                    tail_4_0_mass = inv_mass[tail_4_0_node]
+                    tail_4_1_mass = inv_mass[tail_4_1_node]
+                    tail_4_2_mass = inv_mass[tail_4_2_node]
+                    tail_4_3_mass = inv_mass[tail_4_3_node]
+                    tail_4_0_increment = tail_4_0_mass * (tensor @ tail_4_0_gradient)
+                    tail_4_1_increment = tail_4_1_mass * (tensor @ tail_4_1_gradient)
+                    tail_4_2_increment = tail_4_2_mass * (tensor @ tail_4_2_gradient)
+                    tail_4_3_increment = tail_4_3_mass * (tensor @ tail_4_3_gradient)
+                    velocity[tail_4_0_node] += tail_4_0_increment
+                    velocity[tail_4_1_node] += tail_4_1_increment
+                    velocity[tail_4_2_node] += tail_4_2_increment
+                    velocity[tail_4_3_node] += tail_4_3_increment
+                    scatter_tail += 4
+                if row_end - scatter_tail >= 2:
+                    tail_2_0_node = rows.columns[scatter_tail + 0]
+                    tail_2_1_node = rows.columns[scatter_tail + 1]
+                    tail_2_0_gradient = rows.values[scatter_tail + 0]
+                    tail_2_1_gradient = rows.values[scatter_tail + 1]
+                    tail_2_0_mass = inv_mass[tail_2_0_node]
+                    tail_2_1_mass = inv_mass[tail_2_1_node]
+                    tail_2_0_increment = tail_2_0_mass * (tensor @ tail_2_0_gradient)
+                    tail_2_1_increment = tail_2_1_mass * (tensor @ tail_2_1_gradient)
+                    velocity[tail_2_0_node] += tail_2_0_increment
+                    velocity[tail_2_1_node] += tail_2_1_increment
+                    scatter_tail += 2
+                if scatter_tail < row_end:
+                    node = rows.columns[scatter_tail]
+                    increment = inv_mass[node] * (tensor @ rows.values[scatter_tail])
+                    velocity[node] += increment
+            elif wp.static(not batched):
                 scatter_entries = n
                 if wp.static(cache_cell_velocity):
                     scatter_entries = 8
@@ -1190,6 +1493,17 @@ def make_gs_solve_kernel(
         colored_contact_nodes,
         strain_nodes_per_cell if colored_contact_nodes > 0 else 0,
     )
+    pipeline_viscous = (
+        has_viscosity
+        and not has_dilatancy
+        and not has_compliance_mat
+        and has_rotation
+        and strain_velocity_node_count == -1
+        and max_entries == -1
+        and not soa
+        and not batched
+        and colored_contact_nodes == 0
+    )
     solve_rows = make_solve_strain_rows(
         has_viscosity,
         has_dilatancy,
@@ -1198,6 +1512,7 @@ def make_gs_solve_kernel(
         cache_cell_velocity,
         batched,
         max_entries,
+        pipeline_viscous,
     )
 
     solve_contacts = make_solve_colored_cell_contacts(colored_contact_nodes) if colored_contact_nodes > 0 else None
