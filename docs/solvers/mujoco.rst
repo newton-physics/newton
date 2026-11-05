@@ -240,7 +240,18 @@ Geometry types
 non-colliding reference frames used for sensor attachment and spatial
 tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``ELLIPSOID``,
 ``CYLINDER``, and ``BOX`` are MuJoCo-native site geom types; other types
-silently fall back to ``SPHERE``.
+silently fall back to ``SPHERE``. MuJoCo ignores the third size component of a cylinder
+site, so the MJCF importer sets ``scale[2]`` (Newton's barrel radius) of
+cylinder sites to ``0.0``.
+
+.. deprecated:: 1.8
+
+    The ``mujoco:site_size_is_display`` shape attribute is no longer populated
+    by the MJCF importer. Passing it to :meth:`~newton.ModelBuilder.add_site`
+    emits a ``NewtonDeprecationWarning``; if it is ``True``, ``scale[2]`` of a
+    cylinder site is set to ``0.0``. Remove the attribute, and set ``scale[2]``
+    to ``0.0`` directly where it was ``True``. The attribute will be removed in
+    a future release.
 
 Several Newton collision features — for example non-convex trimesh,
 SDF-based contacts, and hydroelastic contacts — are not part of the
@@ -413,12 +424,11 @@ the mode from user code.
 
 .. note::
 
-   ``use_mujoco_contacts=True`` and the MuJoCo CPU backend do not
-   apply the per-contact two-body factor — MuJoCo's internal
-   ``contact_params`` averages per-geom ``solref``, which cannot
-   reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
-   fall back to the legacy ``convert_solref(ke, kd, 1, 1)``
-   approximation on those paths.
+   ``use_mujoco_contacts=True`` does not apply the per-contact two-body
+   factor — MuJoCo's internal ``contact_params`` averages per-geom
+   ``solref``, which cannot reproduce the inverse-mass sum.
+   ``SOLREF_MODE_FORCE_SPACE`` shapes fall back to the legacy
+   ``convert_solref(ke, kd, 1, 1)`` approximation on that path.
 
 For parameter interpretation, stability tradeoffs, and task-oriented guidance,
 see :ref:`Tuning MuJoCo`.
@@ -429,9 +439,8 @@ Contact friction ``solreffriction`` mapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
-``solreffriction`` when the MuJoCo Warp backend uses elliptic friction cones
-(``use_mujoco_cpu=False``, ``cone="elliptic"``) with Newton contacts
-(``use_mujoco_contacts=False``). It targets the force-space friction slope
+``solreffriction`` with elliptic friction cones (``cone="elliptic"``) and Newton
+contacts (``use_mujoco_contacts=False``). It targets the force-space friction slope
 ``f = -kf * v`` below the Coulomb limit. The mapping is exact when the sum of
 MuJoCo's translational ``body_invweight0`` values matches the contact's inverse
 effective mass (the relevant diagonal of :math:`J M^{-1} J^T`) and the contact
