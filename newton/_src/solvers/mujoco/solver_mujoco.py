@@ -135,6 +135,7 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
+from .sensors import SensorType, _register_sensor_attributes, _SensorObjType
 from .utils import solref_invalid_mask
 
 if TYPE_CHECKING:
@@ -1488,6 +1489,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
 
         _register_equality_constraint_attributes(builder)
+        _register_sensor_attributes(builder)
 
         def parse_solreflimit_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
             prim = context.get("prim")
@@ -3603,6 +3605,173 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             spec.add_pair(**pair_kwargs)
 
+    def _init_sensors(
+        self,
+        model: Model,
+        spec: Any,
+        template_world: int,
+        body_name_mapping: dict[int, str],
+        shape_mapping: dict[int, str],
+        site_mapping: dict[int, str],
+        dof_to_mjc_joint: np.ndarray,
+        mjc_joint_names: list[str],
+        tendon_name_mapping: dict[int, str],
+        actuator_custom_attr_idx: np.ndarray,
+    ) -> list[int]:
+        """Add MuJoCo sensors from the ``mujoco:sensor`` custom frequency.
+
+        Sensors of the template world and global sensors (world < 0) are added
+        to ``spec`` in row order. Sensors whose objects are not exported to
+        MuJoCo are skipped and logged once.
+
+        Args:
+            model: The Newton model.
+            spec: The MuJoCo spec receiving the sensors.
+            template_world: The world index used as the template.
+            body_name_mapping: Newton body index to MuJoCo body name.
+            shape_mapping: Newton shape index to MuJoCo geom name.
+            site_mapping: Newton shape index to MuJoCo site name.
+            dof_to_mjc_joint: Template Newton DOF index to MuJoCo joint index.
+            mjc_joint_names: MuJoCo joint names indexed by MuJoCo joint index.
+            tendon_name_mapping: ``mujoco:tendon`` row to MuJoCo tendon name.
+            actuator_custom_attr_idx: MuJoCo actuator index to ``mujoco:actuator`` row.
+
+        Returns:
+            The ``mujoco:sensor`` row of each added MuJoCo sensor, in MuJoCo order.
+        """
+        sensor_count = model.custom_frequency_counts.get("mujoco:sensor", 0)
+        mujoco_attrs = getattr(model, "mujoco", None)
+        if sensor_count == 0 or mujoco_attrs is None or not hasattr(mujoco_attrs, "sensor_type"):
+            return []
+        mujoco = self._mujoco
+
+        def get_numpy(name: str) -> np.ndarray:
+            return getattr(mujoco_attrs, name).numpy()
+
+        sensor_world = get_numpy("sensor_world")
+        sensor_type = get_numpy("sensor_type")
+        sensor_objtype = get_numpy("sensor_objtype")
+        sensor_objid = get_numpy("sensor_objid")
+        sensor_reftype = get_numpy("sensor_reftype")
+        sensor_refid = get_numpy("sensor_refid")
+        sensor_intprm = get_numpy("sensor_intprm")
+        sensor_noise = get_numpy("sensor_noise")
+        sensor_cutoff = get_numpy("sensor_cutoff")
+        sensor_nsample = get_numpy("sensor_nsample")
+        sensor_interp = get_numpy("sensor_interp")
+        sensor_delay = get_numpy("sensor_delay")
+        sensor_interval = get_numpy("sensor_interval")
+        sensor_label = getattr(mujoco_attrs, "sensor_label", None)
+        if sensor_label is None:
+            sensor_label = [""] * sensor_count
+        sensor_user = getattr(mujoco_attrs, "sensor_user", None)
+        if sensor_user is None:
+            sensor_user = [""] * sensor_count
+
+        # Actuator sensors refer to actuators by name; name unnamed targets on demand.
+        actuator_row_to_mjc = {
+            int(row): mjc_idx for mjc_idx, row in enumerate(actuator_custom_attr_idx.tolist()) if row >= 0
+        }
+        used_actuator_names = {act.name for act in spec.actuators if act.name}
+
+        def actuator_name(row: int) -> str | None:
+            mjc_idx = actuator_row_to_mjc.get(row)
+            if mjc_idx is None:
+                return None
+            actuator = spec.actuators[mjc_idx]
+            if not actuator.name:
+                name = f"actuator_{row}"
+                suffix = 1
+                while name in used_actuator_names:
+                    name = f"actuator_{row}_{suffix}"
+                    suffix += 1
+                actuator.name = name
+                used_actuator_names.add(name)
+            return actuator.name
+
+        def body_name(body: int) -> str | None:
+            return "world" if body == -1 else body_name_mapping.get(body)
+
+        def joint_name(dof: int) -> str | None:
+            if dof < 0 or dof >= len(dof_to_mjc_joint):
+                return None
+            mjc_joint = int(dof_to_mjc_joint[dof])
+            if mjc_joint < 0 or mjc_joint >= len(mjc_joint_names):
+                return None
+            return mjc_joint_names[mjc_joint]
+
+        resolvers = {
+            int(_SensorObjType.BODY): body_name,
+            int(_SensorObjType.XBODY): body_name,
+            int(_SensorObjType.JOINT): joint_name,
+            int(_SensorObjType.GEOM): shape_mapping.get,
+            int(_SensorObjType.SITE): site_mapping.get,
+            int(_SensorObjType.TENDON): lambda row: tendon_name_mapping.get(row) or None,
+            int(_SensorObjType.ACTUATOR): actuator_name,
+        }
+
+        def resolve(objtype: int, objid: int) -> tuple[bool, str]:
+            if objtype == int(_SensorObjType.UNKNOWN):
+                return True, ""
+            resolver = resolvers.get(objtype)
+            name = resolver(objid) if resolver is not None else None
+            return name is not None, name or ""
+
+        used_sensor_names: set[str] = set()
+        exported_rows: list[int] = []
+        skipped: list[str] = []
+        for row in range(sensor_count):
+            world = int(sensor_world[row])
+            if world != template_world and world >= 0:
+                continue
+            label = str(sensor_label[row])
+            stype = int(sensor_type[row])
+            try:
+                stype = SensorType(stype)
+            except ValueError:
+                skipped.append(f"{row} ('{label}'): unsupported type {stype}")
+                continue
+
+            objtype, reftype = int(sensor_objtype[row]), int(sensor_reftype[row])
+            obj_ok, objname = resolve(objtype, int(sensor_objid[row]))
+            ref_ok, refname = resolve(reftype, int(sensor_refid[row]))
+            if not (obj_ok and ref_ok):
+                skipped.append(f"{row} ('{label}'): object or reference not in the MuJoCo model")
+                continue
+
+            kwargs: dict[str, Any] = {
+                "type": mujoco.mjtSensor(int(stype)),
+                "objtype": mujoco.mjtObj(objtype),
+                "reftype": mujoco.mjtObj(reftype),
+                "intprm": [int(value) for value in sensor_intprm[row]],
+                "noise": float(sensor_noise[row]),
+                "cutoff": float(sensor_cutoff[row]),
+                "nsample": int(sensor_nsample[row]),
+                "interp": int(sensor_interp[row]),
+                "delay": float(sensor_delay[row]),
+                "interval": [float(value) for value in sensor_interval[row]],
+            }
+            user = [float(value) for value in str(sensor_user[row]).split()]
+            if user:
+                kwargs["userdata"] = user
+            if objname:
+                kwargs["objname"] = objname
+            if refname:
+                kwargs["refname"] = refname
+            if label:
+                name = label
+                suffix = 1
+                while name in used_sensor_names:
+                    name = f"{label}_{suffix}"
+                    suffix += 1
+                used_sensor_names.add(name)
+                kwargs["name"] = name
+            spec.add_sensor(**kwargs)
+            exported_rows.append(row)
+        if skipped:
+            logger.warning("Skipped %d MuJoCo sensors: %s", len(skipped), "; ".join(skipped))
+        return exported_rows
+
     @staticmethod
     def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
         """
@@ -4717,6 +4886,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
+        self.mjc_sensor_to_newton_sensor: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo [world, sensor] to Newton ``mujoco:sensor`` row.
+
+        A sensor's output occupies ``mj_model.sensor_dim[sensor]`` values starting at
+        ``mj_model.sensor_adr[sensor]`` in the MuJoCo ``sensordata`` array. Global sensors
+        (``mujoco:sensor_world`` < 0) map to the same row in every world.
+
+        Shape [nworld, nsensor], dtype int32."""
         self.body_free_qd_start: wp.array[wp.int32] | None = None
         """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
@@ -9073,6 +9250,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             elif newton_idx >= 0:
                 actuator_custom_attr_idx[actuator] = newton_idx
 
+        sensor_rows = self._init_sensors(
+            model,
+            spec,
+            first_world,
+            body_name_mapping,
+            shape_mapping,
+            site_mapping,
+            dof_to_mjc_joint,
+            mjc_joint_names,
+            tendon_name_mapping,
+            actuator_custom_attr_idx,
+        )
+
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:
             self.mjc_actuator_ctrl_source = wp.array(
@@ -9524,6 +9714,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     template_tendon = newton_tendon % tendons_per_world if tendons_per_world > 0 else newton_tendon
                     mjc_tendon_to_newton_tendon_np[:, mjc_tendon] = world_offsets * tendons_per_world + template_tendon
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
+
+            # Create mjc_sensor_to_newton_sensor: MuJoCo[world, sensor] -> Newton sensor row.
+            # The k-th world-local template sensor maps to the k-th sensor row of each world.
+            if sensor_rows:
+                sensor_world = model.mujoco.sensor_world.numpy()
+                rows_by_world: dict[int, list[int]] = {}
+                for row, world in enumerate(sensor_world.tolist()):
+                    rows_by_world.setdefault(int(world), []).append(row)
+                template_rows = rows_by_world.get(int(first_world), [])
+                template_position = {row: k for k, row in enumerate(template_rows)}
+                mjc_sensor_to_newton_sensor_np = np.full((nworld, len(sensor_rows)), -1, dtype=np.int32)
+                for mjc_sensor, row in enumerate(sensor_rows):
+                    if int(sensor_world[row]) < 0:
+                        mjc_sensor_to_newton_sensor_np[:, mjc_sensor] = row
+                        continue
+                    k = template_position[row]
+                    for w in range(nworld):
+                        world_rows = rows_by_world.get(int(first_world) + w, [])
+                        if k < len(world_rows):
+                            mjc_sensor_to_newton_sensor_np[w, mjc_sensor] = world_rows[k]
+                self.mjc_sensor_to_newton_sensor = wp.array(mjc_sensor_to_newton_sensor_np, dtype=wp.int32)
 
             if separate_worlds:
                 nworld = model.world_count

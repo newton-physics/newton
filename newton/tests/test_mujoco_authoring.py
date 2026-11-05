@@ -870,5 +870,127 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
             mujoco.add_equality_joint(builder, joint, joint)
 
 
+class TestMuJoCoSensorAuthoring(unittest.TestCase):
+    """Tests for the public MuJoCo sensor authoring helper."""
+
+    def _build_blueprint(self) -> tuple[newton.ModelBuilder, dict[str, int]]:
+        builder = newton.ModelBuilder()
+        body, joint = _add_revolute(builder, "hinge")
+        site = builder.add_site(body, xform=wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity()), label="tip")
+        builder.add_shape_sphere(body, radius=0.05)
+        tendon = mujoco.add_tendon_fixed(builder, joints=[(joint, 2.0)], label="tendon")
+        actuator = mujoco.add_actuator_motor(builder, target=mujoco.ActuatorTarget.joint(joint))
+        rows = {
+            "jointpos": mujoco.add_sensor(builder, "jointpos", mujoco.SensorObject.joint(joint), label="q"),
+            "framepos": mujoco.add_sensor(
+                builder,
+                mujoco.SensorType.FRAMEPOS,
+                mujoco.SensorObject.site(site),
+                ref=mujoco.SensorObject.xbody(-1),
+                label="tip_pos",
+            ),
+            "tendonpos": mujoco.add_sensor(builder, "tendonpos", mujoco.SensorObject.tendon(tendon)),
+            "actuatorfrc": mujoco.add_sensor(builder, "actuatorfrc", mujoco.SensorObject.actuator(actuator)),
+            "clock": mujoco.add_sensor(builder, "clock", cutoff=10.0, user=(1.0, 2.0)),
+        }
+        return builder, rows
+
+    def test_add_sensor_exports_native_sensors(self):
+        """Sensors authored with the helper reach MuJoCo and read the expected values."""
+        blueprint, rows = self._build_blueprint()
+        self.assertEqual(list(rows.values()), [0, 1, 2, 3, 4])
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.replicate(blueprint, 2)
+        model = builder.finalize()
+        joint_dofs_per_world = blueprint.joint_dof_count
+        np.testing.assert_array_equal(
+            model.mujoco.sensor_objid.numpy()[[0, 5]], [0, joint_dofs_per_world]
+        )  # jointpos rows reference each world's own DOF
+        np.testing.assert_array_equal(model.mujoco.sensor_objid.numpy()[[2, 7]], [0, 1])  # tendon rows
+        np.testing.assert_array_equal(model.mujoco.sensor_objid.numpy()[[3, 8]], [0, 1])  # actuator rows
+
+        state = model.state()
+        joint_q = state.joint_q.numpy()
+        joint_q[:] = [0.3, -0.2]
+        state.joint_q.assign(joint_q)
+        solver = newton.solvers.SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+        mj_model = solver.mj_model
+        self.assertEqual(mj_model.nsensor, 5)
+        np.testing.assert_array_equal(
+            mj_model.sensor_type,
+            [
+                int(mujoco.SensorType.JOINTPOS),
+                int(mujoco.SensorType.FRAMEPOS),
+                int(mujoco.SensorType.TENDONPOS),
+                int(mujoco.SensorType.ACTUATORFRC),
+                int(mujoco.SensorType.CLOCK),
+            ],
+        )
+        np.testing.assert_array_equal(solver.mjc_sensor_to_newton_sensor.numpy(), [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]])
+        np.testing.assert_allclose(mj_model.sensor_user[4], [1.0, 2.0])
+
+        state_out = model.state()
+        solver.step(state, state_out, model.control(), None, 0.001)
+        sensordata = solver.mjw_data.sensordata.numpy()
+        adr = mj_model.sensor_adr
+        q = state_out.joint_q.numpy()
+        np.testing.assert_allclose(sensordata[:, adr[0]], q, atol=1e-5)
+        np.testing.assert_allclose(sensordata[:, adr[2]], 2.0 * q, atol=1e-5)
+        tip = sensordata[:, adr[1] : adr[1] + 3]
+        np.testing.assert_allclose(tip[:, 0], 0.1 * np.cos(q), atol=1e-5)
+        np.testing.assert_allclose(tip[:, 1], 0.1 * np.sin(q), atol=1e-5)
+
+    def test_reject_invalid_sensor_objects(self):
+        """Reject sensors whose object kinds, indices, or worlds are invalid."""
+        builder = newton.ModelBuilder()
+        body, joint = _add_revolute(builder, "hinge")
+        site = builder.add_site(body)
+        shape = builder.add_shape_sphere(body, radius=0.1)
+
+        with self.assertRaisesRegex(ValueError, "require obj"):
+            mujoco.add_sensor(builder, "touch")
+        with self.assertRaisesRegex(ValueError, "accept obj kinds: site"):
+            mujoco.add_sensor(builder, "touch", mujoco.SensorObject.geom(shape))
+        with self.assertRaisesRegex(ValueError, "does not identify a Newton site"):
+            mujoco.add_sensor(builder, "touch", mujoco.SensorObject.site(shape))
+        with self.assertRaisesRegex(ValueError, "identifies a site"):
+            mujoco.add_sensor(builder, "geomdist", mujoco.SensorObject.geom(site), ref=mujoco.SensorObject.geom(shape))
+        with self.assertRaisesRegex(IndexError, "outside"):
+            mujoco.add_sensor(builder, "jointpos", mujoco.SensorObject.joint(joint + 1))
+        with self.assertRaisesRegex(ValueError, "Unknown sensor type"):
+            mujoco.add_sensor(builder, "camprojection", mujoco.SensorObject.site(site))
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:sensor", 0), 0)
+
+    def test_reject_sensor_across_worlds(self):
+        """Reject sensors whose objects belong to another world."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        body, _ = _add_revolute(builder, "hinge")
+        builder.end_world()
+        builder.begin_world()
+        with self.assertRaisesRegex(ValueError, "belongs to world 0"):
+            mujoco.add_sensor(builder, "subtreecom", mujoco.SensorObject.body(body))
+        builder.end_world()
+
+    def test_d6_joint_requires_dof(self):
+        """Multi-axis D6 joints require selecting a local DOF."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_d6(
+            parent=-1,
+            child=body,
+            angular_axes=[
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+            ],
+        )
+        builder.add_articulation([joint])
+        with self.assertRaisesRegex(ValueError, "specify the local dof"):
+            mujoco.add_sensor(builder, "jointpos", mujoco.SensorObject.joint(joint))
+        row = mujoco.add_sensor(builder, "jointpos", mujoco.SensorObject.joint(joint, dof=1))
+        self.assertEqual(builder.custom_attributes["mujoco:sensor_objid"].values[row], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
