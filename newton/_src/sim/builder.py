@@ -1838,6 +1838,13 @@ class ModelBuilder:
         - ``"verbose"`` (``bool``): The ``verbose`` argument passed to
           :meth:`ModelBuilder.collapse_fixed_joints`; log additional information
           when ``True``.
+        - ``"joints_to_keep"`` (``frozenset[str | int]``): The joint labels and
+          original joint indices passed as ``joints_to_keep`` to
+          :meth:`ModelBuilder.collapse_fixed_joints`; empty when none were given.
+        - ``"keep_referenced_bodies"`` (``bool``): The ``keep_referenced_bodies``
+          argument passed to :meth:`ModelBuilder.collapse_fixed_joints`. When
+          ``False``, bodies referenced by ``references="body"`` attributes may
+          appear in ``body_merged_parent`` with parent ``-1``.
 
         After the callback returns, references to bodies follow merges to the
         surviving body and references to removed joints become ``-1``. Bodies
@@ -8644,6 +8651,8 @@ class ModelBuilder:
                     "body_merged_parent": body_merged_parent,
                     "body_merged_transform": body_merged_transform,
                     "verbose": verbose,
+                    "joints_to_keep": frozenset(joints_to_keep),
+                    "keep_referenced_bodies": keep_referenced_bodies,
                 }
             frequency.collapse_fixed_joints_handler(self, handler_context)
 

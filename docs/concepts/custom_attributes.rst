@@ -1042,7 +1042,8 @@ a body's local frame. Two callbacks cover these cases:
   declaring ``references="body"`` or ``references="joint"`` are remapped, so it still
   sees the original indices, and receives a context with ``body_remap``,
   ``joint_remap``, ``articulation_remap``, ``body_merged_parent``,
-  ``body_merged_transform``, and ``verbose``.
+  ``body_merged_transform``, and the ``verbose``, ``joints_to_keep``, and
+  ``keep_referenced_bodies`` arguments.
 
 The collapse handler is part of the frequency registration. Re-registering a frequency
 with a different handler raises an error, and merging copies the source builder's

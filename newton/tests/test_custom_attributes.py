@@ -2724,6 +2724,8 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(context["body_remap"], {-1: -1, root: 0})
         self.assertEqual(context["joint_remap"], {hinge: 0})
         self.assertFalse(context["verbose"])
+        self.assertEqual(context["joints_to_keep"], frozenset())
+        self.assertTrue(context["keep_referenced_bodies"])
         self.assertIn("articulation_remap", context)
         np.testing.assert_allclose(
             wp.transform_get_translation(context["body_merged_transform"][child]), [1.0, 0.0, 0.0]
@@ -2745,17 +2747,24 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
 
     def test_collapse_fixed_joints_merges_custom_referenced_bodies_when_disabled(self):
         """Merge referenced bodies into the world when keep_referenced_bodies is False."""
-        builder = self._build_custom_referenced_bodies()
+        contexts = []
+        builder = self._build_custom_referenced_bodies(
+            collapse_fixed_joints_handler=lambda _builder, context: contexts.append(dict(context))
+        )
 
-        builder.collapse_fixed_joints(keep_referenced_bodies=False)
+        builder.collapse_fixed_joints(joints_to_keep=["missing_joint", 99], keep_referenced_bodies=False)
 
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0]["joints_to_keep"], frozenset({"missing_joint", 99}))
+        self.assertFalse(contexts[0]["keep_referenced_bodies"])
+        self.assertEqual(contexts[0]["body_merged_parent"].get(1), -1)
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.custom_attributes["test:link_body"].values, [-1])
 
-    def _build_custom_referenced_bodies(self):
+    def _build_custom_referenced_bodies(self, collapse_fixed_joints_handler=None):
         """Weld an unreferenced body and two referenced bodies to the world."""
         builder = ModelBuilder()
-        self._add_link_frequency(builder)
+        self._add_link_frequency(builder, collapse_fixed_joints_handler=collapse_fixed_joints_handler)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="shape_anchor",
