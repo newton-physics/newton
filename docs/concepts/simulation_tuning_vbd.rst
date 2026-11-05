@@ -399,11 +399,11 @@ check. Recheck the damping transient at the final resolution too.
 **Initial and rest geometry.** Initial geometry (``points``, ``quaternions``)
 and rest geometry (``rest_points``, ``rest_quaternions``) are distinct; rest
 defaults to the initial shape. For an ordered chain, ``rest_straight=True``
-sets a straight, untwisted rest shape with the initial segment lengths. Do not
-supply explicit rest inputs with it. With nonzero bending stiffness, the cable
-then tends toward straight. The default ``body_frame_origin="com"`` places the
-body origin at the segment midpoint; use the corresponding local offset for
-an endpoint attachment.
+sets zero intrinsic bend and twist without changing the initial geometry
+or segment lengths. Do not supply explicit rest inputs with it. With nonzero
+bending stiffness, the cable then tends toward straight. The default
+``body_frame_origin="com"`` places the body origin at the segment midpoint;
+use the corresponding local offset for an endpoint attachment.
 
 **Attachments and fitting.** Before tuning stiffness, check the initial and
 rest orientations and how the cable ends are attached. Fixing only an
