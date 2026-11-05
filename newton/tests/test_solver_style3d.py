@@ -38,9 +38,9 @@ def _assert_pd_matrix(test, model, solver):
             continue
         weights = np.array([-cot[0] - cot[2], -cot[1] - cot[3], cot[2] + cot[3], cot[0] + cot[1]])
         expected[np.ix_(edge, edge)] += prop[0] * (3.0 / area) * np.outer(weights, weights)
-    actual = np.diag(solver.pd_diags.numpy())
-    counts = solver.pd_non_diags.num_nz.numpy()
-    entries = solver.pd_non_diags.nz_ell.numpy()
+    actual = np.diag(solver._pd_diag.numpy())
+    counts = solver._pd_off_diag.num_nz.numpy()
+    entries = solver._pd_off_diag.nz_ell.numpy()
     for row, count in enumerate(counts):
         columns = entries["column_index"][:count, row]
         test.assertEqual(len(set(columns.tolist())), count)
@@ -240,7 +240,7 @@ def test_high_valence_pd_matrix(test, device):
             solver = newton.solvers.SolverStyle3D(
                 model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
             )
-            test.assertEqual(int(solver.pd_non_diags.num_nz.numpy()[0]), n * (2 if outer_ring else 1))
+            test.assertEqual(int(solver._pd_off_diag.num_nz.numpy()[0]), n * (2 if outer_ring else 1))
             _assert_pd_matrix(test, model, solver)
 
 
