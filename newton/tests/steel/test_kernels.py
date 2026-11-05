@@ -2018,12 +2018,18 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
             # An inactive row past the world's count is never visited.
             types[w, rows - 1] = vlim
     rng = np.random.default_rng(5)
-    J = rng.normal(size=(worlds, rows, dofs)).astype(np.float32)
+    J = rng.normal(size=(worlds, rows, dofs))
+    for w in range(worlds):
+        # Orthogonal velocity-limit rows: projecting one leaves the others' velocities unchanged.
+        vlim_w = np.flatnonzero(types[w] == vlim)
+        J[w, vlim_w] = np.sqrt(dofs) * np.linalg.qr(rng.normal(size=(dofs, len(vlim_w))))[0].T
+    J = J.astype(np.float32)
     Y = (0.5 * J).astype(np.float32)
     diag = (np.einsum("wrd,wrd->wr", J, Y) + 1.0e-3).astype(np.float32)
-    # Every velocity-limit row starts violated, so each visited one carries an impulse.
+    # Every velocity-limit row is violated in the single sweep, so each visited one carries an impulse.
     rhs = np.where(types == vlim, -100.0, -0.5).astype(np.float32)
     mu = np.where(types == friction, 0.5, 0.0).astype(np.float32)
+    v_in = rng.normal(size=worlds * dofs).astype(np.float32)
     for shared_metadata, pair_cache in ((True, False), (False, False), (False, True)):
         kernel = _get_pgs_solve_mf_gs_kernel(
             rows,
@@ -2069,7 +2075,7 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
                 zeros((worlds, rows)),
                 zeros((worlds, rows)),
                 zeros((worlds, 1)),
-                4,
+                1,
                 1.0,
                 0,
                 0,
@@ -2077,7 +2083,7 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
                 0,
                 0,
             ],
-            outputs=[arr(rng.normal(size=worlds * dofs).astype(np.float32))],
+            outputs=[arr(v_in)],
             block_dim=32,
             device=device,
         )
