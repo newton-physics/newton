@@ -8524,6 +8524,20 @@ class TestMuJoCoOptions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "use_mujoco_cpu=True requires use_mujoco_contacts=True"):
             SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
 
+        for flag_contact, disable_contacts in ((True, True), (False, None)):
+            with self.subTest(flag_contact=flag_contact, disable_contacts=disable_contacts):
+                model.mujoco.flag_contact.fill_(flag_contact)
+                solver = SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=True,
+                    use_mujoco_contacts=False,
+                    disable_contacts=disable_contacts,
+                )
+                self.assertTrue(solver.mj_model.opt.disableflags & solver._mujoco.mjtDisableBit.mjDSBL_CONTACT)
+
+        with self.assertRaisesRegex(ValueError, "use_mujoco_cpu=True requires use_mujoco_contacts=True"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=False)
+
         model = self._create_multiworld_model(world_count=2)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, nconmax=64)
         self.assertEqual(solver.mjw_data.naconmax, 128)

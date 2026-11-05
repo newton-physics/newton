@@ -4535,8 +4535,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if update_data_interval is not None:
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
-        if use_mujoco_cpu and not use_mujoco_contacts and not disable_contacts:
-            raise ValueError("use_mujoco_cpu=True requires use_mujoco_contacts=True.")
         self._kinematic_switchable_roots = kinematic_switchable_roots
         if use_speculative_contacts and use_mujoco_contacts:
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
@@ -4779,6 +4777,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             enable_multiccd = flags["multiccd"]
         if disable_contacts is None:
             disable_contacts = not flags["contact"]
+        if use_mujoco_cpu and not use_mujoco_contacts and not disable_contacts:
+            raise ValueError("use_mujoco_cpu=True requires use_mujoco_contacts=True.")
         if disable_sensors is None:
             disable_sensors = not flags["sensor"]
         flags.update(multiccd=enable_multiccd, contact=not disable_contacts, sensor=not disable_sensors)
