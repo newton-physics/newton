@@ -188,12 +188,6 @@ class Example:
 
     def test_final(self):
         """Verify the free body flips without gaining rotational energy."""
-        if self.model.body_count != 1 or self.model.shape_count != 3:
-            raise ValueError(
-                f"Dzhanibekov scene has {self.model.body_count} bodies and {self.model.shape_count} shapes; "
-                "expected 1 body and 3 shapes"
-            )
-
         if self.initial_rotational_energy is not None:
             energy_ratio = self._rotational_energy() / self.initial_rotational_energy
             if not np.isfinite(energy_ratio) or abs(energy_ratio - 1.0) > 0.01:

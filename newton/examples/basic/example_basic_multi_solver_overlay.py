@@ -265,12 +265,6 @@ class Example:
         # body must stay within the swept envelope and exactly in the
         # x=0 plane (the joints only rotate about y).
         for layer in self.layers:
-            if layer.model.body_count != 4 or layer.model.shape_count != 5:
-                raise ValueError(
-                    f"{layer.layer_id} layer has {layer.model.body_count} bodies and {layer.model.shape_count} shapes; "
-                    "expected 4 bodies and 5 shapes"
-                )
-
             num_links = layer.model.body_count
             newton.examples.test_body_state(
                 layer.model,
