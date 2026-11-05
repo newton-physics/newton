@@ -2013,11 +2013,15 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
     parents = np.full((worlds, rows), -1, np.int32)
     counts = np.full(worlds, rows - 2, np.int32)
     for w, vlim_rows in enumerate(layouts.values()):
-        free = [r for r in range(rows - 2) if r not in vlim_rows]
-        for start in free[:15:3]:
+        # Whole contact triplets clear of the velocity-limit rows, since friction also writes its sibling's impulse.
+        start = 0
+        for _ in range(5):
+            while set(range(start, start + 3)) & set(vlim_rows):
+                start += 1
             types[w, start] = contact
             types[w, start + 1 : start + 3] = friction
             parents[w, start + 1 : start + 3] = start
+            start += 3
         types[w, vlim_rows] = vlim
         if vlim_rows and vlim_rows[-1] >= rows - 2:
             counts[w] = rows
