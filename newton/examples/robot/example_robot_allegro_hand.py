@@ -72,70 +72,6 @@ def move_hand(
     sim_time[world_id] += sim_dt
 
 
-@wp.struct
-class _TestMetrics:
-    """Persistent per-world failures and motion maxima for the example checks."""
-
-    target_mismatch: int
-    cube_target_mismatch: int
-    finger_mismatch: int
-    cube_lost: int
-    max_target_change: float
-    max_finger_change: float
-
-
-@wp.kernel
-def _check_hand_state(
-    joint_world_start: wp.array[int],
-    joint_q_start: wp.array[int],
-    body_world_start: wp.array[int],
-    hand_dof_count: int,
-    cube_body_offset: int,
-    joint_target_q: wp.array[float],
-    joint_q: wp.array[float],
-    body_q: wp.array[wp.transform],
-    initial_joint_target_q: wp.array[float],
-    initial_joint_q: wp.array[float],
-    initial_body_q: wp.array[wp.transform],
-    first_finger_targets: wp.array[float],
-    # outputs
-    metrics: wp.array[_TestMetrics],
-):
-    """Accumulate trajectory checks on device without synchronizing each frame."""
-    world = wp.tid()
-    coord_start = joint_q_start[joint_world_start[world]]
-    coord_end = joint_q_start[joint_world_start[world + 1]]
-    reference_start = joint_q_start[joint_world_start[0]]
-    result = metrics[world]
-
-    for i in range(hand_dof_count):
-        qi = coord_start + i
-        if joint_target_q[qi] != joint_target_q[reference_start + i]:
-            result.target_mismatch = 1
-        # Allow small solver/contact differences between otherwise identical worlds.
-        if not wp.abs(joint_q[qi] - joint_q[reference_start + i]) <= 0.01:
-            result.finger_mismatch = 1
-        result.max_target_change = wp.max(
-            result.max_target_change, wp.abs(joint_target_q[qi] - first_finger_targets[qi])
-        )
-        result.max_finger_change = wp.max(result.max_finger_change, wp.abs(joint_q[qi] - initial_joint_q[qi]))
-
-    for qi in range(coord_start + hand_dof_count, coord_end):
-        if joint_target_q[qi] != initial_joint_target_q[qi]:
-            result.cube_target_mismatch = 1
-
-    body_start = body_world_start[world]
-    world_pos = initial_body_q[body_start].p
-    cube_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
-    cube_lower[2] = 0.9
-    cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
-    if not newton.math.vec_inside_limits(body_q[body_start + cube_body_offset].p, cube_lower, cube_upper):
-        result.cube_lost = 1
-
-    # Keep failures sticky so a later recovery cannot hide a bad frame.
-    metrics[world] = result
-
-
 class Example:
     def __init__(self, viewer, args):
         """Build replicated Allegro hands and configure the selected solver."""
@@ -314,6 +250,14 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+        parser.set_defaults(world_count=None)
+        return parser
+
     def test_post_step(self):
         """Accumulate finger and cube checks on device throughout the trajectory."""
         if self._test_metrics is None:
@@ -400,13 +344,69 @@ class Example:
                 indices=hand_body_indices,
             )
 
-    @staticmethod
-    def create_parser():
-        parser = newton.examples.create_parser()
-        newton.examples.add_world_count_arg(parser)
-        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
-        parser.set_defaults(world_count=None)
-        return parser
+
+@wp.struct
+class _TestMetrics:
+    """Persistent per-world failures and motion maxima for the example checks."""
+
+    target_mismatch: int
+    cube_target_mismatch: int
+    finger_mismatch: int
+    cube_lost: int
+    max_target_change: float
+    max_finger_change: float
+
+
+@wp.kernel
+def _check_hand_state(
+    joint_world_start: wp.array[int],
+    joint_q_start: wp.array[int],
+    body_world_start: wp.array[int],
+    hand_dof_count: int,
+    cube_body_offset: int,
+    joint_target_q: wp.array[float],
+    joint_q: wp.array[float],
+    body_q: wp.array[wp.transform],
+    initial_joint_target_q: wp.array[float],
+    initial_joint_q: wp.array[float],
+    initial_body_q: wp.array[wp.transform],
+    first_finger_targets: wp.array[float],
+    # outputs
+    metrics: wp.array[_TestMetrics],
+):
+    """Accumulate trajectory checks on device without synchronizing each frame."""
+    world = wp.tid()
+    coord_start = joint_q_start[joint_world_start[world]]
+    coord_end = joint_q_start[joint_world_start[world + 1]]
+    reference_start = joint_q_start[joint_world_start[0]]
+    result = metrics[world]
+
+    for i in range(hand_dof_count):
+        qi = coord_start + i
+        if joint_target_q[qi] != joint_target_q[reference_start + i]:
+            result.target_mismatch = 1
+        # Allow small solver/contact differences between otherwise identical worlds.
+        if not wp.abs(joint_q[qi] - joint_q[reference_start + i]) <= 0.01:
+            result.finger_mismatch = 1
+        result.max_target_change = wp.max(
+            result.max_target_change, wp.abs(joint_target_q[qi] - first_finger_targets[qi])
+        )
+        result.max_finger_change = wp.max(result.max_finger_change, wp.abs(joint_q[qi] - initial_joint_q[qi]))
+
+    for qi in range(coord_start + hand_dof_count, coord_end):
+        if joint_target_q[qi] != initial_joint_target_q[qi]:
+            result.cube_target_mismatch = 1
+
+    body_start = body_world_start[world]
+    world_pos = initial_body_q[body_start].p
+    cube_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
+    cube_lower[2] = 0.9
+    cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+    if not newton.math.vec_inside_limits(body_q[body_start + cube_body_offset].p, cube_lower, cube_upper):
+        result.cube_lost = 1
+
+    # Keep failures sticky so a later recovery cannot hide a bad frame.
+    metrics[world] = result
 
 
 if __name__ == "__main__":
