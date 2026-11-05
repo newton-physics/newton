@@ -9552,7 +9552,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._sorted_contact_slot_offsets = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
         # Scans run on preallocated scratch, so a capture Warp does not track can record them.
         scan_length = max(cursor_size, self._max_contacts_alloc) + 1
-        self._ordered_scan_scratch = wp.zeros(_scan_scratch_size(scan_length, device), dtype=wp.int32, device=device)
+        self._ordered_scan_scratch = wp.zeros(_scan_scratch_size(scan_length, device), dtype=wp.int64, device=device)
         # scan_with_total clips this length to each scanned view, so every scan covers its whole view.
         self._ordered_scan_length = wp.full(1, scan_length, dtype=wp.int32, device=device)
         self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)

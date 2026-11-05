@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ctypes
+import sys
 import time
 import unittest
 from enum import Enum
@@ -225,37 +227,122 @@ def test_mc_corner_pair_selection(test, device):
 
 
 def test_scan_with_total_boundaries(test, device):
-    """Match hydroelastic count scans at empty, partial, clamped, and multi-chunk sizes."""
-    capacity = 4099
-    counts_np = (np.arange(capacity, dtype=np.int32) % 7) + 1
+    """Match hydroelastic count scans at empty, partial, clamped, single-tile and multi-tile sizes."""
+    for capacity in (2048, 4099):
+        counts_np = (np.arange(capacity, dtype=np.int32) % 7) + 1
+        for case, active_count in (
+            ("empty", 0),
+            ("partial", 37),
+            ("clamped", capacity + 19),
+            ("full", capacity),
+        ):
+            with test.subTest(capacity=capacity, case=case):
+                counts = wp.array(counts_np, dtype=wp.int32, device=device)
+                num_elements = wp.array([active_count], dtype=wp.int32, device=device)
+                fallback_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+                scratch_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+                fallback_total = wp.full(1, -1, dtype=wp.int32, device=device)
+                scratch_total = wp.full(1, -1, dtype=wp.int32, device=device)
+                scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int64, device=device)
 
-    for case, active_count in (
-        ("empty", 0),
-        ("partial", 37),
-        ("clamped", capacity + 19),
-        ("multi_chunk", capacity),
-    ):
-        with test.subTest(case=case):
-            counts = wp.array(counts_np, dtype=wp.int32, device=device)
-            num_elements = wp.array([active_count], dtype=wp.int32, device=device)
-            fallback_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
-            scratch_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
-            fallback_total = wp.full(1, -1, dtype=wp.int32, device=device)
-            scratch_total = wp.full(1, -1, dtype=wp.int32, device=device)
-            scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int32, device=device)
+                scan_with_total(counts, fallback_prefix, num_elements, fallback_total)
+                scan_with_total(counts, scratch_prefix, num_elements, scratch_total, scratch=scratch)
 
-            scan_with_total(counts, fallback_prefix, num_elements, fallback_total)
-            scan_with_total(counts, scratch_prefix, num_elements, scratch_total, scratch=scratch)
+                count = min(max(active_count, 0), capacity)
+                expected_prefix = np.zeros(count, dtype=np.int32)
+                if count > 1:
+                    expected_prefix[1:] = np.cumsum(counts_np[: count - 1], dtype=np.int32)
+                scratch_prefix_np = scratch_prefix.numpy()
+                np.testing.assert_array_equal(scratch_prefix_np[:count], expected_prefix)
+                np.testing.assert_array_equal(scratch_prefix_np[:count], fallback_prefix.numpy()[:count])
+                np.testing.assert_array_equal(scratch_prefix_np[count:], -1)
+                test.assertEqual(int(scratch_total.numpy()[0]), int(counts_np[:count].sum()))
+                test.assertEqual(int(scratch_total.numpy()[0]), int(fallback_total.numpy()[0]))
+                # The scan leaves its scratch zeroed for the next one.
+                test.assertFalse(scratch.numpy().any())
 
-            count = min(max(active_count, 0), capacity)
-            expected_prefix = np.zeros(count, dtype=np.int32)
-            if count > 1:
-                expected_prefix[1:] = np.cumsum(counts_np[: count - 1], dtype=np.int32)
-            scratch_prefix_np = scratch_prefix.numpy()[:count]
-            np.testing.assert_array_equal(scratch_prefix_np, expected_prefix)
-            np.testing.assert_array_equal(scratch_prefix_np, fallback_prefix.numpy()[:count])
-            test.assertEqual(int(scratch_total.numpy()[0]), int(counts_np[:count].sum()))
-            test.assertEqual(int(scratch_total.numpy()[0]), int(fallback_total.numpy()[0]))
+
+def test_scan_with_total_under_captures(test, device):
+    """Replay the scratch scan bitwise like ``array_scan`` in a Warp capture, a conditional body and a driver capture."""
+    capacity = 300_001
+    counts_np = np.random.default_rng(3).integers(0, 9, capacity).astype(np.int32)
+    counts = wp.array(counts_np, dtype=wp.int32, device=device)
+    expected = wp.zeros(capacity, dtype=wp.int32, device=device)
+    wp.utils.array_scan(counts, expected, inclusive=False)
+    expected_np = expected.numpy()
+    num_elements = wp.array([capacity], dtype=wp.int32, device=device)
+    prefix = wp.zeros(capacity, dtype=wp.int32, device=device)
+    total = wp.zeros(1, dtype=wp.int32, device=device)
+    scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int64, device=device)
+    condition = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def scan():
+        scan_with_total(counts, prefix, num_elements, total, scratch=scratch)
+
+    def scan_once():
+        scan()
+        condition.zero_()
+
+    captures = {}
+    with wp.ScopedCapture(device=device) as capture:
+        scan()
+    captures["warp"] = lambda graph=capture.graph: wp.capture_launch(graph)
+    if wp.is_conditional_graph_supported():
+        with wp.ScopedCapture(device=device) as capture:
+            wp.capture_while(condition, scan_once)
+        captures["capture_while"] = lambda graph=capture.graph: (condition.fill_(1), wp.capture_launch(graph))
+    if sys.platform.startswith("linux"):
+        captures["driver"], release = _driver_capture(device, scan)
+    try:
+        for name, replay in captures.items():
+            with test.subTest(capture=name):
+                for _ in range(20):
+                    prefix.zero_()
+                    replay()
+                    np.testing.assert_array_equal(prefix.numpy(), expected_np)
+                    test.assertEqual(int(total.numpy()[0]), int(counts_np.sum()))
+                    test.assertFalse(scratch.numpy().any())
+    finally:
+        if sys.platform.startswith("linux"):
+            release()
+
+
+def _driver_capture(device, fn):
+    """Capture ``fn`` with the CUDA driver alone, as another framework would; return replay and release."""
+    cuda = ctypes.CDLL("libcuda.so.1")
+    handle = ctypes.c_void_p
+    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
+    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
+    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
+    cuda.cuGraphLaunch.argtypes = [handle, handle]
+    cuda.cuGraphExecDestroy.argtypes = [handle]
+    cuda.cuGraphDestroy.argtypes = [handle]
+    stream = handle(wp.get_stream(device).cuda_stream)
+    graph, graph_exec = handle(), handle()
+    thread_local_mode = 1
+    if cuda.cuStreamBeginCapture_v2(stream, thread_local_mode) != 0:
+        raise RuntimeError("cuStreamBeginCapture failed")
+    try:
+        fn()
+    finally:
+        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    if ended != 0:
+        raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
+    instantiated = cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(0))
+    if instantiated != 0:
+        cuda.cuGraphDestroy(graph)
+        raise RuntimeError(f"cuGraphInstantiateWithFlags failed with {instantiated}")
+
+    def replay():
+        launched = cuda.cuGraphLaunch(graph_exec, stream)
+        if launched != 0:
+            raise RuntimeError(f"cuGraphLaunch failed with {launched}")
+
+    def release():
+        cuda.cuGraphExecDestroy(graph_exec)
+        cuda.cuGraphDestroy(graph)
+
+    return replay, release
 
 
 # --- Helper functions ---
@@ -2970,6 +3057,13 @@ add_function_test(
     "test_scan_with_total_boundaries",
     test_scan_with_total_boundaries,
     devices=scan_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_scan_with_total_under_captures",
+    test_scan_with_total_under_captures,
+    devices=cuda_devices,
 )
 
 add_function_test(

@@ -1,0 +1,1 @@
+Speed up the count-aware prefix scans used by hydroelastic contact generation and by `SolverSteel` with `deterministic=RUN_TO_RUN` by running each scan in a single launch. Results are unchanged. No migration is required.
