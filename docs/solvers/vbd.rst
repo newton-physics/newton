@@ -304,15 +304,15 @@ Key Constructor Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
-``soft_contact_damping_bidirectional``, ``rigid_contact_damping_bidirectional``,
-``dat_conservative_bound_relaxation``,
+``soft_contact_damping_bidirectional``, ``dat_conservative_bound_relaxation``,
 ``integrate_with_external_rigid_solver``, and ``collision_pipeline`` with
 ``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
 self-contact on or off, margin and gap, the candidate buffer sizes, the
 topological and rest-shape filters, and the tile solve. ``rigid_*``: the
 compliant ALM switch with its stabilization and retention factors, body-body
-contact history, the per-body contact list capacities, the rigid-soft barrier
-law and DAT, and the structural joint stiffness and damping. Defaults and exact
+contact history and two-sided damping (``rigid_contact_damping_bidirectional``),
+the per-body contact list capacities, the rigid-soft barrier law and DAT, and
+the structural joint stiffness and damping. Defaults and exact
 semantics are in :class:`~newton.solvers.SolverVBD`; recommended values for
 particle systems, and effects and symptoms for rigid bodies and cables, are
 in the :ref:`Tuning VBD` parameter table.
@@ -712,8 +712,7 @@ stability. Damping (``damp_collision``) acts on the gap rate :math:`\dot d =
 Hessian :math:`(\mathtt{soft\_contact\_kd}/h)\,\mathbf{n}\mathbf{n}^T`. By default
 (``soft_contact_damping_bidirectional=True``) it acts while the gap closes and
 while it opens. ``soft_contact_damping_bidirectional=False`` restores the
-closing-only
-damping, which leaves a separating pair undamped.
+closing-only damping, which leaves a separating pair undamped.
 
 *Rigid-soft contact* acts between a soft contact point and one shape of a
 rigid or static body. The point is a particle, or, with full-surface mesh

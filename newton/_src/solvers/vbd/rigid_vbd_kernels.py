@@ -2375,6 +2375,64 @@ def _eval_soft_ef_contact(
 
 
 @wp.func
+def _eval_body_particle_contact_mixed_mu(
+    particle_index: int,
+    particle_pos: wp.vec3,
+    particle_prev_pos: wp.vec3,
+    contact_index: int,
+    body_particle_contact_ke: float,
+    body_particle_contact_kd: float,
+    friction_mu: float,
+    friction_epsilon: float,
+    particle_radius: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    dt: float,
+    contact_damping_bidirectional: bool,
+):
+    """Particle-rigid contact force/Hessian with per-shape mu mixing and the quadratic normal law.
+
+    ``contact_damping_bidirectional`` selects damping on both directions of the
+    normal gap rate (True) or closing-only damping (False).
+    """
+    shape_index = contact_shape[contact_index]
+    mixed_mu = wp.sqrt(friction_mu * shape_material_mu[shape_index])
+    return _eval_body_particle_contact(
+        particle_index,
+        particle_pos,
+        particle_prev_pos,
+        contact_index,
+        body_particle_contact_ke,
+        body_particle_contact_kd,
+        mixed_mu,
+        friction_epsilon,
+        particle_radius,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_qd,
+        body_com,
+        contact_shape,
+        contact_body_pos,
+        contact_body_vel,
+        contact_normal,
+        shape_margin,
+        dt,
+        False,
+        contact_damping_bidirectional,
+    )
+
+
+@wp.func
 def evaluate_body_particle_contact(
     particle_index: int,
     particle_pos: wp.vec3,
@@ -2405,18 +2463,17 @@ def evaluate_body_particle_contact(
     that pass raw mu and need per-shape mixing. It keeps the quadratic
     normal law and one-sided (closing only) damping.
     """
-    shape_index = contact_shape[contact_index]
-    mixed_mu = wp.sqrt(friction_mu * shape_material_mu[shape_index])
-    return _eval_body_particle_contact(
+    return _eval_body_particle_contact_mixed_mu(
         particle_index,
         particle_pos,
         particle_prev_pos,
         contact_index,
         body_particle_contact_ke,
         body_particle_contact_kd,
-        mixed_mu,
+        friction_mu,
         friction_epsilon,
         particle_radius,
+        shape_material_mu,
         shape_body,
         body_q,
         body_q_prev,
@@ -2428,7 +2485,6 @@ def evaluate_body_particle_contact(
         contact_normal,
         shape_margin,
         dt,
-        False,
         False,
     )
 

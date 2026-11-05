@@ -20,11 +20,11 @@ from newton._src.math import orthonormal_basis
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _attachment_auto_rho,
     _eval_body_particle_contact,
+    _eval_body_particle_contact_mixed_mu,
     _eval_soft_ef_contact,
     _reset_world_selected,
     dat_separation_epsilon,
     evaluate_body_particle_attachment_particle_force_hessian,
-    evaluate_body_particle_contact,
     find_edge_edge_separator,
     find_vertex_triangle_separator,
     place_dat_division_plane,
@@ -3236,7 +3236,7 @@ def accumulate_contact_force_and_hessian(
         particle_idx = soft_contact_particle[t_id]
 
         if particle_colors[particle_idx] == current_color:
-            body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
+            body_contact_force, body_contact_hessian = _eval_body_particle_contact_mixed_mu(
                 particle_idx,
                 pos[particle_idx],
                 pos_prev[particle_idx],
@@ -3258,6 +3258,7 @@ def accumulate_contact_force_and_hessian(
                 contact_normal,
                 shape_margin,
                 dt,
+                contact_damping_bidirectional,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)

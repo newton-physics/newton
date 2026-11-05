@@ -3574,18 +3574,20 @@ def _contact_damping_bidirectional_damps_separation(test, device):
         np.testing.assert_allclose(forces[1], expected_forces, rtol=1.0e-5, atol=1.0e-6)
         np.testing.assert_allclose(hessians[1], expected_hessians, rtol=1.0e-5, atol=1.0e-6)
 
-    builder = newton.ModelBuilder()
-    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-    builder.color()
-    model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model)
-    test.assertTrue(solver.soft_contact_damping_bidirectional)
-    test.assertFalse(solver.rigid_contact_damping_bidirectional)
-    solver = newton.solvers.SolverVBD(
-        model, soft_contact_damping_bidirectional=False, rigid_contact_damping_bidirectional=True
-    )
-    test.assertFalse(solver.soft_contact_damping_bidirectional)
-    test.assertTrue(solver.rigid_contact_damping_bidirectional)
+    if wp.get_device(device).is_cpu:
+        # The constructor checks need no GPU; one device is enough.
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.color()
+        model = builder.finalize(device=device)
+        solver = newton.solvers.SolverVBD(model)
+        test.assertTrue(solver.soft_contact_damping_bidirectional)
+        test.assertFalse(solver.rigid_contact_damping_bidirectional)
+        solver = newton.solvers.SolverVBD(
+            model, soft_contact_damping_bidirectional=False, rigid_contact_damping_bidirectional=True
+        )
+        test.assertFalse(solver.soft_contact_damping_bidirectional)
+        test.assertTrue(solver.rigid_contact_damping_bidirectional)
 
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):

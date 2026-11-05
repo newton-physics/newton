@@ -444,7 +444,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         iterations: int | None = None,
         friction_epsilon: float = 1e-2,
         soft_contact_damping_bidirectional: bool = True,
-        rigid_contact_damping_bidirectional: bool = False,
         dat_conservative_bound_relaxation: float = 0.85,
         integrate_with_external_rigid_solver: bool = False,
         # Particle parameters
@@ -475,6 +474,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_contact_hard: bool | None = None,  # Legacy body-body contact hard/soft mode
         rigid_contact_history: bool | None = None,  # Body-body contact numeric warm-start
         rigid_contact_k_start: float | None = None,  # Legacy AVBD contact penalty ramp seed
+        rigid_contact_damping_bidirectional: bool = False,  # Body-body contact damping also while separating
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
         rigid_soft_contact_use_log_barrier: bool = False,  # Use particle-style normal log barrier
@@ -508,19 +508,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Explicit values override the scene.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
-            soft_contact_damping_bidirectional: Whether the damping of soft contacts (soft self-contact and
-                rigid-soft contacts, both driven by ``Model.soft_contact_kd``) also acts while a contact
-                separates. With the default ``True`` the normal damper and its Hessian act while the gap closes
-                and while it opens, for every contact that is still within its contact radius, so a contact
-                removes energy on approach and on rebound and stacked layers come to rest. With ``False`` the
-                damper acts only while the gap closes, which in the implicit step behaves like a restitution
-                spring and can keep a stack of thin layers bouncing (the ``example_cloth_poker_cards`` deck).
-                Two-sided damping also opposes the opening motion, so a contact releases more slowly and a
-                large ``soft_contact_kd`` can hold a separating pair briefly.
-            rigid_contact_damping_bidirectional: The same choice for rigid-rigid contacts, whose damping
-                coefficient is the mean of the two shapes' ``kd``. The default ``False`` keeps the closing-only
-                damping of rigid contacts (while the row carries load). ``True`` also damps the rebound, so
-                rigid contacts return less of the approach speed.
+            soft_contact_damping_bidirectional: Whether the damping of soft contacts (soft self-contact, driven
+                by ``Model.soft_contact_kd``, and rigid-soft contacts, driven by the mean of
+                ``Model.soft_contact_kd`` and the shape's ``Model.shape_material_kd``) also acts while a
+                contact separates. With the default ``True`` the normal damper and its Hessian act while the
+                gap closes and while it opens, for every contact that is still within its contact radius.
+                With ``False`` the damper acts only while the gap closes and leaves the rebound undamped; in
+                the card stack of ``example_cloth_poker_cards`` (issue #3494) that stack kept bouncing, and a
+                larger ``soft_contact_kd`` made it worse. Two-sided damping also opposes the opening motion,
+                so it can delay release, and a large ``soft_contact_kd`` can hold a separating pair briefly.
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
                 (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
                 (``rigid_soft_enable_dat``). It scales every truncation scalar, and each side's motion
@@ -676,6 +672,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     Penalty ramping is deprecated for all uses. Body-particle contacts
                     continue to honor this control during migration; keep the effective beta
                     at ``0`` (the default behavior) and author fixed contact stiffness instead.
+            rigid_contact_damping_bidirectional: Whether body-body contact damping, whose coefficient is the
+                mean of the two shapes' ``kd``, also acts while the bodies separate. The default ``False``
+                keeps the closing-only damping of rigid contacts (while the row carries load). ``True`` also
+                damps the rebound, so rigid contacts return less of the approach speed.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
             rigid_body_particle_contact_buffer_size: Capacity of the per-body soft-contact adjacency
                 list, including currently ineligible mesh candidates. If a body's list overflows, force
