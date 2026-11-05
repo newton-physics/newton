@@ -21,6 +21,7 @@ from newton._src.solvers.steel.solver_steel import (
     _estimate_cholesky_shared_memory,
     _estimate_mf_solve_shared_memory,
     _estimate_tiled_row_shared_memory,
+    _get_pgs_solve_mf_gs_kernel,
     _select_delassus_chunk_size,
     _select_hinv_jt_chunk_size,
     _SteelExecutionPlan,
@@ -1983,6 +1984,117 @@ add_function_test(
     TestSteelMatrixFreePairCache,
     "test_pair_cache_selection",
     test_pair_cache_selection,
+    devices=get_cuda_test_devices(),
+)
+
+
+def test_velocity_limit_pass_visits_every_active_row(test, device):
+    """Project velocity-limit rows at the first and last dense rows and between contacts, and skip inactive rows.
+
+    The pass walks only the span of each world's velocity-limit rows, so this places them at the span's ends.
+    """
+    rows, dofs = 24, 12
+    contact, friction, vlim = (
+        steel_kernels.PGS_CONSTRAINT_TYPE_CONTACT,
+        steel_kernels.PGS_CONSTRAINT_TYPE_FRICTION,
+        steel_kernels.PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+    )
+    layouts = {"first": [0, 1], "last": [22, 23], "between_contacts": [3, 10, 17], "none": []}
+    worlds = len(layouts)
+    types = np.full((worlds, rows), steel_kernels.PGS_CONSTRAINT_TYPE_JOINT_LIMIT, np.int32)
+    parents = np.full((worlds, rows), -1, np.int32)
+    counts = np.full(worlds, rows - 2, np.int32)
+    for w, vlim_rows in enumerate(layouts.values()):
+        free = [r for r in range(rows - 2) if r not in vlim_rows]
+        for start in free[:15:3]:
+            types[w, start] = contact
+            types[w, start + 1 : start + 3] = friction
+            parents[w, start + 1 : start + 3] = start
+        types[w, vlim_rows] = vlim
+        if vlim_rows and vlim_rows[-1] >= rows - 2:
+            counts[w] = rows
+        else:
+            # An inactive row past the world's count is never visited.
+            types[w, rows - 1] = vlim
+    rng = np.random.default_rng(5)
+    J = rng.normal(size=(worlds, rows, dofs)).astype(np.float32)
+    Y = (0.5 * J).astype(np.float32)
+    diag = (np.einsum("wrd,wrd->wr", J, Y) + 1.0e-3).astype(np.float32)
+    # Every velocity-limit row starts violated, so each visited one carries an impulse.
+    rhs = np.where(types == vlim, -100.0, -0.5).astype(np.float32)
+    mu = np.where(types == friction, 0.5, 0.0).astype(np.float32)
+    for shared_metadata, pair_cache in ((True, False), (False, False), (False, True)):
+        kernel = _get_pgs_solve_mf_gs_kernel(
+            rows,
+            1,
+            dofs,
+            wp.get_device(device).arch,
+            has_dense_velocity_limit_rows=True,
+            shared_metadata=shared_metadata,
+            pair_cache=pair_cache,
+        )
+
+        def arr(value, dtype=float):
+            return wp.array(value, dtype=dtype, device=device)
+
+        def zeros(shape, dtype=float):
+            return wp.zeros(shape, dtype=dtype, device=device)
+
+        impulses = zeros((worlds, rows))
+        wp.launch_tiled(
+            kernel,
+            dim=[worlds],
+            inputs=[
+                arr(counts, int),
+                arr(np.arange(worlds * dofs, dtype=np.int32).reshape(worlds, dofs), int),
+                arr(rhs),
+                arr(diag),
+                impulses,
+                arr(J),
+                arr(Y),
+                arr(types, int),
+                arr(parents, int),
+                arr(mu),
+                *(zeros((worlds, rows)) for _ in range(5)),
+                zeros(worlds, int),
+                zeros(worlds, int),
+                zeros((worlds, 4), int),
+                zeros((worlds, 1)),
+                *(zeros((worlds, 1, 6)) for _ in range(4)),
+                zeros((worlds, 1)),
+                arr(np.ones((worlds, rows), np.float32)),
+                zeros((worlds, 1)),
+                arr(np.full((worlds, rows), -1, np.int32), int),
+                zeros((worlds, rows)),
+                zeros((worlds, rows)),
+                zeros((worlds, 1)),
+                4,
+                1.0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ],
+            outputs=[arr(rng.normal(size=worlds * dofs).astype(np.float32))],
+            block_dim=32,
+            device=device,
+        )
+        lam = impulses.numpy()
+        for w, (name, vlim_rows) in enumerate(layouts.items()):
+            with test.subTest(shared_metadata=shared_metadata, pair_cache=pair_cache, layout=name):
+                test.assertTrue(np.all(lam[w, vlim_rows] > 0.0))
+                test.assertFalse(np.any(lam[w, counts[w] :]))
+
+
+class TestSteelMatrixFreeVelocityLimitPass(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelMatrixFreeVelocityLimitPass,
+    "test_velocity_limit_pass_visits_every_active_row",
+    test_velocity_limit_pass_visits_every_active_row,
     devices=get_cuda_test_devices(),
 )
 
