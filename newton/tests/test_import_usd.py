@@ -990,6 +990,58 @@ class TestImportUsdPhysics(unittest.TestCase):
         np.testing.assert_array_equal(sources[0].vertices, sources[2].vertices)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_instanced_meshes_keep_material_selected_uv_sets(self):
+        """Load each instance's UV set from the material bound to that instance."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/Prototype")
+        mesh = UsdGeom.Mesh.Define(stage, "/Prototype/Mesh")
+        mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)])
+        mesh.CreateFaceVertexCountsAttr([4])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        primvars = UsdGeom.PrimvarsAPI(mesh.GetPrim())
+        uv_sets = {
+            "st": [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+            "st1": [(0.5, 0.5), (0.25, 0.5), (0.25, 0.25), (0.5, 0.25)],
+        }
+        for name, values in uv_sets.items():
+            primvar = primvars.CreatePrimvar(name, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+            primvar.Set(Vt.Vec2fArray(values))
+
+        UsdGeom.Xform.Define(stage, "/World")
+        for index, varname in enumerate(uv_sets):
+            material = UsdShade.Material.Define(stage, f"/Looks/Material{index}")
+            surface = UsdShade.Shader.Define(stage, f"/Looks/Material{index}/Surface")
+            surface.CreateIdAttr("UsdPreviewSurface")
+            texture = UsdShade.Shader.Define(stage, f"/Looks/Material{index}/Texture")
+            texture.CreateIdAttr("UsdUVTexture")
+            texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set("albedo.png")
+            reader = UsdShade.Shader.Define(stage, f"/Looks/Material{index}/Reader")
+            reader.CreateIdAttr("UsdPrimvarReader_float2")
+            reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set(varname)
+            texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+            surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+                texture.ConnectableAPI(), "rgb"
+            )
+            material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{index}")
+            instance.AddTranslateOp().Set(Gf.Vec3d(3.0 * index, 0.0, 0.0))
+            instance.GetPrim().GetReferences().AddInternalReference("/Prototype")
+            instance.GetPrim().SetInstanceable(True)
+            binding = UsdShade.MaterialBindingAPI.Apply(instance.GetPrim())
+            binding.Bind(material, UsdShade.Tokens.strongerThanDescendants)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World")
+
+        for index, values in enumerate(uv_sets.values()):
+            source = builder.shape_source[result["path_shape_map"][f"/World/Instance{index}/Mesh"]]
+            np.testing.assert_allclose(source.uvs, values)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
         """Preserve the authored mesh for a disabled collider."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

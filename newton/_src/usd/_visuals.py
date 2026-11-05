@@ -35,9 +35,13 @@ def _geometry_path(prim: Usd.Prim) -> str:
 
 
 def _freeze(value: Any) -> Any:
-    """Return a hashable stand-in for one resolved material property value."""
+    """Return a hashable stand-in for one resolved material property value.
+
+    Arrays, such as decoded textures, are keyed by identity: hashing their contents
+    would copy whole images per prim. The import's material cache keeps them alive.
+    """
     if isinstance(value, np.ndarray):
-        return ("ndarray", value.dtype.str, value.shape, value.tobytes())
+        return ("ndarray", id(value))
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
     if isinstance(value, dict):
@@ -61,7 +65,8 @@ class _UsdVisuals:
         self.stage = stage
         self.material_props_cache: dict[str, dict[str, Any]] = {}
         self.mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
-        self.material_mesh_cache: dict[tuple[str, bool, bool, tuple], Mesh] = {}
+        self.material_mesh_cache: dict[tuple[str | None, ...], Mesh] = {}
+        self.uv_primvar_name_cache: dict[str, str | None] = {}
         # Subset index (-1 for the uncovered-face fallback) and render mesh per instanced mesh.
         self.subset_mesh_cache: dict[tuple, list[tuple[int, Mesh]]] = {}
 
@@ -72,13 +77,28 @@ class _UsdVisuals:
             self.material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return self.material_props_cache[prim_path]
 
+    def _get_geometry_key(self, prim: Usd.Prim, load_uvs: bool) -> tuple[str, str | None]:
+        """Return the prototype geometry path and, when loading UVs, the material-selected UV set.
+
+        A mesh may carry several UV sets, and the material bound to each instance can
+        select a different one, so instances share UV-loaded geometry only per UV set.
+        """
+        if not load_uvs:
+            return _geometry_path(prim), None
+        prim_path = str(prim.GetPath())
+        if prim_path not in self.uv_primvar_name_cache:
+            from ._mesh_loading import _resolve_material_uv_primvar_name  # noqa: PLC0415
+
+            self.uv_primvar_name_cache[prim_path] = _resolve_material_uv_primvar_name(prim)
+        return _geometry_path(prim), self.uv_primvar_name_cache[prim_path]
+
     def get_mesh_cached(self, prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction.
 
         Instance proxies of one USD prototype share the cache entry, since their
         geometry is authored once in the prototype.
         """
-        key = (_geometry_path(prim), load_uvs, load_normals)
+        key = (*self._get_geometry_key(prim, load_uvs), load_uvs, load_normals)
         if key in self.mesh_cache:
             return self.mesh_cache[key]
 
@@ -116,7 +136,7 @@ class _UsdVisuals:
         the returned mesh, so callers must not mutate it per prim.
         """
         material_props = self.get_material_props_cached(prim)
-        key = (_geometry_path(prim), load_uvs, load_normals, _material_key(material_props))
+        key = (*self._get_geometry_key(prim, load_uvs), load_uvs, load_normals, _material_key(material_props))
         mesh = self.material_mesh_cache.get(key)
         if mesh is None:
             mesh = self.get_mesh_cached(prim, load_uvs=load_uvs, load_normals=load_normals).copy()
@@ -260,7 +280,7 @@ class _UsdVisuals:
         cache_key = None
         if prim.IsInstanceProxy():
             cache_key = (
-                _geometry_path(prim),
+                *self._get_geometry_key(prim, load_uvs=True),
                 tuple(_material_key(material_props) for _, material_props in subset_props),
                 _material_key(self.get_material_props_cached(prim)),
             )
