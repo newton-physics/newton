@@ -946,6 +946,50 @@ class TestImportUsdPhysics(unittest.TestCase):
             self.assertIs(meshes[0, name], meshes[2, name])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_instanced_meshes_keep_inherited_display_colors(self):
+        """Keep displayColor inherited from each instance root while sharing geometry."""
+        from pxr import Gf, Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        box = newton.Mesh.create_box(
+            0.5,
+            0.5,
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        UsdGeom.Xform.Define(stage, "/Prototype")
+        mesh = UsdGeom.Mesh.Define(stage, "/Prototype/Mesh")
+        mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in box.vertices.tolist()])
+        mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+        mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+
+        UsdGeom.Xform.Define(stage, "/World")
+        colors = [(1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        for index, color in enumerate(colors):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{index}")
+            instance.GetPrim().GetReferences().AddInternalReference("/Prototype")
+            instance.GetPrim().SetInstanceable(True)
+            # Constant primvars authored on the instance root are inherited by the prototype mesh.
+            primvar = UsdGeom.PrimvarsAPI(instance.GetPrim()).CreatePrimvar(
+                "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant
+            )
+            primvar.Set([Gf.Vec3f(*color)])
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World")
+        sources = [builder.shape_source[result["path_shape_map"][f"/World/Instance{i}/Mesh"]] for i in range(3)]
+
+        for source, color in zip(sources, colors, strict=True):
+            np.testing.assert_allclose(source.color, color, atol=1e-6)
+        self.assertIs(sources[0], sources[1])
+        self.assertIsNot(sources[0], sources[2])
+        np.testing.assert_array_equal(sources[0].vertices, sources[2].vertices)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
         """Preserve the authored mesh for a disabled collider."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
