@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import json
 import os
 import struct
 import tempfile
@@ -9013,6 +9014,16 @@ class TestImportMjcfSensors(unittest.TestCase):
         sensor = '<framepos objtype="site" objname="tip" interval="0.004 -0.001 0"/>'
         with self.assertRaisesRegex(ValueError, "invalid interval '0.004 -0.001 0'"):
             newton.ModelBuilder().add_mjcf(self.mjcf(sensor), parse_sensors=True)
+        # SolverMuJoCo checks attribute rows that did not come from the importer, too.
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.mjcf('<framepos objtype="site" objname="tip"/>'), parse_sensors=True)
+        builder.custom_attributes["mujoco:sensor_attributes"].values[0] = json.dumps({"interval": "0.004 -0.001 0"})
+        with self.assertRaisesRegex(ValueError, "invalid interval '0.004 -0.001 0'"):
+            SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+        # Native MuJoCo reads an empty interval as zero.
+        self.assert_sensors_match_native(
+            self.mjcf('<framepos objtype="site" objname="tip" interval=""/>'), ([0.0] * 7,)
+        )
 
     def test_separate_worlds_need_matching_sensors(self):
         """Reject worlds whose sensors differ from the template world's, which alone are exported."""

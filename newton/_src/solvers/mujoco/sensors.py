@@ -78,9 +78,14 @@ def _sensor_spec_kwargs(attributes: dict[str, str]) -> dict[str, Any]:
     if "interp" in attributes:
         kwargs["interp"] = INTERPOLATION_ORDERS[attributes["interp"]]
     if "interval" in attributes:
-        # MJCF may omit the phase, which defaults to zero.
+        # MJCF may omit the phase or the whole interval, which default to zero.
         interval = [float(value) for value in attributes["interval"].split()]
-        kwargs["interval"] = [*interval, 0.0][:2]
+        if len(interval) > 2:
+            raise ValueError(
+                f"Sensor {attributes.get('name', '')!r} has invalid interval {attributes['interval']!r}; "
+                "expected a period and an optional phase."
+            )
+        kwargs["interval"] = [*interval, 0.0, 0.0][:2]
     if "user" in attributes:
         kwargs["userdata"] = [float(value) for value in attributes["user"].split()]
     return kwargs
