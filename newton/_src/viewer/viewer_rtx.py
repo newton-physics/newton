@@ -298,6 +298,7 @@ class ViewerRTX(ViewerUSD):
         self._displayed_pixels = None
         self._last_frame_is_fullscreen = False
         self._uses_fractional_opacity = False
+        self._pending_fractional_opacity = False
         self._ovstage = None
         self._ovstage_attached = False
         self._ovstage_paths = None
@@ -729,6 +730,7 @@ void main() {
         rp.CreateAttribute("omni:rtx:rt:ambientLight:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.1, 0.1, 0.1))
         rp.CreateAttribute("omni:rtx:rt:demoire", Sdf.ValueTypeNames.Bool).Set(False)
         rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(self._uses_fractional_opacity)
+        self._pending_fractional_opacity = False
         rp.CreateAttribute("omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts", Sdf.ValueTypeNames.Bool).Set(
             True
         )
@@ -1817,6 +1819,13 @@ void main() {
         self._update_ovrtx_point_batches()
         self._update_ovrtx_mesh_materials()
         self._update_ovrtx_mesh_points()
+        if self._pending_fractional_opacity:
+            # Materials and shape opacities can both enable transparency.
+            if "omni:rtx:rt:fractionalOpacity" not in self._rtx_render_settings:
+                self._write_runtime_attribute(
+                    [self._render_product_path], "omni:rtx:rt:fractionalOpacity", np.array([True], dtype=np.bool_)
+                )
+            self._pending_fractional_opacity = False
         if self._runtime_scene_changed:
             self._retire_runtime_materials()
         self._apply_ovstage_population_changes()
@@ -1843,8 +1852,9 @@ void main() {
     def _preview_surface_opacity_value(self, requested_opacity: float) -> float:
         """Map object opacity to RTX PreviewSurface per-hit opacity."""
         requested_opacity = float(np.clip(requested_opacity, 0.0, 1.0))
-        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD and not self._uses_fractional_opacity:
             self._uses_fractional_opacity = True
+            self._pending_fractional_opacity = True
         if requested_opacity <= 0.0 or requested_opacity >= OPAQUE_OPACITY_THRESHOLD:
             return requested_opacity
         return 1.0 - math.pow(1.0 - requested_opacity, 1.0 / self._PREVIEW_SURFACE_OPACITY_LAYERS)
@@ -2498,7 +2508,6 @@ void main() {
             if not self._shape_opacities_changed_device.numpy()[0]:
                 return
         opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
-        had_fractional_opacity = self._uses_fractional_opacity
         for name, shape_indices in self._shape_opacity_batches.items():
             batch_opacities = opacities[shape_indices]
             previous = self._instance_specs.get(name)
@@ -2515,14 +2524,6 @@ void main() {
                 tensors = [np.array([value], dtype=np.float32) for value in values]
                 self._write_runtime_attribute(paths, f"primvars:{attribute}", tensors, is_array=True)
             self._instance_specs[name] = (previous[0], previous[1], (*previous[2][:2], batch_opacities.copy()))
-        if (
-            self._uses_fractional_opacity
-            and not had_fractional_opacity
-            and "omni:rtx:rt:fractionalOpacity" not in self._rtx_render_settings
-        ):
-            self._write_runtime_attribute(
-                [self._render_product_path], "omni:rtx:rt:fractionalOpacity", np.array([True], dtype=np.bool_)
-            )
         if self._model_shape_opacities_device is None:
             self._model_shape_opacities_device = wp.empty_like(self.model.shape_opacity)
             self._shape_opacities_changed_device = wp.zeros(1, dtype=wp.int32, device=self.model.device)
@@ -3166,6 +3167,7 @@ void main() {
         self._shape_opacities_changed_device = None
         self._shape_opacity_batches = {}
         self._uses_fractional_opacity = False
+        self._pending_fractional_opacity = False
 
         self._last_state = None
         self._last_control = None

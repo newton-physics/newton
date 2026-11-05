@@ -542,6 +542,7 @@ class TestViewerRTXRendering(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_runtime_mesh_textures(self):
         """Replace one mesh's texture without changing another mesh sharing its material."""
+        import ovstage
         from PIL import Image
         from pxr import UsdShade
 
@@ -693,6 +694,46 @@ class TestViewerRTXRendering(unittest.TestCase):
                             if viewer.stage.GetPrimAtPath(path).IsA(UsdShade.Material)
                         ]
                         self.assertLessEqual(len(runtime_materials), 2)
+                        # Mesh materials can need transparency even with no model shapes.
+                        opaque_signal = None
+                        for frame, opacity in enumerate((1.0, 0.5, 0.0, 1.0), start=14):
+                            with self.subTest(opacity=opacity):
+                                viewer.begin_frame(frame / 60.0)
+                                viewer.log_mesh(
+                                    "/left",
+                                    left,
+                                    indices,
+                                    uvs=uvs,
+                                    texture=green.copy(),
+                                    opacity=opacity,
+                                    hidden=asynchronous,
+                                )
+                                viewer.end_frame()
+                                rgb = viewer.get_frame().numpy().astype(np.float32)[:, :48]
+                                signal = np.maximum(rgb[:, :, 1] - np.maximum(rgb[:, :, 0], rgb[:, :, 2]), 0.0).sum()
+                                if opaque_signal is None:
+                                    opaque_signal = signal
+                                    self.assertGreater(opaque_signal, 1000.0)
+                                if opacity == 0.0:
+                                    self.assertLess(signal, 0.1 * opaque_signal)
+                                elif opacity == 1.0:
+                                    self.assertGreater(signal, 0.7 * opaque_signal)
+                                else:
+                                    self.assertGreater(signal, 0.1 * opaque_signal)
+                                    self.assertLess(signal, 0.85 * opaque_signal)
+                                if opacity == 0.5:
+                                    query = viewer._get_ovstage_query([viewer._render_product_path])
+                                    token = viewer._ovstage_paths.intern_token("omni:rtx:rt:fractionalOpacity")
+                                    with viewer._ovstage.read_attributes(
+                                        query, [token], ovstage.OrdinalRange.latest(viewer._ovstage_ordinal)
+                                    ) as read:
+                                        read.wait()
+                                        group = read.fetch_next()
+                                        self.assertIsNotNone(group)
+                                        try:
+                                            self.assertTrue(bool(np.from_dlpack(group.dlpack(0)).reshape(-1)[0]))
+                                        finally:
+                                            viewer._ovstage.release_group(group)
                         viewer.clear_model()
                         self.assertFalse(viewer._runtime_prim_handles)
                     finally:
@@ -921,13 +962,16 @@ class TestViewerRTXRendering(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_runtime_opacity_preserves_render_settings(self):
-        """Keep explicit fractional-opacity settings when a shape becomes translucent."""
+        """Keep explicit fractional-opacity settings for translucent shapes and meshes."""
         import ovstage
 
         setting = "omni:rtx:rt:fractionalOpacity"
         builder = newton.ModelBuilder()
         builder.add_shape_box(builder.add_body(), hx=0.25, hy=0.25, hz=0.25)
         model = builder.finalize()
+        points = wp.array([[0, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
         viewer = ViewerRTX(
             width=32,
             height=24,
@@ -938,10 +982,13 @@ class TestViewerRTXRendering(unittest.TestCase):
         try:
             viewer.set_model(model)
             state = model.state()
-            for frame_index, opacity in enumerate((1.0, 0.5)):
-                model.shape_opacity.fill_(opacity)
+            for frame_index, (shape_opacity, mesh_opacity) in enumerate(((1.0, 1.0), (1.0, 0.5), (0.5, 0.5))):
+                model.shape_opacity.fill_(shape_opacity)
                 viewer.begin_frame(frame_index / 60.0)
                 viewer.log_state(state)
+                viewer.log_mesh(
+                    "/mesh", points, indices, uvs=uvs, texture=np.ones((2, 2, 3), dtype=np.uint8), opacity=mesh_opacity
+                )
                 viewer.end_frame()
                 query = viewer._get_ovstage_query([viewer._render_product_path])
                 token = viewer._ovstage_paths.intern_token(setting)
