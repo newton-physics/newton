@@ -19,7 +19,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
-from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
+from ..geometry.utils import compute_aabb, compute_inertia_box, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import dcmotor
@@ -1716,7 +1716,7 @@ def parse_mjcf(
                     scaling = np.asarray(mesh_assets[mesh_name]["scale"]) * scale
                     maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
-                    # Fitting needs only the geometry, not the mesh's mass properties.
+                    # The AABB fit uses the geometry; the inertia-box fit uses the mode's mass properties.
                     m_meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert)
                     # Combine all sub-meshes into one vertex array for fitting.
                     all_vertices, all_faces = _combine_meshes(m_meshes)
@@ -1749,9 +1749,16 @@ def parse_mjcf(
                             center_offset = wp.vec3(*center)
                             tf = tf * wp.transform(center_offset, wp.quat_identity())
                     else:
-                        # Equivalent inertia box mode (default): compute the box whose
-                        # inertia tensor matches the mesh.
-                        com, half_extents, principal_rot = compute_inertia_box_mesh(all_vertices, all_faces.flatten())
+                        # Equivalent inertia box mode (default): compute the box whose inertia tensor
+                        # matches the mesh's in its inertia mode, as mjCMesh::FitGeom does.
+                        properties = mesh_inertia(mesh_name, scaling, maxhullvert)
+                        if properties is None:
+                            # MuJoCo rejects the mesh (mesh_inertia() warns); keep the exact volume's box.
+                            com, half_extents, principal_rot = compute_inertia_box_mesh(
+                                all_vertices, all_faces.flatten()
+                            )
+                        else:
+                            com, half_extents, principal_rot = compute_inertia_box(*properties)
                         # Sort half-extents so the largest is last (Z), matching MuJoCo's
                         # convention where capsule/cylinder axis aligns with Z.
                         he_arr = np.array([*half_extents])

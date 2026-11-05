@@ -154,10 +154,11 @@ For format-specific details, see:
   MuJoCo's default ``legacy`` sums absolute tetrahedron volumes, ``exact`` uses
   the signed volume, ``convex`` the convex hull (limited by ``maxhullvert`` as
   in MuJoCo), and ``shell`` the surface area. A mesh without faces uses
-  MuJoCo's convex hull of all its vertices, not the collision hull. A mesh with
-  too little surface area or volume for its mode, which MuJoCo rejects, adds
-  no mass and logs a warning; use ``inertia="shell"`` to give flat or open
-  surface meshes mass.
+  MuJoCo's convex hull of all its vertices, not the collision hull, and a
+  primitive geom fitted to a mesh is sized and posed by the equivalent inertia
+  box of the mesh's mode, as in MuJoCo. A mesh with too little surface area or
+  volume for its mode, which MuJoCo rejects, adds no mass and logs a warning;
+  use ``inertia="shell"`` to give flat or open surface meshes mass.
 - **URDF**: :meth:`~newton.ModelBuilder.add_urdf` — uses ``<inertial>``
   directly when present; falls back to collision geometry with default density
   otherwise.  By default visual shapes do not contribute mass; however,

@@ -2396,6 +2396,35 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
                     with self.subTest(source=source.split("=")[0], attributes=attributes):
                         self.assert_matches_native(mjcf, directory)
 
+    def test_fitted_primitives_use_inertia_mode(self):
+        """Fit primitives to the equivalent inertia box of the mesh's mode, as MuJoCo does."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for mode in (None, "exact", "convex", "shell"):
+            for geom_type in ("box", "capsule"):
+                mjcf = self.inline_mjcf(f'inertia="{mode}"' if mode else "")
+                mjcf = mjcf.replace('type="mesh"', f'type="{geom_type}"')
+                with self.subTest(mode=mode, geom_type=geom_type):
+                    native = mujoco.MjModel.from_xml_string(mjcf)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    transform = builder.shape_transform[0]
+                    np.testing.assert_allclose(np.array(transform.p), native.geom_pos[0], atol=1e-5)
+                    axes = np.array([wp.quat_rotate(transform.q, wp.vec3(*axis)) for axis in np.eye(3)]).T
+                    native_axes = np.zeros(9)
+                    mujoco.mju_quat2Mat(native_axes, native.geom_quat[0])
+                    native_axes = native_axes.reshape(3, 3)
+                    size, native_size = np.array(builder.shape_scale[0]), native.geom_size[0]
+                    if geom_type == "box":
+                        # Compare the boxes independently of the order and signs of their axes.
+                        np.testing.assert_allclose(
+                            axes @ np.diag(size**2) @ axes.T,
+                            native_axes @ np.diag(native_size**2) @ native_axes.T,
+                            atol=1e-5,
+                        )
+                    else:
+                        np.testing.assert_allclose(size[:2], native_size[:2], rtol=1e-5)
+                        self.assertAlmostEqual(abs(axes[:, 2] @ native_axes[:, 2]), 1.0, places=5)
+
     def test_mesh_without_volume_adds_no_mass(self):
         """A mesh that its mode gives no volume adds no mass, where MuJoCo rejects it; ``shell`` gives it mass."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
