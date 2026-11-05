@@ -833,6 +833,7 @@ class TestDeformableVisualViewer(unittest.TestCase):
         viewer.log_state(model.state())
         offsets = viewer.world_offsets.numpy()
         self.assertEqual(model.deformable_visual_mesh_count, 2)
+        displayed_points = []
         for i, mesh in enumerate(model.deformable_visual_meshes):
             self.assertEqual(mesh.world, i)
             self.assertEqual(mesh.label, "skin")
@@ -843,6 +844,13 @@ class TestDeformableVisualViewer(unittest.TestCase):
             vertices = viewer.objects[name].vertices.numpy()
             expected = np.asarray(source.particle_q) + offsets[i] + (0, 0, 3)
             np.testing.assert_allclose(vertices["pos"], expected)
+            displayed_points.append(expected)
+        points = np.vstack(displayed_points)
+        bounds = viewer._get_scene_bounds()
+        self.assertIsNotNone(bounds)
+        np.testing.assert_allclose(bounds, (points.min(axis=0), points.max(axis=0)))
+        viewer.show_deformable_visual_meshes = False
+        self.assertIsNone(viewer._get_scene_bounds())
 
     def test_non_rendering_backends_ignore_skins(self):
         """Let Null and File ignore the option like their other display flags."""
