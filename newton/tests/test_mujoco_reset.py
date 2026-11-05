@@ -1049,6 +1049,8 @@ class TestMuJoCoCPUWorldInputs(unittest.TestCase):
         for name, flag, row, column in (
             ("equality_constraint_joint1", flags.CONSTRAINT_PROPERTIES, 3, None),
             ("equality_constraint_joint2", flags.CONSTRAINT_PROPERTIES, 3, None),
+            ("equality_constraint_joint1_dof", flags.CONSTRAINT_PROPERTIES, 3, None),
+            ("equality_constraint_joint2_dof", flags.CONSTRAINT_PROPERTIES, 3, None),
             ("equality_constraint_body1", flags.CONSTRAINT_PROPERTIES, 2, None),
             ("actuator_trnid", flags.ACTUATOR_PROPERTIES, 3, 0),
             ("actuator_trnid", flags.ACTUATOR_PROPERTIES, 4, 0),

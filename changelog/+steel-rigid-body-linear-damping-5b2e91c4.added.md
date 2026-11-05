@@ -1,0 +1,1 @@
+Add `steel:rigid_body_linear_damping` to `newton.solvers.SolverSteel`, imported from `physxRigidBody:linearDamping` (default 0). It scales the COM velocity of free bodies and floating bases by `max(1 - d dt, 0)` each step, on every solve route, alongside the existing angular damping.

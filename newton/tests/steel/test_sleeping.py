@@ -3,7 +3,10 @@
 
 """Experimental passive-island sleeping of SolverSteel."""
 
+import ctypes
 import functools
+import inspect
+import sys
 import unittest
 import warnings
 from pathlib import Path
@@ -14,7 +17,9 @@ import warp as wp
 
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
-from newton.solvers import SolverSteel
+from newton._src.solvers.steel.friction_patches import _FLOOD_MIN_CONTACTS
+from newton._src.solvers.steel.sleeping import _SleepState
+from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -480,7 +485,7 @@ def _drive_scene(device, sleeping):
     return model, newton.CollisionPipeline(model, rigid_contact_max=64), solver, control, link, box
 
 
-def _compliance_scene(device, sleeping):
+def _compliance_scene(device, sleeping, response="immediate"):
     """Two independent spheres resting on implicit spring-damper contacts."""
     builder = newton.ModelBuilder()
     builder.rigid_gap = 0.005
@@ -505,6 +510,8 @@ def _compliance_scene(device, sleeping):
         baumgarte=0.05,
         articulation_constraint_max=32,
         free_body_constraint_max=32,
+        articulated_contact_response=response,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         **(SLEEP if sleeping else {}),
     )
     return model, pipeline, contacts, solver
@@ -1170,6 +1177,125 @@ def test_frozen_patch_carry_copies_the_previous_history(test, device):
         np.testing.assert_array_equal(getattr(current, name).numpy()[:count], before[name], err_msg=name)
 
 
+def _frozen_plates(device):
+    """Settled plates of box tiles on the ground, each pair large enough for the warp flood."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.rigid_gap = 0.002
+    builder.add_ground_plane()
+    tile = 0.03
+    for level in range(3):
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.01 + 0.0205 * level), wp.quat_identity()))
+        for ix in range(4):
+            for iy in range(4):
+                offset = wp.vec3((ix - 1.5) * 2 * tile, (iy - 1.5) * 2 * tile, 0.0)
+                builder.add_shape_box(body, xform=wp.transform(offset, wp.quat_identity()), hx=tile, hy=tile, hz=0.01)
+    model = builder.finalize(device=device)
+    model.rigid_contact_max = 1024
+    solver = SolverSteel(model, solve_mode="matrix_free", iterations=8, free_body_constraint_max=2048)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=1024)
+    contacts = pipeline.contacts()
+    control = model.control()
+    state_0, state_1 = model.state(), model.state()
+    for _ in range(10):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    pipeline.collide(state_0, contacts)
+    model.body_q.assign(state_0.body_q)
+    return model, contacts, solver
+
+
+_CONTACT_FIELDS = ("shape0", "shape1", "point0", "point1", "normal", "margin0", "margin1")
+
+
+def test_frozen_pair_floods_on_device_when_its_carry_fails(test, device):
+    """A frozen pair whose contacts no longer repeat floods on a warp and matches the serial flood exactly.
+
+    Reversing the contact order breaks the carry, as an unordered collision pipeline does every step.
+    """
+    model, contacts, solver = _frozen_plates(device)
+    patches = solver._friction_patches
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    original = {name: getattr(contacts, "rigid_contact_" + name).numpy().copy() for name in _CONTACT_FIELDS}
+    reversed_order = {}
+    for name, values in original.items():
+        reversed_order[name] = values.copy()
+        reversed_order[name][:count] = values[:count][::-1]
+    state = model.state()
+    frozen = wp.ones(model.body_count, dtype=int, device=model.device)
+
+    def run(device_flood):
+        patches.device_flood = device_flood
+        patches.previous.valid.zero_()
+        patches.build(model, state, contacts, shape_material_mu=solver._shape_mu)
+        patches.store(state)
+        for name, values in reversed_order.items():
+            getattr(contacts, "rigid_contact_" + name).assign(values)
+        patches.build(model, state, contacts, shape_material_mu=solver._shape_mu, frozen_bodies=frozen)
+        listed = int(patches._flood_pair_count.numpy()[0])
+        for name, values in original.items():
+            getattr(contacts, "rigid_contact_" + name).assign(values)
+        outputs = {"frame." + name: getattr(patches.current, name) for name in _PATCH_FRAME_OUTPUTS}
+        outputs.update({"view." + name: getattr(patches.view, name) for name in _PATCH_VIEW_OUTPUTS})
+        return listed, {name: array.numpy().copy() for name, array in outputs.items()}
+
+    _, serial = run(False)
+    listed, flooded = run(True)
+    _, sizes = np.unique(patches.current.keys.numpy()[:count], return_counts=True)
+    large_pairs = int(np.count_nonzero(sizes > _FLOOD_MIN_CONTACTS))
+    test.assertGreater(large_pairs, 0, "no body pair was large enough for the warp flood")
+    test.assertEqual(listed, large_pairs, "a frozen pair skipped the warp flood")
+    source = flooded["frame.source"][:count]
+    test.assertLess(int(np.count_nonzero(source >= 0)), count, "the frozen pairs carried their history")
+    for name, value in serial.items():
+        np.testing.assert_array_equal(flooded[name], value, err_msg=f"{name} differs between the floods")
+
+
+_PATCH_FRAME_OUTPUTS = ("owner", "members", "valid", "source", "anchor_a", "anchor_b", "displacement")
+_PATCH_VIEW_OUTPUTS = ("weight", "next_contact", "point_a", "point_b", "phi")
+
+
+def test_frozen_pair_carry_maps_regions_across_frames(test, device):
+    """Carry each frozen contact's source and region owner after its buffer slot and sorted position move.
+
+    The pairs' buffer blocks are reversed, and the first sorted pair loses a contact, so it rebuilds and
+    every later pair starts one sorted position earlier than in the previous frame.
+    """
+    model, contacts, solver = _frozen_plates(device)
+    patches = solver._friction_patches
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    state = model.state()
+    patches.previous.valid.zero_()
+    patches.build(model, state, contacts, shape_material_mu=solver._shape_mu)
+    patches.store(state)
+    previous_owner = patches.previous.owner.numpy()[:count].copy()
+    keys = patches.previous.keys.numpy()[:count]
+    _, starts = np.unique(keys, return_index=True)
+    pairs = np.split(patches.previous.indices.numpy()[:count], starts[1:])
+    # New slot i holds the previous frame's contact perm[i]; each pair keeps its contacts' relative order.
+    perm = np.concatenate([*pairs[:0:-1], pairs[0][:-1]])
+    new_count = count - 1
+    for name in _CONTACT_FIELDS:
+        array = getattr(contacts, "rigid_contact_" + name)
+        values = array.numpy().copy()
+        values[:new_count] = values[perm]
+        array.assign(values)
+    contacts.rigid_contact_count.fill_(new_count)
+    frozen = wp.ones(model.body_count, dtype=int, device=model.device)
+    patches.build(model, state, contacts, shape_material_mu=solver._shape_mu, frozen_bodies=frozen)
+    test.assertEqual(int(patches._flood_pair_count.numpy()[0]), int(len(pairs[0]) - 1 > _FLOOD_MIN_CONTACTS))
+    slot = np.full(count, -1)
+    slot[perm] = np.arange(new_count)
+    carried = np.arange(new_count - (len(pairs[0]) - 1))
+    source = patches.current.source.numpy()[carried]
+    owner = patches.current.owner.numpy()[carried]
+    np.testing.assert_array_equal(source, perm[carried])
+    np.testing.assert_array_equal(owner, slot[previous_owner[perm[carried]]])
+    regions = np.unique(owner)
+    test.assertGreater(len(regions), 4, "too few friction regions to exercise the carry")
+    test.assertLess(len(regions), len(carried), "no region spans several contacts")
+
+
 def test_successive_notifications_keep_every_wake(test, device):
     """Keep the first notification's wake through a second notification before the next step."""
     model, pipeline, solver, states = _two_world_boxes(device)
@@ -1396,6 +1522,8 @@ for _name in (
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",
     "test_frozen_patch_carry_copies_the_previous_history",
+    "test_frozen_pair_floods_on_device_when_its_carry_fails",
+    "test_frozen_pair_carry_maps_regions_across_frames",
     "test_successive_notifications_keep_every_wake",
     "test_replaced_property_array_wakes_its_island",
     "test_resized_property_array_is_rejected",
@@ -2084,6 +2212,725 @@ for _name in (
     "test_nonfinite_prescribed_velocity_wakes_before_allocation",
 ):
     add_function_test(TestSteelSleepWorkSkipping, _name, globals()[_name], devices=devices)
+
+
+COLORED_STEPS = 240
+
+
+def test_colored_separated_boxes_sleep_and_wake_like_immediate(test, device):
+    """Sleep, force-wake and contact-wake separated boxes at the same steps as immediate, with units only while awake."""
+    traces = {}
+    for response in ("immediate", "propagation_colored"):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for x in (0.0, 0.5):
+            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+        model.rigid_contact_max = 64
+        scene = _Heap(device, response, model=model, sleep_quiet_time=0.05, friction_anchor_beta=0.0)
+        awake, poses, units = [], [], []
+        # One step of this force slides box 0 into box 1, which no force or reset touches.
+        force = np.zeros((2, 6), dtype=np.float32)
+        force[0, 0] = 8000.0
+        for k in range(240):
+            if k == 120:
+                scene.state_in.body_f.assign(force)
+            scene.step(clear=k != 120)
+            awake.append(scene.solver._sleeping.body_awake.numpy().copy())
+            poses.append(scene.state_in.body_q.numpy().copy())
+            if response == "propagation_colored":
+                _contact, body_a, body_b = scene.units()
+                units.append([int(np.sum((body_a == b) | (body_b == b))) for b in (0, 1)])
+        traces[response] = (np.array(awake), np.array(poses), np.array(units))
+    immediate, colored = traces["immediate"], traces["propagation_colored"]
+    awake, poses, units = colored
+    slept = int(np.argmax(awake.sum(axis=1) == 0))
+    test.assertGreater(slept, 0, "both boxes must fall asleep before the force")
+    test.assertLess(slept, 120)
+    hit = 120 + int(np.argmax(awake[120:, 1] == 1))
+    test.assertGreater(hit, 120, "box 1 must wake after the force")
+    np.testing.assert_array_equal(awake[: hit + 1], immediate[0][: hit + 1])
+    np.testing.assert_allclose(poses[:slept], immediate[1][:slept], atol=1.0e-4, rtol=0)
+    # Units exist only for a box that was awake during the step, and never for one asleep before and after it.
+    test.assertTrue(np.all(units[:slept] > 0))
+    np.testing.assert_array_equal(units[slept + 1 : 120], 0)
+    np.testing.assert_array_equal(awake[120:hit], [[1, 0]] * (hit - 120))
+    test.assertGreater(units[120, 0], 0)
+    np.testing.assert_array_equal(units[120:hit, 1], 0)
+    test.assertGreater(units[hit + 1, 1], 0)
+    test.assertGreater(poses[hit - 1, 0, 0], poses[119, 0, 0] + 0.05)
+    test.assertGreater(poses[-1, 1, 0], poses[hit, 1, 0] + 0.05)
+    np.testing.assert_array_equal(awake[-1], [0, 0])
+    np.testing.assert_array_equal(immediate[0][-1], [0, 0])
+
+
+def test_colored_compliant_contacts_sleep_and_wake_like_immediate(test, device):
+    """Sleep and push-wake spheres on compliant contacts at the steps immediate does, eager and captured."""
+    stiffness = 3000.0
+    force = np.zeros((2, 6), dtype=np.float32)
+    force[0, 0] = 5.0
+    traces = {}
+    for response, graph in (("immediate", False), ("propagation_colored", False), ("propagation_colored", True)):
+        model, pipeline, contacts, solver = _compliance_scene(device, sleeping=True, response=response)
+        states = [model.state(), model.state()]
+        control = model.control()
+        pushes = [wp.zeros_like(states[0].body_f), wp.array(force, dtype=wp.spatial_vector, device=device)]
+
+        def step(push, pipeline=pipeline, contacts=contacts, solver=solver, states=states, control=control):
+            # Fixed buffers, so the same work can be captured.
+            wp.copy(states[0].body_f, push)
+            pipeline.collide(states[0], contacts)
+            contacts.rigid_contact_stiffness.fill_(stiffness)
+            contacts.rigid_contact_damping.fill_(20.0)
+            contacts.rigid_contact_friction.fill_(1.0)
+            solver.step(states[0], states[1], control, contacts, DT)
+            for name in _FIELDS:
+                wp.copy(getattr(states[0], name), getattr(states[1], name))
+
+        if graph:
+            graphs = []
+            for push in pushes:
+                with wp.ScopedCapture(device=model.device) as capture:
+                    step(push)
+                graphs.append(capture.graph)
+
+            def run(push, graphs=graphs):
+                wp.capture_launch(graphs[push])
+        else:
+
+            def run(push, step=step, pushes=pushes):
+                step(pushes[push])
+
+        awake, poses = [], []
+        for k in range(420):
+            run(1 if 400 <= k < 405 else 0)
+            awake.append(solver._sleeping.body_awake.numpy().copy())
+            poses.append(states[0].body_q.numpy().copy())
+        solver.check_constraint_capacity()
+        traces[response, graph] = (np.array(awake), np.array(poses))
+    awake, poses = traces["propagation_colored", False]
+    slept = int(np.argmax(awake.sum(axis=1) == 0))
+    test.assertGreater(slept, 0, "both spheres must fall asleep before the push")
+    test.assertLess(slept, 400)
+    np.testing.assert_array_equal(awake, traces["immediate", False][0])
+    np.testing.assert_allclose(poses, traces["immediate", False][1], atol=1.0e-4, rtol=0)
+    # Asleep, the spheres stay frozen; the push wakes and moves sphere 0 only.
+    np.testing.assert_array_equal(poses[slept:400], np.broadcast_to(poses[slept], poses[slept:400].shape))
+    np.testing.assert_array_equal(awake[404], [1, 0])
+    test.assertGreater(float(poses[-1, 0, 0]), float(poses[399, 0, 0]))
+    np.testing.assert_array_equal(poses[400:, 1], np.broadcast_to(poses[399, 1], poses[400:, 1].shape))
+    # Captured replay matches eager stepping bitwise.
+    np.testing.assert_array_equal(traces["propagation_colored", True][0], awake)
+    np.testing.assert_array_equal(traces["propagation_colored", True][1], poses)
+
+
+def test_colored_units_omit_exactly_the_sleeping_islands(test, device):
+    """Color every contact of an awake island and none of a skipped one; keep all of them with skipping off."""
+    for skip in (True, False):
+        with test.subTest(skip=skip):
+            scene = _Heap(device, sleep_skip_constraints=skip)
+            scene.step(COLORED_STEPS)
+            asleep = scene.asleep_this_step()
+            body0, body1 = scene.contact_bodies()
+            sleeping_contacts = _touches(body0, asleep) | _touches(body1, asleep)
+            test.assertGreater(int(sleeping_contacts.sum()), 0, "the heap must have sleeping contacts")
+            test.assertGreater(int((~sleeping_contacts).sum()), 0, "the arm must keep awake contacts")
+            contact, body_a, body_b = scene.units()
+            test.assertEqual(len(contact), len(set(contact.tolist())))
+            path = scene.solver._contact_path.numpy()[: len(body0)]
+            np.testing.assert_array_equal(np.sort(contact), np.flatnonzero(path == 2))
+            expected = np.flatnonzero(~sleeping_contacts) if skip else np.arange(len(body0))
+            np.testing.assert_array_equal(np.sort(contact), expected)
+            rows_touch = _touches(scene.propagation_row_bodies(), asleep)
+            units_touch = _touches(body_a, asleep) | _touches(body_b, asleep)
+            if skip:
+                test.assertFalse(units_touch.any())
+                test.assertFalse(rows_touch.any())
+            else:
+                test.assertEqual(int(units_touch.sum()), int(sleeping_contacts.sum()))
+                test.assertTrue(rows_touch.any())
+
+
+def test_colored_propagation_overflow_vetoes_sleep(test, device):
+    """Keep worlds whose propagation rows overflowed awake; the same scene sleeps when the veto ignores it."""
+    module = inspect.getmodule(_SleepState)
+    launch = wp.launch
+    asleep = {}
+    for ignore_overflow in (False, True):
+        # The settled arm and heap need more rows than this; once they sleep they need fewer.
+        scene = _Heap(device, propagation_constraint_max=300, warn_constraint_overflow=False)
+        clean = wp.zeros_like(scene.solver.constraint_overflow)
+
+        def veto_without_overflow(kernel, dim, inputs=None, *args, scene=scene, clean=clean, **kwargs):
+            if kernel in (module._veto_unsafe_islands, module._quiet_components):
+                inputs = [clean if value is scene.solver.constraint_overflow else value for value in inputs]
+            return launch(kernel, dim, inputs, *args, **kwargs)
+
+        with patch.object(module.wp, "launch", veto_without_overflow if ignore_overflow else launch):
+            scene.step(COLORED_STEPS)
+        marks = scene.solver.constraint_row_watermarks()
+        test.assertGreater(marks["propagation_overflow_world_steps"], 0, "the propagation rows must overflow")
+        test.assertEqual(marks["articulation_overflow_world_steps"], 0)
+        test.assertEqual(marks["free_body_overflow_world_steps"], 0)
+        test.assertTrue(scene.solver.constraint_overflow.numpy()[: scene.model.world_count].all())
+        asleep[ignore_overflow] = int(np.sum(scene.solver._sleeping.art_awake.numpy() == 0))
+    test.assertEqual(asleep[False], 0)
+    test.assertGreater(asleep[True], 0)
+
+
+def test_colored_force_reset_and_notification_wake_islands(test, device):
+    """Wake a forced island, a masked-reset world and a notified body's island, and color their contacts again."""
+    scene = _Heap(device)
+    scene.step(COLORED_STEPS)
+    sleeping = scene.solver._sleeping
+    worlds = scene.model.world_count
+    bodies_per_world = scene.model.body_count // worlds
+    body_world = np.arange(scene.model.body_count) // bodies_per_world
+    islands = sleeping.body_island.numpy()
+    asleep = np.flatnonzero(sleeping.body_awake.numpy() == 0)
+    test.assertEqual(len(asleep) % worlds, 0)
+    test.assertGreater(len(asleep), 0)
+
+    def colored_bodies():
+        _contact, body_a, body_b = scene.units()
+        return set(body_a.tolist()) | set(body_b.tolist())
+
+    # Force: the forced body's island wakes alone, in world 1.
+    target = int(asleep[body_world[asleep] == 1][0])
+    force = np.zeros((scene.model.body_count, 6), dtype=np.float32)
+    force[target, 2] = 5.0
+    scene.state_in.body_f.assign(force)
+    before = sleeping.body_awake.numpy().copy()
+    scene.step(clear=False)
+    awake = sleeping.body_awake.numpy()
+    woken = np.flatnonzero((before == 0) & (awake == 1))
+    test.assertIn(target, woken)
+    test.assertTrue(np.all(body_world[woken] == 1))
+    test.assertIn(target, colored_bodies())
+    np.testing.assert_array_equal(islands[woken], islands[target])
+
+    # Masked reset: world 2 wakes, other worlds keep their sleepers.
+    before = sleeping.body_awake.numpy().copy()
+    mask = np.zeros(worlds + 1, dtype=bool)
+    mask[2] = True
+    scene.solver.reset(scene.state_in, world_mask=wp.array(mask, dtype=wp.bool, device=device))
+    after = sleeping.body_awake.numpy()
+    test.assertTrue(np.all(after[body_world == 2] == 1))
+    np.testing.assert_array_equal(after[body_world != 2], before[body_world != 2])
+    scene.step()
+    test.assertFalse(scene.asleep_this_step()[body_world == 2].any())
+    count = int(scene.contacts.rigid_contact_count.numpy()[0])
+    contact_world = scene.solver._contact_world.numpy()[:count]
+    # Contacts beyond the gap limit get no rows and are never colored.
+    routed = scene.solver._contact_path.numpy()[:count] == 2
+    contact, _body_a, _body_b = scene.units()
+    np.testing.assert_array_equal(
+        np.sort(contact[contact_world[contact] == 2]), np.flatnonzero((contact_world == 2) & routed)
+    )
+    test.assertTrue(set(np.flatnonzero((body_world == 2) & (before == 0)).tolist()) <= colored_bodies())
+
+    # Notification: changing one sleeping body's mass wakes its island in world 3 only.
+    before = sleeping.body_awake.numpy().copy()
+    target = int(np.flatnonzero((before == 0) & (body_world == 3))[0])
+    mass = scene.model.body_mass.numpy()
+    mass[target] *= 2.0
+    scene.model.body_mass.assign(mass)
+    scene.solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    scene.step()
+    awake = sleeping.body_awake.numpy()
+    woken = np.flatnonzero((before == 0) & (awake == 1))
+    test.assertIn(target, woken)
+    test.assertTrue(np.all(body_world[woken] == 3))
+    test.assertIn(target, colored_bodies())
+
+
+def test_colored_sleeping_rollout_is_independent_of_world_order(test, device):
+    """Give each world the same trajectory and sleep pattern whichever position it takes in the model."""
+    offsets = (0.0, 0.05)
+    results = []
+    for order in ((0, 1), (1, 0)):
+        scene = _Heap(device, worlds=2)
+        model = scene.model
+        coord_world = model.joint_q.numpy().size // 2
+        q = scene.state_in.joint_q.numpy()
+        arm = np.arange(6)
+        for position, variant in enumerate(order):
+            q[position * coord_world + arm] += offsets[variant]
+        scene.state_in.joint_q.assign(q)
+        newton.eval_fk(model, scene.state_in.joint_q, scene.state_in.joint_qd, scene.state_in)
+        scene.step(COLORED_STEPS)
+        per_variant = {}
+        for position, variant in enumerate(order):
+            per_variant[variant] = [
+                values.reshape(2, -1, *values.shape[1:])[position]
+                for values in (
+                    scene.state_in.body_q.numpy(),
+                    scene.state_in.body_qd.numpy(),
+                    scene.state_in.joint_q.numpy(),
+                    scene.solver._sleeping.art_awake.numpy(),
+                )
+            ]
+        results.append(per_variant)
+    for variant in (0, 1):
+        for a, b in zip(results[0][variant], results[1][variant], strict=True):
+            np.testing.assert_array_equal(a, b, err_msg=f"offset {offsets[variant]}")
+        test.assertGreater(int(np.sum(results[0][variant][3] == 0)), 0)
+    test.assertFalse(np.array_equal(results[0][0][0], results[0][1][0]), "the two worlds must differ")
+
+
+def test_colored_captured_sleep_and_wake_match_eager(test, device):
+    """Cold-capture one step, then match an eager twin bitwise, with identical worlds, through sleeping and a force wake.
+
+    The joint wrenches match to rounding as well.
+    """
+    captured, eager = _Heap(device), _Heap(device)
+    for scene in (captured, eager):
+        scene.observables = scene.solver.observables({SolverBase.ObservableKind.BODY_PARENT_F})
+    with wp.ScopedCapture(device) as capture:
+        captured.step(clear=False)
+    worlds = eager.model.world_count
+    force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+    for k in range(COLORED_STEPS + 20):
+        if k == COLORED_STEPS:
+            asleep = np.flatnonzero(eager.solver._sleeping.body_awake.numpy() == 0)
+            test.assertGreater(len(asleep), 0)
+            force[asleep[0], 2] = 5.0
+        for scene in (captured, eager):
+            scene.state_in.body_f.assign(force)
+        wp.capture_launch(capture.graph)
+        eager.step(clear=False)
+        a, b = captured.snapshot(), eager.snapshot()
+        for name in _FIELDS:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"replay {k} {name}")
+            if k < COLORED_STEPS:
+                per_world = b[name].reshape(worlds, -1, *b[name].shape[1:])
+                for world in range(1, worlds):
+                    np.testing.assert_array_equal(per_world[world], per_world[0], err_msg=f"world {world} {name} {k}")
+        np.testing.assert_array_equal(
+            captured.solver._sleeping.art_awake.numpy(), eager.solver._sleeping.art_awake.numpy()
+        )
+        wrench = eager.observables.body_parent_f.numpy()
+        # The wrench sums are not ordered, so replay and eager agree only to rounding.
+        np.testing.assert_allclose(
+            captured.observables.body_parent_f.numpy(), wrench, rtol=1.0e-5, atol=1.0e-4, err_msg=f"replay {k}"
+        )
+        if k == COLORED_STEPS - 1:
+            # The arm's joints carry its weight while the heap sleeps, so the match is not trivial.
+            test.assertGreater(np.abs(wrench).max(), 1.0)
+        force[:] = 0.0
+    test.assertEqual(int(captured.solver._sleeping.body_awake.numpy()[asleep[0]]), 1)
+
+
+def test_colored_separated_stacks_sleep_like_immediate(test, device):
+    """Separated box stacks sleep within a few steps of immediate and leave no colored units."""
+    scene_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    for _ in range(4):
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for ix in range(3):
+            for iy in range(3):
+                for iz in range(3):
+                    body = world.add_body(
+                        xform=wp.transform(wp.vec3(0.3 * ix, 0.3 * iy, 0.051 + 0.102 * iz), wp.quat_identity())
+                    )
+                    world.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
+        scene_builder.add_world(world)
+    scene_builder.add_ground_plane()
+    model = scene_builder.finalize(device=device)
+    model.rigid_contact_max = 8192
+    first_sleep, final_asleep = {}, {}
+    for response in ("immediate", "propagation_colored"):
+        scene = _Heap(device, response, model=model)
+        first = np.full(model.articulation_count, -1)
+        for k in range(COLORED_STEPS):
+            scene.step()
+            asleep = scene.solver._sleeping.art_awake.numpy() == 0
+            first[(first < 0) & asleep] = k
+            if response == "propagation_colored" and k == 0:
+                test.assertGreater(len(scene.units()[0]), 0)
+        first_sleep[response], final_asleep[response] = first, asleep
+    test.assertEqual(len(scene.units()[0]), 0)
+    test.assertTrue(final_asleep["immediate"].all())
+    test.assertTrue(final_asleep["propagation_colored"].all())
+    delta = np.abs(first_sleep["propagation_colored"] - first_sleep["immediate"])
+    test.assertLessEqual(int(delta.max()), 6)
+
+
+def _dumbbells_model(device, count=2, welded=False):
+    """Two-link floating chains resting apart on a ground plane, so their trees go through propagation.
+
+    ``welded`` adds a box welded to the world away from the chains, an articulation that never sleeps.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_ground_plane()
+    for i in range(count):
+        x = 0.6 * i
+        a = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(a, hx=0.08, hy=0.04, hz=0.04)
+        b = builder.add_link(xform=wp.transform(wp.vec3(x + 0.16, 0.0, 0.04), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.08, hy=0.04, hz=0.04)
+        root = builder.add_joint_free(child=a, parent_xform=wp.transform(wp.vec3(x, 0.0, 0.04), wp.quat_identity()))
+        hinge = builder.add_joint_revolute(
+            parent=a,
+            child=b,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(-0.08, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([root, hinge])
+    if welded:
+        pose = wp.transform(wp.vec3(-1.0, 0.0, 0.2), wp.quat_identity())
+        post = builder.add_link(xform=pose)
+        builder.add_shape_box(post, hx=0.05, hy=0.05, hz=0.05)
+        builder.add_articulation([builder.add_joint_fixed(-1, post, parent_xform=pose)])
+    model = builder.finalize(device=device)
+    model.rigid_contact_max = 128
+    return model
+
+
+def test_colored_sleeping_skips_tree_and_solve_work(test, device):
+    """Leave sleeping trees unfactored, and skip the captured propagation solve while all sleep, bitwise like eager.
+
+    With contact compliance the propagation setup still runs while all sleep, since compliance replaces its rows.
+    A welded box, which never sleeps, does not keep the solve running.
+    """
+    for tree_kernel, compliant, welded in (
+        ("auto", False, False),
+        ("generic", False, False),
+        ("auto", True, False),
+        ("auto", False, True),
+    ):
+        with (
+            test.subTest(tree_kernel=tree_kernel, compliant=compliant, welded=welded),
+            kernel_overrides({"propagation_tree_kernel": tree_kernel}),
+        ):
+            _check_colored_sleeping_skips_work(test, device, compliant, welded)
+
+
+def _check_colored_sleeping_skips_work(test, device, compliant, welded):
+    options = {"sleep_quiet_time": 0.05, "friction_anchor_beta": 0.0}
+    if compliant:
+        options.update(contact_compliance=True, contact_regularization=0.0, compliance_stiffness=2.0e4)
+    captured, eager = (_Heap(device, model=_dumbbells_model(device, welded=welded), **options) for _ in range(2))
+    test.assertTrue(captured.solver._propagation_tree_sizes)
+    with wp.ScopedCapture(device) as capture:
+        captured.step(clear=False)
+    gated = wp.is_conditional_graph_supported()
+    joint_art = captured.model.joint_articulation.numpy()
+    sleepable = captured.solver._sleeping.art_skippable.numpy()
+    test.assertEqual(sleepable.tolist(), [1, 1, 0] if welded else [1, 1])
+    body_art = captured.solver._body_to_articulation.numpy()
+    tree_bodies = np.flatnonzero(sleepable[body_art] == 1)
+    force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+    all_asleep = 0
+    for k in range(60):
+        force[:] = 0.0
+        if k == 40:
+            test.assertGreater(all_asleep, 0, "both chains must sleep before the force")
+            force[0, 2] = 5.0
+        for scene in (captured, eager):
+            scene.state_in.body_f.assign(force)
+            for name in ("_propagation_tree_D_inv", "_propagation_body_com_rel", "_propagation_body_response"):
+                getattr(scene.solver, name).fill_(np.nan)
+            scene.solver._propagation_body_qd.fill_(np.nan)
+        wp.capture_launch(capture.graph)
+        eager.step(clear=False)
+        a, b = captured.snapshot(), eager.snapshot()
+        for name in _FIELDS:
+            np.testing.assert_array_equal(a[name], b[name], err_msg=f"replay {k} {name}")
+        active = eager.solver._dynamics_art_active.numpy()
+        np.testing.assert_array_equal(captured.solver._dynamics_art_active.numpy(), active)
+        awake = active * sleepable
+        for scene in (captured, eager):
+            factored = ~np.isnan(scene.solver._propagation_tree_D_inv.numpy()[:, 0, 0])
+            np.testing.assert_array_equal(factored, awake[joint_art] == 1, err_msg=f"step {k}")
+            # The response, twist refresh and impulse propagation kernels leave sleeping trees untouched.
+            asleep = tree_bodies[awake[body_art[tree_bodies]] == 0]
+            for name in ("_propagation_body_response", "_propagation_body_qd"):
+                values = getattr(scene.solver, name).numpy()[asleep]
+                test.assertTrue(np.isnan(values).all(), f"step {k} {name}")
+        moving = tree_bodies[awake[body_art[tree_bodies]] == 1]
+        for name in ("_propagation_body_response", "_propagation_body_qd"):
+            test.assertTrue(np.isfinite(getattr(eager.solver, name).numpy()[moving]).all(), f"step {k} {name}")
+        solved = ~np.isnan(captured.solver._propagation_body_com_rel.numpy()[tree_bodies]).any(axis=1)
+        test.assertEqual(bool(solved.all()), bool(awake.any() or not gated or compliant), f"step {k}")
+        test.assertTrue(bool(solved.all()) or not solved.any())
+        if k == 40:
+            test.assertEqual(awake[:2].tolist(), [1, 0], "the force must wake its chain only")
+        all_asleep += int(not awake.any())
+
+
+def test_colored_sleeping_runs_under_external_and_warp_capture(test, device):
+    """Replay a colored sleeping step captured by Warp or directly through CUDA, and sleep and wake as eager steps do."""
+    # The RUN_TO_RUN row ordering fails under a capture Warp does not track; this test covers the sleeping solve.
+    options = {
+        "sleep_quiet_time": 0.05,
+        "friction_anchor_beta": 0.0,
+        "deterministic": wp.DeterministicMode.NOT_GUARANTEED,
+    }
+    for mode in ("warp", "external"):
+        with test.subTest(mode=mode):
+            if mode == "external" and not sys.platform.startswith("linux"):
+                test.skipTest("the CUDA driver capture loads libcuda.so.1")
+            captured, eager = (_Heap(device, model=_dumbbells_model(device), **options) for _ in range(2))
+            replay, release = _capture_step(captured, mode)
+            try:
+                force = np.zeros((captured.model.body_count, 6), dtype=np.float32)
+                slept = False
+                for k in range(60):
+                    force[:] = 0.0
+                    if k == 40:
+                        test.assertTrue(slept, "both chains must sleep before the force")
+                        force[0, 2] = 5.0
+                    for scene in (captured, eager):
+                        scene.state_in.body_f.assign(force)
+                    replay()
+                    eager.step(clear=False)
+                    awake = captured.solver._sleeping.art_awake.numpy()
+                    np.testing.assert_array_equal(
+                        awake, eager.solver._sleeping.art_awake.numpy(), err_msg=f"{mode} {k}"
+                    )
+                    slept |= not awake.any()
+                    if k == 40:
+                        np.testing.assert_array_equal(awake, [1, 0])
+                a, b = captured.snapshot(), eager.snapshot()
+                for name in _FIELDS:
+                    np.testing.assert_allclose(a[name], b[name], rtol=0.0, atol=1.0e-4, err_msg=f"{mode} {name}")
+            finally:
+                release()
+
+
+def _capture_step(scene, mode):
+    """Capture one solver step of ``scene`` with Warp or with the CUDA driver alone; return a replay function.
+
+    Collision runs eagerly before each replay, so only the solver step is captured. Call the returned
+    release function when done; the CUDA driver capture loads ``libcuda.so.1`` and runs only on Linux.
+    """
+    device = scene.model.device
+
+    def solve():
+        scene.solver.step(scene.state_in, scene.state_out, scene.control, scene.contacts, 1.0 / 240.0)
+        for name in _FIELDS:
+            wp.copy(getattr(scene.state_in, name), getattr(scene.state_out, name))
+
+    scene.pipeline.collide(scene.state_in, scene.contacts)
+    if mode == "warp":
+        with wp.ScopedCapture(device) as capture:
+            solve()
+
+        def replay():
+            scene.pipeline.collide(scene.state_in, scene.contacts)
+            wp.capture_launch(capture.graph)
+
+        return replay, lambda: None
+    # Capture that Warp does not track, as another framework's graph capture would start.
+    cuda = ctypes.CDLL("libcuda.so.1")
+    handle = ctypes.c_void_p
+    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
+    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
+    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
+    cuda.cuGraphLaunch.argtypes = [handle, handle]
+    cuda.cuGraphExecDestroy.argtypes = [handle]
+    cuda.cuGraphDestroy.argtypes = [handle]
+    stream = ctypes.c_void_p(wp.get_stream(device).cuda_stream)
+    graph, graph_exec = ctypes.c_void_p(), ctypes.c_void_p()
+    thread_local_mode = 1
+    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
+    assert began == 0, began
+    try:
+        solve()
+    finally:
+        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    assert ended == 0, ended
+    # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
+    auto_free_on_launch = 1
+    instantiated = cuda.cuGraphInstantiateWithFlags(
+        ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)
+    )
+    assert instantiated == 0, instantiated
+
+    def replay():
+        scene.pipeline.collide(scene.state_in, scene.contacts)
+        launched = cuda.cuGraphLaunch(graph_exec, stream)
+        assert launched == 0, launched
+        wp.synchronize_stream(wp.get_stream(device))
+
+    def release():
+        cuda.cuGraphExecDestroy(graph_exec)
+        cuda.cuGraphDestroy(graph)
+
+    return replay, release
+
+
+class TestSteelSleepingColoredPropagation(unittest.TestCase):
+    pass
+
+
+for _name in (
+    "test_colored_separated_boxes_sleep_and_wake_like_immediate",
+    "test_colored_units_omit_exactly_the_sleeping_islands",
+    "test_colored_propagation_overflow_vetoes_sleep",
+    "test_colored_force_reset_and_notification_wake_islands",
+    "test_colored_sleeping_rollout_is_independent_of_world_order",
+    "test_colored_captured_sleep_and_wake_match_eager",
+    "test_colored_separated_stacks_sleep_like_immediate",
+    "test_colored_sleeping_skips_tree_and_solve_work",
+    "test_colored_sleeping_runs_under_external_and_warp_capture",
+    "test_colored_compliant_contacts_sleep_and_wake_like_immediate",
+):
+    add_function_test(TestSteelSleepingColoredPropagation, _name, globals()[_name], devices=devices)
+
+
+class _Heap:
+    """Colored-propagation solver on arm-on-heap worlds, stepped in place so steps can be captured."""
+
+    def __init__(
+        self,
+        device,
+        response="propagation_colored",
+        *,
+        model=None,
+        worlds=4,
+        heap=(5, 2, 2),
+        compliance_stiffness=None,
+        **solver_kwargs,
+    ):
+        self.model = model if model is not None else _arm_heap_model(device, worlds=worlds, heap=heap)
+        args = {
+            "solve_mode": "matrix_free",
+            "articulated_contact_response": response,
+            "deterministic": wp.DeterministicMode.RUN_TO_RUN,
+            "iterations": 16,
+            "contact_regularization": 0.01,
+            "free_body_constraint_max": 1024,
+            "articulation_constraint_max": 128,
+            "enable_joint_limits": True,
+            "row_watermark": True,
+            "enable_sleeping": True,
+        }
+        args.update(solver_kwargs)
+        self.solver = SolverSteel(self.model, **args)
+        # Tests that compare joint wrenches set this to the solver's observables.
+        self.observables = None
+        self.pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.model.rigid_contact_max, deterministic=True
+        )
+        self.contacts = self.pipeline.contacts()
+        self.compliance_stiffness = compliance_stiffness
+        if compliance_stiffness is not None:
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(self.contacts, name, wp.zeros(self.model.rigid_contact_max, dtype=float, device=device))
+        self.state_in, self.state_out = self.model.state(), self.model.state()
+        self.control = self.model.control()
+
+    def step(self, steps=1, *, clear=True):
+        for _ in range(steps):
+            if clear:
+                self.state_in.clear_forces()
+            self.pipeline.collide(self.state_in, self.contacts)
+            if self.compliance_stiffness is not None:
+                self.contacts.rigid_contact_stiffness.fill_(self.compliance_stiffness)
+                self.contacts.rigid_contact_damping.fill_(200.0)
+                self.contacts.rigid_contact_friction.fill_(1.0)
+            self.solver.step(
+                self.state_in, self.state_out, self.control, self.contacts, 1.0 / 240.0, observables=self.observables
+            )
+            for name in _FIELDS:
+                wp.copy(getattr(self.state_in, name), getattr(self.state_out, name))
+
+    def snapshot(self):
+        return {name: getattr(self.state_in, name).numpy().copy() for name in _FIELDS}
+
+    def asleep_this_step(self):
+        """Bodies of the islands the last step skipped."""
+        nodes = self.solver._sleeping.body_nodes.numpy()
+        skipped = self.solver._sleeping.step_asleep.numpy()
+        return (nodes >= 0) & (skipped[np.maximum(nodes, 0)] == 1)
+
+    def contact_bodies(self):
+        count = int(self.contacts.rigid_contact_count.numpy()[0])
+        shape_body = self.model.shape_body.numpy()
+        bodies = []
+        for shapes in (self.contacts.rigid_contact_shape0, self.contacts.rigid_contact_shape1):
+            shape = shapes.numpy()[:count]
+            bodies.append(np.where(shape >= 0, shape_body[np.maximum(shape, 0)], -1))
+        return bodies
+
+    def units(self):
+        """Contact index and bodies of every colored unit of the last step."""
+        solver = self.solver
+        capacity = solver._propagation_max_constraints
+        cursor = np.minimum(solver._color_world_unit_cursor.numpy(), capacity)
+        index = np.concatenate([w * capacity + np.arange(n) for w, n in enumerate(cursor)]).astype(int)
+        return (
+            solver._color_unit_contact.numpy()[index],
+            solver._color_unit_body_a.numpy()[index],
+            solver._color_unit_body_b.numpy()[index],
+        )
+
+    def propagation_row_bodies(self):
+        counts = self.solver._propagation_constraint_count.numpy()
+        rows = [
+            np.concatenate(
+                [table.numpy()[w, :n] for table in (self.solver._propagation_body_a, self.solver._propagation_body_b)]
+            )
+            for w, n in enumerate(counts)
+        ]
+        return np.concatenate(rows)
+
+
+def _touches(bodies, mask):
+    return (bodies >= 0) & mask[np.maximum(bodies, 0)]
+
+
+def _arm_heap_model(device, worlds=4, heap=(5, 2, 2)):
+    """Worlds of a fixed-base six-link arm drooping onto a box heap; spheres on links 0, 3 and 5."""
+    scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    scene.rigid_gap = 0.005
+    for _ in range(worlds):
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        world.rigid_gap = 0.005
+        world.default_shape_cfg.density = 1000.0
+        world.default_shape_cfg.mu = 0.7
+        no_collision = world.default_shape_cfg.copy()
+        no_collision.has_shape_collision = False
+        no_collision.collision_group = 0
+        prev, joints = -1, []
+        for i in range(6):
+            link = world.add_link()
+            world.add_shape_box(link, hx=0.12, hy=0.03, hz=0.03, cfg=no_collision)
+            if i in (0, 3, 5):
+                world.add_shape_sphere(link, radius=0.08)
+            parent_xform = wp.transform(
+                wp.vec3(0.0, 0.0, 0.32) if prev == -1 else wp.vec3(0.12, 0.0, 0.0), wp.quat_identity()
+            )
+            joints.append(
+                world.add_joint_revolute(
+                    parent=prev,
+                    child=link,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=parent_xform,
+                    child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+            prev = link
+        world.add_articulation(joints)
+        nx, ny, nz = heap
+        for ix in range(nx):
+            for iy in range(ny):
+                for iz in range(nz):
+                    body = world.add_body(
+                        xform=wp.transform(
+                            wp.vec3(0.15 + 0.216 * ix, 0.083 * (iy - (ny - 1) / 2), 0.041 + 0.082 * iz),
+                            wp.quat_rpy(0.0, 0.0, 0.05 * (ix + iy + iz)),
+                        )
+                    )
+                    world.add_shape_box(body, hx=0.04, hy=0.04, hz=0.04)
+        scene.add_world(world)
+    scene.add_ground_plane()
+    model = scene.finalize(device=device)
+    model.rigid_contact_max = 4096 * worlds
+    return model
 
 
 if __name__ == "__main__":

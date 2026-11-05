@@ -88,6 +88,8 @@ class _PatchFrame:
     separation: wp.array[float]
     support_gap_limit: wp.array[float]
     tangent_impulse: wp.array[wp.vec3]
+    # Per sorted pair start: nonzero when a frozen pair's contacts differ from the previous frame's.
+    carry_failed: wp.array[int]
 
 
 @wp.func
@@ -135,6 +137,7 @@ def _prepare(
     frame.source[c] = -1
     frame.eligible[c] = 0
     frame.tangent_impulse[c] = wp.vec3(0.0)
+    frame.carry_failed[c] = 0
     patches.weight[c] = 0.0
     patches.next_contact[c] = -1
     patches.phi[c] = wp.vec2(0.0)
@@ -490,8 +493,8 @@ def _list_flood_pairs(
         return
     if start + min_contacts >= end or keys[start + min_contacts] != key:
         return
-    # Frozen pairs carry their history in ``_build`` and flood there only if the carry fails.
-    if _pair_frozen(frozen_bodies, frame, start):
+    # Frozen pairs carry their history in :func:`_carry_frozen_pairs` and flood only if the carry fails.
+    if _pair_frozen(frozen_bodies, frame, start) and frame.carry_failed[start] == 0:
         return
     index = wp.atomic_add(pair_count, 0, 1)
     if index < pair_list.shape[0]:
@@ -572,11 +575,15 @@ def _build(
     prev: _PatchFrame,
     patches: FrictionPatches,
     flooded: int,
+    contact_surface_velocity: wp.array[wp.vec3],
+    dt: float,
 ):
     """One thread per sorted body pair; writes disjoint current/previous records.
 
-    With ``flooded``, pairs with more than ``_FLOOD_MIN_CONTACTS`` contacts were grown by
-    :func:`_flood_regions`; their seeds own themselves and each region's first location,
+    Frozen pairs carried by :func:`_carry_frozen_pairs` are skipped.
+
+    With ``flooded``, pairs with more than ``_FLOOD_MIN_CONTACTS`` contacts, including frozen pairs whose carry
+    failed, were grown by :func:`_flood_regions`; their seeds own themselves and each region's first location,
     member range and farthest member are stored. Other pairs flood here.
     """
     start = wp.tid()
@@ -585,6 +592,8 @@ def _build(
         return
     key = frame.keys[start]
     if key == wp.int64(0x7FFFFFFFFFFFFFFF):
+        return
+    if _pair_frozen(frozen_bodies, frame, start) and frame.carry_failed[start] == 0:
         return
     stop = start + 1
     while stop < end and frame.keys[stop] == key:
@@ -611,14 +620,11 @@ def _build(
             prev.members[prev_anchor_stop] = p
             prev_anchor_stop += 1
         prev_stop += 1
-    if _carry_frozen_pair(q, frozen_bodies, frame, prev, start, stop, prev_start, prev_stop):
-        return
 
     member_stop = start
     remaining = stop - start
-    # Pairs with more than _FLOOD_MIN_CONTACTS contacts were grown by _flood_regions.
     pair_flooded = int(0)
-    if flooded != 0 and remaining > _FLOOD_MIN_CONTACTS and not _pair_frozen(frozen_bodies, frame, start):
+    if flooded != 0 and remaining > _FLOOD_MIN_CONTACTS:
         pair_flooded = 1
     for index in range(start, stop):
         seed = frame.indices[index]
@@ -928,8 +934,15 @@ def _build(
                 error -= n * wp.dot(error, n)
                 carried_impulse = prev.tangent_impulse[chosen]
             stored_error = error
+            if contact_surface_velocity:
+                # The rows drive the surface's tangential motion over the coming step, which the next build
+                # pairs with that step's pose motion. The velocity is shape 1's relative to shape 0.
+                surface_motion = contact_surface_velocity[c] * dt
+                if frame.flipped[c] == 0:
+                    surface_motion = -surface_motion
+                stored_error += surface_motion - n * wp.dot(surface_motion, n)
             if a >= 0:
-                stored_error = wp.transform_vector(wp.transform_inverse(q[a]), error)
+                stored_error = wp.transform_vector(wp.transform_inverse(q[a]), stored_error)
             frame.displacement[c] = stored_error
             frame.source[c] = chosen
             if carry_only != 0 and chosen < 0:
@@ -961,55 +974,111 @@ def _build(
 
 
 @wp.func
-def _pair_frozen(frozen_bodies: wp.array[int], frame: _PatchFrame, start: int):
-    """Whether either body of the sorted pair starting at ``start`` is frozen."""
+def _pair_frozen(frozen_bodies: wp.array[int], frame: _PatchFrame, index: int):
+    """Whether either body of the pair of sorted contact ``index`` is frozen; a pair's contacts share their bodies."""
     if frozen_bodies.shape[0] == 0:
         return False
-    a = frame.body_a[frame.indices[start]]
-    b = frame.body_b[frame.indices[start]]
+    a = frame.body_a[frame.indices[index]]
+    b = frame.body_b[frame.indices[index]]
     return (a >= 0 and frozen_bodies[a] != 0) or (b >= 0 and frozen_bodies[b] != 0)
 
 
 @wp.func
-def _carry_frozen_pair(
+def _sorted_range(keys: wp.array[wp.int64], n: int, key: wp.int64):
+    """Binary search the range of ``key`` in the first ``n`` sorted ``keys``."""
+    lo = int(0)
+    hi = n
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if keys[mid] < key:
+            lo = mid + 1
+        else:
+            hi = mid
+    start = lo
+    hi = n
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if keys[mid] <= key:
+            lo = mid + 1
+        else:
+            hi = mid
+    return start, lo
+
+
+@wp.kernel(enable_backward=False)
+def _check_frozen_carry(count: wp.array[int], frozen_bodies: wp.array[int], frame: _PatchFrame, prev: _PatchFrame):
+    """Flag frozen pairs whose contacts differ from the previous frame's, one thread per sorted contact.
+
+    A frozen pair carries only if its contacts repeat shape for shape in sorted order. Each previous contact's
+    sorted position goes to ``prev.used``, so :func:`_carry_frozen_pairs` maps regions across frames directly.
+    """
+    i = wp.tid()
+    n = frame.center.shape[0]
+    end = wp.min(count[0], n)
+    if i >= end:
+        return
+    key = frame.keys[i]
+    if key == wp.int64(0x7FFFFFFFFFFFFFFF):
+        return
+    if not _pair_frozen(frozen_bodies, frame, i):
+        return
+    start, stop = _sorted_range(frame.keys, end, key)
+    prev_start, prev_stop = _sorted_range(prev.keys, n, key)
+    if prev_stop - prev_start != stop - start:
+        frame.carry_failed[start] = 1
+        return
+    k = i - start
+    c = frame.indices[i]
+    p = prev.indices[prev_start + k]
+    prev.used[p] = k
+    if frame.shape_a[c] != prev.shape_a[p] or frame.shape_b[c] != prev.shape_b[p]:
+        frame.carry_failed[start] = 1
+
+
+@wp.kernel(enable_backward=False)
+def _carry_frozen_pairs(
+    count: wp.array[int],
     q: wp.array[wp.transform],
     frozen_bodies: wp.array[int],
     frame: _PatchFrame,
     prev: _PatchFrame,
-    start: int,
-    stop: int,
-    prev_start: int,
-    prev_stop: int,
 ):
-    """Carry a frozen pair's history unchanged; its poses and contacts repeat and it has no rows."""
-    if prev_stop - prev_start != stop - start or not _pair_frozen(frozen_bodies, frame, start):
-        return False
-    a = frame.body_a[frame.indices[start]]
-    for k in range(stop - start):
-        c = frame.indices[start + k]
-        p = prev.indices[prev_start + k]
-        if frame.shape_a[c] != prev.shape_a[p] or frame.shape_b[c] != prev.shape_b[p]:
-            return False
-    for k in range(stop - start):
-        c = frame.indices[start + k]
-        p = prev.indices[prev_start + k]
-        frame.source[c] = p
-        frame.valid[c] = prev.valid[p]
-        frame.displacement[c] = prev.displacement[p]
-        frame.tangent_impulse[c] = prev.tangent_impulse[p]
-        frame.anchor_a[c] = prev.anchor_a[p]
-        frame.anchor_b[c] = prev.anchor_b[p]
-        if prev.valid[p] != 0:
-            frame.surface_a[c] = prev.surface_a[p]
-            frame.surface_b[c] = prev.surface_b[p]
-            normal = prev.normal[p]
-            if a >= 0:
-                normal = wp.transform_vector(q[a], normal)
-            frame.normal[c] = normal
-        for j in range(stop - start):
-            if prev.indices[prev_start + j] == prev.owner[p]:
-                frame.owner[c] = frame.indices[start + j]
-    return True
+    """Carry a frozen pair's history unchanged, one thread per sorted contact; its poses repeat and it has no rows."""
+    i = wp.tid()
+    n = frame.center.shape[0]
+    end = wp.min(count[0], n)
+    if i >= end:
+        return
+    key = frame.keys[i]
+    if key == wp.int64(0x7FFFFFFFFFFFFFFF):
+        return
+    if not _pair_frozen(frozen_bodies, frame, i):
+        return
+    start, stop = _sorted_range(frame.keys, end, key)
+    if frame.carry_failed[start] != 0:
+        return
+    prev_start, _prev_stop = _sorted_range(prev.keys, n, key)
+    c = frame.indices[i]
+    p = prev.indices[prev_start + i - start]
+    frame.source[c] = p
+    frame.valid[c] = prev.valid[p]
+    frame.displacement[c] = prev.displacement[p]
+    frame.tangent_impulse[c] = prev.tangent_impulse[p]
+    frame.anchor_a[c] = prev.anchor_a[p]
+    frame.anchor_b[c] = prev.anchor_b[p]
+    if prev.valid[p] != 0:
+        frame.surface_a[c] = prev.surface_a[p]
+        frame.surface_b[c] = prev.surface_b[p]
+        normal = prev.normal[p]
+        a = frame.body_a[frame.indices[start]]
+        if a >= 0:
+            normal = wp.transform_vector(q[a], normal)
+        frame.normal[c] = normal
+    owner = prev.owner[p]
+    if owner >= 0 and owner < prev.used.shape[0]:
+        j = prev.used[owner]
+        if j >= 0 and j < stop - start and prev.indices[prev_start + j] == owner:
+            frame.owner[c] = frame.indices[start + j]
 
 
 @wp.kernel(enable_backward=False)
@@ -1248,6 +1317,8 @@ class _FrictionPatchState:
         self._changed_bodies = wp.zeros(model.body_count, dtype=int, device=device)
         self.current = self._frame(capacity, device)
         self.previous = self._frame(capacity, device)
+        # Only the current frame flags failed carries.
+        self.previous.carry_failed = wp.zeros(0, dtype=int, device=device)
         self.previous_q = wp.zeros(model.body_count, dtype=wp.transform, device=device)
         # Body pairs large enough for the warp flood: at most one per _FLOOD_MIN_CONTACTS + 1
         # contacts, grown by a fixed grid of warps so the launch does not scale with capacity.
@@ -1325,6 +1396,7 @@ class _FrictionPatchState:
             "first",
             "region_stop",
             "second",
+            "carry_failed",
         ):
             setattr(frame, field, wp.zeros(n, dtype=int, device=device))
         return frame
@@ -1339,6 +1411,7 @@ class _FrictionPatchState:
         contact_gap_limit=float("inf"),
         friction_gap_limit=float("inf"),
         frozen_bodies=None,
+        dt=0.0,
     ):
         wp.launch(
             _prepare,
@@ -1365,6 +1438,19 @@ class _FrictionPatchState:
             device=model.device,
         )
         wp.utils.radix_sort_pairs(self.current.keys, self.current.indices, self.capacity)
+        if frozen_bodies is not None:
+            wp.launch(
+                _check_frozen_carry,
+                dim=self.capacity,
+                inputs=[contacts.rigid_contact_count, frozen_bodies, self.current, self.previous],
+                device=model.device,
+            )
+            wp.launch(
+                _carry_frozen_pairs,
+                dim=self.capacity,
+                inputs=[contacts.rigid_contact_count, state.body_q, frozen_bodies, self.current, self.previous],
+                device=model.device,
+            )
         # The warp-per-pair flood matches the serial one exactly; the switch exists so
         # tests can compare them.
         flooded = model.device.is_cuda and getattr(self, "device_flood", True)
@@ -1416,6 +1502,8 @@ class _FrictionPatchState:
                 self.previous,
                 self.view,
                 int(flooded),
+                contacts.rigid_contact_surface_velocity,
+                dt,
             ],
             device=model.device,
         )
@@ -1602,6 +1690,14 @@ def _point_velocity(
     return velocity
 
 
+_SLIP_SATURATION_TOLERANCE = wp.constant(0.05)
+"""Fraction of the Coulomb radius by which a slipping anchor's friction may fall short and still count as saturated.
+
+Gauss-Seidel clamps each anchor against the pooled normal load it sees mid-sweep. On a footprint with redundant
+contacts the later normal rows keep moving that load, so a sliding anchor can end a few percent inside the final cone.
+"""
+
+
 @wp.kernel(enable_backward=False)
 def finish_patch_impulses(
     count: wp.array[int],
@@ -1611,6 +1707,7 @@ def finish_patch_impulses(
     qd_out: wp.array[wp.spatial_vector],
     com: wp.array[wp.vec3],
     body_to_articulation: wp.array[int],
+    contact_surface_velocity: wp.array[wp.vec3],
     world: wp.array[int],
     slot: wp.array[int],
     path: wp.array[int],
@@ -1623,7 +1720,7 @@ def finish_patch_impulses(
 ):
     """Cache solved friction and release saturated anchors with tangential motion.
 
-    The tolerance is relative to geometry and timestep. Merely resting at the
+    The motion tolerance is relative to geometry and timestep. Merely resting at the
     Coulomb limit does not prove sliding, so it must not erase static history.
     """
     c = wp.tid()
@@ -1663,7 +1760,12 @@ def finish_patch_impulses(
     speed = _point_velocity(q_out, qd_out, com, body_to_articulation, a, frame.anchor_a[c]) - _point_velocity(
         q_out, qd_out, com, body_to_articulation, b, frame.anchor_b[c]
     )
+    if contact_surface_velocity:
+        if frame.flipped[c] == 0:
+            speed -= contact_surface_velocity[c]
+        else:
+            speed += contact_surface_velocity[c]
     # Check opposing tangential motion to distinguish slipping from impending slip.
-    if radius > 0.0 and wp.length(tangent) >= (1.0 - 1.0e-5) * radius:
+    if radius > 0.0 and wp.length(tangent) >= (1.0 - _SLIP_SATURATION_TOLERANCE) * radius:
         if wp.dot(speed, tangent) < -radius * (1.0e-5 * frame.radius[c] / dt):
             frame.valid[c] = 0
