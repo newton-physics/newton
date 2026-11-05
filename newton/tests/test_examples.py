@@ -1041,14 +1041,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 18},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )

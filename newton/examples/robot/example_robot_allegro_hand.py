@@ -12,7 +12,7 @@ about this change in the joint parent transform by calling
 self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
 
 Success criteria:
-- Floating Allegro hands appear with a cube on each palm.
+- Floating Allegro hands keep a cube on each palm throughout the run.
 - The hands are manipulating the cube to make it turn.
 - All hands have the same movement.
 
@@ -34,7 +34,10 @@ from newton import JointTargetMode, ModelFlags
 
 @wp.kernel
 def move_hand(
+    joint_world_start: wp.array[wp.int32],
     joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    hand_dof_count: int,
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
     sim_time: wp.array[wp.float32],
@@ -45,16 +48,19 @@ def move_hand(
     joint_parent_xform: wp.array[wp.transform],
 ):
     world_id = wp.tid()
-    root_joint_id = world_id * 22
+    root_joint_id = joint_world_start[world_id]
     t = sim_time[world_id]
 
-    root_dof_start = joint_q_start[root_joint_id]
+    # The free cube has seven coordinates but six DOFs, so these offsets differ.
+    root_coord_start = joint_q_start[root_joint_id]
+    root_dof_start = joint_qd_start[root_joint_id]
 
     # animate the finger joints
-    for i in range(20):
+    for i in range(hand_dof_count):
+        qi = root_coord_start + i
         di = root_dof_start + i
         target = wp.sin(t + float(i * 6) * 0.1) * 0.08 + 0.3
-        joint_target_q[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
+        joint_target_q[qi] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
     q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.sin(t) * 0.1)
@@ -108,7 +114,8 @@ class Example:
         )
 
         # set joint targets and joint drive gains (only on hand, not the floating-body cube)
-        for i in range(allegro_hand.joint_dof_count - 6):
+        self.hand_dof_count = allegro_hand.joint_dof_count - 6
+        for i in range(self.hand_dof_count):
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
             allegro_hand.joint_q[i] = 0.3
@@ -201,7 +208,10 @@ class Example:
                 move_hand,
                 dim=self.world_count,
                 inputs=[
+                    self.model.joint_world_start,
                     self.model.joint_q_start,
+                    self.model.joint_qd_start,
+                    self.hand_dof_count,
                     self.model.joint_limit_lower,
                     self.model.joint_limit_upper,
                     self.world_time,
@@ -235,8 +245,44 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    def test_post_step(self):
+        """Check synchronized fingers and retain every cube throughout the trajectory."""
+        targets = self.control.joint_target_q.numpy().reshape(self.world_count, -1)
+        finger_targets = targets[:, : self.hand_dof_count]
+        np.testing.assert_array_equal(
+            finger_targets,
+            np.broadcast_to(finger_targets[0], finger_targets.shape),
+            err_msg="Replicated hands must receive identical finger targets",
+        )
+        np.testing.assert_array_equal(
+            targets[:, self.hand_dof_count :],
+            self.model.joint_target_q.numpy().reshape(self.world_count, -1)[:, self.hand_dof_count :],
+            err_msg="Hand animation must not modify the floating cube's targets",
+        )
+
+        fingers = self.state_0.joint_q.numpy().reshape(self.world_count, -1)[:, : self.hand_dof_count]
+        # Allow small solver/contact differences between otherwise identical worlds.
+        np.testing.assert_allclose(
+            fingers,
+            np.broadcast_to(fingers[0], fingers.shape),
+            rtol=0.0,
+            atol=0.01,
+            err_msg="Replicated hands must have the same finger motion",
+        )
+
+        num_bodies_per_world = self.model.body_count // self.world_count
+        cube_positions = self.state_0.body_q.numpy().reshape(self.world_count, num_bodies_per_world, 7)[
+            :, self.cube_body_offset, :3
+        ]
+        cube_lower = self.initial_world_positions - 0.5
+        cube_lower[:, 2] = 0.9
+        cube_upper = self.initial_world_positions + 0.5
+        cubes_held = np.all((cube_positions >= cube_lower) & (cube_positions <= cube_upper), axis=1)
+        assert cubes_held.all(), f"Cubes left the hands in worlds {np.flatnonzero(~cubes_held).tolist()}"
+
     def test_final(self):
         """Check compact viewer layout and stable hand and cube motion."""
+        self.test_post_step()
         # Scale the bound with the grid size so larger world counts remain valid.
         offset_limit = np.ceil(np.sqrt(self.world_count))
         max_world_offset = float(np.abs(self.viewer.world_offsets.numpy()).max())
@@ -245,7 +291,6 @@ class Example:
         )
 
         num_bodies_per_world = self.model.body_count // self.world_count
-        cubes_held = 0
 
         for i in range(self.world_count):
             world_offset = i * num_bodies_per_world
@@ -262,19 +307,6 @@ class Example:
                 lambda q, qd: newton.math.vec_inside_limits(q.p, hand_lower, hand_upper),  # noqa: B023
                 indices=hand_body_indices,
             )
-
-            # Count cubes still in the hand — at least 50% must remain
-            cube_body_idx = world_offset + self.cube_body_offset
-            cube_lower = wp.vec3(world_pos.x - 0.5, world_pos.y - 0.5, 0.9)
-            cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
-            cube_pos = wp.vec3(*self.state_0.body_q.numpy()[cube_body_idx, :3])
-            if newton.math.vec_inside_limits(cube_pos, cube_lower, cube_upper):
-                cubes_held += 1
-
-        held_ratio = cubes_held / self.world_count
-        assert held_ratio >= 0.5, (
-            f"Only {cubes_held}/{self.world_count} ({held_ratio:.0%}) cubes stayed in the hand, expected at least 50%"
-        )
 
     @staticmethod
     def create_parser():
