@@ -209,16 +209,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
       Newton 1.6 and will be removed in a future release; select it explicitly
       with ``rigid_compliant_alm=False``.
 
-    With ``rigid_compliant_alm=True``, rigid-rigid contacts consume shape
-    ``mu_torsional`` and ``mu_rolling``. Legacy contacts ignore both coefficients.
-    Both coefficients have units of length [m]; multiplying them by the contact
-    normal load gives the corresponding torque limit [N·m].
-    Their nonzero defaults enable both channels; setting either coefficient to
-    zero on either shape disables that channel for the contact pair.
-    VBD clamps sliding force, torsional torque, and rolling torque to separate
-    Coulomb limits; it does not use a single coupled friction cone. Sliding and
-    rolling use two-dimensional conditioning metrics; torsion uses a scalar.
-
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, ROD.
           DISTANCE joints are not supported.
@@ -1055,6 +1045,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Defaults to True and is reset to True when consumed by step().
         self._update_rigid_history = True
 
+        # Contact-frame setup requests one joint-aware angular-conditioning refresh.
+        self._refresh_contact_angular_conditioning = False
+
         # Warn after validation so warnings-as-errors do not mask invalid inputs.
         if self._integrates_rigid_bodies and not self.rigid_compliant_alm:
             warnings.warn(
@@ -1486,6 +1479,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "model.body_color_groups is empty but rigid bodies are present! When using the SolverVBD you must call ModelBuilder.color() "
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
+
+        # Per-body color from the groups VBD solves by (``model.body_colors`` may be unset when the groups are
+        # assigned directly); compliant contacts between same-color dynamic bodies use a conservative metric.
+        body_color = np.full(model.body_count, -1, dtype=np.int32)
+        for color, group in enumerate(model.body_color_groups):
+            body_color[group.numpy()] = color
+        self._body_color = wp.array(body_color, dtype=wp.int32, device=self.device)
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -2822,10 +2822,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._mid_step_detection(
                 state_in, state_out, contacts, dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=True
             )
-            refresh_contact_angular_conditioning = iter_num == 0 or rigid_due
-            self._solve_rigid_body_iteration(
-                state_in, state_out, control, contacts, dt, refresh_contact_angular_conditioning
-            )
+            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
 
         update_tendon_diagnostics = (
@@ -3790,6 +3787,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             ],
             device=self.device,
         )
+        # Frame setup reseeds rho; refresh joint-aware angular conditioning on the next sweep.
+        self._refresh_contact_angular_conditioning = self.body_contact_free_angular_compliance.shape[0] > 0
 
     def _initialize_rigid_bodies(
         self,
@@ -3840,6 +3839,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # ---------------------------
         # Rigid-only initialization
         # ---------------------------
+        self._refresh_contact_angular_conditioning = False
         if self._integrates_rigid_bodies:
             self._refresh_rigid_contact_state(contacts, refresh)
 
@@ -4408,7 +4408,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         control: Control,
         contacts: Contacts | None,
         dt: float,
-        refresh_contact_angular_conditioning: bool,
     ):
         """Solve one rigid-body VBD iteration (per-iteration phase).
 
@@ -4416,15 +4415,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and updates AVBD penalty parameters (dual update).
         """
         model = self.model
-        # Refresh angular conditioning on sweep 0 and after an in-step contact refresh.
         refresh_contact_angular_conditioning = int(
-            refresh_contact_angular_conditioning
-            and model.joint_count > 0
-            and model.shape_count > 0
-            and contacts is not None
-            and contacts.rigid_contact_max > 0
-            and self.rigid_compliant_alm
+            self._refresh_contact_angular_conditioning and contacts is not None and contacts.rigid_contact_max > 0
         )
+        self._refresh_contact_angular_conditioning = False
         # Body-particle soft contacts still need penalty updates when VBD skips rigid solves:
         # external rigid mode uses state_out.body_q, while static-shape contacts use _empty_body_q.
         skip_rigid_solve = not self._integrates_rigid_bodies
@@ -4556,7 +4550,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     inputs=[
                         dt,
                         color_group,
-                        model.body_colors,
+                        self._body_color,
                         self.body_q_prev,
                         state_in.body_q,
                         model.body_com,
@@ -4956,7 +4950,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         wp.array[wp.vec3],
         wp.array[wp.int32],
     ]:
-        """Collect per-contact rigid contact forces and world-space surface points.
+        """Collect per-contact rigid contact forces and world-space application points.
 
         Args:
             body_q: Current body transforms (world frame),
@@ -4980,11 +4974,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             iterate up to the returned ``rigid_contact_count`` rather than the
             array length.
 
-            Returned points are surface anchors. Normal force acts at the underlying
-            support points, which can have different moment arms when offsets rotate.
-            Pure torsional/rolling friction couples are also excluded, so these
-            outputs do not reconstruct the full contact wrench.
-
         Returns:
             tuple[
                 wp.array[wp.int32],
@@ -4996,8 +4985,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             ]: Tuple of per-contact outputs:
                 - body0: Body index for shape0, int32.
                 - body1: Body index for shape1, int32.
-                - point0_world: World-space surface contact point on body0, wp.vec3 [m].
-                - point1_world: World-space surface contact point on body1, wp.vec3 [m].
+                - point0_world: World-space contact point on body0, wp.vec3 [m].
+                - point1_world: World-space contact point on body1, wp.vec3 [m].
                 - force_on_body1: Contact force applied to body1 in world frame, wp.vec3 [N].
                 - rigid_contact_count: Length-1 active rigid-contact count, int32.
         """

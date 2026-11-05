@@ -1481,7 +1481,7 @@ def _contact_tangent_conditioning_scale(
     body_inv_inertia: wp.array[wp.mat33],
     inv_dt_sq: float,
 ):
-    """Return the cached inverse pair tangent response."""
+    """Return the pair's inverse tangent response as a packed metric (see :func:`_pack_tangent_metric`)."""
     tangent_0, tangent_1 = orthonormal_basis(n)
     w = _contact_body_tangent_block(
         shape_id_0,
@@ -1589,7 +1589,7 @@ def _tangent_response_rho(a: float, b: float, c: float, scale: float):
 
 @wp.func
 def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit: float):
-    """Project onto the Coulomb disk in the inverse-rho metric; return its PSD secant."""
+    """Project onto the Coulomb disk ``||f|| <= limit`` in the ``R^-1`` metric; return ``(f, K_secant)``."""
     if limit <= 0.0:
         return wp.vec3(0.0), wp.mat33(0.0)
     tangent = trial - n * wp.dot(n, trial)
@@ -1601,7 +1601,9 @@ def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit
     if high == low or low <= 0.0:
         scale = limit / wp.sqrt(length_sq)
         return scale * tangent, scale * _world_tangent_metric(R, n)
-    # Normalize x = alpha * rho_high in f_i = trial_i / (1 + alpha * rho_i).
+    # In the eigenbasis (eh, el) of R, the R^-1-nearest point on ||f|| = limit has components
+    # f_h = vh / (1 + root) and f_l = vl / (1 + root * ratio), where root = alpha * high > 0
+    # and ratio = low / high. Solve norm_sq(root) = (f_h / limit)^2 + (f_l / limit)^2 = 1.
     ratio = low / high
     t0, t1 = orthonormal_basis(n)
     eh = t0 * R[1, 0] + t1 * R[1, 1]
@@ -1612,9 +1614,9 @@ def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit
     low_sq = vl * vl / (limit * limit)
     total = high_sq + low_sq
     mean_ratio = (high_sq + ratio * low_sq) / total
+    # Analytic lower bound on root from Jensen's inequality and the low-axis bound.
     root = wp.max(wp.max((wp.sqrt(total) - 1.0) / mean_ratio, (wp.sqrt(low_sq) - 1.0) / ratio), 0.0)
-    # Reciprocal-norm Newton is monotone from these analytic lower bounds.
-    # The cap guards work; convergence uses a dimensionless float32 residual.
+    # Monotone Newton iteration on 1 / sqrt(norm_sq(root)) - 1 = 0.
     for _ in range(24):
         ih = 1.0 / (1.0 + root)
         il = 1.0 / (1.0 + root * ratio)
@@ -5513,18 +5515,16 @@ def step_body_body_contact_C0_lambda(
     if contact_compliant_alm == 0:
         # Preserve legacy full-vector retention.
         contact_lambda[i] = lam * lambda_retention
-    else:
-        has_compressive_warmstart = wp.dot(lam, n) > 0.0
-        live = ke > 0.0 and contact_normal_rho[i] > 0.0
-        if has_compressive_warmstart and live and lambda_retention > 0.0:
-            contact_lambda[i] = lam * lambda_retention
-        else:
-            contact_lambda[i] = wp.vec3(0.0)
-            contact_lambda_angular[i] = wp.vec3(0.0)
-
-    if contact_compliant_alm == 0:
         contact_lambda_angular[i] = wp.vec3(0.0)
         return
+
+    has_compressive_warmstart = wp.dot(lam, n) > 0.0
+    live = ke > 0.0 and contact_normal_rho[i] > 0.0
+    if has_compressive_warmstart and live and lambda_retention > 0.0:
+        contact_lambda[i] = lam * lambda_retention
+    else:
+        contact_lambda[i] = wp.vec3(0.0)
+        contact_lambda_angular[i] = wp.vec3(0.0)
 
     lam_angular = contact_lambda_angular[i] * lambda_retention
     lam_torsional = n * wp.dot(lam_angular, n)
@@ -6136,7 +6136,7 @@ def _evaluate_body_body_contact_slot(
         _h_ll_1,
         _h_al_1,
         _h_aa_1,
-        _pure_torque_1,
+        trial_pure_torque_1,
     ) = evaluate_rigid_contact_from_collision(
         int(b0),
         int(b1),
@@ -6168,11 +6168,12 @@ def _evaluate_body_body_contact_slot(
         friction_c0,
     )
 
-    # The final dual update already projected this step's angular displacement.
+    # Report the solved angular multiplier, which the final dual update already projected, in place of
+    # the trial couple re-evaluated at these poses (torque_0 includes the trial couple's reaction).
     pure_torque_1 = wp.vec3(0.0)
     if contact_compliant_alm == 1:
         pure_torque_1 = contact_lambda_angular[contact_idx]
-    torque_0 += _pure_torque_1 - pure_torque_1
+    torque_0 += trial_pure_torque_1 - pure_torque_1
     return b0, b1, point0_world, point1_world, force_0, torque_0, force_1, pure_torque_1
 
 
@@ -7909,19 +7910,16 @@ def create_update_duals_body_body_contacts():
                     torsional_rho, rolling_rho = _contact_angular_conditioning_scales_from_mobility(
                         pair_angular_compliance, n, 1.0
                     )
-                    # Keep the initialized inertia-based rho if the local factorization is invalid.
+                    # Keep the inertia seed from contact-frame setup if the local factorization is invalid;
+                    # frame setup already zeroed the rho of a channel without friction.
                     if contact_material_mu_torsional[idx] > 0.0 and wp.isfinite(torsional_rho) and torsional_rho > 0.0:
                         contact_torsional_rho[idx] = torsional_rho
-                    elif contact_material_mu_torsional[idx] <= 0.0:
-                        contact_torsional_rho[idx] = 0.0
                     if (
                         contact_material_mu_rolling[idx] > 0.0
                         and wp.isfinite(rolling_rho[0, 0])
                         and rolling_rho[0, 0] > 0.0
                     ):
                         contact_rolling_rho[idx] = rolling_rho
-                    elif contact_material_mu_rolling[idx] <= 0.0:
-                        contact_rolling_rho[idx] = wp.mat22(0.0)
 
                 # As for sliding, bound angular multipliers by the updated normal multiplier.
                 normal_load = wp.max(wp.dot(contact_lambda[idx], n), 0.0)
