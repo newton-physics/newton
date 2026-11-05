@@ -197,8 +197,14 @@ class TestBroadPhase(unittest.TestCase):
             indices.append(total)
             sizes.append(size)
             expected.append((-1, -1))
+            indices.append(-1)
+            sizes.append(size)
+            expected.append((-1, size - 1))
         for device in get_test_devices():
             with self.subTest(device=device):
+                broad_phase = BroadPhaseAllPairs(np.zeros(65536, dtype=np.int32), device=device)
+                self.assertEqual(broad_phase.num_kernel_threads, 65536 * 65535 // 2)
+                np.testing.assert_array_equal(broad_phase.world_cumsum_lower_tri.numpy(), [65536 * 65535 // 2] * 2)
                 pairs = wp.empty(len(indices), dtype=wp.vec2i, device=device)
                 wp.launch(
                     _test_nxn_pair_indices,

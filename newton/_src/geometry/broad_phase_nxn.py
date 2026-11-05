@@ -304,7 +304,8 @@ class BroadPhaseAllPairs:
         start_idx = 0
         cumsum = 0
         for world_idx in range(world_count):
-            end_idx = slice_ends_np[world_idx]
+            # Use Python integers so the product cannot overflow before division.
+            end_idx = int(slice_ends_np[world_idx])
             # Number of geometries in this world (including shared geometries)
             num_geoms_in_world = end_idx - start_idx
             # Number of lower triangular elements for this world

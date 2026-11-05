@@ -1646,19 +1646,19 @@ def vertex_triangle_collision_detection_kernel(
 
                 dist = wp.length(closest_p - v)
 
-                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-                    closest_p_ref, _, __ = triangle_closest_point(
-                        min_distance_filtering_ref_pos[t1],
-                        min_distance_filtering_ref_pos[t2],
-                        min_distance_filtering_ref_pos[t3],
-                        min_distance_filtering_ref_pos[v_index],
-                    )
-                    dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
-
-                    if dist_ref < min_query_radius:
-                        continue
-
                 if dist < max_query_radius:
+                    if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+                        closest_p_ref, _, __ = triangle_closest_point(
+                            min_distance_filtering_ref_pos[t1],
+                            min_distance_filtering_ref_pos[t2],
+                            min_distance_filtering_ref_pos[t3],
+                            min_distance_filtering_ref_pos[v_index],
+                        )
+                        dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
+
+                        if dist_ref < min_query_radius:
+                            continue
+
                     # record v-f collision to vertex
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
                     if vertex_num_collisions < vertex_buffer_size:
