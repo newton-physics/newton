@@ -204,10 +204,11 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
 )
 _ADD_MUSCLE_DEPRECATION_MSG = (
     "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
-    "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit and "
-    "SolverFeatherstone. Use SolverMuJoCo muscle actuators instead: import MJCF <muscle> actuators, or build "
+    "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit. "
+    "Use SolverMuJoCo muscle actuators instead: import MJCF <muscle> actuators, or build "
     "them with newton.solvers.mujoco.add_tendon_spatial() and "
-    'add_actuator_general(..., dyntype="muscle", gaintype="muscle", biastype="muscle").'
+    'add_actuator_general(..., dyntype="muscle", gaintype="muscle", biastype="muscle") '
+    "with explicit muscle dynprm, gainprm, and biasprm values."
 )
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
@@ -8805,9 +8806,8 @@ class ModelBuilder:
 
         .. deprecated:: 1.9
             Legacy muscles will be removed in a future release. Only
-            :class:`~newton.solvers.SolverSemiImplicit` and
-            :class:`~newton.solvers.SolverFeatherstone` evaluate them, and they
-            ignore the muscle parameters, applying a force of magnitude
+            :class:`~newton.solvers.SolverSemiImplicit` evaluates them, and it
+            ignores the muscle parameters, applying a force of magnitude
             ``Control.muscle_activations`` along each waypoint segment. Use
             :class:`~newton.solvers.SolverMuJoCo` muscle actuators instead,
             either imported from MJCF ``<muscle>`` actuators or built in code:
@@ -8816,6 +8816,13 @@ class ModelBuilder:
             with :func:`newton.solvers.mujoco.add_actuator_general` using
             :meth:`ActuatorTarget.tendon() <newton.solvers.mujoco.ActuatorTarget.tendon>`
             and ``dyntype``, ``gaintype`` and ``biastype`` set to ``"muscle"``.
+            Pass explicit muscle parameters, since MuJoCo rejects the generic
+            defaults of :func:`~newton.solvers.mujoco.add_actuator_general` for
+            muscles. MuJoCo's ``<muscle>`` defaults are
+            ``dynprm=(0.01, 0.04)`` and
+            ``gainprm = biasprm = (0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2)``,
+            which hold range, force, scale, lmin, lmax, vmax, fpmax and fvmax.
+            A negative force derives the peak force from ``scale``.
 
         Args:
             bodies: A list of body indices for each waypoint
