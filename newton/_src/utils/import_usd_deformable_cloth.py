@@ -597,10 +597,19 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if not collision_enabled:
             _warn_collision_not_disableable(path)
 
-        # The cloth gets one color and opacity, so subset materials are ignored, with the visual-mesh importer's message.
+        # Subset materials are not mapped to triangles, so they are ignored, with the visual-mesh importer's message.
         if _has_graphics_material_subsets(prim):
             logger.warning("%s: graphics material subsets are not supported; using only the mesh-level material.", path)
-        material_props = usd.resolve_material_properties_for_prim(prim, include_subsets=False)
+        material_props = usd.resolve_material_properties_for_prim(
+            prim, include_subsets=False, face_count=len(face_counts)
+        )
+        color = material_props.get("color")
+        opacity = material_props.get("opacity")
+        # A uniform displayColor or displayOpacity holds one value per authored face; give it to that face's triangles.
+        if color is not None and np.ndim(color) == 2:
+            color = color[tri_source_faces]
+        if opacity is not None and np.ndim(opacity) == 1:
+            opacity = opacity[tri_source_faces]
         p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -614,8 +623,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             tri_ka=tri_ka,
             edge_ke=edge_ke,
             particle_radius=particle_radius,
-            color=material_props.get("color"),
-            opacity=material_props.get("opacity"),
+            color=color,
+            opacity=opacity,
             label=path,
         )
         if builder.tri_count - t0 != len(tri_faces):

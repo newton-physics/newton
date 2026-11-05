@@ -81,6 +81,38 @@ class TestUSDDeformableCloth(unittest.TestCase):
         np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.44), atol=1e-6, rtol=1e-6)
 
+    def test_cloth_uniform_display_primvars_map_to_face_triangles(self):
+        """Give each authored face's uniform display color and opacity to the triangles that face is split into."""
+        from pxr import Sdf, UsdGeom, Vt
+
+        red, blue = (0.8, 0.1, 0.1), (0.1, 0.2, 0.9)
+        stage = _deformable_stage()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+        mesh.CreatePointsAttr([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0), (2.0, 0.0, 0.0)])
+        # A quad and a triangle: the quad fan-splits into triangles 0 and 1, the triangle becomes triangle 2.
+        mesh.CreateFaceVertexCountsAttr([4, 3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 1, 4, 2])
+        mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        primvars = UsdGeom.PrimvarsAPI(mesh)
+        # Indexed, so the per-face values must be flattened: the quad is blue and the triangle red.
+        color = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.uniform)
+        color.Set([red, blue])
+        color.SetIndices(Vt.IntArray([1, 0]))
+        primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.uniform).Set(
+            [0.25, 0.75]
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertNoLogs("newton", level="WARNING"):
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.tri_count, 3)
+        expected_color = [newton.utils.color_linear_to_srgb(c) for c in (blue, blue, red)]
+        np.testing.assert_allclose(builder.tri_color, expected_color, atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.tri_opacity, [0.25, 0.25, 0.75], atol=1e-6, rtol=1e-6)
+
     def test_cloth_material_appearance_imports_to_triangles(self):
         """Import bound material color and opacity onto every generated triangle."""
         from pxr import Sdf, UsdShade

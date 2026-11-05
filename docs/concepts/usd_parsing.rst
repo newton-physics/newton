@@ -166,6 +166,9 @@ across three families:
 * **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
   cloth: particles with triangle elements and bending edges. Polygonal faces (such as quads) are
   fan-triangulated on import as a Newton extension to the proposal's triangle-only input.
+  Display color and opacity come from the bound material, and ``displayColor``/``displayOpacity``
+  fill what it leaves unset. A ``uniform`` primvar with one value per face applies to that face's
+  triangles; other interpolations use the first value for the whole cloth.
 * **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` becomes a soft
   body. Under a ``PhysicsDeformableBodyAPI`` ancestor exactly one simulation TetMesh is
   selected; other TetMeshes in that hierarchy are graphics/collision geometry and are not
