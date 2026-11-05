@@ -215,9 +215,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     Tuning guide: :ref:`Tuning VBD`
     (https://newton-physics.github.io/newton/stable/concepts/simulation_tuning_vbd.html)
-    covers cloth and soft bodies, their self-contact and their contact with shapes:
+    covers cloth, soft bodies, rigid bodies, cables, and their contacts:
 
-    - Parameter effects: the constructor arguments that matter for particle systems,
+    - Parameter effects: the constructor arguments that matter most for tuning,
       the model parameters, and the time step, substeps and iterations.
     - Contact handling: interaction distance, detection slack, query radius and motion
       budget; what DAT does to motion; how to set margin and gap.
@@ -226,6 +226,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
       elasticity, membrane against bending), a fine mesh converging slowly, DAT damping,
       bad assets, a smaller time step making things worse, self-contact tunneling.
     - Parameter combinations from the shipped examples, and rules of thumb.
+    - Rigid bodies and cables: joint gains, cable materials, contact history and
+      capacity, model updates, and reset.
 
     The math behind the advice (step objective, block solve, rigid bodies and joints, the
     energy terms, DAT) is on the solver page :doc:`/solvers/vbd`.
@@ -2775,8 +2777,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         is enabled (from each contact's own state when ``Contacts`` was not
         collided since the previous step, otherwise through
         ``Contacts.rigid_contact_match_index``).
-        When False, the step reuses the current rigid contact lists and contact
-        state. In that mode, the caller must pass the same contact result/buffers
+        When False, the step reuses the current rigid contact lists and records
+        without reinitializing them. Pass the same contact result/buffers
         used by the previous refresh; do not run collision into the contacts
         buffer between refreshes. Passing newly collided contacts while update is
         disabled can mismatch stale per-body contact lists with current contact
@@ -2792,6 +2794,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         automatic rho refresh) runs every step regardless of this flag via
         step_joint_C0_lambda_rho().
         Rigid contact history snapshotting also runs every step when enabled.
+        Per-step contact maintenance (C0, conditioning, penalty, and lambda
+        retention) also runs on the reused contact records.
 
         This setting applies only to the next call to :meth:`step` and is then
         reset to True.  Useful for substepping where collision detection frequency
