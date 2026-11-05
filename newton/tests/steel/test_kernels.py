@@ -2008,6 +2008,8 @@ def test_world_row_slot_reservation_matches_prefix_sums(test, device):
             expected_cursor[elements[i]] = expected_counters[world]
             expected_counters[world] += counts[elements[i]]
     inputs = [wp.array(starts, dtype=int, device=device), wp.array(elements, dtype=int, device=device)]
+    # The solver launches only the worlds that have elements.
+    listed_worlds = wp.array(np.flatnonzero(sizes), dtype=int, device=device)
     for block_dim in (32, 256, 1024) if wp.get_device(device).is_cuda else (None,):
         cursor = wp.array(counts, dtype=int, device=device)
         world_counters = wp.array(counters, dtype=int, device=device)
@@ -2022,8 +2024,8 @@ def test_world_row_slot_reservation_matches_prefix_sums(test, device):
         else:
             wp.launch_tiled(
                 steel_kernels.reserve_world_row_slots,
-                dim=[len(sizes)],
-                inputs=inputs,
+                dim=[listed_worlds.shape[0]],
+                inputs=[listed_worlds, *inputs],
                 outputs=[world_counters, cursor],
                 block_dim=block_dim,
                 device=device,

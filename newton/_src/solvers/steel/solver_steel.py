@@ -9514,12 +9514,18 @@ class SolverSteel(SolverBase, CouplingInterface):
             elements = listed[np.argsort(element_world[listed], kind="stable")]
             counts = np.bincount(element_world[listed], minlength=self._world_count)
             start = np.concatenate(([0], np.cumsum(counts))).astype(np.int32)
-            # One reservation block per world: a power of two of 32 to 1024 threads, enough for its largest world.
-            block_dim = min(1024, max(32, 1 << (int(counts.max(initial=0)) - 1).bit_length()))
+            # CUDA reservation launches: the worlds with elements, grouped by the power of two of 32 to 1024
+            # threads that covers each world's element count.
+            listed_worlds = np.flatnonzero(counts).astype(np.int32)
+            block_dims = np.clip(1 << np.ceil(np.log2(counts[listed_worlds])).astype(np.int64), 32, 1024)
+            launches = [
+                (int(block_dim), wp.array(listed_worlds[block_dims == block_dim], dtype=wp.int32, device=device))
+                for block_dim in np.unique(block_dims)
+            ]
             return (
                 wp.array(start, dtype=wp.int32, device=device),
                 wp.array(elements.astype(np.int32), dtype=wp.int32, device=device),
-                block_dim,
+                launches,
             )
 
         art_world = self._art_to_world.numpy()
@@ -9561,18 +9567,19 @@ class SolverSteel(SolverBase, CouplingInterface):
             launch(ROW_SLOTS_ATOMIC)
             return
         device = self.model.device
-        world_element_start, world_elements, block_dim = world_index
+        world_element_start, world_elements, launches = world_index
         self._row_cursor.zero_()
         launch(ROW_SLOTS_COUNT)
         if device.is_cuda:
-            wp.launch_tiled(
-                reserve_world_row_slots,
-                dim=[self._world_count],
-                inputs=[world_element_start, world_elements],
-                outputs=[world_slot_counter, self._row_cursor],
-                block_dim=block_dim,
-                device=device,
-            )
+            for block_dim, worlds in launches:
+                wp.launch_tiled(
+                    reserve_world_row_slots,
+                    dim=[worlds.shape[0]],
+                    inputs=[worlds, world_element_start, world_elements],
+                    outputs=[world_slot_counter, self._row_cursor],
+                    block_dim=block_dim,
+                    device=device,
+                )
         else:
             wp.launch(
                 reserve_world_row_slots_serial,

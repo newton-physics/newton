@@ -147,6 +147,7 @@ def _reserve_world_row_slots(
 # Its own module: each launch block size compiles this kernel alone, not all of the Steel kernels.
 @wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)
 def reserve_world_row_slots(
+    worlds: wp.array[int],
     world_element_start: wp.array[int],
     world_elements: wp.array[int],
     # in/out
@@ -155,10 +156,12 @@ def reserve_world_row_slots(
 ):
     """Turn a COUNT pass's row counts into first slots in world-element order and advance the world counters.
 
-    Launch tiled with one block per world and a multiple of 32 threads, at most 1024 (CUDA only).
+    Launch tiled with one block per entry of ``worlds`` and a multiple of 32 threads, at most 1024 (CUDA only).
     """
-    world, thread = wp.tid()
-    _reserve_world_row_slots(world, thread, world_element_start, world_elements, world_slot_counter, element_row_cursor)
+    block, thread = wp.tid()
+    _reserve_world_row_slots(
+        worlds[block], thread, world_element_start, world_elements, world_slot_counter, element_row_cursor
+    )
 
 
 @wp.kernel(enable_backward=False)
