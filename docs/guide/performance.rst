@@ -8,77 +8,74 @@
 Performance
 ===========
 
-Most Newton simulations are slow for a small number of reasons: the CPU spends
-more time launching kernels than the GPU spends running them, the frame stops
-to copy data back to the host, collision detection does more work than the
-scene needs, or buffers are sized far beyond what the simulation uses. This
-page explains each of these and how to fix them.
+This guide describes how to measure and improve simulation performance, from
+CUDA graph capture and host synchronization to collision detection and solver
+settings. For custom Warp kernels, see Warp's `performance guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance.html>`__.
 
-Get the simulated behavior right before optimizing it (see
-:ref:`Simulation Tuning`). An optimization should leave the results unchanged.
-If a change makes the simulation faster by dropping contacts or skipping
-substeps, it has changed the simulation, and the speedup does not count.
+Establish the required simulation behavior before optimizing (see
+:ref:`Simulation Tuning`). Execution changes should preserve that behavior;
+changes to geometry, contact models, or solver settings need an accuracy check.
 
-Newton runs on `NVIDIA Warp <https://nvidia.github.io/warp/>`__. If you write
-your own kernels, Warp's `performance
-<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance.html>`__
-and `profiling
-<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html>`__
-guides apply to them.
+Measuring Performance
+---------------------
 
-.. important::
+Use a representative scene and choose an accuracy metric and tolerance before
+comparing configurations. Check that the state contains no NaN or Inf values
+and that contact and constraint buffers do not overflow (see
+:ref:`performance-buffer-capacity`). Compare against a reference using a
+physical quantity such as penetration depth, force balance, or body trajectory.
+For solver tuning, increase substeps or iterations until the reference metric
+converges.
 
-   Default capacities, solver options, and model flags change between
-   releases. This page names them as examples; check the API reference of your
-   installed version for the exact behavior.
+Measure a baseline, then profile it to identify the dominant cost. Common
+bottlenecks include kernel launch overhead, host synchronization, collision
+detection, solver work, buffer operations, and rendering. Their relative cost
+depends on the scene and world count. Change one setting at a time and record
+both timing and accuracy.
 
-Measuring
----------
+.. _performance-benchmarking:
 
-Before comparing two configurations, make sure both produce valid results. The
-state should contain no NaN or Inf values, contact and constraint counts should
-stay below their capacities (see :ref:`performance-buffer-capacity`), and the
-result should match a reference run within a tolerance you choose in advance.
-A good reference is the same scene with more substeps or iterations, compared
-using a physical quantity such as penetration depth or the trajectory of a body.
+Benchmarking
+^^^^^^^^^^^^
 
-Then find out where the time goes. Measure a reproducible baseline, profile it
-(see :ref:`performance-profiling`), and read the profile before deciding what
-to change. In practice, the largest cost is usually one of the following,
-roughly from most to least common:
+The examples accept ``--benchmark``, which uses a null viewer, warms up, and
+reports frames per second:
 
-1. Kernel launch overhead, when the frame is not captured in a CUDA graph.
-2. Host synchronization inside the frame.
-3. Collision detection.
-4. Solver substeps and iterations, multiplied by the number of worlds.
-5. Buffers much larger than needed.
-6. Rendering.
+.. code-block:: console
 
-The first two are pure overhead and can be removed without touching the
-physics, so start there. Changes that reduce simulation work, such as fewer
-substeps or coarser collision geometry, trade accuracy for speed; see
-:ref:`performance-tradeoffs`. Change one setting at a time, or a small set of
-settings that interact, and record the accuracy metric next to each timing so
-you can tell a real speedup from a cheaper simulation.
+    uv run -m newton.examples basic_shapes --benchmark 10
+
+When timing your own code, warm up the simulation and replay any captured graph
+at least once before starting the timer. Synchronize the device before and
+after the timed region so that the measurement includes GPU execution. Time
+several frames together to reduce measurement overhead. Report setup time,
+including model construction and kernel compilation, separately from stepping.
+
+Record the hardware and software versions, world count, timestep, substeps,
+solver settings, and collision frequency. State whether rendering, sensors,
+controls, and resets are included. Compare configurations over the same amount
+of simulated time and report the accuracy metric alongside the timing. To track
+performance changes in Newton itself, use the airspeed velocity suite described
+in the :doc:`development guide </guide/development>`.
 
 .. _performance-profiling:
 
 Profiling
 ---------
 
-Startup and steady-state stepping have different causes, so profile them
-separately.
+Profile startup and steady-state stepping separately to distinguish setup costs
+from work that repeats every frame.
 
 Startup
 ^^^^^^^
 
 Startup covers importing modules, building and finalizing the model, compiling
-and loading kernels, allocating buffers, and capturing graphs. Python's
-:mod:`cProfile` or timers around each phase show where the time goes; call
-:func:`warp.synchronize` before reading a timer so GPU work is counted in the
-phase that launched it. Warp prints the load and compile time of each module,
-and later runs reuse compiled kernels from the kernel cache, so the first run
-after a code or option change is slower than later ones. To compile kernels
+and loading kernels, allocating buffers, and capturing graphs. Use Python's
+:mod:`cProfile` to identify expensive host calls, or time each phase with device
+synchronization at both boundaries to include GPU work. Warp prints module load
+and compile times. Later runs reuse compiled kernels from the kernel cache, so
+the first run after a code or option change is slower. To compile kernels
 before latency-sensitive work, or to ship them precompiled, see Warp's guide to
 `reducing compilation and startup time
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/reducing_compilation_and_startup_time.html>`__.
@@ -91,16 +88,15 @@ graph.
 
 When the step runs eagerly, :class:`warp.ScopedTimer` with ``synchronize=True``
 measures a region, and its ``cuda_filter`` option records the duration of each
-kernel and memory operation. This is the easiest way to find the most expensive
-kernels, and :class:`~utils.EventTracer` does the same for instrumented solver
-functions.
+kernel and memory operation. :class:`~utils.EventTracer` uses CUDA events to
+time instrumented solver functions.
 
-When the step is captured, the graph launch is a single operation, and
-per-kernel timers inside it are not available. Time the graph as a whole, or
-profile the eager version of the same frame to see the kernels. Warp's
-`profiling guide
-<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#timing-in-cuda-graphs>`__
-describes what can be timed inside graphs. To check what a graph contains,
+For captured steps, Warp's activity timing reports the graph launch as a
+single operation. Time the graph as a whole, profile the eager version, or
+record timed CUDA events during capture to measure regions within the graph
+(see Warp's `graph timing guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#timing-in-cuda-graphs>`__).
+To check what a graph contains,
 :func:`warp.capture_debug_dot_print` writes it as a Graphviz file.
 
 For a full picture, run the application under NVIDIA Nsight Systems. Its
@@ -120,11 +116,10 @@ the same instrumentation, or none, on both sides.
 Memory
 ^^^^^^
 
-:func:`warp.get_mempool_used_mem_high` reports the peak memory Warp has
-allocated. :class:`warp.ScopedMemoryTracker` reports which call sites allocated
-memory, which helps find oversized buffers. ``nvidia-smi`` reports more than
-either, because it includes memory reserved by the pool and used by other
-processes. See Warp's `memory management guide
+:func:`warp.get_mempool_used_mem_high` reports the high-water mark of memory
+used from a device's Warp memory pool. This excludes allocations outside that
+pool. The process memory reported by ``nvidia-smi`` also includes reserved pool
+memory and other CUDA allocations. See Warp's `memory management guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/memory_management.html#querying-memory-usage>`__.
 
 .. _performance-graph-capture:
@@ -134,15 +129,15 @@ CUDA Graph Capture
 
 A simulation frame consists of many small kernel launches: clearing forces,
 detecting collisions, and one or more solver passes for every substep. For
-small scenes, each kernel finishes quickly and the GPU spends much of the
-frame waiting for the CPU to launch the next one.
+small scenes, each kernel finishes quickly and the GPU spends much of the frame
+waiting for the CPU to launch the next one.
 
 A CUDA graph records a sequence of launches once and replays it with a single
 call. With Warp, you record the frame inside :class:`warp.ScopedCapture` and
 replay it with :func:`warp.capture_launch`. This removes the per-launch CPU
-cost but does not make the kernels themselves faster. Scenes with few bodies
-and few worlds often run several times faster when captured; large scenes,
-where a few kernels dominate the frame, gain little.
+cost but does not make the kernels themselves faster. The benefit is greatest
+when host launch overhead dominates; workloads that already keep the GPU busy
+may gain little.
 
 Simulation Loop
 ^^^^^^^^^^^^^^^
@@ -208,30 +203,36 @@ produce the same result:
 
     num_frames = 20
 
-    eager = Simulation(model, sim_substeps=5, use_graph=False)
-    for _ in range(num_frames):
-        eager.step()
+    for substeps in (4, 5):
+        eager = Simulation(model, sim_substeps=substeps, use_graph=False)
+        for _ in range(num_frames):
+            eager.step()
 
-    captured = Simulation(model, sim_substeps=5)
-    for _ in range(num_frames - 1 if captured.graph is not None else num_frames):
-        captured.step()
+        captured = Simulation(model, sim_substeps=substeps)
+        replay_frames = num_frames - 1 if captured.graph is not None else num_frames
+        for _ in range(replay_frames):
+            captured.step()
 
-    assert np.allclose(eager.state_0.body_q.numpy(), captured.state_0.body_q.numpy(), atol=1e-5)
+        np.testing.assert_allclose(
+            eager.state_0.body_q.numpy(), captured.state_0.body_q.numpy(), atol=1e-5
+        )
+        np.testing.assert_allclose(
+            eager.state_0.body_qd.numpy(), captured.state_0.body_qd.numpy(), atol=1e-5
+        )
 
-A comparison like this catches most capture bugs and is worth keeping as a
-test. Run it with both odd and even substep counts, change the controls
-between frames, and compare velocities and solver history as well as
-positions. Results agree to within ``float32`` tolerance, not bit for bit; for
-bitwise repeatability, see :ref:`Deterministic Contacts`.
+When validating your own captured loop, test both odd and even substep counts
+and change controls between frames. Compare velocities and any relevant solver
+history as well as positions, using tolerances appropriate to the scene. For
+repeatable contact ordering, see :ref:`Deterministic Contacts`.
 
 The uncaptured warm-up frame serves two purposes. Warp compiles and loads
 kernels on their first launch, and the warm-up keeps that out of the graph.
-Some solvers and controllers also allocate buffers during their first step. An
-allocation made during capture becomes part of the graph and repeats on every
-replay; for example, a buffer that is created and zeroed on first use would be
-zeroed again every frame, which discards warm-start data. Because the warm-up
-advances the simulation, save and restore the state, including any solver
-history, if the run must start from its initial conditions.
+Some solvers and controllers also allocate buffers during their first step.
+Initialization recorded during capture repeats on every replay. For example,
+zeroing a lazily allocated history buffer during capture would discard its
+warm-start data every frame. Because the warm-up advances the simulation, save
+and restore the state, including any solver history, if the run must start from
+its initial conditions.
 
 The first :func:`warp.capture_launch` call takes longer than later ones,
 because CUDA builds the executable graph at that point. Leave it out of
@@ -239,13 +240,11 @@ timings.
 
 Capture the whole frame in one graph rather than one graph per substep, and
 include collision detection, control updates, and any per-step metric kernels.
-Any kernel left outside the graph still pays its launch cost every frame, and a
-few of them can cancel most of the benefit.
+Kernels outside the graph still incur individual host launch costs.
 
-Graph capture applies to CUDA devices; on the CPU, run the frame directly, as
-the example does. If the captured code allocates memory, capture also requires
-the device's memory pool, which you can check with
-``device.is_mempool_enabled``.
+The example uses CUDA graphs on CUDA devices and runs the frame directly on the
+CPU. If the captured code allocates memory, capture also requires the device's
+memory pool, which you can check with ``device.is_mempool_enabled``.
 
 .. _performance-odd-substeps:
 
@@ -253,8 +252,8 @@ Odd Substep Counts
 ^^^^^^^^^^^^^^^^^^
 
 The example above treats the last substep differently when the substep count is
-odd. Without that special case, the captured simulation silently runs in slow
-motion.
+odd. A plain state swap at every substep would cause each replay to read an
+outdated state.
 
 The swap ``state_0, state_1 = state_1, state_0`` exchanges two Python names.
 During capture, it runs once per substep, and the graph records which buffer
@@ -277,15 +276,14 @@ substeps, the recorded frame looks like this:
      - A
      - B
 
-After capture, the newest state is in B, but the graph always starts by
-reading A, which holds the result of substep 2. Every replay therefore repeats
-work from one substep back, and the simulation advances two substeps per frame
-while computing three. Nothing fails, so the problem is easy to miss. Whether
-it is visible also depends on the solver and scene, so a simulation that looks
-correct is not proof that the loop is correct.
+On replay, the graph writes the final result to B but starts the next frame by
+reading A, which holds the result of substep 2. For a solver without other
+persistent state, the simulation advances only two substeps per frame while
+computing three. Solver history can introduce further inconsistencies. With one
+substep, the input state never advances.
 
-With an even substep count, the frame ends in A and the problem does not
-occur. For odd counts, there are three options:
+With an even substep count, the frame ends in A and the problem does not occur.
+For odd counts, there are three options:
 
 - Copy the result back to A at the end of the frame with
   :meth:`State.assign`, as the example does. This costs one state copy per
@@ -297,30 +295,30 @@ occur. For odd counts, there are three options:
   of the state track which buffer is current. :ref:`stateful-actuators`
   shows this pattern.
 
-Other double-buffered data in the graph, such as
-:ref:`actuator state <stateful-actuators>`, behaves the same way. Some solvers
-only support capture with an even substep count; their API reference says so.
+Other double-buffered data in the graph, such as :ref:`actuator state
+<stateful-actuators>`, behaves the same way. Some solvers only support capture
+with an even substep count; their API reference says so.
 
 What a Graph Records
 ^^^^^^^^^^^^^^^^^^^^
 
 A graph records memory addresses and launch parameters, not Python code. When
-it replays, Python does not run. Between replays, only the contents of the
-captured arrays can change. Array addresses, launch dimensions, scalar
-arguments such as ``dt``, and the outcome of any Python ``if`` stay as they were
-during capture.
+it replays, Python does not run. To update inputs between replays, write into
+the captured arrays. Array addresses, launch dimensions, scalar arguments such
+as ``dt``, and the outcome of any Python ``if`` stay as they were during
+capture.
 
-The most common mistake is replacing an array instead of writing into it:
+Replacing an array does not update the address recorded in the graph:
 
 .. code-block:: python
 
-    # Wrong: the graph keeps reading the old array
+    # Replacing the array leaves the graph reading the old buffer.
     control.joint_target_q = wp.array(targets, dtype=float)
 
-    # Right: copy the new values into the captured array
+    # Update the captured buffer in place instead.
     control.joint_target_q.assign(targets)
 
-The same reasoning leads to a few more rules:
+For a reusable graph:
 
 - Keep every state, :class:`Contacts`, and solver used by the graph alive
   while you replay it. The graph refers to their memory directly.
@@ -335,13 +333,18 @@ The same reasoning leads to a few more rules:
   :meth:`~solvers.SolverVBD.set_rigid_history_update`, or the size of any
   buffer.
 
-Changing model parameters such as masses or gains does not require a new
-capture, because the graph reads the model arrays at replay time. After
-writing them, call :meth:`~solvers.SolverBase.notify_model_changed` outside
-the graph with the :class:`ModelFlags` that describe the change, and keep
-replaying. Setters such as :meth:`Model.set_gravity` name the flag to use in
-their docstrings. Prefer the narrowest flags; ``ModelFlags.ALL`` makes the
-solver recompute everything, which is expensive inside a loop.
+For updates scheduled by a Python step counter, capture a complete repeating
+schedule. For example, the number of steps in a graph should be a multiple of
+Featherstone's ``update_mass_matrix_interval``. Otherwise, replay repeats the
+captured update pattern at a different frequency from eager execution.
+
+For supported in-place model edits, such as changes to masses or gains, call
+:meth:`~solvers.SolverBase.notify_model_changed` outside the graph with the
+:class:`ModelFlags` that describe the change. Prefer the narrowest applicable
+flags to avoid unnecessary updates. Setters such as :meth:`Model.set_gravity`
+name the flag to use in their docstrings. Existing graphs can read updated
+array contents, but changes that replace buffers or alter the launch sequence
+require recapture; check the solver's requirements.
 
 Sensors, actuators, selection views, and some solvers have further capture
 requirements, described on their own pages: :ref:`solver_observables`,
@@ -353,36 +356,33 @@ requirements, described on their own pages: :ref:`solver_observables`,
 Host Synchronization
 --------------------
 
-The CPU normally queues GPU work and moves on without waiting. Reading a
-device array on the host breaks this: the CPU has to wait until the GPU has
-finished everything queued before the read, and while it waits, it cannot
-queue the next frame, so the GPU then sits idle. A single read per frame can
-cost more than the simulation step itself in a small scene. Such reads also
-cannot be captured in a graph.
+GPU operations are usually asynchronous: the CPU queues work and continues.
+Reading device data on the host waits for the relevant GPU work to finish,
+which can interrupt that overlap and leave gaps between launches. Host reads
+also prevent CUDA graph capture.
 
-Typical reads hidden in a simulation loop are ``array.numpy()``, printing an
-array, converting a PyTorch tensor to a Python number, and reading a contact
-count to decide how many threads to launch. Host-side setters that accept
-NumPy arrays, such as :meth:`Model.set_gravity`, copy data to the device and
-can read data back; they are meant for setup or occasional changes, not for
-every step.
+Common sources of synchronization are ``array.numpy()``, printing an array,
+converting a PyTorch tensor to a Python number, and reading a contact count to
+decide how many threads to launch. Host-side setters that accept NumPy arrays,
+such as :meth:`Model.set_gravity`, copy data to the device and can read data
+back; they are meant for setup or occasional changes, not for every step.
 
-Most of these reads can be moved out of the frame. Accumulate metrics and
-error sums on the device and copy them to the host once per episode. Launch
+Move readbacks out of the simulation loop where possible. Accumulate metrics
+and error sums on the device and copy them to the host once per episode. Launch
 kernels over a buffer's full capacity and let each thread compare its index
-with the count on the device. Check for buffer overflow at the end of a run or
-every few hundred frames rather than every step. To find reads you did not
-expect, profile the run with Nsight Systems, which shows synchronization on its
-timeline.
+with the count on the device. Collect peak counts or overflow flags on the
+device and read them periodically or at the end of a run. To find reads you did
+not expect, profile the run with Nsight Systems, which shows synchronization on
+its timeline.
 
-Rendering is a common source of both readbacks and extra work. Render once per frame, after the simulation step, not inside the substep loop.
-Some viewers read data back to the host when logging. In particular,
-:meth:`~viewer.ViewerBase.log_contacts` reads the contact count whenever
-contacts are drawn. With many worlds, rendering only a few of them with
-:meth:`~viewer.ViewerBase.set_visible_worlds`, or the examples'
+Render once per frame, after the simulation step, to avoid repeating viewer
+work in every substep. Some viewers read data back to the host when logging. In
+particular, :meth:`~viewer.ViewerBase.log_contacts` reads the contact count
+whenever contacts are drawn. With many worlds, rendering only a few of them
+with :meth:`~viewer.ViewerBase.set_visible_worlds`, or the examples'
 ``--max-worlds`` option, keeps the viewer from dominating the frame. To time
-the simulation without rendering, use :class:`~viewer.ViewerNull`
-(``--viewer null`` in the examples). See :ref:`choosing-a-viewer`.
+the simulation without rendering, use :class:`~viewer.ViewerNull` (``--viewer
+null`` in the examples). See :ref:`choosing-a-viewer`.
 
 .. _performance-buffer-capacity:
 
@@ -391,60 +391,51 @@ Buffer Capacity
 
 Contacts and constraints are stored in buffers with a fixed capacity. Many
 operations on these buffers, such as sorting, clearing, and scanning, take time
-proportional to the capacity rather than to the number of entries in use, so
-an oversized buffer slows down every step. A buffer that is too small is worse:
-contacts that do not fit are dropped, and the simulation changes.
+proportional to the capacity rather than to the number of entries in use, so an
+oversized buffer slows down every step. Insufficient capacity can drop contacts
+or constraint rows and change the simulation.
 
 Size the buffers from measurement. Run a worst-case scene at the world count
 you intend to use, record the peak contact and constraint counts, and set the
 capacities to that peak plus a margin.
 
 The capacities of :class:`CollisionPipeline`, such as ``rigid_contact_max``,
-``soft_contact_max``, and ``shape_pairs_max``, are totals over all worlds. When
-you do not set them, Newton estimates them from the model; the estimates are
-not upper bounds. The NxN and SAP broad phases by default reserve space for
-every shape pair in each world, which is often far more than a scene needs.
-MuJoCo's contact and constraint capacities, by contrast, are set per world
-(see :doc:`/solvers/mujoco`), and the solver can report overflow per world
-(see :ref:`mujoco_overflow_observable`).
+``soft_contact_max``, and ``shape_pairs_max``, are totals over all worlds.
+Automatic contact-capacity estimates are not worst-case bounds. In contrast,
+the NxN and SAP broad phases default to a worst-case shape-pair bound summed
+over worlds, including shared global shapes. This can reserve much more memory
+than the scene needs. MuJoCo's contact and constraint capacities, by contrast,
+are set per world (see :doc:`/solvers/mujoco`), and the solver can report
+overflow per world (see :ref:`mujoco_overflow_observable`).
 
 With ``verify_buffers=True``, the collision pipeline reports overflow. Keep it
-enabled while sizing the buffers and disable it afterwards to save the check.
-
-Shapes with a nonzero ``gap`` generate speculative contacts before the shapes
-touch. These take buffer space and collision time, so leave the gap at zero
-for shapes that do not need early contacts.
+enabled while sizing buffers. Once capacities have been validated, disabling
+the check removes one diagnostic kernel per collision pass. Recheck capacities
+when changing the scene, world count, or contact settings.
 
 Collision Detection
 -------------------
 
-Collision detection often costs as much as the solver, and making it cheaper
-does not reduce accuracy the way fewer iterations would. The biggest savings
-usually come from simpler geometry: collide with primitives or convex hulls
-instead of render meshes (see :meth:`ModelBuilder.approximate_meshes`), and
-build an SDF for meshes that collide with other meshes. Fewer candidate pairs
-also help; the broad phase choice, separate worlds, collision groups, and
-filters all reduce them, and global shapes (world ``-1``) are tested against
-every world. :ref:`Collision Pipeline Details` covers these options.
+Reduce candidate pairs before changing collision accuracy. Use collision groups
+and filters to exclude pairs that should not interact, and choose a broad phase
+suited to the scene. Shared shapes (world ``-1``) participate in collision
+detection across worlds, so include their cost when sizing buffers. See
+:ref:`Collision Pipeline Details`.
 
-Collision detection does not have to run every substep. Running it every few
-substeps, or once per frame, is often enough when bodies move little between
-substeps; compare the result with per-substep detection before relying on it.
-See :ref:`collision-frequency-in-the-simulation-loop`.
-
-Contact sensors and contact observables add work to every step, so request
-them only when you use them.
+Simpler geometry and less frequent collision detection can reduce cost further,
+but may change contact locations or miss collisions. The next section describes
+these tradeoffs. Request contact sensors and solver observables only when the
+application needs their output.
 
 .. _performance-tradeoffs:
 
-Trading Accuracy for Speed
---------------------------
+Simulation Accuracy and Cost
+----------------------------
 
-Once the overhead is gone, further speedups come from doing less simulation
-work, which changes the results. Accept such a change only when the accuracy
-metric stays within the tolerance chosen in `Measuring`_. The settings below
-are the common levers; :ref:`Simulation Tuning` and the linked pages describe
-their effect on behavior.
+Changes to collision and solver settings can reduce work but affect the
+simulated behavior. Evaluate them against the accuracy metric and tolerance
+chosen in `Measuring Performance`_. :ref:`Simulation Tuning` and the linked
+pages describe their effect on behavior.
 
 Collision and solver rates
     Detecting collisions less often than the solver steps saves collision time
@@ -454,36 +445,34 @@ Collision and solver rates
 Contact gap and tunneling
     A contact is found only when two shapes are within the contact gap at the
     time of detection. If a body moves farther than the gap between two
-    detection passes, it can pass through thin geometry. A larger gap, or
-    velocity-dependent speculative contacts, prevents this but creates more
-    contacts. Less frequent detection or larger time steps increase the motion
-    between passes, so revisit the gap when changing either. See
+    detection passes, it can pass through thin geometry. A larger gap or
+    velocity-dependent speculative contacts can reduce this risk, at the cost
+    of more contacts; neither guarantees that tunneling is eliminated. Less
+    frequent detection or larger time steps increase the motion between passes,
+    so revisit the gap when changing either. See
     :ref:`Collisions`.
 
 Collision geometry
-    Primitives and convex hulls are cheaper than meshes, and the cost and
-    accuracy of mesh contact depend on mesh and SDF resolution. A coarser SDF
-    builds faster and uses less memory but rounds off small features. See
+    Primitives and convex hulls can be cheaper than detailed meshes, but an
+    approximation changes the collision surface. Use
+    :meth:`ModelBuilder.approximate_meshes` where that change is acceptable.
+    For mesh-mesh contacts, build the SDFs required by the collision pipeline.
+    Coarser SDFs use less memory but lose small features. See
     :ref:`Collision Pipeline Details`.
 
 Contact model
-    Point contacts are cheaper than SDF-based or hydroelastic contacts, which
-    model contact patches and pressure distributions more accurately. Choose
-    the cheapest model that resolves the behavior the task depends on, and
-    enable expensive models only on the shapes that need them. See
-    :ref:`Hydroelastic Contacts`.
-
-Contact pairs
-    Filtering pairs that cannot or should not touch, such as adjacent links,
-    reduces collision work without changing the results for the remaining
-    pairs. See :ref:`Collisions`.
+    SDF queries and hydroelastic contact generation can add collision work.
+    Hydroelastic contacts represent contact patches and pressure distributions;
+    use them where the task needs that behavior. Enable expensive models only
+    on the shapes that need them. See :ref:`Hydroelastic Contacts`.
 
 Substeps, iterations, and tolerances
     Solver cost scales with substeps and iterations. Reduce iterations, or let
     the solver stop early through a convergence tolerance where it supports
     one, only while the residual or task metric stays within bounds that you
     can justify physically. Fewer substeps also make each step larger, which
-    affects stability and contact. See the tuning order in
+    affects stability and contact. Equal products of substeps and iterations
+    do not imply equal accuracy. See the tuning order in
     :ref:`Simulation Tuning` and :ref:`Tuning Solver Reference`.
 
 Solver choice and solver options
@@ -500,42 +489,18 @@ To simulate many copies of a scene, build one world and copy it with
 :meth:`ModelBuilder.replicate`. Approximate meshes and build SDFs on the
 original before replicating, so the work is done once.
 
-Throughput, measured in world-steps per second, increases with the number of
-worlds until the GPU is fully used. Beyond that point, adding worlds increases
-the time per step and the memory use without increasing throughput. Measure a
-few world counts to find where this happens on your hardware.
+Measure both throughput (world-steps per second) and latency (time per step)
+across several world counts. Batching can improve GPU utilization, but gains
+eventually level off while memory use and latency continue to grow. Choose the
+world count that meets the application's throughput, latency, and memory needs.
 
-Update all worlds together: randomize or reset parameters in one kernel launch,
-then call :meth:`~solvers.SolverBase.notify_model_changed` once. Partial resets
-take a device mask rather than a list of indices; see
+Batch per-world updates in device kernels rather than looping over worlds in
+Python. After changing model parameters, call
+:meth:`~solvers.SolverBase.notify_model_changed` with the relevant flags.
+Partial state resets take a device mask rather than a list of indices; see
 :ref:`Per-world reset masks`.
 
 A model and its solver run on a single device. To use several GPUs, run an
-independent simulation on each, for example one process per GPU, and divide
-the worlds between them. Throughput then scales with the number of GPUs as long
-as the simulations do not need to exchange data every step.
-
-.. _performance-benchmarking:
-
-Benchmarking
-------------
-
-The examples accept ``--benchmark``, which replaces the viewer with the null
-viewer, warms up, and prints frames per second:
-
-.. code-block:: console
-
-    python -m newton.examples basic_shapes --benchmark 10
-
-When timing your own code, capture and replay the graph once before starting
-the timer, and synchronize the device before and after the timed replays.
-Report the setup time, which includes building the model and compiling
-kernels, separately from the time per step. :class:`~utils.EventTracer` times
-instrumented solver functions with CUDA events. To track performance changes in
-Newton itself, use the airspeed velocity suite described in the
-:doc:`development guide </guide/development>`.
-
-A timing is only comparable when the configuration behind it is known. Along
-with the result, note the world count, substeps, iterations, collision
-frequency, the hardware and software versions, and whether rendering and resets
-were included, together with the accuracy check from `Measuring`_.
+independent simulation on each, for example one process per GPU, and divide the
+worlds between them. Measure aggregate throughput as well as any communication
+or coordination cost.
