@@ -14407,7 +14407,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uniform_display_primvars_resolve_per_face(self):
-        """Resolve uniform display primvars per face for a given face count, clamping or dropping invalid values."""
+        """Resolve uniform display primvars per face, clamping or dropping invalid values."""
         from pxr import Sdf, Usd, UsdGeom, UsdShade
 
         from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
@@ -14418,7 +14418,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         opacity_path = "/World/Mesh.primvars:displayOpacity"
         nan = float("nan")
         two_colors = [(0.2, 0.4, 0.6), (0.6, 0.4, 0.2)]
-        # (name, interpolation, displayColor, displayOpacity, bind material, expected color, expected opacity, logs)
+        # (name, interpolation, displayColor, displayOpacity, bind, color, opacity, expected logs)
         cases = (
             ("per_face", uniform, two_colors, [0.25, 0.75], False,
              [srgb((0.2, 0.4, 0.6)), srgb((0.6, 0.4, 0.2))], [0.25, 0.75], ()),

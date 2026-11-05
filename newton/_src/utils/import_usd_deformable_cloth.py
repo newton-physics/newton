@@ -597,7 +597,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if not collision_enabled:
             _warn_collision_not_disableable(path)
 
-        # Subset materials are not mapped to triangles, so they are ignored, with the visual-mesh importer's message.
+        # Subset materials are not mapped to triangles; ignore them as the visual-mesh importer does.
         if _has_graphics_material_subsets(prim):
             logger.warning("%s: graphics material subsets are not supported; using only the mesh-level material.", path)
         material_props = usd.resolve_material_properties_for_prim(
@@ -605,7 +605,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         )
         color = material_props.get("color")
         opacity = material_props.get("opacity")
-        # A uniform displayColor or displayOpacity holds one value per authored face; give it to that face's triangles.
+        # A uniform display primvar holds one value per face; give it to that face's triangles.
         if color is not None and np.ndim(color) == 2:
             color = color[tri_source_faces]
         if opacity is not None and np.ndim(opacity) == 1:

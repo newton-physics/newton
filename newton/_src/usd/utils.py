@@ -2128,7 +2128,7 @@ def _coerce_color_opacity(value: Any, attr: Usd.Attribute | None) -> float | Non
 
 
 def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | None) -> tuple[np.ndarray | None, bool]:
-    """Return a ``uniform`` array primvar's flattened per-face values and whether a value-count mismatch was logged.
+    """Return a ``uniform`` primvar's per-face values and whether a value-count mismatch was logged.
 
     The values are None unless the primvar holds exactly one value per face.
     """
