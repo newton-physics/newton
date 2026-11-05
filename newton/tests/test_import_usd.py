@@ -14427,9 +14427,16 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
              (f"{color_path}: clamping 1 of 2 imported face colors to [0, 1].",
               f"{opacity_path}: clamping 1 of 2 imported face opacities to [0, 1].")),
             ("non_finite", uniform, [(nan, 0.4, 0.6), (0.6, 0.4, 0.2)], [0.25, 0.75], False,
-             None, [0.25, 0.75], (f"{color_path}: ignoring imported face colors: 1 of 2 are non-finite.",)),
-            ("wrong_count", uniform, [*two_colors, (0.1, 0.1, 0.1)], [0.25, 0.75], False,
-             srgb((0.2, 0.4, 0.6)), [0.25, 0.75], (f"{color_path}: uniform primvar has 3 values for 2 faces",)),
+             [(nan, nan, nan), srgb((0.6, 0.4, 0.2))], [0.25, 0.75],
+             (f"{color_path}: ignoring imported face colors: 1 of 2 are non-finite; those faces use the default.",)),
+            ("all_non_finite", uniform, [(nan, 0.4, 0.6), (nan, 0.4, 0.2)], [0.25, 0.75], False,
+             None, [0.25, 0.75], (f"{color_path}: ignoring imported face colors: all 2 are non-finite.",)),
+            ("single_value", uniform, [(0.2, 0.4, 0.6)], [0.25, 0.75], False,
+             srgb((0.2, 0.4, 0.6)), [0.25, 0.75], (f"{color_path}: uniform primvar length 1 does not match 2 faces",)),
+            ("wrong_count", uniform, [*two_colors, (0.1, 0.1, 0.1)], [0.25, 0.75, 0.5], False,
+             srgb((0.2, 0.4, 0.6)), 0.25,
+             (f"{color_path}: uniform primvar length 3 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 3 does not match 2 faces")),
             ("vertex_stays_scalar", vertex, [*two_colors, *two_colors], [0.25, 0.75, 0.25, 0.75], False,
              srgb((0.2, 0.4, 0.6)), 0.25, (f"{opacity_path}: opacity data contains 4 values",)),
             ("material_color_wins", uniform, two_colors, [0.25, 0.75], True,
@@ -14459,6 +14466,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
                 else:
                     with self.assertLogs("newton", level="WARNING") as caught:
                         props = resolve_material_properties_for_prim(mesh.GetPrim(), face_count=2)
+                    self.assertEqual(len(caught.output), len(messages), caught.output)
                     for message in messages:
                         self.assertIn(message, "\n".join(caught.output))
 

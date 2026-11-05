@@ -1917,25 +1917,18 @@ def _resolve_color_space(name: str, default: ColorSpace, what: str, path: Any) -
 
 
 def _color_to_display_space(
-    color: tuple[float, float, float],
+    color: tuple[float, float, float] | np.ndarray,
     attr: Usd.Attribute | None,
-) -> tuple[float, float, float]:
-    """Normalize a USD scalar color to Newton's display/sRGB model color space."""
-    if attr is None:
-        return color_linear_to_srgb(color)
-    # Untagged scalar colors follow USD Preview Surface and are linear.
-    color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
-    if color_space == ColorSpace.LINEAR:
-        return color_linear_to_srgb(color)
-    return color
-
-
-def _colors_to_display_space(colors: np.ndarray, attr: Usd.Attribute) -> np.ndarray:
-    """Normalize an array of USD colors read from ``attr`` to Newton's display/sRGB model color space."""
-    color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
-    if color_space == ColorSpace.LINEAR:
-        return _linear_to_srgb(colors)
-    return colors
+) -> tuple[float, float, float] | np.ndarray:
+    """Normalize a USD color, or an ``(N, 3)`` array of colors, to Newton's display/sRGB model color space."""
+    if attr is not None:
+        # Untagged colors follow USD Preview Surface and are linear.
+        color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
+        if color_space != ColorSpace.LINEAR:
+            return color
+    if np.ndim(color) == 2:
+        return _linear_to_srgb(np.asarray(color))
+    return color_linear_to_srgb(color)
 
 
 def _resolve_color_texture_asset(
@@ -2137,12 +2130,12 @@ def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | Non
     if not primvar.GetTypeName().isArray:
         return None, False
     values = primvar.ComputeFlattened()
-    if values is None or len(values) <= 1:
+    if values is None or len(values) == 0:
         return None, False
     if len(values) != face_count:
         _warn_imported_value(
             primvar.GetAttr(),
-            "uniform primvar has %d values for %d faces; using the first value.",
+            "uniform primvar length %d does not match %d faces; using the first value.",
             len(values),
             face_count,
         )
@@ -2154,19 +2147,25 @@ def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | Non
 
 
 def _coerce_face_values(values: np.ndarray, attr: Usd.Attribute, what: str) -> np.ndarray | None:
-    """Clamp per-face values read from ``attr`` to [0, 1], or return None if any value is non-finite."""
+    """Clamp per-face values read from ``attr`` to [0, 1]; faces with a non-finite value become NaN.
+
+    Returns None if every face is non-finite.
+    """
     finite = np.all(np.isfinite(values), axis=1)
+    if not np.any(finite):
+        _warn_imported_value(attr, "ignoring imported face %s: all %d are non-finite.", what, len(values))
+        return None
     if not np.all(finite):
         _warn_imported_value(
             attr,
-            "ignoring imported face %s: %d of %d are non-finite.",
+            "ignoring imported face %s: %d of %d are non-finite; those faces use the default.",
             what,
             int(np.count_nonzero(~finite)),
             len(values),
         )
-        return None
     clamped = np.clip(values, 0.0, 1.0)
-    clamped_count = int(np.count_nonzero(np.any(clamped != values, axis=1)))
+    clamped[~finite] = np.nan
+    clamped_count = int(np.count_nonzero(finite & np.any(clamped != values, axis=1)))
     if clamped_count:
         _warn_imported_value(attr, "clamping %d of %d imported face %s to [0, 1].", clamped_count, len(values), what)
     return clamped
@@ -2191,7 +2190,7 @@ def _extract_display_primvar_properties(
             if face_colors is not None and face_colors.shape[1] >= 3:
                 colors = _coerce_face_values(face_colors[:, :3], display_color.GetAttr(), "colors")
                 if colors is not None:
-                    properties["color"] = _colors_to_display_space(colors, display_color.GetAttr())
+                    properties["color"] = _color_to_display_space(colors, display_color.GetAttr())
             else:
                 color = _coerce_color(display_color.Get(), display_color.GetAttr())
                 if color is not None:
@@ -2657,7 +2656,8 @@ def resolve_material_properties_for_prim(
             ``GeomSubset`` fallback and uses its display primvars.
         face_count: Number of authored faces of the prim. If given, a ``uniform``
             ``displayColor`` or ``displayOpacity`` with one value per face is returned
-            as a per-face array of shape ``(face_count, 3)`` or ``(face_count,)``.
+            as a per-face array of shape ``(face_count, 3)`` or ``(face_count,)``, with
+            NaN for faces whose authored value is non-finite.
 
     Returns:
         Dictionary with surface properties (including opacity), texture data, and a

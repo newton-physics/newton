@@ -606,10 +606,13 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         color = material_props.get("color")
         opacity = material_props.get("opacity")
         # A uniform display primvar holds one value per face; give it to that face's triangles.
+        # Faces whose authored value is non-finite (NaN) keep the builder's default.
         if color is not None and np.ndim(color) == 2:
             color = color[tri_source_faces]
+            color[np.isnan(color).any(axis=1)] = builder._DEFAULT_TRI_COLOR
         if opacity is not None and np.ndim(opacity) == 1:
             opacity = opacity[tri_source_faces]
+            opacity[np.isnan(opacity)] = 1.0
         p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
