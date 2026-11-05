@@ -118,6 +118,14 @@ def _load_mujoco_msh(filename: str) -> tuple[np.ndarray, np.ndarray | None, np.n
     return vertices, faces if nface else None, normals, texcoords
 
 
+def _is_mujoco_msh(mesh_asset: dict) -> bool:
+    """Return whether a parsed MJCF mesh asset is a MuJoCo binary ``.msh`` file."""
+    mesh_file, content_type = mesh_asset.get("file"), mesh_asset.get("content_type")
+    return bool(mesh_file) and (
+        content_type == "model/vnd.mujoco.msh" or (not content_type and mesh_file.lower().endswith(".msh"))
+    )
+
+
 _MESH_INERTIA_MODES = frozenset({"legacy", "exact", "convex", "shell"})
 _MJ_MINVAL = 1e-15  # MuJoCo's mjMINVAL
 
@@ -1080,6 +1088,28 @@ def parse_mjcf(
     mesh_file_cache: dict[tuple, list[Mesh]] = {}
     # unit-density mass properties of each mesh asset and scale in its inertia mode, or None where MuJoCo rejects it
     mesh_inertia_cache: dict[tuple, tuple[float, np.ndarray, np.ndarray] | None] = {}
+    # vertices of .msh files without faces, keyed by file, or None for a file with faces
+    msh_vertices_without_faces: dict[str, np.ndarray | None] = {}
+
+    def mesh_hull_source(mesh_name: str) -> np.ndarray | None:
+        """Return the vertices of a mesh asset without faces, whose faces MuJoCo takes from their convex hull."""
+        mesh_asset = mesh_assets[mesh_name]
+        if "vertices" in mesh_asset:
+            return mesh_asset["vertices"] if mesh_asset["faces"] is None else None
+        if not _is_mujoco_msh(mesh_asset):
+            return None
+        path = mesh_asset["file"]
+        if path not in msh_vertices_without_faces:
+            vertices, faces, _, _ = _load_mujoco_msh(path)
+            msh_vertices_without_faces[path] = vertices if faces is None else None
+        return msh_vertices_without_faces[path]
+
+    def mode_sets_mass(mesh_name: str) -> bool:
+        """Return whether a mesh asset's mass properties come from mesh_inertia() rather than from Mesh().
+
+        Mesh() computes exact properties, but of the collision hull for a mesh without faces.
+        """
+        return mesh_assets[mesh_name]["inertia"] != "exact" or mesh_hull_source(mesh_name) is not None
 
     def mesh_inertia(
         mesh_name: str, scaling: np.ndarray, maxhullvert: int
@@ -1098,12 +1128,23 @@ def parse_mjcf(
         key = (mesh_name, tuple(float(v) for v in np.asarray(scaling, dtype=np.float64).reshape(-1)))
         if key not in mesh_inertia_cache:
             mesh_asset = mesh_assets[mesh_name]
-            mode = mesh_asset["inertia"]
-            # MuJoCo reads a mesh file as one mesh, so combine its submeshes, loaded without
-            # material overrides so that every geom gets the same properties.
-            vertices, faces = _combine_meshes(load_mesh_asset_geometry(mesh_name, scaling, maxhullvert))
-            hull_vertices = _undo_mesh_ref_pose(vertices, mesh_asset["refpos"], mesh_asset["refquat"], scaling)
-            properties = _mesh_mass_properties(vertices, faces, mode, mesh_asset["inertia_hullvert"], hull_vertices)
+            mode, hullvert = mesh_asset["inertia"], mesh_asset["inertia_hullvert"]
+            refpos, refquat = mesh_asset["refpos"], mesh_asset["refquat"]
+            source = mesh_hull_source(mesh_name)
+            if source is None:
+                # MuJoCo reads a mesh file as one mesh, so combine its submeshes, loaded without
+                # material overrides so that every geom gets the same properties.
+                vertices, faces = _combine_meshes(load_mesh_asset_geometry(mesh_name, scaling, maxhullvert))
+                hull_vertices = _undo_mesh_ref_pose(vertices, refpos, refquat, scaling)
+            else:
+                # MuJoCo gives a mesh without faces the faces of its convex hull, limited only by an
+                # authored maxhullvert (mjCMesh::CopyGraph); Newton's collision hull may keep fewer.
+                hull_vertices = np.asarray(source, dtype=np.float64)
+                vertices = _apply_mesh_ref_pose(hull_vertices, None, refpos, refquat, scaling)[0]
+                faces = _mesh_hull_faces(vertices, hullvert, hull_vertices)
+            properties = (
+                None if faces is None else _mesh_mass_properties(vertices, faces, mode, hullvert, hull_vertices)
+            )
             if properties is None:
                 logger.warning(
                     'MJCF mesh %r has too little surface area or volume for inertia="%s" and adds no mass; '
@@ -1135,7 +1176,7 @@ def parse_mjcf(
             Submeshes whose mass properties add up to the whole mesh.
         """
         meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert, override_color, override_texture)
-        if mesh_assets[mesh_name]["inertia"] == "exact":
+        if not mode_sets_mass(mesh_name):
             # Newton's mesh mass properties already use the exact signed volume.
             return meshes
         properties = mesh_inertia(mesh_name, scaling, maxhullvert)
@@ -1183,10 +1224,7 @@ def parse_mjcf(
         # Mesh() computes exact mass properties; other modes are set by load_mesh_asset().
         compute_exact = mesh_asset["inertia"] == "exact"
         mesh_file = mesh_asset.get("file")
-        content_type = mesh_asset.get("content_type")
-        if mesh_file and (
-            content_type == "model/vnd.mujoco.msh" or (not content_type and mesh_file.lower().endswith(".msh"))
-        ):
+        if _is_mujoco_msh(mesh_asset):
             vertices, faces, normals, texcoords = _load_mujoco_msh(mesh_file)
         elif mesh_file:
             refpos = mesh_asset["refpos"]
@@ -1803,7 +1841,7 @@ def parse_mjcf(
                 explicit_mesh_density = None
                 # A mesh that its inertia mode gives no mass adds none (see load_mesh_asset); a zero
                 # density keeps compute_inertia_shape() from falling back to the exact volume.
-                if mesh_asset["inertia"] != "exact" and all(m.has_inertia and m.mass == 0.0 for m in m_meshes):
+                if mode_sets_mass(geom_attrib["mesh"]) and all(m.has_inertia and m.mass == 0.0 for m in m_meshes):
                     explicit_mesh_density = 0.0
                     explicit_mass_handled = True
                 elif geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:

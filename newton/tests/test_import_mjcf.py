@@ -2369,6 +2369,33 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
             with self.subTest(file="sphere.obj"):
                 self.assert_matches_native(mjcf, directory)
 
+    def test_mesh_without_faces_uses_mujoco_hull(self):
+        """Take the mass of a mesh without faces from MuJoCo's hull of all its vertices, not the collision hull."""
+        # 100 points on a sphere: all lie on the hull, which then has more than the collision hull's 64 vertices.
+        index = np.arange(100)
+        z = 1.0 - (2.0 * index + 1.0) / 100.0
+        azimuth = index * np.pi * (3.0 - np.sqrt(5.0))
+        rho = np.sqrt(1.0 - z**2)
+        points = np.stack((rho * np.cos(azimuth), rho * np.sin(azimuth), z), axis=1).astype(np.float32)
+        vertex = " ".join(map(str, points.flat))
+        with tempfile.TemporaryDirectory() as directory:
+            header = np.array([len(points), 0, 0, 0], dtype=np.int32)
+            Path(directory, "points.msh").write_bytes(header.tobytes() + points.tobytes())
+            for source in (f'vertex="{vertex}"', 'file="points.msh"'):
+                for attributes in (
+                    "",
+                    'inertia="exact"',
+                    'inertia="shell"',
+                    'inertia="convex" maxhullvert="40"',
+                    'maxhullvert="40" scale="2 0.5 1.5"',
+                ):
+                    # Unit density keeps the float32 body inertia within the comparison's absolute tolerance.
+                    mjcf = f"""<mujoco><asset><mesh name="mesh" {source} {attributes}/></asset>
+                      <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh" density="1"/></body>
+                    </worldbody></mujoco>"""
+                    with self.subTest(source=source.split("=")[0], attributes=attributes):
+                        self.assert_matches_native(mjcf, directory)
+
     def test_mesh_without_volume_adds_no_mass(self):
         """A mesh that its mode gives no volume adds no mass, where MuJoCo rejects it; ``shell`` gives it mass."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
