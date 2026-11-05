@@ -2188,6 +2188,43 @@ def test_captured_spring_notifications_apply_in_place_edits(test, device):
     np.testing.assert_allclose(taus, [4.0 * 0.5 - 3.0, 2.0 * -0.5 - 3.0], atol=1.0e-6)
 
 
+def test_springs_skip_unsupported_joint_types(test, device, solve_mode="matrix_free"):
+    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs, across construction and notifications."""
+    # Loop closures need matrix_free, so only that route adds the square's REVOLUTE loop joint.
+    builder, loop_joint = (
+        _build_square_loop("revolute") if solve_mode == "matrix_free" else (newton.ModelBuilder(), None)
+    )
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    links = [
+        builder.add_link(
+            xform=wp.transform(wp.vec3(3.0 + 0.3 * i, 0.0, 1.0), wp.quat_identity()), mass=0.5, inertia=inertia
+        )
+        for i in range(3)
+    ]
+    hinge = wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity())
+    joints = [
+        builder.add_joint_free(child=links[0]),
+        builder.add_joint_ball(parent=links[0], child=links[1], parent_xform=hinge),
+        builder.add_joint_revolute(parent=links[1], child=links[2], parent_xform=hinge, axis=newton.Axis.Z),
+    ]
+    builder.add_articulation(joints)
+    builder.joint_stiffness = [5.0] * builder.joint_dof_count
+    model = builder.finalize(device=device)
+    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE and BALL joints do not.
+    qd_start = model.joint_qd_start.numpy()
+    sprung = np.zeros(model.joint_dof_count, dtype=bool)
+    sprung[qd_start[joints[2]]] = True
+    if loop_joint is not None:
+        sprung[: qd_start[loop_joint]] = True
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+        solver = SolverSteel(model, solve_mode=solve_mode)
+        np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
+        model.joint_stiffness.fill_(7.0)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
+
+
 def test_registration_adds_no_spring_attributes(test, device):
     """Register only Steel's own body attributes, not the MuJoCo spring attributes."""
     builder = newton.ModelBuilder()
@@ -2248,6 +2285,19 @@ add_function_test(
     "test_captured_spring_notifications_apply_in_place_edits",
     test_captured_spring_notifications_apply_in_place_edits,
     devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSteelSprings,
+    "test_springs_skip_unsupported_joint_types",
+    test_springs_skip_unsupported_joint_types,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSteelSprings,
+    "test_springs_skip_unsupported_joint_types_split",
+    test_springs_skip_unsupported_joint_types,
+    devices=get_test_devices(),
+    solve_mode="split",
 )
 add_function_test(
     TestSteelSprings,

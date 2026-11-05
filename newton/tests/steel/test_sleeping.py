@@ -1444,6 +1444,32 @@ def _two_world_boxes(device):
     return model, pipeline, solver, [model.state(), model.state()]
 
 
+def test_stiffness_without_a_spring_lets_articulations_sleep(test, device):
+    """Sleep and step bitwise like zero stiffness when only FREE and BALL DOFs, which carry no spring, have stiffness."""
+    runs = []
+    for stiffness in (0.0, 50.0):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for x in (0.0, 1.0):
+            base = builder.add_link(xform=wp.transform((x, 0.0, 0.1), wp.quat_identity()))
+            builder.add_shape_box(base, hx=0.2, hy=0.1, hz=0.1)
+            tip = builder.add_link(xform=wp.transform((x + 0.3, 0.0, 0.1), wp.quat_identity()))
+            builder.add_shape_box(tip, hx=0.1, hy=0.1, hz=0.1)
+            hinge = wp.transform((0.3, 0.0, 0.0), wp.quat_identity())
+            builder.add_articulation(
+                [builder.add_joint_free(child=base), builder.add_joint_ball(parent=base, child=tip, parent_xform=hinge)]
+            )
+        builder.joint_stiffness = [stiffness] * builder.joint_dof_count
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
+        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **PROFILE)
+        states = [model.state(), model.state()]
+        _advance(pipeline, solver, states, model.control(), 400)
+        np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+        runs.append(states[0].body_q.numpy())
+    np.testing.assert_array_equal(runs[1], runs[0])
+
+
 def _add_box(builder):
     body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -1530,6 +1556,7 @@ for _name in (
     "test_coincident_entity_counts_keep_property_owners",
     "test_solver_body_attribute_notification_wakes_its_island",
     "test_mimic_articulation_stays_awake",
+    "test_stiffness_without_a_spring_lets_articulations_sleep",
 ):
     add_function_test(TestSteelSleepingProduction, _name, globals()[_name], devices=devices)
 

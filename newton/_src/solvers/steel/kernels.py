@@ -336,6 +336,20 @@ def compute_com_transforms(
 
 
 @wp.kernel
+def mask_passive_spring_stiffness(
+    joint_stiffness: wp.array[float],
+    spring_dof_mask: wp.array[wp.int32],
+    # outputs
+    spring_stiffness: wp.array[float],
+):
+    dof = wp.tid()
+    if spring_dof_mask[dof] != 0:
+        spring_stiffness[dof] = joint_stiffness[dof]
+    else:
+        spring_stiffness[dof] = 0.0
+
+
+@wp.kernel
 def compute_effective_joint_armature(
     joint_armature: wp.array[float],
     kinematic_dof_mask: wp.array[wp.int32],

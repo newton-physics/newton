@@ -162,6 +162,7 @@ from .kernels import (
     invert_lower_factor_grouped,
     local_solve_launch_gate,
     mark_propagation_bodies,
+    mask_passive_spring_stiffness,
     pgs_solve_loop,
     pgs_solve_mf_loop,
     populate_connect_J_for_size,
@@ -2187,7 +2188,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
                 shapes (other notifications and changes to static or kinematic owners wake
                 every island). Driven articulations (nonzero drive gains) and articulations with
-                passive springs (nonzero :attr:`~newton.Model.joint_stiffness`) stay awake.
+                passive springs (nonzero :attr:`~newton.Model.joint_stiffness` on a PRISMATIC,
+                REVOLUTE or D6 tree joint) stay awake.
                 Sleeping is configured at construction; rebuild captured graphs to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
                 or ``velocity_iterations``, or for a model without articulations, and
                 :class:`NotImplementedError` with ``articulated_contact_response="propagation"``;
@@ -4437,6 +4439,16 @@ class SolverSteel(SolverBase, CouplingInterface):
         n_dofs = max(int(model.joint_dof_count), 1)
         self._passive_joint_damping = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._refresh_passive_joint_damping()
+        # Tree PRISMATIC, REVOLUTE and D6 DOFs carry springs; the sleep veto reads the same buffer.
+        spring_dof_mask = np.zeros(n_dofs, dtype=np.int32)
+        if model.joint_count:
+            joint_type = model.joint_type.numpy()
+            qd_start = model.joint_qd_start.numpy()
+            sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
+            sprung &= self._model_plan.loop_joint_articulation < 0
+            for joint in np.flatnonzero(sprung):
+                spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
+        self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._passive_spring_rest_q = wp.zeros(
             max(int(model.joint_coord_count), 1), dtype=wp.float32, device=model.device
@@ -4445,11 +4457,17 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._refresh_passive_spring_rest_q()
 
     def _refresh_passive_spring_stiffness(self) -> None:
-        """Copy the model's passive spring stiffness into the solver's fixed buffer."""
+        """Copy the model's passive spring stiffness of sprung DOFs into the solver's fixed buffer."""
         # Users may replace model.joint_stiffness; captured graphs keep this buffer's address.
         stiffness = self.model.joint_stiffness
         if stiffness is not None and self.model.joint_dof_count:
-            wp.copy(self._passive_spring_stiffness, stiffness, count=self.model.joint_dof_count)
+            wp.launch(
+                mask_passive_spring_stiffness,
+                self.model.joint_dof_count,
+                inputs=[stiffness, self._passive_spring_dof_mask],
+                outputs=[self._passive_spring_stiffness],
+                device=self.model.device,
+            )
 
     def _refresh_passive_spring_rest_q(self) -> None:
         """Copy the model's passive spring rest coordinates into the solver's fixed buffer."""
