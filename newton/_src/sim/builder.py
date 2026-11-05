@@ -7843,8 +7843,8 @@ class ModelBuilder:
         if loop_welds:
             labels = ", ".join(repr(self.joint_label[j]) for j in loop_welds)
             warnings.warn(
-                f"collapse_fixed_joints() does not preserve FIXED loop-closing joints ({labels}): they are merged "
-                "or dropped, which opens their loops. Build or import link-break models without collapsing fixed "
+                f"collapse_fixed_joints() does not preserve FIXED loop-closing joints ({labels}): it may merge or "
+                "drop them, which opens their loops. Build or import link-break models without collapsing fixed "
                 "joints (collapse_fixed_joints=False).",
                 NewtonWarning,
                 stacklevel=2,
