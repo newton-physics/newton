@@ -26,6 +26,7 @@ supporting both a Z-up and X-up convention.
 from __future__ import annotations
 
 import functools
+import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Literal
@@ -42,8 +43,9 @@ from ..core.model import ModelKamino
 from ..core.types import (
     to_warp_int32_array,
 )
-from ..utils import logger as msg
 from .keying import build_pair_key2
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -305,17 +307,18 @@ class ContactsKaminoData:
     """
 
     stiffness: wp.array[wp.float32] | None = None
-    """Normal stiffness of each active contact [N/m]; zero selects hard contact.
+    """Normal stiffness of each active contact [N/m], transported from Newton contacts.
 
-    Shape of ``(model_max_contacts_host,)``. Transported from Newton's per-contact
-    ``rigid_contact_stiffness``; used by compliant LOX contacts.
+    Shape of ``(model_max_contacts_host,)``. Positive per-contact
+    ``rigid_contact_stiffness`` takes precedence when compliance is enabled.
+    Zero selects shape-material fallback on PADMM/DVI and hard contact on LOX.
     """
 
     damping: wp.array[wp.float32] | None = None
     """Normal damping of each active contact [N s/m]; used with a positive :attr:`stiffness`.
 
     Shape of ``(model_max_contacts_host,)``. Transported from Newton's per-contact
-    ``rigid_contact_damping``; used by compliant LOX contacts.
+    ``rigid_contact_damping``; used by compliant PADMM, DVI, and LOX contacts.
     """
 
     margins: wp.array[wp.vec2f] | None = None
@@ -760,7 +763,7 @@ class ContactsKamino:
 
     @property
     def stiffness(self) -> wp.array[wp.float32]:
-        """Return the normal stiffness of each contact [N/m]; zero selects hard contact."""
+        """Return normal stiffness [N/m]; zero inherits shape gains on PADMM/DVI and stays hard on LOX."""
         self._assert_has_data()
         return self._data.stiffness
 
@@ -917,7 +920,7 @@ class ContactsKamino:
 
         # Skip allocation if there are no contacts to allocate
         if model_max_contacts == 0:
-            msg.debug("ContactsKamino: Skipping contact data allocations since total requested capacity was `0`.")
+            logger.debug("ContactsKamino: Skipping contact data allocations since total requested capacity was `0`.")
             return
 
         # Allocate the contacts data on the specified device
@@ -1543,7 +1546,7 @@ def convert_contacts_newton_to_kamino(
     # Issue warning to the user if the number of contacts to
     # convert exceeds the capacity of the output contacts.
     if contacts_in.rigid_contact_max > contacts_out.model_max_contacts_host:
-        msg.warning(
+        logger.warning(
             "Newton `rigid_contact_max` (%d) exceeds Kamino `model_max_contacts_host` (%d); active contacts may be truncated.",
             contacts_in.rigid_contact_max,
             contacts_out.model_max_contacts_host,
@@ -1704,7 +1707,7 @@ def convert_contacts_kamino_to_newton(
 
     # Only Kamino-generated contacts can be truncated during export.
     if clear_output and contacts_in.model_max_contacts_host > contacts_out.rigid_contact_max:
-        msg.warning(
+        logger.warning(
             "Kamino `model_max_contacts_host` (%d) exceeds Newton `rigid_contact_max` (%d); active contacts may be truncated.",
             contacts_in.model_max_contacts_host,
             contacts_out.rigid_contact_max,

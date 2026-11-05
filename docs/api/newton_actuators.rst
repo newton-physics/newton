@@ -69,17 +69,5 @@ construction.
 
    * - Name
      - Guidance
-   * - ``Clamping``
-     - Deprecated in 1.6; use ClampingBase instead.
-   * - ``Controller``
-     - Deprecated in 1.6; use DriveBase instead.
-   * - ``ControllerNeuralLSTM``
-     - Deprecated in 1.6; use DriveNeuralLSTM instead.
-   * - ``ControllerNeuralMLP``
-     - Deprecated in 1.6; use DriveNeuralMLP instead.
-   * - ``ControllerPD``
-     - Deprecated in 1.6; use DrivePD instead.
-   * - ``ControllerPID``
-     - Deprecated in 1.6; use DrivePID instead.
    * - ``Delay``
-     - Deprecated in 1.8; use InputProcessorDelay instead.
+     - Deprecated in 1.9; use InputProcessorDelay instead.

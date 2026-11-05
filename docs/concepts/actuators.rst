@@ -108,16 +108,6 @@ to add new models.
    deprecated.  Pass the delay in ``input_processors`` and read its state
    from :attr:`Actuator.State.input_processor_states`.
 
-.. deprecated:: 1.6
-
-   The actuator ``Controller*`` class names are retained as compatibility
-   aliases for :class:`DriveBase`, :class:`DrivePD`, :class:`DrivePID`,
-   :class:`DriveNeuralMLP`, and :class:`DriveNeuralLSTM`. The former
-   ``controller`` constructor keywords and attributes are also deprecated;
-   use ``drive``, ``drive_class``, ``drive_state``, and ``drive_kwargs``.
-   The clamping base class is now :class:`ClampingBase`; :class:`Clamping`
-   remains as a deprecated compatibility alias.
-
 .. note::
 
    **Current limitations:** the first version does not include a transmission
@@ -371,50 +361,160 @@ In the loop below the drive declares one array named ``extra_input``:
 Neural-Network Checkpoints
 --------------------------
 
-Neural-network drives support `ONNX <https://onnx.ai/>`__ (``.onnx``), which
-Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
-:class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
-Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
+Neural-network drives load `ONNX <https://onnx.ai/>`__ (``.onnx``)
+checkpoints, which Warp-NN runs with its own Warp kernels.
+:class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM` also load Torch
+checkpoints, which are deprecated (see :ref:`torch-checkpoints`).
+:class:`DriveNeuralGRU` loads ONNX only.
 
-For :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`, prefer ONNX exports
-with dynamic batch axes: axis 0 of the MLP input and axis 1 of the LSTM
-input, hidden state, and cell state. Existing fixed-batch exports remain
-supported by adapting these input declarations without changing the source
-checkpoint. This does not rewrite batch sizes embedded in graph operations
-such as ``Reshape``; re-export those models with dynamic batch axes when
-running a different number of actuators.
+ONNX checkpoints
+^^^^^^^^^^^^^^^^
 
-Torch checkpoints must be pt2 archives saved with ``torch.export.save``.
-Use the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
-archives.
-Checkpoint metadata (scales and network configuration) is stored as a JSON
-extra file:
+An ONNX checkpoint stores the Newton metadata as one JSON string in the
+``metadata`` property of the ONNX model. Set ``model_type`` to ``"mlp"``,
+``"lstm"``, or ``"gru"`` so that USD import can choose the drive. The drives
+read these keys:
+
+* :class:`DriveNeuralMLP`: optional ``input_order``, ``input_idx``,
+  ``pos_scale``, ``vel_scale``, and ``effort_scale``. Missing keys fall back to
+  their defaults without an error.
+* :class:`DriveNeuralLSTM`: ``num_layers``, ``hidden_size``, and the graph
+  input and output names ``input_name``, ``hidden_in_name``, ``cell_in_name``,
+  ``output_name``, ``hidden_out_name``, and ``cell_out_name``.
+* :class:`DriveNeuralGRU`: ``input_columns``, ``normalization``, and
+  ``sample_dt_s``, plus an optional ``custom_inputs`` that marks one column of
+  ``input_columns`` as an array the application supplies each step.
+
+Export the network with dynamic batch axes: axis 0 of the MLP input, and
+axis 1 of the LSTM input, hidden state, and cell state. Existing fixed-batch
+exports still load, because Newton adapts these input declarations. It does
+not rewrite batch sizes embedded in graph operations such as ``Reshape``;
+re-export those models with dynamic batch axes to run a different number of
+actuators.
+
+With an ONNX checkpoint, the LSTM ``State.hidden`` and ``State.cell`` are Warp
+arrays instead of Torch tensors. In USD, point ``newton:modelPath`` at the
+``.onnx`` file.
+
+Migrating Torch checkpoints to ONNX
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Export the network with ``torch.onnx.export``, which needs the ``onnxscript``
+package in recent PyTorch versions, and copy every metadata key from the Torch
+checkpoint into the ONNX metadata. For an MLP:
 
 .. code-block:: python
 
    import json
+
+   import onnx
+   import torch
+
+   torch.onnx.export(
+       net,
+       example_inputs,
+       "policy.onnx",
+       input_names=["input"],
+       output_names=["effort"],
+       dynamic_axes={"input": {0: "batch"}, "effort": {0: "batch"}},
+   )
+   model = onnx.load("policy.onnx")
+   metadata = {"model_type": "mlp", "effort_scale": 2.0}
+   onnx.helper.set_model_props(model, {"metadata": json.dumps(metadata)})
+   onnx.save(model, "policy.onnx")
+
+An LSTM takes the input, hidden state, and cell state as three graph inputs
+and returns the effort, hidden state, and cell state as three graph outputs.
+The input has shape ``(1, batch, features)`` and the effort has shape
+``(batch, 1)``. Warp-NN runs only the ``LSTM``, ``Squeeze``, and ``Gemm``
+operators of such a network, so wrap the network as below and export with
+``dynamo=False``. For a Torch network with a one-layer ``batch_first`` LSTM
+``net.lstm`` and a linear head ``net.dec``:
+
+.. code-block:: python
+
+   class OnnxLSTM(torch.nn.Module):
+       def __init__(self, net):
+           super().__init__()
+           self.lstm = torch.nn.LSTM(net.lstm.input_size, net.lstm.hidden_size)
+           self.lstm.load_state_dict(net.lstm.state_dict())
+           self.dec = net.dec
+
+       def forward(self, x, h, c):
+           y, (h, c) = self.lstm(x, (h, c))
+           return self.dec(y.squeeze(0)), h, c
+
+
+   hidden_size = net.lstm.hidden_size
+   example_inputs = (torch.zeros(1, 2, 2), torch.zeros(1, 2, hidden_size), torch.zeros(1, 2, hidden_size))
+   torch.onnx.export(
+       OnnxLSTM(net).eval(),
+       example_inputs,
+       "policy.onnx",
+       dynamo=False,
+       input_names=["input", "h_in", "c_in"],
+       output_names=["effort", "h_out", "c_out"],
+       dynamic_axes={
+           "input": {1: "batch"},
+           "h_in": {1: "batch"},
+           "c_in": {1: "batch"},
+           "effort": {0: "batch"},
+           "h_out": {1: "batch"},
+           "c_out": {1: "batch"},
+       },
+   )
+   model = onnx.load("policy.onnx")
+   metadata = {
+       "model_type": "lstm",
+       "effort_scale": 2.0,
+       "num_layers": 1,
+       "hidden_size": hidden_size,
+       "input_name": "input",
+       "hidden_in_name": "h_in",
+       "cell_in_name": "c_in",
+       "output_name": "effort",
+       "hidden_out_name": "h_out",
+       "cell_out_name": "c_out",
+   }
+   onnx.helper.set_model_props(model, {"metadata": json.dumps(metadata)})
+   onnx.save(model, "policy.onnx")
+
+Multi-layer LSTMs cannot be migrated yet: their export splits and joins the
+stacked hidden and cell state with ``Slice`` and ``Concat``, which Warp-NN
+does not support.
+
+.. _torch-checkpoints:
+
+Torch checkpoints
+^^^^^^^^^^^^^^^^^
+
+.. deprecated:: 1.8
+   Torch checkpoints and ``allow_unsafe_torch_checkpoints`` are deprecated and
+   will be removed in a future release. Export the network to ONNX instead.
+
+Torch checkpoints must be pt2 archives saved with ``torch.export.save``. Use
+the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
+archives. The metadata is stored as a JSON extra file, with the same keys as
+for ONNX:
+
+.. code-block:: python
+
+   import json
+
    import torch
 
    exported = torch.export.export(net, example_inputs)
-   metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
+   metadata = {"model_type": "lstm", "effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
-USD neural actuators may reference a checkpoint through ``newton:modelPath``.
-Importing a USD rejects Torch checkpoints (``.pt2``, ``.pt``, or ``.pth``)
-by default because :meth:`~newton.ModelBuilder.finalize` would load them with
-``torch.export.load``, which can execute code from an untrusted checkpoint.
-For a trusted USD asset and checkpoint, pass
-``allow_unsafe_torch_checkpoints=True`` to
-:meth:`newton.ModelBuilder.add_usd`. Programmatic construction of a neural
-drive from a checkpoint path remains the caller's explicit trust decision.
-
-:class:`DriveNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
-the metadata of both pt2 and ONNX checkpoints.
-
-:class:`DriveNeuralGRU` requires ``input_columns``, ``normalization`` and
-``sample_dt_s`` in its ONNX checkpoint metadata, and an optional
-``custom_inputs`` that marks one column of ``input_columns`` as an array the
-application supplies each step.
+A USD neural actuator may reference a checkpoint through
+``newton:modelPath``. USD import rejects Torch checkpoints (``.pt2``, ``.pt``,
+or ``.pth``) by default, because :meth:`~newton.ModelBuilder.finalize` would
+load them with ``torch.export.load``, which can execute code from an untrusted
+checkpoint. For a trusted USD asset and checkpoint, pass
+``allow_unsafe_torch_checkpoints=True`` to :meth:`newton.ModelBuilder.add_usd`.
+Constructing a neural drive from a checkpoint path in code is the caller's
+own trust decision.
 
 .. _effort-modes:
 

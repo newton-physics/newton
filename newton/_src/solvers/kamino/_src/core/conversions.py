@@ -16,7 +16,6 @@ from .....sim import JointTargetMode
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
-from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -43,6 +42,9 @@ from .types import mat63f, to_warp_int32_array, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
+import logging
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -519,8 +521,6 @@ def rigid_bodies_indexing_kernel(
 @wp.kernel
 def joint_conversion_kernel(
     # Inputs:
-    model_joint_world: wp.array[wp.int32],
-    model_joint_world_start: wp.array[wp.int32],
     model_joint_parent: wp.array[wp.int32],
     model_joint_child: wp.array[wp.int32],
     model_joint_type: wp.array[wp.int32],
@@ -539,7 +539,6 @@ def joint_conversion_kernel(
     joint_limit_upper: wp.array[wp.float32],
     body_is_immovable: wp.array[wp.int32],
     # Outputs:
-    joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
     joint_act_type: wp.array[wp.int32],
     joint_dof_act_types: wp.array[wp.int32],
@@ -555,9 +554,6 @@ def joint_conversion_kernel(
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
-
-    world_id = model_joint_world[joint_id]
-    joint_jid[joint_id] = joint_id - model_joint_world_start[world_id]
 
     # Determine Kamino joint type
     type_j = model_joint_type[joint_id]
@@ -1582,7 +1578,7 @@ def _warn_ignored_free_joint_friction(
         > positive_friction_prefix[qd_start_np[free_joint_ids]]
     )
     for jid in free_joint_ids[free_joint_has_friction].tolist():
-        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+        logger.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
 def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
@@ -1629,7 +1625,6 @@ def convert_joints(
 
     # Create joint property arrays
     with wp.ScopedDevice(model.device):
-        joint_jid = wp.empty(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_act_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_act_types = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
@@ -1656,8 +1651,6 @@ def convert_joints(
         dim=model.joint_count,
         inputs=[
             # Inputs:
-            model.joint_world,
-            model.joint_world_start,
             model.joint_parent,
             model.joint_child,
             model.joint_type,
@@ -1676,7 +1669,6 @@ def convert_joints(
             model.joint_limit_upper,
             model_bodies.is_immovable,
             # Outputs:
-            joint_jid,
             joint_dof_type,
             joint_act_type,
             joint_dof_act_types,
@@ -2085,7 +2077,6 @@ def convert_joints(
         num_joints=model.joint_count,
         label=model.joint_label,
         wid=model.joint_world,
-        jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
         dof_act_types=joint_dof_act_types,
@@ -2099,6 +2090,8 @@ def convert_joints(
         X_Fj=joint_X_F,
         q_j_min=model.joint_limit_lower,
         q_j_max=model.joint_limit_upper,
+        limit_ke=model.joint_limit_ke,
+        limit_kd=model.joint_limit_kd,
         dq_j_max=model.joint_velocity_limit,
         tau_j_max=model.joint_effort_limit,
         a_j=model.joint_armature,
@@ -2264,6 +2257,8 @@ def convert_geometries(
         params=model.shape_scale,
         offset=offset,
         material=geom_material,
+        stiffness=model.shape_material_ke,
+        damping=model.shape_material_kd,
         torsional_friction=model.shape_material_mu_torsional,
         rolling_friction=model.shape_material_mu_rolling,
         group=model.shape_collision_group,

@@ -9,8 +9,15 @@ from typing import Any, ClassVar
 
 import warp as wp
 
+from ...utils.deprecation import warn_deprecation
 from ..space import DriveOutputSpace
-from ..utils import _looks_like_torch_checkpoint, _parse_metadata_scale, load_checkpoint, load_metadata
+from ..utils import (
+    _TORCH_CHECKPOINT_DEPRECATION_MSG,
+    _looks_like_torch_checkpoint,
+    _parse_metadata_scale,
+    load_checkpoint,
+    load_metadata,
+)
 from ._linearization import (
     IMPLICIT_JACOBIAN_MARGIN as _JACOBIAN_MARGIN,
 )
@@ -182,6 +189,9 @@ class DriveNeuralMLP(DriveBase):
     through Warp-NN. Torch checkpoints keep the Torch backend and must be pt2
     archives saved with ``torch.export.save``.
 
+    .. deprecated:: 1.8
+        Torch checkpoints are deprecated; export the network to ONNX.
+
     Implicit actuation linearizes the network about the current state each
     step (:meth:`prepare_implicit`) and enters the shared implicit solve as
     the linearized force law ``tau0 + a*(q-q0) + b*(qd-qd0)`` (see
@@ -239,7 +249,8 @@ class DriveNeuralMLP(DriveBase):
 
         Args:
             model_path: Path to the ``.onnx`` checkpoint or the pt2 archive
-                (``.pt2``, ``.pt``, or ``.pth``).
+                (``.pt2``, ``.pt``, or ``.pth``). Torch checkpoints are
+                deprecated since 1.8; use ONNX.
             output_space: Interpretation of checkpoint outputs, EFFORT or DUTY.
                 The checkpoint must be trained for these units.
         """
@@ -248,6 +259,7 @@ class DriveNeuralMLP(DriveBase):
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
 
         if self._is_torch_checkpoint:
+            warn_deprecation(_TORCH_CHECKPOINT_DEPRECATION_MSG)
             import torch
 
             self._torch_device = torch.device("cpu")

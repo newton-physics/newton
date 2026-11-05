@@ -8,6 +8,7 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -64,7 +65,8 @@ from .solvers.lox import LOXSolver
 from .solvers.metrics import SolutionMetrics
 from .solvers.padmm import PADMMSolver
 from .solvers.warmstart import WarmstarterContacts, WarmstarterLimits
-from .utils import logger as msg
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -186,9 +188,10 @@ class SolverKaminoImpl(SolverBase):
         # Override the linear solver type to an iterative solver if
         # sparsity is enabled but the provided solver is not iterative
         if not uses_lox and self._config.sparse_dynamics and not issubclass(linear_solver_type, IterativeSolver):
-            msg.warning(
-                f"Sparse dynamics requires an iterative solver, but got '{linear_solver_type.__name__}'."
-                " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver."
+            logger.warning(
+                "Sparse dynamics requires an iterative solver, but got '%s'."
+                " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver.",
+                linear_solver_type.__name__,
             )
             linear_solver_type = ConjugateResidualSolver
 
@@ -196,12 +199,12 @@ class SolverKaminoImpl(SolverBase):
         # which is only built when both sparse_dynamics and sparse_jacobian are enabled.
         if not uses_lox and issubclass(linear_solver_type, ConjugateResidualSolverFused):
             if not self._config.sparse_dynamics:
-                msg.warning(
+                logger.warning(
                     "ConjugateResidualSolverFused requires sparse dynamics. Enabling sparse_dynamics automatically."
                 )
                 self._config.sparse_dynamics = True
             if not self._config.sparse_jacobian:
-                msg.warning(
+                logger.warning(
                     "ConjugateResidualSolverFused requires sparse Jacobians. Enabling sparse_jacobian automatically."
                 )
                 self._config.sparse_jacobian = True
@@ -212,11 +215,36 @@ class SolverKaminoImpl(SolverBase):
         if not self._config.padmm.use_graph_conditionals and issubclass(linear_solver_type, IterativeSolver):
             linear_solver_kwargs.setdefault("use_graph_conditionals", False)
 
+        # Resolve the effective integrator before configuring physical compliance.
+        # LOX solves the velocity of singular (prescribed) bodies, which the integrators then advance.
+        integrate_singular_bodies = self._config.dynamics_solver == "lox"
+        # External contacts are evaluated at the start of a step; Moreau requires midpoint detection.
+        if self._config.integrator == "euler":
+            self._integrator = IntegratorEuler(model=self._model, integrate_singular_bodies=integrate_singular_bodies)
+        elif self._config.integrator == "moreau":
+            if self._config.use_collision_detector:
+                self._integrator = IntegratorMoreauJean(
+                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
+                )
+            else:
+                logger.warning(
+                    "Falling back to the 'euler' integrator: 'moreau' requires "
+                    "`use_collision_detector=True` to generate contacts at the mid-point."
+                )
+                self._integrator = IntegratorEuler(
+                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
+                )
+        else:
+            raise ValueError(
+                f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
+            )
+
         # Bundle both constraint stabilization and forward-
         # dynamics problem configurations into a single object
         problem_fd_config = DualProblem.Config(
             constraints=self._config.constraints,
             dynamics=self._config.dynamics,
+            position_update_fraction=0.5 if isinstance(self._integrator, IntegratorMoreauJean) else 1.0,
             # TODO: linear_solver_type=linear_solver_type,
             # TODO: linear_solver_kwargs=linear_solver_kwargs,
             # TODO: sparse=bool(self._config.sparse_dynamics),
@@ -305,30 +333,6 @@ class SolverKaminoImpl(SolverBase):
         self._solver_fk = None
         if self._config.use_fk_solver:
             self._solver_fk = ForwardKinematicsSolver(model=self._model, config=self._config.fk)
-
-        # LOX solves the velocity of singular (prescribed) bodies, which the integrators then advance
-        integrate_singular_bodies = self._config.dynamics_solver == "lox"
-        # Contacts generated externally are evaluated at the start of a step, so they require
-        # Euler integration. Moreau-Jean is valid only with the internal mid-step detector.
-        if self._config.integrator == "euler":
-            self._integrator = IntegratorEuler(model=self._model, integrate_singular_bodies=integrate_singular_bodies)
-        elif self._config.integrator == "moreau":
-            if self._config.use_collision_detector:
-                self._integrator = IntegratorMoreauJean(
-                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
-                )
-            else:
-                msg.warning(
-                    "Falling back to the 'euler' integrator: 'moreau' requires "
-                    "`use_collision_detector=True` to generate contacts at the mid-point."
-                )
-                self._integrator = IntegratorEuler(
-                    model=self._model, integrate_singular_bodies=integrate_singular_bodies
-                )
-        else:
-            raise ValueError(
-                f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
-            )
 
         # Allocate additional internal data for reset operations
         with wp.ScopedDevice(self._model.device):
@@ -575,7 +579,7 @@ class SolverKaminoImpl(SolverBase):
                 or isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve)
             )
         ) and self._model.info.has_world_without_base_body:
-            msg.warning(
+            logger.warning(
                 "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
                 "Base pose/velocity resets will have no effect for those worlds."
             )

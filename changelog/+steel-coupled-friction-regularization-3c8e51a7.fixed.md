@@ -1,0 +1,1 @@
+Reject `contact_regularization > 0` together with a `friction_mode` other than `"fixed_normal"` in `SolverSteel`. The coupled updates of those modes ignored the regularization; only articulated contacts on the immediate response under `"coulomb_newton"`, which keep the fixed-normal update, applied it.

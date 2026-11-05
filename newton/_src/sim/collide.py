@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -24,7 +25,12 @@ from ..geometry.contact_data import (
     prepare_speculative_contact,
 )
 from ..geometry.contact_match import ContactMatcher
-from ..geometry.contact_reduction_global import CONTACT_ID_BITS
+from ..geometry.contact_reduction_body_pairs import (
+    BodyPairReduction,
+    build_group_reduction_config,
+    build_reduction_groups,
+)
+from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
 from ..geometry.flags import MeshProperties, ShapeFlags
@@ -55,16 +61,94 @@ if TYPE_CHECKING:
 
 
 def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndarray:
-    """Return a host mask for shapes participating in shape-shape collision."""
+    """Return a host mask for shapes participating in shape-shape collision.
+
+    A variant row counts when any variant shape it can hold collides, since a selection can
+    change its flags after construction.
+    """
     shape_flags = getattr(model, "shape_flags", None)
     if shape_flags is None:
         count = model.shape_count if shape_count is None else shape_count
         return np.ones(count, dtype=bool)
 
-    flags = shape_flags.numpy()
+    flags = model._shape_option_flags() if model._has_variant_rows else shape_flags.numpy()
     if shape_count is not None and len(flags) != shape_count:
         raise ValueError("model.shape_flags and model.shape_type must have the same length")
     return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
+
+
+@dataclasses.dataclass(frozen=True)
+class _VariantOptions:
+    """The variant shapes that variant rows can hold, so that routing and capacities cover all of them.
+
+    A row of a body can hold the variant shape of its role at its position in any of the body's variants.
+    """
+
+    shape_count: int
+    row_shapes: np.ndarray
+    """Variant row of each option."""
+    variant_shapes: np.ndarray
+    """Variant shape of each option."""
+    variant_types: np.ndarray
+    """Shape type of each variant shape."""
+    variant_collides: np.ndarray
+    """Whether each variant shape collides with shapes."""
+    row_mask: np.ndarray
+    """Whether each shape is a variant row."""
+
+    def any(self, variant_mask: np.ndarray) -> np.ndarray:
+        """Per shape, whether it is a variant row that can hold a variant shape in ``variant_mask``."""
+        mask = np.zeros(self.shape_count, dtype=bool)
+        mask[self.row_shapes[variant_mask[self.variant_shapes]]] = True
+        return mask
+
+    def may_be(self, shape_types: np.ndarray, types: tuple[int, ...]) -> np.ndarray:
+        """Per shape, whether it is or can become one of ``types``, counting only colliding variant shapes."""
+        return np.isin(shape_types, types) | self.any(self.variant_collides & np.isin(self.variant_types, types))
+
+    def reachable(self, shape_mask: np.ndarray) -> np.ndarray:
+        """Per variant shape, whether a variant row in ``shape_mask`` can hold it."""
+        mask = np.zeros(len(self.variant_types), dtype=bool)
+        mask[self.variant_shapes[shape_mask[self.row_shapes]]] = True
+        return mask
+
+    def type_bits(self) -> tuple[np.ndarray, np.ndarray]:
+        """Variant rows and, for each, a bit per type of the colliding variant shapes it can hold."""
+        bits = np.zeros(self.shape_count, dtype=np.int64)
+        option_bits = np.where(
+            self.variant_collides[self.variant_shapes],
+            np.left_shift(1, self.variant_types[self.variant_shapes].astype(np.int64)),
+            0,
+        )
+        np.bitwise_or.at(bits, self.row_shapes, option_bits)
+        rows = np.flatnonzero(self.row_mask)
+        return rows, bits[rows]
+
+
+def _variant_options(model: Model) -> _VariantOptions | None:
+    """The variant shapes the model's variant rows can hold, or ``None`` without variant rows."""
+    if not model._has_variant_rows:
+        return None
+    row_shapes, variant_shapes = model._variant_row_options()
+    row_mask = np.zeros(model.shape_count, dtype=bool)
+    row_mask[row_shapes] = True
+    geometry = model._variant_shape_geometry
+    return _VariantOptions(
+        shape_count=model.shape_count,
+        row_shapes=row_shapes,
+        variant_shapes=variant_shapes,
+        variant_types=geometry["shape_type"].numpy(),
+        variant_collides=(geometry["shape_flags"].numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0,
+        row_mask=row_mask,
+    )
+
+
+def _shape_may_be_mesh(model: Model, shape_types: np.ndarray, variant_options: _VariantOptions | None) -> np.ndarray:
+    """Shapes that are, or as variant rows can become, meshes or heightfields."""
+    mesh_types = (int(GeoType.MESH), int(GeoType.HFIELD))
+    return (
+        np.isin(shape_types, mesh_types) if variant_options is None else variant_options.may_be(shape_types, mesh_types)
+    )
 
 
 _ANALYTIC_PRIMITIVE_PAIRS = frozenset(
@@ -335,8 +419,12 @@ def _record_reduction_overflow(
     buffer_overflows: wp.array[wp.int32],
     overflow: wp.array[wp.int32],
 ):
-    """Copy the reducer's loss counters into the contact stream's overflow flag."""
-    overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
+    """Raise the contact stream's overflow flag if the reducer lost contacts; the pass start clears it."""
+    if insert_failures[0] > 0 or buffer_overflows[0] > 0:
+        overflow[0] = 1
+
+
+_EMPTY_AABB_EXTENT = wp.constant(1.0e30)
 
 
 @wp.kernel(enable_backward=False)
@@ -352,6 +440,8 @@ def compute_shape_aabbs(
     shape_gap: wp.array[float],
     shape_collision_aabb_lower: wp.array[wp.vec3],
     shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_flags: wp.array[wp.int32],
+    shape_variant_row: wp.array[wp.bool],
     # Fused counter arrays — zeroed by thread 0 to avoid separate kernel launches.
     contact_counters: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
@@ -382,6 +472,14 @@ def compute_shape_aabbs(
             g = g + 1
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
+
+    # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
+    # phases include every row that could hold a colliding variant shape.
+    if shape_variant_row.shape[0] > 0 and shape_variant_row[shape_id]:
+        if (shape_flags[shape_id] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) == 0:
+            aabb_lower[shape_id] = wp.vec3(_EMPTY_AABB_EXTENT)
+            aabb_upper[shape_id] = wp.vec3(-_EMPTY_AABB_EXTENT)
+            return
 
     rigid_id = shape_body[shape_id]
     geo_type = shape_type[shape_id]
@@ -660,9 +758,11 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
         )
 
     shape_types = model.shape_type.numpy()
+    # Slot rows count as meshes if they can hold one.
+    variant_options = _variant_options(model)
     colliding_mask = _shape_collide_mask(model, len(shape_types))
 
-    mesh_mask = colliding_mask & ((shape_types == int(GeoType.MESH)) | (shape_types == int(GeoType.HFIELD)))
+    mesh_mask = colliding_mask & _shape_may_be_mesh(model, shape_types, variant_options)
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
     non_plane_mask = colliding_mask & ~plane_mask
     num_meshes = int(np.count_nonzero(mesh_mask))
@@ -803,7 +903,7 @@ def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contac
         return 0
 
     counts = _shape_contact_pair_counts(model)
-    is_mesh = np.isin(model.shape_type.numpy(), (int(GeoType.MESH), int(GeoType.HFIELD)))
+    is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _variant_options(model))
     primitive_counts = _shape_contact_pair_counts(model, shape_mask=~is_mesh) if is_mesh.any() else counts
     contacts = (
         primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
@@ -841,6 +941,7 @@ def _estimate_triangle_pair_details(
     mesh_like_mask: np.ndarray,
     planar_sdf_mask: np.ndarray,
     hydroelastic: bool,
+    variant_row_mask: np.ndarray | None = None,
 ) -> _TrianglePairCountEstimate:
     """Estimate the triangle-pair and global contact-reducer capacity from the model.
 
@@ -872,6 +973,7 @@ def _estimate_triangle_pair_details(
         mesh_like_mask: Routed mesh and heightfield shapes.
         planar_sdf_mask: Routed shapes with SDF edge data.
         hydroelastic: Whether hydroelastic-hydroelastic pairs use their own reducer.
+        variant_row_mask: Variant rows, whose current type does not limit the pairs they can route.
 
     Returns:
         The estimated capacity, never below ``_TRIANGLE_PAIRS_MIN_CAPACITY``, and its inputs.
@@ -888,7 +990,7 @@ def _estimate_triangle_pair_details(
 
     if shape_pairs is not None:
         pairs_per_bucket, participants_per_bucket = _count_routed_pairs(
-            model, shape_pairs, shape_world, mesh_like_mask, planar_sdf_mask, hydroelastic
+            model, shape_pairs, shape_world, mesh_like_mask, planar_sdf_mask, hydroelastic, variant_row_mask
         )
         source = "shape pairs"
     else:
@@ -922,6 +1024,7 @@ def _count_routed_pairs(
     mesh_like_mask: np.ndarray,
     planar_sdf_mask: np.ndarray,
     hydroelastic: bool,
+    variant_row_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Count routed pairs and their participating shapes per bucket from an explicit pair list.
 
@@ -938,6 +1041,8 @@ def _count_routed_pairs(
     shape_b = shape_b[valid]
     heightfield = shape_types == int(GeoType.HFIELD)
     box = shape_types == int(GeoType.BOX)
+    if variant_row_mask is not None:
+        box &= ~variant_row_mask
     routed = (mesh_like_mask[shape_a] | mesh_like_mask[shape_b]) & ~(heightfield[shape_a] & heightfield[shape_b])
     routed |= planar_sdf_mask[shape_a] & planar_sdf_mask[shape_b] & ~(box[shape_a] & box[shape_b])
     if hydroelastic:
@@ -1081,12 +1186,7 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
         return max(0, (shape_count * (shape_count - 1)) // 2)
 
     sw = shape_world.numpy()
-    shape_flags = getattr(model, "shape_flags", None)
-    if shape_flags is not None:
-        sf = shape_flags.numpy()
-        colliding = (sf & int(ShapeFlags.COLLIDE_SHAPES)) != 0
-    else:
-        colliding = np.ones(len(sw), dtype=bool)
+    colliding = _shape_collide_mask(model, len(sw))
 
     global_count = int(np.count_nonzero((sw == -1) & colliding))
     _, world_counts = np.unique(sw[(sw >= 0) & colliding], return_counts=True)
@@ -1171,16 +1271,23 @@ def _compute_generic_convex_pair_stats(
     shape_pairs_filtered: wp.array[wp.vec2i] | np.ndarray | None,
     candidate_pair_work_estimate: int,
     shape_pairs_host: np.ndarray | None = None,
+    variant_options: _VariantOptions | None = None,
 ) -> tuple[bool, int]:
     """Determine whether generic convex pairs exist and estimate their work.
 
     ``shape_pairs_host`` is an optional ``(N, 2)`` host copy of
-    ``shape_pairs_filtered`` that spares another device-to-host read.
+    ``shape_pairs_filtered`` that spares another device-to-host read. With
+    ``variant_options``, a variant row counts as every colliding variant shape it can hold.
     """
     shape_types_array = getattr(model, "shape_type", None)
     if shape_types_array is None:
         return True, candidate_pair_work_estimate
     shape_types = shape_types_array.numpy()
+    # Bit t of a shape's entry is set if the shape is, or as a variant row can become, of type t.
+    type_bits = np.left_shift(1, shape_types.astype(np.int64))
+    if variant_options is not None:
+        row_shapes, row_bits = variant_options.type_bits()
+        type_bits[row_shapes] |= row_bits
 
     if broad_phase_mode == "explicit":
         if shape_pairs_filtered is None:
@@ -1195,31 +1302,30 @@ def _compute_generic_convex_pair_stats(
             )
         if len(explicit_pairs) == 0:
             return False, 0
-        pair_types = shape_types[explicit_pairs]
-        generic_pair_count = int(
-            np.count_nonzero(
-                _GENERIC_CONVEX_PAIR_LOOKUP[
-                    pair_types[:, 0],
-                    pair_types[:, 1],
-                ]
-            )
-        )
+        if variant_options is None:
+            pair_types = shape_types[explicit_pairs]
+            generic = _GENERIC_CONVEX_PAIR_LOOKUP[pair_types[:, 0], pair_types[:, 1]]
+        else:
+            bits_a = type_bits[explicit_pairs[:, 0]]
+            bits_b = type_bits[explicit_pairs[:, 1]]
+            generic = np.zeros(len(explicit_pairs), dtype=bool)
+            for type_a, type_b in zip(*np.nonzero(_GENERIC_CONVEX_PAIR_LOOKUP), strict=True):
+                generic |= ((bits_a >> type_a) & 1).astype(bool) & ((bits_b >> type_b) & 1).astype(bool)
+        generic_pair_count = int(np.count_nonzero(generic))
         return generic_pair_count > 0, min(candidate_pair_work_estimate, generic_pair_count)
 
     colliding_mask = _shape_collide_mask(model, len(shape_types))
-    has_generic_convex_pairs = False
     generic_pair_bound = 0
-    unique_types = np.unique(shape_types[colliding_mask])
+    unique_types = [t for t in range(len(GeoType)) if np.any(colliding_mask & ((type_bits >> t) & 1).astype(bool))]
     for index, type_a in enumerate(unique_types):
-        first_mask = colliding_mask & (shape_types == type_a)
+        first_mask = colliding_mask & ((type_bits >> type_a) & 1).astype(bool)
         for type_b in unique_types[index:]:
             if not _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)):
                 continue
-            has_generic_convex_pairs = True
-            second_mask = colliding_mask & (shape_types == type_b)
+            second_mask = colliding_mask & ((type_bits >> type_b) & 1).astype(bool)
             generic_pair_bound += _compute_per_world_mask_pair_max(model, first_mask, second_mask)
 
-    return has_generic_convex_pairs, min(candidate_pair_work_estimate, generic_pair_bound)
+    return generic_pair_bound > 0, min(candidate_pair_work_estimate, generic_pair_bound)
 
 
 def _normalize_broad_phase_mode(mode: str) -> str:
@@ -1480,11 +1586,71 @@ class CollisionPipeline:
         workflow before relying on them in optimization loops.
     """
 
+    @dataclass(frozen=True, kw_only=True)
+    class BodyPairReductionConfig:
+        """Configure body-pair contact reduction.
+
+        Bodies built from many colliders produce one manifold per shape pair.
+        The narrow phase then reduces its primitive and convex contacts per group of
+        ``(body or static shape, other body or static shape, normal bin,
+        spatial cell)``: each group keeps one depth representative, up to six
+        sampled footprint extremes over all its contacts and up to six more over
+        its touching contacts (canonical separation ``<= 0``).  Shapes on one
+        body share a group only when their ``shape_material_*`` values and
+        ``material_attributes`` match exactly.  Selection is memoryless.  Mesh
+        and heightfield contacts keep the per-shape-pair reduction that
+        ``reduce_contacts`` selects.
+
+        It is an approximation with scene-dependent support error and possible
+        upward torsional-friction bias; validate tipping- and yaw-sensitive
+        tasks.  Only solvers with
+        :attr:`~newton.solvers.SolverBase.supports_body_pair_reduced_contacts`
+        accept the reduced buffers.  Sticky contact matching and hydroelastic
+        contacts are rejected at construction.
+
+        .. experimental::
+        """
+
+        cell_size: float = 0.25
+        """Spatial cell edge [m] that keeps separated same-normal patches of one body pair
+        independently represented."""
+        hashtable_size_factor: float = 1.0
+        """Multiplier on the group-table capacity, which is derived from the model's contact-pair topology
+        rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames keep every
+        primitive and convex contact, so ``rigid_contact_count`` stays near its unreduced value."""
+        material_attributes: tuple[str, ...] | None = None
+        """Per-shape custom attributes, by full name such as ``"steel:min_torsional_patch_radius"``, that
+        must also match for shapes on one body to share a group.  ``None`` uses every per-shape custom
+        attribute the model registers."""
+
+        def __post_init__(self):
+            """Validate configuration before any device allocation."""
+            try:
+                cell_size = float(self.cell_size)
+                hashtable_size_factor = float(self.hashtable_size_factor)
+            except (TypeError, ValueError) as error:
+                raise TypeError("BodyPairReductionConfig numeric fields must be real numbers") from error
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                cell_size_f32 = float(np.float32(cell_size))
+            if not np.isfinite(cell_size_f32) or cell_size_f32 <= 0.0:
+                raise ValueError("BodyPairReductionConfig.cell_size must be finite and > 0 at float32 precision")
+            if not np.isfinite(hashtable_size_factor) or hashtable_size_factor <= 0.0:
+                raise ValueError("BodyPairReductionConfig.hashtable_size_factor must be finite and > 0")
+            if self.material_attributes is not None:
+                if not isinstance(self.material_attributes, (tuple, list)) or not all(
+                    isinstance(name, str) for name in self.material_attributes
+                ):
+                    raise TypeError(
+                        "BodyPairReductionConfig.material_attributes must be a tuple or list of str, or None"
+                    )
+                object.__setattr__(self, "material_attributes", tuple(self.material_attributes))
+
     def __init__(
         self,
         model: Model,
         *,
         reduce_contacts: bool = True,
+        body_pair_reduction: CollisionPipeline.BodyPairReductionConfig | None = None,
         rigid_contact_max: int | None = None,
         max_triangle_pairs: int | None = None,
         shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
@@ -1519,6 +1685,9 @@ class CollisionPipeline:
         Args:
             model: The simulation model.
             reduce_contacts: Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
+            body_pair_reduction: Reduce contacts per body pair in the narrow
+                phase. ``None`` (default) disables it. See
+                :class:`CollisionPipeline.BodyPairReductionConfig`.
             rigid_contact_max: Maximum number of rigid contacts to allocate.
                 Resolution order:
                 - If provided, use this value.
@@ -1529,6 +1698,10 @@ class CollisionPipeline:
                 worst-case bound. A warning reports automatic estimates whose base
                 rigid-contact buffers require at least 256 MiB. Pass an explicit
                 value to select the memory budget and silence the warning.
+                With ``body_pair_reduction``, this sizes the reduced output. The
+                raw primitive and convex contacts are staged in a buffer of the
+                automatic estimate or this value, whichever is larger; contacts
+                beyond it are dropped for that frame.
             max_triangle_pairs:
                 Maximum number of triangle pairs allocated by narrow phase
                 for mesh and heightfield collisions; also the capacity of the
@@ -1706,6 +1879,13 @@ class CollisionPipeline:
         matching_sticky = contact_matching == "sticky"
         if contact_report and not matching_enabled:
             raise ValueError('contact_report=True requires contact_matching != "disabled"')
+        if body_pair_reduction is not None and not isinstance(body_pair_reduction, self.BodyPairReductionConfig):
+            raise TypeError(
+                "body_pair_reduction must be CollisionPipeline.BodyPairReductionConfig or None, "
+                f"got {type(body_pair_reduction).__name__}"
+            )
+        if body_pair_reduction is not None and matching_sticky:
+            raise ValueError('body_pair_reduction requires contact_matching="latest" or "disabled"')
         if speculative_contact_gap_max is not None and (
             not np.isfinite(speculative_contact_gap_max) or speculative_contact_gap_max < 0.0
         ):
@@ -1727,10 +1907,14 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
-        shape_mesh_properties = getattr(model, "_shape_mesh_properties", None)
-        self._rigid_contact_surface_velocity = bool(
-            shape_mesh_properties is not None
-            and np.any(shape_mesh_properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+        # A variant row can take a surface-velocity mesh after construction.
+        mesh_properties = (
+            getattr(model, "_shape_mesh_properties", None),
+            getattr(model, "_variant_shape_geometry", {}).get("_shape_mesh_properties"),
+        )
+        self._rigid_contact_surface_velocity = any(
+            properties is not None and np.any(properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+            for properties in mesh_properties
         )
         self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
@@ -1768,6 +1952,10 @@ class CollisionPipeline:
 
         shape_world = getattr(model, "shape_world", None)
         shape_flags = getattr(model, "shape_flags", None)
+        # Variant rows can hold variant shapes with other types and flags; routing and capacities cover all.
+        variant_options = _variant_options(model)
+        if variant_options is not None:
+            shape_flags = model._shape_option_flags()
         with wp.ScopedDevice(device):
             shape_aabb_lower = wp.zeros(shape_count, dtype=wp.vec3, device=device)
             shape_aabb_upper = wp.zeros(shape_count, dtype=wp.vec3, device=device)
@@ -1776,6 +1964,7 @@ class CollisionPipeline:
         self.shape_count = shape_count
         self.device = device
         self.reduce_contacts = reduce_contacts
+        self._body_pair_reduction = body_pair_reduction
         self.requires_grad = requires_grad
         self.include_static_kinematic_pairs = include_static_kinematic_pairs
         self.speculative_contact_gap_max = speculative_contact_gap_max
@@ -1786,6 +1975,8 @@ class CollisionPipeline:
         if using_expert_components:
             if broad_phase_instance is None or narrow_phase is None:
                 raise ValueError("Provide both broad_phase and narrow_phase for expert component construction")
+            if body_pair_reduction is not None:
+                raise ValueError("body_pair_reduction requires the pipeline to build its own narrow phase")
             if sdf_hydroelastic_config is not None:
                 raise ValueError("sdf_hydroelastic_config cannot be used when narrow_phase is provided")
             if contact_reduction_hashtable_size_factor != 0.25:
@@ -1910,7 +2101,8 @@ class CollisionPipeline:
             max_mesh_plane_pairs = self.shape_pairs_max
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
-                route_mask = _shape_collide_mask(model, len(shape_types))
+                shape_count_routed = len(shape_types)
+                route_mask = _shape_collide_mask(model, shape_count_routed)
                 # Shapes that can reach the narrow phase decide which stages it builds.
                 # NXN/SAP pair only shapes that collide with shapes. The explicit list is
                 # authoritative: every listed shape reaches the narrow phase, including
@@ -1919,12 +2111,39 @@ class CollisionPipeline:
                     route_mask = np.zeros(len(shape_types), dtype=bool)
                     pair_shapes = explicit_pairs_host.ravel()
                     route_mask[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
-                route_shape_types = shape_types[route_mask]
-                mesh_mask = route_mask & (shape_types == int(GeoType.MESH))
-                heightfield_mask = route_mask & (shape_types == int(GeoType.HFIELD))
-                plane_mask = route_mask & (shape_types == int(GeoType.PLANE))
+                # A variant row can take the geometry of any variant shape it can hold at runtime, so
+                # the stages cover every variant shape a routed row can hold, appended as extra
+                # rows, and capacities count each row as any of them.
+                routed_variant_shapes = np.zeros(0, dtype=np.int64)
+                if variant_options is not None:
+                    reachable = variant_options.reachable(route_mask)
+                    if self.broad_phase_mode != "explicit" or self.shape_pairs_filtered is None:
+                        reachable &= variant_options.variant_collides
+                    routed_variant_shapes = np.flatnonzero(reachable)
+
+                def with_variant_shapes(name: str, shape_values: np.ndarray) -> np.ndarray:
+                    """Per-shape values followed by those of the reachable variant shapes."""
+                    if variant_options is None:
+                        return shape_values
+                    variant_values = model._variant_shape_geometry[name].numpy()[routed_variant_shapes]
+                    return np.concatenate((shape_values[:shape_count_routed], variant_values))
+
+                def capacity(mask: np.ndarray) -> np.ndarray:
+                    """Per shape, whether it or a variant shape it can hold as a routed variant row is in ``mask``."""
+                    if variant_options is None:
+                        return mask
+                    variant_mask = np.zeros(len(variant_options.variant_types), dtype=bool)
+                    variant_mask[routed_variant_shapes] = mask[shape_count_routed:]
+                    return mask[:shape_count_routed] | (route_mask & variant_options.any(variant_mask))
+
+                route_types = with_variant_shapes("shape_type", shape_types)
+                route_rows = np.concatenate((route_mask, np.ones(len(routed_variant_shapes), dtype=bool)))
+                route_shape_types = route_types[route_rows]
+                mesh_mask = route_rows & (route_types == int(GeoType.MESH))
+                heightfield_mask = route_rows & (route_types == int(GeoType.HFIELD))
+                plane_mask = route_rows & (route_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
-                planar_sdf_mask = np.zeros(len(shape_types), dtype=bool)
+                planar_sdf_mask = np.zeros(len(route_types), dtype=bool)
                 has_meshes = bool(np.any(mesh_mask))
                 has_heightfields = bool(np.any(heightfield_mask))
                 if (
@@ -1933,15 +2152,15 @@ class CollisionPipeline:
                     and hasattr(model, "_shape_edge_range")
                     and model._shape_edge_range is not None
                 ):
-                    shape_sdf_index = model._shape_sdf_index.numpy()
-                    shape_edge_range = model._shape_edge_range.numpy()
-                    planar_sdf_mask = route_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
+                    shape_sdf_index = with_variant_shapes("_shape_sdf_index", model._shape_sdf_index.numpy())
+                    shape_edge_range = with_variant_shapes("_shape_edge_range", model._shape_edge_range.numpy())
+                    planar_sdf_mask = route_rows & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
                     has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
                     mesh_sdf_pair_mask |= planar_sdf_mask
-                    mesh_sdf_shapes = route_mask & (
-                        (shape_types != int(GeoType.HFIELD))
-                        & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
+                    mesh_sdf_shapes = route_rows & (
+                        (route_types != int(GeoType.HFIELD))
+                        & ((route_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
                     coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
                     if coarse_textures is not None and len(coarse_textures) > 0:
@@ -1965,12 +2184,25 @@ class CollisionPipeline:
                         if dynamic_shape_scale:
                             mesh_sdf_identity_scale_only = runtime_scale_sdf_shapes.size == 0
                         else:
-                            shape_scale = model.shape_scale.numpy()
+                            shape_scale = with_variant_shapes("shape_scale", model.shape_scale.numpy())
                             mesh_sdf_identity_scale_only = bool(
                                 np.all(shape_scale[runtime_scale_sdf_shapes] == np.float32(1.0))
                             )
+                            # Variant rows change scale with their variant, which the unit-scale check would
+                            # report as a rescale.
+                            if variant_options is not None:
+                                on_shapes = runtime_scale_sdf_shapes[runtime_scale_sdf_shapes < shape_count_routed]
+                                if on_shapes.size < runtime_scale_sdf_shapes.size or np.any(
+                                    variant_options.row_mask[on_shapes]
+                                ):
+                                    mesh_sdf_identity_scale_only = False
                             if mesh_sdf_identity_scale_only and runtime_scale_sdf_shapes.size > 0:
                                 unit_scale_sdf_shapes = runtime_scale_sdf_shapes
+                # Per-shape capacity masks: a variant row counts as any variant shape it can hold.
+                mesh_capacity = capacity(mesh_mask)
+                heightfield_capacity = heightfield_mask[:shape_count_routed]
+                plane_capacity = plane_mask[:shape_count_routed]
+                planar_sdf_capacity = capacity(planar_sdf_mask)
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
@@ -1982,31 +2214,33 @@ class CollisionPipeline:
                         shape_a = explicit_pairs_host[:, 0]
                         shape_b = explicit_pairs_host[:, 1]
                         box_mask = route_mask & (shape_types == int(GeoType.BOX))
+                        if variant_options is not None:
+                            box_mask &= ~variant_options.row_mask
                         mesh_mesh_routes = (
-                            (mesh_mask[shape_a] & mesh_mask[shape_b])
-                            | (heightfield_mask[shape_a] & mesh_mask[shape_b])
-                            | (mesh_mask[shape_a] & heightfield_mask[shape_b])
+                            (mesh_capacity[shape_a] & mesh_capacity[shape_b])
+                            | (heightfield_capacity[shape_a] & mesh_capacity[shape_b])
+                            | (mesh_capacity[shape_a] & heightfield_capacity[shape_b])
                             | (
-                                planar_sdf_mask[shape_a]
-                                & planar_sdf_mask[shape_b]
+                                planar_sdf_capacity[shape_a]
+                                & planar_sdf_capacity[shape_b]
                                 & ~(box_mask[shape_a] & box_mask[shape_b])
                             )
                         )
                         shape_scale = model.shape_scale.numpy()
-                        infinite_plane_mask = plane_mask & (shape_scale[:, 0] == 0.0) & (shape_scale[:, 1] == 0.0)
-                        mesh_plane_routes = (mesh_mask[shape_a] & infinite_plane_mask[shape_b]) | (
-                            infinite_plane_mask[shape_a] & mesh_mask[shape_b]
+                        infinite_plane_mask = plane_capacity & (shape_scale[:, 0] == 0.0) & (shape_scale[:, 1] == 0.0)
+                        mesh_plane_routes = (mesh_capacity[shape_a] & infinite_plane_mask[shape_b]) | (
+                            infinite_plane_mask[shape_a] & mesh_capacity[shape_b]
                         )
                         max_mesh_mesh_pairs = int(np.count_nonzero(mesh_mesh_routes))
                         max_mesh_plane_pairs = int(np.count_nonzero(mesh_plane_routes))
                 else:
                     max_mesh_mesh_pairs = min(
                         self.shape_pairs_max,
-                        _compute_per_world_mask_pair_max(model, mesh_sdf_pair_mask),
+                        _compute_per_world_mask_pair_max(model, capacity(mesh_sdf_pair_mask)),
                     )
                     max_mesh_plane_pairs = min(
                         self.shape_pairs_max,
-                        _compute_per_world_mask_pair_max(model, mesh_mask, plane_mask),
+                        _compute_per_world_mask_pair_max(model, mesh_capacity, plane_capacity),
                     )
                 # Use lean GJK/MPR kernel when scene has no capsules, ellipsoids,
                 # cylinders, or cones (which need full support function and axial
@@ -2025,9 +2259,10 @@ class CollisionPipeline:
                         model,
                         explicit_pairs_host,
                         route_mask,
-                        mesh_mask | heightfield_mask,
-                        planar_sdf_mask,
+                        mesh_capacity | heightfield_capacity,
+                        planar_sdf_capacity,
                         hydroelastic=hydroelastic_sdf is not None,
+                        variant_row_mask=None if variant_options is None else variant_options.row_mask,
                     )
                     max_triangle_pairs = _resolve_auto_triangle_pairs(
                         triangle_pair_estimate,
@@ -2050,6 +2285,7 @@ class CollisionPipeline:
                 shape_pairs_filtered=self.shape_pairs_filtered,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
                 shape_pairs_host=explicit_pairs_host,
+                variant_options=variant_options,
             )
             split_pair_count_threshold = (
                 _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD
@@ -2072,6 +2308,21 @@ class CollisionPipeline:
             # the candidate-pair bound (N*(N-1)/2 per world) is orders of
             # magnitude larger than the neighbor-budget contact estimate and
             # allocating sorter scratch at that size burns multi-GB of VRAM.
+            group_reduction = None
+            if body_pair_reduction is not None:
+                if hydroelastic_sdf is not None:
+                    raise ValueError("body_pair_reduction does not support hydroelastic contacts")
+                # Raw contacts are staged before reduction, so the stage holds at least what an
+                # unreduced pipeline allocates by default; rigid_contact_max sizes only the output.
+                group_staging_capacity = max(rigid_contact_max, _estimate_rigid_contact_max(model))
+                group_reduction, group_pair_bound, group_capacity_request = build_group_reduction_config(
+                    model,
+                    body_pair_reduction.cell_size,
+                    body_pair_reduction.hashtable_size_factor,
+                    body_pair_reduction.material_attributes,
+                    self.shape_pairs_filtered,
+                    group_staging_capacity,
+                )
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
@@ -2100,6 +2351,7 @@ class CollisionPipeline:
                 contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
                 speculative=self._speculative_enabled,
                 contact_writer_supports_speculative=self._speculative_enabled,
+                _group_reduction=group_reduction,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 
@@ -2134,6 +2386,11 @@ class CollisionPipeline:
             self.broad_phase_shape_pairs = wp.zeros(self.shape_pairs_max, dtype=wp.vec2i, device=device)
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
+            # Updated in place by Model.select_body_variants(); skipped for models without variants.
+            has_variant_rows = model._has_variant_rows
+            self._shape_variant_row = (
+                model._shape_variant_row if has_variant_rows else wp.empty(0, dtype=wp.bool, device=device)
+            )
             if self._speculative_enabled:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
@@ -2257,6 +2514,16 @@ class CollisionPipeline:
         model._validate_contact_capacity(rigid_contact_max, soft_contact_max)
 
         self.requires_grad = requires_grad
+        if (
+            (requires_grad or enable_rigid_soft_full_surface_contact)
+            and variant_options is not None
+            and model.particle_count > 0
+        ):
+            # Differentiable and full-surface soft contacts do not cull shapes by their AABBs.
+            raise NotImplementedError(
+                "Soft contacts with requires_grad=True or enable_rigid_soft_full_surface_contact=True "
+                "do not support body variants."
+            )
         self.deterministic = deterministic
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
         if deterministic:
@@ -2294,6 +2561,17 @@ class CollisionPipeline:
         else:
             self._contact_matcher = None
 
+        if body_pair_reduction is not None:
+            self._body_pair_reducer = BodyPairReduction(
+                self.narrow_phase.group_contact_reducer, rigid_contact_max, group_pair_bound, group_capacity_request
+            )
+        else:
+            self._body_pair_reducer = None
+        # A scene without primitive or convex pairs reduces nothing by group, so its buffers stay unstamped.
+        self._reduces_body_pairs = (
+            body_pair_reduction is not None and self.narrow_phase.group_contact_reducer is not None
+        )
+
         # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
         # the shared detector (re-pointed per Contacts buffer; see
         # _get_soft_self_contact_detector).
@@ -2304,6 +2582,32 @@ class CollisionPipeline:
             model.rigid_contact_max = rigid_contact_max
             model.soft_contact_max = soft_contact_max
             model._contact_capacity_initialized = True
+
+    @property
+    def body_pair_reduction(self) -> CollisionPipeline.BodyPairReductionConfig | None:
+        """Body-pair reduction configuration, fixed at construction, or ``None`` when disabled.
+
+        .. experimental::
+        """
+        return self._body_pair_reduction
+
+    def refresh_body_pair_reduction_groups(self):
+        """Rebuild body-pair reduction groups from the model's current shape materials.
+
+        Groups are built at construction.  Call this outside CUDA graph capture
+        after changing ``shape_material_*`` or a grouped per-shape attribute.
+        No-op when body-pair reduction is disabled.
+
+        .. experimental::
+        """
+        if self._body_pair_reducer is None:
+            return
+        if self.device.is_cuda and self.device.is_capturing:
+            raise RuntimeError("refresh_body_pair_reduction_groups() must be called outside CUDA graph capture")
+        shape_group, group_count = build_reduction_groups(self.model, self.body_pair_reduction.material_attributes)
+        if group_count > MAX_GROUP_ID + 1:
+            raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
+        self._body_pair_reducer.refresh_groups(shape_group)
 
     @property
     def rigid_contact_max(self) -> int:
@@ -2409,6 +2713,7 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
+        contacts._rigid_contact_body_pair_reduced = self._reduces_body_pairs
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2681,6 +2986,15 @@ class CollisionPipeline:
                 this call. Ignored when speculative contacts are disabled. See
                 :ref:`Speculative contacts <speculative-contacts>`.
         """
+        if contacts.rigid_contact_body_pair_reduced != self._reduces_body_pairs:
+            raise ValueError(
+                "body-pair-reduced Contacts buffers and pipelines with body_pair_reduction must be used together; "
+                "allocate the buffer with this pipeline's contacts()"
+            )
+        if self._reduces_body_pairs and (
+            contacts.rigid_contact_max != self._rigid_contact_max or str(contacts.device) != str(self.device)
+        ):
+            raise ValueError("body_pair_reduction requires a Contacts buffer allocated by this pipeline's contacts()")
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
         # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/
         # face passes below would otherwise populate records while the marker stayed False, so
@@ -2759,6 +3073,8 @@ class CollisionPipeline:
                 model.shape_gap,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
+                model.shape_flags,
+                self._shape_variant_row,
                 contacts.contact_counters,
                 contacts.contact_generation,
                 self.broad_phase_pair_count,
@@ -2919,6 +3235,8 @@ class CollisionPipeline:
                 collision_update_dt=collision_update_dt,
                 max_speculative_extension=max_speculative_extension,
             )
+        if self._reduces_body_pairs:
+            narrow_phase_extension_kwargs.update(body_q=state.body_q, shape_body=model.shape_body)
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,
             candidate_pair_count=self.broad_phase_pair_count,
@@ -2950,16 +3268,16 @@ class CollisionPipeline:
         if check_unit_scale_sdf:
             wp.copy(self._unit_scale_sdf_rescaled_host, self._unit_scale_sdf_rescaled)
 
-        # The reducer's counters are reused by the next pass, so latch losses on this contact stream.
-        reducer = self.narrow_phase.global_contact_reducer
-        if reducer is not None:
-            wp.launch(
-                _record_reduction_overflow,
-                dim=1,
-                inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
-                device=self.device,
-                record_tape=False,
-            )
+        # The reducers' counters are reused by the next pass, so latch losses on this contact stream.
+        for reducer in (self.narrow_phase.global_contact_reducer, self.narrow_phase.group_contact_reducer):
+            if reducer is not None:
+                wp.launch(
+                    _record_reduction_overflow,
+                    dim=1,
+                    inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
+                    device=self.device,
+                    record_tape=False,
+                )
 
         if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
             raise ValueError(

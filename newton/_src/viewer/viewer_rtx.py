@@ -148,6 +148,8 @@ class ViewerRTX(ViewerUSD):
     and custom mesh instances can also be added after rendering starts.
     """
 
+    # Runtime updates assume mesh prototypes.
+    _export_gprims = False
     _PHASE_BUILD = 0
     _PHASE_RENDER = 1
     _PICKING_LINE_NAME = "picking_line"
@@ -951,11 +953,12 @@ void main() {
                 self._ovstage_attached = True
                 self._ovstage_paths = ovstage.PathDictionary(self._ovstage)
                 self._ovstage_ordinal = 1
+                # ovstage 0.3 renamed the time_code keyword to time.
                 ovstage.population.open_usd(
                     self._ovstage,
                     ovrtx_usd_path,
-                    ordinal=self._ovstage_ordinal,
-                    time_code=0.0,
+                    self._ovstage_ordinal,
+                    0.0,
                 )
                 self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
             self._runtime_prim_paths = {

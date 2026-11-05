@@ -1,19 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Tendon Pinhole
-#
-# A cable threaded through a pinhole (eyelet) on a fixed guide body.
-# Two weights hang on either side — the heavier weight pulls cable
-# through the pinhole, descending while the lighter weight ascends.
-#
-# Unlike a rolling pulley, the pinhole has no radius and no wrap arc.
-# The cable simply passes through a single point on the body.
-#
-# Command: python -m newton.examples tendon_pinhole
-#
-###########################################################################
+"""Example Tendon Pinhole
+
+A cable threaded through a pinhole (eyelet) on a fixed guide body.
+Two weights hang on either side — the heavier weight pulls cable
+through the pinhole, descending while the lighter weight ascends.
+
+Unlike a rolling pulley, the pinhole has no radius and no wrap arc.
+The cable simply passes through a single point on the body.
+
+Success criteria:
+- A cable connects two weights through a fixed pinhole above them, without a pulley wrap arc.
+- The heavier weight descends while the lighter weight rises as cable passes through the pinhole.
+- The cable remains connected through the guide without explosive extension or diverging weight
+  motion.
+
+Runs:
+- `python -m newton.examples tendon_pinhole`
+"""
 
 import numpy as np
 import warp as wp
