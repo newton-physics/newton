@@ -253,7 +253,7 @@ def run_fixture(
             **extra,
         )
         options.update(solver_options or {})
-        solver = SolverSteel(model, solve_mode="matrix_free", **options)
+        solver = SolverSteel(model, **options)
         state, next_state = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         trace = []
@@ -303,6 +303,7 @@ def select_colored_variant(test, solver, variant):
             solver.model.device.arch,
             contact_compliance=solver._contact_compliance,
             friction_mode=solver._friction_mode,
+            contact_torsion=solver._propagation_torsion_rows,
         )
         solver._pgs_solve_propagation_colored_warp_kernel = None
     warp_kernel = solver._pgs_solve_propagation_colored_warp_kernel
@@ -424,7 +425,7 @@ def fixture(
     if kwargs["friction_anchor_beta"] is None:
         # Use the constructor default (persistent friction patches).
         del kwargs["friction_anchor_beta"]
-    solver = SolverSteel(model, solve_mode="matrix_free", **kwargs)
+    solver = SolverSteel(model, **kwargs)
     solver._rigid_body_angular_damping.zero_()
     if row_limit is not None:
         solver._articulation_constraint_max = row_limit
@@ -890,7 +891,6 @@ def _solver(model, *, enabled, velocity_limits=False, **options):
     """Build a solver with serial (``enabled=False``) or parallel tree traversal."""
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
         iterations=8,
         update_mass_matrix_interval=2,
         enable_joint_limits=True,
@@ -1068,11 +1068,12 @@ def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
     return b, j_leader, j_follower
 
 
-def _build_scissor_model(device):
+def _build_scissor_model(device, axis=(0.0, 0.0, 1.0)):
     """One articulation: base link + two sibling links whose boxes overlap.
 
     The siblings are not directly jointed, so collision produces a
     link-link contact within a single articulation (common ancestor = base).
+    ``axis`` is every hinge's axis; along the contact normal (y) the siblings spin against each other on the base.
     """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.default_shape_cfg.density = 1000.0
@@ -1087,7 +1088,7 @@ def _build_scissor_model(device):
     j_base = builder.add_joint_revolute(
         parent=-1,
         child=base,
-        axis=wp.vec3(0.0, 0.0, 1.0),
+        axis=wp.vec3(*axis),
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
         child_xform=wp.transform_identity(),
     )
@@ -1100,7 +1101,7 @@ def _build_scissor_model(device):
             builder.add_joint_revolute(
                 parent=base,
                 child=link,
-                axis=wp.vec3(0.0, 0.0, 1.0),
+                axis=wp.vec3(*axis),
                 parent_xform=wp.transform(wp.vec3(0.06, side * 0.028, 0.0), wp.quat_identity()),
                 child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
             )
@@ -1237,7 +1238,7 @@ def _articulations(device, tiles=False, profile=None, torsion_radius=None):
         set_torsion_radius(model, torsion_radius)
     # Deterministic contact order, as in production, so A/B trajectories compare bitwise.
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **(profile or PROFILE))
+    solver = newton.solvers.SolverSteel(model, **(profile or PROFILE))
     return model, pipeline, solver, [model.state(), model.state()], model.control()
 
 
