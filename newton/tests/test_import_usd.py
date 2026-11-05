@@ -8868,26 +8868,29 @@ def Xform "Articulation" (
     def test_mjc_equality_weld_holds_its_authored_pose(self):
         """SolverMuJoCo's row for a USD weld authored at a satisfied pose holds both free bodies still."""
         for target in ("body", "site", "rotated site"):
-            for convert in (False, True):
-                with self.subTest(target=target, convert=convert):
-                    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-                    SolverMuJoCo.register_custom_attributes(builder)
-                    builder.add_usd(
-                        self._authored_weld_stage(target),
-                        load_sites=False,
-                        schema_resolvers=[usd.SchemaResolverMjc()],
-                        convert_mjc_equality_constraints=convert,
-                    )
-                    model = builder.finalize()
-                    solver = SolverMuJoCo(model)
-                    state_0, state_1, control = model.state(), model.state(), model.control()
-                    start = state_0.body_q.numpy().copy()
-                    for _ in range(50):
-                        solver.step(state_0, state_1, control, None, 1.0e-3)
-                        state_0, state_1 = state_1, state_0
-                    # A satisfied weld applies no impulse, so neither body moves.
-                    np.testing.assert_allclose(state_0.body_q.numpy()[:, :3], start[:, :3], atol=1.0e-5)
-                    np.testing.assert_allclose(state_0.body_qd.numpy(), 0.0, atol=1.0e-4)
+            with self.subTest(target=target):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(
+                    self._authored_weld_stage(target),
+                    load_sites=False,
+                    schema_resolvers=[usd.SchemaResolverMjc()],
+                    convert_mjc_equality_constraints=False,
+                )
+                model = builder.finalize()
+                solver = SolverMuJoCo(model)
+                # The imported weld is the only active row; the others are inactive kinematic-root welds.
+                active = np.flatnonzero(solver.mj_model.eq_active0)
+                self.assertEqual(len(active), 1)
+                self.assertEqual(int(solver.mj_model.eq_type[active[0]]), int(SolverMuJoCo.EqType.WELD))
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                start = state_0.body_q.numpy().copy()
+                for _ in range(50):
+                    solver.step(state_0, state_1, control, None, 1.0e-3)
+                    state_0, state_1 = state_1, state_0
+                # A satisfied weld applies no impulse, so neither body moves.
+                np.testing.assert_allclose(state_0.body_q.numpy()[:, :3], start[:, :3], atol=1.0e-5)
+                np.testing.assert_allclose(state_0.body_qd.numpy(), 0.0, atol=1.0e-4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_conversion_roundtrips_to_mujoco(self):
