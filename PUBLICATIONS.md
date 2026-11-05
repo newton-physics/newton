@@ -48,6 +48,8 @@ published citation when available and retain an accessible preprint link.
 
 - **FlashNeRD: Performance-First Contact-Rich Neural Robot Dynamics**. *M. Ataei, M. A. Nabian, J. Xu, M. Macklin, Y. Narang, E. Heiden, O. Zhang, Y. Guo, R. D'Sa, O. Hennigh, G. State, S. Choudhry*. October 2026. [arXiv:2610.09130](https://arxiv.org/abs/2610.09130)
 
+- **Divide and Truncate: A Penetration and Inversion Free Framework for Coupled Multi-physics System**. *A. H. Chen, J. Hsu, Y. Ayman, M. Macklin*. ACM SIGGRAPH 2026 Conference Papers, July 2026. [DOI:10.1145/3799902.3811143](https://doi.org/10.1145/3799902.3811143), [arXiv:2604.15513](https://arxiv.org/abs/2604.15513)
+
 - **GaP: A Graph-as-Policy Multi-Agent Self-Learning Harness For Variational Automation Tasks**. *K. Chen, S. Xie, L. Fu, J. Yu, W. Pacini, S. Bajamahal, H. Kim, J. Drake, D. Kim, H. Xue, J. Francis, C. Juette, P. Schaldenbrand, M. Y. Seker, R. Wickramarachchi, U. Yoo, G. Wang, A. Murali, B. Sundaralingam, S. S. Sastry, Y. Zhu, L. Fan, S. Huang, K. Goldberg*. July 2026. [arXiv:2607.05369](https://arxiv.org/abs/2607.05369)
 
 - **RoboSimStudio: An Interactive Toolkit for Rapid Real2Sim of Robot Manipulation Tasks**. *K. Chen, S. Xie, U. Yoo, X. Zhu, C. Magner, A. Zhu, D. Kim, E. Heiden, E. Coumans, M. Macklin, S. Huang, K. Goldberg*. October 2026. [arXiv:2610.18835](https://arxiv.org/abs/2610.18835)
@@ -111,6 +113,16 @@ published citation when available and retain an accessible preprint link.
 - **SIM1: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds**. *Y. Zhou, H. Liu, X. Jiang, X. Shen, Y. Zhou, H. Wang, B. Fang, Y. Tian, M. Yu, Q. Yu, L. Ma, H. Li, H. Wang, J. Zeng, J. Pang*. April 2026. [arXiv:2604.08544](https://arxiv.org/abs/2604.08544)
 
 - **SceneFactory-3D: Lifting 2D Traffic Scenes into 3D Physical Counterfactuals for Scalable Physically Grounded Safety Evaluation**. *Y. Zhu, L. Tian, T. Zhao, Y. Chen, F. Zuo, T. Li, Z. Bian*. October 2026. [arXiv:2610.02874](https://arxiv.org/abs/2610.02874)
+
+### 2025
+
+- **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205)
+
+- **Augmented Vertex Block Descent**. *C. Giles, E. Diaz, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731195](https://doi.org/10.1145/3731195)
+
+### 2024
+
+- **Vertex Block Descent**. *A. H. Chen, Z. Liu, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 43(4), July 2024. [DOI:10.1145/3658179](https://doi.org/10.1145/3658179), [arXiv:2403.06321](https://arxiv.org/abs/2403.06321)
 
 ## Newton used solely as a comparison baseline
 

@@ -52,6 +52,7 @@ from ..usd.particles import find_particle_prims, import_particles
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .color import color_linear_to_srgb
+from .deprecation import warn_deprecation
 from .import_usd_deformable_attachments import (
     _deformable_import_attachments,
     _deformable_import_element_collision_filters,
@@ -314,6 +315,9 @@ def parse_usd(
             checkpoints: loading a Torch checkpoint may execute code during
             :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
+            .. deprecated:: 1.8
+                Torch checkpoints are deprecated; export the network to ONNX.
+
     Returns:
         .. experimental::
 
@@ -433,6 +437,11 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
+    if allow_unsafe_torch_checkpoints:
+        from ..actuators.utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG  # noqa: PLC0415
+
+        warn_deprecation(_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG)
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
@@ -2818,7 +2827,7 @@ def parse_usd(
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.delay import Delay  # noqa: PLC0415
-    from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
+    from ..actuators.usd_parser import _parse_actuator_prim  # noqa: PLC0415
 
     actuator_count = 0
     path_to_dof = {
@@ -2835,7 +2844,7 @@ def parse_usd(
         prim_path = str(prim.GetPath())
         if any(re.match(pattern, prim_path) for pattern in ignore_paths):
             continue
-        parsed = parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints)
+        parsed = _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints)
         if parsed is None:
             continue
         target_path = parsed.target_path
