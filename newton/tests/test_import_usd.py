@@ -36,7 +36,14 @@ from newton._src.utils.color import color_linear_to_srgb
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests._usd_import_test_utils import _expect_jointless_articulation_warning
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
+from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
+    add_function_test,
+    assert_np_equal,
+    get_cuda_test_devices,
+    get_test_devices,
+    patch_sys_module,
+)
 
 devices = get_test_devices()
 
@@ -4701,11 +4708,6 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
                             r"\(label: '/World/Articulation/Link2'\).*undefined semantics",
                             category=UserWarning,
                         )
-                        warnings.filterwarnings(
-                            "ignore",
-                            message=r"MuJoCo weld '/World/Articulation/Weld' has torquescale=2\.5",
-                            category=newton.exceptions.NewtonWarning,
-                        )
                     with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
                         builder.add_usd(
                             asset_path,
@@ -8911,39 +8913,6 @@ def Xform "Articulation" (
                     # A satisfied weld applies no impulse, so neither body moves.
                     np.testing.assert_allclose(state_0.body_q.numpy()[:, :3], start[:, :3], atol=1.0e-5)
                     np.testing.assert_allclose(state_0.body_qd.numpy(), 0.0, atol=1.0e-4)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    @unittest.skipUnless(wp.get_cuda_device_count() > 0, "SolverSteel's matrix-free solve requires CUDA")
-    def test_converted_mjc_equality_weld_closes_its_loop_in_steel(self):
-        """The loop joint converted from a USD weld holds the weld's own frames together in SolverSteel."""
-        for target in ("body", "site", "rotated site"):
-            with self.subTest(target=target):
-                stage, frame0, frame1 = self._authored_weld_stage(target, closed_loop=True)
-                builder = newton.ModelBuilder()
-                SolverMuJoCo.register_custom_attributes(builder)
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects"):
-                    builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
-                model = builder.finalize(device="cuda:0")
-                solver = newton.solvers.SolverSteel(model)
-                self.assertEqual(solver._connect_count, 1)
-                state_0, state_1, control = model.state(), model.state(), model.control()
-                start = state_0.body_q.numpy().copy()
-                gap, angle = 0.0, 0.0
-                for _ in range(300):
-                    solver.step(state_0, state_1, control, None, 1.0e-3)
-                    state_0, state_1 = state_1, state_0
-                    q = state_0.body_q.numpy().astype(np.float64)
-                    w0 = wp.transform(wp.vec3(*q[0, :3]), wp.quat(*q[0, 3:])) * frame0
-                    w1 = wp.transform(wp.vec3(*q[1, :3]), wp.quat(*q[1, 3:])) * frame1
-                    gap = max(
-                        gap, float(wp.length(wp.transform_get_translation(w0) - wp.transform_get_translation(w1)))
-                    )
-                    rel = wp.quat_inverse(wp.transform_get_rotation(w0)) * wp.transform_get_rotation(w1)
-                    angle = max(angle, 2.0 * math.asin(min(1.0, float(wp.length(wp.vec3(rel[0], rel[1], rel[2]))))))
-                # The loop swings under gravity, and the weld's frames stay together throughout.
-                self.assertGreater(np.linalg.norm(state_0.body_q.numpy()[1, :3] - start[1, :3]), 0.1)
-                self.assertLess(gap, 1.0e-5)
-                self.assertLess(math.degrees(angle), 1.0e-3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_conversion_roundtrips_to_mujoco(self):
@@ -14809,6 +14778,49 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         prim = self._define_material_mesh(stage, "Auto", "auto", texture_asset=texture_path)
         with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
             self.assertEqual(usd.get_mesh(prim).texture, texture_path)
+
+
+def test_converted_mjc_equality_weld_closes_its_loop_in_steel(test, device):
+    """The loop joint converted from a USD weld holds the weld's own frames together in SolverSteel."""
+    steps = 300
+    for target in ("body", "site", "rotated site"):
+        with test.subTest(target=target):
+            stage, frame0, frame1 = TestImportSampleAssetsParsing._authored_weld_stage(target, closed_loop=True)
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects"):
+                builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
+            model = builder.finalize(device=device)
+            solver = newton.solvers.SolverSteel(model)
+            test.assertEqual(solver._connect_count, 1)
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            n = model.body_count
+            history = wp.empty(steps * n, dtype=wp.transform, device=device)
+            for i in range(steps):
+                solver.step(state_0, state_1, control, None, 1.0e-3)
+                state_0, state_1 = state_1, state_0
+                wp.copy(history, state_0.body_q, dest_offset=i * n, count=n)
+            body_q = history.numpy().reshape(steps, n, 7).astype(np.float64)
+            gap, angle = 0.0, 0.0
+            for q in body_q:
+                w0 = wp.transform(wp.vec3(*q[0, :3]), wp.quat(*q[0, 3:])) * frame0
+                w1 = wp.transform(wp.vec3(*q[1, :3]), wp.quat(*q[1, 3:])) * frame1
+                gap = max(gap, float(wp.length(wp.transform_get_translation(w0) - wp.transform_get_translation(w1))))
+                rel = wp.quat_inverse(wp.transform_get_rotation(w0)) * wp.transform_get_rotation(w1)
+                angle = max(angle, 2.0 * math.asin(min(1.0, float(wp.length(wp.vec3(rel[0], rel[1], rel[2]))))))
+            # The loop swings under gravity, and the weld's frames stay together throughout.
+            test.assertGreater(np.linalg.norm(body_q[-1, 1, :3] - model.body_q.numpy()[1, :3]), 0.1)
+            test.assertLess(gap, 1.0e-5)
+            test.assertLess(math.degrees(angle), 1.0e-3)
+
+
+if USD_AVAILABLE:
+    add_function_test(
+        TestImportSampleAssetsParsing,
+        "test_converted_mjc_equality_weld_closes_its_loop_in_steel",
+        test_converted_mjc_equality_weld_closes_its_loop_in_steel,
+        devices=get_cuda_test_devices(),
+    )
 
 
 if __name__ == "__main__":

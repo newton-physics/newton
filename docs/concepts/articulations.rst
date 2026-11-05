@@ -1380,9 +1380,10 @@ MuJoCo's soft ``<weld>`` equality, but the MJCF and USD importers convert MuJoCo
 welds (``<weld>``, ``MjcEqualityWeldAPI``) to the same loop joints:
 
 - ``torquescale`` 0, which MuJoCo enforces as a point constraint with rotation
-  free, becomes a BALL loop joint on the weld's anchor, with a warning.
+  free, becomes a BALL loop joint on the weld's anchor, and the importer logs
+  a warning.
 - Any other ``torquescale`` becomes a FIXED loop joint. A value other than 1
-  warns, because the weld is then enforced in full.
+  logs a warning, because the weld is then enforced in full.
 - :class:`~newton.solvers.SolverSteel` solves loop closures as hard
   constraints and does not support ``solref`` or ``solimp`` (time constant,
   damping ratio, impedance) on them. :class:`~newton.solvers.SolverMuJoCo`
