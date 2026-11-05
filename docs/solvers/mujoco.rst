@@ -140,10 +140,14 @@ An explicit ``rest_q=0.0`` also takes precedence over that default; use
 ``rest_q=None`` to leave it unspecified. Conflicting explicitly configured
 core rest coordinates and authored legacy rest values raise an error.
 
-Runtime ``model.mujoco.dof_springref`` is removed in Newton 1.8 without a
-deprecation period. It cannot directly alias :attr:`~newton.Model.joint_rest_q`:
-the reference changes from absolute MuJoCo coordinates in DOF layout to
-relative Newton coordinates in coordinate layout. Reads, assignments, and
+Runtime ``model.mujoco.dof_springref`` is deprecated since Newton 1.8. When the
+model has no joints with more coordinates than DOFs (free, ball, distance, or
+rod) and no nonzero ``mujoco:dof_ref`` at finalization, the DOF and coordinate
+layouts coincide and ``springref`` equals ``rest_q``, so the old name remains a
+warning alias to :attr:`~newton.Model.joint_rest_q` for at least one minor
+release. The alias
+tracks ``rest_q``, so it no longer reports the absolute spring reference if
+``dof_ref`` is edited later. For other models, reads, assignments, and
 deletions raise an ``AttributeError`` with migration guidance. Replace runtime
 accesses with ``joint_rest_q``, subtract ``ref`` from legacy values, and index
 by :attr:`~newton.Model.joint_q_start`.
@@ -236,7 +240,18 @@ Geometry types
 non-colliding reference frames used for sensor attachment and spatial
 tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``CYLINDER``, and
 ``BOX`` are MuJoCo-native site geom types; other types silently fall
-back to ``SPHERE``.
+back to ``SPHERE``. MuJoCo ignores the third size component of a cylinder
+site, so the MJCF importer sets ``scale[2]`` (Newton's barrel radius) of
+cylinder sites to ``0.0``.
+
+.. deprecated:: 1.8
+
+    The ``mujoco:site_size_is_display`` shape attribute is no longer populated
+    by the MJCF importer. Passing it to :meth:`~newton.ModelBuilder.add_site`
+    emits a ``NewtonDeprecationWarning``; if it is ``True``, ``scale[2]`` of a
+    cylinder site is set to ``0.0``. Remove the attribute, and set ``scale[2]``
+    to ``0.0`` directly where it was ``True``. The attribute will be removed in
+    a future release.
 
 Several Newton collision features — for example non-convex trimesh,
 SDF-based contacts, and hydroelastic contacts — are not part of the
@@ -409,12 +424,11 @@ the mode from user code.
 
 .. note::
 
-   ``use_mujoco_contacts=True`` and the MuJoCo CPU backend do not
-   apply the per-contact two-body factor — MuJoCo's internal
-   ``contact_params`` averages per-geom ``solref``, which cannot
-   reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
-   fall back to the legacy ``convert_solref(ke, kd, 1, 1)``
-   approximation on those paths.
+   ``use_mujoco_contacts=True`` does not apply the per-contact two-body
+   factor — MuJoCo's internal ``contact_params`` averages per-geom
+   ``solref``, which cannot reproduce the inverse-mass sum.
+   ``SOLREF_MODE_FORCE_SPACE`` shapes fall back to the legacy
+   ``convert_solref(ke, kd, 1, 1)`` approximation on that path.
 
 For parameter interpretation, stability tradeoffs, and task-oriented guidance,
 see :ref:`Tuning MuJoCo`.
@@ -425,9 +439,8 @@ Contact friction ``solreffriction`` mapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
-``solreffriction`` when the MuJoCo Warp backend uses elliptic friction cones
-(``use_mujoco_cpu=False``, ``cone="elliptic"``) with Newton contacts
-(``use_mujoco_contacts=False``). It targets the force-space friction slope
+``solreffriction`` with elliptic friction cones (``cone="elliptic"``) and Newton
+contacts (``use_mujoco_contacts=False``). It targets the force-space friction slope
 ``f = -kf * v`` below the Coulomb limit. The mapping is exact when the sum of
 MuJoCo's translational ``body_invweight0`` values matches the contact's inverse
 effective mass (the relevant diagonal of :math:`J M^{-1} J^T`) and the contact
@@ -892,8 +905,8 @@ Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
 worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
-and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
-assets, scales, and convex-hull counts may differ across worlds. Collision
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
+heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
 flags may also differ when Newton supplies contacts. Native MuJoCo contacts
 require matching collision flags, groups, and exclusions for corresponding geom
 slots. With native contacts,

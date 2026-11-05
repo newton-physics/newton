@@ -4524,12 +4524,12 @@ class TestVBDUsdParsing(unittest.TestCase):
         self.assertAlmostEqual(solver.rigid_joint_linear_kd, 24.0)
         self.assertAlmostEqual(solver.rigid_joint_angular_kd, 25.0)
 
-    def _build_scene_model(self, authored_values, with_body=False):
+    def _build_scene_model(self, authored_values, with_body=False, schema="NewtonVbdSceneAPI"):
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
-        scene.ApplyAPI("NewtonVbdSceneAPI")
+        scene.ApplyAPI(schema)
         if with_body:
             body = UsdGeom.Cube.Define(stage, "/Body").GetPrim()
             UsdPhysics.RigidBodyAPI.Apply(body)
@@ -4542,6 +4542,28 @@ class TestVBDUsdParsing(unittest.TestCase):
         if with_body:
             builder.color()
         return builder.finalize(device="cpu")
+
+    def test_scene_iterations_precedence(self):
+        """Resolve USD iterations and reject invalid scene counts unless overridden."""
+        for authored, expected in ((None, 10), (-1, 10), (23, 23)):
+            values = {} if authored is None else {"newton:maxSolverIterations": authored}
+            model = self._build_scene_model(values, schema="NewtonSceneAPI")
+            with self.subTest(authored=authored):
+                self.assertEqual(newton.solvers.SolverVBD(model).iterations, expected)
+        self.assertEqual(newton.solvers.SolverVBD(model, iterations=None).iterations, 23)
+        # An explicit default must override a different scene value.
+        self.assertEqual(newton.solvers.SolverVBD(model, iterations=10).iterations, 10)
+
+        for invalid in (0, -2):
+            model = self._build_scene_model({"newton:maxSolverIterations": invalid}, schema="NewtonSceneAPI")
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "newton:maxSolverIterations"):
+                    newton.solvers.SolverVBD(model)
+                self.assertEqual(newton.solvers.SolverVBD(model, iterations=10).iterations, 10)
+
+        # Python-built models need neither USD nor custom-attribute registration.
+        model = newton.ModelBuilder().finalize(device="cpu")
+        self.assertEqual(newton.solvers.SolverVBD(model).iterations, 10)
 
     def test_registered_defaults_match_schema_fallbacks(self):
         """With the API applied but nothing authored, registered defaults match the schema's fallbacks."""
@@ -5122,6 +5144,59 @@ def _body_particle_attachment_is_native_vbd(test, device):
     anchor_pos = _transform_point_np(body_pose, np.zeros(3))
     test.assertLess(np.linalg.norm(particle_pos - anchor_pos), 2.0e-2)
     test.assertGreater(anchor_pos[0], 1.0e-3)
+
+
+def _simulate_cloth_hung_by_attachments(device, deterministic, height):
+    """Hang a cloth from a static body by two corner attachments, passing contacts to every step.
+
+    Returns the final particle positions and the largest soft contact count seen.
+    """
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()), mass=0.0)
+    builder.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, height),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.02,
+        cell_y=0.02,
+        mass=1.0e-3,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=0.0,
+        particle_radius=2.0e-3,
+    )
+    corners = [0, 4]
+    for particle in corners:
+        builder.add_attachment_particle_body(particle, body, stiffness=1.0e4)
+    builder.color()
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=10, deterministic=deterministic)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out, control = model.state(), model.state(), model.control()
+    max_contact_count = 0
+    for _ in range(50):
+        state_in.clear_forces()
+        pipeline.collide(state_in, contacts)
+        max_contact_count = max(max_contact_count, int(contacts.soft_contact_count.numpy()[0]))
+        solver.step(state_in, state_out, control, contacts, 1.0e-3)
+        state_in, state_out = state_out, state_in
+    return state_in.particle_q.numpy(), max_contact_count
+
+
+def _body_particle_attachment_survives_deterministic_contact_gather(test, device):
+    """Particle-body attachments must act the same in a deterministic mode when contacts are passed to step()."""
+    # At 0.3 m no contact acts: without the attachment forces the whole cloth falls freely. At 1 mm the anchors lie
+    # inside the particle radius, so the attachment and the ground contact act on the same particles.
+    for height, expect_contacts in ((0.3, False), (1.0e-3, True)):
+        reference, _ = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.NOT_GUARANTEED, height)
+        gathered, contact_count = _simulate_cloth_hung_by_attachments(device, wp.DeterministicMode.RUN_TO_RUN, height)
+        test.assertEqual(contact_count > 0, expect_contacts)
+        np.testing.assert_allclose(gathered, reference, atol=1.0e-4, err_msg=f"cloth hung at {height} m")
 
 
 def _body_particle_attachment_validates_inputs(test, device):
@@ -6353,6 +6428,12 @@ add_function_test(
     TestSolverVBD,
     "test_body_particle_attachment_is_native_vbd",
     _body_particle_attachment_is_native_vbd,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_survives_deterministic_contact_gather",
+    _body_particle_attachment_survives_deterministic_contact_gather,
     devices=devices,
 )
 add_function_test(

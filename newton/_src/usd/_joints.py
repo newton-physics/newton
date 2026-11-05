@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonWarning
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
@@ -36,6 +37,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _endpoints_swapped(joint_desc: UsdPhysics.JointDesc, body_index_map: dict[str, int]) -> bool:
+    """Return whether the importer swaps a joint's ends, making physics:body0 the child.
+
+    The ends are swapped when physics:body1 is not an imported rigid body, for example when
+    it is empty (the world) or a static prim.
+
+    Args:
+        joint_desc: The joint description.
+        body_index_map: The map from body prim path to body index used to resolve the joint.
+
+    Returns:
+        ``True`` if the joint's ends are swapped.
+    """
+    return body_index_map.get(str(joint_desc.body1), -1) == -1
 
 
 def _resolve_scalar_spring(
@@ -91,8 +108,7 @@ def resolve_joint_parent_child(
     child_path = str(joint_desc.body1)
     parent_id = body_index_map.get(parent_path, -1)
     child_id = body_index_map.get(child_path, -1)
-    # If child_id is -1, swap parent and child
-    if child_id == -1:
+    if _endpoints_swapped(joint_desc, body_index_map):
         if parent_id == -1:
             raise ValueError(f"Unable to parse joint {joint_desc.primPath}: both bodies unresolved")
         parent_id, child_id = child_id, parent_id
@@ -123,6 +139,49 @@ def _joint_filters_parent(
     if _collision_enabled_authored(joint_prim):
         return not joint_desc.collisionEnabled
     return scene_filter_parent or is_fixed
+
+
+def _can_reverse_joint_axes(
+    linear_axes: list[ModelBuilder.JointDofConfig],
+    angular_axes: list[ModelBuilder.JointDofConfig],
+) -> bool:
+    """Return whether negating the DOF axes reverses a joint whose endpoints were swapped.
+
+    UsdPhysics measures a joint coordinate from the body0 frame to the body1 frame, so
+    swapping the endpoints inverts the joint motion. Negating every axis inverts it exactly
+    only when the DOF motions commute: translations alone, or one rotation with
+    translations along its axis.
+
+    Args:
+        linear_axes: The translational DOFs.
+        angular_axes: The rotational DOFs.
+
+    Returns:
+        ``True`` if negating the axes reverses the joint exactly.
+    """
+    if not angular_axes:
+        return True
+    rotation_axis = np.array(angular_axes[0].axis)
+    return len(angular_axes) == 1 and all(
+        np.linalg.norm(np.cross(np.array(dof.axis), rotation_axis)) < 1e-6 for dof in linear_axes
+    )
+
+
+def _warn_irreversible_joint(description: str) -> None:
+    """Warn that a swapped joint keeps its authored axes because Newton cannot reverse it.
+
+    Args:
+        description: The joint prim path, or the merged joint prim paths.
+    """
+    warnings.warn(
+        f"Newton cannot reverse {description}, so it keeps the authored axes. Newton reverses a joint whose "
+        "physics:body1 is not an imported rigid body, but it can only reverse a joint with no rotational axis, "
+        "or one rotational axis with every translational axis parallel to it. Any limits, drives, or initial "
+        "state of this joint may act in the mirrored direction. To avoid this, author the joint with the rigid "
+        "body as physics:body1.",
+        NewtonWarning,
+        stacklevel=_external_warning_stacklevel(),
+    )
 
 
 def parse_joint(
@@ -174,6 +233,9 @@ def parse_joint(
     parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
         joint_desc, path_body_map, get_transforms=True
     )
+    # A swap reverses the direction of the authored joint coordinate. Negating the joint
+    # axes restores it, so authored limits, targets, and state keep their meaning.
+    endpoints_swapped = _endpoints_swapped(joint_desc, path_body_map)
 
     if incoming_xform is not None:
         parent_tf = incoming_xform * parent_tf
@@ -221,7 +283,8 @@ def parse_joint(
             joint_custom_attrs[solreflimit_mode_key] = dof.limit_solref_mode
         if _should_write_solreflimit_gain_baseline():
             joint_custom_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
-        joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
+        axis = usd_axis_to_axis[joint_desc.axis]
+        joint_params["axis"] = -axis.to_vec3() if endpoints_swapped else axis
         joint_params["limit_lower"] = dof.limit_lower
         joint_params["limit_upper"] = dof.limit_upper
         joint_params["limit_ke"] = dof.limit_ke
@@ -522,6 +585,13 @@ def parse_joint(
         joint_params["collision_filter_parent"] = parent_id != -1 and _joint_filters_parent(
             joint_prim, joint_desc, not linear_axes and not angular_axes, scene_filter_parent
         )
+        if endpoints_swapped:
+            if _can_reverse_joint_axes(linear_axes, angular_axes):
+                for axis in [*linear_axes, *angular_axes]:
+                    axis.axis = -axis.axis
+            else:
+                _warn_irreversible_joint(f"joint {joint_path}")
+
         joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
     elif key == UsdPhysics.ObjectType.DistanceJoint:
         joint_index = builder.add_joint_distance(
@@ -656,6 +726,7 @@ def parse_merged_joints(
     angular_initial_vel: list[float | None] = []
     enabled_count = 0
     sibling_descs = []
+    swapped_axes: list[ModelBuilder.JointDofConfig] = []
 
     # Find the first enabled joint to use as representative for transforms and metadata
     first_desc = None
@@ -810,6 +881,8 @@ def parse_merged_joints(
             velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
             actuator_mode=dof.actuator_mode,
         )
+        if _endpoints_swapped(jd, path_body_map):
+            swapped_axes.append(ax)
 
         if is_revolute:
             angular_axes.append(ax)
@@ -828,6 +901,13 @@ def parse_merged_joints(
 
     if enabled_count == 0:
         return None
+    # Negate the axes of the swapped joints, as in parse_joint.
+    if swapped_axes:
+        if _can_reverse_joint_axes(linear_axes, angular_axes):
+            for ax in swapped_axes:
+                ax.axis = -ax.axis
+        else:
+            _warn_irreversible_joint(f"merged joints {', '.join(joint_paths)}")
 
     # D6 DOF order: linear first, then angular
     dof_prim_paths = linear_prim_paths + angular_prim_paths
