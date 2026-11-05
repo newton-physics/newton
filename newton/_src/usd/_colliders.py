@@ -544,7 +544,8 @@ def _parse_colliders(
         # Colliders that are not render geometry keep no visual: there is nothing
         # authored to preserve. If one is on screen it is because the collider
         # display policy put it there, and what it should show is the collider.
-        rest = [s for s in shape_ids if s not in set(drawn)]
+        drawn_set = set(drawn)
+        rest = [s for s in shape_ids if s not in drawn_set]
         if rest:
             builder.approximate_meshes(
                 method=remeshing_method, shape_indices=rest, keep_visual_shapes=False, **dict(remeshing_kwargs)
