@@ -4083,18 +4083,10 @@ class TestTorsionSweepLinks(unittest.TestCase):
         wp.load_module(kernel.module, device=device)
 
     def test_large_capacity_falls_back(self):
-        """Fall back to the scan when the lists exceed the static limit, and still solve torsion."""
-        result, solver, *_ = fixture(
-            0.0075, articulation_constraint_max=8192, free_body_constraint_max=512, spin=10.0, iterations=8
-        )
+        """Select the scan when the lists exceed the static limit; the forced-fallback test above solves with it."""
+        _, solver, *_ = fixture(0.0075, articulation_constraint_max=8192, free_body_constraint_max=512, step=False)
         self.assertFalse(solver._mfgs_torsion_links)
         self.assertNotIn("_links", solver._pgs_solve_mf_gs_kernel.key)
-        count = int(result["count"][0])
-        torsion_rows = result["row_type"][0, :count] == PGS_CONSTRAINT_TYPE_TORSION
-        self.assertTrue(np.any(torsion_rows))
-        self.assertTrue(np.any(result["impulses"][0, :count][torsion_rows] != 0.0))
-        for name in ("body_q", "body_qd", "impulses"):
-            self.assertTrue(np.all(np.isfinite(result[name])), name)
 
 
 def _link_layouts():
