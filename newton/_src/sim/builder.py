@@ -7833,12 +7833,19 @@ class ModelBuilder:
         # Merging changes the frames and contacts that imported MuJoCo sensors measure, so reject it.
         sensor_count = self._custom_frequency_counts.get("mujoco:sensor", 0)
         if sensor_count:
+            sensor_types = self.custom_attributes["mujoco:sensor_type"]._values_with_defaults(sensor_count)
             sensor_bodies = set()
             for name in ("body", "refbody", "site", "refsite"):
                 attribute = self.custom_attributes.get(f"mujoco:sensor_{name}")
-                for value in attribute._values_with_defaults(sensor_count) if attribute is not None else ():
-                    if int(value) >= 0:
-                        sensor_bodies.add(self.shape_body[int(value)] if name.endswith("site") else int(value))
+                values = attribute._values_with_defaults(sensor_count) if attribute is not None else ()
+                for row, value in enumerate(values):
+                    if int(value) < 0:
+                        continue
+                    body = self.shape_body[int(value)] if name.endswith("site") else int(value)
+                    # Merging into the world leaves world sites in place, but a touch sensor on one
+                    # also counts the contacts of geoms merged into the world.
+                    if body >= 0 or sensor_types[row] == "touch":
+                        sensor_bodies.add(body)
             for joint, joint_type in enumerate(self.joint_type):
                 merged = joint_type == JointType.FIXED and not (
                     self.joint_label[joint] in joints_to_keep or joint in joints_to_keep

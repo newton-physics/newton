@@ -8943,12 +8943,16 @@ class TestImportMjcfSensors(unittest.TestCase):
         self.assertEqual(model.custom_frequency_counts.get("mujoco:sensor", 0), 0)
         self.assertEqual(SolverMuJoCo(model, use_mujoco_cpu=True).mj_model.nsensor, 0)
 
-    def assert_sensors_match_native(self, mjcf: str, velocities, **solver_options) -> list[np.ndarray]:
+    def assert_sensors_match_native(
+        self, mjcf: str, velocities, collapse_fixed_joints: bool = False, **solver_options
+    ) -> list[np.ndarray]:
         """Compare converted sensors with native MuJoCo and return the native sensor data for each velocity."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
         native = mujoco.MjModel.from_xml_string(mjcf)
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf, parse_sensors=True)
+        if collapse_fixed_joints:
+            builder.collapse_fixed_joints()
         converted = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True, **solver_options).mj_model
         self.assertEqual(converted.nsensor, native.nsensor)
         for field in (
@@ -9064,25 +9068,31 @@ class TestImportMjcfSensors(unittest.TestCase):
 
     def test_later_collapse_rejects_merging_sensor_bodies(self):
         """Reject a later collapse that merges a body a sensor uses, and allow merges elsewhere."""
-        mjcf = """<mujoco><worldbody><body name="base"><freejoint/><geom size="0.1"/></body>
+        mjcf = """<mujoco><worldbody><site name="anchor" pos="0 0 1" size="0.2"/>
+          <body name="base"><freejoint/><geom size="0.1"/></body>
           <body name="other" pos="1 0 0"><freejoint/><geom size="0.1"/>
             <body name="cap" pos="0.2 0 0"><geom size="0.05"/><site name="pad" size="0.06"/></body>
-          </body></worldbody><sensor>{}</sensor></mujoco>"""
+          </body><body name="mount" pos="0 1 0"><geom size="0.1"/></body></worldbody><sensor>{}</sensor></mujoco>"""
         sensors = (
-            '<framepos objtype="xbody" objname="cap"/>',
-            '<touch site="pad"/>',
-            '<framepos objtype="body" objname="other"/>',
+            ('<framepos objtype="xbody" objname="cap"/>', "cap"),
+            ('<touch site="pad"/>', "cap"),
+            ('<framepos objtype="body" objname="other"/>', "cap"),
+            # Merging mount into the world makes its geoms count for a touch sensor on a world site.
+            ('<touch site="anchor"/>', "mount"),
         )
-        for sensor in sensors:
+        for sensor, body in sensors:
             builder = newton.ModelBuilder()
             builder.add_mjcf(mjcf.format(sensor), parse_sensors=True)
-            with self.subTest(sensor=sensor), self.assertRaisesRegex(ValueError, "would merge body '.*cap'"):
+            with self.subTest(sensor=sensor), self.assertRaisesRegex(ValueError, f"would merge body '.*{body}'"):
                 builder.collapse_fixed_joints()
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf.format('<framepos objtype="xbody" objname="base"/>'), parse_sensors=True)
         builder.collapse_fixed_joints()
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.custom_attributes["mujoco:sensor_body"].values, [0])
+        # Merging mount into the world leaves a world site's frame unchanged.
+        world_site = mjcf.format('<framepos objtype="site" objname="anchor"/>')
+        self.assert_sensors_match_native(world_site, ([0.0] * 12,), collapse_fixed_joints=True)
 
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):
