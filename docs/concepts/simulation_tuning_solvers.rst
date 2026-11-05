@@ -374,10 +374,11 @@ repository examples spend tuning effort, not a shared solver API.
        rejects the hydroelastic contacts that compliance needs. The propagation response rejects
        loop-closing joints, and falls back from bilateral pre-elimination to iterative mimic rows
        with a warning.
-       ``solve_mode="colored"`` supports sleeping, with or without contact compliance, and the
-       ``friction_mode`` values other than ``"fixed_normal"``, which it applies to the articulated
-       contacts on its propagation rows as well. ``"propagation"`` with ``solve_mode="serial"``
-       rejects sleeping and requires ``"fixed_normal"``.
+       ``solve_mode="colored"`` supports sleeping, with or without contact compliance, leaving
+       sleeping articulations out of its trees, and the ``friction_mode`` values other than
+       ``"fixed_normal"``, which it applies to the articulated contacts on its propagation rows as
+       well. ``"propagation"`` with ``solve_mode="serial"`` rejects sleeping and requires
+       ``"fixed_normal"``.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
