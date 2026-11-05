@@ -98,7 +98,7 @@ class TestUsdTransforms(unittest.TestCase):
         np.testing.assert_array_equal(usd.get_scale(prim, local=False, xform_cache=UsdGeom.XformCache()), expected)
 
     def test_quaternion_conversion_matches_warp_normalize(self):
-        """Convert USD quaternions to Warp's normalization within one float32 rounding step."""
+        """Convert USD quaternions bit-identically to Warp's normalization."""
         from pxr import Gf
 
         rng = np.random.default_rng(5)
@@ -108,8 +108,7 @@ class TestUsdTransforms(unittest.TestCase):
             for quat_type in (Gf.Quatf, Gf.Quatd):
                 value = quat_type(float(w), float(x), float(y), float(z))
                 expected = wp.normalize(wp.quat(*value.imaginary, value.real))
-                # Bit-identical on x86; compilers may fuse Warp's multiply-adds on other targets.
-                np.testing.assert_allclose(usd.value_to_warp(value), expected, rtol=2.0e-7, atol=1.0e-7)
+                np.testing.assert_array_equal(usd.value_to_warp(value), expected)
 
     def test_cached_world_scale_matches_uncached(self):
         """Reuse ancestors' authored scales without changing any world scale."""

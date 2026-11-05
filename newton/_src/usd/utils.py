@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import math
 import os
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 import warp as wp
 
+from ..core.host_transform import _builtin
 from ..core.types import Axis, AxisType
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import Gaussian
@@ -482,20 +484,14 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
 
 
 def _normalized_quat(x: float, y: float, z: float, w: float) -> wp.quat:
-    """Return ``wp.normalize(wp.quat(x, y, z, w))`` without a Warp builtin dispatch.
+    """Return ``wp.normalize(wp.quat(x, y, z, w))`` by calling Warp's native builtin directly.
 
-    Importing large scenes converts one rotation per prim, where the builtin dispatch
-    dominates. Float32 arithmetic in Warp's operation order matches its result to the
-    last bit unless the compiler fused Warp's multiply-adds.
+    Importing large scenes converts one rotation per prim, where resolving the
+    ``wp.normalize`` overload at Python scope dominates the cost.
     """
-    f32 = np.float32
-    with np.errstate(all="ignore"):
-        x, y, z, w = f32(x), f32(y), f32(z), f32(w)
-        length = f32(math.sqrt(f32(f32(f32(x * x) + f32(y * y)) + f32(z * z)) + f32(w * w)))
-        if length > f32(0.0):
-            inv_length = f32(1.0) / length
-            return wp.quat(x * inv_length, y * inv_length, z * inv_length, w * inv_length)
-    return wp.quat(0.0, 0.0, 0.0, 1.0)
+    result = wp.quat()
+    _builtin("wp_builtin_normalize_quatf")(wp.quat(x, y, z, w), ctypes.byref(result))
+    return result
 
 
 def value_to_warp(v: Any, warp_dtype: Any | None = None) -> Any:
