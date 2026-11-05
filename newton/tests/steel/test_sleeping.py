@@ -3,7 +3,6 @@
 
 """Experimental passive-island sleeping of SolverSteel."""
 
-import ctypes
 import functools
 import inspect
 import sys
@@ -21,7 +20,7 @@ from newton._src.solvers.steel.friction_patches import _FLOOD_MIN_CONTACTS
 from newton._src.solvers.steel.sleeping import _SleepState
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, capture_with_cuda_driver, get_cuda_test_devices
 
 DT = 0.005
 
@@ -2724,40 +2723,12 @@ def _capture_step(scene, mode):
 
         return replay, lambda: None
     # Capture that Warp does not track, as another framework's graph capture would start.
-    cuda = ctypes.CDLL("libcuda.so.1")
-    handle = ctypes.c_void_p
-    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
-    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
-    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
-    cuda.cuGraphLaunch.argtypes = [handle, handle]
-    cuda.cuGraphExecDestroy.argtypes = [handle]
-    cuda.cuGraphDestroy.argtypes = [handle]
-    stream = ctypes.c_void_p(wp.get_stream(device).cuda_stream)
-    graph, graph_exec = ctypes.c_void_p(), ctypes.c_void_p()
-    thread_local_mode = 1
-    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
-    assert began == 0, began
-    try:
-        solve()
-    finally:
-        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
-    assert ended == 0, ended
     # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
-    auto_free_on_launch = 1
-    instantiated = cuda.cuGraphInstantiateWithFlags(
-        ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)
-    )
-    assert instantiated == 0, instantiated
+    launch, release = capture_with_cuda_driver(device, solve, auto_free_on_launch=True)
 
     def replay():
         scene.pipeline.collide(scene.state_in, scene.contacts)
-        launched = cuda.cuGraphLaunch(graph_exec, stream)
-        assert launched == 0, launched
-        wp.synchronize_stream(wp.get_stream(device))
-
-    def release():
-        cuda.cuGraphExecDestroy(graph_exec)
-        cuda.cuGraphDestroy(graph)
+        launch()
 
     return replay, release
 

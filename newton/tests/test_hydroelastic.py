@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import ctypes
 import sys
 import time
 import unittest
@@ -32,6 +31,7 @@ from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     add_function_test,
+    capture_with_cuda_driver,
     get_selected_cuda_test_devices,
     get_test_devices,
 )
@@ -293,7 +293,7 @@ def test_scan_with_total_under_captures(test, device):
             wp.capture_while(condition, scan_once)
         captures["capture_while"] = lambda graph=capture.graph: (condition.fill_(1), wp.capture_launch(graph))
     if sys.platform.startswith("linux"):
-        captures["driver"], release = _driver_capture(device, scan)
+        captures["driver"], release = capture_with_cuda_driver(device, scan)
     try:
         for name, replay in captures.items():
             with test.subTest(capture=name):
@@ -310,44 +310,6 @@ def test_scan_with_total_under_captures(test, device):
     finally:
         if sys.platform.startswith("linux"):
             release()
-
-
-def _driver_capture(device, fn):
-    """Capture ``fn`` with the CUDA driver alone, as another framework would; return replay and release."""
-    cuda = ctypes.CDLL("libcuda.so.1")
-    handle = ctypes.c_void_p
-    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
-    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
-    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
-    cuda.cuGraphLaunch.argtypes = [handle, handle]
-    cuda.cuGraphExecDestroy.argtypes = [handle]
-    cuda.cuGraphDestroy.argtypes = [handle]
-    stream = handle(wp.get_stream(device).cuda_stream)
-    graph, graph_exec = handle(), handle()
-    thread_local_mode = 1
-    if cuda.cuStreamBeginCapture_v2(stream, thread_local_mode) != 0:
-        raise RuntimeError("cuStreamBeginCapture failed")
-    try:
-        fn()
-    finally:
-        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
-    if ended != 0:
-        raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
-    instantiated = cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(0))
-    if instantiated != 0:
-        cuda.cuGraphDestroy(graph)
-        raise RuntimeError(f"cuGraphInstantiateWithFlags failed with {instantiated}")
-
-    def replay():
-        launched = cuda.cuGraphLaunch(graph_exec, stream)
-        if launched != 0:
-            raise RuntimeError(f"cuGraphLaunch failed with {launched}")
-
-    def release():
-        cuda.cuGraphExecDestroy(graph_exec)
-        cuda.cuGraphDestroy(graph)
-
-    return replay, release
 
 
 # --- Helper functions ---
