@@ -163,6 +163,11 @@ RTX applies UVs supplied with a replacement image, including to its instances.
 Changing only UVs while reusing the same image object or file path is not
 supported.
 These updates are intended for occasional appearance changes, not video textures.
+Distinct image contents create separate PNG files. USD keeps those files next
+to the exported stage. RTX keeps them in its private temporary directory until
+the viewer closes, so many unique replacements can use substantial disk space
+during a session. Reuse a fixed set of image arrays or file paths for bounded
+texture variation.
 
 :class:`~newton.viewer.ViewerFile` records deformable visual meshes and
 simulation state without evaluating them. JSON and binary recordings rebuild
