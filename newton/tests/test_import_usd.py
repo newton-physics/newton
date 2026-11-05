@@ -8891,7 +8891,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_converted_world_weld_frames_follow_the_import_xform(self):
-        """A converted USD weld to the world holds its body at the weld's target, placed by the import transform."""
+        """Hold a USD weld's body at the weld's target, placed by the import transform, in the converted frames."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         def gf_quat(q):
@@ -14834,7 +14834,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
 
 
 def test_converted_mjc_equality_weld_closes_its_loop_in_steel(test, device):
-    """The loop joint converted from a USD weld holds the weld's own frames together in SolverSteel."""
+    """Hold a USD weld's own frames together in SolverSteel through the loop joint converted from it."""
     steps = 300
     for target in ("body", "site", "rotated site"):
         with test.subTest(target=target):

@@ -769,7 +769,7 @@ def test_disabled_tree_joint_is_reported(test, device):
 
 
 def test_imported_weld_equality_holds_the_authored_pose(test, device):
-    """An imported MuJoCo WELD on a tilted body holds it where it is authored instead of snapping it to the world axes."""
+    """Hold a tilted body where an imported MuJoCo WELD authors it instead of snapping it to the world axes."""
     mjcf = """
     <mujoco>
       <worldbody>
@@ -799,7 +799,7 @@ def test_imported_weld_equality_holds_the_authored_pose(test, device):
 
 
 def test_imported_weld_with_zero_torquescale_leaves_rotation_free(test, device):
-    """A MuJoCo weld with torquescale 0 pins only its anchor: welded at the hinge, the paddle swings as a pendulum."""
+    """Pin only the anchor of a MuJoCo weld with torquescale 0, so a paddle welded at its hinge swings freely."""
     mjcf = """
     <mujoco>
       <worldbody>

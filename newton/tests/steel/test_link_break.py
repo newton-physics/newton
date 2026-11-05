@@ -229,7 +229,7 @@ def _four_bar_reference(t_end, dt=2.0e-4, theta0_deg=60.0):
 
 
 def test_weld_loop_holds_a_hinge(test, device):
-    """A FIXED loop joint between two hinged links locks their relative rotation; without it the hinge swings."""
+    """Lock two hinged links' relative rotation with a FIXED loop joint; without it the hinge swings."""
 
     def build(weld):
         b = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, -9.81))
@@ -280,7 +280,7 @@ def test_weld_loop_holds_a_hinge(test, device):
 
 
 def test_link_break_four_bar_matches_joint_break_early(test, device):
-    """Link-break and joint-break follow the same four-bar motion while it is slow (first 0.1 s) and keep loops shut."""
+    """Follow the joint-break four-bar with link-break while the motion is slow (first 0.1 s), keeping loops shut."""
     series = {}
     for closure in ("link", "joint"):
         builder, body, com, hinges, _ = _four_bar(closure)
@@ -297,7 +297,7 @@ def test_link_break_four_bar_matches_joint_break_early(test, device):
 
 
 def test_link_break_four_bar_tracks_ground_truth(test, device):
-    """Link-break follows the analytic four-bar to first order in dt, and its loop gap shrinks like dt^2.
+    """Track the analytic four-bar to first order in dt with link-break, with a loop gap that shrinks like dt^2.
 
     The crank falls from 60 deg to -40 deg in 0.25 s. Halving the step must roughly halve the peak crank-angle error
     against ``_four_bar_reference`` and quarter the peak anchor gap.
@@ -368,7 +368,7 @@ def _four_bar_link_break_stage():
 
 
 def test_link_break_four_bar_from_usd(test, device):
-    """A link-break four-bar authored in USD imports as one articulation plus the weld and moves like the built one."""
+    """Import a link-break four-bar from USD as one articulation plus the weld that moves like the built one."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, -9.81))
     builder.add_usd(_four_bar_link_break_stage())
     usd_model = builder.finalize(device=device)
@@ -469,7 +469,7 @@ def _momentum_drift(model, q_index, steps=250, dt=1.0e-3):
 
 
 def test_link_break_floating_loop_conserves_momentum(test, device):
-    """An internally driven free-floating loop starts at rest, so its momentum should stay zero.
+    """Keep the momentum of an internally driven free-floating loop that starts at rest near zero.
 
     Neither closure style is exact (Steel leaks some linear momentum through the loop rows), so this guards the
     measured ordering at a 1 ms step: link-break, cut opposite the heaviest link with two short branches, leaks several
@@ -486,7 +486,7 @@ def test_link_break_floating_loop_conserves_momentum(test, device):
 
 
 def test_link_break_drives_the_loop_closing_joint(test, device):
-    """With link-break the closing hinge C keeps its coordinate and can carry a PD drive (joint-break cannot)."""
+    """Drive the loop-closing hinge C, which keeps its coordinate with link-break (joint-break cannot)."""
     builder, body, com, hinges, j_c = _four_bar("link", gravity=0.0)
     dof = builder.joint_qd_start[j_c]
     builder.joint_target_ke[dof] = 20.0
@@ -501,7 +501,7 @@ def test_link_break_drives_the_loop_closing_joint(test, device):
 
 
 def test_link_break_preelimination_falls_back(test, device):
-    """Pre-elimination takes one weld (6 rows); a second weld in the articulation exceeds its 8 rows and falls back."""
+    """Pre-eliminate one weld (6 rows), and fall back when a second weld exceeds the 8-row capacity."""
     builder, body, com, hinges, _ = _four_bar("link")
     model = builder.finalize(device=device)
     with warnings.catch_warnings():
@@ -526,7 +526,7 @@ def test_link_break_preelimination_falls_back(test, device):
 
 
 def test_weld_to_world_returns_the_short_way(test, device):
-    """A free body welded to the world 170 deg off about an oblique axis returns along the short way.
+    """Return a free body welded to the world 170 deg off about an oblique axis along the short way.
 
     The planar four-bars leave the x/z rotation rows and the y point row of a weld inert; this loads all six rows. The
     weld anchor is off the COM and the inertia is anisotropic, so the point and rotation rows are coupled.
@@ -562,7 +562,7 @@ def test_weld_to_world_returns_the_short_way(test, device):
 
 class TestSteelLinkBreak(unittest.TestCase):
     def test_collapse_fixed_joints_warns_on_a_weld_closure(self):
-        """Collapsing fixed joints opens a link-break loop, so it warns; a joint-break loop collapses quietly."""
+        """Warn when collapsing would open a link-break loop; collapse a joint-break loop and a MuJoCo weld quietly."""
         builder, *_ = _four_bar("link")
         with self.assertWarnsRegex(
             newton.exceptions.NewtonWarning, r"does not preserve FIXED loop-closing joints \('coupler_weld'\)"

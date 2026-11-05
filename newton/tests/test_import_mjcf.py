@@ -6291,7 +6291,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         np.testing.assert_allclose(converted_solver.mj_model.eq_solimp, legacy_solver.mj_model.eq_solimp, atol=1e-6)
 
     def test_converted_weld_loop_joint_frames_follow_mujoco(self):
-        """Converted welds keep the reference relative pose, or the authored relpose of body2 in body1's frame."""
+        """Keep the reference relative pose, or body2's authored relpose in body1's frame, in converted weld frames."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="weld_frames">
     <worldbody>
@@ -6357,7 +6357,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         assert_same_pose(wp.transform_multiply(x_p, wp.transform_inverse(x_c)), wp.transform_inverse(relpose))
 
     def test_converted_weld_frames_follow_import_xform_and_scale(self):
-        """Converted weld frames hold MuJoCo's weld targets after an import transform and scale."""
+        """Hold MuJoCo's weld targets in converted weld frames after an import transform and scale."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="weld_xform">
     <worldbody>
@@ -6430,7 +6430,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             np.testing.assert_allclose(np.array(wp.transform_point(builder.body_q[c], x_c.p)), pivot, atol=1e-5)
 
     def test_converted_weld_torquescale_selects_the_loop_joint(self):
-        """torquescale 0 converts a weld to a BALL loop joint on its anchor, other values to FIXED; both log unless 1."""
+        """Convert a weld to a BALL loop joint on its anchor for torquescale 0 and to FIXED otherwise, logging unless 1."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="weld_ts">
     <worldbody>
