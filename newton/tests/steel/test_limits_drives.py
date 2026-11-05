@@ -1724,9 +1724,7 @@ class TestSteelJointFriction(unittest.TestCase):
 
     def test_friction_and_ground_contact(self):
         """Hold a vertical slider against gravity, or let it fall onto the ground and rest, on both contact routes."""
-        for response, (friction, falls) in itertools.product(
-            ("immediate", "colored"), ((15.0, False), (5.0, True))
-        ):
+        for response, (friction, falls) in itertools.product(("immediate", "colored"), ((15.0, False), (5.0, True))):
             with self.subTest(response=response, friction=friction):
                 model = _vertical_slider_model(mass=1.0, half=0.1, friction=friction)
                 pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
