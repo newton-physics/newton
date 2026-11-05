@@ -4090,7 +4090,8 @@ class TestTorsionSweepLinks(unittest.TestCase):
             contact_torsion=True,
             torsion_links=True,
         )
-        wp.load_module(kernel.module, device=device)
+        # The solver launches this kernel with one warp per block, which sets its tile storage.
+        wp.load_module(kernel.module, device=device, block_dim=32)
 
     def test_large_capacity_falls_back(self):
         """Select the scan when the lists exceed the static limit; the forced-fallback test above solves with it."""
