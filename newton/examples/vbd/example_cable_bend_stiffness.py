@@ -1,34 +1,36 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Bend Stiffness Validation
-#
-# Three horizontal cantilever cables sit side by side along Y. Each cable has
-# the same geometry, stretch stiffness, and load, but a different bend
-# stiffness. The root body is kinematic; the tip body receives the same
-# transverse force in -Z.
-#
-# After settling, the example asserts the bend response:
-#
-#     delta_i * k_bend_i  must be approximately constant across cables.
-#
-# This is the primary check. It avoids depending on a continuum constant-factor
-# calibration and verifies the discrete cable path behaves like a linear bend
-# spring with the correct stiffness ratios.
-#
-# Other assertions:
-#   - Deflection decreases monotonically as bend stiffness increases.
-#   - Tip stays close to its original Y, so the bend load does not leak sideways.
-#   - Tip X foreshortening remains within a geometric bound.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness --test --viewer null
-#
-###########################################################################
+"""Cable Bend Stiffness Validation
+
+Three horizontal cantilever cables sit side by side along Y. Each cable has
+the same geometry, stretch stiffness, and load, but a different bend
+stiffness. The root body is kinematic; the tip body receives the same
+transverse force in -Z.
+
+After settling, the example asserts the bend response:
+
+    delta_i * k_bend_i  must be approximately constant across cables.
+
+This is the primary check. It avoids depending on a continuum constant-factor
+calibration and verifies the discrete cable path behaves like a linear bend
+spring with the correct stiffness ratios.
+
+Other assertions:
+  - Deflection decreases monotonically as bend stiffness increases.
+  - Tip stays close to its original Y, so the bend load does not leak sideways.
+  - Tip X foreshortening remains within a geometric bound.
+
+Success criteria:
+- Three cantilever cables receive the same transverse tip load while their roots remain fixed.
+- After the load ramp and hold, larger bend stiffness produces smaller deflection; tip deflection
+  times bend stiffness is approximately equal across the cables.
+- The tips bend downward without appreciable sideways drift or axial stretching; inspect the held
+  response for persistent jitter.
+
+Runs:
+- `python -m newton.examples cable_bend_stiffness`
+"""
 
 import numpy as np
 import warp as wp
@@ -74,13 +76,13 @@ class Example:
         for i, bend_stiffness in enumerate(self.BEND_STIFFNESS_VALUES):
             y_pos = (i - (self.num_cables - 1) * 0.5) * self.Y_SEPARATION
             start = wp.vec3(0.0, y_pos, 0.0)
-            points = newton.utils.cable_straight_points(
+            rod = newton.Rod.create_straight(
                 start=start,
                 direction=wp.vec3(1.0, 0.0, 0.0),
                 length=self.cable_length,
-                num_segments=self.NUM_ELEMENTS,
+                segment_count=self.NUM_ELEMENTS,
+                radius=self.CABLE_RADIUS,
             )
-            quats = newton.utils.rod_parallel_transport_quaternions(points)
 
             # Twist != bend exercises the split stiffness path while the applied
             # load remains pure bending.
@@ -89,16 +91,13 @@ class Example:
             twist_damping = twist_stiffness
 
             rod_bodies, _ = builder.add_rod(
-                positions=points,
-                quaternions=quats,
-                radius=self.CABLE_RADIUS,
+                rod=rod,
                 stretch_stiffness=1.0e6,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 twist_stiffness=twist_stiffness,
                 twist_damping=twist_damping,
                 label=f"cantilever_k{int(bend_stiffness)}",
-                body_frame_origin="com",
             )
             # Zero mass + zero inertia in Newton's VBD makes the root kinematic.
             root_body = rod_bodies[0]
@@ -112,7 +111,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

@@ -7,6 +7,12 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
+from ...geometry.tri_mesh_collision import (
+    TriMeshCollisionInfo,
+    get_edge_colliding_edges_count,
+    get_vertex_colliding_triangles_count,
+)
 from ...math import quat_velocity
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -14,7 +20,6 @@ from .particle_vbd_kernels import (
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
 from .rigid_vbd_kernels import _NUM_CONTACT_THREADS_PER_BODY, _eval_body_particle_contact, _eval_soft_ef_contact
-from .tri_mesh_collision import TriMeshCollisionInfo
 
 wp.set_module_options({"enable_backward": False})
 
@@ -138,6 +143,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -153,15 +159,15 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
+    contact_filter: _SoftContactFilterData,
     out_body_f: wp.array[wp.spatial_vector],
 ):
-    """Sum the body-side soft-contact reaction the destination solve applied to each proxy body.
+    """Evaluate the body-side soft-contact reaction at each proxy body's feedback state.
 
-    Walks the per-body adjacency list, and truncates it at the same per-body capacity as
-    ``accumulate_body_particle_contacts_per_body``. A body carrying more soft contacts than the
-    list holds is pushed by only the records the list kept, so harvesting the whole contact
-    stream would hand the source solver a reaction the destination never applied -- momentum the
-    coupled pair would then disagree about, growing with the size of the overflow.
+    Walks the per-body adjacency list, falling back to all stored contacts on overflow,
+    just like ``accumulate_body_particle_contacts_per_body``. Eligibility is
+    recomputed at the supplied positions with the same predicate as force evaluation;
+    this is a force evaluation, not the impulse integrated across earlier iterations.
     """
     tid = wp.tid()
     body_idx = tid // _NUM_CONTACT_THREADS_PER_BODY
@@ -174,13 +180,14 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     if proxy_global < 0 or proxy_global >= out_body_f.shape[0]:
         return
 
+    max_contacts = wp.min(body_particle_contact_count[0], body_particle_contact_shape.shape[0])
     num_contacts = body_particle_contact_counts[body_idx]
-    if num_contacts > body_particle_contact_buffer_pre_alloc:
-        num_contacts = body_particle_contact_buffer_pre_alloc
+    overflow = num_contacts > body_particle_contact_buffer_pre_alloc
+    if overflow:
+        num_contacts = max_contacts
     if num_contacts == 0:
         return
 
-    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
     com_world = wp.transform_point(body_q[body_idx], body_com[body_idx])
 
     force_acc = wp.vec3(0.0)
@@ -188,9 +195,17 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
 
     i = thread_id_within_body
     while i < num_contacts:
-        contact_idx = body_particle_contact_indices[body_idx * body_particle_contact_buffer_pre_alloc + i]
+        contact_idx = i
+        if not overflow:
+            contact_idx = body_particle_contact_indices[body_idx * body_particle_contact_buffer_pre_alloc + i]
         i += _NUM_CONTACT_THREADS_PER_BODY
         if contact_idx >= max_contacts:
+            continue
+        if overflow:
+            shape_idx = body_particle_contact_shape[contact_idx]
+            if shape_idx < 0 or shape_body[shape_idx] != body_idx:
+                continue
+        if not _soft_contact_force_enabled(contact_idx, contact_filter):
             continue
 
         corners = soft_contact_indices[contact_idx]
@@ -221,6 +236,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
             body_particle_contact_normal,
             shape_margin,
             dt,
+            rigid_body_particle_contact_use_log_barrier,
         )
 
         force_on_body = -force_on_particle
@@ -305,8 +321,10 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     active_particle_flag: int,
     proxy_particle_flag: int,
     friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
     particle_radius: wp.array[float],
     body_particle_contact_count: wp.array[int],
+    contact_filter: _SoftContactFilterData,
     body_particle_contact_particle: wp.array[int],
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
@@ -345,6 +363,8 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     body_idx = shape_body[shape_idx]
     if not _vbd_body_is_dynamic_nonproxy(body_idx, body_flags, body_inv_mass, proxy_body_flag):
         return
+    if not _soft_contact_force_enabled(contact_idx, contact_filter):
+        return
 
     body_contact_force, _ = _eval_body_particle_contact(
         particle_idx,
@@ -367,6 +387,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         body_particle_contact_normal,
         shape_margin,
         dt,
+        rigid_body_particle_contact_use_log_barrier,
     )
     _vbd_add_proxy_particle_force(particle_idx, body_contact_force, particle_local_to_proxy_global, out_particle_f)
 
@@ -383,7 +404,7 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
     proxy_particle_flag: int,
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -393,8 +414,6 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
     out_particle_f: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
@@ -402,7 +421,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
         e1_idx = primitive_id
         collision_buffer_counter = t_id_current_primitive
         collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.edge_colliding_edges_buffer_sizes[primitive_id]:
+        collision_count = get_edge_colliding_edges_count(collision_info, primitive_id)
+        while collision_buffer_counter < collision_count:
             e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
 
             if e1_idx != -1 and e2_idx != -1:
@@ -453,7 +473,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
         particle_idx = primitive_id
         collision_buffer_counter = t_id_current_primitive
         collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.vertex_colliding_triangles_buffer_sizes[primitive_id]:
+        collision_count = get_vertex_colliding_triangles_count(collision_info, primitive_id)
+        while collision_buffer_counter < collision_count:
             tri_idx = collision_info.vertex_colliding_triangles[
                 (collision_buffer_offset + collision_buffer_counter) * 2 + 1
             ]

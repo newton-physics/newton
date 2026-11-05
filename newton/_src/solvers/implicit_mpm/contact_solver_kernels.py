@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warp as wp
+import warp.fem as fem
 import warp.sparse as sp
 
 wp.set_module_options({"enable_backward": False})
@@ -185,6 +186,8 @@ def apply_subgrid_impulse(
     u_i = wp.tid()
     block_beg = tr_collider_mat_offsets[u_i]
     block_end = tr_collider_mat_offsets[u_i + 1]
+    if block_beg == block_end:
+        return
 
     delta_f = wp.vec3(0.0)
     for b in range(block_beg, block_end):
@@ -278,3 +281,197 @@ def solve_subgrid_friction(
 
     impulse[i] += delta_lambda
     delta_impulse[i] = delta_lambda
+
+
+@wp.kernel
+def compute_collider_unsplit_diagonal(
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    values: wp.array[float],
+    inv_volume: wp.array[float],
+    collider_inv_mass: wp.array[float],
+    diagonal: wp.array[float],
+):
+    i = wp.tid()
+    # Grid nodes use GS; rigid-body feedback remains mass-split between sweeps.
+    w = collider_inv_mass[i]
+    for b in range(offsets[i], offsets[i + 1]):
+        w += values[b] * values[b] * inv_volume[columns[b]]
+    diagonal[i] = w
+
+
+@wp.func
+def _solve_cell_contacts_gs_generic(
+    cell: int,
+    cell_offsets: wp.array[int],
+    cell_rows: wp.array[int],
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    values: wp.array[float],
+    friction: wp.array[float],
+    adhesion: wp.array[float],
+    normal: wp.array[wp.vec3],
+    diagonal: wp.array[float],
+    boundary_velocity: wp.array[wp.vec3],
+    inv_volume: wp.array[float],
+    velocity: wp.array[wp.vec3],
+    impulse: wp.array[wp.vec3],
+    delta_impulse: wp.array[wp.vec3],
+):
+    # Same-cell contacts overlap, so update them sequentially with the true diagonal.
+    for entry in range(cell_offsets[cell], cell_offsets[cell + 1]):
+        i = cell_rows[entry]
+        w = diagonal[i]
+        if w > 0.0 and friction[i] >= 0.0:
+            u0 = -boundary_velocity[i]
+            for b in range(offsets[i], offsets[i + 1]):
+                u0 += values[b] * velocity[columns[b]]
+            n = normal[i]
+            u = solve_coulomb_isotropic(friction[i], n, u0 - (impulse[i] + adhesion[i] * n) * w)
+            delta = (u - u0) / w
+            impulse[i] += delta
+            delta_impulse[i] = delta
+            for b in range(offsets[i], offsets[i + 1]):
+                node = columns[b]
+                velocity[node] += inv_volume[node] * values[b] * delta
+
+
+_ContactScalar8 = wp.types.vector(length=8, dtype=float)
+_ContactIndex8 = wp.types.vector(length=8, dtype=int)
+
+
+@wp.func
+def solve_cell_contacts_gs(
+    cell: int,
+    cell_offsets: wp.array[int],
+    cell_rows: wp.array[int],
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    values: wp.array[float],
+    friction: wp.array[float],
+    adhesion: wp.array[float],
+    normal: wp.array[wp.vec3],
+    diagonal: wp.array[float],
+    boundary_velocity: wp.array[wp.vec3],
+    inv_volume: wp.array[float],
+    velocity: wp.array[wp.vec3],
+    impulse: wp.array[wp.vec3],
+    delta_impulse: wp.array[wp.vec3],
+):
+    beg = cell_offsets[cell]
+    end = cell_offsets[cell + 1]
+    if beg == end:
+        return
+
+    first = cell_rows[beg]
+    full_rows = bool(True)
+    for entry in range(beg, end):
+        row = cell_rows[entry]
+        if offsets[row + 1] - offsets[row] != 8:
+            full_rows = False
+    if not full_rows:
+        _solve_cell_contacts_gs_generic(
+            cell,
+            cell_offsets,
+            cell_rows,
+            offsets,
+            columns,
+            values,
+            friction,
+            adhesion,
+            normal,
+            diagonal,
+            boundary_velocity,
+            inv_volume,
+            velocity,
+            impulse,
+            delta_impulse,
+        )
+        return
+
+    # Full eight-node rows in one cell share its sorted velocity nodes.
+    # Cache them across the sequential local contacts, scattering only once.
+    nodes = _ContactIndex8()
+    mass = _ContactScalar8()
+    vx = _ContactScalar8()
+    vy = _ContactScalar8()
+    vz = _ContactScalar8()
+    for k in range(8):
+        node = columns[offsets[first] + k]
+        nodes[k] = node
+        mass[k] = inv_volume[node]
+        v = velocity[node]
+        vx[k] = v[0]
+        vy[k] = v[1]
+        vz[k] = v[2]
+
+    for entry in range(beg, end):
+        i = cell_rows[entry]
+        w = diagonal[i]
+        if w > 0.0 and friction[i] >= 0.0:
+            weights = _ContactScalar8()
+            for k in range(8):
+                weights[k] = values[offsets[i] + k]
+            u0 = wp.vec3(wp.dot(weights, vx), wp.dot(weights, vy), wp.dot(weights, vz)) - boundary_velocity[i]
+            n = normal[i]
+            u = solve_coulomb_isotropic(friction[i], n, u0 - (impulse[i] + adhesion[i] * n) * w)
+            delta = (u - u0) / w
+            impulse[i] += delta
+            delta_impulse[i] = delta
+            mw = wp.cw_mul(mass, weights)
+            vx += mw * delta[0]
+            vy += mw * delta[1]
+            vz += mw * delta[2]
+
+    for k in range(8):
+        velocity[nodes[k]] = wp.vec3(vx[k], vy[k], vz[k])
+
+
+@wp.struct
+class ColoredContacts:
+    """Particle contact rows grouped by strain cell, solved within the colored strain sweep."""
+
+    cell_offsets: wp.array[int]
+    cell_rows: wp.array[int]
+    offsets: wp.array[int]
+    columns: wp.array[int]
+    values: wp.array[float]
+    friction: wp.array[float]
+    adhesion: wp.array[float]
+    normal: wp.array[wp.vec3]
+    diagonal: wp.array[float]
+    boundary_velocity: wp.array[wp.vec3]
+    impulse: wp.array[wp.vec3]
+    delta_impulse: wp.array[wp.vec3]
+
+
+def make_solve_colored_cell_contacts(nodes_per_cell: int):
+    """Solve one strain cell's contact rows, caching eight-node cells in registers."""
+    solve_cell = solve_cell_contacts_gs if nodes_per_cell == 8 else _solve_cell_contacts_gs_generic
+
+    @fem.cache.dynamic_func(suffix=nodes_per_cell)
+    def solve_colored_cell_contacts(
+        cell: int,
+        contacts: ColoredContacts,
+        inv_volume: wp.array[float],
+        velocity: wp.array[wp.vec3],
+    ):
+        wp.static(solve_cell)(
+            cell,
+            contacts.cell_offsets,
+            contacts.cell_rows,
+            contacts.offsets,
+            contacts.columns,
+            contacts.values,
+            contacts.friction,
+            contacts.adhesion,
+            contacts.normal,
+            contacts.diagonal,
+            contacts.boundary_velocity,
+            inv_volume,
+            velocity,
+            contacts.impulse,
+            contacts.delta_impulse,
+        )
+
+    return solve_colored_cell_contacts

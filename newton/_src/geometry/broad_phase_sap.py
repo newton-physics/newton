@@ -23,6 +23,7 @@ from .broad_phase_common import (
     check_aabb_overlap_moving,
     is_pair_excluded,
     is_shape_pair_immovable_filtered,
+    is_shape_pair_same_body_filtered,
     precompute_world_map,
     test_group_pair,
     test_world_and_group_pair,
@@ -125,7 +126,7 @@ def _create_tile_sort_kernel(tile_size: int):
         A Warp kernel that performs segmented tile-based sorting
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def tile_sort_kernel(
         sap_projection_lower: wp.array[float],
         sap_sort_index: wp.array[int],
@@ -289,6 +290,9 @@ def _process_single_sap_pair(
 ):
     shape1 = pair[0]
     shape2 = pair[1]
+
+    if is_shape_pair_same_body_filtered(shape1, shape2, shape_body):
+        return
 
     if is_shape_pair_immovable_filtered(shape1, shape2, shape_body, body_flags, include_static_kinematic_pairs):
         return
@@ -563,7 +567,7 @@ class BroadPhaseSAP:
                 segmented sorting; a single segment uses equivalent ordinary radix sorting.
                 Use ``"tile"`` for tile-based
                 sorting via ``wp.tile_sort``, or ``"auto"`` to use one of
-                three bounded tile sizes for medium-sized worlds.
+                five bounded tile sizes for worlds with up to 512 shapes.
             tile_block_dim: Block dimension for tile-based sorting (optional, auto-calculated if None).
                 If None, will be set to next power of 2 >= ``max_shapes_per_world``, capped at 512.
                 Minimum value is 32 (required by wp.tile_sort). If provided, will be clamped to [32, 1024].
@@ -617,14 +621,18 @@ class BroadPhaseSAP:
             self.max_shapes_per_world = max(self.max_shapes_per_world, num_shapes)
             start_idx = end_idx
 
-        # The collision pipeline uses auto mode. Restrict it to three fixed
+        # The collision pipeline uses auto mode. Restrict it to five fixed
         # tile sizes so arbitrary model sizes cannot create arbitrary kernel
-        # variants, and keep padding at or below 2x. Small and large worlds retain
-        # the general segmented sort.
+        # variants. Small worlds avoid segmented-sort overhead with 32/64 tiles;
+        # empty and large worlds retain the general segmented sort.
         if self.sort_type == "auto":
-            if 64 <= self.max_shapes_per_world <= 512:
+            if 1 <= self.max_shapes_per_world <= 512:
                 self.sort_type = "tile"
-                if self.max_shapes_per_world <= 128:
+                if self.max_shapes_per_world <= 32:
+                    self.max_shapes_per_world = 32
+                elif self.max_shapes_per_world < 64:
+                    self.max_shapes_per_world = 64
+                elif self.max_shapes_per_world <= 128:
                     self.max_shapes_per_world = 128
                 elif self.max_shapes_per_world <= 256:
                     self.max_shapes_per_world = 256
@@ -660,7 +668,7 @@ class BroadPhaseSAP:
         self.sap_range = wp.zeros(total_elements, dtype=wp.int32, device=device)
         self.sap_cumulative_sum = wp.zeros(total_elements, dtype=wp.int32, device=device)
 
-        # Segment indices for segmented sort (needed for graph capture)
+        # Segment indices for the multi-world segmented sort
         # [0, max_shapes_per_world, 2*max_shapes_per_world, ..., world_count*max_shapes_per_world]
         segment_indices_np = np.array(
             [i * self.max_shapes_per_world for i in range(self.world_count + 1)], dtype=np.int32
@@ -716,11 +724,11 @@ class BroadPhaseSAP:
                 the counter was zeroed by a preceding fused kernel).  Defaults to False so
                 the launch remains self-contained.
             shape_body: Optional array mapping each shape to its body index. Negative body indices are static shapes.
-                Omitting this array disables immovable-pair filtering for expert callers.
+                Omitting this array disables same-body and immovable-pair filtering for expert callers.
             body_flags: Optional body flag array used to identify kinematic bodies. An empty array is valid for
                 an all-static model when ``shape_body`` is provided.
-            include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
-                ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            include_static_kinematic_pairs: Whether to include static-kinematic and kinematic-kinematic pairs.
+                Set to ``False`` to filter those pairs. Static-static pairs are always filtered.
             shape_displacement: Optional world-space displacement of each shape over the collision-update interval
                 ``dt``,
                 used for speculative-contact swept-AABB tests [m]. See
@@ -747,18 +755,11 @@ class BroadPhaseSAP:
 
         if device is None:
             device = shape_lower.device
-        device_obj = wp.get_device(device)
 
         if shape_count < 0 or shape_count > shape_lower.shape[0]:
             raise ValueError(f"shape_count must be in [0, {shape_lower.shape[0]}], got {shape_count}")
 
-        # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
-        if shape_gap is None:
-            shape_gap = wp.empty(0, dtype=wp.float32, device=device)
-        if shape_body is None:
-            shape_body = wp.empty(0, dtype=wp.int32, device=device)
-        if body_flags is None:
-            body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        # Warp passes None arrays as zero-sized descriptors to the kernels.
         if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
             raise ValueError(
                 "shape_displacement length must match the shape bounds "
@@ -774,9 +775,9 @@ class BroadPhaseSAP:
                 )
             projection_limit = sort_axis_displacement_limit
 
-        # Exclusion filter: empty array and 0 when not provided or empty
+        # Exclusion filter: null array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
-            filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
+            filter_pairs_arr = None
             n_filter = 0
         else:
             filter_pairs_arr = filter_pairs
@@ -821,7 +822,7 @@ class BroadPhaseSAP:
                 device=device,
                 record_tape=False,
             )
-        elif self.world_count == 1 and not device_obj.is_capturing:
+        elif self.world_count == 1:
             # A single segment does not need segmented-sort bookkeeping.
             wp.utils.radix_sort_pairs(
                 keys=self.sap_projection_lower,
@@ -829,9 +830,6 @@ class BroadPhaseSAP:
                 count=self.max_shapes_per_world,
             )
         else:
-            # Warp versions before 1.17 may resize radix-sort scratch storage
-            # during CUDA graph capture (NVIDIA/warp#1373). Retain the
-            # capture-safe segmented path for a single segment while capturing.
             # The count is the number of actual elements to sort (not including scratch space)
             wp.utils.segmented_sort_pairs(
                 keys=self.sap_projection_lower,

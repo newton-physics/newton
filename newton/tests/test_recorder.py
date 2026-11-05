@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -195,6 +197,7 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_capsule(body)
+    builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
     model = builder.finalize(device=device)
 
     # Create recorder with ring buffer (capacity 3)
@@ -226,14 +229,25 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
         # Should have loaded the 3 states that were saved
         test.assertEqual(len(new_recorder.history), 3)
 
-        # Test that we can create a new model and restore it
-        restored_model = newton.Model(device=device)
-        new_recorder.playback_model(restored_model)
+        edge_names = ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range")
+        for legacy_names in (False, True):
+            with test.subTest(legacy_names=legacy_names):
+                if legacy_names:
+                    for name in edge_names:
+                        new_recorder.deserialized_model[name] = new_recorder.deserialized_model.pop(f"_{name}")
+                restored_model = newton.Model(device=device)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+                    new_recorder.playback_model(restored_model)
 
-        # Basic model validation
-        test.assertEqual(restored_model.body_count, model.body_count)
-        test.assertEqual(restored_model.joint_count, model.joint_count)
-        test.assertEqual(restored_model.shape_count, model.shape_count)
+                test.assertEqual(restored_model.body_count, model.body_count)
+                test.assertEqual(restored_model.joint_count, model.joint_count)
+                test.assertEqual(restored_model.shape_count, model.shape_count)
+                for name in edge_names:
+                    original = getattr(model, f"_{name}")
+                    restored = getattr(restored_model, f"_{name}")
+                    test.assertIsNotNone(restored, name)
+                    np.testing.assert_array_equal(restored.numpy(), original.numpy(), err_msg=name)
 
         # Test state history comparison
         for original_state_data, loaded_state_data in zip(recorder.history, new_recorder.history, strict=False):
@@ -539,9 +553,14 @@ def test_warp_dtype_roundtrip(test: TestRecorder, device):
             # Create test array with random data
             arr = wp.zeros(shape, dtype=dtype, device=device)
 
-            # Fill with non-zero values to verify data integrity
+            # Fill with representative values to verify data integrity.
             np_data = arr.numpy()
-            np_data[:] = rng.standard_normal(np_data.shape).astype(np_data.dtype)
+            if np.issubdtype(np_data.dtype, np.bool_):
+                np_data[:] = rng.integers(0, 2, size=np_data.shape, dtype=np.uint8).astype(np_data.dtype)
+            elif np.issubdtype(np_data.dtype, np.integer):
+                np_data[:] = rng.integers(1, 10, size=np_data.shape, dtype=np_data.dtype)
+            else:
+                np_data[:] = rng.standard_normal(np_data.shape).astype(np_data.dtype)
             arr = wp.array(np_data, dtype=dtype, device=device)
 
             # Serialize
@@ -678,7 +697,7 @@ def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
     mesh_b.vertices = mesh_a.vertices
     mesh_b.indices = mesh_a.indices
 
-    serialized = pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())
+    serialized = json.loads(json.dumps(pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())))
     restored = depointer_as_key(serialized, cache=ArrayCache())
 
     test.assertIs(restored[0], restored[2])
@@ -781,6 +800,11 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
                 test.assertEqual(restored_model.body_count, model.body_count)
                 test.assertEqual(restored_model.joint_count, model.joint_count)
                 test.assertEqual(restored_model.shape_count, model.shape_count)
+
+                for attr_name in ("joint_stiffness", "joint_rest_q"):
+                    np.testing.assert_array_equal(
+                        getattr(restored_model, attr_name).numpy(), getattr(model, attr_name).numpy()
+                    )
 
                 # Verify MuJoCo attributes loaded (these use dynamic vec5 types).
                 # SolverMuJoCo.register_custom_attributes guarantees ``model.mujoco`` and

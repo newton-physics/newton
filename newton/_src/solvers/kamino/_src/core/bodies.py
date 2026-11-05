@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import warp as wp
 
-from .....core.types import override
 from .....sim import BodyFlags
-from .types import Descriptor
 
 ###
 # Module interface
@@ -20,13 +18,14 @@ from .types import Descriptor
 __all__ = [
     "RigidBodiesData",
     "RigidBodiesModel",
-    "RigidBodyDescriptor",
+    "compute_body_acceleration",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
     "convert_geom_offset_origin_to_com",
     "has_zero_inverse_inertia",
     "is_immovable_for_kamino",
+    "reset_body_acceleration",
     "update_body_inertias",
     "update_body_wrenches",
 ]
@@ -42,75 +41,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 # Rigid-Body Containers
 ###
-
-
-@dataclass
-class RigidBodyDescriptor(Descriptor):
-    """
-    A container to describe a single rigid body in the model builder.
-
-    Attributes:
-        name: The name of the body.
-        uid: The unique identifier of the body.
-        m_i: Mass of the body [kg].
-        i_r_com_i: Translational offset of the body center of mass [m].
-        i_I_i: Moment of inertia matrix in local coordinates [kg·m²].
-        q_i_0: Initial absolute pose of the body in world coordinates.
-        u_i_0: Initial absolute twist of the body in world coordinates.
-        wid: Index of the world to which the body belongs.
-        bid: Index of the body w.r.t. its world.
-    """
-
-    ###
-    # Attributes
-    ###
-
-    m_i: float = 0.0
-    """Mass of the body."""
-
-    i_r_com_i: wp.vec3f = field(default_factory=wp.vec3f)
-    """Translational offset of the body center of mass w.r.t the reference frame expressed in local coordinates."""
-
-    i_I_i: wp.mat33f = field(default_factory=wp.mat33f)
-    """Moment of inertia matrix of the body expressed in local coordinates."""
-
-    q_i_0: wp.transformf = field(default_factory=wp.transformf)
-    """Initial absolute pose of the body expressed in world coordinates."""
-
-    u_i_0: wp.spatial_vectorf = field(default_factory=wp.spatial_vectorf)
-    """Initial absolute twist of the body expressed in world coordinates."""
-
-    ###
-    # Metadata - to be set by the WorldDescriptor when added
-    ###
-
-    wid: int = -1
-    """
-    Index of the world to which the body belongs.
-    Defaults to `-1`, indicating that the body has not yet been added to a world.
-    """
-
-    bid: int = -1
-    """
-    Index of the body w.r.t. its world.
-    Defaults to `-1`, indicating that the body has not yet been added to a world.
-    """
-
-    @override
-    def __repr__(self) -> str:
-        """Returns a human-readable string representation of the RigidBodyDescriptor."""
-        return (
-            f"RigidBodyDescriptor(\n"
-            f"name: {self.name},\n"
-            f"uid: {self.uid},\n"
-            f"m_i: {self.m_i},\n"
-            f"i_I_i:\n{self.i_I_i},\n"
-            f"q_i_0: {self.q_i_0},\n"
-            f"u_i_0: {self.u_i_0}\n"
-            f"wid: {self.wid},\n"
-            f"bid: {self.bid},\n"
-            f")"
-        )
 
 
 @dataclass
@@ -206,8 +136,9 @@ class RigidBodiesModel:
     """
     Per-body boolean (0/1) marking whether Kamino treats the body as immovable,
     either because it is physically massless (zero inverse mass and inverse
-    inertia in Newton) or because it is flagged
-    :attr:`newton.BodyFlags.KINEMATIC` / :attr:`newton.BodyFlags.PROXY`.
+    inertia in Newton) or because it is flagged :attr:`newton.BodyFlags.KINEMATIC`.
+    Dynamics solvers that simulate massless bodies only mark the
+    KINEMATIC bodies, see :func:`is_immovable_for_kamino`.
     Shape of ``(num_bodies,)``.
     """
 
@@ -359,17 +290,22 @@ def has_zero_inverse_inertia(inv_inertia: wp.mat33f) -> bool:
 
 
 @wp.func
-def is_immovable_for_kamino(inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32) -> bool:
+def is_immovable_for_kamino(
+    inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32, kinematic_only_immovable: wp.bool
+) -> bool:
     """Whether a body is treated as immovable by Kamino.
 
     A body is immovable if it is either physically massless (zero inverse mass
-    and zero inverse inertia) or flagged as externally driven via KINEMATIC or
-    PROXY. Its inverse mass and inertia are masked to zero in Kamino, so the
-    body neither responds to forces nor contributes to constraint dynamics.
+    and zero inverse inertia) or flagged as externally driven via KINEMATIC. Its
+    inverse mass and inertia are masked to zero in Kamino, so the body neither
+    responds to forces nor contributes to constraint dynamics. PROXY bodies are
+    simulated like any other body. Dynamics solvers that also simulate massless
+    bodies set ``kinematic_only_immovable``, so that only KINEMATIC bodies are
+    immovable.
     """
-    return (inv_mass <= 0.0 and has_zero_inverse_inertia(inv_inertia)) or (
-        (flags & (int(BodyFlags.KINEMATIC) | int(BodyFlags.PROXY))) != 0
-    )
+    if kinematic_only_immovable:
+        return (flags & int(BodyFlags.KINEMATIC)) != 0
+    return (inv_mass <= 0.0 and has_zero_inverse_inertia(inv_inertia)) or (flags & int(BodyFlags.KINEMATIC)) != 0
 
 
 @wp.func
@@ -421,6 +357,29 @@ def transform_body_inertial_properties(
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def _compute_body_acceleration(
+    body_qd_in: wp.array[wp.spatial_vectorf],
+    body_qd_out: wp.array[wp.spatial_vectorf],
+    inv_dt: float,
+    body_qdd: wp.array[wp.spatial_vectorf],
+):
+    body_id = wp.tid()
+    body_qdd[body_id] = (body_qd_out[body_id] - body_qd_in[body_id]) * inv_dt
+
+
+@wp.kernel
+def _reset_body_acceleration(
+    body_wid: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],  # None also supported
+    body_qdd: wp.array[wp.spatial_vectorf],
+):
+    body_id = wp.tid()
+    if world_mask and not world_mask[body_wid[body_id]]:
+        return
+    body_qdd[body_id] = wp.spatial_vectorf(0.0)
 
 
 @wp.kernel
@@ -582,6 +541,51 @@ def _convert_geom_offset_origin_to_com(
 ###
 # Launchers
 ###
+
+
+def compute_body_acceleration(
+    body_qd_in: wp.array[wp.spatial_vectorf],
+    body_qd_out: wp.array[wp.spatial_vectorf],
+    body_qdd: wp.array[wp.spatial_vectorf],
+    dt: float,
+) -> None:
+    """Compute discrete step-average body accelerations.
+
+    Args:
+        body_qd_in: Input body twists in the world frame at the center of mass
+            [m/s, rad/s].
+        body_qd_out: Output body twists in the world frame at the center of mass
+            [m/s, rad/s].
+        body_qdd: Output body accelerations in the world frame at the center of
+            mass [m/s², rad/s²].
+        dt: Simulation step duration [s].
+    """
+    wp.launch(
+        _compute_body_acceleration,
+        dim=body_qdd.shape[0],
+        inputs=[body_qd_in, body_qd_out, 1.0 / dt, body_qdd],
+        device=body_qdd.device,
+    )
+
+
+def reset_body_acceleration(
+    body_wid: wp.array[wp.int32],
+    body_qdd: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool] | None = None,
+) -> None:
+    """Clear body accelerations in selected worlds.
+
+    Args:
+        body_wid: Body-to-world index mapping.
+        body_qdd: Body accelerations to clear [m/s², rad/s²].
+        world_mask: Optional per-world mask selecting which accelerations to clear.
+    """
+    wp.launch(
+        _reset_body_acceleration,
+        dim=body_qdd.shape[0],
+        inputs=[body_wid, world_mask, body_qdd],
+        device=body_qdd.device,
+    )
 
 
 def convert_geom_offset_origin_to_com(

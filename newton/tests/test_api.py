@@ -4,7 +4,6 @@
 import inspect
 import typing as _t
 import unittest
-import warnings
 
 
 def _get_type_hints(obj):
@@ -91,29 +90,32 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
-    def test_geometry_match_constants_deprecated(self):
+    def test_joint_target_layout_flag_removed(self):
+        """Expose coordinate-shaped position targets without a layout switch."""
         import newton  # noqa: PLC0415
-        from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND  # noqa: PLC0415
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            public_match_broken = newton.geometry.MATCH_BROKEN
-            public_match_not_found = newton.geometry.MATCH_NOT_FOUND
+        self.assertNotIn("use_coord_layout_targets", newton.__all__)
+        self.assertFalse(hasattr(newton, "use_coord_layout_targets"))
+        builder = newton.ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        self.assertFalse(hasattr(model, "use_coord_layout_targets"))
+        self.assertEqual(model.joint_target_q.shape, (7,))
+        self.assertEqual(model.control().joint_target_q.shape, (7,))
+        self.assertIs(model.joint_target_q_start, model.joint_q_start)
 
-        self.assertEqual(public_match_broken, MATCH_BROKEN)
-        self.assertEqual(public_match_not_found, MATCH_NOT_FOUND)
-        self.assertEqual(len(caught), 2)
-        self.assertTrue(all(issubclass(warning.category, DeprecationWarning) for warning in caught))
+    def test_collision_pipeline_flattens_speculative_contact_config(self):
+        """Configure speculative contacts without a single-field wrapper."""
+        import newton  # noqa: PLC0415
 
-        with self.assertRaises(AttributeError):
-            _ = newton.geometry.UNKNOWN_MATCH_STATUS
+        parameters = inspect.signature(newton.CollisionPipeline).parameters
 
-        star_namespace = {}
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            exec("from newton.geometry import *", star_namespace)
-        self.assertNotIn("MATCH_BROKEN", star_namespace)
-        self.assertNotIn("MATCH_NOT_FOUND", star_namespace)
+        self.assertIn("speculative_contact_gap_max", parameters)
+        self.assertNotIn("max_speculative_extension", parameters)
+        self.assertNotIn("speculative_config", parameters)
+        self.assertFalse(hasattr(newton.CollisionPipeline, "SpeculativeContactConfig"))
 
     def test_builder_urdf_signature_parity(self):
         from newton import ModelBuilder  # noqa: PLC0415
@@ -140,6 +142,14 @@ class TestApi(unittest.TestCase):
         doc_func = "\n".join(line.strip() for line in (get_tetmesh.__doc__ or "").splitlines()).strip()
         doc_method = "\n".join(line.strip() for line in (TetMesh.create_from_usd.__doc__ or "").splitlines()).strip()
         assert doc_func == doc_method, "Docstring mismatch between get_tetmesh and TetMesh.create_from_usd"
+
+    def test_get_tetmesh_hides_importer_material_control(self):
+        """Keep importer-only material controls out of the public signature."""
+        import newton.usd  # noqa: PLC0415
+
+        parameters = inspect.signature(newton.usd.get_tetmesh).parameters
+
+        self.assertNotIn("_load_material", parameters)
 
     def test_keyword_only_arguments_reject_positional_use(self):
         """Reject positional use of mature keyword-only API options."""

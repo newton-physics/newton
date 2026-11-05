@@ -6,10 +6,12 @@ Kamino: A physics back-end for Newton for constrained multi-body body simulation
 """
 
 from .core.bodies import (
+    compute_body_acceleration,
     convert_base_origin_to_com,
     convert_body_com_to_origin,
     convert_body_origin_to_com,
     convert_geom_offset_origin_to_com,
+    reset_body_acceleration,
 )
 from .core.control import ControlKamino
 from .core.conversions import (
@@ -31,7 +33,6 @@ from .geometry.contacts import (
 )
 from .geometry.detector import CollisionDetector
 from .solver_kamino_impl import SolverKaminoImpl
-from .utils import logger as msg
 
 ###
 # Kamino API
@@ -49,6 +50,7 @@ __all__ = [
     "SolverKaminoImpl",
     "StateKamino",
     "StructuralUpdateViolation",
+    "compute_body_acceleration",
     "compute_material_first_shape",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
@@ -59,7 +61,7 @@ __all__ = [
     "convert_model_joint_actuation",
     "convert_model_joint_transforms",
     "convert_model_materials",
-    "msg",
     "refresh_masked_body_inertia",
+    "reset_body_acceleration",
     "validate_model_structural_updates",
 ]

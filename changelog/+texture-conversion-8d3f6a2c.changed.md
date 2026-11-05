@@ -1,1 +1,0 @@
-Speed up linear `uint8` texture conversion and avoid redundant visual-material resolution during USD import. Pass `load_visual_materials=False` to `newton.usd.get_mesh()` when only geometry, normals, and UVs are needed.

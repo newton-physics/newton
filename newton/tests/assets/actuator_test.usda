@@ -92,7 +92,7 @@ def Xform "World"
             uniform token physics:axis = "Y"
         }
 
-        # Actuator for Joint 1 (PD Controller + MaxEffort clamping)
+        # Actuator for Joint 1 (PD drive + MaxEffort clamping)
         def NewtonActuator "Joint1Actuator" (
             prepend apiSchemas = ["NewtonPDControlAPI", "NewtonMaxEffortClampingAPI"]
         )
@@ -103,7 +103,7 @@ def Xform "World"
             float newton:maxEffort = 50.0
         }
 
-        # Actuator for Joint 2 (PD Controller with Delay)
+        # Actuator for Joint 2 (PD drive with Delay)
         def NewtonActuator "Joint2Actuator" (
             prepend apiSchemas = ["NewtonPDControlAPI", "NewtonActuatorDelayAPI"]
         )

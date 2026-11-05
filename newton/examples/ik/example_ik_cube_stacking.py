@@ -1,16 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cube Stacking
-#
-# Shows how to set up a simulation of a cube stacking task for multiple
-# worlds using inverse kinematics to set joint target position references
-# for the Franka Emika Franka Panda robot arm.
-#
-# Command: python -m newton.examples ik_cube_stacking --world-count 16
-#
-###########################################################################
+"""Example Cube Stacking
+
+Shows how to set up a simulation of a cube stacking task for multiple
+worlds using inverse kinematics to set joint target position references
+for the Franka Emika Franka Panda robot arm.
+
+Success criteria:
+- Replicated setups appear, each consisting of a Franka robotic arm in front of a table with three
+  cubes on it.
+- The Franka arm moves and stacks the three cubes together.
+
+Runs:
+- `python -m newton.examples ik_cube_stacking --world-count 4`
+  - Four replicated setups appear.
+- `python -m newton.examples ik_cube_stacking --world-count 16`
+  - Sixteen replicated setups appear.
+"""
 
 import enum
 import time
@@ -196,6 +203,7 @@ class Example:
         self.verbose = args.verbose
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         self.cube_count = 3
         self.cube_size = 0.05
@@ -257,7 +265,6 @@ class Example:
             self.viewer = newton.viewer.ViewerNull()
 
         self.viewer.set_model(self.model)
-        self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
 
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(1.5, 1.5, 0.0))
@@ -338,6 +345,7 @@ class Example:
             floating=False,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
+            joint_damping_mode="passive",
         )
 
         builder.joint_q[:9] = [

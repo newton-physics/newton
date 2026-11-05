@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 
 import numpy as np
@@ -14,10 +14,7 @@ from warp._src.types import Any, Int, Vector
 
 from .....core.types import MAXVAL, override
 from .....sim import JointTargetMode, JointType
-from .math import FLOAT32_MAX
 from .types import (
-    ArrayLike,
-    Descriptor,
     mat63f,
     vec1f,
     vec1i,
@@ -35,7 +32,6 @@ __all__ = [
     "DofActuationPath",
     "JointActuationType",
     "JointCorrectionMode",
-    "JointDescriptor",
     "JointDoFType",
     "JointsData",
     "JointsModel",
@@ -302,26 +298,26 @@ def _has_implicit_pd(act_type: int, k_p: float, k_d: float) -> bool:
     ) and (k_p > 0.0 or k_d > 0.0)
 
 
-def _has_missing_implicit_pd_gains(act_type: int, k_p: float, k_d: float) -> bool:
-    """Returns whether an implicit-PD actuation type has no effective gain."""
-    if act_type == JointActuationType.VELOCITY:
-        return k_d == 0.0
-    return (
-        act_type
-        in (
-            JointActuationType.POSITION,
-            JointActuationType.POSITION_VELOCITY,
-            JointActuationType.POSITION_VELOCITY_FORCE,
+def _has_missing_implicit_pd_gains(
+    act_type: int | np.ndarray,
+    k_p: float | np.ndarray,
+    k_d: float | np.ndarray,
+) -> np.bool_ | np.ndarray:
+    """Returns whether implicit-PD actuation types have no effective gain."""
+    missing_velocity_gain = (act_type == JointActuationType.VELOCITY) & (k_d == 0.0)
+    missing_position_gain = (
+        np.isin(
+            act_type,
+            (
+                JointActuationType.POSITION,
+                JointActuationType.POSITION_VELOCITY,
+                JointActuationType.POSITION_VELOCITY_FORCE,
+            ),
         )
-        and k_p == 0.0
-        and k_d == 0.0
+        & (k_p == 0.0)
+        & (k_d == 0.0)
     )
-
-
-def _validate_implicit_pd_gains(act_type: JointActuationType, k_p: float, k_d: float, *, label: str) -> None:
-    """Raises if an implicit-PD actuation type has no effective gain."""
-    if _has_missing_implicit_pd_gains(act_type, k_p, k_d):
-        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain ({label}).")
+    return missing_velocity_gain | missing_position_gain
 
 
 def _is_bounded_effort_limit(tau_max: float) -> bool:
@@ -367,6 +363,14 @@ def is_bounded_effort_limit_wp(tau_max: float) -> bool:
     # Checking against JOINT_TAUMAX is important, because the Newton ModelBuilder will insert
     # JOINT_TAUMAX as a default value if no effort limit is specified.
     return wp.isfinite(tau_max) and tau_max < JOINT_TAUMAX
+
+
+@wp.func
+def clamp_joint_effort_wp(tau: float, tau_max: float) -> float:
+    """Clamp an actuator command to a bounded effort limit; pass unbounded commands through."""
+    if is_bounded_effort_limit_wp(tau_max):
+        return wp.clamp(tau, -tau_max, tau_max)
+    return tau
 
 
 @wp.func
@@ -930,130 +934,6 @@ class JointDoFType(IntEnum):
         return joint_type
 
     @staticmethod
-    def from_newton(
-        type: JointType,
-        q_count: int,
-        qd_count: int,
-        dof_dim: tuple[int, int],
-        limit_lower: np.ndarray,
-        limit_upper: np.ndarray,
-        dof_axes: np.ndarray | None = None,
-    ) -> JointDoFType:
-        """
-        Converts a `JointType` to the corresponding `JointDoFType`.
-
-        Args:
-            type: The Newton joint type to convert.
-            q_count: The Newton coordinates count for this joint.
-            qd_count: The Newton dofs count for this joint.
-            dof_dim: The Newton dof dimension (linear/angular dof counts) for this joint.
-            limit_lower: The lower position limits from Newton for this joint (in dof space).
-            limit_upper: The upper position limits from Newton for this joint (in dof space).
-            dof_axes: The Newton joint axes, used to distinguish gimbal handedness.
-
-        Returns:
-            The corresponding joint DoF type.
-
-        Raises:
-            ValueError: if the Newton joint type is not supported.
-        """
-        # First try directly mapping the trivially supported types
-        _MAP_TO_KAMINO: dict[JointType, JointDoFType | None] = {
-            JointType.FREE: JointDoFType.FREE,
-            JointType.REVOLUTE: JointDoFType.REVOLUTE,
-            JointType.PRISMATIC: JointDoFType.PRISMATIC,
-            JointType.BALL: JointDoFType.SPHERICAL,
-            JointType.FIXED: JointDoFType.FIXED,
-            # NOTE: D6 joints require special handling
-            # to infer the corresponding DoF type
-            JointType.D6: None,
-        }
-        dof_type = _MAP_TO_KAMINO.get(type, None)
-        if dof_type is not None:
-            return dof_type
-
-        # If the type is not directly supported, attempt to infer the DoF type based on the number of DoFs
-        if dof_type is None or type == JointType.D6:
-            # Ensure that q_count and qd_count are provided for inference
-            if q_count is None or qd_count is None:
-                raise ValueError("q_count and qd_count must be provided for inference of unsupported joint types.")
-
-            # Ensure dof_dim is provided for inference
-            if dof_dim is None or not isinstance(dof_dim, tuple) or len(dof_dim) != 2:
-                raise ValueError(
-                    "dof_dim must be provided as a tuple of length 2 for inference of unsupported joint types."
-                )
-
-            # Ensure the limits are provided for inference
-            if limit_lower is None or limit_upper is None:
-                raise ValueError(
-                    "limit_lower and limit_upper must be provided for inference of unsupported joint types."
-                )
-            if not isinstance(limit_lower, np.ndarray) or not isinstance(limit_upper, np.ndarray):
-                raise TypeError(
-                    "limit_lower and limit_upper must be numpy arrays for inference of unsupported joint types."
-                )
-            if limit_lower.shape != limit_upper.shape:
-                raise ValueError(
-                    f"limit_lower and limit_upper must have the same shape, got: "
-                    f"limit_lower.shape: {limit_lower.shape}, limit_upper.shape: {limit_upper.shape}."
-                )
-            if limit_lower.shape[0] != qd_count or limit_upper.shape[0] != qd_count:
-                raise ValueError(
-                    f"The length of limit_lower and limit_upper must match qd_count ({qd_count}), got:"
-                    f"\n  limit_lower: {limit_lower} (shape={limit_lower.shape})"
-                    f"\n  limit_upper: {limit_upper} (shape={limit_upper.shape})"
-                )
-
-            # Map to the DoF type based on the dimensions of the joint
-            if q_count == 0 and qd_count == 0 and dof_dim == (0, 0):
-                dof_type = JointDoFType.FIXED
-            elif q_count == 1 and qd_count == 1 and dof_dim == (1, 0):
-                dof_type = JointDoFType.PRISMATIC
-            elif q_count == 1 and qd_count == 1 and dof_dim == (0, 1):
-                dof_type = JointDoFType.REVOLUTE
-            elif q_count == 2 and qd_count == 2 and dof_dim == (0, 2):
-                dof_type = JointDoFType.UNIVERSAL
-            elif q_count == 2 and qd_count == 2 and dof_dim == (1, 1):
-                dof_type = JointDoFType.CYLINDRICAL
-            elif q_count == 3 and qd_count == 3 and dof_dim == (3, 0):
-                dof_type = JointDoFType.CARTESIAN
-            elif q_count == 3 and qd_count == 3 and dof_dim == (0, 3):
-                if (
-                    dof_axes is not None
-                    and dof_axes.shape == (3, 3)
-                    and np.all(np.isfinite(dof_axes))
-                    and np.dot(np.cross(dof_axes[0], dof_axes[1]), dof_axes[2]) < 0.0
-                ):
-                    dof_type = JointDoFType.GIMBAL_LEFT_HANDED
-                else:
-                    dof_type = JointDoFType.GIMBAL
-            elif q_count == 4 and qd_count == 3 and dof_dim == (0, 3):
-                dof_type = JointDoFType.SPHERICAL
-            elif q_count == 7 and qd_count == 6:
-                if np.any(limit_lower <= JOINT_QMIN) or np.any(limit_upper >= JOINT_QMAX):
-                    dof_type = JointDoFType.FREE
-                else:
-                    raise ValueError(
-                        f"Unsupported joint type with 7 coordinates and 6 DoFs but unrecognized limits:\n"
-                        f"\n  limit_lower: {limit_lower}"
-                        f"\n  limit_upper: {limit_upper}"
-                    )
-            else:
-                raise ValueError(
-                    f"Unsupported joint type with:"
-                    f"\n  type: {type}"
-                    f"\n  dof_dim: {dof_dim}"
-                    f"\n  q_count: {q_count}"
-                    f"\n  qd_count: {qd_count}"
-                    f"\n  limit_lower: {limit_lower}"
-                    f"\n  limit_upper: {limit_upper}"
-                )
-
-        # Return the inferred DoF type
-        return dof_type
-
-    @staticmethod
     @wp.func
     def from_newton_wp(
         joint_type: int,
@@ -1066,9 +946,6 @@ class JointDoFType(IntEnum):
     ) -> wp.int32:
         """
         Converts a Newton `JointType` to the corresponding Kamino `JointDoFType`.
-
-        Note:
-            This is the warp-compatible equivalent to `from_newton()`.
 
         Args:
             joint_type: The Newton joint type to convert, see `JointType`.
@@ -1319,712 +1196,6 @@ class JointDoFType(IntEnum):
 
 
 @dataclass
-class JointDescriptor(Descriptor):
-    """
-    A container to describe a single joint in the model builder.
-    """
-
-    ###
-    # Attributes
-    ###
-
-    dof_act_types: list[JointActuationType] = field(default_factory=list)
-    """
-    Actuation type of each joint DoF.
-
-    This is the authoritative actuation representation for the joint. Its
-    length must equal :attr:`num_dofs`. :attr:`act_type` is a derived coarse
-    passive-versus-actuated classification for forward kinematics and layout
-    bookkeeping.
-    """
-
-    fk_act_flag: int = -1
-    """
-    Integer flag indicating whether this joint should be considered actuated (1) or passive (0) by the
-    Forward Kinematics solver, or to infer this from `act_type` (-1).
-
-    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
-    under-actuated systems.
-    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
-    """
-
-    dof_type: JointDoFType = JointDoFType.FREE
-    """DoF type of the joint."""
-
-    bid_B: int = -1
-    """
-    The Base body index of the joint (-1 for world, >=0 for bodies).
-    Defaults to `-1`, indicating that the joint has not been assigned a base body.
-    """
-
-    bid_F: int = -1
-    """
-    The Follower body index of the joint (must always be >=0 to index a body).
-    Defaults to `-1`, indicating that the joint has not been assigned a follower body.
-    """
-
-    B_r_Bj: wp.vec3f = field(default_factory=wp.vec3f)
-    """The relative position of the joint in the base body coordinates."""
-
-    F_r_Fj: wp.vec3f = field(default_factory=wp.vec3f)
-    """The relative position of the joint in the follower body coordinates."""
-
-    X_Bj: wp.mat33f = field(default_factory=wp.mat33f)
-    """The orientation of the joint frame on the base body, in the base body coordinates."""
-
-    X_Fj: wp.mat33f | None = None
-    """
-    The orientation of the joint frame on the follower body, in the follower body coordinates.
-
-    If not provided, defaults to `X_Bj`.
-    """
-
-    q_j_min: ArrayLike | float | None = None
-    """
-    Minimum DoF limits of the joint.
-
-    If `None`, then no limits are applied to the joint DoFs,
-    and the maximum limits default to `-inf` for lower limits.
-
-    If specified as a single float value, it will
-    be applied uniformly to all DoFs of the joint.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-
-    For rotational DoFs, limits are expected in radians,
-    while for translational DoFs, limits are expected in
-    the same units as the world units.
-
-    **Warning**:
-    These limits are dimensioned according to the number of `num_dofs`,
-    even though joint coordinates are actually dimensioned according to
-    `num_coords`. This is because some joints (e.g. SPHERICAL) may use
-    redundant or non-minimal parameterizations at configuration-level.
-    In order to support configuration-level limits regardless of the
-    underlying parameterization, a mapping is performed in the solver
-    that translates the limits from DoF space to coordinate space.
-    """
-
-    q_j_max: ArrayLike | float | None = None
-    """
-    Maximum DoF limits of the joint.
-
-    If `None`, then no limits are applied to the joint DoFs,
-    and the maximum limits default to `-inf` for lower limits.
-
-    If specified as a single float value, it will
-    be applied uniformly to all DoFs of the joint.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-
-    **Warning**:
-    These limits are dimensioned according to the number of `num_dofs`,
-    even though joint coordinates are actually dimensioned according to
-    `num_coords`. This is because some joints (e.g. SPHERICAL) may use
-    redundant or non-minimal parameterizations at configuration-level.
-    In order to support configuration-level limits regardless of the
-    underlying parameterization, a mapping is performed in the solver
-    that translates the limits from DoF space to coordinate space.
-    """
-
-    dq_j_max: ArrayLike | float | None = None
-    """
-    Maximum velocity limits of the joint.
-
-    If `None`, then no limits are applied
-    to the joint's generalized velocities.
-
-    If specified as a single float value, it will
-    be applied uniformly to all DoFs of the joint.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-    """
-
-    tau_j_max: ArrayLike | float | None = None
-    """
-    Maximum effort (i.e. generalized force) limits of the joint.
-
-    If ``None``, defaults to :data:`JOINT_TAUMAX` (unbounded). Values at or above
-    :data:`JOINT_TAUMAX` are treated as unbounded for implicit-PD effort-row
-    allocation, matching the Newton ``ModelBuilder`` default sentinel.
-
-    If specified as a single float value, it will
-    be applied uniformly to all DoFs of the joint.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-    """
-
-    a_j: ArrayLike | float | None = None
-    """
-    Internal inertia of the joint (a.k.a. joint armature),
-    used for implicit integration of joint dynamics.
-
-    This represents effects like rotor inertia of rotary motors,
-    potentially transferred over a transmission, and compounding
-    the inertia of the gearbox. This is often referred to as so
-    called "reflected inertia" of an actuator as seen at the joint.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-
-    Defaults to `[0.0] * num_dofs` if not specified, indicating
-    that the joint has no internal inertia and is thus massless.
-    """
-
-    b_j: ArrayLike | float | None = None
-    """
-    Internal damping of the joint used for implicit integration of joint dynamics.
-
-    This represents effects like viscous friction in rotary motors,
-    potentially transferred over a transmission, and compounding
-    the friction of the gearbox.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-
-    Defaults to `[0.0] * num_dofs` if not specified, indicating
-    that the joint has no internal damping and is thus frictionless.
-    """
-
-    f_j: ArrayLike | float | None = None
-    """
-    Coulomb friction force or torque along each joint DoF [N, N·m].
-
-    Each translational DoF uses a force [N], and each rotational DoF uses a torque [N·m].
-    Accepts `ArrayLike`, `float`, or `None`.
-
-    If specified as a type conforming to the `ArrayLike` union, then the
-    number of elements must equal the number of DoFs of the joint, i.e.
-    `num_dofs = dof_type.num_dofs`.
-
-    Defaults to zero. Positive values allocate a bounded-multiplier constraint row
-    for every DoF of the joint. Friction on free joints is ignored.
-    """
-
-    k_p_j: ArrayLike | float | None = None
-    """
-    Implicit PD-control proportional gain.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-
-    Defaults to `[0.0] * num_dofs` if not specified, indicating
-    that the joint has no implicit proportional gain.
-    """
-
-    k_d_j: ArrayLike | float | None = None
-    """
-    Implicit PD-control derivative gain.
-
-    If specified as a type conforming to the `ArrayLike`
-    union, then the number of elements must equal number of
-    DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
-
-    Defaults to `[0.0] * num_dofs` if not specified, indicating
-    that the joint has no implicit derivative gain.
-    """
-
-    ###
-    # Metadata - to be set by the WorldDescriptor when added
-    ###
-
-    wid: int = -1
-    """
-    Index of the world to which the joint belongs.
-    Defaults to `-1`, indicating that the joint has not yet been added to a world.
-    """
-
-    jid: int = -1
-    """
-    Index of the joint w.r.t. its world.
-    Defaults to `-1`, indicating that the joint has not yet been added to a world.
-    """
-
-    coords_offset: int = -1
-    """
-    Index offset of this joint's coordinates among
-    all joint coordinates in the world it belongs to.
-    """
-
-    dofs_offset: int = -1
-    """
-    Index offset of this joint's DoFs among
-    all joint DoFs in the world it belongs to.
-    """
-
-    passive_coords_offset: int = -1
-    """
-    Index offset of this joint's passive coordinates among all
-    passive joint coordinates in the world it belongs to.
-    """
-
-    passive_dofs_offset: int = -1
-    """
-    Index offset of this joint's passive DoFs among all
-    passive joint DoFs in the world it belongs to.
-    """
-
-    actuated_coords_offset: int = -1
-    """
-    Index offset of this joint's actuated coordinates among
-    all actuated joint coordinates in the world it belongs to.
-    """
-
-    actuated_dofs_offset: int = -1
-    """
-    Index offset of this joint's actuated DoFs among
-    all actuated joint DoFs in the world it belongs to.
-    """
-
-    bilateral_cts_offset: int = -1
-    """
-    Index offset of this joint's bilateral constraints among all bilateral
-    joint constraints (kinematic + dynamic) in the world it belongs to.
-    """
-
-    dynamic_cts_offset: int = -1
-    """
-    Index offset of this joint's dynamic constraints among all
-    dynamic joint constraints in the world it belongs to.
-    """
-
-    kinematic_cts_offset: int = -1
-    """
-    Index offset of this joint's kinematic constraints among all
-    kinematic joint constraints in the world it belongs to.
-    """
-
-    bounded_cts_offset: int = -1
-    """
-    Index offset of this joint's bounded-multiplier rows among all
-    bounded-multiplier constraints in its world.
-    """
-
-    friction_cts_offset: int = -1
-    """
-    Index offset of this joint's friction rows among all
-    Coulomb joint friction constraints in its world.
-    """
-
-    effort_cts_offset: int = -1
-    """
-    Index offset of this joint's effort-limit implicit-PD rows among all
-    effort-limit implicit-PD constraints in its world.
-    """
-
-    ###
-    # Properties
-    ###
-
-    @property
-    def num_coords(self) -> int:
-        """
-        Returns the number of coordinates for this joint.
-        """
-        return self.dof_type.num_coords
-
-    @property
-    def num_dofs(self) -> int:
-        """
-        Returns the number of DoFs for this joint.
-        """
-        return self.dof_type.num_dofs
-
-    @property
-    def num_passive_coords(self) -> int:
-        """
-        Returns the number of passive coordinates for this joint.
-        """
-        return self.dof_type.num_coords if self.is_passive else 0
-
-    @property
-    def num_passive_dofs(self) -> int:
-        """
-        Returns the number of passive DoFs for this joint.
-        """
-        return self.dof_type.num_dofs if self.is_passive else 0
-
-    @property
-    def num_actuated_coords(self) -> int:
-        """
-        Returns the number of actuated coordinates for this joint.
-        """
-        return self.dof_type.num_coords if self.is_actuated else 0
-
-    @property
-    def num_actuated_dofs(self) -> int:
-        """
-        Returns the number of actuated DoFs for this joint.
-        """
-        return self.dof_type.num_dofs if self.is_actuated else 0
-
-    @property
-    def num_bilateral_cts(self) -> int:
-        """
-        Returns the total number of bilateral constraints introduced by this joint.
-        """
-        return self.num_dynamic_cts + self.num_kinematic_cts
-
-    @property
-    def num_dynamic_cts(self) -> int:
-        """
-        Returns the number of dynamic constraints introduced by this joint.
-        """
-        return len(self.dynamic_cts_axes())
-
-    @property
-    def num_kinematic_cts(self) -> int:
-        """
-        Returns the number of kinematic constraints introduced by this joint.
-        """
-        return self.dof_type.num_cts
-
-    @property
-    def num_bounded_cts(self) -> int:
-        """Returns the number of bounded-multiplier constraint rows introduced by this joint."""
-        return self.num_friction_cts + self.num_effort_cts
-
-    @property
-    def num_friction_cts(self) -> int:
-        """Returns the number of Coulomb joint friction rows introduced by this joint."""
-        return len(self.friction_cts_axes())
-
-    @property
-    def num_effort_cts(self) -> int:
-        """Returns the number of effort-limit implicit-PD rows."""
-        return len(self.effort_cts_axes())
-
-    @property
-    def is_binary(self) -> bool:
-        """
-        Returns whether the joint is binary (i.e. connected to two bodies).
-        """
-        return self.bid_B != -1 and self.bid_F != -1
-
-    @property
-    def is_unary(self) -> bool:
-        """
-        Returns whether the joint is unary (i.e. connected to the world).
-        """
-        return self.bid_B == -1 or self.bid_F == -1
-
-    @property
-    def act_type(self) -> JointActuationType:
-        """
-        Returns the joint-level passive-versus-actuated classification.
-
-        The aggregate is not used for per-DoF control or dynamics.
-        """
-        return JointActuationType.aggregate(self.dof_act_types)
-
-    @property
-    def is_passive(self) -> bool:
-        """
-        Returns whether the joint is passive.
-        """
-        return self.act_type == JointActuationType.PASSIVE
-
-    @property
-    def is_actuated(self) -> bool:
-        """
-        Returns whether the joint is actuated.
-        """
-        return self.act_type > JointActuationType.PASSIVE
-
-    def dynamic_cts_axes(self) -> list[int]:
-        """
-        Returns sorted local DoF axes with joint dynamics.
-        """
-        return [axis for axis in range(self.num_dofs) if self._has_dynamic_cts(axis)]
-
-    def friction_cts_axes(self) -> list[int]:
-        """
-        Returns sorted local DoF axes with Coulomb friction.
-        """
-        return [axis for axis in range(self.num_dofs) if self._has_friction_cts(axis)]
-
-    def effort_cts_axes(self) -> list[int]:
-        """
-        Returns sorted local DoF axes with bounded implicit actuation.
-        """
-        return [axis for axis in range(self.num_dofs) if self._has_effort_cts(axis)]
-
-    def dof_act_paths(self) -> list[DofActuationPath]:
-        """
-        Returns the inferred per-DoF actuation routing for this joint.
-        """
-        return [self._actuation_path(axis) for axis in range(self.num_dofs)]
-
-    def has_base_body(self, bid: int) -> bool:
-        """
-        Returns whether the joint has assigned the specified body as Base.
-
-        The body index `bid` must be given w.r.t the world.
-        """
-        return self.bid_B == bid
-
-    def has_follower_body(self, bid: int) -> bool:
-        """
-        Returns whether the joint has assigned the specified body as Follower.
-
-        The body index `bid` must be given w.r.t the world.
-        """
-        return self.bid_F == bid
-
-    def is_connected_to_body(self, bid: int) -> bool:
-        """
-        Returns whether the joint is connected to the specified body.
-
-        The body index `bid` must be given w.r.t the world.
-        """
-        return self.has_base_body(bid) or self.has_follower_body(bid)
-
-    ###
-    # Operations
-    ###
-
-    def __post_init__(self):
-        """Post-initialization processing to validate and set up joint limits."""
-        # Ensure base descriptor post-init is called first
-        # NOTE: This ensures that the UID is properly set before proceeding
-        super().__post_init__()
-
-        if len(self.dof_act_types) != self.num_dofs:
-            raise ValueError(f"Invalid per-DoF actuation type length: {len(self.dof_act_types)} != {self.num_dofs}")
-        if not all(isinstance(act_type, JointActuationType) for act_type in self.dof_act_types):
-            raise TypeError("Invalid per-DoF actuation type. Must be `JointActuationType`.")
-        self.dof_act_types = list(self.dof_act_types)
-
-        # Check if DoF type + actuation type are compatible
-        if self.dof_type == JointDoFType.FREE and self.is_binary:
-            raise ValueError(f"Invalid joint: FREE joints cannot be binary (name={self.name}, uid={self.uid}).")
-        if self.act_type == JointActuationType.FORCE and self.dof_type == JointDoFType.FIXED:
-            raise ValueError(f"Invalid joint: FIXED joints cannot be actuated (name={self.name}, uid={self.uid}).")
-        # Default the follower-side joint frame to the base-side one, which
-        # is the convention for joints with aligned base/follower frames.
-        if self.X_Fj is None:
-            self.X_Fj = wp.mat33f(self.X_Bj)
-
-        # Set default values for joint limits if not provided
-        self.q_j_min = self._check_dofs_array(self.q_j_min, self.num_dofs, float(JOINT_QMIN))
-        self.q_j_max = self._check_dofs_array(self.q_j_max, self.num_dofs, float(JOINT_QMAX))
-        self.dq_j_max = self._check_dofs_array(self.dq_j_max, self.num_dofs, float(JOINT_DQMAX))
-        self.tau_j_max = self._check_dofs_array(self.tau_j_max, self.num_dofs, float(JOINT_TAUMAX))
-
-        # Set default values for internal inertia, damping, and implicit PD gains if not provided
-        self.a_j = self._check_dofs_array(self.a_j, self.num_dofs, 0.0)
-        self.b_j = self._check_dofs_array(self.b_j, self.num_dofs, 0.0)
-        self.f_j = self._check_dofs_array(self.f_j, self.num_dofs, 0.0)
-        self.k_p_j = self._check_dofs_array(self.k_p_j, self.num_dofs, 0.0)
-        self.k_d_j = self._check_dofs_array(self.k_d_j, self.num_dofs, 0.0)
-
-        # Validate that the specified parameters are valid
-        self._check_parameter_values()
-        for axis, act_type in enumerate(self.dof_act_types):
-            _validate_implicit_pd_gains(
-                act_type, self.k_p_j[axis], self.k_d_j[axis], label=f"name={self.name}, uid={self.uid}, DoF={axis}"
-            )
-
-        # Check if DoF type + dynamic/implicit PD settings are compatible.
-        if self.dof_type == JointDoFType.FREE and (self.num_dynamic_cts > 0 or self.num_effort_cts > 0):
-            raise ValueError(
-                f"Invalid joint: FREE joints cannot have dynamic or implicit PD DoFs (name={self.name}, uid={self.uid})."
-            )
-        # TODO: Add support for missing multi-DOF joint types in the future.
-        # Ensure that only revolute and prismatic joints are dynamically constrained
-        supported_implicit_joint_types = (
-            JointDoFType.REVOLUTE,
-            JointDoFType.PRISMATIC,
-            JointDoFType.GIMBAL,
-            JointDoFType.GIMBAL_LEFT_HANDED,
-        )
-        if (
-            self.num_dynamic_cts > 0 or self.num_effort_cts > 0
-        ) and self.dof_type not in supported_implicit_joint_types:
-            raise ValueError(
-                "Invalid joint: Kamino currently supports dynamic/implicit joints "
-                f"for REVOLUTE, PRISMATIC, or GIMBAL types (name={self.name}, uid={self.uid})."
-            )
-
-    @override
-    def __repr__(self):
-        """Returns a human-readable string representation of the JointDescriptor."""
-        return (
-            f"JointDescriptor(\n"
-            f"name: {self.name},\n"
-            f"uid: {self.uid},\n"
-            "----------------------------------------------\n"
-            f"act_type: {self.act_type},\n"
-            f"dof_act_types: {self.dof_act_types},\n"
-            f"fk_act_flag: {self.fk_act_flag},\n"
-            f"dof_type: {self.dof_type},\n"
-            "----------------------------------------------\n"
-            f"bid_B: {self.bid_B},\n"
-            f"bid_F: {self.bid_F},\n"
-            "----------------------------------------------\n"
-            f"B_r_Bj: {self.B_r_Bj},\n"
-            f"F_r_Fj: {self.F_r_Fj},\n"
-            f"X_Bj:\n{self.X_Bj},\n"
-            f"X_Fj:\n{self.X_Fj},\n"
-            "----------------------------------------------\n"
-            f"q_j_min: {self.q_j_min},\n"
-            f"q_j_max: {self.q_j_max},\n"
-            f"dq_j_max: {self.dq_j_max},\n"
-            f"tau_j_max: {self.tau_j_max}\n"
-            "----------------------------------------------\n"
-            f"a_j: {self.a_j},\n"
-            f"b_j: {self.b_j},\n"
-            f"f_j: {self.f_j},\n"
-            f"k_p_j: {self.k_p_j},\n"
-            f"k_d_j: {self.k_d_j},\n"
-            "----------------------------------------------\n"
-            f"wid: {self.wid},\n"
-            f"jid: {self.jid},\n"
-            "----------------------------------------------\n"
-            f"num_coords: {self.num_coords},\n"
-            f"num_dofs: {self.num_dofs},\n"
-            f"num_dynamic_cts: {self.num_dynamic_cts},\n"
-            f"num_kinematic_cts: {self.num_kinematic_cts},\n"
-            "----------------------------------------------\n"
-            f"coords_offset: {self.coords_offset},\n"
-            f"dofs_offset: {self.dofs_offset},\n"
-            f"dynamic_cts_offset: {self.dynamic_cts_offset},\n"
-            f"kinematic_cts_offset: {self.kinematic_cts_offset},\n"
-            "----------------------------------------------\n"
-            f"passive_coords_offset: {self.passive_coords_offset},\n"
-            f"passive_dofs_offset: {self.passive_dofs_offset},\n"
-            f"actuated_coords_offset: {self.actuated_coords_offset},\n"
-            f"actuated_dofs_offset: {self.actuated_dofs_offset},\n"
-            f")"
-        )
-
-    ###
-    # Operations - Internal
-    ###
-
-    def _has_dynamic_cts(self, axis: int) -> bool:
-        """Returns whether an axis has a dynamic constraint row."""
-        return _has_dynamic_cts(
-            self.dof_act_types[axis],
-            self.k_p_j[axis],
-            self.k_d_j[axis],
-            self.tau_j_max[axis],
-            self.a_j[axis],
-            self.b_j[axis],
-        )
-
-    def _has_friction_cts(self, axis: int) -> bool:
-        """Returns whether an axis has a Coulomb-friction constraint row."""
-        return _has_friction_cts(self.dof_type, self.f_j[axis])
-
-    def _has_effort_cts(self, axis: int) -> bool:
-        """Returns whether an axis has bounded implicit-PD actuation."""
-        return _has_effort_cts(self.dof_act_types[axis], self.k_p_j[axis], self.k_d_j[axis], self.tau_j_max[axis])
-
-    def _actuation_path(self, axis: int) -> DofActuationPath:
-        """Returns the actuation routing path for an axis."""
-        if self._has_effort_cts(axis):
-            return DofActuationPath.EFFORT_CTS
-        elif self._has_dynamic_cts(axis):
-            return DofActuationPath.DYNAMIC_CTS
-        else:
-            return DofActuationPath.BODY_WRENCHES
-
-    @staticmethod
-    def _check_dofs_array(
-        x: ArrayLike | float | None,
-        size: int,
-        default: float = float(FLOAT32_MAX),
-    ) -> list[float]:
-        """
-        Processes a specified limit value to ensure it is a list of floats.
-
-        Notes:
-        - If the input is None, a list of default values is returned.
-        - If the input is a single float, it is converted to a list of the specified length.
-        - If the input is an empty list, a list of default values is returned.
-        - If the input is a non-empty list, it is validated to ensure it
-            contains only floats and matches the specified length.
-
-        Args:
-            x: The DOF array to be processed.
-            size: The number of degrees of freedom to determine the length of the output list.
-            default: The default value to use if DOF array is None or an empty list.
-
-        Returns:
-            The processed list of DOF values.
-
-        Raises:
-            ValueError: If the length of the DOF array does not match num_dofs.
-            TypeError: If the DOF array contains non-float types.
-        """
-        if x is None:
-            return [float(default) for _ in range(size)]
-
-        if isinstance(x, (int, float, np.floating)):
-            return [x] * size
-
-        if isinstance(x, ArrayLike):
-            if len(x) == 0:
-                return [float(default) for _ in range(size)]
-
-            if len(x) != size:
-                raise ValueError(f"Invalid DOF array length: {len(x)} != {size}")
-
-            if all(isinstance(x, (float, np.floating)) for x in x):
-                return x
-            else:
-                raise TypeError(f"Unsupported DOF array type: {type(x)!r}; expected float, iterable of floats, or None")
-
-    def _check_parameter_values(self):
-        """
-        Validates the joint parameters to ensure they are consistent and within expected ranges.
-
-        Raises:
-            ValueError: If any of the joint parameters are invalid, such as:
-                - q_j_min >= q_j_max for any DoF
-                - dq_j_max <= 0 for any DoF
-                - tau_j_max <= 0 for any DoF
-                - a_j < 0 for any DoF
-                - b_j < 0 for any DoF
-                - k_p_j < 0 for any DoF
-                - k_d_j < 0 for any DoF
-        """
-        for i in range(self.num_dofs):
-            if self.q_j_min[i] >= self.q_j_max[i]:
-                raise ValueError(
-                    f"Invalid joint limits: q_j_min[{i}] >= q_j_max[{i}] (name={self.name}, uid={self.uid})."
-                )
-            if self.dq_j_max[i] <= 0:
-                raise ValueError(
-                    f"Invalid joint velocity limit: dq_j_max[{i}] <= 0 (name={self.name}, uid={self.uid})."
-                )
-            if self.tau_j_max[i] <= 0:
-                raise ValueError(f"Invalid joint effort limit: tau_j_max[{i}] <= 0 (name={self.name}, uid={self.uid}).")
-            if self.a_j[i] < 0:
-                raise ValueError(f"Invalid joint armature: a_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
-            if self.b_j[i] < 0:
-                raise ValueError(f"Invalid joint damping: b_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
-            if self.f_j[i] < 0:
-                raise ValueError(f"Invalid joint friction: f_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
-            if self.k_p_j[i] < 0:
-                raise ValueError(f"Invalid joint proportional gain: k_p_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
-            if self.k_d_j[i] < 0:
-                raise ValueError(f"Invalid joint derivative gain: k_d_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
-
-
-@dataclass
 class JointsModel:
     """
     An SoA-based container to hold time-invariant model data of joints.
@@ -2050,12 +1221,6 @@ class JointsModel:
     wid: wp.array[wp.int32] | None = None
     """
     Index each the world in which each joint is defined.
-    Shape of ``(num_joints,)``.
-    """
-
-    jid: wp.array[wp.int32] | None = None
-    """
-    Index of each joint w.r.t the world.
     Shape of ``(num_joints,)``.
     """
 
@@ -2180,6 +1345,12 @@ class JointsModel:
     Maximum joint velocity limits of each joint (as flat array).
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
+
+    limit_ke: wp.array[wp.float32] | None = None
+    """Limit stiffness [N/m or N m/rad], indexed by joint DoF."""
+
+    limit_kd: wp.array[wp.float32] | None = None
+    """Limit damping [N s/m or N m s/rad], indexed by joint DoF."""
 
     tau_j_max: wp.array[wp.float32] | None = None
     """
@@ -2694,11 +1865,11 @@ class JointsData:
     h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
-    For unbounded implicit PD, the joint dynamics constraint includes
-    ``tau_j_tot`` according to the actuation type:
+    For DoFs with armature, viscous damping or unbounded implicit PD, this path
+    assembles ``tau_j_tot`` as follows according to the actuation type:
 
-    - ``PASSIVE``: ``tau_j``
-    - ``FORCE``: ``tau_j + tau_j_ff``
+    - ``PASSIVE``: ``clamp(tau_j, -tau_j_max, tau_j_max)``
+    - ``FORCE``: ``clamp(tau_j + tau_j_ff, -tau_j_max, tau_j_max)``
     - ``POSITION``: ``tau_j + k_p_j * (q_j_ref - q_j^{-})``
     - ``VELOCITY``: ``tau_j + k_d_j * dq_j_ref``
     - ``POSITION_VELOCITY``:

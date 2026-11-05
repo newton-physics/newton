@@ -1,0 +1,1 @@
+Fix missing or misplaced convex contacts by recovering aligned MPR surface witnesses within penetration-depth bounds, accounting for support-coordinate roundoff, and rejecting sampled manifold planes that do not support the contact witnesses.

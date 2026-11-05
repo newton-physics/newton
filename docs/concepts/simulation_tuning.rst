@@ -25,12 +25,6 @@ as external references.
    truth. These evolve with the codebase, so verify the ones you rely on against
    the cited source (and the solver's own constructor or config) before acting.
 
-.. toctree::
-   :hidden:
-
-   simulation_tuning_solvers
-   simulation_tuning_mujoco
-
 Diagnose Before Tuning
 ----------------------
 
@@ -182,3 +176,5 @@ Going Deeper
   math.
 - :ref:`Tuning MuJoCo` — the MuJoCo-Warp constraint model, ``ke``/``kd`` to
   ``solref``/``solimp`` mapping, and task templates.
+- :ref:`Tuning VBD` — the VBD mental model, parameter effects, failure modes
+  and fixes, and known-good parameter combinations (in development).

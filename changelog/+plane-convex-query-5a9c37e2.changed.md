@@ -1,0 +1,1 @@
+Accelerate infinite-plane contacts with convex hulls in the fused lean narrow phase and stabilize their contact normals using analytic support queries. Existing collision settings and call sites require no changes.

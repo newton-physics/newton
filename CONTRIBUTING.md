@@ -6,6 +6,12 @@ Newton is a project of the Linux Foundation and aims to be governed in a transpa
 
 Please refer to [the contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) in the `newton-governance` repository for general information, project membership, and legal requirements for making contributions to Newton.
 
+## Corporate Contributions and EasyCLA
+
+If you contribute as part of your employment, your organization must be set up in LFX EasyCLA for Newton and complete a Corporate Contributor License Agreement (CCLA). Opening a pull request against an EasyCLA-enabled Newton repository triggers the EasyCLA check. If authorization is required, the check displays the prompt and link for starting or completing the appropriate CLA workflow.
+
+If your organization is not listed, the EasyCLA workflow lets you add it and identify the representative authorized to coordinate the CCLA signing process. See [Contributor License Agreements](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#contributor-license-agreements) for the full process.
+
 # Contributing to Newton
 
 Newton welcomes contributions from the community. In order to avoid any surprises and to increase the chance of contributions being merged, we encourage contributors to communicate their plans proactively by opening a GitHub Issue or starting a Discussion in the corresponding repository. Keep each pull request focused on a single feature or bug fix, and write clear, concise commit messages.

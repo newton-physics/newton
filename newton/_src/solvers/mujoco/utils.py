@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -60,14 +61,12 @@ def mjc_eq_custom_attrs(
 
 
 def mjc_parse_polycoef(polycoef: str | Sequence[float]) -> list[float]:
-    """Parse a MuJoCo five-term equality polynomial, padding omitted terms with zeros."""
+    """Parse a MuJoCo five-term equality polynomial, filling omitted terms from MuJoCo's ``0 1 0 0 0`` default."""
     if isinstance(polycoef, str):
         values = [float(x) for x in polycoef.split()]
     else:
         values = [float(x) for x in polycoef]
-    if len(values) < 5:
-        values.extend([0.0] * (5 - len(values)))
-    return values[:5]
+    return (values + [0.0, 1.0, 0.0, 0.0, 0.0][len(values) :])[:5]
 
 
 def mjc_polycoef_has_higher_order(polycoef: Sequence[float]) -> bool:
@@ -162,14 +161,20 @@ def mjc_add_equality_mimic(
     custom_attrs: dict[str, Any],
 ) -> tuple[int, int]:
     """Add a Newton mimic constraint and its authoritative MuJoCo equality row."""
-    mimic_idx = builder.add_constraint_mimic(
-        joint0=joint1,
-        joint1=joint2,
-        coef0=polycoef[0],
-        coef1=polycoef[1],
-        label=label,
-        enabled=enabled,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"ModelBuilder\.add_constraint_mimic\(\) is deprecated",
+            category=DeprecationWarning,
+        )
+        mimic_idx = builder.add_constraint_mimic(
+            joint0=joint1,
+            joint1=joint2,
+            coef0=polycoef[0],
+            coef1=polycoef[1],
+            label=label,
+            enabled=enabled,
+        )
     eq_idx = _add_equality_constraint(
         builder,
         constraint_type=EqType.JOINT,
