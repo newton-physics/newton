@@ -9556,6 +9556,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         # scan_with_total clips this length to each scanned view, so every scan covers its whole view.
         self._ordered_scan_length = wp.full(1, scan_length, dtype=wp.int32, device=device)
         self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
+        self._contact_slot_scan_length = wp.ones(1, dtype=wp.int32, device=device)
 
     def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
@@ -9608,8 +9609,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         wp.launch(
             fill_contact_family_sort_keys,
             dim=count,
-            inputs=[contacts.rigid_contact_count, self._contact_path, self._contact_world, segment_count],
-            outputs=[self._contact_sort_keys, self._contact_sort_values],
+            inputs=[contacts.rigid_contact_count, self._contact_path, self._contact_world, segment_count, count],
+            outputs=[self._contact_sort_keys, self._contact_sort_values, self._contact_slot_scan_length],
             device=device,
         )
         wp.utils.radix_sort_pairs(
@@ -9632,7 +9633,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         scan_with_total(
             slots_needed,
             slot_offsets,
-            self._ordered_scan_length,
+            self._contact_slot_scan_length,
             self._ordered_scan_total,
             self._ordered_scan_scratch,
         )
