@@ -226,8 +226,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
       elasticity, membrane against bending), a fine mesh converging slowly, DAT damping,
       bad assets, a smaller time step making things worse, self-contact tunneling.
     - Parameter combinations from the shipped examples, and rules of thumb.
-    - Rigid bodies and cables: joint gains,
-      cable materials, contact history and capacity, model updates, and reset.
+    - Rigid bodies and cables: joint gains, cable materials, contact history and
+      capacity, model updates, and reset.
 
     The math behind the advice (step objective, block solve, rigid bodies and joints, the
     energy terms, DAT) is on the solver page :doc:`/solvers/vbd`.
