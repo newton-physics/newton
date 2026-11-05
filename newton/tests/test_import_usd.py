@@ -4701,6 +4701,11 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
                             r"\(label: '/World/Articulation/Link2'\).*undefined semantics",
                             category=UserWarning,
                         )
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"MuJoCo weld '/World/Articulation/Weld' has torquescale=2\.5",
+                            category=newton.exceptions.NewtonWarning,
+                        )
                     with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
                         builder.add_usd(
                             asset_path,
