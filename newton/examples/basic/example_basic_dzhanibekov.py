@@ -130,6 +130,7 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(4.0, -4.0, 3.0), pitch=-10.0, yaw=135.0)
 
         self.capture()
 
@@ -162,6 +163,12 @@ class Example:
         self.min_stem_axis_y = min(self.min_stem_axis_y, float(local_y_world[1]))
 
     def test_final(self):
+        if self.model.body_count != 1 or self.model.shape_count != 3:
+            raise ValueError(
+                f"Dzhanibekov scene has {self.model.body_count} bodies and {self.model.shape_count} shapes; "
+                "expected 1 body and 3 shapes"
+            )
+
         body_q = self.state_0.body_q.numpy()
         body_qd = self.state_0.body_qd.numpy()
         if not np.isfinite(body_q[self.body]).all() or not np.isfinite(body_qd[self.body]).all():

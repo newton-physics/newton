@@ -199,6 +199,7 @@ class Example:
                 layer.layer_id,
                 wp.transform(wp.vec3(shift, 0.0, 0.0), wp.quat_identity()),
             )
+        self.viewer.set_camera(wp.vec3(14.0, -4.0, 2.0), pitch=0.0, yaw=-180.0)
 
     def step(self):
         for layer in self.layers:
@@ -210,6 +211,12 @@ class Example:
         # body must stay within the swept envelope and exactly in the
         # x=0 plane (the joints only rotate about y).
         for layer in self.layers:
+            if layer.model.body_count != 4 or layer.model.shape_count != 5:
+                raise ValueError(
+                    f"{layer.layer_id} layer has {layer.model.body_count} bodies and {layer.model.shape_count} shapes; "
+                    "expected 4 bodies and 5 shapes"
+                )
+
             num_links = layer.model.body_count
             newton.examples.test_body_state(
                 layer.model,
