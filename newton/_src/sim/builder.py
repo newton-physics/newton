@@ -9932,6 +9932,9 @@ class ModelBuilder:
                     import trimesh
 
                 decompositions = {}
+                # Shapes sharing one source mesh, e.g. USD instances, share its convex replacement and parts.
+                replacement_meshes: dict[int, tuple[Mesh, Mesh]] = {}
+                part_meshes: dict[tuple[int, int | None], list[Mesh]] = {}
                 filtered_shapes_by_shape: dict[int, set[int]] = {}
                 convex_parts_by_shape: dict[int, list[int]] = {}
                 source_shapes = set(shape_indices)
@@ -9999,12 +10002,16 @@ class ModelBuilder:
                         decomposition_failed = True
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    replacement_mesh = self.shape_source[shape].copy(
-                        vertices=decomposition[0][0], indices=decomposition[0][1]
-                    )
-                    # Decomposition outputs do not provide attributes remapped to the new vertices.
-                    replacement_mesh._normals = None
-                    replacement_mesh._uvs = None
+                    cached_replacement = replacement_meshes.get(id(mesh))
+                    if cached_replacement is None:
+                        replacement_mesh = mesh.copy(vertices=decomposition[0][0], indices=decomposition[0][1])
+                        # Decomposition outputs do not provide attributes remapped to the new vertices.
+                        replacement_mesh._normals = None
+                        replacement_mesh._uvs = None
+                        # Keep the source alive so its id cannot be reused by a new mesh.
+                        replacement_meshes[id(mesh)] = (mesh, replacement_mesh)
+                    else:
+                        replacement_mesh = cached_replacement[1]
                     self.shape_source[shape] = replacement_mesh
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
@@ -10038,12 +10045,19 @@ class ModelBuilder:
                         cfg.gap = self.shape_gap[shape]
                         cfg.collision_group = self.shape_collision_group[shape]
                         cfg.collision_filter_parent = False
-                        for i in range(1, len(decomposition)):
+                        parts = part_meshes.get(hash_m)
+                        if parts is None:
+                            parts = [
+                                Mesh(vertices, indices, maxhullvert=mesh.maxhullvert)
+                                for vertices, indices in decomposition[1:]
+                            ]
+                            part_meshes[hash_m] = parts
+                        for i, part in enumerate(parts, 1):
                             # add additional convex parts as convex meshes
                             extra_shape = self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
-                                mesh=Mesh(decomposition[i][0], decomposition[i][1], maxhullvert=mesh.maxhullvert),
+                                mesh=part,
                                 scale=scale,
                                 cfg=cfg,
                                 color=color,
@@ -10084,13 +10098,23 @@ class ModelBuilder:
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            # Shapes sharing one source mesh, e.g. USD instances, share its remeshed replacement.
+            replacements: dict[int, tuple[Mesh, Mesh]] = {}
             remesh_failed = False
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
                     continue
                 mesh: Mesh = self.shape_source[shape]
-                hash_m = hash(mesh)
+                cached_replacement = replacements.get(id(mesh))
+                if cached_replacement is not None:
+                    self.shape_source[shape] = cached_replacement[1]
+                    if method == "convex_hull":
+                        self.shape_type[shape] = GeoType.CONVEX_MESH
+                    remeshed_shapes.add(shape)
+                    continue
+                # Mesh.__hash__ does not include the hull-vertex limit.
+                hash_m = (hash(mesh), mesh.maxhullvert)
                 rmesh = remeshed.get(hash_m, None)
                 if rmesh is None:
                     try:
@@ -10108,7 +10132,10 @@ class ModelBuilder:
                             remesh_failed = True
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                replacement = mesh.copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                # Keep the source alive so its id cannot be reused by a new mesh.
+                replacements[id(mesh)] = (mesh, replacement)
+                self.shape_source[shape] = replacement
                 # mark convex_hull result as convex mesh type for efficient collision detection
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH

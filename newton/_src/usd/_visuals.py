@@ -24,6 +24,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _geometry_path(prim: Usd.Prim) -> str:
+    """Return the path of the prim that authors ``prim``'s geometry.
+
+    Instance proxies resolve to their prim in the shared USD prototype.
+    """
+    if prim.IsInstanceProxy():
+        prim = prim.GetPrimInPrototype()
+    return str(prim.GetPath())
+
+
+def _freeze(value: Any) -> Any:
+    """Return a hashable stand-in for one resolved material property value."""
+    if isinstance(value, np.ndarray):
+        return ("ndarray", value.dtype.str, value.shape, value.tobytes())
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze(item)) for key, item in value.items()))
+    try:
+        hash(value)
+    except TypeError:
+        return ("id", id(value))
+    return value
+
+
+def _material_key(material_props: dict[str, Any]) -> tuple:
+    """Return a hashable key identifying a resolved material."""
+    return _freeze(material_props)
+
+
 class _UsdVisuals:
     """Keep material and mesh reads cached for one import."""
 
@@ -31,6 +61,7 @@ class _UsdVisuals:
         self.stage = stage
         self.material_props_cache: dict[str, dict[str, Any]] = {}
         self.mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
+        self.material_mesh_cache: dict[tuple[str, bool, bool, tuple], Mesh] = {}
 
     def get_material_props_cached(self, prim: Usd.Prim) -> dict[str, Any]:
         """Get material properties with caching to avoid repeated traversal."""
@@ -40,9 +71,12 @@ class _UsdVisuals:
         return self.material_props_cache[prim_path]
 
     def get_mesh_cached(self, prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
-        """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
-        prim_path = str(prim.GetPath())
-        key = (prim_path, load_uvs, load_normals)
+        """Load and cache mesh data to avoid repeated expensive USD mesh extraction.
+
+        Instance proxies of one USD prototype share the cache entry, since their
+        geometry is authored once in the prototype.
+        """
+        key = (_geometry_path(prim), load_uvs, load_normals)
         if key in self.mesh_cache:
             return self.mesh_cache[key]
 
@@ -72,16 +106,26 @@ class _UsdVisuals:
             if value is not None:
                 setattr(mesh, key, value)
 
+    def get_mesh_with_material(self, prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
+        """Return a cached mesh carrying the prim's resolved visual material.
+
+        The geometry cache entry stays unmodified. Prims sharing geometry and an
+        identical resolved material, such as instances of one USD prototype, share
+        the returned mesh, so callers must not mutate it per prim.
+        """
+        material_props = self.get_material_props_cached(prim)
+        key = (_geometry_path(prim), load_uvs, load_normals, _material_key(material_props))
+        mesh = self.material_mesh_cache.get(key)
+        if mesh is None:
+            mesh = self.get_mesh_cached(prim, load_uvs=load_uvs, load_normals=load_normals).copy()
+            self.apply_visual_material(mesh, material_props)
+            self.material_mesh_cache[key] = mesh
+        return mesh
+
     def get_mesh_with_visual_material(self, prim: Usd.Prim, *, path_name: str) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
-        material_props = self.get_material_props_cached(prim)
-        texture = material_props.get("texture")
-        mesh = self.get_mesh_cached(
-            prim,
-            load_uvs=texture is not None,
-            load_normals=True,
-        ).copy(recompute_inertia=False)
-        self.apply_visual_material(mesh, material_props)
+        texture = self.get_material_props_cached(prim).get("texture")
+        mesh = self.get_mesh_with_material(prim, load_uvs=texture is not None, load_normals=True)
         if mesh.texture is not None and mesh.uvs is None:
             logger.debug("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
         return mesh

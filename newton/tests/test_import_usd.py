@@ -777,6 +777,71 @@ class TestImportUsdPhysics(unittest.TestCase):
                             self.assertTrue(np.isfinite(model.shape_scale.numpy()).all())
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_instanced_mesh_colliders_share_geometry(self):
+        """Share instanced USD meshes and their approximations, keeping per-instance materials."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        box = newton.Mesh.create_box(
+            0.5,
+            0.5,
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        UsdGeom.Xform.Define(stage, "/Prototype")
+        mesh = UsdGeom.Mesh.Define(stage, "/Prototype/Mesh")
+        mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in box.vertices.tolist()])
+        mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+        mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr().Set("convexHull")
+
+        material = UsdShade.Material.Define(stage, "/Looks/Red")
+        shader = UsdShade.Shader.Define(stage, "/Looks/Red/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.0, 0.0, 0.0))
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        UsdGeom.Xform.Define(stage, "/World")
+        for index in range(3):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{index}")
+            instance.AddTranslateOp().Set(Gf.Vec3d(2.0 * index, 0.0, 0.0))
+            instance.GetPrim().GetReferences().AddInternalReference("/Prototype")
+            instance.GetPrim().SetInstanceable(True)
+        # A binding on the instance root reaches the instance's prototype mesh.
+        instance2 = stage.GetPrimAtPath("/World/Instance2")
+        UsdShade.MaterialBindingAPI.Apply(instance2).Bind(material)
+        self.assertTrue(stage.GetPrimAtPath("/World/Instance0/Mesh").IsInstanceProxy())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World")
+        shapes = [result["path_shape_map"][f"/World/Instance{index}/Mesh"] for index in range(3)]
+        sources = [builder.shape_source[shape] for shape in shapes]
+
+        for shape in shapes:
+            self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+        # Identical instances share one approximated mesh instead of one copy per instance.
+        self.assertIs(sources[0], sources[1])
+        # An instance with a different resolved material keeps its own mesh and color.
+        self.assertIsNot(sources[0], sources[2])
+        np.testing.assert_allclose(sources[2].color, (1.0, 0.0, 0.0), atol=1e-6)
+        self.assertIsNone(sources[0].color)
+
+        visual_sources = {
+            index: builder.shape_source[builder.shape_label.index(f"/World/Instance{index}/Mesh_visual")]
+            for index in range(3)
+        }
+        self.assertIs(visual_sources[0], visual_sources[1])
+        self.assertIsNot(visual_sources[0], visual_sources[2])
+        np.testing.assert_allclose(visual_sources[2].color, (1.0, 0.0, 0.0), atol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
         """Preserve the authored mesh for a disabled collider."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

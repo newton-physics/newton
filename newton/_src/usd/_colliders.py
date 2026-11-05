@@ -358,10 +358,8 @@ def _parse_colliders(
                         mesh = visuals.get_mesh_with_visual_material(prim, path_name=path)
                     else:
                         # Not viewport-drawn, but the viewer still draws these under show_collision /
-                        # show_static. Mutating the shared cache entry is safe: both caches key on the
-                        # prim path, so every consumer resolves the same values.
-                        mesh = visuals.get_mesh_cached(prim)
-                        visuals.apply_visual_material(mesh, material_props)
+                        # show_static, so the mesh still carries the resolved material.
+                        mesh = visuals.get_mesh_with_material(prim)
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,

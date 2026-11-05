@@ -1110,5 +1110,34 @@ class TestRemeshUnifiedAPI(unittest.TestCase):
         self.assertLess(max_distance, 0.2, "Max distance to cube should be reasonable")
 
 
+class TestApproximateMeshesSharing(unittest.TestCase):
+    """Test that builder mesh approximation reuses results for shared source meshes."""
+
+    def test_convex_hull_shares_replacement_and_respects_maxhullvert(self):
+        sphere = newton.Mesh.create_sphere(1.0, num_latitudes=16, num_longitudes=16, compute_inertia=False)
+        shared = sphere.copy()
+        shared.maxhullvert = 64
+        limited = sphere.copy()
+        limited.maxhullvert = 8
+
+        builder = newton.ModelBuilder()
+        shapes = [
+            builder.add_shape_mesh(body=-1, mesh=shared),
+            builder.add_shape_mesh(body=-1, mesh=shared),
+            builder.add_shape_mesh(body=-1, mesh=limited),
+        ]
+        builder.approximate_meshes(method="convex_hull", shape_indices=shapes)
+
+        sources = [builder.shape_source[shape] for shape in shapes]
+        for shape in shapes:
+            self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+        # Shapes sharing one source mesh share one replacement mesh.
+        self.assertIs(sources[0], sources[1])
+        self.assertIsNot(sources[0], shared)
+        # Equal geometry with a different hull-vertex limit is remeshed separately.
+        self.assertLessEqual(len(sources[2].vertices), 8)
+        self.assertGreater(len(sources[0].vertices), 8)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
