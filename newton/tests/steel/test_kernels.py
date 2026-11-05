@@ -3,6 +3,7 @@
 
 """Kernel selection, launch configuration, streams and double buffering of SolverSteel."""
 
+import itertools
 import types
 import unittest
 import warnings
@@ -1985,6 +1986,62 @@ add_function_test(
     test_pair_cache_selection,
     devices=get_cuda_test_devices(),
 )
+
+
+def test_world_row_slot_reservation_matches_prefix_sums(test, device):
+    """Give each element its world's counter plus the earlier row counts of that world, in world-element order.
+
+    Worlds hold no elements, a few, exactly one warp's worth, and many more than a warp.
+    """
+    rng = np.random.default_rng(11)
+    sizes = [0, 3, 32, 33, 0, 1500, 7]
+    starts = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int32)
+    element_count = int(starts[-1])
+    # Elements are listed per world in a shuffled element-id order, as the solver's world indices are.
+    elements = rng.permutation(element_count).astype(np.int32)
+    counts = rng.integers(0, 7, element_count).astype(np.int32)
+    counters = rng.integers(0, 50, len(sizes)).astype(np.int32)
+    expected_cursor = np.empty(element_count, np.int32)
+    expected_counters = counters.copy()
+    for world, (lo, hi) in enumerate(itertools.pairwise(starts)):
+        for i in range(lo, hi):
+            expected_cursor[elements[i]] = expected_counters[world]
+            expected_counters[world] += counts[elements[i]]
+    cursor = wp.array(counts, dtype=int, device=device)
+    world_counters = wp.array(counters, dtype=int, device=device)
+    inputs = [wp.array(starts, dtype=int, device=device), wp.array(elements, dtype=int, device=device)]
+    if wp.get_device(device).is_cuda:
+        wp.launch_tiled(
+            steel_kernels.reserve_world_row_slots_warp,
+            dim=[len(sizes)],
+            inputs=inputs,
+            outputs=[world_counters, cursor],
+            block_dim=32,
+            device=device,
+        )
+    else:
+        wp.launch(
+            steel_kernels.reserve_world_row_slots_serial,
+            dim=len(sizes),
+            inputs=inputs,
+            outputs=[world_counters, cursor],
+            device=device,
+        )
+    np.testing.assert_array_equal(cursor.numpy(), expected_cursor)
+    np.testing.assert_array_equal(world_counters.numpy(), expected_counters)
+
+
+class TestSteelWorldRowSlotReservation(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelWorldRowSlotReservation,
+    "test_world_row_slot_reservation_matches_prefix_sums",
+    test_world_row_slot_reservation_matches_prefix_sums,
+    devices=get_test_devices(),
+)
+
 
 if __name__ == "__main__":
     unittest.main()

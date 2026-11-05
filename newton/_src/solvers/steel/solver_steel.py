@@ -71,7 +71,6 @@ from .kernels import (
     accumulate_sparse_diagonal_response_diag,
     accumulate_torsion_wrenches_from_impulses,
     advance_world_contact_counters,
-    advance_world_row_counters,
     allocate_connect_slots,
     allocate_joint_velocity_limit_slots,
     allocate_mimic_slots,
@@ -88,7 +87,6 @@ from .kernels import (
     apply_world_contact_restitution,
     apply_world_impulses_to_velocity,
     assign_world_contact_slots,
-    assign_world_row_slots,
     build_joint_limit_rows,
     build_mass_update_mask,
     build_mf_body_map,
@@ -154,7 +152,6 @@ from .kernels import (
     gather_JY_to_world,
     gather_propagation_unit_meta,
     gather_tau_to_groups,
-    gather_world_row_requests,
     hinv_jt_diagonal,
     hinv_jt_par_row,
     hinv_jt_par_row_contact_fallback,
@@ -185,6 +182,8 @@ from .kernels import (
     refresh_propagation_free_body_qd_from_vout,
     refresh_propagation_tree_body_qd_for_size,
     remove_free_root_transport_from_qdd,
+    reserve_world_row_slots_serial,
+    reserve_world_row_slots_warp,
     reset_row_warmstart,
     rhs_accum_world_par_art,
     rhs_accum_world_par_row,
@@ -9535,9 +9534,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
             cursor_size = max(cursor_size, self._free_rigid_body_count)
         self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
-        # One family's row counts in world-element order, then a zero, and their exclusive scan.
-        self._row_requests = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
-        self._row_offsets = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
         for size in self._size_groups:
             self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])[:2]
 
@@ -9563,36 +9559,26 @@ class SolverSteel(SolverBase, CouplingInterface):
             launch(ROW_SLOTS_ATOMIC)
             return
         device = self.model.device
-        world_element_start, world_elements, element_world = world_index
-        element_count = world_elements.shape[0]
-        requests = self._row_requests[: element_count + 1]
-        offsets = self._row_offsets[: element_count + 1]
+        world_element_start, world_elements, _element_world = world_index
         self._row_cursor.zero_()
         launch(ROW_SLOTS_COUNT)
-        wp.launch(
-            gather_world_row_requests,
-            dim=element_count + 1,
-            inputs=[world_elements, self._row_cursor],
-            outputs=[requests],
-            device=device,
-        )
-        scan_with_total(
-            requests, offsets, self._ordered_scan_length, self._ordered_scan_total, self._ordered_scan_scratch
-        )
-        wp.launch(
-            assign_world_row_slots,
-            dim=element_count,
-            inputs=[world_element_start, world_elements, element_world, offsets, world_slot_counter],
-            outputs=[self._row_cursor],
-            device=device,
-        )
-        wp.launch(
-            advance_world_row_counters,
-            dim=self._world_count,
-            inputs=[world_element_start, offsets],
-            outputs=[world_slot_counter],
-            device=device,
-        )
+        if device.is_cuda:
+            wp.launch_tiled(
+                reserve_world_row_slots_warp,
+                dim=[self._world_count],
+                inputs=[world_element_start, world_elements],
+                outputs=[world_slot_counter, self._row_cursor],
+                block_dim=32,
+                device=device,
+            )
+        else:
+            wp.launch(
+                reserve_world_row_slots_serial,
+                dim=self._world_count,
+                inputs=[world_element_start, world_elements],
+                outputs=[world_slot_counter, self._row_cursor],
+                device=device,
+            )
         launch(ROW_SLOTS_WRITE)
 
     def _assign_contact_slots_by_world(
@@ -12415,7 +12401,7 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
             if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
-                // One warp owns the articulation; see assign_world_row_slots.
+                // One warp owns the articulation; see reserve_world_row_slots_warp.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
             }}
@@ -12552,7 +12538,7 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
             if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
-                // One warp owns the articulation; see assign_world_row_slots.
+                // One warp owns the articulation; see reserve_world_row_slots_warp.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
             }}
