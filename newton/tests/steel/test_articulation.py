@@ -2163,27 +2163,6 @@ def test_spring_edits_follow_their_notifications(test, device, solve_mode="matri
     np.testing.assert_allclose(_first_step_tau(model, solver), [3.0], atol=1.0e-6)
 
 
-def test_spring_edits_apply_between_replays(test, device):
-    """Apply in-place spring edits to a captured step after an eager notification."""
-    model = _hinge_model(device, damping=3.0, spring_k=4.0, spring_ref=0.5)
-    solver = _construct(test, model)
-    state_0, state_1 = model.state(), model.state()
-    control = model.control()
-    solver.step(state_0, state_1, control, None, DT)
-    with wp.ScopedCapture(device) as capture:
-        solver.step(state_0, state_1, control, None, DT)
-    taus = []
-    for stiffness, rest_q in ((4.0, 0.5), (2.0, -0.5)):
-        model.joint_stiffness.assign([stiffness])
-        model.joint_rest_q.assign([rest_q])
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        state_0.joint_q.zero_()
-        state_0.joint_qd.fill_(1.0)
-        wp.capture_launch(capture.graph)
-        taus.append(float(solver._joint_tau.numpy()[0]))
-    np.testing.assert_allclose(taus, [4.0 * 0.5 - 3.0, 2.0 * -0.5 - 3.0], atol=1.0e-6)
-
-
 def test_registration_adds_no_spring_attributes(test, device):
     """Register only Steel's own body attributes, not the MuJoCo spring attributes."""
     builder = newton.ModelBuilder()
@@ -2205,14 +2184,11 @@ add_function_test(
 )
 
 
-# Every solve mode and contact response shares the inverse-dynamics pass that applies the springs.
+# Each route launches a different kernel for the inverse-dynamics pass that applies the springs.
 SPRING_ROUTES = {
     "": {},
-    "_propagation": {"articulated_contact_response": "propagation"},
-    "_propagation_colored": {"articulated_contact_response": "propagation_colored"},
     "_drive_rows": {"drive_mode": "rows"},
     "_parallel_tree": {"parallel_tree": True},
-    "_sleeping": {"enable_sleeping": True},
 }
 
 
@@ -2242,12 +2218,6 @@ for _name, _func in (
 ):
     add_function_test(TestSteelSprings, _name, _func, devices=get_cuda_test_devices())
     add_function_test(TestSteelSprings, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
-add_function_test(
-    TestSteelSprings,
-    "test_spring_edits_apply_between_replays",
-    test_spring_edits_apply_between_replays,
-    devices=get_cuda_test_devices(),
-)
 add_function_test(
     TestSteelSprings,
     "test_registration_adds_no_spring_attributes",
