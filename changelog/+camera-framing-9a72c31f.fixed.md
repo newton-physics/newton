@@ -1,1 +1,1 @@
-Fix viewer camera framing to include shape extents and displayed world offsets, and fit the scene to the viewport aspect ratio and camera orientation.
+Fix viewer camera framing to include displayed geometry, particles, and COM markers, respect world and layer transforms, and fit the viewport aspect ratio and camera orientation in GL and RTX.

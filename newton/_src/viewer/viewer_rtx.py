@@ -2330,6 +2330,11 @@ void main() {
                 mat[np.newaxis, ...],
                 is_matrix=True,
             )
+            self._write_runtime_attribute(
+                [self._camera_prim_path],
+                "clippingRange",
+                np.array([[self.camera.near, self.camera.far]], dtype=np.float32),
+            )
             self._camera_dirty = False
 
     def _update_ovrtx_transforms(self):

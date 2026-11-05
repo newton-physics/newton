@@ -244,7 +244,7 @@ class ViewerGui:
             self._viewer._camera_dirty = True
 
     def frame_camera_on_model(self):
-        """Frame the camera to show all visible objects in the scene."""
+        """Frame displayed model geometry, with legacy fallback bounds for custom drawing."""
         viewer = self._viewer
         if viewer.is_rendering_paused():
             return
@@ -256,7 +256,28 @@ class ViewerGui:
 
         bounds = viewer._get_scene_bounds()
         if bounds is None:
-            return
+            if viewer.model is None:
+                return
+            # Preserve framing for callers that draw through log_points/log_mesh
+            # instead of the model's display toggles or log_state().
+            positions = []
+            state = viewer._last_state
+            if state is not None:
+                if state.body_q is not None and len(state.body_q):
+                    positions.append(state.body_q.numpy()[:, :3])
+                if state.particle_q is not None and len(state.particle_q):
+                    points = state.particle_q.numpy()
+                    if viewer.model.particle_flags is not None:
+                        points = points[(viewer.model.particle_flags.numpy() & int(nt.ParticleFlags.ACTIVE)) != 0]
+                    positions.append(points)
+            points = np.vstack(positions) if positions else np.empty((0, 3))
+            points = points[np.isfinite(points).all(axis=1)]
+            if len(points):
+                center = (points.min(axis=0) + points.max(axis=0)) * 0.5
+                extent = np.maximum(np.ptp(points, axis=0), 1.0) * 0.5
+                bounds = (center - extent, center + extent)
+            else:
+                bounds = (np.full(3, -5.0), np.full(3, 5.0))
         min_bounds, max_bounds = bounds
 
         center = (min_bounds + max_bounds) * 0.5

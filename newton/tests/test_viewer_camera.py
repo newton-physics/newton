@@ -43,28 +43,79 @@ class TestViewerCamera(unittest.TestCase):
         return viewer.camera
 
     def test_frame_geometry(self):
-        """Fit offset primitives and signed mesh scales across aspect ratios and up axes."""
+        """Fit displayed primitives, meshes, shells, and Gaussian clouds across camera orientations."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.0), wp.quat(0.5, 0.5, 0.5, 0.5)))
         builder.add_shape_box(body, xform=wp.transform((12.0, 0.0, 0.0), wp.quat_identity()), hx=8.0, hy=0.2, hz=0.2)
         vertices = np.array(((3.0, 0.0, 0.0), (8.0, 0.0, 0.0), (3.0, 2.0, 0.0)), dtype=np.float32)
-        builder.add_shape_mesh(-1, mesh=newton.Mesh(vertices, [0, 1, 2], compute_inertia=False), scale=(-2.0, 3.0, 1.0))
+        mesh_shape = builder.add_shape_mesh(
+            -1, mesh=newton.Mesh(vertices, [0, 1, 2], compute_inertia=False), scale=(-2.0, 3.0, 1.0)
+        )
+        builder.add_shape_gaussian(
+            body,
+            xform=wp.transform((30.0, 0.0, 0.0), wp.quat_identity()),
+            gaussian=newton.Gaussian([[5.0, 1.0, 0.0]], scales=[[2.0, 2.0, 2.0]]),
+        )
         builder.add_ground_plane()
         model = builder.finalize(device="cpu")
         viewer = ViewerNull()
+        # A state logged before attachment must not leak into the new model.
+        viewer.log_state(model.state())
         viewer.set_model(model)
+        self.assertIsNone(viewer._last_state)
+        viewer.show_gaussians = True
         state = model.state()
         viewer.log_state(state)
         corners = np.array(list(product((4.0, 20.0), (-0.2, 0.2), (-0.2, 0.2))))
-        points = np.vstack((corners, vertices * (-2.0, 3.0, 1.0)))
+        splat_corners = np.array(list(product((-2.0, 2.0), (33.0, 37.0), (-1.0, 3.0))))
+        points = np.vstack((corners[:, (2, 0, 1)], vertices * (-2.0, 3.0, 1.0), splat_corners))
         for width, height in ((1280, 720), (320, 1000)):
             for up_axis in ("X", "Y", "Z"):
                 with self.subTest(width=width, height=height, up_axis=up_axis):
                     camera = self._frame(viewer, points, width, height, up_axis)
-                    _assert_vec_close(self, camera.pivot, (2.0, 2.9, 0.0))
+                    _assert_vec_close(self, camera.pivot, (-7.0, 18.5, 1.0))
+
+        # Reuse the mesh with a substantial shell, including its signed scale.
+        solid = model.shape_is_solid.numpy()
+        solid[mesh_shape] = False
+        model.shape_is_solid.assign(solid)
+        margins = model.shape_margin.numpy()
+        margins[mesh_shape] = 3.0
+        model.shape_margin.assign(margins)
+        viewer.set_model(model)
+        viewer.show_visual = viewer.show_collision = False
+        viewer.show_static = True
+        viewer.log_state(state)
+        shell = np.vstack([vertices * (-2.0, 3.0, 1.0) + (0.0, 0.0, z) for z in (-3.0, 3.0)])
+        bounds = viewer._get_scene_bounds()
+        self.assertTrue(np.all(bounds[0] <= shell.min(axis=0)))
+        self.assertTrue(np.all(bounds[1] >= shell.max(axis=0)))
+        camera = self._frame(viewer, shell, width=320, height=1000)
+        _assert_vec_close(self, camera.pivot, (-11.0, 3.0, 0.0))
+
+        if wp.is_cuda_available():
+            with self.subTest(geometry="collision_isomesh"), wp.ScopedDevice("cuda:0"):
+                mesh = newton.Mesh.create_box(0.3, 0.3, 0.3)
+                mesh.build_sdf(max_resolution=16)
+                builder = newton.ModelBuilder()
+                builder.add_shape_mesh(-1, mesh=mesh)
+                model = builder.finalize()
+                viewer = ViewerNull()
+                viewer.set_model(model)
+                viewer.show_visual = viewer.show_static = False
+                viewer.show_collision = True
+                viewer.log_state(model.state())
+                isomesh = viewer._get_sdf_isomesh(0)
+                self.assertIsNotNone(isomesh)
+                bounds = viewer._get_scene_bounds()
+                self.assertIsNotNone(bounds)
+                np.testing.assert_allclose(
+                    bounds, (isomesh.vertices.min(axis=0), isomesh.vertices.max(axis=0)), rtol=0.0, atol=1.0e-6
+                )
+                self._frame(viewer, isomesh.vertices)
 
     def test_frame_visibility(self):
-        """Fit displayed worlds, then transformed particle layers while excluding hidden outliers."""
+        """Frame visible worlds, layers, particles, triangles, and COM markers."""
         world = newton.ModelBuilder()
         body = world.add_body()
         world.add_shape_box(body, hx=0.5, hy=0.5, hz=2.0)
@@ -77,18 +128,26 @@ class TestViewerCamera(unittest.TestCase):
         viewer = ViewerNull()
         viewer.set_model(model)
         state = model.state()
+        translations = np.zeros((4, 3))
+        translations[1, 0] = 4000.0
+        poses = state.body_q.numpy()
+        poses[:, :3] += translations
+        state.body_q.assign(poses)
         for visible in (None, [0, 2, 3]):
             with self.subTest(visible=visible):
                 viewer.set_visible_worlds(visible)
                 viewer.set_world_offsets((1000.0, 1000.0, 0.0))
                 viewer.log_state(state)
-                offsets = viewer.world_offsets.numpy()[visible if visible is not None else slice(None)]
+                selected = visible if visible is not None else slice(None)
+                offsets = viewer.world_offsets.numpy()[selected] + translations[selected]
                 corners = np.array(list(product((-0.5, 0.5), (-0.5, 0.5), (-2.0, 2.0))))
-                self._frame(viewer, (corners[None] + offsets[:, None]).reshape(-1, 3))
+                points = (corners[None] + offsets[:, None]).reshape(-1, 3)
+                camera = self._frame(viewer, points)
+                _assert_vec_close(self, camera.pivot, (points.min(axis=0) + points.max(axis=0)) * 0.5)
 
         # Reuse the model with rigid shapes hidden to isolate particle extents.
         viewer.layer.visible = False
-        for name, offset in (("left", -20.0), ("right", 20.0), ("hidden", 10000.0)):
+        for name, offset, particle_x in (("left", -20.0, -2.0), ("right", 20.0, 4.0), ("hidden", 10000.0, 30.0)):
             layer = viewer.activate(name)
             layer.xform = wp.transform((offset, 0.0, 0.0), wp.quat_identity())
             layer.visible = name != "hidden"
@@ -97,10 +156,58 @@ class TestViewerCamera(unittest.TestCase):
             viewer.show_collision = False
             viewer.show_static = False
             viewer.show_particles = True
-            viewer.log_state(state)
-        corners = np.array(list(product((-22.0, 22.0), (-2.0, 2.0), (-2.0, 2.0))))
+            layer_state = model.state()
+            positions = layer_state.particle_q.numpy()
+            positions[0, 0] = particle_x
+            layer_state.particle_q.assign(positions)
+            viewer.log_state(layer_state)
+        corners = np.array(list(product((-24.0, 26.0), (-2.0, 2.0), (-2.0, 2.0))))
         camera = self._frame(viewer, corners)
+        _assert_vec_close(self, camera.pivot, (1.0, 0.0, 0.0))
+
+        # Cover shape-free display paths with one particle/triangle/COM fixture.
+        builder = newton.ModelBuilder()
+        builder.add_body(
+            xform=wp.transform((10.0, 0.0, 0.0), wp.quat_identity()),
+            com=(2.0, 0.0, 0.0),
+            mass=1.0,
+            inertia=wp.diag(wp.vec3(1.0)),
+        )
+        positions = np.array(((0, 0, 0), (1, 0, 0), (0, 2, 0), (100, 0, 0), (101, 0, 0), (100, 2, 0)), dtype=float)
+        for i, point in enumerate(positions):
+            builder.add_particle(
+                pos=wp.vec3(point),
+                vel=(0, 0, 0),
+                mass=1.0,
+                radius=0.1,
+                flags=0 if i == 2 else newton.ParticleFlags.ACTIVE,
+            )
+        builder.add_triangle(0, 1, 2)
+        builder.add_triangle(3, 4, 5, opacity=0.0)
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        viewer.show_triangles = False
+        viewer.log_points("custom", wp.array(positions[:3], dtype=wp.vec3, device="cpu"))
+        camera = self._frame(viewer, positions[:3])
         _assert_vec_close(self, camera.pivot, (0.0, 0.0, 0.0))
+        viewer.show_particles = True
+        active = positions[[0, 1, 3, 4, 5]]
+        self._frame(viewer, np.vstack((active - 0.1, active + 0.1)))
+        viewer.show_particles = False
+        viewer.show_triangles = True
+        viewer.log_state(model.state())
+        camera = self._frame(viewer, positions[:3])
+        _assert_vec_close(self, camera.pivot, (0.5, 1.0, 0.0))
+        viewer.show_triangles = False
+        viewer.show_com = True
+        viewer.log_state(model.state())
+        radius = 0.5 * viewer.scene_scale
+        corners = np.array(list(product((12.0 - radius, 12.0 + radius), (-radius, radius), (-radius, radius))))
+        camera = self._frame(viewer, corners)
+        _assert_vec_close(self, camera.pivot, (12.0, 0.0, 0.0))
+        viewer.show_com = False
+        self._frame(viewer, np.vstack((active, [[10.0, 0.0, 0.0]])))
 
     def test_sync_pivot_to_view_tracks_fps_look(self):
         camera = Camera(pos=(0.0, 0.0, 0.0), up_axis="Z")
