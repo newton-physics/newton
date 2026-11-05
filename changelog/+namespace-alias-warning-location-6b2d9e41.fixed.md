@@ -1,0 +1,1 @@
+Report deprecation warnings for namespaced model aliases, such as `Model.mujoco.dof_passive_stiffness`, at the calling user code when they are accessed through `ArticulationView` or coupled-solver model views, so Python's default warning filters show them.

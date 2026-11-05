@@ -175,7 +175,7 @@ def integrate_euler_semi_implicit(
             alpha,  # alpha: angular damping
             integrate_singular_bodies,
             model.time.dt,
-            model.gravity.vector,
+            model.gravity,
             model.bodies.wid,
             model.bodies.inv_m_i,
             data.bodies.I_i,

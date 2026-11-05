@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
@@ -477,7 +478,9 @@ def parse_mjcf(
         convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-            and finalize under ``model.mujoco.equality_constraint_*``.
+            and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
+            target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
+            with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
             Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
             an identity rest orientation. Default is False.
@@ -520,6 +523,7 @@ def parse_mjcf(
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
     dcmotor_parameters = dcmotor.resolve_mjcf_parameters(root)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
+    start_body_count = len(builder.body_mass)
 
     contact_sections = root.findall("contact")
 
@@ -615,6 +619,12 @@ def parse_mjcf(
     inertia_group_range = tuple(int(value) for value in compiler_attribs.get("inertiagrouprange", "0 5").split())
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
+    bound_mass = float(compiler_attribs.get("boundmass", 0.0))
+    bound_inertia = float(compiler_attribs.get("boundinertia", 0.0)) * scale**2
+    balance_inertia_value = compiler_attribs.get("balanceinertia", "false").lower()
+    if balance_inertia_value not in {"false", "true"}:
+        raise ValueError(f"MJCF compiler balanceinertia must be 'false' or 'true'; got {balance_inertia_value!r}.")
+    balance_inertia = balance_inertia_value == "true"
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -2980,6 +2990,7 @@ def parse_mjcf(
                             common["name"],
                         )
 
+        mujoco_only_joint_equalities = []
         for joint in equality.findall("joint"):
             attribs = resolve_element_attrib(joint, "equality")
             common = parse_common_attributes(attribs)
@@ -2994,11 +3005,34 @@ def parse_mjcf(
                         "Joint constraint: %s coupled to %s with polycoef %s", joint1_name, joint2_name, polycoef
                     )
 
-                joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
-                joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
+                endpoints = []
+                for name in (joint1_name, joint2_name):
+                    if not name:
+                        # MuJoCo fixes joint1 to the polynomial's constant term when joint2 is omitted.
+                        endpoints.append((-1, -1))
+                        continue
+                    key = sanitize_name(name)
+                    if key not in joint_name_to_idx:
+                        raise ValueError(f"Joint equality '{common['name']}' references unknown joint '{name}'.")
+                    endpoints.append((joint_name_to_idx[key], mjcf_joint_name_to_dof.get(key, -1)))
+                if joint2_name and endpoints[0] == endpoints[1]:
+                    raise ValueError(f"Joint equality '{common['name']}' uses joint '{joint1_name}' as both endpoints.")
+                (joint1_idx, joint1_dof), (joint2_idx, joint2_dof) = endpoints
+                custom_attrs["mujoco:equality_constraint_joint1_dof"] = joint1_dof
+                custom_attrs["mujoco:equality_constraint_joint2_dof"] = joint2_dof
                 polycoef_values = mjc_parse_polycoef(polycoef)
+                # Slide coordinates are imported in scaled lengths: q1 = sum(c_k q2^k)
+                # becomes s1 q1 = sum(c_k s1 / s2^k (s2 q2)^k).
+                s1 = scale if sanitize_name(joint1_name) in mjcf_slide_joint_names else 1.0
+                s2 = scale if joint2_name and sanitize_name(joint2_name) in mjcf_slide_joint_names else 1.0
+                polycoef_values = [c * s1 / s2**k for k, c in enumerate(polycoef_values)]
+                # Newton mimic constraints couple two whole scalar joints; other
+                # endpoints stay MuJoCo equality rows resolved per DoF.
+                scalar_pair = joint2_idx >= 0 and all(
+                    sum(builder.joint_dof_dim[index]) == 1 for index in (joint1_idx, joint2_idx)
+                )
 
-                if convert_mjc_equality_constraints:
+                if convert_mjc_equality_constraints and scalar_pair:
                     if mjc_polycoef_has_higher_order(polycoef_values):
                         warnings.warn(
                             f"Joint equality '{common['name']}' uses higher-order polycoef terms. "
@@ -3017,6 +3051,8 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
+                    if convert_mjc_equality_constraints:
+                        mujoco_only_joint_equalities.append(common["name"] or f"joint1={joint1_name}")
                     _add_equality_constraint(
                         builder,
                         constraint_type=EqType.JOINT,
@@ -3027,6 +3063,18 @@ def parse_mjcf(
                         enabled=common["active"],
                         custom_attributes=custom_attrs,
                     )
+
+        if mujoco_only_joint_equalities:
+            shown = ", ".join(mujoco_only_joint_equalities[:5])
+            if len(mujoco_only_joint_equalities) > 5:
+                shown += ", ..."
+            warnings.warn(
+                f"{len(mujoco_only_joint_equalities)} joint equalities omit joint2 or target a multi-DoF joint, "
+                f"such as joints sharing a body ({shown}), so they stay MuJoCo equality constraints instead of "
+                "mimic constraints. SolverMuJoCo enforces them; other solvers ignore them.",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
         # TODO: add support for equality constraint type "flex" once Newton supports it
@@ -3893,6 +3941,35 @@ def parse_mjcf(
     if not visual_shapes:
         for shape_idx in collider_shapes:
             builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
+
+    # MuJoCo applies compiler inertia guards after all body mass properties have
+    # been accumulated. Restrict them to this import so an existing builder is
+    # not affected.
+    for body_idx in range(start_body_count, len(builder.body_mass)):
+        mass = builder.body_mass[body_idx]
+        inertia = np.array(builder.body_inertia[body_idx], dtype=np.float64).reshape(3, 3)
+        inertia = 0.5 * (inertia + inertia.T)
+        principal_inertia, principal_axes = np.linalg.eigh(inertia)
+
+        mass = max(mass, bound_mass)
+        principal_inertia = np.maximum(principal_inertia, bound_inertia)
+        if mass < 0.0 or np.any(principal_inertia < 0.0):
+            raise ValueError("MJCF body mass and inertia must be nonnegative.")
+
+        # Allow accumulated float32 storage and rotation error at the triangle
+        # boundary without replacing a valid anisotropic inertia with its mean.
+        triangle_tolerance = 8.0 * np.finfo(np.float32).eps * principal_inertia[2]
+        if principal_inertia[0] + principal_inertia[1] < principal_inertia[2] - triangle_tolerance:
+            if not balance_inertia:
+                raise ValueError("MJCF body inertia must satisfy A + B >= C; use 'balanceinertia' to fix.")
+            principal_inertia[:] = np.mean(principal_inertia)
+
+        inertia = principal_axes @ np.diag(principal_inertia) @ principal_axes.T
+        inertia = wp.mat33(inertia.astype(np.float32))
+        builder.body_mass[body_idx] = mass
+        builder.body_inv_mass[body_idx] = 1.0 / mass if mass > 0.0 else 0.0
+        builder.body_inertia[body_idx] = inertia
+        builder.body_inv_inertia[body_idx] = wp.inverse(inertia) if any(inertia) else inertia
 
     end_shape_count = len(builder.shape_type)
 
