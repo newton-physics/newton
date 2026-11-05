@@ -8239,6 +8239,16 @@ class ModelBuilder:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
 
+        def remap_body_frame(body: int) -> tuple[int, wp.transform | None]:
+            """Return the final body index and the old-to-surviving frame transform.
+
+            The DFS records the full transform across each fixed-joint chain.
+            Retained bodies and world (-1) need no geometry transformation.
+            """
+            if body in body_merged_parent:
+                return body_remap[body_merged_parent[body]], body_merged_transform[body]
+            return body_remap[body], None
+
         for spec in self._deformable_visual_meshes:
             if spec["kind"] != DeformableVisualMesh.Kind.BODY:
                 continue
@@ -8523,13 +8533,10 @@ class ModelBuilder:
 
         # Keep tendon contact geometry in the same world frame when its body is merged.
         for guide_idx, old_body in enumerate(self.tendon_guide_body):
-            if old_body in body_remap:
-                self.tendon_guide_body[guide_idx] = body_remap[old_body]
+            self.tendon_guide_body[guide_idx], merge_xform = remap_body_frame(old_body)
+            if merge_xform is None:
                 continue
 
-            merged_parent = body_merged_parent[old_body]
-            merge_xform = body_merged_transform[old_body]
-            self.tendon_guide_body[guide_idx] = body_remap[merged_parent]
             self.tendon_guide_offset[guide_idx] = wp.transform_point(
                 merge_xform, axis_to_vec3(self.tendon_guide_offset[guide_idx])
             )
@@ -8581,14 +8588,11 @@ class ModelBuilder:
         for i in range(self._equality_constraint_count):
             old_body1 = _at(body1_values, i, body1_attr.default)
             old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = old_body1 in body_merged_parent
-            body2_was_merged = old_body2 in body_merged_parent
-
             constraint_type = _at(type_values, i, type_attr.default)
 
             # Transform anchor/relpose from merged body's frame to parent body's frame
-            if body1_was_merged:
-                merge_xform = body_merged_transform[old_body1]
+            if old_body1 in body_merged_parent:
+                _, merge_xform = remap_body_frame(old_body1)
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                     while len(anchor_values) <= i:
@@ -8600,8 +8604,8 @@ class ModelBuilder:
                         relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
-            if body2_was_merged and constraint_type == EqType.WELD:
-                merge_xform = body_merged_transform[old_body2]
+            if old_body2 in body_merged_parent and constraint_type == EqType.WELD:
+                _, merge_xform = remap_body_frame(old_body2)
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
                 while len(anchor_values) <= i:
@@ -8681,14 +8685,11 @@ class ModelBuilder:
         # frame so the attachment keeps its world-space position.
         for i in range(len(self.attachment_particle_body_body)):
             old_body = self.attachment_particle_body_body[i]
-            if old_body in body_merged_parent:
-                merge_xform = body_merged_transform[old_body]
+            self.attachment_particle_body_body[i], merge_xform = remap_body_frame(old_body)
+            if merge_xform is not None:
                 self.attachment_particle_body_body_point[i] = wp.transform_point(
                     merge_xform, self.attachment_particle_body_body_point[i]
                 )
-                self.attachment_particle_body_body[i] = body_remap[body_merged_parent[old_body]]
-            else:
-                self.attachment_particle_body_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -8702,10 +8703,9 @@ class ModelBuilder:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            if idx in body_remap:
-                return body_remap[idx]
-            if idx in body_merged_parent:
-                return body_remap[body_merged_parent[idx]]
+            if idx in body_remap or idx in body_merged_parent:
+                new_body, _ = remap_body_frame(idx)
+                return new_body
             return value
 
         def _remap_joint_reference(value: Any) -> Any:
