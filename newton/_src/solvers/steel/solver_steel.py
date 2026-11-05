@@ -30,6 +30,8 @@ from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
     prepare_torsion_velocity_pass,
+    torque_links_shared_bytes,
+    torque_links_source,
     torque_sweep_source,
     validate_torsion_step,
 )
@@ -1009,6 +1011,39 @@ def _use_mfgs_pair_cache(
         and block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
         and world_count <= resident_worlds
     )
+
+
+def _use_mfgs_torsion_links(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    max_shared_memory: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool,
+) -> bool:
+    """Select the linked contact-torsion sweep when its row lists fit the static shared-memory bound.
+
+    Otherwise the sweep scans every dense row for torsion groups, with identical results.
+    """
+    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
+    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
+    cache_bytes = 0
+    if pair_cache:
+        cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
+        if not shared_metadata:
+            cache_bytes += 3 * max_constraints
+    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    block_bytes = (
+        _MFGS_TILE_SHARED_STORAGE_BYTES
+        + base_shared_bytes
+        + metadata_bytes
+        + cache_bytes
+        + torque_links_shared_bytes(max_constraints)
+    )
+    return block_bytes + _WARP_STATIC_SHARED_RESERVE_BYTES <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
 
 
 def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
@@ -6083,6 +6118,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._pack_mf_meta_kernel = _get_pack_mf_meta_kernel(self._mf_meta_packed.shape[1] // 4, device_arch)
         self._pgs_solve_mf_gs_kernel = None
         self._mfgs_pair_cache = False
+        self._mfgs_torsion_links = False
         self._init_propagation_kernels(model)
         triples = self._sparse_diagonal_contact_triples
         self._mark_independent_sparse_contact_candidates_kernel = (
@@ -6147,6 +6183,16 @@ class SolverSteel(SolverBase, CouplingInterface):
                     sm_count=int(getattr(model.device, "sm_count", 0)),
                 )
             )
+            self._mfgs_torsion_links = self._contact_torsion_enabled and _use_mfgs_torsion_links(
+                self._articulation_constraint_max,
+                mf_rows,
+                self._max_world_dofs,
+                int(getattr(model.device, "max_shared_memory_per_block", 0)),
+                shared_metadata=shared_metadata,
+                has_drive_rows=self._has_drive_rows,
+                fuse_vel_limits=self._velocity_limits_fused,
+                pair_cache=self._mfgs_pair_cache,
+            )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
                 _get_pgs_solve_mf_gs_kernel,
                 self._articulation_constraint_max,
@@ -6165,6 +6211,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
                 pair_cache=self._mfgs_pair_cache,
+                torsion_links=self._mfgs_torsion_links,
             )
             if row_phases:
                 # One kernel per row phase the schedule launches, each with its phase compiled in.
@@ -15137,6 +15184,7 @@ def _get_pgs_solve_mf_gs_kernel(
     contact_compliance: bool = False,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -15191,6 +15239,8 @@ def _get_pgs_solve_mf_gs_kernel(
         row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
         pair_cache: Set up each dense friction pair's 2x2 operator once per launch, and with streamed metadata keep a
             compact shared copy of the row types and parents.
+        torsion_links: Find the contact torsion rows and their members through shared row lists built once
+            per launch (``contact_torsion.torque_links_source``); the results are the same.
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
@@ -15211,6 +15261,8 @@ def _get_pgs_solve_mf_gs_kernel(
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if row_phase is not None and not row_phases:
         raise ValueError("row_phase requires row_phases")
+    if torsion_links and not contact_torsion:
+        raise ValueError("torsion_links requires contact_torsion")
     if pair_cache and (friction_mode != "fixed_normal" or factor_coordinates):
         raise ValueError("the friction-pair cache requires the fixed-normal pair solve")
     if factor_coordinates and (
@@ -15355,7 +15407,8 @@ def _get_pgs_solve_mf_gs_kernel(
         else ""
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
-    torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    torsion_sweep = torque_sweep_source(D, linked=torsion_links) if contact_torsion else ""
+    torsion_link_build = torque_links_source(M_D) if torsion_links else ""
     pair_cache_capacity = _mfgs_pair_cache_capacity(M_D)
     # Streamed metadata rereads row types and parents every sweep (patch chains, torsion members).
     row_cache = pair_cache and not shared_metadata
@@ -15647,6 +15700,7 @@ def _get_pgs_solve_mf_gs_kernel(
     }}
     __syncwarp();
 {pair_cache_build}
+{torsion_link_build}
 {dense_pipe_decl}
 
     for (int iter = 0; iter < iterations; iter++) {{
@@ -15932,6 +15986,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 contact_compliance,
                 row_phase,
                 pair_cache,
+                torsion_links,
             )
             + "_local",
         )
@@ -16078,6 +16133,7 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_compliance,
         row_phase,
         pair_cache,
+        torsion_links,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -16100,6 +16156,7 @@ def _mf_gs_kernel_name(
     contact_compliance: bool,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -16108,6 +16165,7 @@ def _mf_gs_kernel_name(
         f"{'' if shared_metadata else '_gmeta'}"
         f"{'_paircache' if pair_cache else ''}"
         f"{'_torsion' if contact_torsion else ''}"
+        f"{'_links' if torsion_links else ''}"
         f"{('_phased' if row_phase is None else f'_phase{row_phase}') if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"
@@ -16323,6 +16381,8 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
 
 # Static shared memory available to a CUDA block without opt-in [B].
 _STATIC_SHARED_MEMORY_BYTES = 48 * 1024
+# Headroom for the static shared storage Warp adds to a kernel beyond the solver's own arrays [B].
+_WARP_STATIC_SHARED_RESERVE_BYTES = 2048
 # Shared-memory budget of the streaming Delassus kernel's J and Y row chunks [B].
 _DELASSUS_SHARED_MEMORY_BYTES = 45000
 _DELASSUS_MAX_CHUNK_SIZE = 64
