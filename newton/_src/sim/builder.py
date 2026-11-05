@@ -205,7 +205,9 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
 _ADD_MUSCLE_DEPRECATION_MSG = (
     "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
     "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit and "
-    "SolverFeatherstone; import MJCF <muscle> actuators and use SolverMuJoCo instead."
+    "SolverFeatherstone. Use SolverMuJoCo muscle actuators instead: import MJCF <muscle> actuators, or build "
+    "them with newton.solvers.mujoco.add_tendon_spatial() and "
+    'add_actuator_general(..., dyntype="muscle", gaintype="muscle", biastype="muscle").'
 )
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
@@ -8806,9 +8808,14 @@ class ModelBuilder:
             :class:`~newton.solvers.SolverSemiImplicit` and
             :class:`~newton.solvers.SolverFeatherstone` evaluate them, and they
             ignore the muscle parameters, applying a force of magnitude
-            ``Control.muscle_activations`` along each waypoint segment. For
-            muscle actuation, import MJCF ``<muscle>`` actuators and simulate
-            them with :class:`~newton.solvers.SolverMuJoCo`.
+            ``Control.muscle_activations`` along each waypoint segment. Use
+            :class:`~newton.solvers.SolverMuJoCo` muscle actuators instead,
+            either imported from MJCF ``<muscle>`` actuators or built in code:
+            route a spatial tendon through sites on the waypoint bodies with
+            :func:`newton.solvers.mujoco.add_tendon_spatial`, then actuate it
+            with :func:`newton.solvers.mujoco.add_actuator_general` using
+            :meth:`ActuatorTarget.tendon() <newton.solvers.mujoco.ActuatorTarget.tendon>`
+            and ``dyntype``, ``gaintype`` and ``biastype`` set to ``"muscle"``.
 
         Args:
             bodies: A list of body indices for each waypoint
