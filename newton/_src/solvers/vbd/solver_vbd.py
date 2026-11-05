@@ -62,6 +62,7 @@ from .particle_vbd_kernels import (
     scatter_particle_body_contact_force_and_hessian,
     solve_elasticity,
     update_velocity,
+    vbd_apply_particle_kinematic_targets,
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
@@ -2788,11 +2789,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._validate_dat_collision_schedules()
 
-        if self._pre_initialization_detection(state_in, dt):
-            update_rigid = True
-
         if control is None:
             control = self.model.control(clone_variables=False)
+
+        self._apply_particle_kinematic_prologue(state_in, control)
+
+        if self._pre_initialization_detection(state_in, dt):
+            update_rigid = True
 
         # Must run BEFORE _initialize_rigid_bodies: the dynamic routing activation
         # decision has to see the accepted pose, but the inertial predictor inside
@@ -2861,6 +2864,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._finalize_rigid_bodies(state_in, state_out, dt)
         if update_tendon_diagnostics:
             self._update_tendon_segment_diagnostics(state_out, dt)
+        if self.iterations == 0 and self.model.particle_count > 0:
+            wp.copy(state_out.particle_q, state_in.particle_q)
         self._finalize_particles(state_out, dt)
         self._save_tendon_history(state_out)
 
@@ -3448,6 +3453,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 device=self.device,
             )
 
+    def _apply_particle_kinematic_prologue(self, state_in: State, control: Control) -> None:
+        """Record particle start positions and move kinematic particles to their targets before detection."""
+        if self.model.particle_count == 0:
+            return
+        wp.launch(
+            kernel=vbd_apply_particle_kinematic_targets,
+            dim=self.model.particle_count,
+            inputs=[self.model.particle_flags, control.particle_target_q],
+            outputs=[state_in.particle_q, self.particle_q_prev],
+            device=self.device,
+        )
+
     def _initialize_particles(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
@@ -3470,7 +3487,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 dt,
                 model.gravity,
                 model.particle_world,
-                self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,
                 self.model.particle_inv_mass,

@@ -47,6 +47,7 @@ from ...utils.mesh import (
     get_vertex_num_adjacent_faces,
     get_vertex_num_adjacent_tets,
 )
+from ..solver import particle_is_kinematic
 
 # TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
@@ -1406,12 +1407,29 @@ def reset_particle_state(
         particle_qd[tid] = model_particle_qd[tid]
 
 
+@wp.func
+def vbd_particle_is_fixed(flags: wp.int32, mass: float) -> bool:
+    return (flags & ParticleFlags.ACTIVE) == 0 or mass == 0.0 or (flags & ParticleFlags.KINEMATIC) != 0
+
+
+@wp.kernel
+def vbd_apply_particle_kinematic_targets(
+    particle_flags: wp.array[wp.int32],
+    target_q: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+):
+    particle = wp.tid()
+    pos_prev[particle] = pos[particle]
+    if target_q and particle_is_kinematic(particle_flags[particle]):
+        pos[particle] = target_q[particle]
+
+
 @wp.kernel
 def forward_step(
     dt: float,
     gravity: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
-    pos_prev: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
     vel: wp.array[wp.vec3],
     inv_mass: wp.array[float],
@@ -1422,9 +1440,9 @@ def forward_step(
 ):
     particle = wp.tid()
 
-    pos_prev[particle] = pos[particle]
-    if not particle_flags[particle] & ParticleFlags.ACTIVE or inv_mass[particle] == 0:
-        inertia_out[particle] = pos_prev[particle]
+    flags = particle_flags[particle]
+    if not flags & ParticleFlags.ACTIVE or flags & ParticleFlags.KINEMATIC or inv_mass[particle] == 0:
+        inertia_out[particle] = pos[particle]
         if displacements_out:
             displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
         return
@@ -2553,9 +2571,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
         particle_is_dynamic = False
         if particle_slot_valid:
             particle_index = particle_ids_in_color[particle_slot]
-            particle_is_dynamic = (
-                particle_flags[particle_index] & ParticleFlags.ACTIVE != 0 and mass[particle_index] != 0.0
-            )
+            particle_is_dynamic = not vbd_particle_is_fixed(particle_flags[particle_index], mass[particle_index])
 
         if wp.static(not two_particles_per_warp):
             # Whole 16-lane block shares one particle: safe to retire inactive blocks early.
@@ -2749,7 +2765,7 @@ def solve_elasticity(
 
     particle_index = particle_ids_in_color[t_id]
 
-    if not particle_flags[particle_index] & ParticleFlags.ACTIVE or mass[particle_index] == 0:
+    if vbd_particle_is_fixed(particle_flags[particle_index], mass[particle_index]):
         particle_displacements[particle_index] = wp.vec3(0.0)
         return
 

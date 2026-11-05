@@ -277,7 +277,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             # particle shape contact
             eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f_work)
 
-            self.integrate_particles(model, state_in, state_out, dt)
+            self.integrate_particles(model, state_in, state_out, dt, control)
 
             if body_f_work is body_f:
                 self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)

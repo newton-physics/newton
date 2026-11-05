@@ -1558,6 +1558,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         enable_timers: bool = False,
     ):
         super().__init__(model)
+        self._raise_if_kinematic_particles()
 
         self._initial_particle_count = int(model.particle_count)
         self._initial_world_count = int(model.world_count)

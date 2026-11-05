@@ -66,11 +66,9 @@ def apply_rotation(
     roots_to_ps: wp.array[wp.vec3],
     t: wp.array[float],
     angular_velocity: float,
-    dt: float,
     end_time: float,
     # output
-    pos_0: wp.array[wp.vec3],
-    pos_1: wp.array[wp.vec3],
+    target_q: wp.array[wp.vec3],
 ):
     cur_t = t[0]
     if cur_t > end_time:
@@ -104,11 +102,12 @@ def apply_rotation(
     root_to_p_rot = R * root_to_p
     p_rot = root + root_to_p_rot
 
-    pos_0[v_index] = p_rot
-    pos_1[v_index] = p_rot
+    target_q[v_index] = p_rot
 
-    if tid == 0:
-        t[0] = cur_t + dt
+
+@wp.kernel
+def advance_time(t: wp.array[float], dt: float):
+    t[0] = t[0] + dt
 
 
 class Example:
@@ -172,8 +171,8 @@ class Example:
 
         if len(rot_point_indices):
             flags = self.model.particle_flags.numpy()
-            for fixed_vertex_id in rot_point_indices:
-                flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
+            for driven_vertex_id in rot_point_indices:
+                flags[driven_vertex_id] = flags[driven_vertex_id] | ParticleFlags.KINEMATIC
 
             self.model.particle_flags = wp.array(flags)
 
@@ -252,14 +251,11 @@ class Example:
                     self.roots_to_ps,
                     self.t,
                     self.rot_angular_velocity,
-                    self.sim_dt,
                     self.rot_end_time,
                 ],
-                outputs=[
-                    self.state_0.particle_q,
-                    self.state_1.particle_q,
-                ],
+                outputs=[self.control.particle_target_q],
             )
+            wp.launch(kernel=advance_time, dim=1, inputs=[self.t, self.sim_dt])
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

@@ -1309,5 +1309,146 @@ for solver, tests in collision_pipeline_tests_to_run.items():
         )
 
 
+# ============================================================================
+# Kinematic particle targets (ParticleFlags.KINEMATIC + Control.particle_target_q)
+# ============================================================================
+
+
+class TestClothKinematicParticles(unittest.TestCase):
+    pass
+
+
+@wp.kernel
+def _kinematic_offset_target_kernel(
+    particle: int,
+    q0: wp.array[wp.vec3],
+    offset: wp.vec3,
+    target_q: wp.array[wp.vec3],
+):
+    target_q[particle] = q0[particle] + offset
+
+
+def _kinematic_corner_model(device, max_velocity=None):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    builder.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-3,
+        particle_radius=0.01,
+    )
+    builder.particle_flags[0] |= int(ParticleFlags.KINEMATIC)
+    builder.color()
+    model = builder.finalize(device=device)
+    if max_velocity is not None:
+        model.particle_max_velocity = max_velocity
+    return model
+
+
+def test_kinematic_particle_parity(test, device):
+    """Every supported solver lands a massive KINEMATIC particle exactly on its target with qd = delta / dt."""
+    dt = 1.0e-3
+    step_offset = np.array((0.002, 0.0, 0.001), dtype=np.float32)
+    cases = (
+        ("vbd", lambda m: newton.solvers.SolverVBD(m, iterations=4), None),
+        ("semi_implicit", newton.solvers.SolverSemiImplicit, None),
+        ("featherstone", newton.solvers.SolverFeatherstone, None),
+        ("xpbd", lambda m: newton.solvers.SolverXPBD(m, iterations=3), 0.1),
+    )
+    for name, make_solver, max_velocity in cases:
+        with test.subTest(solver=name):
+            model = _kinematic_corner_model(device, max_velocity)
+            solver = make_solver(model)
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            q_rest = wp.clone(model.particle_q)
+            for k in range(5):
+                wp.launch(
+                    _kinematic_offset_target_kernel,
+                    dim=1,
+                    inputs=[0, q_rest, wp.vec3(step_offset * float(k + 1))],
+                    outputs=[control.particle_target_q],
+                    device=device,
+                )
+                if k == 4:
+                    q_in = state_0.particle_q.numpy()[0].copy()
+                state_0.clear_forces()
+                solver.step(state_0, state_1, control, None, dt)
+                state_0, state_1 = state_1, state_0
+            target = control.particle_target_q.numpy()[0]
+            np.testing.assert_array_equal(state_0.particle_q.numpy()[0], target)
+            np.testing.assert_allclose(state_0.particle_qd.numpy()[0], (target - q_in) / dt, rtol=1.0e-3, atol=1.0e-3)
+            np.testing.assert_allclose(target, q_rest.numpy()[0] + 5.0 * step_offset, atol=1.0e-6)
+
+    for name, make_solver in (
+        ("semi_implicit_in_place", newton.solvers.SolverSemiImplicit),
+        ("featherstone_in_place", newton.solvers.SolverFeatherstone),
+    ):
+        with test.subTest(solver=name):
+            model = _kinematic_corner_model(device)
+            solver = make_solver(model)
+            state = model.state()
+            control = model.control()
+            wp.launch(
+                _kinematic_offset_target_kernel,
+                dim=1,
+                inputs=[0, model.particle_q, wp.vec3(step_offset)],
+                outputs=[control.particle_target_q],
+                device=device,
+            )
+            solver.step(state, state, control, None, dt)
+            np.testing.assert_allclose(state.particle_qd.numpy()[0], step_offset / dt, rtol=1.0e-3)
+
+
+def test_kinematic_particle_control_defaults(test, device):
+    """Model.control() seeds particle_target_q from particle_q; clear() never zeroes it."""
+    model = _kinematic_corner_model(device)
+    control = model.control()
+    np.testing.assert_array_equal(control.particle_target_q.numpy(), model.particle_q.numpy())
+    test.assertIsNot(control.particle_target_q, model.particle_q)
+    test.assertIsNone(model.control(clone_variables=False).particle_target_q)
+
+    control.particle_target_q.fill_(wp.vec3(1.0, 2.0, 3.0))
+    control.clear()
+    np.testing.assert_array_equal(
+        control.particle_target_q.numpy(), np.tile((1.0, 2.0, 3.0), (model.particle_count, 1))
+    )
+    control.clear(model)
+    np.testing.assert_array_equal(control.particle_target_q.numpy(), model.particle_q.numpy())
+
+    rigid = newton.ModelBuilder()
+    rigid.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    test.assertIsNone(rigid.finalize(device=device).control().particle_target_q)
+
+    solver = newton.solvers.SolverVBD(model, iterations=2)
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, None, None, 1.0e-3)
+    np.testing.assert_array_equal(state_1.particle_q.numpy()[0], model.particle_q.numpy()[0])
+
+
+def test_kinematic_particle_unsupported_solvers(test, device):
+    """Solvers without kinematic particle support refuse models that set the flag."""
+    model = _kinematic_corner_model(device)
+    with test.assertRaises(NotImplementedError):
+        newton.solvers.SolverStyle3D(model)
+    with test.assertRaises(NotImplementedError):
+        newton.solvers.SolverImplicitMPM(model, newton.solvers.SolverImplicitMPM.Config())
+
+
+for _test in (
+    test_kinematic_particle_parity,
+    test_kinematic_particle_control_defaults,
+    test_kinematic_particle_unsupported_solvers,
+):
+    add_function_test(TestClothKinematicParticles, _test.__name__, _test, devices=devices)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

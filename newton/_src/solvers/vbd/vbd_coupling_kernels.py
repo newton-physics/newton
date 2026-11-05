@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry.flags import ParticleFlags
 from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
@@ -277,6 +278,8 @@ def _vbd_particle_is_dynamic_nonproxy(
     if (particle_flags[particle_idx] & proxy_particle_flag) != 0:
         return False
     if particle_inv_mass[particle_idx] <= 0.0:
+        return False
+    if (particle_flags[particle_idx] & ParticleFlags.KINEMATIC) != 0:
         return False
     return True
 
