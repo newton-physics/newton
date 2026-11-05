@@ -13,6 +13,7 @@ from newton._src.geometry.contact_reduction_hydroelastic import (
     FIXED_EXP_NONE,
     SPECULATIVE_BIN_OFFSET,
     _fixed_mantissa_bits,
+    _fixed_shift,
     _from_fixed,
     _to_fixed,
 )
@@ -82,11 +83,13 @@ def _test_fixed_point_extreme_exponents(
     mantissa_bits: int,
     fixed_values: wp.array[wp.int64],
     roundtrip_values: wp.array[wp.float32],
+    shifts: wp.array[wp.float64],
 ):
     """Convert sentinel and high finite pressure contributions in fixed point."""
     tid = wp.tid()
     fixed_values[tid] = _to_fixed(values[tid], exponents[tid], mantissa_bits)
     roundtrip_values[tid] = _from_fixed(fixed_values[tid], exponents[tid], mantissa_bits)
+    shifts[tid] = _fixed_shift(exponents[tid], mantissa_bits)
 
 
 @wp.kernel
@@ -2549,20 +2552,22 @@ def test_scalar_sdf_texture_hydroelastic_contacts(test, device):
 
 
 def test_fixed_point_extreme_exponents(test, device):
-    """Handle sentinel and high finite pressure contributions without overflow."""
+    """Use exact binary scales across finite float32 exponents without overflow."""
     mantissa_bits = _fixed_mantissa_bits(1024)
     high_value = np.finfo(np.float32).max
-    values_np = np.array([0.0, high_value, -high_value], dtype=np.float32)
-    exponents_np = np.array([int(FIXED_EXP_NONE), 127, 127], dtype=np.int32)
+    binary_exponents = np.arange(-149, 128, dtype=np.int32)
+    values_np = np.concatenate(([0.0, high_value, -high_value], np.ldexp(1.0, binary_exponents))).astype(np.float32)
+    exponents_np = np.concatenate(([int(FIXED_EXP_NONE), 127, 127], binary_exponents)).astype(np.int32)
     values = wp.array(values_np, dtype=wp.float32, device=device)
     exponents = wp.array(exponents_np, dtype=wp.int32, device=device)
     fixed_values = wp.empty(len(values_np), dtype=wp.int64, device=device)
     roundtrip_values = wp.empty(len(values_np), dtype=wp.float32, device=device)
+    shifts = wp.empty(len(values_np), dtype=wp.float64, device=device)
 
     wp.launch(
         _test_fixed_point_extreme_exponents,
         dim=len(values_np),
-        inputs=[values, exponents, mantissa_bits, fixed_values, roundtrip_values],
+        inputs=[values, exponents, mantissa_bits, fixed_values, roundtrip_values, shifts],
         device=device,
     )
 
@@ -2572,6 +2577,9 @@ def test_fixed_point_extreme_exponents(test, device):
     test.assertEqual(roundtrip_np[0], 0.0)
     test.assertTrue(np.all(np.abs(fixed_np[1:]) < np.iinfo(np.int64).max))
     np.testing.assert_array_equal(roundtrip_np[1:], values_np[1:])
+    expected_shifts = np.zeros(len(values_np), dtype=np.float64)
+    expected_shifts[1:] = np.ldexp(1.0, mantissa_bits - exponents_np[1:])
+    np.testing.assert_array_equal(shifts.numpy(), expected_shifts)
 
 
 # --- Test class ---
