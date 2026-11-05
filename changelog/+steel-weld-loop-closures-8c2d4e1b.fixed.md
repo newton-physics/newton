@@ -1,0 +1,1 @@
+Fix FIXED loop joints converted from MuJoCo weld equalities ignoring `relpose` and the bodies' relative orientation. The joint frames now follow MuJoCo's weld: the anchor on `body2` is held at `relpose` in `body1`'s frame, or at the reference relative pose when `relpose` is not given. `SolverMuJoCo` is unaffected.
