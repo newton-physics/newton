@@ -1,0 +1,1 @@
+Fix `SolverFeatherstone` ignoring runtime edits of `Model.body_mass`, `Model.body_inertia` and `Model.body_com`. `notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)` now refreshes the solver's cached spatial inertias and COM transforms and rebuilds the mass matrix on the next step.

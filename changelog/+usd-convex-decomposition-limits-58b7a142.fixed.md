@@ -1,0 +1,1 @@
+Honor PhysX USD convex-decomposition hull-count and vertex limits when SchemaResolverPhysx is enabled, using existing hull reduction and applying the hull-count limit independently to each connected component.

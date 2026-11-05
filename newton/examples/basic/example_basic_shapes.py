@@ -1,19 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Shapes
-#
-# Shows how to programmatically create a variety of
-# collision shapes using the newton.ModelBuilder() API.
-# Supports XPBD (default), VBD, and Kamino DVI solvers.
-#
-# Command: python -m newton.examples basic_shapes
-# With VBD: python -m newton.examples basic_shapes --solver vbd
-# With Kamino DVI: python -m newton.examples basic_shapes --solver kamino
-#
-#
-###########################################################################
+"""Example Basic Shapes
+
+Shows how to programmatically create a variety of
+collision shapes using the newton.ModelBuilder() API.
+Supports XPBD (default), VBD, and Kamino DVI solvers.
+
+Success criteria:
+- Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.
+- The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.
+
+Runs:
+- `python -m newton.examples basic_shapes --solver xpbd`
+- `python -m newton.examples basic_shapes --solver vbd`
+- `python -m newton.examples basic_shapes`
+- `python -m newton.examples basic_shapes --solver kamino`
+"""
 
 import warp as wp
 from pxr import Usd

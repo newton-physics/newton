@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 from asv_runner.benchmarks.time import TimeBenchmark
+from asv_runner.statistics import compute_stats
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -39,6 +40,7 @@ try:
     from run_pr_benchmarks import build_pr_config, load_benchmark_patterns
     from simulation import (
         bench_anymal,
+        bench_cloth,
         bench_contacts,
         bench_kamino,
         bench_mujoco,
@@ -167,7 +169,19 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Cover selector crossovers, duplicate-heavy hulls, and every convex type."""
         self.assertEqual(
             tuple(bench_contacts.FastConvexCollision.params[0]),
-            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191)),
+            (
+                ("hulls", 56),
+                ("hulls_duplicate", 192),
+                ("mixed", 64),
+                ("mixed", 153),
+                ("mixed", 191),
+                ("plane_hulls", 64),
+                ("plane_hulls", 512),
+                ("hulls_plane", 4),
+                ("hulls_plane", 56),
+                ("mixed_plane", 16),
+                ("mixed_plane", 64),
+            ),
         )
         self.assertEqual(
             {shape for pair in bench_contacts.MIXED_CONVEX_PAIR_TYPES for shape in pair},
@@ -203,6 +217,62 @@ class TestSimulationBenchmarks(unittest.TestCase):
         for benchmark_name in benchmark_names:
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
+    def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
+        """Keep nightly collisions out of the gate with finite timing statistics."""
+        benchmark_names = (
+            "simulation.bench_cloth.DeformableRigidCollision.time_collide",
+            "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
+        )
+        inventory = {entry["name"]: entry for entry in self._discover_benchmarks(pr_gate=False)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for benchmark_name in benchmark_names:
+            with self.subTest(benchmark_name=benchmark_name):
+                self.assertIn(benchmark_name, inventory)
+                self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
+                benchmark = inventory[benchmark_name]
+                sample_count = benchmark["rounds"] * benchmark["repeat"]
+                samples = [0.01 + 0.001 * index for index in range(sample_count)]
+                _, stats = compute_stats(samples, number=1)
+                self.assertTrue(np.isfinite([stats["ci_99_a"], stats["ci_99_b"]]).all())
+        coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
+        self.assertIn(coarse_name, inventory)
+        self.assertEqual(inventory[coarse_name]["rounds"], 2)
+        self.assertTrue(any(pattern.search(coarse_name) for pattern in patterns))
+        self.assertEqual(
+            {case[1] for case in bench_cloth.FastDeformableRigidCoarseCloth.params[0]},
+            {"box", "capsule", "mesh"},
+        )
+        vbd_name = "simulation.bench_cloth.FastDeformableRigidCoarseClothVBD.time_simulate"
+        self.assertIn(vbd_name, inventory)
+        self.assertEqual(inventory[vbd_name]["rounds"], 2)
+        self.assertTrue(any(pattern.search(vbd_name) for pattern in patterns))
+        self.assertIn(
+            ("box_coarse_cloth_256", "box", 8, 256, 1, False),
+            bench_cloth.FastDeformableRigidCoarseClothVBD.params[0],
+        )
+
+    def test_deformable_rigid_benchmark_rejects_overflow(self):
+        """Reject each truncated contact stream but allow exactly full buffers."""
+        benchmark = bench_cloth.DeformableRigidCollision()
+        benchmark.pipeline = SimpleNamespace(broad_phase_pair_count=self._FakeArray([8]), shape_pairs_max=8)
+        benchmark.contacts = SimpleNamespace(
+            rigid_contact_count=self._FakeArray([8]),
+            rigid_contact_max=8,
+            soft_contact_count=self._FakeArray([8]),
+            soft_contact_max=8,
+        )
+        benchmark._verify_contact_capacity()
+        for label, counter in (
+            ("candidate pairs", benchmark.pipeline.broad_phase_pair_count),
+            ("rigid contacts", benchmark.contacts.rigid_contact_count),
+            ("soft contacts", benchmark.contacts.soft_contact_count),
+        ):
+            with self.subTest(counter=label):
+                counter.values[0] = 9
+                with self.assertRaisesRegex(RuntimeError, f"overflows {label}: 9 > 8"):
+                    benchmark._verify_contact_capacity()
+                counter.values[0] = 8
 
     def test_deformable_collision_benchmark_is_in_pr_gate(self):
         """Keep the large-scene deformable collision benchmark in the PR gate."""
@@ -609,6 +679,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
+            "simulation.bench_actuators.ActuatorG1.time_step",
         )
 
         for benchmark in blocking_benchmarks + dashboard_benchmarks:

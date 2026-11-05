@@ -12,22 +12,37 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.contact_compliance import (
-    _prepare_compliant_rows,
+    begin_rows,
+    clear_status,
     material_coefficients,
     normal_coefficients,
+    prepare_rows,
     start_step,
 )
-from newton._src.solvers.steel.kernels import PGS_CONSTRAINT_TYPE_CONTACT, compute_world_contact_bias
+from newton._src.solvers.steel.kernels import (
+    PGS_CONSTRAINT_TYPE_CONTACT,
+    PGS_CONSTRAINT_TYPE_FRICTION,
+    PROPAGATION_COLOR_TAIL,
+    compute_world_contact_bias,
+)
 from newton.geometry import HydroelasticSDF
 from newton.solvers import SolverSteel
 from newton.tests.steel._compliance_reference import solve_reference, support_trajectory
-from newton.tests.steel._fixtures import _build_scissor_model, run_fixture
+from newton.tests.steel._fixtures import (
+    COLORED_VARIANTS,
+    _build_mixed_response_model,
+    _build_scissor_model,
+    run_fixture,
+    select_colored_variant,
+    set_torsion_radius,
+)
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
-def run_native_hydro_fixture(*, device, articulated=True):
-    """Consume the emitted SDF hydroelastic coefficients unchanged on dense or free-body sphere rows."""
+def run_native_hydro_fixture(*, device, articulated=True, response="immediate"):
+    """Consume the emitted SDF hydroelastic coefficients unchanged on dense, free-body or colored sphere rows."""
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
@@ -88,6 +103,7 @@ def run_native_hydro_fixture(*, device, articulated=True):
                 articulation_constraint_max=2048,
                 free_body_constraint_max=32 if articulated else 2048,
                 baumgarte=0.05,
+                articulated_contact_response=response,
             )
             output = model.state()
             step_input = model.state()
@@ -97,10 +113,15 @@ def run_native_hydro_fixture(*, device, articulated=True):
             step_input.clear_forces()
             solver.step(step_input, output, model.control(), contacts, 0.0025)
             paths = solver._contact_path.numpy()[:count]
-            if not np.all(paths == (0 if articulated else 1)):
+            route = 2 if response == "propagation_colored" else (0 if articulated else 1)
+            if not np.all(paths == route):
                 raise AssertionError("Hydroelastic fixture did not use the requested contact route")
-            impulses = solver._impulses if articulated else solver._mf_impulses
-            row_types = solver._row_type if articulated else solver._mf_row_type
+            if route == 2:
+                impulses, row_types = solver._propagation_impulses, solver._propagation_row_type
+            elif articulated:
+                impulses, row_types = solver._impulses, solver._row_type
+            else:
+                impulses, row_types = solver._mf_impulses, solver._mf_row_type
             results["compliant" if enabled else "stock_law"] = {
                 "body_z_m": float(output.body_q.numpy()[body, 2]),
                 "joint_velocity_m_s": float(output.joint_qd.numpy()[0]),
@@ -451,28 +472,11 @@ def _contacts(device, *, count=0):
 
 def test_input_overflow_rejected(test, device):
     """Fail explicitly for lost contact candidates."""
-    solver = SimpleNamespace(model=SimpleNamespace(device=device))
+    scene = _CompliantScene(device, articulated=True)
+    scene.collide()
+    scene.contacts.rigid_contact_count.fill_(scene.contacts.rigid_contact_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing contact"):
-        start_step(solver, _contacts(device, count=5), 0.005)
-
-
-def test_capture_rejected(test, device):
-    """Prevent a silent fallback under CUDA graph capture."""
-    solver = SimpleNamespace(model=SimpleNamespace(device=device))
-    contacts = _contacts(device)
-    with wp.ScopedCapture(device=device):
-        with test.assertRaisesRegex(RuntimeError, "CUDA graph"):
-            start_step(solver, contacts, 0.005)
-
-
-def test_solver_step_rejects_capture(test, device):
-    """Reject capturing a real compliant solver step before it launches any work."""
-    _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=1)
-    model = solver.model
-    state, output = model.state(), model.state()
-    with wp.ScopedCapture(device=device):
-        with test.assertRaisesRegex(RuntimeError, "CUDA graph"):
-            solver.step(state, output, model.control(), None, 0.005)
+        scene.solve()
 
 
 def test_missing_material_arrays_rejected(test, device):
@@ -485,6 +489,11 @@ def test_missing_material_arrays_rejected(test, device):
             start_step(solver, contacts, 0.005)
     with test.assertRaisesRegex(ValueError, "hydroelastic material arrays"):
         start_step(solver, None, 0.005)
+    for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+        contacts = _contacts(device)
+        setattr(contacts, name, wp.zeros(3, device=device))
+        with test.subTest(short=name), test.assertRaisesRegex(ValueError, rf"{name} of shape \(4,\)"):
+            start_step(solver, contacts, 0.005)
 
 
 def test_invalid_contact_stiffness_rejected(test, device):
@@ -561,15 +570,57 @@ def test_rolled_back_capacity_fails_without_warnings(test, device):
 
 
 def test_solver_overflow_and_dropped_contact_rejected(test, device):
-    """Reject overflowing rows and missing mappings for positive stiffness."""
-    _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=1)
+    """Reject overflowing rows, duplicate mappings and missing mappings for positive stiffness."""
+    # A second contact mapped to the first one's normal row, on the free-body and the dense route.
+    for articulated in (False, True):
+        scene = _CompliantScene(device, articulated=articulated)
+        scene.step()
+        solver = scene.solver
+        test.assertEqual(int(solver._contact_path.numpy()[0]), 0 if articulated else 1)
+        # Without a duplicate, the cleared step-local coefficients let the single contact through.
+        begin_rows(solver)
+        prepare_rows(solver, scene.contacts, 0.005)
+        for mapping in (solver._contact_path, solver._contact_slot, solver._contact_world):
+            values = mapping.numpy()
+            values[1] = values[0]
+            mapping.assign(values)
+        scene.contacts.rigid_contact_count.fill_(2)
+        begin_rows(solver)
+        with test.subTest(articulated=articulated):
+            with test.assertRaisesRegex(RuntimeError, r"one-to-one to normal rows \(contact [01]\)"):
+                prepare_rows(solver, scene.contacts, 0.005)
+        scene.contacts.rigid_contact_count.fill_(1)
+        solver._contact_slot.fill_(-1)
+        begin_rows(solver)
+        with test.subTest(articulated=articulated, case="unmapped"):
+            with test.assertRaisesRegex(RuntimeError, r"dropped or routed to an unsupported path \(contact 0\)"):
+                prepare_rows(solver, scene.contacts, 0.005)
     solver._constraint_count.fill_(solver.articulation_constraint_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
-        _prepare_compliant_rows(solver)
-    solver._constraint_count.fill_(1)
-    solver._contact_slot.fill_(-1)
-    with test.assertRaisesRegex(RuntimeError, "dropped"):
-        _prepare_compliant_rows(solver)
+        prepare_rows(solver, scene.contacts, 0.005)
+
+
+def test_underflowing_compliance_keeps_friction_weight(test, device):
+    """Weight the friction rows of a compliant contact whose gamma is below the float32 range."""
+    # gamma = 1 / (dt (dt k + c)) is about 3e-47 [1/kg] here.
+    for articulated in (True, False):
+        _, _, solver, _ = run_fixture(
+            device=device,
+            articulated=articulated,
+            enabled=True,
+            steps=1,
+            dt=1.0e4,
+            stiffness=3.0e38,
+            friction_scale=0.25,
+        )
+        row_type, row_mu = (
+            (solver._row_type, solver._row_mu) if articulated else (solver._mf_row_type, solver._mf_row_mu)
+        )
+        friction = row_mu.numpy()[0][row_type.numpy()[0] == PGS_CONSTRAINT_TYPE_FRICTION]
+        with test.subTest(articulated=articulated):
+            test.assertEqual(solver.compliance_contact_count, 1)
+            test.assertGreater(friction.size, 0)
+            np.testing.assert_allclose(friction, 0.5 * 0.25)
 
 
 def test_reset_and_open_gap_release(test, device):
@@ -582,7 +633,6 @@ def test_reset_and_open_gap_release(test, device):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     before = {name: getattr(state, name).numpy().copy() for name in ("joint_q", "joint_qd", "body_q", "body_qd")}
     solver.reset(state)
-    test.assertIsNone(solver._compliant_contacts)
     test.assertEqual(solver.compliance_contact_count, 0)
     test.assertEqual(solver.compliance_skipped_contact_count, 0)
     for name, value in before.items():
@@ -622,8 +672,6 @@ class TestContactComplianceSafety(unittest.TestCase):
 
 for _fn in (
     test_input_overflow_rejected,
-    test_capture_rejected,
-    test_solver_step_rejects_capture,
     test_nonfinite_inputs_rejected,
     test_missing_material_arrays_rejected,
     test_invalid_contact_stiffness_rejected,
@@ -632,11 +680,684 @@ for _fn in (
     test_nonresponding_contact_is_skipped,
     test_rolled_back_capacity_fails_without_warnings,
     test_solver_overflow_and_dropped_contact_rejected,
+    test_underflowing_compliance_keeps_friction_weight,
     test_reset_and_open_gap_release,
     test_actual_timestep_and_iterations,
     test_public_defaults_remain_hard,
 ):
     add_function_test(TestContactComplianceSafety, _fn.__name__, _fn, devices=devices)
+
+
+_COLORED = {"articulated_contact_response": "propagation_colored"}
+
+
+class _CompliantScene:
+    """A compliant sphere-on-plane solver stepped from fixed buffers, so its steps can be captured."""
+
+    def __init__(self, device, *, articulated, stiffness=3000.0, damping=5.0, height=0.05, solver_options=None):
+        # Zero steps: the solver is constructed but never stepped, so the first capture is cold.
+        _, _, self.solver, _ = run_fixture(
+            device=device, articulated=articulated, enabled=True, steps=0, height=height, solver_options=solver_options
+        )
+        self.model = model = self.solver.model
+        with wp.ScopedDevice(device):
+            self.pipeline = newton.CollisionPipeline(model, rigid_contact_max=32)
+            self.contacts = self.pipeline.contacts()
+            # Collision rewrites the contact material arrays, so each step copies them from these sources.
+            self.stiffness = wp.full(32, stiffness, dtype=float)
+            self.damping = wp.full(32, damping, dtype=float)
+            self.friction = wp.full(32, 1.0, dtype=float)
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(self.contacts, name, wp.zeros(32, dtype=float))
+            self.states = [model.state(), model.state()]
+            self.control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, self.states[0])
+        self.solver.reset(self.states[0])
+
+    def collide(self):
+        self.pipeline.collide(self.states[0], self.contacts)
+        wp.copy(self.contacts.rigid_contact_stiffness, self.stiffness)
+        wp.copy(self.contacts.rigid_contact_damping, self.damping)
+        wp.copy(self.contacts.rigid_contact_friction, self.friction)
+
+    def solve(self):
+        self.solver.step(self.states[0], self.states[1], self.control, self.contacts, 0.005)
+        wp.copy(self.states[0].body_q, self.states[1].body_q)
+        wp.copy(self.states[0].body_qd, self.states[1].body_qd)
+        wp.copy(self.states[0].joint_q, self.states[1].joint_q)
+        wp.copy(self.states[0].joint_qd, self.states[1].joint_qd)
+
+    def step(self):
+        self.collide()
+        self.solve()
+
+    def capture(self):
+        with wp.ScopedCapture(device=self.model.device) as capture:
+            self.step()
+        return capture.graph
+
+    def pose(self):
+        return np.concatenate([self.states[0].body_q.numpy().ravel(), self.states[0].body_qd.numpy().ravel()])
+
+
+def test_captured_steps_match_eager_steps(test, device):
+    """Replay a compliant step captured cold, before any eager step, bitwise like eager stepping.
+
+    The compliance counts raise when read during the capture, which stays usable.
+    """
+    for colored, articulated in ((False, True), (False, False), (True, True), (True, False)):
+        options = _COLORED if colored else None
+        eager, captured = (_CompliantScene(device, articulated=articulated, solver_options=options) for _ in range(2))
+        with wp.ScopedCapture(device=captured.model.device) as capture:
+            captured.step()
+            for name in ("compliance_contact_count", "compliance_skipped_contact_count"):
+                with test.subTest(colored=colored, articulated=articulated, name=name):
+                    with test.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
+                        getattr(captured.solver, name)
+        graph = capture.graph
+        # The capture records the step without running it.
+        np.testing.assert_array_equal(captured.pose(), eager.pose())
+        for step in range(40):
+            eager.step()
+            wp.capture_launch(graph)
+            with test.subTest(colored=colored, articulated=articulated, step=step):
+                np.testing.assert_array_equal(captured.pose(), eager.pose())
+        test.assertEqual(captured.solver.compliance_contact_count, 1)
+        test.assertEqual(captured.solver.compliance_contact_count, eager.solver.compliance_contact_count)
+        test.assertEqual(captured.solver.compliance_skipped_contact_count, 0)
+        captured.solver.check_constraint_capacity()
+
+
+def test_capture_interleaves_with_eager_steps_and_reset(test, device):
+    """Keep eager steps, replays and resets on one trajectory."""
+    reference, mixed = (_CompliantScene(device, articulated=True) for _ in range(2))
+    initial = [wp.clone(a) for a in (mixed.states[0].body_q, mixed.states[0].body_qd)]
+    initial_joint = [wp.clone(a) for a in (mixed.states[0].joint_q, mixed.states[0].joint_qd)]
+    trajectory = []
+    for _ in range(12):
+        reference.step()
+        trajectory.append(reference.pose())
+    for _ in range(3):
+        mixed.step()
+    graph = mixed.capture()
+    for _ in range(6):
+        wp.capture_launch(graph)
+    for _ in range(3):
+        mixed.step()
+    np.testing.assert_array_equal(mixed.pose(), trajectory[11])
+    for target, source in zip(
+        (mixed.states[0].body_q, mixed.states[0].body_qd, mixed.states[0].joint_q, mixed.states[0].joint_qd),
+        (*initial, *initial_joint),
+        strict=True,
+    ):
+        wp.copy(target, source)
+    mixed.solver.reset(mixed.states[0])
+    for step in range(4):
+        wp.capture_launch(graph)
+        np.testing.assert_array_equal(mixed.pose(), trajectory[step])
+
+
+def test_replay_reads_edited_contact_material(test, device):
+    """Read per-contact material edits made in place between replays."""
+    captured = _CompliantScene(device, articulated=True)
+    eager = _CompliantScene(device, articulated=True, stiffness=1500.0)
+    graph = captured.capture()
+    captured.stiffness.fill_(1500.0)
+    for _ in range(30):
+        wp.capture_launch(graph)
+        eager.step()
+    np.testing.assert_array_equal(captured.pose(), eager.pose())
+
+
+def test_captured_errors_are_deferred_until_reset(test, device):
+    """Report invalid input from replay through check_constraint_capacity until reset, then recover."""
+    scene = _CompliantScene(device, articulated=True)
+    graph = scene.capture()
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    scene.stiffness.fill_(float("nan"))
+    wp.capture_launch(graph)
+    scene.stiffness.fill_(3000.0)
+    # A valid eager step neither raises the replay's error nor clears it.
+    scene.step()
+    for _ in range(2):
+        with test.assertRaisesRegex(RuntimeError, r"contact compliance.*Invalid contact stiffness \(contact 0\)"):
+            scene.solver.check_constraint_capacity()
+    scene.solver.reset(scene.states[0])
+    scene.solver.check_constraint_capacity()
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    # A shape notification publishes the restitution that the captured step reads.
+    scene.model.shape_material_restitution.fill_(0.5)
+    scene.solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    wp.capture_launch(graph)
+    with test.assertRaisesRegex(RuntimeError, "contact compliance.*zero shape restitution"):
+        scene.solver.check_constraint_capacity()
+    scene.model.shape_material_restitution.zero_()
+    scene.solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    scene.solver.reset(scene.states[0])
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    test.assertTrue(np.isfinite(scene.pose()).all())
+
+
+def test_status_snapshot_reports_a_replay_error(test, device):
+    """Report a replay's invalid contact input from a snapshot taken after it, not before it or after a reset."""
+    scene = _CompliantScene(device, articulated=True)
+    graph = scene.capture()
+    wp.capture_launch(graph)
+    scene.solver.snapshot_constraint_status()
+    scene.stiffness.fill_(float("nan"))
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity(snapshot=True)
+    scene.solver.snapshot_constraint_status()
+    clear_status(scene.solver._compliance)
+    scene.solver.check_constraint_capacity()
+    with test.assertRaisesRegex(RuntimeError, r"contact compliance.*Invalid contact stiffness \(contact 0\)"):
+        scene.solver.check_constraint_capacity(snapshot=True)
+    scene.solver.reset(scene.states[0])
+    scene.solver.check_constraint_capacity(snapshot=True)
+
+
+def _run_paired_fixture(device, *, hinv_jt_kernel, friction, friction_gap_max=None, steps=40):
+    """Drop a free box onto a 23-DOF arm (one articulation/free-body pair per world) with compliant contacts."""
+    with wp.ScopedDevice(device):
+        model = _build_mixed_response_model(device, dof_count=23, friction=friction)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, broad_phase="nxn", reduce_contacts=False)
+        model.rigid_contact_max = 64
+        contacts = pipeline.contacts()
+        for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+            setattr(contacts, name, wp.zeros(64, dtype=float))
+        with kernel_overrides({"hinv_jt_kernel": hinv_jt_kernel}):
+            solver = SolverSteel(
+                model,
+                contact_compliance=True,
+                friction_anchor_beta=0.0,
+                solve_mode="matrix_free",
+                enable_restitution=False,
+                contact_friction_scale=1.0 if friction > 0.0 else 0.0,
+                contact_friction_gap_max=friction_gap_max,
+                joint_limit_activation_gap=0.0,
+                iterations=8,
+                articulation_constraint_max=96,
+                free_body_constraint_max=32,
+            )
+        state, output = model.state(), model.state()
+        free = int(np.flatnonzero(solver._model_plan.is_free_rigid)[0])
+        start = int(solver._model_plan.articulation_dof_start[free])
+        qd = state.joint_qd.numpy()
+        qd[start] = 0.5
+        qd[start + 2] = -3.0
+        state.joint_qd.assign(qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        control = model.control()
+        trace = []
+        compliant = 0
+        for _ in range(steps):
+            state.clear_forces()
+            pipeline.collide(state, contacts)
+            contacts.rigid_contact_stiffness.fill_(2.0e4)
+            contacts.rigid_contact_damping.fill_(10.0)
+            contacts.rigid_contact_friction.fill_(1.0)
+            solver.step(state, output, control, contacts, 1.0 / 240.0)
+            state, output = output, state
+            trace.append(state.joint_q.numpy().copy())
+            compliant = max(compliant, solver.compliance_contact_count)
+        return solver, np.asarray(trace), compliant
+
+
+def test_paired_factor_owner_matches_general_owner(test, device):
+    """Apply the compliant residual in the paired factor-coordinate owner as in the general owner."""
+    # Contacts with friction rows take the contact-triple branch; a -inf gap leaves normal rows for the general branch.
+    for friction, gap in ((0.7, None), (0.0, -float("inf"))):
+        with test.subTest(friction=friction):
+            general_solver, general, _ = _run_paired_fixture(
+                device, hinv_jt_kernel="par_row", friction=friction, friction_gap_max=gap
+            )
+            paired_solver, paired, compliant = _run_paired_fixture(
+                device, hinv_jt_kernel="auto", friction=friction, friction_gap_max=gap
+            )
+            test.assertFalse(general_solver._paired_factor_coordinates)
+            test.assertTrue(paired_solver._paired_factor_coordinates)
+            test.assertEqual(paired_solver._factor_coordinate_contact_triples, gap is None)
+            test.assertGreater(compliant, 0)
+            np.testing.assert_allclose(paired, general, rtol=5.0e-4, atol=1.0e-5)
+
+
+def _run_local_owner_scene(device, *, compliance, steps=40):
+    """Drop a free box onto a 13-DOF arm with joint limits, the scene that selects the articulation-local owners."""
+    with wp.ScopedDevice(device):
+        model = _build_mixed_response_model(device, dof_count=13, friction=0.0)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, broad_phase="nxn", reduce_contacts=False)
+        contacts = pipeline.contacts()
+        for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+            setattr(contacts, name, wp.zeros(64, dtype=float))
+        with kernel_overrides({"hinv_jt_kernel": "par_row"}):
+            solver = SolverSteel(
+                model,
+                solve_mode="matrix_free",
+                contact_compliance=compliance,
+                friction_anchor_beta=0.0,
+                enable_joint_limits=True,
+                joint_limit_activation_gap=0.0,
+                iterations=8,
+                articulation_constraint_max=32,
+                free_body_constraint_max=32,
+            )
+        state, output = model.state(), model.state()
+        qd = state.joint_qd.numpy()
+        free = int(np.flatnonzero(solver._model_plan.is_free_rigid)[0])
+        qd[int(solver._model_plan.articulation_dof_start[free]) + 2] = -3.0
+        state.joint_qd.assign(qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        control = model.control()
+        trace = []
+        for _ in range(steps):
+            state.clear_forces()
+            pipeline.collide(state, contacts)
+            solver.step(state, output, control, contacts, 1.0 / 240.0)
+            state, output = output, state
+            trace.append(np.concatenate([state.joint_q.numpy(), state.joint_qd.numpy()]))
+        return solver, np.asarray(trace)
+
+
+def test_enabled_option_keeps_rigid_contacts_on_local_owner_scene(test, device):
+    """Leave rigid contacts unchanged by the option on a scene whose rigid solve takes the local owners."""
+    rigid_solver, rigid = _run_local_owner_scene(device, compliance=False)
+    compliant_solver, enabled = _run_local_owner_scene(device, compliance=True)
+    np.testing.assert_allclose(enabled, rigid, rtol=5.0e-4, atol=2.0e-5)
+    test.assertEqual(compliant_solver.compliance_contact_count, 0)
+    test.assertTrue(rigid_solver._local_internal_fast_path)
+    # The local owners do not carry the compliant residual, so the option keeps the general owner.
+    test.assertFalse(compliant_solver._local_internal_fast_path)
+
+
+add_function_test(
+    TestContactComplianceIntegration,
+    test_enabled_option_keeps_rigid_contacts_on_local_owner_scene.__name__,
+    test_enabled_option_keeps_rigid_contacts_on_local_owner_scene,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestContactComplianceIntegration,
+    test_paired_factor_owner_matches_general_owner.__name__,
+    test_paired_factor_owner_matches_general_owner,
+    devices=devices,
+)
+
+
+class TestContactComplianceCapture(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_captured_steps_match_eager_steps,
+    test_capture_interleaves_with_eager_steps_and_reset,
+    test_replay_reads_edited_contact_material,
+    test_captured_errors_are_deferred_until_reset,
+    test_status_snapshot_reports_a_replay_error,
+):
+    add_function_test(TestContactComplianceCapture, _fn.__name__, _fn, devices=devices)
+
+
+def test_colored_support_matches_immediate(test, device):
+    """Recover the finite-stiffness indentation on colored propagation rows, as the immediate rows do."""
+    for articulated in (True, False):
+        with test.subTest(articulated=articulated):
+            immediate, _, _, _ = run_fixture(device=device, articulated=articulated, enabled=True)
+            trace, paths, solver, mass = run_fixture(
+                device=device, articulated=articulated, enabled=True, solver_options=_COLORED
+            )
+            test.assertEqual(paths, {2})
+            test.assertGreater(solver.compliance_contact_count, 0)
+            test.assertLess(abs(trace[-1, 2] - (0.05 - mass * 9.81 / 3000)), 2e-6)
+            np.testing.assert_allclose(trace, immediate, atol=1e-6, rtol=0)
+
+
+def test_colored_zero_stiffness_preserves_hard_contacts(test, device):
+    """Keep the colored rigid contact motion bitwise with compliance on and zero stiffness."""
+    for articulated in (True, False):
+        with test.subTest(articulated=articulated):
+            options = {"articulated": articulated, "stiffness": 0, "steps": 60, "solver_options": _COLORED}
+            hard, _, _, _ = run_fixture(device=device, enabled=False, **options)
+            noop, paths, solver, _ = run_fixture(device=device, enabled=True, **options)
+            test.assertEqual(paths, {2})
+            test.assertEqual(solver.compliance_contact_count, 0)
+            np.testing.assert_array_equal(hard, noop)
+
+
+def test_colored_friction_uses_compliant_load_and_contact_weight(test, device):
+    """Hold below mu*m*g and slip after reducing the contact friction weight, on colored rows."""
+    options = {"articulated": True, "enabled": True, "lateral_force": 0.5, "solver_options": _COLORED}
+    held, _, solver, mass = run_fixture(device=device, **options)
+    slipped, _, _, _ = run_fixture(device=device, friction_scale=0.25, **options)
+    test.assertLess(abs(held[-1, 0]), 1e-5)
+    test.assertGreater(slipped[-1, 0], 0.005)
+    count = int(solver._propagation_constraint_count.numpy()[0])
+    types = solver._propagation_row_type.numpy()[0, :count]
+    impulses = solver._propagation_impulses.numpy()[0, :count]
+    test.assertAlmostEqual(float(impulses[types == 0].sum() / 0.005), mass * 9.81, delta=1e-4)
+    test.assertAlmostEqual(float(np.linalg.norm(impulses[types == 2]) / 0.005), 0.5, delta=1e-4)
+
+
+def test_colored_native_hydro_matches_immediate(test, device):
+    """Consume every emitted hydroelastic contact on colored rows and land where the immediate rows do."""
+    for articulated in (True, False):
+        with test.subTest(articulated=articulated):
+            immediate = run_native_hydro_fixture(device=device, articulated=articulated)
+            colored = run_native_hydro_fixture(device=device, articulated=articulated, response="propagation_colored")
+            test.assertEqual(
+                colored["compliant"]["consumed_compliant_contacts"],
+                colored["native_material"]["positive_stiffness_contacts"],
+            )
+            for key in ("body_z_m", "joint_velocity_m_s", "normal_impulse_N_s"):
+                test.assertAlmostEqual(colored["compliant"][key], immediate["compliant"][key], delta=1e-5)
+            test.assertGreater(
+                abs(colored["compliant"]["normal_impulse_N_s"] - colored["stock_law"]["normal_impulse_N_s"]), 1e-5
+            )
+
+
+def test_colored_rising_kinematic_support_matches_immediate(test, device):
+    """Carry a compliant sphere on a kinematic platform rising at 0.1 m/s on colored rows as on immediate rows."""
+    traces = {}
+    for response in ("immediate", "propagation_colored"):
+        with wp.ScopedDevice(device):
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            builder.rigid_gap = 0.005
+            platform = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()))
+            builder.add_shape_box(platform, hx=0.5, hy=0.5, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+            sphere = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+            cfg = newton.ModelBuilder.ShapeConfig(density=0.3 / (4 / 3 * np.pi * 0.05**3), mu=0.5)
+            builder.add_shape_sphere(sphere, radius=0.05, cfg=cfg)
+            model = builder.finalize()
+            flags = model.body_flags.numpy()
+            flags[platform] |= int(newton.BodyFlags.KINEMATIC)
+            model.body_flags.assign(flags)
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=32)
+            model.rigid_contact_max = 32
+            contacts = pipeline.contacts()
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(contacts, name, wp.zeros(32, dtype=float))
+            solver = SolverSteel(
+                model,
+                solve_mode="matrix_free",
+                articulated_contact_response=response,
+                contact_compliance=True,
+                friction_anchor_beta=0.0,
+                iterations=8,
+                baumgarte=0.05,
+            )
+            state, output, control = model.state(), model.state(), model.control()
+            trace = []
+            for step in range(200):
+                # The step passes a kinematic body's pose through, so the test moves the platform.
+                q, qd = state.joint_q.numpy(), state.joint_qd.numpy()
+                q[2] = -0.05 + 0.1 * step * 0.005
+                qd[2] = 0.1
+                state.joint_q.assign(q)
+                state.joint_qd.assign(qd)
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                state.clear_forces()
+                pipeline.collide(state, contacts)
+                contacts.rigid_contact_stiffness.fill_(3000.0)
+                contacts.rigid_contact_damping.fill_(20.0)
+                contacts.rigid_contact_friction.fill_(1.0)
+                solver.step(state, output, control, contacts, 0.005)
+                state, output = output, state
+                trace.append(state.body_qd.numpy()[sphere].copy())
+            test.assertEqual(solver.compliance_contact_count, 1)
+            test.assertEqual(int(solver._contact_path.numpy()[0]), 2 if response == "propagation_colored" else 1)
+            traces[response] = np.asarray(trace)
+    np.testing.assert_allclose(traces["propagation_colored"], traces["immediate"], atol=1e-6, rtol=0)
+    test.assertAlmostEqual(float(traces["propagation_colored"][-1, 2]), 0.1, delta=1e-4)
+
+
+def test_colored_device_coefficients_match_host_law(test, device):
+    """Prepare open-gap and penetrating colored rows exactly as the float64 host law."""
+    for articulated in (True, False):
+        for height in (0.052, 0.0495):
+            with test.subTest(articulated=articulated, height=height):
+                scene = _CompliantScene(
+                    device, articulated=articulated, damping=200.0, height=height, solver_options=_COLORED
+                )
+                scene.step()
+                solver = scene.solver
+                test.assertEqual(solver.compliance_contact_count, 1)
+                path, slot, world = (
+                    int(a.numpy()[0]) for a in (solver._contact_path, solver._contact_slot, solver._contact_world)
+                )
+                test.assertEqual(path, 2)
+                phi = solver._propagation_phi.numpy()[world, slot]
+                test.assertEqual(phi > 0.0, height > 0.05)
+                gamma, bias = normal_coefficients(3000.0, 200.0, float(phi), dt=0.005)
+                test.assertEqual(solver._compliance.propagation_gamma.numpy()[world, slot], np.float32(gamma))
+                test.assertEqual(solver._propagation_rhs.numpy()[world, slot], np.float32(bias))
+
+
+def test_colored_routing_errors_rejected(test, device):
+    """Reject a shared colored normal row, a mapping past the live rows and overflowing colored rows."""
+    scene = _CompliantScene(device, articulated=True, solver_options=_COLORED)
+    scene.step()
+    solver = scene.solver
+    test.assertEqual(int(solver._contact_path.numpy()[0]), 2)
+    saved = [mapping.numpy().copy() for mapping in (solver._contact_path, solver._contact_slot, solver._contact_world)]
+    for mapping, values in zip((solver._contact_path, solver._contact_slot, solver._contact_world), saved, strict=True):
+        shared = values.copy()
+        shared[1] = shared[0]
+        mapping.assign(shared)
+    scene.contacts.rigid_contact_count.fill_(2)
+    begin_rows(solver)
+    with test.assertRaisesRegex(RuntimeError, r"one-to-one to normal rows \(contact [01]\)"):
+        prepare_rows(solver, scene.contacts, 0.005)
+    scene.contacts.rigid_contact_count.fill_(1)
+    solver._propagation_row_type.fill_(int(PGS_CONSTRAINT_TYPE_FRICTION))
+    begin_rows(solver)
+    with test.assertRaisesRegex(RuntimeError, r"no longer points to a propagation normal row \(contact 0\)"):
+        prepare_rows(solver, scene.contacts, 0.005)
+    solver._propagation_constraint_count.fill_(0)
+    begin_rows(solver)
+    with test.assertRaisesRegex(RuntimeError, r"beyond active solver rows \(contact 0\)"):
+        prepare_rows(solver, scene.contacts, 0.005)
+    solver._propagation_constraint_count.fill_(solver._propagation_max_constraints + 1)
+    begin_rows(solver)
+    with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
+        prepare_rows(solver, scene.contacts, 0.005)
+
+
+def test_colored_rolled_back_capacity_fails_without_warnings(test, device):
+    """Reject a failed colored row reservation even when its counter was rolled back."""
+    for articulated in (False, True):
+        with test.subTest(articulated=articulated), test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
+            run_fixture(
+                device=device,
+                articulated=articulated,
+                enabled=True,
+                steps=1,
+                solver_options={**_COLORED, "propagation_constraint_max": 1, "warn_constraint_overflow": False},
+            )
+
+
+def test_colored_sweep_bodies_match_immediate(test, device):
+    """Add the compliant residual in each colored sweep body, for articulated and free spheres."""
+    for articulated in (True, False):
+        immediate = _CompliantScene(device, articulated=articulated)
+        reference = []
+        for _ in range(40):
+            immediate.step()
+            reference.append(immediate.pose())
+        # The prefetch and staged sweeps solve this unit with the packed sweep's code.
+        for variant in ("packed", "reference", "row loop", "block", "block global"):
+            with test.subTest(articulated=articulated, variant=variant):
+                with kernel_overrides(COLORED_VARIANTS[variant][0]):
+                    scene = _CompliantScene(device, articulated=articulated, solver_options=_COLORED)
+                select_colored_variant(test, scene.solver, variant)
+                for step, expected in enumerate(reference):
+                    scene.step()
+                    np.testing.assert_allclose(scene.pose(), expected, atol=1e-6, rtol=0, err_msg=f"step {step}")
+                test.assertEqual(scene.solver.compliance_contact_count, 1)
+
+
+def test_colored_mixed_routes_match_immediate(test, device):
+    """Solve a same-articulation dense contact and a colored propagation contact in one step, as immediate does."""
+
+    def build():
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.rigid_gap = 0.005
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+        cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=0.5)
+        # Two sibling links whose boxes overlap: a contact within one articulation.
+        base = builder.add_link()
+        builder.add_shape_box(base, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+        joints = [
+            builder.add_joint_revolute(
+                parent=-1,
+                child=base,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
+            )
+        ]
+        for side in (1.0, -1.0):
+            link = builder.add_link()
+            builder.add_shape_box(link, hx=0.12, hy=0.03, hz=0.04, cfg=cfg)
+            joints.append(
+                builder.add_joint_revolute(
+                    parent=base,
+                    child=link,
+                    axis=wp.vec3(0.0, 0.0, 1.0),
+                    parent_xform=wp.transform(wp.vec3(0.06, side * 0.028, 0.0), wp.quat_identity()),
+                    child_xform=wp.transform(wp.vec3(-0.12, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+        builder.add_articulation(joints)
+        sphere = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.05), wp.quat_identity()))
+        builder.add_shape_sphere(sphere, radius=0.05, cfg=cfg)
+        return builder.finalize(device=device)
+
+    traces = {}
+    for response, routes in (("immediate", {0, 1}), ("propagation_colored", {0, 2})):
+        trace, paths, solver, count = _step_compliant(build(), response, 60, stiffness=3000.0, damping=20.0)
+        test.assertEqual(paths, routes)
+        test.assertEqual(solver.compliance_contact_count, count)
+        gamma = {
+            0: solver._compliance.dense_gamma.numpy(),
+            1: solver._compliance.mf_gamma.numpy(),
+            2: solver._compliance.propagation_gamma.numpy(),
+        }
+        mapping = zip(
+            *(a.numpy()[:count] for a in (solver._contact_path, solver._contact_world, solver._contact_slot)),
+            strict=True,
+        )
+        test.assertTrue(all(gamma[int(path)][world, slot] > 0.0 for path, world, slot in mapping))
+        traces[response] = trace
+    np.testing.assert_allclose(traces["propagation_colored"], traces["immediate"], atol=1e-6, rtol=0)
+
+
+def test_colored_serial_tail_keeps_compliance(test, device):
+    """Hold a plate on 529 compliant contacts at the spring law's indentation when 17 of them solve in the serial tail."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.rigid_gap = 0.005
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.01), wp.quat_identity()))
+    cfg = newton.ModelBuilder.ShapeConfig(density=100.0, mu=0.5)
+    # Every contact shares the plate, so each takes its own color until the colors run out.
+    for i, j in np.ndindex(23, 23):
+        xform = wp.transform(wp.vec3(0.02 * (i - 11), 0.02 * (j - 11), 0.0), wp.quat_identity())
+        builder.add_shape_sphere(plate, xform=xform, radius=0.01, cfg=cfg)
+    model = builder.finalize(device=device)
+    trace, paths, solver, count = _step_compliant(
+        model, "propagation_colored", 100, stiffness=2.0, damping=0.1, propagation_constraint_max=4096
+    )
+    test.assertEqual(paths, {2})
+    test.assertEqual(count, 529)
+    test.assertEqual(solver.compliance_contact_count, count)
+    offsets = solver._color_world_offsets.numpy()[: PROPAGATION_COLOR_TAIL + 2]
+    test.assertGreater(int(offsets[PROPAGATION_COLOR_TAIL + 1] - offsets[PROPAGATION_COLOR_TAIL]), 0)
+    indentation = float(model.body_mass.numpy()[plate]) * 9.81 / (count * 2.0)
+    test.assertAlmostEqual(float(trace[-1, 2]), 0.01 - indentation, delta=2e-5)
+
+
+def test_colored_replay_reports_row_capacity_loss(test, device):
+    """Report a compliant colored contact that a replay could not fit in the rows through check_constraint_capacity."""
+    options = {**_COLORED, "propagation_constraint_max": 1, "warn_constraint_overflow": False}
+    scene = _CompliantScene(device, articulated=True, solver_options=options)
+    graph = scene.capture()
+    wp.capture_launch(graph)
+    with test.assertRaisesRegex(RuntimeError, "contact compliance.*overflowing solver rows"):
+        scene.solver.check_constraint_capacity()
+
+
+def test_colored_incompatible_options_rejected(test, device):
+    """Reject compliance on plain propagation and contact torsion with colored compliance; accept sleeping."""
+    _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=False, steps=0)
+    model = solver.model
+    base = {"solve_mode": "matrix_free", "contact_compliance": True, "friction_anchor_beta": 0.0}
+    with test.assertRaisesRegex(NotImplementedError, "contact_compliance=True.*'propagation'"):
+        SolverSteel(model, **base, articulated_contact_response="propagation")
+    test.assertIsNotNone(SolverSteel(model, **base, **_COLORED, enable_sleeping=True)._sleeping)
+    set_torsion_radius(model, 0.01)
+    with test.assertRaisesRegex(NotImplementedError, "^contact torsion with contact_compliance=True is not supported"):
+        SolverSteel(model, **base, **_COLORED, contact_torsion_device=True)
+
+
+class TestContactComplianceColored(unittest.TestCase):
+    """Compliant contacts on ``articulated_contact_response="propagation_colored"`` rows."""
+
+
+for _fn in (
+    test_colored_support_matches_immediate,
+    test_colored_zero_stiffness_preserves_hard_contacts,
+    test_colored_friction_uses_compliant_load_and_contact_weight,
+    test_colored_native_hydro_matches_immediate,
+    test_colored_rising_kinematic_support_matches_immediate,
+    test_colored_device_coefficients_match_host_law,
+    test_colored_routing_errors_rejected,
+    test_colored_rolled_back_capacity_fails_without_warnings,
+    test_colored_sweep_bodies_match_immediate,
+    test_colored_mixed_routes_match_immediate,
+    test_colored_serial_tail_keeps_compliance,
+    test_colored_replay_reports_row_capacity_loss,
+    test_colored_incompatible_options_rejected,
+):
+    add_function_test(TestContactComplianceColored, _fn.__name__, _fn, devices=devices)
+
+
+def _step_compliant(model, response, steps, *, stiffness, damping, **solver_options):
+    """Step ``model`` with every contact compliant; return its body states per step, routes, solver and contact count."""
+    contact_max = 1024
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=contact_max)
+    model.rigid_contact_max = contact_max
+    contacts = pipeline.contacts()
+    for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+        setattr(contacts, name, wp.zeros(contact_max, dtype=float, device=model.device))
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        articulated_contact_response=response,
+        contact_compliance=True,
+        friction_anchor_beta=0.0,
+        iterations=8,
+        baumgarte=0.05,
+        articulation_constraint_max=64,
+        free_body_constraint_max=4096,
+        **solver_options,
+    )
+    state, next_state, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    trace, paths = [], set()
+    for _ in range(steps):
+        state.clear_forces()
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        contacts.rigid_contact_stiffness.fill_(stiffness)
+        contacts.rigid_contact_damping.fill_(damping)
+        contacts.rigid_contact_friction.fill_(1.0)
+        solver.step(state, next_state, control, contacts, 0.005)
+        state, next_state = next_state, state
+        paths.update(solver._contact_path.numpy()[:count].tolist())
+        trace.append(np.concatenate([state.body_q.numpy().ravel(), state.body_qd.numpy().ravel()]))
+    return np.asarray(trace), paths, solver, count
 
 
 DT = 1.0 / 60.0

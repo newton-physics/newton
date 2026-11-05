@@ -1,27 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Controllers — Heterogeneous Joint Impedance
-#
-# Demonstrates ControllerJointImpedance on a mixed fleet:
-#   Robot A — 3-DOF revolute chain (triple pendulum)
-#   Robot B — 1-DOF revolute pendulum, side by side with robot A
-#
-# Joints rotate about an axis perpendicular to gravity, so as each robot
-# moves away from hanging straight down, gravity applies real torque the
-# controller must compensate for. Robot A tracks a sinusoidal target with
-# staggered joint phases; robot B rotates continuously, passing through the
-# high-torque horizontal pose every revolution.
-# Both robots use model-based impedance (gravity compensation + inertia
-# decoupling computed internally by the controller from the sim model).
-#
-# The two robots have different DOF counts, exercising the heterogeneous
-# per-robot DOF layout and the indexed-view scatter into the sim.
-#
-# Command: python -m newton.examples controller_joint_impedance_heterogeneous
-#          python -m newton.examples controller_joint_impedance_heterogeneous --solver kamino
-###########################################################################
+"""Example Controllers — Heterogeneous Joint Impedance
+
+Demonstrates ControllerJointImpedance on a mixed fleet:
+  Robot A — 3-DOF revolute chain (triple pendulum)
+  Robot B — 1-DOF revolute pendulum, side by side with robot A
+
+Joints rotate about an axis perpendicular to gravity, so as each robot
+moves away from hanging straight down, gravity applies real torque the
+controller must compensate for. Robot A tracks a sinusoidal target with
+staggered joint phases; robot B rotates continuously, passing through the
+high-torque horizontal pose every revolution.
+Both robots use model-based impedance (gravity compensation + inertia
+decoupling computed internally by the controller from the sim model).
+
+The two robots have different DOF counts, exercising the heterogeneous
+per-robot DOF layout and the indexed-view scatter into the sim.
+
+Success criteria:
+- The three-joint chain tracks sinusoidal targets with staggered phases.
+- The single pendulum rotates continuously through the horizontal pose despite gravity.
+- Both mechanisms stay connected and follow bounded motion without unstable control oscillation.
+
+Runs:
+- `python -m newton.examples controller_joint_impedance_heterogeneous`
+- `python -m newton.examples controller_joint_impedance_heterogeneous --solver kamino`
+"""
 
 import math
 
@@ -37,6 +42,7 @@ from newton.controllers import ControllerJointImpedance
 # ---------------------------------------------------------------------------
 # Robot geometry
 # ---------------------------------------------------------------------------
+
 
 LINK_LEN_A = 0.25  # length of each link in robot A [m]
 LINK_LEN_B = 0.45  # length of robot B's single link [m]

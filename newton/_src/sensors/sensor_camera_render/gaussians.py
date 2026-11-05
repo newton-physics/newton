@@ -10,14 +10,13 @@ import warp as wp
 from ...geometry import Gaussian
 from ...geometry.bvh import compute_ellipsoid_bounds
 from ...geometry.raycast import map_ray_to_local
+from ...geometry.types import SH_C0
 from ...math import safe_div
+from ...utils.color import ColorSpace, srgb_to_linear_wp
 from .types import GaussianRenderMode, RenderConfig
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
-
-
-SH_C0 = wp.float32(0.28209479177387814)
 
 
 @wp.func
@@ -197,6 +196,8 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                     gaussian_data.sh_coeffs[hit_index][1],
                     gaussian_data.sh_coeffs[hit_index][2],
                 ) + wp.vec3f(0.5)
+                # Blend in the asset's authored color space (as 3DGS is trained); sRGB is decoded once per ray below.
+                color = wp.max(color, wp.vec3f(0.0))
 
                 opacity = hit_alphas[hit]
                 result_color += color * opacity * ray_transmittance
@@ -214,6 +215,8 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
         if ray_transmittance < wp.static(config.gaussians_min_transmittance):
             result_distance = tracked_distance
             result_color /= 1.0 - ray_transmittance
+            if gaussian_data.sh_color_space == ColorSpace.SRGB:
+                result_color = srgb_to_linear_wp(result_color)
 
         return result_distance, result_normal, result_color
 

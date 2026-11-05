@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
@@ -37,6 +38,16 @@ def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     if contact_offset == inf or rest_offset == inf:
         return None
     return float(contact_offset) - float(rest_offset)
+
+
+def _physx_max_hull_vertices(prim: Usd.Prim) -> int | None:
+    """Prefer decomposition limits for meshes using the applied decomposition API."""
+    approximation = str(usd.get_attribute(prim, "physics:approximation", "")).lower()
+    if approximation == "convexdecomposition" and usd.has_applied_api_schema(
+        prim, "PhysxConvexDecompositionCollisionAPI"
+    ):
+        return usd.get_attribute(prim, "physxConvexDecompositionCollision:hullVertexLimit")
+    return usd.get_attribute(prim, "physxConvexHullCollision:hullVertexLimit")
 
 
 def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
@@ -375,7 +386,16 @@ class SchemaResolverPhysx(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
+            "max_hull_vertices": SchemaAttribute(
+                "physxConvexHullCollision:hullVertexLimit",
+                64,
+                usd_value_getter=_physx_max_hull_vertices,
+                attribute_names=(
+                    "physxConvexHullCollision:hullVertexLimit",
+                    "physxConvexDecompositionCollision:hullVertexLimit",
+                ),
+            ),
+            "convex_decomposition_max_hulls": SchemaAttribute("physxConvexDecompositionCollision:maxConvexHulls", 32),
             # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
             # PhysX uses -inf to mean "engine default"; treat as unset (None).
             "margin": SchemaAttribute(
@@ -459,6 +479,13 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
+def _mjc_angle_scale(physics_scene_prim: Usd.Prim | None) -> float:
+    """Convert MuJoCo USD angles to radians, defaulting unauthored compiler units to degrees."""
+    if not physics_scene_prim or usd.get_attribute(physics_scene_prim, "mjc:compiler:angle", "degree") == "degree":
+        return math.pi / 180.0
+    return 1.0
+
+
 def _mjc_joint_effort_limit(prim: Usd.Prim) -> float | None:
     """Read a joint effort limit [N or N·m] from MuJoCo ``mjc:actuatorfrcrange``.
 
@@ -496,6 +523,9 @@ class SchemaResolverMjc(SchemaResolver):
             # DOFs), unlike the USD per-degree convention behind the plain
             # "damping" key, so it resolves through the _per_rad variant.
             "damping_per_rad": SchemaAttribute("mjc:damping", None),
+            "stiffness": SchemaAttribute("mjc:stiffness", None),
+            "springref": SchemaAttribute("mjc:springref", None),
+            "ref": SchemaAttribute("mjc:ref", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             "effort_limit": SchemaAttribute(
                 "mjc:actuatorfrcrange:min",

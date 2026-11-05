@@ -48,13 +48,16 @@ class WarmStartMode(IntEnum):
 
 
 class DualSolution:
-    """Constraint impulse and post-event velocity arrays for a dual solver."""
+    """Constraint impulses and constraint-law velocity arrays for a dual solver."""
 
     def __init__(self, size: SizeKamino | None = None):
         self.lambdas: wp.array[wp.float32] | None = None
         """Constraint impulses, shape ``(sum_of_max_total_cts,)``."""
         self.v_plus: wp.array[wp.float32] | None = None
-        """Post-event constraint-space velocities, shape ``(sum_of_max_total_cts,)``."""
+        """Constraint-law velocities, including biases and physical compliance times impulse.
+
+        These differ from measured relative body velocities. Shape ``(sum_of_max_total_cts,)``.
+        """
         if size is not None:
             self.finalize(size)
 

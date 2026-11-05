@@ -15,9 +15,9 @@ import warp as wp
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...geometry import ParticleFlags
+from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
-    TriMeshCollisionInfo,
 )
 from ...sim import (
     BodyFlags,
@@ -61,6 +61,7 @@ from .particle_vbd_kernels import (
     reset_particle_state,
     scatter_particle_body_contact_force_and_hessian,
     solve_elasticity,
+    step_particle_body_attachment_lambda_rho,
     update_velocity,
 )
 from .rigid_vbd_kernels import (
@@ -69,8 +70,6 @@ from .rigid_vbd_kernels import (
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_body_particle_attachments_per_body,
-    _count_num_adjacent_joints,
-    _fill_adjacent_joints,
     _fill_body_particle_attachments_per_body,
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_attachments_per_body,
@@ -92,7 +91,9 @@ from .rigid_vbd_kernels import (
     init_rod_rest_bend_twist,
     refresh_body_structural_k,
     refresh_joint_material_params,
+    reset_particle_body_attachment_state,
     reset_rigid_state,
+    select_variant_bounding_radius,
     snapshot_body_body_contact_history,
     step_body_body_contact_C0_lambda,
     step_joint_C0_lambda_rho,
@@ -100,6 +101,7 @@ from .rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_body_particle_contacts,
     update_duals_joint,
+    update_duals_particle_body_attachments,
     update_rod_dahl_state,
 )
 from .tendon_kernels import (
@@ -120,6 +122,35 @@ logger = logging.getLogger(__name__)
 __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+
+# ``NewtonVbdSceneAPI`` settings: constructor argument -> (dtype, default, USD attribute name).
+# Read by both ``register_custom_attributes`` and ``SolverVBD.__init__``.
+_SCENE_ATTRIBUTES = {
+    "rigid_contact_history": (wp.bool, False, "newton:vbd:rigid:contactHistory"),
+    "rigid_joint_linear_ke": (wp.float32, 1.0e5, "newton:vbd:rigid:jointLinearStiffness"),
+    "rigid_joint_angular_ke": (wp.float32, 1.0e5, "newton:vbd:rigid:jointAngularStiffness"),
+    "rigid_joint_linear_kd": (wp.float32, 0.0, "newton:vbd:rigid:jointLinearDamping"),
+    "rigid_joint_angular_kd": (wp.float32, 0.0, "newton:vbd:rigid:jointAngularDamping"),
+}
+
+
+def _select_rigid_block_dim(launch_dim: int, device: wp.Device) -> int:
+    """Expose more blocks on small rigid launches, allowing sub-warp blocks.
+
+    Target as many blocks as SMs, with a four-thread minimum and a 256-thread
+    maximum. This empirical tradeoff does not guarantee occupancy.
+    """
+    if not device.is_cuda:
+        return 256
+
+    target_blocks = device.sm_count
+    block_dim = 4
+    while block_dim < 256:
+        candidate = 2 * block_dim
+        if (launch_dim + candidate - 1) // candidate < target_blocks:
+            break
+        block_dim = candidate
+    return block_dim
 
 
 def _particle_contact_scatter_worker_count(soft_contact_max: int, particle_count: int, device) -> int:
@@ -182,11 +213,28 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     .. experimental::
         SolverVBD's public API and behavior may change without prior notice.
 
+    Tuning guide: :ref:`Tuning VBD`
+    (https://newton-physics.github.io/newton/stable/concepts/simulation_tuning_vbd.html)
+    covers cloth and soft bodies, their self-contact and their contact with shapes:
+
+    - Parameter effects: the constructor arguments that matter for particle systems,
+      the model parameters, and the time step, substeps and iterations.
+    - Contact handling: interaction distance, detection slack, query radius and motion
+      budget; what DAT does to motion; how to set margin and gap.
+    - A debug protocol: the jitter pipeline and the explosion checklist, each in order.
+    - Special topics with symptom, cause and fix: the stiffness ratio (contact against
+      elasticity, membrane against bending), a fine mesh converging slowly, DAT damping,
+      bad assets, a smaller time step making things worse, self-contact tunneling.
+    - Parameter combinations from the shipped examples, and rules of thumb.
+
+    The math behind the advice (step objective, block solve, rigid bodies and joints, the
+    energy terms, DAT) is on the solver page :doc:`/solvers/vbd`.
+
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
         - Coupled particle-rigid body systems
-        - Compliant rigid-body-to-particle attachments
+        - Compliant and hard rigid-body-to-particle attachments
 
     For rigid bodies, two paths are supported:
 
@@ -254,8 +302,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     Particle-body attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
-        - The constraint is compliant: ``stiffness`` and ``damping`` enter a quadratic
-          penalty, so a loaded attachment keeps a small offset. There is no rigid mode.
+        - Attachments are compliant-ALM rows with a limit-row penalty: a finite
+          ``stiffness`` keeps its physical spring offset under load, while infinite
+          stiffness is the hard limit of the same row and ignores ``damping``.
+          Multipliers are retained across steps with ``rigid_avbd_gamma``. Finite
+          iterations can leave residual error, especially for conflicting constraints.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.
 
@@ -294,6 +345,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           https://doi.org/10.1145/3658179
         - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages.
           https://doi.org/10.1145/3731195
+        - Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide and Truncate: A Penetration and Inversion Free Framework for Coupled Multi-physics System. In ACM SIGGRAPH 2026 Conference Papers.
+          https://doi.org/10.1145/3799902.3811143
+        - Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem Yuksel. 2025. Offset Geometric Contact. ACM Trans. Graph. 44, 4.
+          https://doi.org/10.1145/3731205
 
     Note:
         `SolverVBD` requires coloring for each system it solves:
@@ -309,11 +364,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         creation time (see example below).
 
         For ROD joints, SolverVBD captures structural-rest bend and twist from
-        ``model.joint_target_q`` when constructed. After changing these Model-owned
-        angular rest targets, call :meth:`notify_model_changed` with
+        ``model.joint_rest_q`` when constructed. After changing these Model-owned
+        rest rotations, call :meth:`notify_model_changed` with
         :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`; the broader
-        :attr:`~newton.ModelFlags.JOINT_PROPERTIES` and
-        :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` also refresh it.
+        :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` also refreshes it.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -361,6 +415,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and apply only to :attr:`~newton.JointType.ROD`. Only structural
         slots are named here; per-DOF drive/limit slots (slot 2+ on non-rod
         joints) are not.
+
+        These are solver constraint slots, not offsets into
+        :attr:`newton.Model.joint_target_ke` or
+        :attr:`newton.Model.joint_target_kd`. Rod material coefficients start at
+        :attr:`newton.Model.joint_qd_start` in the order
+        ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; see
+        :ref:`Rod joints`.
         """
 
         # Non-rod structural slots.
@@ -378,7 +439,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         model: Model,
         *,
         # Common parameters
-        iterations: int = 10,
+        iterations: int | None = None,
         friction_epsilon: float = 1e-2,
         dat_conservative_bound_relaxation: float = 0.85,
         integrate_with_external_rigid_solver: bool = False,
@@ -408,21 +469,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_avbd_gamma: float = 0.999,  # Per-step decay for persisted lambda (and legacy penalty k)
         # Rigid body - contacts
         rigid_contact_hard: bool | None = None,  # Legacy body-body contact hard/soft mode
-        rigid_contact_history: bool = False,  # Body-body contact numeric warm-start
-        rigid_contact_stick_motion_eps: float | None = None,  # Deprecated and ignored
-        rigid_contact_stick_freeze_translation_eps: float | None = None,  # Deprecated and ignored
-        rigid_contact_stick_freeze_angular_eps: float | None = None,  # Deprecated and ignored
+        rigid_contact_history: bool | None = None,  # Body-body contact numeric warm-start
         rigid_contact_k_start: float | None = None,  # Legacy AVBD contact penalty ramp seed
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
         rigid_soft_contact_use_log_barrier: bool = False,  # Use particle-style normal log barrier
         # Rigid body - joints
-        rigid_joint_linear_ke: float = 1.0e5,  # Structural linear joint stiffness
-        rigid_joint_angular_ke: float = 1.0e5,  # Structural angular joint stiffness
+        rigid_joint_linear_ke: float | None = None,  # Structural linear joint stiffness
+        rigid_joint_angular_ke: float | None = None,  # Structural angular joint stiffness
         rigid_joint_linear_k_start: float | None = None,  # Legacy AVBD linear joint penalty ramp seed
         rigid_joint_angular_k_start: float | None = None,  # Legacy AVBD angular joint penalty ramp seed
-        rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
+        rigid_joint_linear_kd: float | None = None,  # Absolute damping for non-rod linear joint constraints
+        rigid_joint_angular_kd: float | None = None,  # Absolute damping for non-rod angular joint constraints
         # Tendons
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
@@ -431,6 +489,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
         deterministic: wp.DeterministicMode | None = None,
+        enable_fast_math: bool = True,
         collision_pipeline: CollisionPipeline | None = None,
         collision_frequency: Mapping[SolverBase.CollisionSlot, int] | None = None,
         collision_frequency_type: Mapping[SolverBase.CollisionSlot, SolverBase.CollisionFrequencyType] | None = None,
@@ -440,7 +499,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             model: The `Model` object used to initialize the integrator. Must be identical to the `Model` object passed
                 to the `step` function.
 
-            iterations: Number of VBD iterations per step.
+            iterations: Number of VBD iterations per step. If ``None``, use the registered
+                ``newton:maxSolverIterations`` scene value, or ``10`` if absent or ``-1``.
+                Explicit values override the scene.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
@@ -509,12 +570,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Values must be finite and representable in float32; infinity is unsupported.
 
                 Explicit non-``None`` values for deprecated beta, hard-contact, or
-                penalty-seed controls emit a :class:`DeprecationWarning`.
+                penalty-seed controls emit a :class:`~newton.exceptions.NewtonDeprecationWarning`.
 
                 .. deprecated:: 1.6
                     The legacy path selected by ``False`` will be removed in a future
-                    release. Using it emits a :class:`DeprecationWarning` when VBD
-                    integrates rigid bodies. Use the default compliant ALM path instead.
+                    release. Explicit ``False`` emits a
+                    :class:`~newton.exceptions.NewtonDeprecationWarning` for all models.
+                    Use the default compliant ALM path instead.
             rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
                 Controls both joints and body-body contacts when neither class-specific
                 override (``rigid_avbd_joint_alpha`` / ``rigid_avbd_contact_alpha``) is set.
@@ -556,9 +618,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
                     default behavior) and author fixed material stiffness instead.
             rigid_avbd_gamma: Per-step decay factor for penalty k and persisted lambda.
-                Compliant ALM joints and validated contacts retain lambda by ``gamma``;
-                the legacy path retains lambda by ``alpha * gamma``. Lower values
-                discard history faster.
+                Compliant ALM joints, particle-body attachments, and validated contacts
+                retain lambda by ``gamma``; the legacy path retains joint and contact
+                lambda by ``alpha * gamma``. Lower values discard history faster.
             rigid_contact_hard: Legacy body-body contact hard/soft mode. With
                 ``rigid_compliant_alm=True``, contacts use the ALM path. With
                 ``rigid_compliant_alm=False``, ``True`` selects legacy hard AVBD contact
@@ -586,20 +648,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``model.body_count == 0``. During graph capture, construct the
                 collision pipeline before ``SolverVBD`` so history is pre-allocated,
                 or run one uncaptured solver step before capture.
-            rigid_contact_stick_motion_eps: Deprecated and ignored. SolverVBD no longer
-                classifies contacts as sticking. Use
-                ``CollisionPipeline(contact_matching="sticky",
-                contact_matching_pos_threshold=...)`` for persistent contact geometry.
-
-                .. deprecated:: 1.5
-            rigid_contact_stick_freeze_translation_eps: Deprecated and ignored. The
-                SolverVBD body-level contact deadzone was removed.
-
-                .. deprecated:: 1.5
-            rigid_contact_stick_freeze_angular_eps: Deprecated and ignored. The
-                SolverVBD body-level contact deadzone was removed.
-
-                .. deprecated:: 1.5
+                ``None`` (default) reads ``model.vbd.rigid_contact_history`` when
+                registered, otherwise uses ``False``.
             rigid_contact_k_start: Body-body and body-particle contact penalty seed for
                 legacy AVBD ramping [N/m]. Used when ``rigid_avbd_linear_beta`` (or
                 ``rigid_avbd_beta`` fallback) is greater than zero. When the linear beta
@@ -611,13 +661,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     continue to honor this control during migration; keep the effective beta
                     at ``0`` (the default behavior) and author fixed contact stiffness instead.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
-            rigid_body_particle_contact_buffer_size: Max body-particle soft contacts tracked per rigid
-                body, covering both particle-vs-surface and full-surface edge/face contacts.
+            rigid_body_particle_contact_buffer_size: Capacity of the per-body soft-contact adjacency
+                list, including currently ineligible mesh candidates. If a body's list overflows, force
+                evaluation and coupling feedback scan all stored soft contacts for that body instead.
+                This preserves reactions but can increase evaluation cost.
             rigid_soft_contact_use_log_barrier: Whether body-particle normal contacts use the same C2
                 log-barrier law as particle self-contact. When ``False`` (default), they use the legacy quadratic
                 penalty law.
             rigid_joint_linear_ke: Material stiffness for non-rod structural linear joint slots [N/m].
+                ``None`` (default) reads ``model.vbd.rigid_joint_linear_ke`` when
+                registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
+                non-negative, and applies with and without ``rigid_compliant_alm``.
             rigid_joint_angular_ke: Material stiffness for non-rod structural angular joint slots [N·m/rad].
+                ``None`` (default) reads ``model.vbd.rigid_joint_angular_ke`` when
+                registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
+                non-negative, and applies with and without ``rigid_compliant_alm``.
             rigid_joint_linear_k_start: Linear penalty seed for legacy AVBD ramping [N/m]. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the joint stiffness regardless of this value.
@@ -635,16 +693,24 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
                     default behavior) and author fixed joint stiffness instead.
             rigid_joint_linear_kd: Damping coefficient for non-rod linear joint constraints [N·s/m].
-                Negative values are clamped to 0.
+                ``None`` (default) reads ``model.vbd.rigid_joint_linear_kd`` when
+                registered, otherwise uses ``0.0``. Negative explicit values are clamped to 0; a
+                scene-authored value must be finite and non-negative. Scene values apply with and
+                without ``rigid_compliant_alm``.
             rigid_joint_angular_kd: Damping coefficient for non-rod angular joint constraints [N·m·s/rad].
-                Negative values are clamped to 0.
+                ``None`` (default) reads ``model.vbd.rigid_joint_angular_kd`` when
+                registered, otherwise uses ``0.0``. Negative explicit values are clamped to 0; a
+                scene-authored value must be finite and non-negative. Scene values apply with and
+                without ``rigid_compliant_alm``.
             rigid_soft_enable_dat: Whether to apply Divide-and-Truncate (DAT) penetration-free
                 truncation to rigid-soft contacts, symmetric to particle self-contact truncation.
                 Each rigid-soft contact reported by the owned collision pipeline defines a division
                 plane at its detection-time reference configuration; rigid pose updates and particle
                 displacements are jointly truncated so neither side crosses it. Rigid rotation makes
-                trajectories curved, so crossing times against the contact's stored surface point are
-                found by sampling and bisection.
+                trajectories curved, so crossing times are found by sampling and bisection,
+                optionally certified with interval arithmetic. Full-surface mesh contacts use
+                complete VT/TV/EE primitives through Contacts.soft_contact_rigid_indices;
+                every corner stays on its assigned side of a certified separating plane.
                 Requires a solver-owned pipeline (``collision_pipeline=``); each side's motion budget
                 between detections is 0.5 x ``dat_conservative_bound_relaxation`` x the minimum
                 rigid-soft query radius,
@@ -660,12 +726,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 bounds the per-detection motion of every dynamic body and particle in the
                 model, not only those near soft geometry.
 
-                Truncation acts per reported contact against its own division plane; it does not
-                attempt dense primitive-pair coverage, so it does not by itself guarantee a globally
-                penetration-free rigid-soft state for general nonconvex geometry. If a soft-contact
-                overflow warning is reported, contacts were dropped and are not truncated on that pass.
-                Sampling and bisection alone can miss a rigid trajectory that crosses and returns
-                between samples; the optional interval path detects such cases but remains experimental.
+                Full-surface mesh coverage includes every mesh edge and nearby VT/TV/EE pair,
+                including rows ineligible for contact forces. It requires initially separated
+                geometry; topology, nonzero mesh scales, radii, and motion bounds must remain unchanged. Analytic
+                and penetration-recovery contacts retain their point-anchor behavior; this
+                is not a general initial-penetration recovery method. When no separating
+                plane can be certified, the affected primitives freeze. Contact overflow
+                makes DAT coverage incomplete; stop the simulation and increase contact
+                capacity if an overflow is reported.
+                Sampling and bisection alone can miss a rigid trajectory that crosses and
+                returns between samples; enable the experimental interval path to certify
+                the complete rigid trajectory.
             rigid_soft_dat_use_interval_arithmetic: Selector for rigid DAT trajectory
                 truncation. ``False`` uses sampling and bisection, plus an interval
                 derivative bound that releases rows starting inside the empty band only
@@ -684,6 +755,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
                 atomics in every other mode.
+            enable_fast_math: Compile the particle kernels, the rigid body
+                solve, and the joint dual update with Warp's ``fast_math``
+                (approximate division and square root). Results change at the
+                floating-point rounding level. Ignored on CPU.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
             tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
@@ -712,7 +787,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             - `particle_vertex_contact_buffer_size`, `particle_edge_contact_buffer_size`, `rigid_body_contact_buffer_size`,
               and `rigid_body_particle_contact_buffer_size` are fixed and will not be dynamically resized during runtime.
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
-              contacts).
+              contacts). Body-particle list overflow uses the complete stored soft-contact buffer as
+              a fallback; it cannot recover records lost to overflow of that collision buffer itself.
               Setting them excessively large may increase memory usage and degrade performance.
             - Dahl hysteresis friction for rod angular response is controlled by custom model attributes
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
@@ -721,6 +797,50 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         """
         integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
+        vbd_attrs = getattr(model, "vbd", None)
+
+        def resolve_scene_attribute(name: str, explicit_value: Any) -> tuple[Any, bool]:
+            """Resolve an explicit option before its model custom attribute and default.
+
+            Returns the value and whether it came from the scene (``model.vbd``).
+            """
+            if explicit_value is not None:
+                return explicit_value, False
+            model_value = getattr(vbd_attrs, name, None)
+            if model_value is None:
+                return _SCENE_ATTRIBUTES[name][1], False
+            value = model_value.numpy()[0].item()
+            usd_name = _SCENE_ATTRIBUTES[name][2]
+            if name != "rigid_contact_history" and not (np.isfinite(value) and value >= 0.0):
+                raise ValueError(
+                    f"Scene-authored {usd_name} (model.vbd.{name}) must be finite and >= 0, got {value}. "
+                    f"Fix the scene value or pass {name}= explicitly to SolverVBD."
+                )
+            return value, True
+
+        if iterations is None:
+            scene_iterations = getattr(vbd_attrs, "max_solver_iterations", None)
+            iterations = int(scene_iterations.numpy()[0]) if scene_iterations is not None else -1
+            if iterations == -1:
+                iterations = 10
+            elif iterations <= 0:
+                raise ValueError(
+                    "Scene-authored newton:maxSolverIterations must be positive or -1 (use the default), "
+                    f"got {iterations}. Fix the scene value or pass iterations= explicitly to SolverVBD."
+                )
+
+        rigid_contact_history, history_from_scene = resolve_scene_attribute(
+            "rigid_contact_history", rigid_contact_history
+        )
+        rigid_contact_history = bool(rigid_contact_history)
+        if history_from_scene and not integrates_rigid_bodies:
+            # Contact history only applies to rigid bodies integrated by VBD; a scene-authored
+            # value must not make body-free or externally integrated models fail.
+            rigid_contact_history = False
+        rigid_joint_linear_ke = float(resolve_scene_attribute("rigid_joint_linear_ke", rigid_joint_linear_ke)[0])
+        rigid_joint_angular_ke = float(resolve_scene_attribute("rigid_joint_angular_ke", rigid_joint_angular_ke)[0])
+        rigid_joint_linear_kd = float(resolve_scene_attribute("rigid_joint_linear_kd", rigid_joint_linear_kd)[0])
+        rigid_joint_angular_kd = float(resolve_scene_attribute("rigid_joint_angular_kd", rigid_joint_angular_kd)[0])
 
         if rigid_compliant_alm is None:
             raise TypeError("rigid_compliant_alm must be True or False; omit it to use the default.")
@@ -748,22 +868,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
-        if (
-            rigid_contact_stick_motion_eps is not None
-            or rigid_contact_stick_freeze_translation_eps is not None
-            or rigid_contact_stick_freeze_angular_eps is not None
-        ):
-            warnings.warn(
-                "SolverVBD rigid_contact_stick_motion_eps, "
-                "rigid_contact_stick_freeze_translation_eps, and "
-                "rigid_contact_stick_freeze_angular_eps are deprecated and ignored, "
-                "and will be removed in a future release. "
-                "Use CollisionPipeline(contact_matching='sticky', "
-                "contact_matching_pos_threshold=...) for persistent contact geometry. "
-                "The SolverVBD body-level contact deadzone was removed.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
 
         # Self-contact geometry: margin/gap scheme (margin = interaction distance,
         # detection query radius = margin + gap). The legacy radius/margin pair is
@@ -902,6 +1006,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "matching for the warm-start restore; construct the pipeline with "
                 "contact_matching='latest' (or 'sticky' for persistent friction anchors). "
                 "Alternatively, set rigid_contact_history=False."
+                + (
+                    " The value came from the scene (model.vbd.rigid_contact_history, "
+                    "newton:vbd:rigid:contactHistory); passing rigid_contact_history=False overrides it."
+                    if history_from_scene
+                    else ""
+                )
             )
         # Per-step schedule cache; refreshed at every step() so runtime
         # set_collision_frequency() changes take effect at the next step.
@@ -942,6 +1052,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 {
                     "deterministic": effective_deterministic,
                     "deterministic_max_records": particle_deterministic_max_records,
+                    "fast_math": enable_fast_math,
                 },
                 module=particle_vbd_kernels,
             )
@@ -958,13 +1069,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if integrates_rigid_bodies:
             rigid_modules = (
                 rigid_vbd_kernels,
-                self._solve_rigid_body_kernel.module,
                 accumulate_body_body_contacts_per_body.module,
                 compute_rigid_contact_forces.module,
                 update_duals_body_body_contacts.module,
             )
             for module in rigid_modules:
                 self._set_module_options(options, module=module)
+            for module in (self._solve_rigid_body_kernel.module, update_duals_joint.module):
+                self._set_module_options(options | {"fast_math": enable_fast_math}, module=module)
         if model.joint_count > 0:
             self._set_module_options(
                 {"deterministic": effective_deterministic, "deterministic_max_records": 0},
@@ -1001,6 +1113,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_rest_shape_contact_exclusion_radius,
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
+            enable_fast_math,
         )
 
         # Routed tendon geometry and material state are shared with XPBD; VBD
@@ -1030,6 +1143,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_joint_angular_kd,
         )
 
+        attachment_count = model.attachment_particle_body_count
+        self._attachment_particle_body_lambda = wp.zeros(attachment_count, dtype=wp.vec3, device=self.device)
+        self._attachment_particle_body_rho = wp.zeros(attachment_count, dtype=float, device=self.device)
+
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._mimic_body_deltas = None
         if self._has_joint_mimics:
@@ -1049,19 +1166,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._refresh_contact_angular_conditioning = False
 
         # Warn after validation so warnings-as-errors do not mask invalid inputs.
-        if self._integrates_rigid_bodies and not self.rigid_compliant_alm:
+        if not self.rigid_compliant_alm:
+            legacy_controls.insert(0, "rigid_compliant_alm=False")
+        if legacy_controls:
             warnings.warn(
-                "rigid_compliant_alm=False is deprecated as of Newton 1.6 and will be removed in a future release. "
-                "Omit the argument to use compliant ALM and author finite material stiffness.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        elif legacy_controls:
-            warnings.warn(
-                f"Legacy VBD controls {', '.join(legacy_controls)} are deprecated as of Newton 1.6 "
+                f"VBD options {', '.join(legacy_controls)} are deprecated as of Newton 1.6 "
                 "and will be removed in a future release. "
-                "These controls do not affect compliant-ALM rigid constraints. "
-                "Use the default compliant ALM path and author fixed finite material stiffness.",
+                "Omit these options and author fixed finite material stiffness.",
                 NewtonDeprecationWarning,
                 stacklevel=2,
             )
@@ -1081,6 +1192,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_rest_shape_contact_exclusion_radius: float,
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
+        enable_fast_math: bool,
     ):
         """Initialize particle-specific data structures and settings."""
         # Early exit if no particles
@@ -1095,6 +1207,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.particle_q_prev = wp.zeros_like(
             model.particle_q, device=self.device
         )  # per-substep previous q (for velocity)
+        # Particle pose at the start of the coupled entry step, paired with
+        # ``_coupling_body_q_prev_snapshot`` by the coupling harvest hooks.
+        self._coupling_particle_q_prev_snapshot = wp.clone(model.particle_q, device=self.device)
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
 
         # Particle adjacency info: reuse the shared device copy built once at finalize (the VBD
@@ -1127,6 +1242,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._tiled_elasticity_kernel = make_solve_elasticity_tile(
                 include_triangles, include_tets, two_particles_per_warp
             )
+            self._set_module_options({"fast_math": enable_fast_math}, module=self._tiled_elasticity_kernel.module)
             self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
@@ -1147,7 +1263,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
                 collision_info = self.trimesh_collision_detector.collision_info
 
-            self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
+            self.trimesh_collision_info = collision_info
 
             self.particle_self_contact_evaluation_kernel_launch_size = max(
                 self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -1292,24 +1408,27 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses
 
             # Adjacency and dimensions
-            self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model).to(self.device)
+            joint_constraint_dim = self._init_joint_constraint_layout()
+            self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model, joint_constraint_dim)
             self.tendon_adjacency = self._compute_tendon_force_element_adjacency(model).to(self.device)
             (
                 self.body_particle_attachment_offsets,
                 self.body_particle_attachment_indices,
             ) = self._compute_body_particle_attachment_adjacency(model)
 
-            # Force accumulation arrays
-            self.body_torques = wp.zeros(model.body_count, dtype=wp.vec3, device=self.device)
-            self.body_forces = wp.zeros(model.body_count, dtype=wp.vec3, device=self.device)
+            # Pack two vec3 and three mat33 fields for one clear.
+            body_count = model.body_count
+            self._body_contact_scratch = wp.zeros((11, body_count, 3), dtype=float, device=self.device)
+            self.body_forces = self._body_contact_scratch[0].view(wp.vec3)
+            self.body_torques = self._body_contact_scratch[1].view(wp.vec3)
+            # Hessian slices store consecutive per-body matrices, not scratch[row, body] matrix rows.
+            self.body_hessian_ll = self._body_contact_scratch[2:5].reshape((body_count, 3, 3)).view(wp.mat33)
+            self.body_hessian_al = self._body_contact_scratch[5:8].reshape((body_count, 3, 3)).view(wp.mat33)
+            self.body_hessian_aa = self._body_contact_scratch[8:11].reshape((body_count, 3, 3)).view(wp.mat33)
 
             # Persistent scratch for joint_f accumulation
             self._body_f_for_integration = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=self.device)
 
-            # Hessian blocks (6x6 block structure: angular-angular, angular-linear, linear-linear)
-            self.body_hessian_aa = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
-            self.body_hessian_al = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
-            self.body_hessian_ll = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
             angular_compliance_capacity = (
                 model.body_count if model.joint_count > 0 and model.shape_count > 0 and self.rigid_compliant_alm else 0
             )
@@ -1331,14 +1450,29 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 rigid_body_particle_contact_buffer_size if model.shape_count > 0 and model.particle_count > 0 else 0
             )
             self.body_particle_contact_buffer_pre_alloc = bp_pre_alloc
+            # Large cloths need more lanes to accumulate their contacts onto each rigid body.
+            self._body_particle_contact_threads = (
+                128 if self.device.is_cuda and model.particle_count // max(model.body_count, 1) >= 4096 else 4
+            )
             self.body_particle_contact_counts = wp.zeros(model.body_count, dtype=wp.int32, device=self.device)
             self.body_particle_contact_indices = wp.zeros(
                 model.body_count * bp_pre_alloc, dtype=wp.int32, device=self.device
             )
             self.body_particle_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=self.device)
 
-            # Joint constraint layout, legacy penalty state, and material data.
-            self._init_joint_constraint_layout()
+            # Launch dimensions are fixed for the solver's lifetime.
+            self._rigid_body_block_dim = _select_rigid_block_dim(model.body_count, self.device)
+            self._rigid_joint_block_dim = _select_rigid_block_dim(model.joint_count, self.device)
+            self._rigid_color_block_dims = tuple(
+                (
+                    _select_rigid_block_dim(group.size, self.device),
+                    _select_rigid_block_dim(group.size * _NUM_CONTACT_THREADS_PER_BODY, self.device),
+                    _select_rigid_block_dim(group.size * self._body_particle_contact_threads, self.device),
+                )
+                for group in model.body_color_groups
+            )
+
+            # Joint penalty state and material data.
             (
                 self.joint_penalty_k,
                 self.joint_penalty_k_min,
@@ -1509,6 +1643,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+        if flags & ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            self._select_rigid_dat_variant_radius()
         if (
             flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
             and self._integrates_rigid_bodies
@@ -1523,9 +1659,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_joint_material_params()
         if refresh_structural_k:
             self._refresh_structural_k()
-        if flags & (
-            ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
-        ):
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
             self._refresh_rod_rest_bend_twist_cache()
 
     @override
@@ -1544,9 +1678,23 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
-        """Convert input body pose updates into VBD-compatible history updates."""
+        """Convert input body pose updates into VBD-compatible history updates.
+
+        Also snapshots the input particle pose, which the coupling harvest hooks
+        pair with the body pose history over the whole coupled entry step (all substeps).
+        """
         self._apply_module_options()
         flags = int(flags)
+
+        if (
+            flags & StateFlags.PARTICLE_Q
+            and dt > 0.0
+            and not iteration_restart
+            and state.particle_q is not None
+            and self.model.particle_count > 0
+        ):
+            # Restarted iterations restore the same input particle pose, so they keep the pass-0 snapshot.
+            wp.copy(dest=self._coupling_particle_q_prev_snapshot, src=state.particle_q)
 
         if (
             not (flags & StateFlags.BODY_Q)
@@ -1638,6 +1786,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if contacts is None:
             return
 
+        # Both pose histories span the whole coupled entry step, matching the coupled ``dt``;
+        # ``particle_q_prev`` and ``body_q_prev`` cover only the last substep of a sub-stepped entry.
         body_q_prev = self._coupling_body_q_prev_snapshot
 
         if contacts.rigid_contact_max > 0:
@@ -1673,9 +1823,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
 
         if contacts.soft_contact_max > 0 and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max:
-            # Per-body, mirroring accumulate_body_particle_contacts_per_body: the harvest reads the
-            # same truncated adjacency list the destination solve consumed, so the reaction reported
-            # to the source is by construction the one the solve applied.
+            # Use the solve's candidate list and force law, evaluating eligibility at
+            # the feedback state. Retain the same per-body capacity limit as the solve.
             wp.launch(
                 _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
                 dim=self.model.body_count * _NUM_CONTACT_THREADS_PER_BODY,
@@ -1683,7 +1832,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     float(dt),
                     body_local_to_proxy_global,
                     state_out.particle_q,
-                    self.particle_q_prev,
+                    self._coupling_particle_q_prev_snapshot,
                     self.model.particle_radius,
                     state_out.body_q,
                     body_q_prev,
@@ -1706,6 +1855,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_particle_contact_buffer_pre_alloc,
                     self.body_particle_contact_counts,
                     self.body_particle_contact_indices,
+                    _make_soft_contact_filter_data(self.model, contacts, state_out.particle_q, state_out.body_q),
                     out_body_f,
                 ],
                 device=self.device,
@@ -1746,14 +1896,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             and contacts.soft_contact_shape is not None
             and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max
         ):
+            # Contacts are evaluated at the solved poses in ``state_out``, with histories at the
+            # coupled entry step start pose, matching the coupled ``dt``.
             if self.integrate_with_external_rigid_solver:
                 body_q_for_particles = state_out.body_q
                 body_q_prev_for_particles = state.body_q
                 body_qd_for_particles = state_out.body_qd
             else:
-                body_q_for_particles = state.body_q
+                body_q_for_particles = state_out.body_q
                 body_q_prev_for_particles = self._coupling_body_q_prev_snapshot if self.model.body_count > 0 else None
-                body_qd_for_particles = state.body_qd
+                body_qd_for_particles = state_out.body_qd
 
             wp.launch(
                 _harvest_vbd_proxy_particle_body_contact_forces_kernel,
@@ -1761,8 +1913,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 inputs=[
                     float(dt),
                     particle_local_to_proxy_global,
-                    state.particle_q,
-                    self.particle_q_prev,
+                    state_out.particle_q,
+                    self._coupling_particle_q_prev_snapshot,
                     self.model.particle_flags,
                     self.model.particle_inv_mass,
                     int(ParticleFlags.ACTIVE),
@@ -1771,6 +1923,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.rigid_soft_contact_use_log_barrier,
                     self.model.particle_radius,
                     contacts.soft_contact_count,
+                    _make_soft_contact_filter_data(self.model, contacts, state_out.particle_q, body_q_for_particles),
                     contacts.soft_contact_particle,
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
@@ -1800,8 +1953,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 inputs=[
                     float(dt),
                     particle_local_to_proxy_global,
-                    self.particle_q_prev,
-                    state.particle_q,
+                    self._coupling_particle_q_prev_snapshot,
+                    state_out.particle_q,
                     self.model.particle_flags,
                     self.model.particle_inv_mass,
                     int(ParticleFlags.ACTIVE),
@@ -1945,7 +2098,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
 
     def _refresh_rod_rest_bend_twist_cache(self) -> None:
-        """Recompute Rod bend/twist rest invariants from Model targets."""
+        """Recompute Rod bend/twist rest invariants from Model rest coordinates."""
         # The cache is only allocated when SolverVBD integrates the rigid system
         # (see _init_rigid_system); skip when bodies are handled externally.
         if not self._integrates_rigid_bodies or self.model.joint_count == 0:
@@ -1962,8 +2115,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             dim=self.model.joint_count,
             inputs=[
                 self.model.joint_type,
-                self.model.joint_target_q_start,
-                self.model.joint_target_q,
+                self.model.joint_q_start,
+                self.model.joint_rest_q,
             ],
             outputs=[
                 self.joint_rod_rest_kb_local,
@@ -1979,7 +2132,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         result = cpu.numpy() if hasattr(cpu, "numpy") else np.asarray(cpu)
         return result if dtype is None else result.astype(dtype, copy=False)
 
-    def _init_joint_constraint_layout(self) -> None:
+    def _init_joint_constraint_layout(self) -> np.ndarray:
         """Initialize VBD-owned joint constraint indexing.
 
         VBD indexes scalar constraint components for structural joint penalties,
@@ -1995,6 +2148,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Drive and limit for each free DOF share one AVBD slot (mutually exclusive at runtime).
 
         Any other joint type will raise NotImplementedError.
+
+        Returns:
+            Host constraint dimensions for adjacency construction without a device round trip.
         """
         n_j = self.model.joint_count
         with wp.ScopedDevice("cpu"):
@@ -2041,6 +2197,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.joint_constraint_count = int(c)
             self.joint_constraint_dim = wp.array(dim_np, dtype=wp.int32, device=self.device)
             self.joint_constraint_start = wp.array(start_np, dtype=wp.int32, device=self.device)
+        return dim_np
 
     def _init_joint_penalty_k(self):
         """Build initial joint penalty state on CPU and upload to solver device.
@@ -2413,11 +2570,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
+          - ``vbd:max_solver_iterations`` for ``NewtonSceneAPI.newton:maxSolverIterations``.
+          - ``vbd:rigid_contact_history``, ``vbd:rigid_joint_linear_ke``, ``vbd:rigid_joint_angular_ke``,
+            ``vbd:rigid_joint_linear_kd`` and ``vbd:rigid_joint_angular_kd`` for the ``NewtonVbdSceneAPI``
+            solver settings, authored in USD as ``newton:vbd:rigid:contactHistory``,
+            ``newton:vbd:rigid:jointLinearStiffness``, ``...jointAngularStiffness``,
+            ``...jointLinearDamping`` and ``...jointAngularDamping``. ``SolverVBD`` uses them as
+            defaults: explicit constructor argument > ``model.vbd.*`` > built-in default. Scene-authored
+            stiffness and damping must be finite and non-negative.
           - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-rod joints)
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
-        in scenes and in USD as ``newton:vbd:<attr>``.
+        in scenes. The Dahl and ``joint_is_hard`` attributes are authored in USD as
+        ``newton:vbd:<attr>``; the solver settings above use the names listed there.
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
@@ -2426,6 +2592,31 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Args:
             builder: Model builder to register attributes on.
         """
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="max_solver_iterations",
+                frequency=Model.AttributeFrequency.ONCE,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="vbd",
+                usd_attribute_name="newton:maxSolverIterations",
+            )
+        )
+
+        for name, (dtype, default, usd_attribute_name) in _SCENE_ATTRIBUTES.items():
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency=Model.AttributeFrequency.ONCE,
+                    assignment=Model.AttributeAssignment.MODEL,
+                    dtype=dtype,
+                    default=default,
+                    namespace="vbd",
+                    usd_attribute_name=usd_attribute_name,
+                )
+            )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
@@ -2466,60 +2657,26 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError("model.soft_mesh_adjacency is missing; finalize the model with ModelBuilder.")
         return self.model.soft_mesh_adjacency.init_vertex_adjacency(self.model.particle_count)
 
-    def _compute_rigid_force_element_adjacency(self, model):
-        """
-        Build CSR adjacency between rigid bodies and joints.
-
-        Returns an instance of RigidForceElementAdjacencyInfo with:
-          - body_adj_joints: flattened joint ids
-          - body_adj_joints_offsets: CSR offsets of size body_count + 1
-
-        Notes:
-            - Runs on CPU to avoid GPU atomics; kernels iterate serially over joints (dim=1).
-            - When there are no joints, offsets are an all-zero array of length body_count + 1.
-        """
+    def _compute_rigid_force_element_adjacency(self, model, joint_constraint_dim: np.ndarray):
+        """Build body-to-constraint CSR adjacency in ascending joint order."""
         adjacency = RigidForceElementAdjacencyInfo()
-
-        with wp.ScopedDevice("cpu"):
-            # Build body-joint adjacency data (rigid-only)
-            if model.joint_count > 0:
-                joint_parent_cpu = model.joint_parent.to("cpu")
-                joint_child_cpu = model.joint_child.to("cpu")
-
-                num_body_adjacent_joints = wp.zeros(shape=(model.body_count,), dtype=wp.int32)
-                wp.launch(
-                    kernel=_count_num_adjacent_joints,
-                    inputs=[joint_parent_cpu, joint_child_cpu, num_body_adjacent_joints],
-                    dim=1,
-                    device="cpu",
-                )
-
-                num_body_adjacent_joints = num_body_adjacent_joints.numpy()
-                body_adjacent_joints_offsets = np.empty(shape=(model.body_count + 1,), dtype=wp.int32)
-                body_adjacent_joints_offsets[1:] = np.cumsum(num_body_adjacent_joints)[:]
-                body_adjacent_joints_offsets[0] = 0
-                adjacency.body_adj_joints_offsets = wp.array(body_adjacent_joints_offsets, dtype=wp.int32)
-
-                body_adjacent_joints_fill_count = wp.zeros(shape=(model.body_count,), dtype=wp.int32)
-                adjacency.body_adj_joints = wp.empty(shape=(num_body_adjacent_joints.sum(),), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_fill_adjacent_joints,
-                    inputs=[
-                        joint_parent_cpu,
-                        joint_child_cpu,
-                        adjacency.body_adj_joints_offsets,
-                        body_adjacent_joints_fill_count,
-                        adjacency.body_adj_joints,
-                    ],
-                    dim=1,
-                    device="cpu",
-                )
-            else:
-                # No joints: create offset array of zeros (size body_count + 1) so indexing works
-                adjacency.body_adj_joints_offsets = wp.zeros(shape=(model.body_count + 1,), dtype=wp.int32)
-                adjacency.body_adj_joints = wp.empty(shape=(0,), dtype=wp.int32)
-
+        if self.joint_constraint_count == 0:
+            adjacency.body_adj_joints = wp.empty(0, dtype=wp.int32, device=self.device)
+            adjacency.body_adj_joints_offsets = wp.zeros(model.body_count + 1, dtype=wp.int32, device=self.device)
+            return adjacency
+        # FREE joints have no constraints; their applied forces are handled separately.
+        # Keep disabled constraints here because joint_enabled can change between steps.
+        constrained_joints = np.flatnonzero(joint_constraint_dim).astype(np.int32)
+        body_ids = np.column_stack((model.joint_parent.numpy(), model.joint_child.numpy()))[constrained_joints].ravel()
+        joint_ids = np.repeat(constrained_joints, 2)
+        valid = body_ids >= 0  # Exclude world endpoints.
+        body_ids, joint_ids = body_ids[valid], joint_ids[valid]
+        # A stable sort preserves ascending joint order within each body.
+        order = np.argsort(body_ids, kind="stable")
+        offsets = np.zeros(model.body_count + 1, dtype=np.int32)
+        offsets[1:] = np.cumsum(np.bincount(body_ids, minlength=model.body_count))
+        adjacency.body_adj_joints = wp.array(joint_ids[order], dtype=wp.int32, device=self.device)
+        adjacency.body_adj_joints_offsets = wp.array(offsets, dtype=wp.int32, device=self.device)
         return adjacency
 
     def _compute_tendon_force_element_adjacency(self, model: Model) -> TendonForceElementAdjacencyInfo:
@@ -2538,13 +2695,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             for segment, left_guide in enumerate(segment_left_guides):
                 body_l = int(guide_bodies[left_guide])
                 body_r = int(guide_bodies[left_guide + 1])
-                if body_l != body_r and len(model.body_color_groups) > 0 and body_colors[body_l] == body_colors[body_r]:
+                if (
+                    body_l >= 0
+                    and body_r >= 0
+                    and body_l != body_r
+                    and len(model.body_color_groups) > 0
+                    and body_colors[body_l] == body_colors[body_r]
+                ):
                     raise ValueError(
                         "model.body_color_groups does not separate tendon segment endpoints; "
                         "call ModelBuilder.color() after adding tendons"
                     )
-                body_segments[body_l].add(segment)
-                body_segments[body_r].add(segment)
+                if body_l >= 0:
+                    body_segments[body_l].add(segment)
+                if body_r >= 0:
+                    body_segments[body_r].add(segment)
 
                 right_guide = left_guide + 1
                 # Deactivation reuses the left authored segment for the bypass to the following guide.
@@ -2553,7 +2718,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ] == segment:
                     bypass_body = int(guide_bodies[right_guide + 1])
                     if (
-                        bypass_body != body_l
+                        bypass_body >= 0
+                        and body_l >= 0
+                        and bypass_body != body_l
                         and len(model.body_color_groups) > 0
                         and body_colors[bypass_body] == body_colors[body_l]
                     ):
@@ -2561,7 +2728,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             "model.body_color_groups does not separate dynamic tendon bypass endpoints; "
                             "call ModelBuilder.color() after adding tendons"
                         )
-                    body_segments[bypass_body].add(segment)
+                    if bypass_body >= 0:
+                        body_segments[bypass_body].add(segment)
 
         offsets = np.zeros(model.body_count + 1, dtype=np.int32)
         for body, segments in enumerate(body_segments):
@@ -2598,6 +2766,45 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     # =====================================================
     # Main Solver Methods
     # =====================================================
+
+    def _initialize_particle_body_attachments(self, state: State, dt: float) -> None:
+        """Refresh attachment ALM metrics and retain multipliers once per step."""
+        model = self.model
+        wp.launch(
+            kernel=step_particle_body_attachment_lambda_rho,
+            dim=model.attachment_particle_body_count,
+            inputs=[
+                dt,
+                self.rigid_avbd_gamma,
+                model.attachment_particle_body_body,
+                model.attachment_particle_body_particle,
+                model.attachment_particle_body_stiffness,
+                model.attachment_particle_body_enabled,
+                state.particle_q,
+                self.particle_q_prev,
+                model.particle_inv_mass,
+                model.particle_flags,
+                self.body_inv_mass_effective,
+                self.particle_adjacency,
+                model.tri_indices,
+                model.tri_poses,
+                model.tri_areas,
+                model.tri_materials,
+                model.edge_indices,
+                model.edge_rest_angle,
+                model.edge_rest_length,
+                model.edge_bending_properties,
+                model.tet_indices,
+                model.tet_poses,
+                model.tet_materials,
+                model.spring_indices,
+                model.spring_rest_length,
+                model.spring_stiffness,
+                model.spring_damping,
+            ],
+            outputs=[self._attachment_particle_body_rho, self._attachment_particle_body_lambda],
+            device=self.device,
+        )
 
     def set_rigid_history_update(self, update: bool):
         """Set whether the next step() should update rigid solver history.
@@ -2765,6 +2972,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """
         contacts = self._resolve_step_contacts(contacts)
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
@@ -2789,7 +2997,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Must run BEFORE _initialize_rigid_bodies: the dynamic routing activation
         # decision has to see the accepted pose, but the inertial predictor inside
         # _initialize_rigid_bodies overwrites state_in.body_q in place.
-        if self.tendon_segment_lambda is not None and state_in.body_q is not None:
+        if self.tendon_segment_lambda is not None:
             self._load_tendon_history(state_in)
             self._snapshot_tendon_step_state()
             self._update_tendon_guide_active(self.model, state_in.body_q)
@@ -2801,6 +3009,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid)
         self._initialize_particles(state_in, state_out, contacts, dt)
+        if self.model.attachment_particle_body_count > 0:
+            self._initialize_particle_body_attachments(state_in, dt)
 
         rigid_due, soft_due = self._collision_detection_due((_Frequency.PRE_POST_INIT,))
         # With contact history, the post-initialization pass carries the state just
@@ -2822,13 +3032,32 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._mid_step_detection(
                 state_in, state_out, contacts, dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=True
             )
+            # Material can redistribute between fixed guides even without any rigid bodies.
+            if self.tendon_segment_lambda is not None and not self.integrate_with_external_rigid_solver:
+                self._update_tendon_routing(state_in, dt, False)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
+            if self.model.attachment_particle_body_count > 0:
+                wp.launch(
+                    kernel=update_duals_particle_body_attachments,
+                    dim=self.model.attachment_particle_body_count,
+                    inputs=[
+                        self.model.attachment_particle_body_body,
+                        self.model.attachment_particle_body_particle,
+                        self.model.attachment_particle_body_body_point,
+                        self.model.attachment_particle_body_stiffness,
+                        self.model.attachment_particle_body_enabled,
+                        state_in.particle_q,
+                        state_in.body_q,
+                        self._attachment_particle_body_rho,
+                    ],
+                    outputs=[self._attachment_particle_body_lambda],
+                    device=self.device,
+                )
 
         update_tendon_diagnostics = (
             self.iterations > 0
             and self.tendon_segment_lambda is not None
-            and state_in.body_q is not None
             and not self.integrate_with_external_rigid_solver
         )
         if update_tendon_diagnostics:
@@ -2896,7 +3125,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         volumetric (tet) soft bodies, and it runs even when an external solver
         integrates the bodies or the model has none. A requested particle field is
         skipped if its *state* array is ``None``. Particle and body-particle solver
-        history is intentionally left untouched: ``particle_q_prev`` is rebaselined
+        history is intentionally left untouched except for retained attachment
+        multipliers, which are cleared in selected worlds.
+        ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
         and body-particle contacts rebuild per step, and tet/cloth elasticity is
         stateless, so no particle history cold-start is required. Reset does not
@@ -3002,6 +3233,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._reset_tendon_state(state, world_mask)
 
+        if model.attachment_particle_body_count > 0:
+            wp.launch(
+                kernel=reset_particle_body_attachment_state,
+                dim=model.attachment_particle_body_count,
+                inputs=[world_mask, world_mask is None, model.world_count, model.attachment_particle_body_world],
+                outputs=[self._attachment_particle_body_lambda],
+                device=self.device,
+            )
+
         if not self._integrates_rigid_bodies:
             return
 
@@ -3103,11 +3343,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "(pass collision_pipeline=CollisionPipeline(...) to SolverVBD): the DAT reference poses "
                 "must be snapshotted at the exact detection instants the solver drives."
             )
-        has_rigid_soft_queries = (
-            self.collision_pipeline.soft_contact_pair_count > 0
-            or len(self.collision_pipeline.soft_edge_rigid_pairs) > 0
-            or len(self.collision_pipeline.soft_face_rigid_pairs) > 0
-        )
+        has_rigid_soft_queries = self.collision_pipeline._has_rigid_soft_queries
         if self.integrate_with_external_rigid_solver:
             raise ValueError("rigid_soft_enable_dat is not supported with an external rigid solver.")
 
@@ -3128,6 +3364,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if has_rigid_soft_queries and model.particle_count > 0 and model.shape_count > 0:
             particle_radius_min = float(np.min(model.particle_radius.numpy()))
             shape_margin_min = float(np.min(model.shape_margin.numpy()))
+            # A variant row can take a variant shape with a smaller margin after construction.
+            variant_margin = model._variant_shape_geometry.get("shape_margin")
+            if variant_margin is not None and variant_margin.shape[0] > 0:
+                shape_margin_min = min(shape_margin_min, float(np.min(variant_margin.numpy())))
             rigid_soft_query_radius_min = (
                 float(self.collision_pipeline.soft_contact_gap) + particle_radius_min + shape_margin_min
             )
@@ -3152,21 +3392,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         The radius makes ``|translation| + |rotation angle| * radius`` bound the
         displacement of every represented surface point between collision detections.
+        A body with variants gets a radius per variant, about that variant's COM;
+        :meth:`notify_model_changed` selects it on the device.
         """
         from ...geometry import GeoType  # noqa: PLC0415
 
-        shape_body = model.shape_body.numpy()
-        shape_type = model.shape_type.numpy()
-        shape_scale = model.shape_scale.numpy()
-        shape_transform = model.shape_transform.numpy()
-        shape_collision_radius = model.shape_collision_radius.numpy()
-        body_com = model.body_com.numpy()
-        bounding_radius = np.zeros(model.body_count, dtype=np.float32)
-
-        def shape_local_reach(shape_index: int, com_shape: wp.vec3) -> float:
+        def shape_local_reach(
+            geo: int, scale: wp.vec3, source: Any, collision_radius: float, com_shape: wp.vec3
+        ) -> float:
             """Return a conservative upper bound on the shape's distance about the body COM."""
-            geo = shape_type[shape_index]
-            scale = wp.vec3(*shape_scale[shape_index])
             if geo == GeoType.SPHERE:
                 return wp.length(com_shape) + wp.abs(scale[0])
             if geo == GeoType.CAPSULE:
@@ -3191,29 +3425,103 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 # A sphere about the shape origin avoids underestimating the continuous rim.
                 return wp.length(com_shape) + wp.length(wp.vec2(radius, h))
             if geo in (GeoType.MESH, GeoType.CONVEX_MESH):
-                src_mesh = model.shape_source[shape_index]
-                verts = getattr(src_mesh, "vertices", None)
+                verts = getattr(source, "vertices", None)
                 if verts is not None and len(verts) > 0:
                     points_shape = np.asarray(verts, dtype=np.float64) * np.asarray(scale, dtype=np.float64)
                     return float(
                         np.max(np.linalg.norm(points_shape - np.asarray(com_shape, dtype=np.float64)[None, :], axis=1))
                     )
             # Preserve a conservative fallback for geometry without explicit support points.
-            return wp.length(com_shape) + shape_collision_radius[shape_index]
+            return wp.length(com_shape) + collision_radius
 
-        for shape_index in range(model.shape_count):
-            body_index = shape_body[shape_index]
-            # Collision flags are mutable, so cache every attached shape that could
-            # later be enabled for rigid-soft queries.
-            if body_index < 0:
-                continue
-            X_bs = wp.transform(*shape_transform[shape_index])
-            # com_shape is the body's Center of Mass in shape frame
-            com_shape = wp.transform_point(wp.transform_inverse(X_bs), wp.vec3(*body_com[body_index]))
-            reach = shape_local_reach(shape_index, com_shape)
-            bounding_radius[body_index] = max(bounding_radius[body_index], reach)
+        def max_reach(shapes: list[tuple], com: np.ndarray) -> float:
+            """Largest reach about ``com`` of ``(type, scale, transform, source, collision radius)`` shapes."""
+            result = 0.0
+            for geo, scale, transform, source, collision_radius in shapes:
+                X_bs = wp.transform(*transform)
+                # com_shape is the body's Center of Mass in shape frame
+                com_shape = wp.transform_point(wp.transform_inverse(X_bs), wp.vec3(*com))
+                result = max(result, shape_local_reach(geo, wp.vec3(*scale), source, collision_radius, com_shape))
+            return result
 
+        # Collision flags are mutable, so cache every attached shape that could later be
+        # enabled for rigid-soft queries. Variant rows are covered per variant below.
+        shape_body = model.shape_body.numpy()
+        variant_row = (
+            model._shape_variant_row.numpy() if model._has_variant_rows else np.zeros(model.shape_count, dtype=bool)
+        )
+        body_shapes: list[list[tuple]] = [[] for _ in range(model.body_count)]
+        shapes = list(
+            zip(
+                model.shape_type.numpy(),
+                model.shape_scale.numpy(),
+                model.shape_transform.numpy(),
+                model.shape_source,
+                model.shape_collision_radius.numpy(),
+                strict=True,
+            )
+        )
+        for shape_index, body_index in enumerate(shape_body.tolist()):
+            if body_index >= 0 and not variant_row[shape_index]:
+                body_shapes[body_index].append(shapes[shape_index])
+        body_com = model.body_com.numpy()
+        bounding_radius = np.array(
+            [max_reach(body_shapes[body], body_com[body]) for body in range(model.body_count)], dtype=np.float32
+        )
         self._rigid_dat_body_bounding_radius = wp.array(bounding_radius, dtype=float, device=self.device)
+
+        # Per body with variants, the radius of each variant about that variant's COM. Bodies
+        # replicated from one declaration share the variant shapes' part.
+        self._rigid_dat_variant_radius_start = None
+        self._rigid_dat_variant_radius = None
+        if not model._has_body_variants:
+            return
+        geometry = model._variant_shape_geometry
+        variant_shapes = list(
+            zip(
+                geometry["shape_type"].numpy(),
+                geometry["shape_scale"].numpy(),
+                geometry["shape_transform"].numpy(),
+                model._variant_shape_source,
+                geometry["shape_collision_radius"].numpy(),
+                strict=True,
+            )
+        )
+        row_shape = model._variant_row_shape.numpy()
+        row_shape_start = model._variant_row_shape_start.numpy()
+        variant_first = model._body_variant_first.numpy()
+        variant_count = model._body_variant_count.numpy()
+        inertia_start = model._body_variant_inertia_start.numpy()
+        variant_com = model._variant_com.numpy()
+        radius_start = np.full(model.body_count, -1, dtype=np.int32)
+        radii: list[float] = []
+        variant_reach: dict[tuple[int, int], float] = {}
+        for body in np.flatnonzero(model._body_variant_set >= 0).tolist():
+            radius_start[body] = len(radii)
+            for variant in range(variant_count[body]):
+                global_variant = variant_first[body] + variant
+                k = inertia_start[body] + variant
+                if (global_variant, k) not in variant_reach:
+                    held = row_shape[row_shape_start[global_variant] : row_shape_start[global_variant + 1]]
+                    variant_reach[global_variant, k] = max_reach(
+                        [variant_shapes[q] for q in held.tolist() if q >= 0], variant_com[k]
+                    )
+                radii.append(max(variant_reach[global_variant, k], max_reach(body_shapes[body], variant_com[k])))
+        self._rigid_dat_variant_radius_start = wp.array(radius_start, dtype=wp.int32, device=self.device)
+        self._rigid_dat_variant_radius = wp.array(radii, dtype=float, device=self.device)
+        self._select_rigid_dat_variant_radius()
+
+    def _select_rigid_dat_variant_radius(self) -> None:
+        """Set the DAT bounding radius of bodies with variants to that of their selected variant."""
+        if getattr(self, "_rigid_dat_variant_radius", None) is None:
+            return
+        wp.launch(
+            select_variant_bounding_radius,
+            dim=self.model.body_count,
+            inputs=[self.model.body_variant, self._rigid_dat_variant_radius_start, self._rigid_dat_variant_radius],
+            outputs=[self._rigid_dat_body_bounding_radius],
+            device=self.device,
+        )
 
     def _reset_dat_references(self, state: State, *, reset_rigid_soft: bool, reset_particles: bool):
         """Reset selected DAT trajectory references at a collision checkpoint."""
@@ -3273,7 +3581,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_barycentric,
+                    contacts.soft_contact_rigid_indices,
                     self.model.shape_body,
+                    self.model.shape_transform,
+                    self.model.shape_scale,
+                    self.model.shape_source_ptr,
                     self.pos_prev_collision_detection,
                     self.particle_displacements,
                     self.body_q_prev_collision_detection,
@@ -3387,7 +3699,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_barycentric,
+                    contacts.soft_contact_rigid_indices,
                     self.model.shape_body,
+                    self.model.shape_transform,
+                    self.model.shape_scale,
+                    self.model.shape_source_ptr,
                     self.pos_prev_collision_detection,
                     self.particle_displacements,
                     self.body_q_prev_collision_detection,
@@ -3908,6 +4224,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
+                block_dim=self._rigid_body_block_dim,
                 device=self.device,
             )
 
@@ -3915,7 +4232,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # solve iterations run on the predicted poses.
             self._rigid_penetration_free_truncation(state_in, contacts)
 
-            if model.joint_count > 0:
+            if self.joint_constraint_count > 0:
                 # Per-step joint setup: penalty-k decay, C0 snapshot, lambda retention,
                 # and automatic per-row rho refresh for compliant ALM.
                 joint_lambda_retention = _rigid_lambda_retention(
@@ -3972,6 +4289,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.joint_limit_lambda,
                         self.joint_angle_prev,
                     ],
+                    block_dim=self._rigid_joint_block_dim,
                     device=self.device,
                 )
 
@@ -4007,6 +4325,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.joint_C_fric,
                     ],
                     dim=model.joint_count,
+                    block_dim=self._rigid_joint_block_dim,
                     device=self.device,
                 )
 
@@ -4036,6 +4355,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if model.particle_count == 0:
             return
 
+        contact_filter = (
+            _make_soft_contact_filter_data(model, contacts, state_in.particle_q, body_q_for_particles)
+            if contacts is not None
+            else None
+        )
+
         # Zero out forces and hessians
         self.particle_forces.zero_()
         self.particle_hessians.zero_()
@@ -4060,6 +4385,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
@@ -4100,6 +4427,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self._particle_contact_head,
                             self._particle_contact_next,
                             *contact_material_and_body_inputs,
+                            contact_filter,
                         ],
                         outputs=[
                             self.particle_forces,
@@ -4124,6 +4452,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             model.particle_radius,
                             contacts.soft_contact_indices,
                             contacts.soft_contact_count,
+                            contact_filter,
                             contacts.soft_contact_max,
                             self._particle_contact_worker_count,
                             *contact_material_and_body_inputs,
@@ -4255,7 +4584,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _update_tendon_routing(self, state_in: State, dt: float, report_unsupported_wrap: bool) -> None:
         """Update VBD routed-tendon geometry and rolling rest transfer for this iteration."""
         model = self.model
-        if model.tendon_segment_count == 0 or state_in.body_q is None:
+        if model.tendon_segment_count == 0:
             return
 
         wp.launch(
@@ -4301,7 +4630,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             inputs=[
                 state_in.body_q,
                 state_in.body_qd,
-                self.body_q_prev,
+                self.body_q_prev if model.body_count else None,
                 model.body_com,
                 model.tendon_start,
                 model.tendon_guide_body,
@@ -4355,7 +4684,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             inputs=[
                 dt,
                 body_q,
-                self.body_q_prev,
+                self.body_q_prev if model.body_count else None,
                 model.body_com,
                 model.tendon_guide_body,
                 model.tendon_guide_type,
@@ -4419,6 +4748,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_contact_angular_conditioning and contacts is not None and contacts.rigid_contact_max > 0
         )
         self._refresh_contact_angular_conditioning = False
+        contact_filter = (
+            _make_soft_contact_filter_data(
+                model,
+                contacts,
+                state_in.particle_q,
+                state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+            )
+            if contacts is not None
+            else None
+        )
         # Body-particle soft contacts still need penalty updates when VBD skips rigid solves:
         # external rigid mode uses state_out.body_q, while static-shape contacts use _empty_body_q.
         skip_rigid_solve = not self._integrates_rigid_bodies
@@ -4433,6 +4772,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     dim=contacts.soft_contact_max,
                     inputs=[
                         contacts.soft_contact_count,
+                        contact_filter,
                         contacts.soft_contact_indices,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
@@ -4452,19 +4792,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             return
 
         # Zero out forces and hessians
-        self.body_torques.zero_()
-        self.body_forces.zero_()
-        self.body_hessian_aa.zero_()
-        self.body_hessian_al.zero_()
-        self.body_hessian_ll.zero_()
-
-        self._update_tendon_routing(state_in, dt, False)
+        self._body_contact_scratch.zero_()
 
         body_color_groups = model.body_color_groups
 
         # Gauss-Seidel-style per-color updates
         for color in range(len(body_color_groups)):
             color_group = body_color_groups[color]
+            solve_block_dim, body_contact_block_dim, particle_contact_block_dim = self._rigid_color_block_dims[color]
 
             if model.attachment_particle_body_count > 0:
                 wp.launch(
@@ -4484,6 +4819,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.attachment_particle_body_stiffness,
                         model.attachment_particle_body_damping,
                         model.attachment_particle_body_enabled,
+                        self._attachment_particle_body_rho,
+                        self._attachment_particle_body_lambda,
                         self.body_particle_attachment_offsets,
                         self.body_particle_attachment_indices,
                     ],
@@ -4501,10 +4838,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             if model.particle_count > 0 and contacts is not None:
                 wp.launch(
                     kernel=accumulate_body_particle_contacts_per_body,
-                    dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
+                    dim=color_group.size * self._body_particle_contact_threads,
                     inputs=[
                         dt,
                         color_group,
+                        self._body_particle_contact_threads,
                         state_in.particle_q,
                         self.particle_q_prev,
                         model.particle_radius,
@@ -4531,6 +4869,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
                         self.body_particle_contact_indices,
+                        contact_filter,
                     ],
                     outputs=[
                         self.body_forces,
@@ -4539,11 +4878,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_hessian_al,
                         self.body_hessian_aa,
                     ],
+                    block_dim=particle_contact_block_dim,
                     device=self.device,
                 )
 
             # Accumulate body-body (rigid-rigid) contact forces and Hessians on bodies (per-body, per-color)
-            if contacts is not None:
+            if contacts is not None and model.shape_count > 0:
                 wp.launch(
                     kernel=accumulate_body_body_contacts_per_body,
                     dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
@@ -4595,6 +4935,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_hessian_al,
                         self.body_hessian_aa,
                     ],
+                    block_dim=body_contact_block_dim,
                     device=self.device,
                 )
 
@@ -4682,6 +5023,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_contact_free_angular_compliance,
                 ],
                 dim=color_group.size,
+                block_dim=solve_block_dim,
                 device=self.device,
             )
             # Truncate this color's pose updates before the next color accumulates
@@ -4699,7 +5041,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 dt,
             )
 
-        if contacts is not None and contacts.rigid_contact_max > 0:
+        if contacts is not None and contacts.rigid_contact_max > 0 and model.shape_count > 0:
             wp.launch(
                 kernel=update_duals_body_body_contacts,
                 dim=contacts.rigid_contact_max,
@@ -4746,6 +5088,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 dim=contacts.soft_contact_max,
                 inputs=[
                     contacts.soft_contact_count,
+                    contact_filter,
                     contacts.soft_contact_indices,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
@@ -4763,7 +5106,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-        if model.joint_count > 0:
+        if self.joint_constraint_count > 0:
             wp.launch(
                 kernel=update_duals_joint,
                 dim=model.joint_count,
@@ -4811,6 +5154,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_drive_lambda,  # input/output
                     self.joint_limit_lambda,  # input/output
                 ],
+                block_dim=self._rigid_joint_block_dim,
                 device=self.device,
             )
 
@@ -4924,6 +5268,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_particle_contact_material_kd,
                 self.body_particle_contact_material_mu,
                 contacts.soft_contact_count,
+                _make_soft_contact_filter_data(model, contacts, state_in.particle_q, body_q),
                 contacts.soft_contact_indices,
                 contacts.soft_contact_shape,
                 contacts.soft_contact_body_pos,
@@ -5133,6 +5478,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             ],
             outputs=[self.body_q_prev, state_out.body_qd, state_in.body_qd, state_out.body_q],
             dim=model.body_count,
+            block_dim=self._rigid_body_block_dim,
             device=self.device,
         )
 
@@ -5161,6 +5507,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_dkappa_prev,
                 ],
                 dim=model.joint_count,
+                block_dim=self._rigid_joint_block_dim,
                 device=self.device,
             )
 

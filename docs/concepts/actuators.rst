@@ -72,16 +72,6 @@ The per-step pipeline is:
 Drives and clamping objects are pluggable: implement the
 :class:`DriveBase` or :class:`ClampingBase` class to add new models.
 
-.. deprecated:: 1.6
-
-   The actuator ``Controller*`` class names are retained as compatibility
-   aliases for :class:`DriveBase`, :class:`DrivePD`, :class:`DrivePID`,
-   :class:`DriveNeuralMLP`, and :class:`DriveNeuralLSTM`. The former
-   ``controller`` constructor keywords and attributes are also deprecated;
-   use ``drive``, ``drive_class``, ``drive_state``, and ``drive_kwargs``.
-   The clamping base class is now :class:`ClampingBase`; :class:`Clamping`
-   remains as a deprecated compatibility alias.
-
 .. note::
 
    **Current limitations:** the first version does not include a transmission
@@ -318,50 +308,160 @@ In the loop below the drive declares one array named ``extra_input``:
 Neural-Network Checkpoints
 --------------------------
 
-Neural-network drives support `ONNX <https://onnx.ai/>`__ (``.onnx``), which
-Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
-:class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
-Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
+Neural-network drives load `ONNX <https://onnx.ai/>`__ (``.onnx``)
+checkpoints, which Warp-NN runs with its own Warp kernels.
+:class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM` also load Torch
+checkpoints, which are deprecated (see :ref:`torch-checkpoints`).
+:class:`DriveNeuralGRU` loads ONNX only.
 
-For :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`, prefer ONNX exports
-with dynamic batch axes: axis 0 of the MLP input and axis 1 of the LSTM
-input, hidden state, and cell state. Existing fixed-batch exports remain
-supported by adapting these input declarations without changing the source
-checkpoint. This does not rewrite batch sizes embedded in graph operations
-such as ``Reshape``; re-export those models with dynamic batch axes when
-running a different number of actuators.
+ONNX checkpoints
+^^^^^^^^^^^^^^^^
 
-Torch checkpoints must be pt2 archives saved with ``torch.export.save``.
-Use the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
-archives.
-Checkpoint metadata (scales and network configuration) is stored as a JSON
-extra file:
+An ONNX checkpoint stores the Newton metadata as one JSON string in the
+``metadata`` property of the ONNX model. Set ``model_type`` to ``"mlp"``,
+``"lstm"``, or ``"gru"`` so that USD import can choose the drive. The drives
+read these keys:
+
+* :class:`DriveNeuralMLP`: optional ``input_order``, ``input_idx``,
+  ``pos_scale``, ``vel_scale``, and ``effort_scale``. Missing keys fall back to
+  their defaults without an error.
+* :class:`DriveNeuralLSTM`: ``num_layers``, ``hidden_size``, and the graph
+  input and output names ``input_name``, ``hidden_in_name``, ``cell_in_name``,
+  ``output_name``, ``hidden_out_name``, and ``cell_out_name``.
+* :class:`DriveNeuralGRU`: ``input_columns``, ``normalization``, and
+  ``sample_dt_s``, plus an optional ``custom_inputs`` that marks one column of
+  ``input_columns`` as an array the application supplies each step.
+
+Export the network with dynamic batch axes: axis 0 of the MLP input, and
+axis 1 of the LSTM input, hidden state, and cell state. Existing fixed-batch
+exports still load, because Newton adapts these input declarations. It does
+not rewrite batch sizes embedded in graph operations such as ``Reshape``;
+re-export those models with dynamic batch axes to run a different number of
+actuators.
+
+With an ONNX checkpoint, the LSTM ``State.hidden`` and ``State.cell`` are Warp
+arrays instead of Torch tensors. In USD, point ``newton:modelPath`` at the
+``.onnx`` file.
+
+Migrating Torch checkpoints to ONNX
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Export the network with ``torch.onnx.export``, which needs the ``onnxscript``
+package in recent PyTorch versions, and copy every metadata key from the Torch
+checkpoint into the ONNX metadata. For an MLP:
 
 .. code-block:: python
 
    import json
+
+   import onnx
+   import torch
+
+   torch.onnx.export(
+       net,
+       example_inputs,
+       "policy.onnx",
+       input_names=["input"],
+       output_names=["effort"],
+       dynamic_axes={"input": {0: "batch"}, "effort": {0: "batch"}},
+   )
+   model = onnx.load("policy.onnx")
+   metadata = {"model_type": "mlp", "effort_scale": 2.0}
+   onnx.helper.set_model_props(model, {"metadata": json.dumps(metadata)})
+   onnx.save(model, "policy.onnx")
+
+An LSTM takes the input, hidden state, and cell state as three graph inputs
+and returns the effort, hidden state, and cell state as three graph outputs.
+The input has shape ``(1, batch, features)`` and the effort has shape
+``(batch, 1)``. Warp-NN runs only the ``LSTM``, ``Squeeze``, and ``Gemm``
+operators of such a network, so wrap the network as below and export with
+``dynamo=False``. For a Torch network with a one-layer ``batch_first`` LSTM
+``net.lstm`` and a linear head ``net.dec``:
+
+.. code-block:: python
+
+   class OnnxLSTM(torch.nn.Module):
+       def __init__(self, net):
+           super().__init__()
+           self.lstm = torch.nn.LSTM(net.lstm.input_size, net.lstm.hidden_size)
+           self.lstm.load_state_dict(net.lstm.state_dict())
+           self.dec = net.dec
+
+       def forward(self, x, h, c):
+           y, (h, c) = self.lstm(x, (h, c))
+           return self.dec(y.squeeze(0)), h, c
+
+
+   hidden_size = net.lstm.hidden_size
+   example_inputs = (torch.zeros(1, 2, 2), torch.zeros(1, 2, hidden_size), torch.zeros(1, 2, hidden_size))
+   torch.onnx.export(
+       OnnxLSTM(net).eval(),
+       example_inputs,
+       "policy.onnx",
+       dynamo=False,
+       input_names=["input", "h_in", "c_in"],
+       output_names=["effort", "h_out", "c_out"],
+       dynamic_axes={
+           "input": {1: "batch"},
+           "h_in": {1: "batch"},
+           "c_in": {1: "batch"},
+           "effort": {0: "batch"},
+           "h_out": {1: "batch"},
+           "c_out": {1: "batch"},
+       },
+   )
+   model = onnx.load("policy.onnx")
+   metadata = {
+       "model_type": "lstm",
+       "effort_scale": 2.0,
+       "num_layers": 1,
+       "hidden_size": hidden_size,
+       "input_name": "input",
+       "hidden_in_name": "h_in",
+       "cell_in_name": "c_in",
+       "output_name": "effort",
+       "hidden_out_name": "h_out",
+       "cell_out_name": "c_out",
+   }
+   onnx.helper.set_model_props(model, {"metadata": json.dumps(metadata)})
+   onnx.save(model, "policy.onnx")
+
+Multi-layer LSTMs cannot be migrated yet: their export splits and joins the
+stacked hidden and cell state with ``Slice`` and ``Concat``, which Warp-NN
+does not support.
+
+.. _torch-checkpoints:
+
+Torch checkpoints
+^^^^^^^^^^^^^^^^^
+
+.. deprecated:: 1.8
+   Torch checkpoints and ``allow_unsafe_torch_checkpoints`` are deprecated and
+   will be removed in a future release. Export the network to ONNX instead.
+
+Torch checkpoints must be pt2 archives saved with ``torch.export.save``. Use
+the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
+archives. The metadata is stored as a JSON extra file, with the same keys as
+for ONNX:
+
+.. code-block:: python
+
+   import json
+
    import torch
 
    exported = torch.export.export(net, example_inputs)
-   metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
+   metadata = {"model_type": "lstm", "effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
-USD neural actuators may reference a checkpoint through ``newton:modelPath``.
-Importing a USD rejects Torch checkpoints (``.pt2``, ``.pt``, or ``.pth``)
-by default because :meth:`~newton.ModelBuilder.finalize` would load them with
-``torch.export.load``, which can execute code from an untrusted checkpoint.
-For a trusted USD asset and checkpoint, pass
-``allow_unsafe_torch_checkpoints=True`` to
-:meth:`newton.ModelBuilder.add_usd`. Programmatic construction of a neural
-drive from a checkpoint path remains the caller's explicit trust decision.
-
-:class:`DriveNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
-the metadata of both pt2 and ONNX checkpoints.
-
-:class:`DriveNeuralGRU` requires ``input_columns``, ``normalization`` and
-``sample_dt_s`` in its ONNX checkpoint metadata, and an optional
-``custom_inputs`` that marks one column of ``input_columns`` as an array the
-application supplies each step.
+A USD neural actuator may reference a checkpoint through
+``newton:modelPath``. USD import rejects Torch checkpoints (``.pt2``, ``.pt``,
+or ``.pth``) by default, because :meth:`~newton.ModelBuilder.finalize` would
+load them with ``torch.export.load``, which can execute code from an untrusted
+checkpoint. For a trusted USD asset and checkpoint, pass
+``allow_unsafe_torch_checkpoints=True`` to :meth:`newton.ModelBuilder.add_usd`.
+Constructing a neural drive from a checkpoint path in code is the caller's
+own trust decision.
 
 .. _effort-modes:
 
@@ -382,10 +482,6 @@ than the control law nominally asks for. The trade-off is between stability at
 large timesteps with the implicit mode, and fidelity to the requested gains at
 small timesteps with the explicit mode.
 
-The predicted state accounts only for the actuator's own impulse. Gravity, any
-other applied force, other actuators driving the same articulation, and joint
-drive applied without the actuator are all absent from it.
-
 The implicit effort mode necessarily requires the joint-space inverse mass
 matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
 is refreshed once per step at the current pose:
@@ -402,6 +498,70 @@ is refreshed once per step at the current pose:
    sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
+
+By default the predicted state accounts only for the actuator's own impulse.
+Gravity, Coriolis forces and every other force the step applies are absent
+from it. The drive still pushes back once those forces have moved the joint,
+but it cannot anticipate them. For a single joint under a constant load ``g``
+with ``kd = kp dt``, this leaves a steady error of ``g / kp + 2 dt^2 A g``: the
+first part shrinks as the gain grows, the second part does not. Pass the forces
+as a *bias force* to include them in the prediction. The bias force uses the
+sign convention of the manipulator equation ``tau = M qdd + C qd + g``: it is
+``C qd + g``, indexed like ``joint_qd``, and the step itself applies its
+negative. The predicted end-of-step velocity
+then becomes ``qd + A (p - dt bias_force)`` instead of ``qd + A p``, where
+``A`` is the inverse mass matrix (see below) and ``p`` the actuator's impulse.
+
+:func:`~newton.eval_inverse_dynamics_passive` returns the two parts,
+``gravity_force`` ``g(q)`` and ``coriolis_force`` ``C(q, qd) qd``, so the bias
+force is their sum. The function reads ``body_q``, which must match
+``joint_q``; call :func:`~newton.eval_fk` first if it may not.
+
+.. code-block:: python
+
+   @wp.kernel
+   def bias_force_kernel(
+       gravity_force: wp.array[float],
+       coriolis_force: wp.array[float],
+       bias_force: wp.array[float],
+   ):
+       i = wp.tid()
+       bias_force[i] = gravity_force[i] + coriolis_force[i]
+
+
+   dt = 0.01
+   n = model.joint_dof_count
+   gravity_force = wp.zeros(n, dtype=float, device=model.device)
+   coriolis_force = wp.zeros(n, dtype=float, device=model.device)
+   bias_force = wp.zeros(n, dtype=float, device=model.device)
+
+   # Simulation loop
+   response.refresh(sim_state)
+   newton.eval_inverse_dynamics_passive(
+       model, sim_state, gravity_force=gravity_force, coriolis_force=coriolis_force
+   )
+   wp.launch(
+       bias_force_kernel,
+       dim=n,
+       inputs=[gravity_force, coriolis_force],
+       outputs=[bias_force],
+       device=model.device,
+   )
+   sim_control.joint_f.zero_()
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=dt, bias_force=bias_force)
+   solver.step(sim_state, next_sim_state, sim_control, contacts, dt=dt)
+
+These are the forces at the start of the step. A solver that holds them
+constant over the step, such as :class:`~newton.solvers.SolverMuJoCo` with its
+default ``implicitfast`` integrator, applies the same values, so the
+prediction matches its step up to the approximations of the response described
+below. This bias force does not include contacts, joint limits, joint damping,
+other actuators, or joint force applied without the actuator, such as other
+writes to ``joint_f``. Contact and limit forces depend on the actuator's own
+effort and cannot be computed before it.
+:func:`~newton.eval_inverse_dynamics_passive` allocates scratch memory on every
+call, so capturing it in a CUDA graph needs the device's memory pool. The
+explicit effort mode ignores the bias force.
 
 In this mode :meth:`Actuator.step <newton.actuators.Actuator.step>` evaluates
 the joint force for each actuated DOF. A force on one DOF changes the velocity
@@ -433,7 +593,9 @@ exception of loop closure effects. To this end,
 <newton.actuators.JointSpaceResponse.refresh_from_solve>` takes a callable that
 computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
-Newton solver that provides one.
+Newton solver that provides one. MuJoCo's free and ball joints use different
+coordinates from Newton's, so pass the state as well; the response then
+converts them at that pose.
 
 .. code-block:: python
 
@@ -442,14 +604,14 @@ Newton solver that provides one.
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
    # Simulation loop, in place of response.refresh(sim_state)
-   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.
 
 :meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back to
 explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
-solve's iteration count and convergence tolerances.
+solve's iteration count, line-search length and convergence tolerances.
 
 The following built-in drives support the implicit mode (neural drives require
 the ONNX backend):

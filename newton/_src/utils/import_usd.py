@@ -52,6 +52,7 @@ from ..usd.particles import find_particle_prims, import_particles
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .color import color_linear_to_srgb
+from .deprecation import warn_deprecation
 from .import_usd_deformable_attachments import (
     _deformable_import_attachments,
     _deformable_import_element_collision_filters,
@@ -69,6 +70,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _scout_deformable_prims,
 )
+from .import_usd_deformable_visual import _deformable_import_visual
 from .import_usd_deformable_volume import _deformable_import_volume
 
 logger = logging.getLogger(__name__)
@@ -163,8 +165,6 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
-    legacy_angular_velocity_units: bool = False,
-    legacy_springref_units: bool = False,
     return_deformable_results: bool = False,
     allow_unsafe_torch_checkpoints: bool = False,
 ) -> dict[str, Any]:
@@ -178,6 +178,8 @@ def parse_usd(
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
+            If ``parent_body`` is set, imported bodies are placed relative to that
+            body's frame; static shapes still use ``xform`` in the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -256,7 +258,7 @@ def parse_usd(
         verbose: If True, log additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path: The USD path to import, defaults to "/". Bound physics materials
             outside this subtree are resolved without importing unrelated bodies
@@ -266,6 +268,7 @@ def parse_usd(
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+            Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
         load_static_visual_shapes: If True, supported visual-only geometry outside
             rigid-body hierarchies is loaded as static shapes when
             ``load_visual_shapes`` is also True. Default is True.
@@ -303,40 +306,17 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
-        legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
-            resolved ``state:angular:physics:velocity``
-            and D6 ``state:rot*:physics:velocity`` values are copied into
-            ``joint_qd`` without converting degrees/s to radians/s. Applies
-            to revolute, native D6, and merged joints. Rigid-body velocities,
-            linear joint velocities, positions, and drive targets retain their
-            usual unit conversion. Defaults to False.
-
-            .. deprecated:: 1.7
-                This temporary flag will be removed in Newton 1.8. Enabling
-                it emits a :class:`DeprecationWarning`. Migrate authored
-                asset values to their documented units and leave it False.
-
-        legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
-            already converted Newton value, ignoring
-            ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
-            conversion is unchanged. Requires registered MuJoCo custom
-            attributes to load spring references. Defaults to False, which
-            interprets revolute spring references using the compiler's angle
-            units (degrees if unauthored) and converts them to radians.
-
-            .. deprecated:: 1.7
-                This temporary flag will be removed in Newton 1.8. Enabling
-                it emits a :class:`DeprecationWarning`. Migrate authored
-                asset values to their documented units and leave it False.
-
         return_deformable_results: If True, include the experimental deformable entries in the
-            returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+            returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
             default return shape carries no deformable additions.
         allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
             Torch checkpoints. Only use this for trusted USD assets and
             checkpoints: loading a Torch checkpoint may execute code during
             :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
+
+            .. deprecated:: 1.8
+                Torch checkpoints are deprecated; export the network to ONNX.
 
     Returns:
         .. experimental::
@@ -420,6 +400,8 @@ def parse_usd(
               - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
             * - ``"path_soft_map"``
               - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+            * - ``"path_deformable_visual_map"``
+              - Mapping from graphics Mesh prim path (str) to its index in :attr:`Model.deformable_visual_meshes`. Includes only successfully imported visual meshes. Present only with ``return_deformable_results=True``. The indices describe this import, not copies created by later builder composition or replication.
             * - ``"path_cable_attrs"``
               - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
             * - ``"path_cloth_attrs"``
@@ -427,9 +409,9 @@ def parse_usd(
             * - ``"path_soft_attrs"``
               - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``return_deformable_results=True``.
             * - ``"path_attachment_map"``
-              - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
+              - Mapping from prim path (str) of a supported cable ``PhysicsAttachment`` prim to the created joint indices. Cloth/volume particle-body attachments are not joints and are listed only in ``path_attachment_attrs``. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
             * - ``"path_attachment_attrs"``
-              - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
+              - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Imported cloth/volume attachments list their particle-body attachment indices under ``"attachment_particle_body_indices"``. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
             * - ``"mass_unit"``
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
             * - ``"linear_unit"``
@@ -455,17 +437,10 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
-    for name, enabled in (
-        ("legacy_angular_velocity_units", legacy_angular_velocity_units),
-        ("legacy_springref_units", legacy_springref_units),
-    ):
-        if enabled:
-            warnings.warn(
-                f"{name}=True is deprecated and will be removed in Newton 1.8. "
-                "Migrate authored asset values to their documented units and leave this option False.",
-                NewtonDeprecationWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
+    if allow_unsafe_torch_checkpoints:
+        from ..actuators.utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG  # noqa: PLC0415
+
+        warn_deprecation(_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG)
 
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -646,8 +621,6 @@ def parse_usd(
         limit_gains_configured=default_joint_limit_gains_configured,
         mjc_resolver=mjc_resolver,
         verbose=verbose,
-        legacy_angular_velocity_units=legacy_angular_velocity_units,
-        legacy_springref_units=legacy_springref_units,
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
     solreflimit_gain_baseline_key = "mujoco:solreflimit_gain_baseline"
@@ -898,11 +871,18 @@ def parse_usd(
                 _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, False)
             return
 
+        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
+        if not is_site and path_name in deformable_visual_exclude_paths:
+            if recurse:
+                _load_visual_shape_children(
+                    parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes
+                )
+            return
+
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
 
-        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
         if is_site and not load_sites:
             return
         if not is_site and not allow_visual_shapes:
@@ -1674,6 +1654,8 @@ def parse_usd(
                     break
                 current_prim = current_prim.GetParent()
 
+    articulation_has_self_collision = {}
+
     _deformable_ctx = _DeformableImportContext(
         builder=builder,
         stage=stage,
@@ -1686,6 +1668,9 @@ def parse_usd(
         get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
         get_first_target=_get_first_target,
         get_tetmesh_cached=_get_tetmesh_cached,
+        is_viewport_drawn=visuals.is_viewport_drawn,
+        load_visual_shapes=load_visual_shapes,
+        hide_collision_shapes=hide_collision_shapes,
         incoming_world_xform=incoming_world_xform,
         linear_unit=linear_unit,
         ignore_paths=ignore_paths,
@@ -1702,7 +1687,13 @@ def parse_usd(
         path_soft_attrs=path_soft_attrs,
         path_attachment_map=path_attachment_map,
         path_attachment_attrs=path_attachment_attrs,
+        articulation_has_self_collision=articulation_has_self_collision,
         prims=_deformable_prims,
+        cable_visual_sim_paths={
+            sim_path
+            for body_path, sim_path in _deformable_prims.body_owner.items()
+            if any(visuals.is_viewport_drawn(prim) for prim in _deformable_prims.visual_meshes.get(body_path, ()))
+        },
     )
 
     def import_attached_cables(body_paths) -> None:
@@ -1746,9 +1737,6 @@ def parse_usd(
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
     ]
     authored_articulation_root_paths.sort(key=len, reverse=True)
-
-    # maps from articulation_id to bool indicating if self-collisions are enabled
-    articulation_has_self_collision = {}
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
@@ -2308,6 +2296,12 @@ def parse_usd(
         if _deformable_prims.tetmeshes:
             _deformable_import_volume(_deformable_ctx)
 
+        # Proposal graphics geometry: untagged Meshes under each imported deformable body
+        # become visual meshes skinned from that body's simulation elements. Runs after the
+        # family passes so ownership (tet/tri ranges, cable body lists) is realized.
+        if load_visual_shapes and _deformable_prims.body_owner:
+            _deformable_import_visual(_deformable_ctx)
+
         # PhysicsAttachment prims from the AOUSD deformables proposal. The current
         # builder can faithfully lower the cable/rod subset because imported cables
         # are rigid capsule bodies. Surface/volume attachments require a separate
@@ -2833,7 +2827,7 @@ def parse_usd(
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.delay import Delay  # noqa: PLC0415
-    from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
+    from ..actuators.usd_parser import _parse_actuator_prim  # noqa: PLC0415
 
     actuator_count = 0
     path_to_dof = {
@@ -2850,7 +2844,7 @@ def parse_usd(
         prim_path = str(prim.GetPath())
         if any(re.match(pattern, prim_path) for pattern in ignore_paths):
             continue
-        parsed = parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints)
+        parsed = _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints)
         if parsed is None:
             continue
         target_path = parsed.target_path
@@ -3101,6 +3095,7 @@ def parse_usd(
                 "path_cable_map": path_cable_map,
                 "path_cloth_map": path_cloth_map,
                 "path_soft_map": path_soft_map,
+                "path_deformable_visual_map": _deformable_ctx.path_deformable_visual_map,
                 "path_cable_attrs": path_cable_attrs,
                 "path_cloth_attrs": path_cloth_attrs,
                 "path_soft_attrs": path_soft_attrs,
