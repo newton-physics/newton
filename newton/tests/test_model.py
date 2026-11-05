@@ -2440,7 +2440,7 @@ class TestShapeConfigValidation(unittest.TestCase):
         builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4))
         builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
         scene = newton.ModelBuilder()
-        scene.replicate(builder, world_count=2)
+        scene.replicate(builder, copy_count=2)
         model = scene.finalize()
 
         np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.4, 0.4, 0.4, 0.4])

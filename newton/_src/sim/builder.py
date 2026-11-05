@@ -16556,6 +16556,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_kf": wp.float32,
     "shape_material_ka": wp.float32,
     "shape_material_mu": wp.float32,
+    # Holds None for "same as mu" until finalize() resolves it, so the merged array is an object array.
     "shape_material_mu_static": wp.float32,
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,

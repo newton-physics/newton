@@ -77,6 +77,7 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "shape_material_kf",
     "shape_material_ka",
     "shape_material_mu",
+    "shape_material_mu_static",
     "shape_material_restitution",
     "shape_material_mu_torsional",
     "shape_material_mu_rolling",
