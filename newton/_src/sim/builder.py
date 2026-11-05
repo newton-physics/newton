@@ -201,12 +201,12 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
 
 
 _ACTUATOR_DELAY_STEPS_DEPRECATION_MSG = (
-    "ModelBuilder.add_actuator(delay_steps=...) is deprecated in Newton 1.8; "
+    "ModelBuilder.add_actuator(delay_steps=...) is deprecated in Newton 1.9; "
     "use input_processors=[(InputProcessorDelay, {'delay_steps': ...})] instead."
 )
 _ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
 _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
-    "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.8; use input_processor_args instead."
+    "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use input_processor_args instead."
 )
 _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
@@ -1014,7 +1014,7 @@ class ModelBuilder:
             """Initialize an actuator entry.
 
             Args:
-                delay_args: Deprecated in Newton 1.8; pass an
+                delay_args: Deprecated in Newton 1.9; pass an
                     :class:`~newton.actuators.InputProcessorDelay` in
                     *input_processor_classes* and its per-actuator params in
                     *input_processor_args* instead.
@@ -1058,7 +1058,7 @@ class ModelBuilder:
             dicts: changing a dict changes the entry, but appending to the
             list does not. Assign a new list to replace the delay entries.
 
-            .. deprecated:: 1.8
+            .. deprecated:: 1.9
                 Use :attr:`input_processor_args` instead.
             """
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -1523,7 +1523,7 @@ class ModelBuilder:
         def target_pos(self) -> float:
             """Deprecated position target.
 
-            .. deprecated:: 1.8
+            .. deprecated:: 1.9
                 Use :attr:`target_q` instead.
             """
             warnings.warn("target_pos is deprecated; use target_q instead.", NewtonDeprecationWarning, stacklevel=2)
@@ -1538,7 +1538,7 @@ class ModelBuilder:
         def target_vel(self) -> float:
             """Deprecated velocity target.
 
-            .. deprecated:: 1.8
+            .. deprecated:: 1.9
                 Use :attr:`target_qd` instead.
             """
             warnings.warn("target_vel is deprecated; use target_qd instead.", NewtonDeprecationWarning, stacklevel=2)
@@ -3456,7 +3456,7 @@ class ModelBuilder:
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
                 Clamps must accept the drive output space. DUTY clamps run
                 before the motor; EFFORT clamps require an actuator without a motor.
-            delay_steps: Deprecated in Newton 1.8; use
+            delay_steps: Deprecated in Newton 1.9; use
                 ``input_processors=[(InputProcessorDelay, {"delay_steps": ...})]`` instead.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from

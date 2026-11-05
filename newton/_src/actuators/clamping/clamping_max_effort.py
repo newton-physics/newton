@@ -13,7 +13,7 @@ from .clamping_symmetric import ClampingSymmetric
 class ClampingMaxEffort(ClampingSymmetric):
     """Deprecated effort-only wrapper for ClampingSymmetric.
 
-    .. deprecated:: 1.8
+    .. deprecated:: 1.9
         Use ``ClampingSymmetric(limit=..., input_space=DriveOutputSpace.EFFORT)``.
     """
 
@@ -28,7 +28,7 @@ class ClampingMaxEffort(ClampingSymmetric):
 
     def __init__(self, max_effort: wp.array[float]):
         """Initialize the legacy effort-only clamp with limits [N or N·m]."""
-        warn_deprecation("ClampingMaxEffort is deprecated in Newton 1.8; use ClampingSymmetric instead.")
+        warn_deprecation("ClampingMaxEffort is deprecated in Newton 1.9; use ClampingSymmetric instead.")
         super().__init__(limit=max_effort)
 
     @property

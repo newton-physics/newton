@@ -15,6 +15,9 @@ construction.
     please file issues or discussion threads.
 """
 
+import warnings
+from typing import TYPE_CHECKING
+
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
@@ -45,6 +48,7 @@ from ._src.actuators import (
     parse_battery_prim,
     register_actuator_component,
 )
+from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",

@@ -36,7 +36,7 @@ An actuator is composed of four building blocks, applied in this order:
    Actuator
    ├── InputProcessor[]  (optional: transforms state and command inputs)
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
-   │   └── InputProcessorEncoder     (position encoder, e.g. behind a backlash joint)
+   │   └── InputProcessorEncoder     (position encoder, e.g. behind an output joint)
    ├── Drive      (control law that computes raw effort, or the motor command)
    ├── Clamping[]  (bounds the drive output in its declared space)
    │   ├── ClampingSymmetric       (±limit in EFFORT or DUTY)
@@ -50,7 +50,7 @@ An actuator is composed of four building blocks, applied in this order:
    Transforms the inputs to the drive: the simulation state (positions,
    velocities) and the control targets (positions, velocities, feedforward
    effort).  Examples include a command delay and a position encoder, e.g.
-   behind a backlash joint.  Multiple input processors can be combined on a single
+   behind an output joint.  Multiple input processors can be combined on a single
    actuator.  See the individual input processor class
    documentation for details.
 
@@ -91,12 +91,12 @@ Drives, clamping objects, and input processors are pluggable: implement the
 :class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase` class
 to add new models.
 
-.. deprecated:: 1.8
+.. deprecated:: 1.9
 
    :class:`ClampingMaxEffort` is an effort-only compatibility wrapper for
    ``ClampingSymmetric(limit=...)``.
 
-.. deprecated:: 1.8
+.. deprecated:: 1.9
 
    ``Delay`` is renamed :class:`InputProcessorDelay`.  The ``delay``
    argument of :class:`Actuator`, the ``delay_steps`` argument of
@@ -328,7 +328,7 @@ all declared custom inputs, ready to be filled with the engine's arrays.
    points at that buffer after the swap and the actuator reads stale positions
    and velocities. Re-point its fields every step.
 
-See :ref:`custom_attributes` for custom attributes and frequencies in general.
+See :ref:`custom_attributes` for custom attributes in general.
 
 In the loop below the drive declares one array named ``extra_input``:
 
@@ -350,11 +350,6 @@ In the loop below the drive declares one array named ``extra_input``:
 
        solver.step(state_0, state_1, control, contacts, dt)
        state_0, state_1 = state_1, state_0
-
-.. deprecated:: 1.8
-
-   Declaring :attr:`DriveBase.custom_inputs` as a tuple of names is
-   deprecated; the names are read as joint-DOF inputs.
 
 .. _neural-network-checkpoints:
 
@@ -488,7 +483,7 @@ does not support.
 Torch checkpoints
 ^^^^^^^^^^^^^^^^^
 
-.. deprecated:: 1.8
+.. deprecated:: 1.9
    Torch checkpoints and ``allow_unsafe_torch_checkpoints`` are deprecated and
    will be removed in a future release. Export the network to ONNX instead.
 
@@ -695,24 +690,24 @@ Limitations of the implicit mode.  In the cases marked *error*,
   (error): a drive that declares
   :attr:`~newton.actuators.DriveBase.custom_inputs` must pass them to the
   solve, or the solve would ignore them.
-* **Backlash is not modeled** (warning): an actuator with an
+* **Encoders** (warning): an actuator with an
   :class:`~newton.actuators.InputProcessorEncoder` is accepted with a
   :class:`~newton.exceptions.NewtonWarning`, because the result is only
   approximate.  The drive reads the encoder behind the output joint, while the
   solve predicts the end-of-step state from the response of the actuated joint
-  alone.  While the backlash gap is open, the motor's effort does not reach
-  the link, yet the solve assumes it does, so it applies less effort than
-  needed to close the gap.
+  alone.  While the output joint is not at its limit, the motor's effort does
+  not reach the link, yet the solve assumes it does, so it applies less effort
+  than needed to bring the output joint to its limit.
 
 Differentiability and Graph Capture
 -----------------------------------
 
 Whether an actuator supports differentiability and CUDA graph capture depends on
-its drive.  :class:`DrivePD` and :class:`DrivePID` are fully
-graphable.  For neural-network drives it depends on the checkpoint
-backend: ONNX checkpoints are graphable, while Torch checkpoints are not due
-to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
-when all components can be captured in a CUDA graph.
+its components.  All built-in input processors, clamps, motors and drives are
+graphable, except neural-network drives with a Torch checkpoint, due to
+framework interop overhead; with an ONNX checkpoint they are graphable.
+Implicit mode is not differentiable.  :meth:`Actuator.is_graphable` returns
+``True`` when all components can be captured in a CUDA graph.
 
 :meth:`Actuator.is_graphable` describes the components, not the captured region.
 A stateful actuator also needs the region's state exchange to be graph-safe.  See
@@ -727,7 +722,7 @@ Input processors
 ^^^^^^^^^^^^^^^^
 
 * :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
-* :class:`InputProcessorEncoder` — position encoder, e.g. behind a backlash
+* :class:`InputProcessorEncoder` — position encoder, e.g. behind an output
   joint (stateless).
 
 Multiple input processors can be stacked on a single actuator; they are applied
@@ -801,6 +796,8 @@ entry per actuator of the model
   from its battery, written by the motor in :meth:`Actuator.step`;
 * output ``control.actuator_supply_voltage``: the supply voltage of each
   motor, read by the motor in the next :meth:`Actuator.step`.
+
+To set up and run batteries:
 
 * :meth:`~newton.ModelBuilder.add_actuator` returns the index of the actuator
   in per-actuator arrays.  :meth:`~newton.ModelBuilder.add_battery` takes a

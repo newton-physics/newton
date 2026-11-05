@@ -37,7 +37,7 @@ from .space import DriveOutputSpace
 from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
 
 _COMPONENT_KIND_DELAY_DEPRECATION_MSG = (
-    "ComponentKind.DELAY is deprecated in Newton 1.8; use ComponentKind.INPUT_PROCESSOR instead."
+    "ComponentKind.DELAY is deprecated in Newton 1.9; use ComponentKind.INPUT_PROCESSOR instead."
 )
 
 
@@ -71,6 +71,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
             warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.INPUT_PROCESSOR
         return None
+
 
 @dataclass
 class ActuatorParsed:

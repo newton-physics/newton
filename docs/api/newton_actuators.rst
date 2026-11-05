@@ -27,7 +27,6 @@ construction.
    :nosignatures:
 
    Actuator
-   DriveOutputSpace
    ActuatorParsed
    BatteryBase
    BatteryConstantResistance
@@ -36,13 +35,14 @@ construction.
    ClampingCurrentDuty
    ClampingDCMotor
    ClampingMaxEffort
-   ClampingSymmetric
    ClampingPositionBased
+   ClampingSymmetric
    ComponentKind
    DriveBase
    DriveNeuralGRU
    DriveNeuralLSTM
    DriveNeuralMLP
+   DriveOutputSpace
    DrivePD
    DrivePID
    InputProcessorBase

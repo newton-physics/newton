@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
 from typing import TYPE_CHECKING, Any
@@ -27,16 +28,16 @@ if TYPE_CHECKING:
     from ..sim.model import Model
 
 _DELAY_KEYWORD_DEPRECATION_MSG = (
-    "Actuator(delay=...) is deprecated in Newton 1.8; use Actuator(input_processors=[delay]) instead."
+    "Actuator(delay=...) is deprecated in Newton 1.9; use Actuator(input_processors=[delay]) instead."
 )
-_DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.8; use Actuator.input_processors instead."
+_DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.9; use Actuator.input_processors instead."
 _DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG = (
     "Overriding InputProcessorDelay.update_state with the (target_pos, target_vel, feedforward, pos_indices, "
-    "vel_indices, current_state, next_state) signature is deprecated in Newton 1.8; override "
+    "vel_indices, current_state, next_state) signature is deprecated in Newton 1.9; override "
     "update_state(inputs, current_state, next_state) instead."
 )
 _DELAY_STATE_DEPRECATION_MSG = (
-    "Actuator.State.delay_state is deprecated in Newton 1.8; use input_processor_states instead."
+    "Actuator.State.delay_state is deprecated in Newton 1.9; use input_processor_states instead."
 )
 
 
@@ -253,7 +254,7 @@ class Actuator:
             """Initialize composed actuator state.
 
             Args:
-                delay_state: Deprecated in Newton 1.8; use ``input_processor_states``.
+                delay_state: Deprecated in Newton 1.9; use ``input_processor_states``.
                 drive_state: Drive-specific state, or ``None`` if stateless.
                 input_processor_states: One state per input processor, in
                     processor order (``None`` for stateless processors).
@@ -271,7 +272,7 @@ class Actuator:
         def delay_state(self) -> InputProcessorDelay.State | None:
             """Deprecated alias for the first :class:`InputProcessorDelay` state in :attr:`input_processor_states`.
 
-            .. deprecated:: 1.8
+            .. deprecated:: 1.9
                 Use :attr:`input_processor_states` instead.
             """
             warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -369,7 +370,7 @@ class Actuator:
             indices: DOF indices into velocity-shaped arrays (velocities,
                 velocity targets, feedforward, effort output). Shape ``(N,)``.
             drive: Drive that computes effort without a motor, or duty with a motor.
-            delay: Deprecated in Newton 1.8; pass the delay in
+            delay: Deprecated in Newton 1.9; pass the delay in
                 ``input_processors`` instead.
             clamping: Clamps applied in list order. Their input_space must match
                 the drive output: EFFORT without a motor, DUTY with one.
@@ -573,7 +574,7 @@ class Actuator:
     def delay(self) -> InputProcessorDelay | None:
         """Deprecated alias for the first :class:`InputProcessorDelay` in :attr:`input_processors`.
 
-        .. deprecated:: 1.8
+        .. deprecated:: 1.9
             Use :attr:`input_processors` instead.
         """
         warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -620,7 +621,7 @@ class Actuator:
         Warns:
             NewtonWarning: The actuator has an :class:`~newton.actuators.InputProcessorEncoder`.
                 The solve uses the motor-side response only, so it is inaccurate
-                while the backlash gap is open.
+                while the output joint is not at its limit.
         """
         if self.requires_grad:
             raise NotImplementedError(
@@ -638,7 +639,7 @@ class Actuator:
         if any(isinstance(p, InputProcessorEncoder) for p in self.input_processors):
             warnings.warn(
                 "Implicit actuation with InputProcessorEncoder predicts the link-side state from the "
-                "motor-side response only, so it is inaccurate while the backlash gap is open.",
+                "motor-side response only, so it is inaccurate while the output joint is not at its limit.",
                 NewtonWarning,
                 stacklevel=2,
             )

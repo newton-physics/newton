@@ -14,7 +14,7 @@ from ...utils.deprecation import warn_deprecation
 from ..space import DriveOutputSpace
 
 _COMPUTE_FORCES_DEPRECATION_MSG = (
-    "The forces argument of DriveBase.compute() is deprecated in Newton 1.8; use output instead."
+    "The forces argument of DriveBase.compute() is deprecated in Newton 1.9; use output instead."
 )
 
 
@@ -24,9 +24,9 @@ def _rename_compute_output(compute: Any, legacy: bool) -> Any:
     @wraps(compute)
     def wrapper(self: DriveBase, *args: Any, **kwargs: Any) -> None:
         if "forces" in kwargs:
-            warn_deprecation(_COMPUTE_FORCES_DEPRECATION_MSG)
             if "output" in kwargs:
                 raise TypeError("compute() got values for both 'output' and its deprecated name 'forces'")
+            warn_deprecation(_COMPUTE_FORCES_DEPRECATION_MSG)
             kwargs["output"] = kwargs.pop("forces")
         if legacy and "output" in kwargs:
             kwargs["forces"] = kwargs.pop("output")
@@ -104,7 +104,7 @@ class DriveBase:
         if legacy:
             warn_deprecation(
                 f"{cls.__name__}.compute() names its output argument 'forces', which is deprecated "
-                "in Newton 1.8; rename it to 'output'."
+                "in Newton 1.9; rename it to 'output'."
             )
         cls.compute = _rename_compute_output(compute, legacy)
 
@@ -178,7 +178,7 @@ class DriveBase:
                 <newton.actuators.MotorDC.compute_supply_voltage>`). Shape
                 ``(N,)``. Only passed when the actuator has a motor.
 
-        .. deprecated:: 1.8
+        .. deprecated:: 1.9
             The argument name ``forces``; use ``output``. Subclasses that
             still name it ``forces`` keep working.
         """

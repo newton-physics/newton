@@ -240,29 +240,29 @@ class TestActuatorDriveAPI(unittest.TestCase):
         expected = run(model.actuators[0], model)
         np.testing.assert_allclose(expected, [10.0, 10.0, 10.0, 20.0])
 
-        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.8"):
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.9"):
             legacy_model = build(delay_steps=2)
         np.testing.assert_allclose(run(legacy_model.actuators[0], legacy_model), expected)
 
-        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.8"):
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.9"):
             self.assertIs(newton.actuators.Delay, actuators.InputProcessorDelay)
 
         legacy_drive = actuators.DrivePD(kp=wp.array([10.0], dtype=wp.float32), kd=wp.array([0.0], dtype=wp.float32))
         legacy_delay = actuators.InputProcessorDelay(delay_steps=wp.array([2], dtype=wp.int32))
-        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.8"):
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.9"):
             legacy_actuator = actuators.Actuator(
                 indices=wp.array([0], dtype=wp.uint32), drive=legacy_drive, delay=legacy_delay
             )
         np.testing.assert_allclose(run(legacy_actuator, model), expected)
 
     def test_deprecated_delay_aliases_warn_and_forward(self):
-        """Every deprecated delay alias warns with the 1.8 deprecation and reaches the input processor."""
+        """Every deprecated delay alias warns with the 1.9 deprecation and reaches the input processor."""
         from newton.actuators import ComponentKind  # noqa: PLC0415
 
         drive = actuators.DrivePD(kp=wp.array([10.0], dtype=wp.float32), kd=wp.array([0.0], dtype=wp.float32))
         delay = actuators.InputProcessorDelay(delay_steps=wp.array([2], dtype=wp.int32))
         actuator = actuators.Actuator(indices=wp.array([0], dtype=wp.uint32), drive=drive, input_processors=[delay])
-        deprecated = self.assertWarnsRegex(NewtonDeprecationWarning, "1.8")
+        deprecated = self.assertWarnsRegex(NewtonDeprecationWarning, "1.9")
 
         with deprecated:
             self.assertIs(actuator.delay, delay)

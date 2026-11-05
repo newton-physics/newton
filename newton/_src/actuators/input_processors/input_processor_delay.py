@@ -16,7 +16,7 @@ from .base import InputProcessorBase
 
 _UPDATE_STATE_LEGACY_DEPRECATION_MSG = (
     "InputProcessorDelay.update_state(target_pos, target_vel, feedforward, pos_indices, vel_indices, current_state, "
-    "next_state) is deprecated in Newton 1.8; use update_state(inputs, current_state, next_state) instead."
+    "next_state) is deprecated in Newton 1.9; use update_state(inputs, current_state, next_state) instead."
 )
 
 
@@ -352,7 +352,7 @@ class InputProcessorDelay(InputProcessorBase):
         * *current_state*: delay state to read from.
         * *next_state*: delay state to write into.
 
-        .. deprecated:: 1.8
+        .. deprecated:: 1.9
             The form ``update_state(target_pos, target_vel, feedforward,
             pos_indices, vel_indices, current_state, next_state)``.
         """
