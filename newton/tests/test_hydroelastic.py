@@ -264,13 +264,14 @@ def test_scan_with_total_boundaries(test, device):
 
 def test_scan_with_total_under_captures(test, device):
     """Replay the scratch scan bitwise like ``array_scan`` in a Warp capture, a conditional body and a driver capture."""
-    capacity = 300_001
+    # More tiles than scan blocks, so blocks loop over tiles.
+    capacity = 2 * wp.get_device(device).sm_count * 8 * 1024 + 1
     counts_np = np.random.default_rng(3).integers(0, 9, capacity).astype(np.int32)
     counts = wp.array(counts_np, dtype=wp.int32, device=device)
     expected = wp.zeros(capacity, dtype=wp.int32, device=device)
     wp.utils.array_scan(counts, expected, inclusive=False)
     expected_np = expected.numpy()
-    num_elements = wp.array([capacity], dtype=wp.int32, device=device)
+    num_elements = wp.zeros(1, dtype=wp.int32, device=device)
     prefix = wp.zeros(capacity, dtype=wp.int32, device=device)
     total = wp.zeros(1, dtype=wp.int32, device=device)
     scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int64, device=device)
@@ -296,11 +297,15 @@ def test_scan_with_total_under_captures(test, device):
     try:
         for name, replay in captures.items():
             with test.subTest(capture=name):
-                for _ in range(20):
+                # The same scratch serves every replay, whatever the active count.
+                for active in (capacity, 37, 0, capacity // 3, 1, capacity) * 3:
+                    num_elements.fill_(active)
                     prefix.zero_()
                     replay()
-                    np.testing.assert_array_equal(prefix.numpy(), expected_np)
-                    test.assertEqual(int(total.numpy()[0]), int(counts_np.sum()))
+                    prefix_np = prefix.numpy()
+                    np.testing.assert_array_equal(prefix_np[:active], expected_np[:active])
+                    np.testing.assert_array_equal(prefix_np[active:], 0)
+                    test.assertEqual(int(total.numpy()[0]), int(counts_np[:active].sum()))
                     test.assertFalse(scratch.numpy().any())
     finally:
         if sys.platform.startswith("linux"):
