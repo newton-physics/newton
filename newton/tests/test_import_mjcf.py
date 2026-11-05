@@ -2218,8 +2218,12 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
         np.concatenate((np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),) * 2) + np.repeat([0, 4], 4)[:, None]
     )
 
-    def assert_matches_native(self, mjcf: str, asset_dir: str | None = None):
-        """Compare the first body's mass, center of mass and inertia tensor with native MuJoCo."""
+    def assert_matches_native(self, mjcf: str, asset_dir: str | None = None) -> newton.ModelBuilder:
+        """Compare the first body's mass, center of mass and inertia tensor with native MuJoCo.
+
+        Returns:
+            The builder of the imported model.
+        """
         mujoco, _ = SolverMuJoCo.import_mujoco()
         if asset_dir is None:
             native = mujoco.MjModel.from_xml_string(mjcf)
@@ -2239,6 +2243,7 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
         np.testing.assert_allclose(
             np.array(builder.body_inertia[0]).reshape(3, 3), expected_inertia, rtol=1e-5, atol=1e-6
         )
+        return builder
 
     def inline_mjcf(
         self,
@@ -2270,8 +2275,15 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
         )
 
     def test_file_mesh_inertia_with_scale_ref_pose_and_mass(self):
-        """File meshes apply the mode after scale and reference pose; an authored mass sets the density."""
-        obj = "".join(f"v {x} {y} {z}\n" for x, y, z in self.VERTICES)
+        """File meshes apply the mode after scale and reference pose; an authored mass sets the density.
+
+        Per-vertex colors split the file into one submesh per color unless a geom sets ``rgba``, so the
+        two geoms load the same mesh asset as different submeshes.
+        """
+        colors = np.repeat([[1, 0, 0], [0, 0, 1]], 4, axis=0)
+        obj = "".join(
+            f"v {x} {y} {z} {r} {g} {b}\n" for (x, y, z), (r, g, b) in zip(self.VERTICES, colors, strict=True)
+        )
         obj += "".join(f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in self.FACES)
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "mesh.obj").write_text(obj)
@@ -2283,8 +2295,10 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
                 with self.subTest(mesh=mesh_attributes, geom=geom_attributes):
                     mjcf = f"""<mujoco><asset><mesh name="mesh" file="mesh.obj" {mesh_attributes}/></asset>
                       <worldbody><body name="body"><freejoint/>
-                        <geom type="mesh" mesh="mesh" {geom_attributes}/></body></worldbody></mujoco>"""
-                    self.assert_matches_native(mjcf, directory)
+                        <geom type="mesh" mesh="mesh" {geom_attributes}/>
+                        <geom type="mesh" mesh="mesh" rgba="0.5 0.5 0.5 1" {geom_attributes}/></body></worldbody>
+                      </mujoco>"""
+                    self.assertEqual(self.assert_matches_native(mjcf, directory).shape_count, 3)
 
     def test_mesh_inertia_computed_once_per_asset(self):
         """Geoms sharing a mesh asset reuse its mass properties."""

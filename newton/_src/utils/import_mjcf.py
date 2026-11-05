@@ -1054,7 +1054,7 @@ def parse_mjcf(
     # meshes loaded from files, keyed by file and load arguments, so a mesh asset
     # referenced by several geoms (e.g. visual and collision, or mirrored links) is parsed once
     mesh_file_cache: dict[tuple, list[Mesh]] = {}
-    # per-submesh unit-density mass properties of non-exact inertia modes, per mesh asset and scale
+    # per-submesh unit-density mass properties of non-exact inertia modes, keyed by mesh asset and load arguments
     mesh_inertia_cache: dict[tuple, list[tuple[float, np.ndarray, np.ndarray]]] = {}
 
     def load_mesh_asset(
@@ -1082,7 +1082,14 @@ def parse_mjcf(
         if mode == "exact":
             # Newton's mesh mass properties already use the exact signed volume.
             return meshes
-        key = (mesh_name, tuple(float(v) for v in np.asarray(scaling, dtype=np.float64).reshape(-1)), maxhullvert)
+        key = (
+            mesh_name,
+            tuple(float(v) for v in np.asarray(scaling, dtype=np.float64).reshape(-1)),
+            maxhullvert,
+            # A color or texture override loads a mesh file as one submesh instead of one per material.
+            None if override_color is None else tuple(float(v) for v in override_color),
+            override_texture,
+        )
         properties = mesh_inertia_cache.get(key)
         if properties is None:
             # MuJoCo reads a mesh file as one mesh, so combine its submeshes.
