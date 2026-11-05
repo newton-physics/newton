@@ -1873,7 +1873,6 @@ def test_closing_gripper_stops_at_finger_contact(test, device):
         with test.subTest(response=response):
             solver = SolverSteel(
                 model,
-                solve_mode="matrix_free",
                 **_response(response),
                 propagation_same_articulation_rows=True,
                 iterations=1,

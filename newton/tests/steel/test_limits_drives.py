@@ -1725,15 +1725,18 @@ class TestSteelJointFriction(unittest.TestCase):
     def test_friction_and_ground_contact(self):
         """Hold a vertical slider against gravity, or let it fall onto the ground and rest, on both contact routes."""
         for response, (friction, falls) in itertools.product(
-            ("immediate", "propagation_colored"), ((15.0, False), (5.0, True))
+            ("immediate", "colored"), ((15.0, False), (5.0, True))
         ):
             with self.subTest(response=response, friction=friction):
                 model = _vertical_slider_model(mass=1.0, half=0.1, friction=friction)
                 pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
                 contacts = pipeline.contacts()
-                solver = _friction_solver(
-                    model, friction_anchor_beta=0.0, iterations=24, articulated_contact_response=response
+                route = (
+                    {"solve_mode": "colored", "articulated_contact_response": "propagation"}
+                    if response == "colored"
+                    else {"articulated_contact_response": response}
                 )
+                solver = _friction_solver(model, friction_anchor_beta=0.0, iterations=24, **route)
                 states, control = [model.state(), model.state()], model.control()
                 newton.eval_fk(model, states[0].joint_q, states[0].joint_qd, states[0])
                 for _ in range(150):

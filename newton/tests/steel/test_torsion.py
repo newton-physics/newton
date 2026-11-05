@@ -3451,7 +3451,6 @@ def test_colored_sleeping_islands_drop_their_torsion_rows(test, device):
     set_torsion_radius(model, 0.01)
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
         iterations=16,
         velocity_iterations=0,
         contact_warmstart=False,
