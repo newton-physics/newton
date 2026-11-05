@@ -7830,6 +7830,24 @@ class ModelBuilder:
             raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
         joints_to_keep = set(joints_to_keep or ())
 
+        # Preserve body frames still required by constraints when collapsing into world.
+        bodies_requiring_body_frame = set()
+        for body1, body2 in zip(
+            self._eq_list("equality_constraint_body1"),
+            self._eq_list("equality_constraint_body2"),
+            strict=False,
+        ):
+            if body1 >= 0:
+                bodies_requiring_body_frame.add(body1)
+            if body2 >= 0:
+                bodies_requiring_body_frame.add(body2)
+
+        # A particle-body attachment needs a surviving body to anchor to and to receive the
+        # reaction force, so its body must not be merged into the world.
+        for body in self.attachment_particle_body_body:
+            if body >= 0:
+                bodies_requiring_body_frame.add(body)
+
         # Merging changes the frames and contacts that imported MuJoCo sensors measure, so reject it.
         sensor_count = self._custom_frequency_counts.get("mujoco:sensor", 0)
         if sensor_count:
@@ -7846,10 +7864,29 @@ class ModelBuilder:
                     # also counts the contacts of geoms merged into the world.
                     if body >= 0 or sensor_types[row] == "touch":
                         sensor_bodies.add(body)
+            kept_joints = {
+                joint
+                for joint in range(self.joint_count)
+                if self.joint_label[joint] in joints_to_keep or joint in joints_to_keep
+            }
+            # Like dfs() below, keep a fixed joint whose child a constraint needs when the child would
+            # merge into the world, i.e. when only merged fixed joints lead to it from the world.
+            joints_by_parent: dict[int, list[int]] = {}
+            for joint, parent in enumerate(self.joint_parent):
+                joints_by_parent.setdefault(parent, []).append(joint)
+            frontier, reached = [-1], {-1}
+            while frontier:
+                for joint in joints_by_parent.get(frontier.pop(), ()):
+                    child = self.joint_child[joint]
+                    if self.joint_type[joint] != JointType.FIXED or joint in kept_joints or child in reached:
+                        continue
+                    if child in bodies_requiring_body_frame:
+                        kept_joints.add(joint)
+                    else:
+                        reached.add(child)
+                        frontier.append(child)
             for joint, joint_type in enumerate(self.joint_type):
-                merged = joint_type == JointType.FIXED and not (
-                    self.joint_label[joint] in joints_to_keep or joint in joints_to_keep
-                )
+                merged = joint_type == JointType.FIXED and joint not in kept_joints
                 if merged and {self.joint_parent[joint], self.joint_child[joint]} & sensor_bodies:
                     raise ValueError(
                         f"collapse_fixed_joints() would merge body {self.body_label[self.joint_child[joint]]!r}, "
@@ -7951,24 +7988,6 @@ class ModelBuilder:
         # sort body children so we traverse the tree in the same order as the bodies are listed
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
-
-        # Preserve body frames still required by constraints when collapsing into world.
-        bodies_requiring_body_frame = set()
-        for body1, body2 in zip(
-            self._eq_list("equality_constraint_body1"),
-            self._eq_list("equality_constraint_body2"),
-            strict=False,
-        ):
-            if body1 >= 0:
-                bodies_requiring_body_frame.add(body1)
-            if body2 >= 0:
-                bodies_requiring_body_frame.add(body2)
-
-        # A particle-body attachment needs a surviving body to anchor to and to receive the
-        # reaction force, so its body must not be merged into the world.
-        for body in self.attachment_particle_body_body:
-            if body >= 0:
-                bodies_requiring_body_frame.add(body)
 
         retained_joints = []
         retained_bodies = []

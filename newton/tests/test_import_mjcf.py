@@ -9094,6 +9094,21 @@ class TestImportMjcfSensors(unittest.TestCase):
         world_site = mjcf.format('<framepos objtype="site" objname="anchor"/>')
         self.assert_sensors_match_native(world_site, ([0.0] * 12,), collapse_fixed_joints=True)
 
+    def test_later_collapse_allows_sensors_on_bodies_constraints_keep(self):
+        """Allow a collapse that keeps a sensor body because a constraint needs its frame."""
+        mjcf = """<mujoco><worldbody>
+          <body name="mount" pos="0 0 1"><geom size="0.1"/><body name="post" pos="0 0 0.2"><geom size="0.05"/></body>
+          </body><body name="arm" pos="1 0 1"><freejoint/><geom size="0.1"/></body>
+        </worldbody><equality><connect body1="post" body2="arm" anchor="0 0 0"/></equality>
+        <sensor>{}</sensor></mujoco>"""
+        # mount merges into the world; post would too, but the connect constraint keeps its frame.
+        post = mjcf.format('<framepos objtype="xbody" objname="post"/>')
+        self.assert_sensors_match_native(post, ([0.0] * 6,), collapse_fixed_joints=True)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf.format('<framepos objtype="xbody" objname="mount"/>'), parse_sensors=True)
+        with self.assertRaisesRegex(ValueError, "would merge body '.*mount'"):
+            builder.collapse_fixed_joints()
+
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):
     """Test that multiple worldbody elements are handled correctly.
