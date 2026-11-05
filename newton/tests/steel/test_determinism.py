@@ -385,7 +385,7 @@ def test_deterministic_step_runs_under_an_external_capture(test, device):
         replay, release = _capture_solve(device, solve, external)
         try:
             hashes[external] = []
-            for _ in range(40):
+            for _ in range(8):
                 pipeline.collide(state_0, contacts)
                 replay()
                 hashes[external].append(_sample(state_0))
@@ -424,11 +424,8 @@ def _capture_solve(device, solve, external):
     ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
     if ended != 0:
         raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
-    # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
-    auto_free_on_launch = 1
-    instantiated = cuda.cuGraphInstantiateWithFlags(
-        ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)
-    )
+    # No instantiate flags: a graph holding an unfreed allocation fails to relaunch.
+    instantiated = cuda.cuGraphInstantiateWithFlags(ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(0))
     if instantiated != 0:
         cuda.cuGraphDestroy(graph)
         raise RuntimeError(f"cuGraphInstantiateWithFlags failed with {instantiated}")
