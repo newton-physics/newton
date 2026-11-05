@@ -2033,6 +2033,11 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
     Y = (0.5 * J).astype(np.float32)
     diag = (np.einsum("wrd,wrd->wr", J, Y) + 1.0e-3).astype(np.float32)
     rhs = np.full((worlds, rows), -0.5, np.float32)
+    # The inactive row is strongly violated, so visiting it would change the output velocity.
+    rhs[:, rows - 1] = -100.0
+    # The same worlds with the inactive row retyped give the velocity of a solve that skips it.
+    types_without_inactive = types.copy()
+    types_without_inactive[counts < rows, rows - 1] = steel_kernels.PGS_CONSTRAINT_TYPE_JOINT_LIMIT
     # A visit overwrites the impulse with a non-negative one, so a row left at -1 was skipped.
     initial_impulses = np.where(types == vlim, -1.0, 0.0).astype(np.float32)
     initial_impulses[np.arange(rows) >= counts[:, None]] = 0.0
@@ -2055,51 +2060,56 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
         def zeros(shape, dtype=float):
             return wp.zeros(shape, dtype=dtype, device=device)
 
-        impulses = arr(initial_impulses)
-        wp.launch_tiled(
-            kernel,
-            dim=[worlds],
-            inputs=[
-                arr(counts, int),
-                arr(np.arange(worlds * dofs, dtype=np.int32).reshape(worlds, dofs), int),
-                arr(rhs),
-                arr(diag),
-                impulses,
-                arr(J),
-                arr(Y),
-                arr(types, int),
-                arr(parents, int),
-                arr(mu),
-                *(zeros((worlds, rows)) for _ in range(5)),
-                zeros(worlds, int),
-                zeros(worlds, int),
-                zeros((worlds, 4), int),
-                zeros((worlds, 1)),
-                *(zeros((worlds, 1, 6)) for _ in range(4)),
-                zeros((worlds, 1)),
-                arr(np.ones((worlds, rows), np.float32)),
-                zeros((worlds, 1)),
-                arr(np.full((worlds, rows), -1, np.int32), int),
-                zeros((worlds, rows)),
-                zeros((worlds, rows)),
-                zeros((worlds, 1)),
-                1,
-                1.0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ],
-            outputs=[arr(v_in)],
-            block_dim=32,
-            device=device,
-        )
-        lam = impulses.numpy()
+        lam, v = [], []
+        for row_types in (types, types_without_inactive):
+            impulses = arr(initial_impulses)
+            v_out = arr(v_in)
+            wp.launch_tiled(
+                kernel,
+                dim=[worlds],
+                inputs=[
+                    arr(counts, int),
+                    arr(np.arange(worlds * dofs, dtype=np.int32).reshape(worlds, dofs), int),
+                    arr(rhs),
+                    arr(diag),
+                    impulses,
+                    arr(J),
+                    arr(Y),
+                    arr(row_types, int),
+                    arr(parents, int),
+                    arr(mu),
+                    *(zeros((worlds, rows)) for _ in range(5)),
+                    zeros(worlds, int),
+                    zeros(worlds, int),
+                    zeros((worlds, 4), int),
+                    zeros((worlds, 1)),
+                    *(zeros((worlds, 1, 6)) for _ in range(4)),
+                    zeros((worlds, 1)),
+                    arr(np.ones((worlds, rows), np.float32)),
+                    zeros((worlds, 1)),
+                    arr(np.full((worlds, rows), -1, np.int32), int),
+                    zeros((worlds, rows)),
+                    zeros((worlds, rows)),
+                    zeros((worlds, 1)),
+                    1,
+                    1.0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                outputs=[v_out],
+                block_dim=32,
+                device=device,
+            )
+            lam.append(impulses.numpy())
+            v.append(v_out.numpy().reshape(worlds, dofs))
         for w, (name, vlim_rows) in enumerate(layouts.items()):
             with test.subTest(shared_metadata=shared_metadata, pair_cache=pair_cache, layout=name):
-                test.assertTrue(np.all(lam[w, vlim_rows] >= 0.0))
-                test.assertFalse(np.any(lam[w, counts[w] :]))
+                test.assertTrue(np.all(lam[0][w, vlim_rows] >= 0.0))
+                test.assertFalse(np.any(lam[0][w, counts[w] :]))
+                np.testing.assert_array_equal(v[0][w], v[1][w])
 
 
 class TestSteelMatrixFreeVelocityLimitPass(unittest.TestCase):
