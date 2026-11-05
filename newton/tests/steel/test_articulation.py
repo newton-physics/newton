@@ -1992,11 +1992,11 @@ SPRING_COORDS = slice(7, 11)
 
 
 def _spring_scene(device, *, stiffness: tuple[float, ...] | None = None, rest_q: tuple[float, ...] | None = None):
-    """A free body, then a prismatic, a revolute and a two-axis D6 joint, each its own articulation.
+    """A free body, a prismatic joint, and a welded root branching into a revolute and a two-axis D6 joint.
 
     Gravity is off and every center of mass lies on its joint axes, so each spring DOF is an independent
     oscillator of mass ``SPRING_MASS + SPRING_ARMATURE``. The free body's quaternion offsets the spring
-    joints' coordinate indices from their DOF indices.
+    joints' coordinate indices from their DOF indices, and the branch gives ``parallel_tree`` a tree plan.
     """
     stiffness = tuple(k for k, _, _ in SPRING_DOFS) if stiffness is None else stiffness
     rest_q = tuple(r for _, r, _ in SPRING_DOFS) if rest_q is None else rest_q
@@ -2017,35 +2017,36 @@ def _spring_scene(device, *, stiffness: tuple[float, ...] | None = None, rest_q:
             axis=direction, stiffness=stiffness[index], rest_q=rest_q[index], armature=SPRING_ARMATURE
         )
 
-    joints = (
-        builder.add_joint_prismatic(
-            -1,
-            link(0.0),
-            axis=newton.Axis.X,
-            stiffness=stiffness[0],
-            rest_q=rest_q[0],
-            armature=SPRING_ARMATURE,
-            parent_xform=parent_xform(0.0),
-        ),
+    slider = builder.add_joint_prismatic(
+        -1,
+        link(0.0),
+        axis=newton.Axis.X,
+        stiffness=stiffness[0],
+        rest_q=rest_q[0],
+        armature=SPRING_ARMATURE,
+        parent_xform=parent_xform(0.0),
+    )
+    builder.add_articulation([slider])
+    root = link(1.0)
+    branch = [
+        builder.add_joint_fixed(-1, root, parent_xform=parent_xform(1.0)),
         builder.add_joint_revolute(
-            -1,
+            root,
             link(1.0),
             axis=newton.Axis.Z,
             stiffness=stiffness[1],
             rest_q=rest_q[1],
             armature=SPRING_ARMATURE,
-            parent_xform=parent_xform(1.0),
         ),
         builder.add_joint_d6(
-            -1,
+            root,
             link(2.0),
             linear_axes=[axis(2, newton.Axis.X)],
             angular_axes=[axis(3, newton.Axis.Z)],
-            parent_xform=parent_xform(2.0),
+            parent_xform=parent_xform(1.0),
         ),
-    )
-    for joint in joints:
-        builder.add_articulation([joint])
+    ]
+    builder.add_articulation(branch)
     model = builder.finalize(device=device)
     q = model.joint_q.numpy()
     q[SPRING_COORDS] = [q0 for _, _, q0 in SPRING_DOFS]
@@ -2090,6 +2091,7 @@ def test_springs_match_explicit_reference(test, device, solve_mode="matrix_free"
     """Oscillate PRISMATIC, REVOLUTE and D6 springs about their rest coordinates as the explicit reference does."""
     model = _spring_scene(device)
     solver = _construct(test, model, solve_mode=solve_mode, **solver_kwargs)
+    test.assertEqual(solver._tree_plan is not None, solver_kwargs.get("parallel_tree", False))
     history = _spring_trajectory(model, solver, SPRING_STEPS)
     reference = _spring_reference(SPRING_STEPS)
     np.testing.assert_allclose(history[:, SPRING_COORDS], reference, rtol=0.0, atol=1.0e-5)
@@ -2163,6 +2165,29 @@ def test_spring_edits_follow_their_notifications(test, device, solve_mode="matri
     np.testing.assert_allclose(_first_step_tau(model, solver), [3.0], atol=1.0e-6)
 
 
+def test_captured_spring_notifications_apply_in_place_edits(test, device):
+    """Replay captured DOF force and reference-pose notifications after in-place spring edits."""
+    model = _hinge_model(device, damping=3.0, spring_k=4.0, spring_ref=0.5)
+    solver = _construct(test, model)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    flags = newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES | newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+    solver.notify_model_changed(flags)
+    solver.step(state_0, state_1, control, None, DT)
+    with wp.ScopedCapture(device) as capture:
+        solver.notify_model_changed(flags)
+        solver.step(state_0, state_1, control, None, DT)
+    taus = []
+    for stiffness, rest_q in ((4.0, 0.5), (2.0, -0.5)):
+        model.joint_stiffness.assign([stiffness])
+        model.joint_rest_q.assign([rest_q])
+        state_0.joint_q.zero_()
+        state_0.joint_qd.fill_(1.0)
+        wp.capture_launch(capture.graph)
+        taus.append(float(solver._joint_tau.numpy()[0]))
+    np.testing.assert_allclose(taus, [4.0 * 0.5 - 3.0, 2.0 * -0.5 - 3.0], atol=1.0e-6)
+
+
 def test_registration_adds_no_spring_attributes(test, device):
     """Register only Steel's own body attributes, not the MuJoCo spring attributes."""
     builder = newton.ModelBuilder()
@@ -2218,6 +2243,12 @@ for _name, _func in (
 ):
     add_function_test(TestSteelSprings, _name, _func, devices=get_cuda_test_devices())
     add_function_test(TestSteelSprings, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
+add_function_test(
+    TestSteelSprings,
+    "test_captured_spring_notifications_apply_in_place_edits",
+    test_captured_spring_notifications_apply_in_place_edits,
+    devices=get_cuda_test_devices(),
+)
 add_function_test(
     TestSteelSprings,
     "test_registration_adds_no_spring_attributes",
