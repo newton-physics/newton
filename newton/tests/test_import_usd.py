@@ -8944,7 +8944,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_weld_holds_its_authored_pose(self):
-        """SolverMuJoCo's row for a USD weld authored at a satisfied pose holds both free bodies still."""
+        """Verify SolverMuJoCo holds two free bodies still under a USD weld authored at a satisfied pose."""
         for target in ("body", "site", "rotated site"):
             for convert in (False, True):
                 with self.subTest(target=target, convert=convert):
@@ -8958,6 +8958,10 @@ def Xform "Articulation" (
                     )
                     model = builder.finalize()
                     solver = SolverMuJoCo(model)
+                    # The imported weld is the only active row; the others are inactive kinematic-root welds.
+                    active = np.flatnonzero(solver.mj_model.eq_active0)
+                    self.assertEqual(len(active), 1)
+                    self.assertEqual(int(solver.mj_model.eq_type[active[0]]), int(SolverMuJoCo.EqType.WELD))
                     state_0, state_1, control = model.state(), model.state(), model.control()
                     start = state_0.body_q.numpy().copy()
                     for _ in range(50):

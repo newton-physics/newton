@@ -8648,7 +8648,12 @@ class ModelBuilder:
                 while len(relpose_values) <= i:
                     relpose_values.append(None)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
+                # relpose.p is the anchor's held position in body1's frame, which body2's merge leaves in
+                # place; only body2's orientation relative to body1 picks up the merge.
+                relpose_values[i] = wp.transform(
+                    wp.transform_get_translation(relpose),
+                    wp.transform_get_rotation(relpose) * wp.quat_inverse(wp.transform_get_rotation(merge_xform)),
+                )
 
             old_joint1 = _at(joint1_values, i, joint1_attr.default)
             old_joint2 = _at(joint2_values, i, joint2_attr.default)
