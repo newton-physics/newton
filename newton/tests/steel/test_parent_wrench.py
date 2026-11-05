@@ -34,12 +34,19 @@ def test_parent_wrench_eager_step_before_first_replay(test, device):
 
     Each run first steps once without the observable, so the collision pipeline's lazily allocated buffers exist.
     """
-    colored = {"enable_joint_velocity_limits": True, "articulated_contact_response": "propagation_colored"}
+    colored = {
+        "enable_joint_velocity_limits": True,
+        "articulated_contact_response": "propagation_colored",
+        "enable_sleeping": True,
+        "contact_torsion_device": True,
+    }
     for options in ({"enable_joint_velocity_limits": False}, {"enable_joint_velocity_limits": True}, colored):
         with test.subTest(**options):
             runs = []
             for _ in range(2):
                 model, pipeline = _parent_wrench_scene(device)
+                if options.get("contact_torsion_device"):
+                    set_torsion_radius(model, 0.02)
                 solver = SolverSteel(
                     model,
                     solve_mode="matrix_free",

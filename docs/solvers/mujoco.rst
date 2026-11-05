@@ -140,10 +140,14 @@ An explicit ``rest_q=0.0`` also takes precedence over that default; use
 ``rest_q=None`` to leave it unspecified. Conflicting explicitly configured
 core rest coordinates and authored legacy rest values raise an error.
 
-Runtime ``model.mujoco.dof_springref`` is removed in Newton 1.8 without a
-deprecation period. It cannot directly alias :attr:`~newton.Model.joint_rest_q`:
-the reference changes from absolute MuJoCo coordinates in DOF layout to
-relative Newton coordinates in coordinate layout. Reads, assignments, and
+Runtime ``model.mujoco.dof_springref`` is deprecated since Newton 1.8. When the
+model has no joints with more coordinates than DOFs (free, ball, distance, or
+rod) and no nonzero ``mujoco:dof_ref`` at finalization, the DOF and coordinate
+layouts coincide and ``springref`` equals ``rest_q``, so the old name remains a
+warning alias to :attr:`~newton.Model.joint_rest_q` for at least one minor
+release. The alias
+tracks ``rest_q``, so it no longer reports the absolute spring reference if
+``dof_ref`` is edited later. For other models, reads, assignments, and
 deletions raise an ``AttributeError`` with migration guidance. Replace runtime
 accesses with ``joint_rest_q``, subtract ``ref`` from legacy values, and index
 by :attr:`~newton.Model.joint_q_start`.
@@ -892,8 +896,8 @@ Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
 worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
-and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
-assets, scales, and convex-hull counts may differ across worlds. Collision
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
+heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
 flags may also differ when Newton supplies contacts. Native MuJoCo contacts
 require matching collision flags, groups, and exclusions for corresponding geom
 slots. With native contacts,

@@ -469,6 +469,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._ensure_restitution_module_options()
         self._apply_module_options()
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0

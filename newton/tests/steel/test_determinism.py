@@ -58,6 +58,7 @@ SPLIT_OPTIONS = {
 
 # Device-prepared contact torsion rows follow the contact rows of their world.
 TORSION_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_torsion_device": True, "articulation_constraint_max": 512}
+TORSION_COLORED_OPTIONS = {**TORSION_OPTIONS, "articulated_contact_response": "propagation_colored"}
 
 # Joint-friction rows alongside contact, drive, joint-limit and velocity-limit rows; unfused limits keep their rows.
 FRICTION_OPTIONS = {
@@ -327,6 +328,7 @@ def test_deterministic_runs_are_bitwise_identical(test, device):
         ("matrix_free", model, MATRIX_FREE_OPTIONS, False),
         ("matrix_free_graph", model, MATRIX_FREE_OPTIONS, True),
         ("torsion_graph", torsion_model, TORSION_OPTIONS, True),
+        ("torsion_colored_graph", torsion_model, TORSION_COLORED_OPTIONS, True),
         ("warmstart_graph", model, WARMSTART_OPTIONS, True),
         ("joint_friction", friction_model, FRICTION_OPTIONS, False),
         ("joint_friction_graph", friction_model, FRICTION_OPTIONS, True),
