@@ -1,1 +1,1 @@
-Fix replicated Allegro hand animation to use the correct joint limit offsets and animate only finger targets, keeping every cube in its hand.
+Fix joint indexing in the Allegro hand example's initialization and animation, and detect frozen fingers or lost cubes in its success checks.
