@@ -3731,8 +3731,9 @@ class ModelBuilder:
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
-            first yields a single simplified copy shared across all copies;
-            approximating afterwards allocates one copy per replicated shape.
+            first simplifies each mesh once and shares the result across all copies;
+            approximating afterwards produces the same shared result but processes
+            every replicated shape.
 
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
@@ -9812,9 +9813,14 @@ class ModelBuilder:
             :meth:`~newton.ModelBuilder.add_world`, not to the parent builder
             afterwards. Replication copies mesh *references*, not mesh data, so
             ``N`` worlds share one :class:`~newton.Mesh` object. Approximating
-            first produces a single simplified copy that is shared across all
-            replicated worlds; approximating afterwards allocates one copy per
-            replicated shape — up to ``N`` times the memory for identical data.
+            first simplifies each mesh once and shares the result across all
+            replicated worlds; approximating afterwards produces the same shared
+            result but processes every replicated shape.
+
+            Shapes that share one source :class:`~newton.Mesh` object receive one
+            shared replacement mesh, so copy a shape's
+            :attr:`~newton.ModelBuilder.shape_source` entry
+            before modifying it for that shape alone.
 
             Recommended:
 

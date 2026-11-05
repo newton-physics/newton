@@ -175,8 +175,7 @@ class TestComputeShapeRadius(unittest.TestCase):
         np.testing.assert_allclose(radius, np.linalg.norm([2.0, 1.0, 0.0]) * 0.5)
 
     def test_mesh_radius_tracks_scale_and_vertex_updates(self):
-        # Shapes sharing a mesh reuse its cached bounds; the radius must still follow
-        # each shape's signed, non-uniform scale and any replaced vertices.
+        """Follow each shape's signed scale and replaced vertices with cached mesh bounds."""
         rng = np.random.default_rng(3)
         mesh = newton.Mesh(rng.uniform(-1.0, 2.0, size=(32, 3)), np.arange(30), compute_inertia=False)
         for scale in ((1.0, 1.0, 1.0), (-2.0, 0.5, 3.0)):
