@@ -10,10 +10,18 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit
+from newton.solvers import SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit, SolverSteel
 from newton.solvers.experimental.coupled import ModelView, SolverCoupled
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
+
+# Construction arguments of each solver on the CPU; Steel's default matrix-free solve requires CUDA.
+CPU_SOLVER_KWARGS = {
+    SolverFeatherstone: {},
+    SolverSemiImplicit: {},
+    SolverMuJoCo: {"use_mujoco_cpu": True},
+    SolverSteel: {"solve_mode": "split"},
+}
 
 
 def _slider_builder(*, register=False):
@@ -431,10 +439,9 @@ class TestJointSprings(unittest.TestCase):
 class TestJointSpringDynamics(unittest.TestCase):
     def test_imported_spring_force(self):
         """Accelerate an undriven unit-mass slider using its imported spring."""
-        for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
+        for solver_cls, kwargs in CPU_SOLVER_KWARGS.items():
             with self.subTest(solver=solver_cls.__name__):
                 model = _slider_builder(register=True).finalize(device="cpu")
-                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
                 solver = solver_cls(model, **kwargs)
                 state, out = model.state(), model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -444,7 +451,7 @@ class TestJointSpringDynamics(unittest.TestCase):
 
     def test_coupled_spring_updates(self):
         """Apply core rest edits to compacted solvers with core or legacy builder inputs."""
-        for solver_cls, legacy in product((SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo), (False, True)):
+        for solver_cls, legacy in product(CPU_SOLVER_KWARGS, (False, True)):
             with self.subTest(solver=solver_cls.__name__, legacy=legacy):
                 builder = newton.ModelBuilder(gravity=(0, 0, 0))
                 SolverMuJoCo.register_custom_attributes(builder)
@@ -463,9 +470,10 @@ class TestJointSpringDynamics(unittest.TestCase):
                 builder.add_articulation([joint])
                 with self.assertWarns(DeprecationWarning) if legacy else nullcontext():
                     model = builder.finalize(device="cpu")
-                factory = (
-                    (lambda view: SolverMuJoCo(view, use_mujoco_cpu=True)) if solver_cls == SolverMuJoCo else solver_cls
-                )
+
+                def factory(view, solver_cls=solver_cls):
+                    return solver_cls(view, **CPU_SOLVER_KWARGS[solver_cls])
+
                 solver = SolverCoupled(
                     model, entries=[SolverCoupled.Entry(name="slider", solver=factory, bodies=[body], joints=[joint])]
                 )
@@ -533,7 +541,7 @@ class TestJointSpringDynamics(unittest.TestCase):
 
     def test_d6_springs_after_quaternion_joint(self):
         """Index D6 rest coordinates correctly after a ball joint changes the coordinate offset."""
-        for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
+        for solver_cls, kwargs in CPU_SOLVER_KWARGS.items():
             with self.subTest(solver=solver_cls.__name__):
                 builder = newton.ModelBuilder(gravity=(0, 0, 0))
                 ball = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
@@ -554,7 +562,6 @@ class TestJointSpringDynamics(unittest.TestCase):
                 )
                 builder.add_articulation([joint])
                 model = builder.finalize(device="cpu")
-                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
                 solver = solver_cls(model, **kwargs)
                 state, out = model.state(), model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -578,9 +585,7 @@ class TestJointSpringDynamics(unittest.TestCase):
 
     def test_spring_equilibrium(self):
         """Keep scalar joints at their spring rest coordinates without installing drives."""
-        for solver_cls, joint_type in product(
-            (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo), ("revolute", "prismatic")
-        ):
+        for solver_cls, joint_type in product(CPU_SOLVER_KWARGS, ("revolute", "prismatic")):
             with self.subTest(solver=solver_cls.__name__, joint_type=joint_type):
                 builder = newton.ModelBuilder(gravity=(0, 0, 0))
                 body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
@@ -588,8 +593,7 @@ class TestJointSpringDynamics(unittest.TestCase):
                 builder.add_articulation([joint])
                 builder.joint_q[0] = 0.4
                 model = builder.finalize(device="cpu")
-                kwargs = {"use_mujoco_cpu": True} if solver_cls == SolverMuJoCo else {}
-                solver = solver_cls(model, **kwargs)
+                solver = solver_cls(model, **CPU_SOLVER_KWARGS[solver_cls])
                 state, out = model.state(), model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
                 solver.step(state, out, model.control(), None, 0.001)
@@ -634,7 +638,7 @@ def test_angular_spring_quaternion_sign_and_preload(test, device):
 
 def test_cuda_graph_runtime_updates(test, device):
     """Apply core spring updates to already captured solver steps."""
-    for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo):
+    for solver_cls in (SolverFeatherstone, SolverSemiImplicit, SolverMuJoCo, SolverSteel):
         with test.subTest(solver=solver_cls.__name__):
             model = _slider_builder(register=True).finalize(device=device)
             kwargs = {"use_mujoco_cpu": False} if solver_cls == SolverMuJoCo else {}
