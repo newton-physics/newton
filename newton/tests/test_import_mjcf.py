@@ -2425,6 +2425,26 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
                         np.testing.assert_allclose(size[:2], native_size[:2], rtol=1e-5)
                         self.assertAlmostEqual(abs(axes[:, 2] @ native_axes[:, 2]), 1.0, places=5)
 
+    def test_exact_inertia_warns_about_inconsistent_orientation(self):
+        """Warn about faces with inconsistent orientation, which MuJoCo rejects for ``inertia="exact"``."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        flipped = self.FACES[:4].copy()
+        flipped[3] = flipped[3][::-1]
+        for faces, mode in ((flipped, "exact"), (flipped, "legacy"), (self.FACES[:4], "exact")):
+            mjcf = self.inline_mjcf(f'inertia="{mode}"', vertices=self.VERTICES[:4], faces=faces)
+            rejected = faces is flipped and mode == "exact"
+            with self.subTest(flipped=faces is flipped, mode=mode):
+                if rejected:
+                    with self.assertRaisesRegex(ValueError, "inconsistent orientation"):
+                        mujoco.MjModel.from_xml_string(mjcf)
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        newton.ModelBuilder().add_mjcf(mjcf)
+                    self.assertIn("inconsistent orientation", "\n".join(logs.output))
+                else:
+                    mujoco.MjModel.from_xml_string(mjcf)
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        newton.ModelBuilder().add_mjcf(mjcf)
+
     def test_mesh_without_volume_adds_no_mass(self):
         """A mesh that its mode gives no volume adds no mass, where MuJoCo rejects it; ``shell`` gives it mass."""
         mujoco, _ = SolverMuJoCo.import_mujoco()

@@ -244,6 +244,30 @@ def _mesh_mass_properties(
     return mass, com, np.trace(second) * np.eye(3) - second
 
 
+def _has_inconsistent_orientation(vertices: np.ndarray, faces: np.ndarray) -> bool:
+    """Return whether two faces traverse an edge in the same direction, as MuJoCo checks for ``inertia="exact"``.
+
+    Follows ``mjCMesh::Process`` in MuJoCo's ``user_mesh.cc``, which skips faces with an area of at most
+    ``sqrt(mjMINVAL)``. Vertices at the same position count as one, because a mesh file loaded as several
+    submeshes repeats the vertices that they share.
+
+    Args:
+        vertices: Mesh vertices [m], shape (N, 3).
+        faces: Triangle vertex indices, shape (F, 3).
+
+    Returns:
+        Whether MuJoCo would reject the mesh's faces for ``inertia="exact"``.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    faces = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
+    triangles = vertices[faces]
+    areas = 0.5 * np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1)
+    _, unique = np.unique(vertices, axis=0, return_inverse=True)
+    faces = unique.reshape(-1)[faces[areas > np.sqrt(_MJ_MINVAL)]]
+    edges = np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
+    return len(np.unique(edges, axis=0)) < len(edges)
+
+
 def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
     """Parse and validate an MJCF mesh reference pose."""
     try:
@@ -1090,6 +1114,8 @@ def parse_mjcf(
     mesh_inertia_cache: dict[tuple, tuple[float, np.ndarray, np.ndarray] | None] = {}
     # vertices of .msh files without faces, keyed by file, or None for a file with faces
     msh_vertices_without_faces: dict[str, np.ndarray | None] = {}
+    # inertia="exact" mesh assets whose face orientation has been checked
+    exact_orientation_checked: set[str] = set()
 
     def mesh_hull_source(mesh_name: str) -> np.ndarray | None:
         """Return the vertices of a mesh asset without faces, whose faces MuJoCo takes from their convex hull."""
@@ -1177,6 +1203,17 @@ def parse_mjcf(
         """
         meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert, override_color, override_texture)
         if not mode_sets_mass(mesh_name):
+            if mesh_name not in exact_orientation_checked:
+                exact_orientation_checked.add(mesh_name)
+                mesh_asset = mesh_assets[mesh_name]
+                vertices, faces = _combine_meshes(meshes)
+                vertices = _undo_mesh_ref_pose(vertices, mesh_asset["refpos"], mesh_asset["refquat"], scaling)
+                if _has_inconsistent_orientation(vertices, faces):
+                    logger.warning(
+                        'MJCF mesh %r has faces with inconsistent orientation, which MuJoCo rejects for inertia="exact"; '
+                        "Newton uses its exact signed volume anyway.",
+                        mesh_name,
+                    )
             # Newton's mesh mass properties already use the exact signed volume.
             return meshes
         properties = mesh_inertia(mesh_name, scaling, maxhullvert)

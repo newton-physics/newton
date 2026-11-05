@@ -158,7 +158,9 @@ For format-specific details, see:
   primitive geom fitted to a mesh is sized and posed by the equivalent inertia
   box of the mesh's mode, as in MuJoCo. A mesh with too little surface area or
   volume for its mode, which MuJoCo rejects, adds no mass and logs a warning;
-  use ``inertia="shell"`` to give flat or open surface meshes mass.
+  use ``inertia="shell"`` to give flat or open surface meshes mass. An
+  ``exact`` mesh whose faces have inconsistent orientation, which MuJoCo also
+  rejects, logs a warning and keeps its signed volume.
 - **URDF**: :meth:`~newton.ModelBuilder.add_urdf` — uses ``<inertial>``
   directly when present; falls back to collision geometry with default density
   otherwise.  By default visual shapes do not contribute mass; however,
