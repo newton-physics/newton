@@ -311,6 +311,9 @@ class ImplicitMPMScratchpad:
 
     def __init__(self):
         self.grid = None
+        self.distance_basis = None
+        self.distance_field = None
+        self.distance_space_restriction = None
         self.particle_cells = None
         self.contact_pic = None
         self.collision_pic = None
@@ -381,8 +384,13 @@ class ImplicitMPMScratchpad:
         environment_first: bool,
         temporary_store: fem.TemporaryStore,
         contact_pic: fem.PicQuadrature | None = None,
+        distance_basis: bool = False,
     ):
-        """Define velocity and strain function spaces over the given geometry."""
+        """Define velocity and strain function spaces over the given geometry.
+
+        With ``distance_basis``, also define the quadratic B-spline space that particle contacts
+        differentiate the collider distance on.
+        """
 
         self.domain = pic.domain
 
@@ -406,12 +414,17 @@ class ImplicitMPMScratchpad:
                 self._collision_basis = _make_grid_basis_space(
                     self.grid, collider_basis_str, family=fem.Polynomial.EQUISPACED_CLOSED
                 )
+            self.distance_basis = _make_grid_basis_space(self.grid, "B2") if distance_basis else None
         else:
+            if distance_basis and self.distance_basis is None:
+                self.distance_basis = _make_grid_basis_space(self.grid, "B2")
             topologies = {id(self._velocity_basis.topology): self._velocity_basis.topology}
             if not use_pic_strain_basis:
                 topologies[id(self._strain_basis.topology)] = self._strain_basis.topology
             if not use_pic_collider_basis:
                 topologies[id(self._collision_basis.topology)] = self._collision_basis.topology
+            if self.distance_basis is not None:
+                topologies[id(self.distance_basis.topology)] = self.distance_basis.topology
             for topology in topologies.values():
                 if hasattr(topology, "rebuild"):
                     topology.rebuild()
@@ -426,6 +439,7 @@ class ImplicitMPMScratchpad:
         self._create_velocity_function_space(temporary_store, max_cell_count, environment_first)
         self._create_collider_function_space(temporary_store, max_cell_count, environment_first)
         self._create_strain_function_space(temporary_store, max_cell_count, environment_first)
+        self._create_distance_function_space(temporary_store, max_cell_count)
 
     def _create_velocity_function_space(
         self, temporary_store: fem.TemporaryStore, max_cell_count: int, environment_first: bool
@@ -494,6 +508,29 @@ class ImplicitMPMScratchpad:
         self._collision_space = collision_space
         self._collision_space_restriction = collision_space_restriction
         self.collider_environment_offsets = collision_space_partition.env_offsets if environment_first else None
+
+    def _create_distance_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int):
+        """Create the collider distance field and its restriction over the active cells."""
+        if self.distance_basis is None:
+            self.distance_field = None
+            self.distance_space_restriction = None
+            return
+
+        domain = self.domain
+        distance_space = fem.make_collocated_function_space(self.distance_basis, dtype=float)
+        distance_space_partition = fem.make_space_partition(
+            space_topology=distance_space.topology,
+            geometry_partition=domain.geometry_partition,
+            with_halo=False,
+            max_node_count=distance_space.topology.MAX_NODES_PER_ELEMENT * max_cell_count
+            if max_cell_count >= 0
+            else -1,
+            temporary_store=temporary_store,
+        )
+        self.distance_space_restriction = fem.make_space_restriction(
+            space_partition=distance_space_partition, domain=domain, temporary_store=temporary_store
+        )
+        self.distance_field = distance_space.make_field(space_partition=distance_space_partition)
 
     def _create_strain_function_space(
         self, temporary_store: fem.TemporaryStore, max_cell_count: int, environment_first: bool
@@ -1150,6 +1187,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         collider bases (``"pic"`` and ``"picN"``) differentiate the collider distance
         rasterized at cell centers with quadratic B-spline weights, so normals turn smoothly
         around concave and convex collider edges, such as the seams between assembled boxes.
+        Particle collider bases require Warp 1.19 or newer for this option.
         """
         collider_basis: _MPMColliderBasisName = "S2"
         """Collider basis function. Defaults to ``"S2"``; pass ``"Q1"``
@@ -1812,6 +1850,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         if self._collider_recovery_fraction > 0.0 and not self.collider_basis.startswith("pic"):
             raise ValueError("Collider recovery requires a particle collider basis")
+        if self.collider_normal_from_sdf_gradient and self.collider_basis.startswith("pic") and not _WARP_AT_LEAST_1_19:
+            raise ValueError("SDF-gradient normals for a particle collider basis require Warp 1.19 or newer")
 
         if config.collider_velocity_mode not in ("forward", "backward"):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
@@ -3122,6 +3162,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 environment_first=self._separate_worlds,
                 contact_pic=scratch.contact_pic,
                 temporary_store=self.temporary_store,
+                distance_basis=self.collider_normal_from_sdf_gradient and self.collider_basis[:3] == "pic",
             )
 
             scratch.allocate_temporaries(
@@ -3673,11 +3714,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             if self.collider_normal_from_sdf_gradient:
                 distance_gradients = None
                 if speculative:
-                    # Particle nodes differentiate the collider distance rasterized at cell centers
+                    # Particle nodes differentiate the collider distance rasterized on a quadratic B-spline space
                     distance_gradients = collider_distance_gradients(
                         self._mpm_model.collider,
                         state_in.body_q,
-                        scratch.grid,
+                        scratch.distance_field,
+                        scratch.distance_space_restriction,
                         self._mpm_model.voxel_size,
                         scratch.collider_position_field.dof_values,
                         scratch.collider_environment_offsets,

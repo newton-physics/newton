@@ -629,16 +629,6 @@ def quadratic_bspline(x: float):
     return 0.0
 
 
-@wp.func
-def quadratic_bspline_derivative(x: float):
-    a = wp.abs(x)
-    if a < 0.5:
-        return -2.0 * x
-    if a < 1.5:
-        return -wp.sign(x) * (1.5 - a)
-    return 0.0
-
-
 def make_cell_locator(grid):
     """Functions locating a position's cell and its neighbor cells, on dense or sparse grids."""
 
@@ -680,164 +670,96 @@ def make_cell_locator(grid):
     return containing_cell, neighbor_cell
 
 
-def make_cell_distance_kernel(grid):
-    """Collider signed distance at every grid cell center, clamped to ``max_distance``."""
-
-    @fem.cache.dynamic_kernel(suffix=grid.name)
-    def cell_distance(
-        geo: grid.CellArg,
-        collider: Collider,
-        body_q: wp.array[wp.transform],
-        body_qd: wp.array[wp.spatial_vector],
-        body_q_prev: wp.array[wp.transform],
-        separate_worlds: bool,
-        max_distance: float,
-        output: wp.array[float],
-    ):
-        cell = wp.tid()
-        if wp.static(isinstance(grid, fem.Nanogrid)):
-            if cell >= wp.volume_voxel_count(geo.cell_grid):
-                return
-        sample = fem.make_free_sample(cell, wp.vec3(0.5))
-        center = grid.cell_position(geo, sample)
-        environment = grid.cell_environment_index(geo, sample)
-        collider_environment = wp.where(separate_worlds, environment, int(_ALL_COLLIDER_WORLDS))
-        sdf, _gradient, _velocity, _collider_id, _material_id = collision_sdf(
-            center, collider_environment, collider, body_q, body_qd, body_q_prev, 1.0
-        )
-        output[cell] = wp.min(sdf, max_distance)
-
-    return cell_distance
+@fem.integrand
+def _node_collider_distance(
+    s: fem.Sample,
+    domain: fem.Domain,
+    separate_worlds: bool,
+    collider: Collider,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    max_distance: float,
+):
+    """Collider signed distance at a distance-space node, clamped to ``max_distance``."""
+    world = wp.where(separate_worlds, fem.environment_index(domain, s), int(_ALL_COLLIDER_WORLDS))
+    sdf, _gradient, _velocity, _collider_id, _material_id = collision_sdf(
+        domain(s), world, collider, body_q, body_qd, body_q_prev, 1.0
+    )
+    return wp.min(sdf, max_distance)
 
 
-def make_distance_gradient_kernel(grid):
-    """Gradient at each contact node of the collider distance rasterized at cell centers.
-
-    The cell-center distances act as quadratic B-spline coefficients, whose gradient is
-    continuous across cells. Cells outside the grid evaluate their distance on the fly.
-    """
-    containing_cell, neighbor_cell = make_cell_locator(grid)
-
-    @fem.cache.dynamic_kernel(suffix=grid.name)
-    def distance_gradient(
-        geo: grid.CellArg,
-        node_positions: wp.array[wp.vec3],
-        node_environment_offsets: wp.array[int],
-        cell_distances: wp.array[float],
-        collider: Collider,
-        body_q: wp.array[wp.transform],
-        body_qd: wp.array[wp.spatial_vector],
-        body_q_prev: wp.array[wp.transform],
-        h: float,
-        max_distance: float,
-        gradients: wp.array[wp.vec3],
-    ):
-        i = wp.tid()
-        gradients[i] = wp.vec3(0.0)
-        x = node_positions[i]
-        if x[0] == fem.OUTSIDE:
-            return
-        environment = int(0)
-        collider_environment = int(_ALL_COLLIDER_WORLDS)
-        if node_environment_offsets:
-            environment = environment_from_offsets(i, node_environment_offsets)
-            collider_environment = environment
-        local_cell, containing_center, found = containing_cell(geo, x, environment, h)
-        if not found:
-            return
-        t = (x - containing_center) / h
-        gradient = wp.vec3(0.0)
-        for k in range(27):
-            offset = wp.vec3i(k // 9 - 1, (k // 3) % 3 - 1, k % 3 - 1)
-            q = t - wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
-            bx = quadratic_bspline(q[0])
-            by = quadratic_bspline(q[1])
-            bz = quadratic_bspline(q[2])
-            if bx * by * bz == 0.0 and (
-                quadratic_bspline_derivative(q[0]) == 0.0
-                or quadratic_bspline_derivative(q[1]) == 0.0
-                or quadratic_bspline_derivative(q[2]) == 0.0
-            ):
-                continue
-            cell = neighbor_cell(geo, local_cell, containing_center, offset, environment, h)
-            distance = float(0.0)
-            if cell >= 0 and cell < cell_distances.shape[0]:
-                distance = cell_distances[cell]
-            else:
-                center = containing_center + h * wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
-                sdf, _g, _v, _cid, _mid = collision_sdf(
-                    center, collider_environment, collider, body_q, body_qd, body_q_prev, 1.0
-                )
-                distance = wp.min(sdf, max_distance)
-            weight_gradient = wp.vec3(
-                quadratic_bspline_derivative(q[0]) * by * bz,
-                bx * quadratic_bspline_derivative(q[1]) * bz,
-                bx * by * quadratic_bspline_derivative(q[2]),
-            )
-            gradient += distance * weight_gradient / h
-        gradients[i] = gradient
-
-    return distance_gradient
+@fem.integrand
+def _point_distance_gradient(
+    s: fem.Sample,
+    domain: fem.Domain,
+    distance: fem.Field,
+    node_positions: wp.array[wp.vec3],
+    node_environment_offsets: wp.array[int],
+):
+    """Gradient of the rasterized collider distance at a contact node position."""
+    i = s.qp_index
+    x = node_positions[i]
+    if x[0] == fem.OUTSIDE:
+        return wp.vec3(0.0)
+    environment = int(0)
+    if node_environment_offsets:
+        environment = environment_from_offsets(i, node_environment_offsets)
+    sample = fem.lookup(domain, x, environment)
+    if sample.element_index == fem.NULL_ELEMENT_INDEX:
+        return wp.vec3(0.0)
+    return fem.grad(distance, sample)
 
 
 def collider_distance_gradients(
     collider: Collider,
     body_q: wp.array[wp.transform],
-    grid: fem.Geometry,
+    distance: fem.DiscreteField,
+    distance_space_restriction: fem.SpaceRestriction,
     voxel_size: float,
     node_positions: wp.array[wp.vec3],
     node_environment_offsets: wp.array | None,
     separate_worlds: bool,
     temporary_store: fem.TemporaryStore,
 ):
-    """Gradient of the collider signed distance rasterized at cell centers, at each contact node.
+    """Gradient of the collider signed distance rasterized on a quadratic B-spline space, at each contact node.
 
-    Distances are exact within four voxels of colliders, which covers the quadratic B-spline
-    support around any active contact, and clamped farther away.
+    Node distances act as B-spline coefficients, whose gradient is continuous across cells. Distances
+    are exact within four voxels of colliders, which covers the B-spline support around any active
+    contact, and clamped farther away.
     """
     device = node_positions.device
     max_distance = 4.0 * voxel_size
-    cell_distances = fem.borrow_temporary(temporary_store, shape=grid.cell_count(), dtype=float, device=device)
     gradients = fem.borrow_temporary(temporary_store, shape=node_positions.shape[0], dtype=wp.vec3, device=device)
     old_query_distance = collider.query_max_dist
     collider.query_max_dist = max(old_query_distance, max_distance)
     try:
-        wp.launch(
-            make_cell_distance_kernel(grid),
-            dim=grid.cell_count(),
-            inputs=[
-                grid.cell_arg_value(device),
-                collider,
-                body_q,
-                None,
-                None,
-                node_environment_offsets is not None,
-                max_distance,
-            ],
-            outputs=[cell_distances],
-            device=device,
+        fem.interpolate(
+            _node_collider_distance,
+            dest=distance,
+            at=distance_space_restriction,
+            values={
+                "separate_worlds": separate_worlds,
+                "collider": collider,
+                "body_q": body_q,
+                "body_qd": None,
+                "body_q_prev": None,
+                "max_distance": max_distance,
+            },
+            reduction="first",
+            temporary_store=temporary_store,
         )
-        wp.launch(
-            make_distance_gradient_kernel(grid),
+        fem.interpolate(
+            _point_distance_gradient,
+            dest=gradients,
+            at=distance_space_restriction.domain,
             dim=node_positions.shape[0],
-            inputs=[
-                grid.cell_arg_value(device),
-                node_positions,
-                node_environment_offsets,
-                cell_distances,
-                collider,
-                body_q,
-                None,
-                None,
-                voxel_size,
-                max_distance,
-            ],
-            outputs=[gradients],
-            device=device,
+            fields={"distance": distance},
+            values={"node_positions": node_positions, "node_environment_offsets": node_environment_offsets},
+            temporary_store=temporary_store,
         )
     finally:
         collider.query_max_dist = old_query_distance
-    cell_distances.release()
     return gradients
 
 
