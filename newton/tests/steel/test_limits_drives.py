@@ -4,6 +4,7 @@
 """Joint limits, velocity limits, joint friction and joint drives of SolverSteel."""
 
 import inspect
+import itertools
 import unittest
 import warnings
 
@@ -1722,13 +1723,17 @@ class TestSteelJointFriction(unittest.TestCase):
                 self.assertAlmostEqual(float(qd[-1]), 1.0, delta=1.0e-5)
 
     def test_friction_and_ground_contact(self):
-        """Hold a vertical slider against gravity, or let it fall onto the ground and rest."""
-        for friction, falls in ((15.0, False), (5.0, True)):
-            with self.subTest(friction=friction):
+        """Hold a vertical slider against gravity, or let it fall onto the ground and rest, on both contact routes."""
+        for response, (friction, falls) in itertools.product(
+            ("immediate", "propagation_colored"), ((15.0, False), (5.0, True))
+        ):
+            with self.subTest(response=response, friction=friction):
                 model = _vertical_slider_model(mass=1.0, half=0.1, friction=friction)
                 pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
                 contacts = pipeline.contacts()
-                solver = _friction_solver(model, friction_anchor_beta=0.0, iterations=24)
+                solver = _friction_solver(
+                    model, friction_anchor_beta=0.0, iterations=24, articulated_contact_response=response
+                )
                 states, control = [model.state(), model.state()], model.control()
                 newton.eval_fk(model, states[0].joint_q, states[0].joint_qd, states[0])
                 for _ in range(150):
@@ -1738,6 +1743,11 @@ class TestSteelJointFriction(unittest.TestCase):
                 z = float(states[0].joint_q.numpy()[0])
                 if falls:
                     self.assertAlmostEqual(z, -0.4, delta=5.0e-3)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    self.assertGreater(count, 0)
+                    # Dense rows (0) on the immediate route, propagation rows (2) on the colored route.
+                    expected_path = 0 if response == "immediate" else 2
+                    np.testing.assert_array_equal(solver._contact_path.numpy()[:count], expected_path)
                 else:
                     self.assertAlmostEqual(z, 0.0, delta=1.0e-5)
                 self.assertLess(abs(float(states[0].joint_qd.numpy()[0])), 1.0e-3)

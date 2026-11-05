@@ -38,12 +38,16 @@ def test_parent_wrench_eager_step_before_first_replay(test, device):
         "enable_joint_velocity_limits": True,
         "solve_mode": "colored",
         "articulated_contact_response": "propagation",
+        "enable_sleeping": True,
+        "contact_torsion_device": True,
     }
     for options in ({"enable_joint_velocity_limits": False}, {"enable_joint_velocity_limits": True}, colored):
         with test.subTest(**options):
             runs = []
             for _ in range(2):
                 model, pipeline = _parent_wrench_scene(device)
+                if options.get("contact_torsion_device"):
+                    set_torsion_radius(model, 0.02)
                 solver = SolverSteel(
                     model,
                     friction_anchor_beta=0.0,

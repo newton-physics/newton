@@ -2242,10 +2242,11 @@ class SolverSteel(SolverBase, CouplingInterface):
             propagation_same_articulation_rows: Solve contacts between two links of the same
                 articulation as propagation rows, with the exact cross response of the two
                 links, instead of dense rows. Requires
-                ``articulated_contact_response="propagation"`` with ``solve_mode="serial"``.
-            propagation_cached_response: With ``articulated_contact_response="propagation"``, replace
-                the per-iteration tree walk by cached responses: the setup extracts, for each
-                contact-active body, its joint-space response ``R`` (DOFs x 6) and the 6x6 response blocks between active bodies,
+                ``articulated_contact_response="propagation"`` (either ``solve_mode``).
+            propagation_cached_response: With ``articulated_contact_response="propagation"``
+                (either ``solve_mode``), replace the per-iteration tree walk by cached
+                responses: the setup extracts, for each contact-active body, its joint-space
+                response ``R`` (DOFs x 6) and the 6x6 response blocks between active bodies,
                 from the tree factorization that is fixed for the step, and each iteration
                 applies them as a small matrix-vector product. The result equals the tree walk up to float reassociation. It applies
                 to articulation groups with 0- or 1-DOF joints (optionally under a free root);
@@ -2506,12 +2507,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 f"propagation_color_order must be 'contact' or 'longest_first', got {propagation_color_order!r}"
             )
         self._propagation_color_order = propagation_color_order
-        if self._propagation_same_articulation_rows and (
-            articulated_contact_response != "propagation" or solve_mode != "serial"
-        ):
+        if self._propagation_same_articulation_rows and articulated_contact_response != "propagation":
             raise ValueError(
-                "propagation_same_articulation_rows requires articulated_contact_response='propagation' with "
-                f"solve_mode='serial', got {articulated_contact_response!r} with solve_mode={solve_mode!r}"
+                "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
+                f"got {articulated_contact_response!r}"
             )
         # The propagation responses route contact rows, free bodies included, to the propagation
         # family, so by default its capacity absorbs both contact budgets.
