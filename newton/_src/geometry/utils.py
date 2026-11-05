@@ -1049,6 +1049,14 @@ def _scan_tile_status(flag: wp.int64, value: int) -> wp.int64:
     return flag | (wp.int64(value) & wp.int64(0xFFFFFFFF))
 
 
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+__threadfence();
+#endif
+""")
+def _scan_thread_fence(): ...
+
+
 @wp.kernel(enable_backward=False)
 def _scan_tiles_kernel(
     counts: wp.array[int],
@@ -1131,7 +1139,10 @@ def _scan_tiles_kernel(
             working = active_tiles > block_count
     finished = wp.int64(0)
     if t == 0:
+        # Fenced so this block's tickets and statuses land before the last block zeroes them.
+        _scan_thread_fence()
         finished = wp.atomic_add(scratch, 1, wp.int64(1))
+        _scan_thread_fence()
     if int(wp.tile_extract(wp.tile(finished), 0)) == block_count - 1:
         for k in range(t, active_tiles + 2, block_dim):
             scratch[k] = wp.int64(0)
@@ -1164,11 +1175,11 @@ def scan_with_total(
     """
     Computes an exclusive prefix sum and total of a counts array.
 
-    Only the first ``num_elements[0]`` entries are read and written. Pass ``scratch`` (a zeroed
-    ``int64`` array of at least ``_scan_scratch_size(counts.shape[0], device)`` entries, allocated
-    once by the caller) to scan in one launch with no allocation, which any CUDA graph capture can
-    record. Scans sharing a scratch must run one at a time; each leaves it zeroed. Without it the
-    whole buffer is scanned with :func:`warp.utils.array_scan`.
+    Pass ``scratch`` (a zeroed ``int64`` array of at least ``_scan_scratch_size(counts.shape[0], device)``
+    entries, allocated once by the caller) to read and write only the first ``num_elements[0]`` entries in
+    one launch with no allocation, which any CUDA graph capture can record. Scans sharing a scratch must
+    run one at a time; each leaves it zeroed. Without it the whole buffer is scanned with
+    :func:`warp.utils.array_scan`.
 
     Args:
         counts: Input array of per-element counts.
