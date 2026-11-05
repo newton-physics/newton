@@ -2735,6 +2735,25 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
 
     def test_collapse_fixed_joints_keeps_custom_referenced_bodies(self):
         """Keep bodies referenced by any references="body" attribute from merging into the world."""
+        builder = self._build_custom_referenced_bodies()
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_label, ["frequency_ref", "shape_ref"])
+        self.assertEqual(builder.custom_attributes["test:link_body"].values, [0])
+        self.assertEqual(builder.custom_attributes["test:shape_anchor"].values, {0: 1})
+
+    def test_collapse_fixed_joints_merges_custom_referenced_bodies_when_disabled(self):
+        """Merge referenced bodies into the world when keep_referenced_bodies is False."""
+        builder = self._build_custom_referenced_bodies()
+
+        builder.collapse_fixed_joints(keep_referenced_bodies=False)
+
+        self.assertEqual(builder.body_count, 0)
+        self.assertEqual(builder.custom_attributes["test:link_body"].values, [-1])
+
+    def _build_custom_referenced_bodies(self):
+        """Weld an unreferenced body and two referenced bodies to the world."""
         builder = ModelBuilder()
         self._add_link_frequency(builder)
         builder.add_custom_attribute(
@@ -2754,12 +2773,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
             bodies.append(body)
         builder.add_shape_sphere(bodies[0], radius=0.1, custom_attributes={"test:shape_anchor": bodies[2]})
         builder.add_custom_values(**{"test:link_body": bodies[1]})
-
-        builder.collapse_fixed_joints()
-
-        self.assertEqual(builder.body_label, ["frequency_ref", "shape_ref"])
-        self.assertEqual(builder.custom_attributes["test:link_body"].values, [0])
-        self.assertEqual(builder.custom_attributes["test:shape_anchor"].values, {0: 1})
+        return builder
 
 
 if __name__ == "__main__":

@@ -1841,8 +1841,8 @@ class ModelBuilder:
 
         After the callback returns, references to bodies follow merges to the
         surviving body and references to removed joints become ``-1``. Bodies
-        referenced by any ``references="body"`` attribute are never merged into
-        the world.
+        referenced by any ``references="body"`` attribute are not merged into
+        the world unless ``keep_referenced_bodies=False`` is passed.
         """
 
         def __post_init__(self):
@@ -7862,6 +7862,7 @@ class ModelBuilder:
         self,
         verbose: bool = False,
         joints_to_keep: Sequence[str | int] | None = None,
+        keep_referenced_bodies: bool = True,
     ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
@@ -7869,11 +7870,14 @@ class ModelBuilder:
             verbose: If True, log additional information about the collapsed joints.
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
+            keep_referenced_bodies: If True, bodies referenced by a custom attribute declaring
+                ``references="body"`` are not merged into the world, so the reference keeps a body
+                frame instead of becoming ``-1``. Pass ``False`` to collapse such bodies into the
+                world like any other body.
 
         Note:
-            Bodies referenced by a custom attribute declaring ``references="body"`` or by a
-            particle-body attachment are not merged into the world, so the reference keeps a
-            body frame. Custom frequencies can fix up their rows through
+            Bodies referenced by a particle-body attachment are never merged into the world.
+            Custom frequencies can fix up their rows through
             :attr:`CustomFrequency.collapse_fixed_joints_handler`.
 
         Note:
@@ -7983,9 +7987,11 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Bodies referenced by custom attributes (e.g. constraint endpoints) keep their own frame
-        # instead of being merged into the world, where the reference would become -1.
-        bodies_requiring_body_frame = self._custom_attribute_referenced_bodies(original_counts)
+        # By default, keep bodies referenced by custom attributes (e.g. constraint endpoints) in their
+        # own frame instead of merging them into the world, where the reference would become -1.
+        bodies_requiring_body_frame = (
+            self._custom_attribute_referenced_bodies(original_counts) if keep_referenced_bodies else set()
+        )
 
         # A particle-body attachment needs a surviving body to anchor to and to receive the
         # reaction force, so its body must not be merged into the world.

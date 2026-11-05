@@ -1121,9 +1121,10 @@ registration into a destination that lacks it.
    [0] [0.6, 0.0, 0.0]
    [0, 2]
 
-Bodies referenced by any attribute declaring ``references="body"`` are never merged
-into the world by :meth:`~newton.ModelBuilder.collapse_fixed_joints`, so such
-references keep a body frame instead of becoming ``-1``.
+By default, bodies referenced by any attribute declaring ``references="body"`` are not
+merged into the world by :meth:`~newton.ModelBuilder.collapse_fixed_joints`, so such
+references keep a body frame instead of becoming ``-1``. Pass
+``keep_referenced_bodies=False`` to collapse them into the world like any other body.
 
 Querying Counts
 ---------------
