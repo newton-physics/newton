@@ -1914,12 +1914,10 @@ def parse_mjcf(
             # Sites are typically hidden by default
             visible = False
 
-            # Expand to 3-element vector if needed
-            if len(site_size) == 2:
-                # Two values (e.g., capsule/cylinder: radius, half-height)
-                radius = site_size[0]
-                half_height = site_size[1]
-                site_size = wp.vec3(radius, half_height, 0.0)
+            # MuJoCo ignores the third size component of a cylinder site, whereas
+            # Newton interprets a cylinder's scale[2] as its barrel radius.
+            if geo_type == GeoType.CYLINDER:
+                site_size[2] = 0.0
 
             # Add site using builder.add_site()
             site_label = f"{label_prefix}/{site_name}" if label_prefix else site_name
@@ -1930,7 +1928,6 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
-                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s

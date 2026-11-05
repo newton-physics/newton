@@ -163,7 +163,58 @@ def _test_advance_sap_chunk_base(
     result[0] = _advance_sap_chunk_base(chunk_base, chunk_stride, total_work_packages)
 
 
+@wp.kernel
+def _test_nxn_pair_indices(indices: wp.array[int], sizes: wp.array[int], pairs: wp.array[wp.vec2i]):
+    """Evaluate implicit pair indices without allocating a quadratic pair buffer."""
+    tid = wp.tid()
+    row, col = broad_phase_nxn._get_lower_triangular_indices(indices[tid], sizes[tid])
+    pairs[tid] = wp.vec2i(row, col)
+
+
 class TestBroadPhase(unittest.TestCase):
+    def test_nxn_pair_index_boundaries(self):
+        """Map row boundaries exactly through the largest int32 single-world pair count."""
+        rng = np.random.default_rng(42)
+        indices, sizes, expected = [], [], []
+        for size in (0, 1, 2, 3, 8, 32, 257, 46341, 46342, 65536):
+            rows = np.arange(size, dtype=np.int64)
+            starts = rows * (2 * size - rows - 1) // 2
+            total = size * (size - 1) // 2
+            if total:
+                selected = rows[np.unique([0, min(1, size - 1), size // 2, max(0, size - 2), size - 1])]
+                boundaries = starts[selected]
+                samples = np.unique(
+                    np.clip(
+                        np.concatenate((boundaries - 1, boundaries, boundaries + 1, rng.integers(total, size=100))),
+                        0,
+                        total - 1,
+                    )
+                )
+                row = np.searchsorted(starts, samples, side="right") - 1
+                indices.extend(samples)
+                sizes.extend([size] * len(samples))
+                expected.extend(zip(row, samples - starts[row] + row + 1, strict=True))
+            indices.append(total)
+            sizes.append(size)
+            expected.append((-1, -1))
+            indices.append(-1)
+            sizes.append(size)
+            expected.append((-1, size - 1))
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                broad_phase = BroadPhaseAllPairs(np.zeros(65536, dtype=np.int32), device=device)
+                self.assertEqual(broad_phase.num_kernel_threads, 65536 * 65535 // 2)
+                np.testing.assert_array_equal(broad_phase.world_cumsum_lower_tri.numpy(), [65536 * 65535 // 2] * 2)
+                pairs = wp.empty(len(indices), dtype=wp.vec2i, device=device)
+                wp.launch(
+                    _test_nxn_pair_indices,
+                    dim=len(indices),
+                    inputs=[wp.array(indices, dtype=int, device=device), wp.array(sizes, dtype=int, device=device)],
+                    outputs=[pairs],
+                    device=device,
+                )
+                np.testing.assert_array_equal(pairs.numpy(), expected)
+
     def test_explicit_large_pair_warning_thresholds(self):
         """Warn only when total and busiest-world pair thresholds are met."""
         cases = (
@@ -202,9 +253,13 @@ class TestBroadPhase(unittest.TestCase):
                         self.assertIn("broad_phase='sap'", str(caught[0].message))
 
     def test_sap_auto_sort_selection(self):
-        """Select bounded tile sizes only for medium-sized SAP worlds."""
+        """Select bounded tile sizes for small and medium-sized SAP worlds."""
         cases = (
-            (63, "segmented", 63),
+            (0, "segmented", 0),
+            (1, "tile", 32),
+            (32, "tile", 32),
+            (33, "tile", 64),
+            (63, "tile", 64),
             (64, "tile", 128),
             (129, "tile", 256),
             (257, "tile", 512),
@@ -265,7 +320,7 @@ class TestBroadPhase(unittest.TestCase):
 
     def test_sap_broadphase_auto(self):
         """Generate correct SAP pairs with automatic sort selection."""
-        for shape_count in (70, 150, 300):
+        for shape_count in (2, 31, 33, 63, 70, 150, 300):
             with self.subTest(shape_count=shape_count):
                 self._test_sap_broadphase_impl("auto", shape_count)
 
