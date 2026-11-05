@@ -19,7 +19,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
-from ..geometry.flags import ShapeFlags
+from ..geometry.flags import ParticleFlags, ShapeFlags
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -2198,7 +2198,9 @@ class Model:
             requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
             clone_variables: If True, clone the control input arrays; if False, use references.
-                With ``False``, :attr:`Control.particle_target_q` is ``None``.
+                :attr:`Control.particle_target_q` is cloned only if a particle sets
+                :attr:`ParticleFlags.KINEMATIC <newton.ParticleFlags.KINEMATIC>`;
+                otherwise, and with ``False``, it is ``None``.
 
         Returns:
             The initialized control object.
@@ -2220,7 +2222,7 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
-            if self.particle_count:
+            if self.particle_count and (self.particle_flags.numpy() & int(ParticleFlags.KINEMATIC)).any():
                 c.particle_target_q = wp.clone(self.particle_q, requires_grad=requires_grad)
         else:
             c.joint_target_q = self.joint_target_q
