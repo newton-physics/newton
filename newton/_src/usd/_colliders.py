@@ -32,6 +32,7 @@ from ._resolution_policy import (
     _resolve_shape_shell,
 )
 from .schema_resolver import PrimType
+from .schemas import SchemaResolverMjc, SchemaResolverNewton, SchemaResolverPhysx
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdGeom, UsdPhysics
@@ -42,6 +43,9 @@ if TYPE_CHECKING:
     from .schema_resolver import SchemaResolverManager
 
 logger = logging.getLogger(__name__)
+
+# Schema resolvers whose values depend only on attributes authored on the queried prim.
+_PRIM_LOCAL_RESOLVERS = (SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc)
 
 
 @dataclass(frozen=True)
@@ -60,7 +64,6 @@ class _ColliderProperties:
     shell_thickness: float | None
     maxhullvert: int | None = None
     approximation: str | None = None
-    convex_decomposition_kwargs: tuple[tuple[str, Any], ...] = ()
 
 
 def _parse_colliders(
@@ -141,6 +144,9 @@ def _parse_colliders(
     # resolve them once per prototype prim, shape type, and bound physics material.
     # Values hold the first instance path, whose collected schema attributes are shared.
     instance_properties: dict[tuple[str, Any, str], tuple[str, _ColliderProperties]] = {}
+    # Built-in resolvers read only the collider prim's own attributes; a custom resolver may read
+    # ancestors, which differ per instance, so its colliders are resolved per instance proxy.
+    share_instance_properties = all(type(resolver) in _PRIM_LOCAL_RESOLVERS for resolver in R.resolvers)
     # Colliders under one instance or body share their ancestors' authored scale products.
     authored_scale_cache: dict[Any, tuple[Any, bool]] = {}
 
@@ -206,7 +212,7 @@ def _parse_colliders(
                 # Instance proxies of one prototype prim author identical collider attributes.
                 collider_properties = None
                 cache_key = None
-                if prim.IsInstanceProxy():
+                if share_instance_properties and prim.IsInstanceProxy():
                     cache_key = (str(prim.GetPrimInPrototype().GetPath()), key, material_path)
                     cached = instance_properties.get(cache_key)
                     if cached is not None:
@@ -233,14 +239,7 @@ def _parse_colliders(
                             default=mesh_maxhullvert,
                             verbose=verbose,
                         )
-                        approximation = usd.get_attribute(prim, "physics:approximation", None)
-                        mesh_properties["approximation"] = approximation
-                        if (
-                            approximation is not None
-                            and approximation_to_remeshing_method.get(approximation.lower()) == "coacd"
-                            and usd.has_applied_api_schema(prim, "PhysxConvexDecompositionCollisionAPI")
-                        ):
-                            mesh_properties["convex_decomposition_kwargs"] = _physx_convex_decomposition_kwargs(prim, R)
+                        mesh_properties["approximation"] = usd.get_attribute(prim, "physics:approximation", None)
                     collider_properties = _ColliderProperties(
                         enabled=_is_enabled_collider(prim),
                         margin=margin_val,
@@ -427,15 +426,15 @@ def _parse_colliders(
                     # The mesh needs its render material when anything will draw it: either
                     # the collider itself is visible, or it is viewport geometry whose
                     # authored topology is about to be split off as a visual shape.
+                    maxhullvert = collider_properties.maxhullvert
                     if collider_is_visible or splits_off_visual_copy:
                         # Drawn colliders should render with the same visual material metadata
                         # as visual-only mesh imports.
-                        mesh = visuals.get_mesh_with_visual_material(prim, path_name=path)
+                        mesh = visuals.get_mesh_with_visual_material(prim, path_name=path, maxhullvert=maxhullvert)
                     else:
                         # Not viewport-drawn, but the viewer still draws these under show_collision /
                         # show_static, so the mesh still carries the resolved material.
-                        mesh = visuals.get_mesh_with_material(prim)
-                    mesh.maxhullvert = collider_properties.maxhullvert
+                        mesh = visuals.get_mesh_with_material(prim, maxhullvert=maxhullvert)
                     # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
                     # write the SDF intent to the builder lists, deferring the build to finalize().
                     mesh_shape_params = dict(shape_params)
@@ -485,8 +484,10 @@ def _parse_colliders(
                                         )
                                 else:
                                     remeshing_kwargs = ()
-                                    if remeshing_method == "coacd":
-                                        remeshing_kwargs = collider_properties.convex_decomposition_kwargs
+                                    if remeshing_method == "coacd" and usd.has_applied_api_schema(
+                                        prim, "PhysxConvexDecompositionCollisionAPI"
+                                    ):
+                                        remeshing_kwargs = _physx_convex_decomposition_kwargs(prim, R)
                                     remeshing_queue.setdefault((remeshing_method, remeshing_kwargs), []).append(
                                         shape_id
                                     )

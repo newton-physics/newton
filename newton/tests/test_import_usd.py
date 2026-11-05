@@ -884,6 +884,26 @@ class TestImportUsdPhysics(unittest.TestCase):
         for path in paths:
             self.assertAlmostEqual(newton_attrs[path]["newton:contactMargin"], 0.01, places=6)
 
+        # A custom resolver may read the instance root, so its values stay per instance.
+        class InstanceRootMarginResolver(usd.SchemaResolver):
+            name = "instance_root_margin"
+            mapping: ClassVar[dict] = {
+                usd.PrimType.SHAPE: {
+                    "margin": usd.SchemaResolver.SchemaAttribute(
+                        "test:margin", usd_value_getter=lambda prim: prim.GetParent().GetAttribute("test:margin").Get()
+                    )
+                }
+            }
+
+        for index in range(3):
+            root = stage.GetPrimAtPath(f"/World/Instance{index}")
+            root.CreateAttribute("test:margin", Sdf.ValueTypeNames.Float).Set(0.02 * (index + 1))
+        builder = newton.ModelBuilder()
+        resolvers = [InstanceRootMarginResolver(), SchemaResolverNewton()]
+        result = builder.add_usd(stage, root_path="/World", schema_resolvers=resolvers)
+        for index, path in enumerate(paths):
+            self.assertAlmostEqual(builder.shape_margin[result["path_shape_map"][path]], 0.02 * (index + 1), places=6)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_instanced_material_subsets_share_render_meshes(self):
         """Share material-subset render meshes across instances with per-instance labels."""

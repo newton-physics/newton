@@ -128,26 +128,44 @@ class _UsdVisuals:
             if value is not None:
                 setattr(mesh, key, value)
 
-    def get_mesh_with_material(self, prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
+    def get_mesh_with_material(
+        self,
+        prim: Usd.Prim,
+        *,
+        load_uvs: bool = False,
+        load_normals: bool = False,
+        maxhullvert: int | None = None,
+    ) -> Mesh:
         """Return a cached mesh carrying the prim's resolved visual material.
 
-        The geometry cache entry stays unmodified. Prims sharing geometry and an
-        identical resolved material, such as instances of one USD prototype, share
-        the returned mesh, so callers must not mutate it per prim.
+        The geometry cache entry stays unmodified. Prims sharing geometry, an identical
+        resolved material, and hull-vertex limit, such as instances of one USD prototype,
+        share the returned mesh, so callers must not mutate it per prim.
+
+        Args:
+            prim: Mesh prim to load.
+            load_uvs: Whether to load the material-selected UV set.
+            load_normals: Whether to load normals.
+            maxhullvert: Hull-vertex limit to store on the mesh, or ``None`` for the default.
         """
         material_props = self.get_material_props_cached(prim)
-        key = (*self._get_geometry_key(prim, load_uvs), load_uvs, load_normals, _material_key(material_props))
+        geometry_key = self._get_geometry_key(prim, load_uvs)
+        key = (*geometry_key, load_uvs, load_normals, maxhullvert, _material_key(material_props))
         mesh = self.material_mesh_cache.get(key)
         if mesh is None:
             mesh = self.get_mesh_cached(prim, load_uvs=load_uvs, load_normals=load_normals).copy()
             self.apply_visual_material(mesh, material_props)
+            if maxhullvert is not None:
+                mesh.maxhullvert = maxhullvert
             self.material_mesh_cache[key] = mesh
         return mesh
 
-    def get_mesh_with_visual_material(self, prim: Usd.Prim, *, path_name: str) -> Mesh:
+    def get_mesh_with_visual_material(self, prim: Usd.Prim, *, path_name: str, maxhullvert: int | None = None) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
         texture = self.get_material_props_cached(prim).get("texture")
-        mesh = self.get_mesh_with_material(prim, load_uvs=texture is not None, load_normals=True)
+        mesh = self.get_mesh_with_material(
+            prim, load_uvs=texture is not None, load_normals=True, maxhullvert=maxhullvert
+        )
         if mesh.texture is not None and mesh.uvs is None:
             logger.debug("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
         return mesh
