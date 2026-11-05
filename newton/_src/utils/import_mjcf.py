@@ -609,6 +609,8 @@ def parse_mjcf(
             to False (identity translation matching MuJoCo 3.9 semantics).
     """
     # Early validation of base joint parameters
+    if collapse_fixed_joints:
+        builder._check_fixed_joint_collapse_supported()
     builder._validate_base_joint_params(floating, base_joint, parent_body)
 
     if override_root_xform and xform is None:
@@ -3785,6 +3787,10 @@ def parse_mjcf(
                     continue
                 objtype, objname = int(frame_objtypes[frame_objtype]), attrib.get("objname")
                 if stype == SensorType.INSIDESITE:
+                    # MuJoCo Warp checks only the object origin, so full enclosure cannot be honored.
+                    if attrib.get("enclosed", "false").strip().lower() == "true":
+                        skip_sensor(tag, 'with enclosed="true" is not supported')
+                        continue
                     reftype, refname = int(obj.SITE), attrib.get("site")
                 elif "reftype" in attrib or "refname" in attrib:
                     frame_reftype = attrib.get("reftype", "")

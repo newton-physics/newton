@@ -670,6 +670,8 @@ def add_sensor(
     if len(intprm) > 3:
         raise ValueError(f"intprm requires at most 3 values, got {len(intprm)}.")
     intprm_values = [int(value) for value in intprm] + [0] * (3 - len(intprm))
+    if stype == SensorType.INSIDESITE and intprm_values[0] != 0:
+        raise ValueError("INSIDESITE sensors do not support enclosure checks (intprm[0] must be 0).")
     if cutoff < 0.0:
         raise ValueError("cutoff must be non-negative.")
     if nsample < 0:

@@ -958,6 +958,10 @@ class TestMuJoCoSensorAuthoring(unittest.TestCase):
             mujoco.add_sensor(builder, "geomdist", mujoco.SensorObject.geom(site), ref=mujoco.SensorObject.geom(shape))
         with self.assertRaisesRegex(IndexError, "outside"):
             mujoco.add_sensor(builder, "jointpos", mujoco.SensorObject.joint(joint + 1))
+        with self.assertRaisesRegex(ValueError, "enclosure"):
+            mujoco.add_sensor(
+                builder, "insidesite", mujoco.SensorObject.xbody(body), ref=mujoco.SensorObject.site(site), intprm=(1,)
+            )
         with self.assertRaisesRegex(ValueError, "Unknown sensor type"):
             mujoco.add_sensor(builder, "camprojection", mujoco.SensorObject.site(site))
         self.assertEqual(builder._custom_frequency_counts.get("mujoco:sensor", 0), 0)

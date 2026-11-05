@@ -12617,6 +12617,26 @@ class TestImportMjcfSensors(unittest.TestCase):
         self.assertIn("<framepos> with objtype 'camera' is not supported", message)
         self.assertEqual(list(builder.finalize().mujoco.sensor_label), ["ok"])
 
+    def test_enclosed_insidesite_is_skipped(self):
+        """An insidesite sensor requesting full enclosure is skipped, since MuJoCo Warp checks only the origin."""
+        mjcf = """
+<mujoco model="enclosed">
+  <worldbody>
+    <site name="zone" type="box" size=".5 .5 .5"/>
+    <body name="b"><freejoint/><geom name="g" size=".1"/></body>
+  </worldbody>
+  <sensor>
+    <insidesite name="enclosed" objtype="geom" objname="g" site="zone" enclosed="true"/>
+    <insidesite name="origin" objtype="geom" objname="g" site="zone"/>
+  </sensor>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton._src.utils.import_mjcf", level="WARNING") as logs:
+            builder.add_mjcf(mjcf, parse_sensors=True)
+        self.assertIn('<insidesite> with enclosed="true" is not supported', logs.records[0].getMessage())
+        self.assertEqual(list(builder.finalize().mujoco.sensor_label), ["origin"])
+
     def test_actuator_sensors_resolve_authored_names(self):
         """Actuator names that sanitize to the same key still resolve to their own actuators."""
         mjcf = """
@@ -12699,6 +12719,12 @@ class TestImportMjcfSensors(unittest.TestCase):
         builder.add_mjcf(self.TOUCH_MJCF, parse_sensors=True)
         with self.assertRaisesRegex(NotImplementedError, "MuJoCo sensors"):
             builder.collapse_fixed_joints()
+
+        # A later import that would collapse is rejected before it adds entities.
+        body_count = builder.body_count
+        with self.assertRaisesRegex(NotImplementedError, "MuJoCo sensors"):
+            builder.add_mjcf(self.TOUCH_MJCF, collapse_fixed_joints=True)
+        self.assertEqual(builder.body_count, body_count)
 
     def test_separate_worlds_require_matching_sensors(self):
         """Worlds whose sensors differ from the template world are rejected."""

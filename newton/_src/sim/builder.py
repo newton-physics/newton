@@ -7807,6 +7807,17 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
+    def _check_fixed_joint_collapse_supported(self) -> None:
+        """Raise if :meth:`collapse_fixed_joints` cannot handle this builder's MuJoCo sensors.
+
+        Importers call this before adding entities, so a rejected collapse does
+        not leave a partial import in the builder.
+        """
+        if self._custom_frequency_counts.get("mujoco:sensor", 0):
+            # Merging bodies changes the frames and contacts MuJoCo sensors measure, and
+            # their object ids depend on the object type, so they cannot be remapped.
+            raise NotImplementedError("collapse_fixed_joints() does not support builders with MuJoCo sensors.")
+
     def collapse_fixed_joints(
         self,
         verbose: bool = False,
@@ -7828,10 +7839,7 @@ class ModelBuilder:
         """
         if self._body_variants:
             raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
-        if self._custom_frequency_counts.get("mujoco:sensor", 0):
-            # Merging bodies changes the frames and contacts MuJoCo sensors measure, and
-            # their object ids depend on the object type, so they cannot be remapped.
-            raise NotImplementedError("collapse_fixed_joints() does not support builders with MuJoCo sensors.")
+        self._check_fixed_joint_collapse_supported()
         joints_to_keep = set(joints_to_keep or ())
 
         original_counts = self._builder_merge_counts(self)

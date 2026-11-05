@@ -437,6 +437,8 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
+    if collapse_fixed_joints:
+        builder._check_fixed_joint_collapse_supported()
     if allow_unsafe_torch_checkpoints:
         from ..actuators.utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG  # noqa: PLC0415
 
