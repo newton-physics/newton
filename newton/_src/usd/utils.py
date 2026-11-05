@@ -409,20 +409,25 @@ def _accumulate_authored_scale(xformable: UsdGeom.Xformable, scale: np.ndarray, 
 
 def _get_world_authored_scale(prim: Usd.Prim, cache: dict[Any, tuple[np.ndarray, bool]]) -> tuple[np.ndarray, bool]:
     """Return the product of authored scale ops from the root down to ``prim``, cached per path."""
-    if not prim or not prim.IsValid() or prim.IsPseudoRoot():
-        return np.ones(3, dtype=np.float32), False
-    path = prim.GetPath()
-    cached = cache.get(path)
-    if cached is not None:
-        return cached
-    xformable = UsdGeom.Xformable(prim)
-    if xformable and xformable.GetResetXformStack():
-        scale, found = np.ones(3, dtype=np.float32), False
-    else:
-        parent_scale, found = _get_world_authored_scale(prim.GetParent(), cache)
-        scale = parent_scale.copy()
-    result = _accumulate_authored_scale(xformable, scale, found)
-    cache[path] = result
+    # Walk up to the nearest cached ancestor, then accumulate back down in root-to-leaf order.
+    chain = []
+    current = prim
+    result = (np.ones(3, dtype=np.float32), False)
+    while current and current.IsValid() and not current.IsPseudoRoot():
+        cached = cache.get(current.GetPath())
+        if cached is not None:
+            result = cached
+            break
+        chain.append(current)
+        current = current.GetParent()
+    for current in reversed(chain):
+        xformable = UsdGeom.Xformable(current)
+        if xformable and xformable.GetResetXformStack():
+            scale, found = np.ones(3, dtype=np.float32), False
+        else:
+            scale, found = result[0].copy(), result[1]
+        result = _accumulate_authored_scale(xformable, scale, found)
+        cache[current.GetPath()] = result
     return result
 
 
@@ -480,7 +485,8 @@ def _normalized_quat(x: float, y: float, z: float, w: float) -> wp.quat:
     """Return ``wp.normalize(wp.quat(x, y, z, w))`` without a Warp builtin dispatch.
 
     Importing large scenes converts one rotation per prim, where the builtin dispatch
-    dominates. Float32 arithmetic in Warp's order keeps the result bit-identical.
+    dominates. Float32 arithmetic in Warp's operation order matches its result to the
+    last bit unless the compiler fused Warp's multiply-adds.
     """
     f32 = np.float32
     with np.errstate(all="ignore"):

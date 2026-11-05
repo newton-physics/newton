@@ -233,8 +233,13 @@ def _parse_colliders(
                             default=mesh_maxhullvert,
                             verbose=verbose,
                         )
-                        mesh_properties["approximation"] = usd.get_attribute(prim, "physics:approximation", None)
-                        if usd.has_applied_api_schema(prim, "PhysxConvexDecompositionCollisionAPI"):
+                        approximation = usd.get_attribute(prim, "physics:approximation", None)
+                        mesh_properties["approximation"] = approximation
+                        if (
+                            approximation is not None
+                            and approximation_to_remeshing_method.get(approximation.lower()) == "coacd"
+                            and usd.has_applied_api_schema(prim, "PhysxConvexDecompositionCollisionAPI")
+                        ):
                             mesh_properties["convex_decomposition_kwargs"] = _physx_convex_decomposition_kwargs(prim, R)
                     collider_properties = _ColliderProperties(
                         enabled=_is_enabled_collider(prim),

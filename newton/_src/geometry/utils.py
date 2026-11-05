@@ -95,7 +95,12 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         # always-correct enclosing radius regardless of where the
         # authoring origin sits relative to the geometry.
         # Scaling a box only scales its extents, so shapes sharing a mesh reuse its cached bounds.
-        aabb_lo, aabb_hi = src._get_local_bounds()
+        get_local_bounds = getattr(src, "_get_local_bounds", None)
+        if get_local_bounds is not None:
+            aabb_lo, aabb_hi = get_local_bounds()
+        else:
+            vertices = np.asarray(src.vertices, dtype=np.float64)
+            aabb_lo, aabb_hi = vertices.min(axis=0), vertices.max(axis=0)
         extent = (aabb_hi - aabb_lo) * np.abs(np.asarray(scale, dtype=np.float64))
         return float(0.5 * np.linalg.norm(extent))
     elif geo_type == GeoType.PLANE:
