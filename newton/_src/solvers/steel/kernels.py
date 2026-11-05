@@ -113,6 +113,12 @@ def reserve_world_rows(
             const int below = __shfl_up_sync(0xFFFFFFFF, inclusive, offset);
             if (lane >= offset) inclusive += below;
         }
+        if (warp_count == 1) {
+            // One warp: the shuffle total carries the chunk, with no shared totals or barriers.
+            if (i < end) element_row_cursor.data[element] = slot + inclusive - count;
+            slot += __shfl_sync(0xFFFFFFFF, inclusive, 31);
+            continue;
+        }
         if (lane == 31) warp_totals[warp] = inclusive;
         __syncthreads();
         if (warp == 0) {
