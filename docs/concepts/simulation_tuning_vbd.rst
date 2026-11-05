@@ -219,7 +219,7 @@ when migrating; the same settings can produce different behavior.
 Finite stiffness permits some stretch, joint displacement, or contact
 penetration even after convergence. If deformation is larger than expected,
 check loads, material values, rest geometry, attachments, and contact setup.
-Also check timestep and iteration sensitivity rather than relying only on
+Also check time step and iteration sensitivity rather than relying only on
 higher stiffness; see :ref:`Simulation Tuning`.
 
 .. _vbd-rigid-joint-gains:
@@ -392,7 +392,7 @@ overrides, ``add_rod`` defaults stretch and shear stiffness to ``1.0e5`` N/m
 and bend and twist stiffness to ``0.0`` N·m/rad. See
 :meth:`ModelBuilder.add_rod` for topology restrictions.
 
-Refine segment count separately from timestep and iterations: the new joint
+Refine segment count separately from time step and iterations: the new joint
 graph, masses, inertias, and contact workload require another convergence
 check. Recheck the damping transient at the final resolution too.
 
@@ -412,9 +412,9 @@ the attachment clamped.
 
 At a cable attachment, the non-rod joint and adjacent rod joint contribute
 to the endpoint body's local solve. Stiffening or refining the cable can
-increase attachment error at a fixed timestep and iteration count, even
+increase attachment error at a fixed time step and iteration count, even
 with unchanged attachment gains. Check attachment errors and cable
-deformation together when tuning ``rigid_joint_*_ke``. Assess timestep
+deformation together when tuning ``rigid_joint_*_ke``. Assess time step
 and iteration sensitivity with those gains held fixed.
 
 Fit stretch, shear, bend, and twist stiffness separately under static loads,
@@ -1261,7 +1261,7 @@ Excessive stretch or joint displacement
 '''''''''''''''''''''''''''''''''''''''
 
 Check loads, stiffness inputs, rest geometry, and attachments. Also check
-timestep and iteration sensitivity with those inputs held fixed.
+time step and iteration sensitivity with those inputs held fixed.
 :ref:`Finite stiffness <vbd-rigid-compliance>` permits some deformation; see
 :ref:`cable materials and attachments <vbd-cable-inputs>` and
 :ref:`non-rod joint gains <vbd-rigid-joint-gains>`.
