@@ -1526,12 +1526,22 @@ observed shape speed:
     )
     schedule.step()
 
-Any change in a collidable shape's linear or angular velocity triggers a
-refresh at the next substep. Slowing, stopping, or turning can increase the
-closing speed between shapes and require contacts that the earlier pass did
-not create. Shapes with rigid collision disabled do not affect the schedule
-or overflow reporting. The scheduler checks the final substep's output when
-reporting ``interval_overflow``.
+During the collision callback, the scheduler's pipeline retains candidates
+within a pairwise distance reserve of at least ``speculative_contact_gap_max``,
+regardless of approach velocity. Authored gaps and physical margins are preserved.
+The callback must use the pipeline passed to the scheduler. Calls outside the
+callback retain velocity-adapted admission.
+
+Gravity, slowing, and turning consume this reserve without unconditionally
+forcing a refresh. Refreshes occur when the travel estimate approaches the
+reserve or the previous horizon expires. The next-step estimate includes the
+speed increase observed over the preceding substep. This is not a bound on
+unobserved forces or impulses. Shapes with rigid collision disabled do not affect
+the schedule or overflow reporting. The final substep is checked for overflow.
+
+The reserve may retain more contacts than velocity-adapted admission. Measure
+both total runtime and refresh counts, and size contact buffers accordingly.
+Fast motion can still require a refresh every substep.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler

@@ -129,9 +129,11 @@ see :doc:`/solvers/mujoco` for its response and capacity requirements.
 The experimental :class:`CollisionSubstepScheduler` varies collision frequency
 while keeping the number and duration of solver substeps fixed. It refreshes
 contacts at frame start, when the conservative relative-travel estimate would
-exhaust the speculative distance, when a collidable shape's velocity changes,
-or when the previous prediction horizon expires. Selection stays on the device
-and supports conditional execution inside CUDA graphs. Use the callback setup
+exhaust the reserved detection distance or when the previous prediction horizon
+expires. During its callback, the pipeline retains nearby candidates regardless
+of approach velocity, so gravity and small velocity changes alone do not force
+a refresh. Selection stays on the device and supports conditional execution
+inside CUDA graphs. Use the callback setup
 in :ref:`speculative-contacts` to pass the scheduler's collision horizon to
 the pipeline. The scheduler requires two distinct state buffers, an even
 substep count, and capture-safe callbacks with preallocated storage.
@@ -139,9 +141,10 @@ substep count, and capture-safe callbacks with preallocated storage.
 Tune ``collision_dt_max`` to cap the time between refreshes, then measure
 collision cost and tunneling at the fastest expected motion. A larger
 ``speculative_contact_gap_max`` allows longer intervals but can admit more
-contacts. Inspect ``schedule.interval_overflow`` after a frame: if set, increase
-the substep count or the speculative distance limit. Keep penetration and
-contact/constraint capacity within the task's bounds.
+contacts. Measure total runtime as well as refresh counts. Inspect
+``schedule.interval_overflow.numpy()[0]`` after a frame (this synchronizes CUDA):
+if set, increase the substep count or the speculative distance limit. Keep
+penetration and contact/constraint capacity within the task's bounds.
 
 This combination can mitigate tunneling while avoiding collision detection on
 every substep during steady motion. It does not compute a time of impact or
