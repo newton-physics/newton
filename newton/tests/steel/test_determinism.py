@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
+import ctypes
 import gc
 import hashlib
 import os
@@ -358,6 +359,88 @@ def test_deterministic_propagation_runs_are_bitwise_identical(test, device):
                 second = _run_hashes(model, options, 40, graph=graph)
                 test.assertEqual(first, second)
                 test.assertTrue(all(finite for _, finite in first))
+
+
+def test_deterministic_step_runs_under_an_external_capture(test, device):
+    """Replay a step captured directly through the CUDA driver bitwise like the same step captured by Warp."""
+    if not sys.platform.startswith("linux"):
+        test.skipTest("the CUDA driver capture loads libcuda.so.1")
+    # Contact, drive, joint-limit, velocity-limit and joint-friction rows all take their slots from a scan.
+    model = _build_contact_scene(device, joint_friction=0.4)
+    hashes = {}
+    for external in (False, True):
+        solver = SolverSteel(model, deterministic=RUN_TO_RUN, **FRICTION_OPTIONS)
+        pipeline = _make_pipeline(model, FRICTION_OPTIONS)
+        contacts = pipeline.contacts()
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        _actuate(model, control)
+
+        def solve(solver=solver, contacts=contacts, state_0=state_0, state_1=state_1, control=control):
+            solver.step(state_0, state_1, control, contacts, 0.005)
+            for name in ("body_q", "body_qd", "joint_q", "joint_qd"):
+                wp.copy(getattr(state_0, name), getattr(state_1, name))
+
+        pipeline.collide(state_0, contacts)
+        replay, release = _capture_solve(device, solve, external)
+        try:
+            hashes[external] = []
+            for _ in range(40):
+                pipeline.collide(state_0, contacts)
+                replay()
+                hashes[external].append(_sample(state_0))
+        finally:
+            release()
+    test.assertEqual(hashes[True], hashes[False])
+    test.assertTrue(all(finite for _, finite in hashes[True]))
+
+
+def _capture_solve(device, solve, external):
+    """Capture ``solve`` with Warp, or with the CUDA driver alone as another framework would; return replay and release."""
+    if not external:
+        with wp.ScopedCapture(device=device) as capture:
+            solve()
+        return lambda: wp.capture_launch(capture.graph), lambda: None
+    cuda = ctypes.CDLL("libcuda.so.1")
+    handle = ctypes.c_void_p
+    cuda.cuStreamBeginCapture_v2.argtypes = [handle, ctypes.c_int]
+    cuda.cuStreamEndCapture.argtypes = [handle, ctypes.POINTER(handle)]
+    cuda.cuGraphInstantiateWithFlags.argtypes = [ctypes.POINTER(handle), handle, ctypes.c_ulonglong]
+    cuda.cuGraphLaunch.argtypes = [handle, handle]
+    cuda.cuGraphExecDestroy.argtypes = [handle]
+    cuda.cuGraphDestroy.argtypes = [handle]
+    stream = handle(wp.get_stream(device).cuda_stream)
+    graph, graph_exec = handle(), handle()
+    thread_local_mode = 1
+    began = cuda.cuStreamBeginCapture_v2(stream, thread_local_mode)
+    if began != 0:
+        raise RuntimeError(f"cuStreamBeginCapture failed with {began}")
+    try:
+        solve()
+    finally:
+        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    if ended != 0:
+        raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
+    # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
+    auto_free_on_launch = 1
+    instantiated = cuda.cuGraphInstantiateWithFlags(
+        ctypes.byref(graph_exec), graph, ctypes.c_ulonglong(auto_free_on_launch)
+    )
+    if instantiated != 0:
+        cuda.cuGraphDestroy(graph)
+        raise RuntimeError(f"cuGraphInstantiateWithFlags failed with {instantiated}")
+
+    def replay():
+        launched = cuda.cuGraphLaunch(graph_exec, stream)
+        if launched != 0:
+            raise RuntimeError(f"cuGraphLaunch failed with {launched}")
+        wp.synchronize_stream(wp.get_stream(device))
+
+    def release():
+        cuda.cuGraphExecDestroy(graph_exec)
+        cuda.cuGraphDestroy(graph)
+
+    return replay, release
 
 
 def _check_propagation_coverage(test, model, options):
@@ -886,6 +969,7 @@ add_function_test(
 for _fn in (
     test_crba_fill_par_dof_is_batch_invariant,
     test_deterministic_runs_are_bitwise_identical,
+    test_deterministic_step_runs_under_an_external_capture,
     test_warm_started_full_reset_matches_fresh_solver,
     test_deterministic_launches_replay_identically,
     test_deterministic_joint_rows_follow_articulation_order,
