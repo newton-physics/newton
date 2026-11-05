@@ -1599,7 +1599,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
           torsion). PhysX also scales a radius with the penetration depth through
-          ``physxCollision:torsionalPatchRadius``; this solver does not.
+          ``physxCollision:torsionalPatchRadius``; this solver does not. Set it before
+          constructing the solver, which enables torsion only when a radius is positive.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -1649,6 +1650,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_linear_damping",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1685,7 +1687,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="min_torsional_patch_radius",
-                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.SHAPE,
                 assignment=Model.AttributeAssignment.MODEL,

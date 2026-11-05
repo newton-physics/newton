@@ -4707,6 +4707,45 @@ class TestMuJoCoSolverFixedTendonProperties(unittest.TestCase):
             "Stiffness value did not change from initial!",
         )
 
+    def test_tendon_properties_update_mujoco_cpu(self):
+        """Tendon edits reach the MuJoCo-C model that the CPU backend steps."""
+        mjcf = """<mujoco>
+    <worldbody>
+        <body name="link1">
+            <joint name="joint1" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="link2" pos="0 -0.5 0">
+            <joint name="joint2" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="coupling" stiffness="1.0" frictionloss="0.5" actuatorfrcrange="-1 1">
+            <joint joint="joint1" coef="1"/>
+            <joint joint="joint2" coef="-1"/>
+        </fixed>
+    </tendon>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+        model.mujoco.tendon_stiffness.fill_(7.0)
+        model.mujoco.tendon_frictionloss.fill_(0.25)
+        model.mujoco.tendon_solref_friction.fill_(wp.vec2(0.04, 0.9))
+        model.mujoco.tendon_solimp_friction.fill_(vec5(0.8, 0.9, 0.002, 0.4, 3.0))
+        model.mujoco.tendon_actuator_force_range.fill_(wp.vec2(-3.0, 3.0))
+        solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mj_model.tendon_stiffness, [7.0])
+        np.testing.assert_allclose(solver.mj_model.tendon_frictionloss, [0.25])
+        np.testing.assert_allclose(solver.mj_model.tendon_solref_fri, [[0.04, 0.9]], rtol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.tendon_solimp_fri, [[0.8, 0.9, 0.002, 0.4, 3.0]], rtol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.tendon_actfrcrange, [[-3.0, 3.0]])
+
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def test_zero_capacity_contacts_clear_collision_counts(self):
@@ -9893,6 +9932,34 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             mujoco_contacts_solver.mjw_model.pair_margin.numpy(),
             np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
         )
+
+    def test_pair_properties_update_mujoco_cpu(self):
+        """Pair edits reach the MuJoCo-C model that the CPU backend steps."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        body = builder.add_body()
+        shape1 = builder.add_shape_sphere(body=body, radius=0.1)
+        shape2 = builder.add_shape_box(body=builder.add_body(), hx=0.1, hy=0.1, hz=0.1)
+        builder.add_custom_values(
+            **{
+                "mujoco:pair_world": 0,
+                "mujoco:pair_geom1": shape1,
+                "mujoco:pair_geom2": shape2,
+                "mujoco:pair_condim": 3,
+            }
+        )
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        self.assertEqual(solver.mj_model.npair, 1)
+
+        model.mujoco.pair_solref.fill_(wp.vec2(0.05, 0.7))
+        model.mujoco.pair_solimp.fill_(vec5(0.8, 0.9, 0.002, 0.4, 3.0))
+        model.mujoco.pair_friction.fill_(vec5(0.3, 0.3, 0.004, 0.0002, 0.0002))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mj_model.pair_solref, [[0.05, 0.7]], rtol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.pair_solimp, [[0.8, 0.9, 0.002, 0.4, 3.0]], rtol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.pair_friction, [[0.3, 0.3, 0.004, 0.0002, 0.0002]], rtol=1e-6)
 
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.

@@ -1262,8 +1262,9 @@ class SolverBase:
         The answer is conservative: it is ``False`` when handling a flag can break capture under some
         configurations or model contents, such as models with rod joints or tendons. A replay
         repeats the captured notification: it reads the model arrays that were current at capture,
-        so edit them in place instead of replacing them, and it skips host-side validation that eager
-        calls perform.
+        so edit them in place instead of replacing them. It also skips host-side validation that eager
+        calls perform, so an edit that an eager call would reject, such as resizing a mesh compiled into
+        :class:`~newton.solvers.SolverMuJoCo`, has no effect on replay.
 
         Example:
 

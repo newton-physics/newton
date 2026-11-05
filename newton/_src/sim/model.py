@@ -849,15 +849,8 @@ class Model:
         "joint_armature": AttributeSpec(
             AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
         ),
-        "joint_target_q": AttributeSpec(
-            AttributeFrequency.JOINT_COORD,
-            dtype=wp.float32,
-            # Default targets copied by Model.control(); coupled entry views refresh their copies.
-            update_flags=ModelFlags.JOINT_PROPERTIES
-            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
-            | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
-        ),
         # Defaults copied by Model.control(); solvers read the Control.
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD, dtype=wp.float32, update_flags=ModelFlags.NONE),
         "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.NONE),
         "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32, update_flags=ModelFlags.NONE),
         "joint_axis": AttributeSpec(
@@ -3494,6 +3487,8 @@ class Model:
                 if flags is None:
                     flags = StateFlags.NONE
             else:
+                if not hasattr(Contacts(0, 0, device="cpu"), name):
+                    raise KeyError(f"No contacts attribute '{name}' exists")
                 # Collision detection rewrites contacts at every step.
                 flags = StateFlags.NONE
         if flags is None:

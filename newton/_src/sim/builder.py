@@ -2643,6 +2643,7 @@ class ModelBuilder:
             and Model._normalize_attribute_reference(existing.references)
             == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
+            and existing.update_flags == incoming.update_flags
         )
 
     @staticmethod

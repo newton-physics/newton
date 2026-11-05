@@ -166,6 +166,17 @@ class TestModelAttributeSpecs(unittest.TestCase):
                     update_flags=update_flags,
                 )
             )
+        # A redeclaration must declare the same flags.
+        with self.assertRaisesRegex(ValueError, "incompatible spec"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="stiffness",
+                    dtype=wp.float32,
+                    frequency=newton.Model.AttributeFrequency.SHAPE,
+                    namespace="user",
+                    update_flags=flags.NONE,
+                )
+            )
         builder.add_shape_sphere(builder.add_body(), radius=0.1)
         model = builder.finalize(device="cpu")
 
@@ -184,7 +195,9 @@ class TestModelAttributeSpecs(unittest.TestCase):
             ("user:stiffness", None, flags.SHAPE_PROPERTIES),
             ("user:heat", None, state_flags.BODY_Q),
             # Read at every step or written by solvers: no flag needed.
+            ("joint_target_q", None, flags.NONE),
             ("joint_target_q", assignment.CONTROL, state_flags.NONE),
+            ("rigid_contact_normal", assignment.CONTACT, state_flags.NONE),
             ("user:gain", None, state_flags.NONE),
             ("body_qdd", None, state_flags.NONE),
             # Read only at construction: no flag refreshes them.
@@ -201,6 +214,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             ("user:missing", None),
             ("user:heat", assignment.MODEL),
             ("shape_type", assignment.STATE),
+            ("shape_material_mu", assignment.CONTACT),
         ):
             with self.subTest(missing=name, assignment=attribute_assignment):
                 with self.assertRaises(KeyError):

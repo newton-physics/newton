@@ -11164,9 +11164,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Updates the randomizable pair properties (solref, solreffriction, solimp,
         margin, gap, friction) for explicit contact pairs defined in the model.
         """
-        if self.use_mujoco_cpu:
-            return  # CPU mode not supported for pair runtime updates
-
         npair = self.mj_model.npair
         if npair == 0:
             return
@@ -11227,6 +11224,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+            if self.use_mujoco_cpu:
+                for field in ("solref", "solreffriction", "solimp", "margin", "gap", "friction"):
+                    getattr(self.mj_model, f"pair_{field}")[:] = getattr(self.mjw_model, f"pair_{field}").numpy()[0]
 
     def _update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
@@ -11434,6 +11434,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_margin[:] = self.mjw_model.tendon_margin.numpy()[0]
             self.mj_model.tendon_solimp_lim[:] = self.mjw_model.tendon_solimp_lim.numpy()[0]
             self.mj_model.tendon_armature[:] = self.mjw_model.tendon_armature.numpy()[0]
+            self.mj_model.tendon_stiffness[:] = self.mjw_model.tendon_stiffness.numpy()[0]
+            self.mj_model.tendon_frictionloss[:] = self.mjw_model.tendon_frictionloss.numpy()[0]
+            self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
+            self.mj_model.tendon_solref_fri[:] = self.mjw_model.tendon_solref_fri.numpy()[0]
+            self.mj_model.tendon_solimp_fri[:] = self.mjw_model.tendon_solimp_fri.numpy()[0]
+            self.mj_model.tendon_actfrcrange[:] = self.mjw_model.tendon_actfrcrange.numpy()[0]
 
     def _resolve_joint_target_damping(self, spec: Any, position_source_rows: dict[int, int]) -> None:
         """Resolve imported damping once, after publishing each world's inertia and gains."""
