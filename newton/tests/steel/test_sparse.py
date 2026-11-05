@@ -640,7 +640,6 @@ class TestSparseContacts(unittest.TestCase):
 
 
 _PAIR_SOLVER = {
-    "solve_mode": "matrix_free",
     "articulation_constraint_max": 64,
     "free_body_constraint_max": 32,
     "iterations": 8,
@@ -1131,7 +1130,6 @@ def test_sparse_diagonal_is_selected_only_where_supported(test, device):
     if not wp.get_device(device).is_cuda:
         solver = SolverSteel(
             model,
-            solve_mode="split",
             enable_joint_limits=True,
             articulation_constraint_max=64,
             use_parallel_streams=True,
@@ -2091,7 +2089,7 @@ def _make_solver(model, sparse, **overrides):
     }
     options.update(overrides)
     with kernel_overrides({"sparse_mass_matrix": sparse}):
-        return SolverSteel(model, solve_mode="matrix_free", **options)
+        return SolverSteel(model, **options)
 
 
 def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
@@ -2479,16 +2477,12 @@ class TestSteelSparseSolver(unittest.TestCase):
 
     def test_default_selects_sparse_factors_for_branched_articulations(self):
         """Select sparse factors for branched trees with point friction and keep dense factors for chains."""
-        point = {"solve_mode": "matrix_free", "friction_anchor_beta": 0.0}
+        point = {"friction_anchor_beta": 0.0}
         self.assertEqual(SolverSteel(_build_model(), **point)._sparse_mass_matrix_size, 9)
         self.assertEqual(SolverSteel(_build_model(free_count=1), **point)._sparse_mass_matrix_size, 9)
         self.assertIsNone(SolverSteel(_build_chain("cuda:0"), **point)._sparse_mass_matrix_size)
         # The sparse kernels do not implement friction patches, the default friction.
-        self.assertIsNone(SolverSteel(_build_model(), solve_mode="matrix_free")._sparse_mass_matrix_size)
-        # The split solve uses dense factors.
-        self.assertIsNone(
-            SolverSteel(_build_model(), solve_mode="split", friction_anchor_beta=0.0)._sparse_mass_matrix_size
-        )
+        self.assertIsNone(SolverSteel(_build_model())._sparse_mass_matrix_size)
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""
@@ -2588,9 +2582,7 @@ class TestSteelSparseSelectionGuard(unittest.TestCase):
     def test_y_tree_selects_sparse_factors(self):
         """Select sparse factors for the uncoupled Y tree used by the bilateral guard."""
         self.assertEqual(
-            SolverSteel(
-                _build_y_tree("cuda:0"), solve_mode="matrix_free", friction_anchor_beta=0.0
-            )._sparse_mass_matrix_size,
+            SolverSteel(_build_y_tree("cuda:0"), friction_anchor_beta=0.0)._sparse_mass_matrix_size,
             3,
         )
 
@@ -2603,7 +2595,7 @@ class TestSteelSparseSelectionGuard(unittest.TestCase):
             ("disabled closure", {"closure": True, "closure_enabled": False}),
         ):
             with self.subTest(label):
-                solver = SolverSteel(_build_y_tree("cuda:0", **kwargs), solve_mode="matrix_free")
+                solver = SolverSteel(_build_y_tree("cuda:0", **kwargs))
                 self.assertIsNone(solver._sparse_mass_matrix_size)
                 self.assertGreater(solver._J_by_size[3].size, 1)
 
@@ -3188,7 +3180,6 @@ def _run_mixed_response(
     with kernel_overrides({"hinv_jt_kernel": kernel}):
         solver = SolverSteel(
             model,
-            solve_mode="matrix_free",
             contact_warmstart=warmstart,
             enable_bilateral_preelimination=preelimination,
             enable_joint_limits=inactive_joint_limit_capacity,
@@ -3488,7 +3479,6 @@ class TestSteelLocalOwners(unittest.TestCase):
                 set_torsion_radius(model, radius)
                 solvers[radius] = SolverSteel(
                     model,
-                    solve_mode="matrix_free",
                     enable_joint_limits=True,
                     joint_limit_activation_gap=0.0,
                     iterations=8,
