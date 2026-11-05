@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Sequence
 from typing import Any
@@ -11,7 +12,6 @@ import numpy as np
 import warp as wp
 
 from ...core.types import vec5
-from ...exceptions import NewtonWarning
 from .enums import EqType
 from .equality import (
     MJC_OBJ_BODY,
@@ -20,6 +20,8 @@ from .equality import (
     MjcEqualityTargetKind,
     _add_equality_constraint,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def solref_invalid_mask(solref: Sequence[float] | np.ndarray) -> np.ndarray:
@@ -90,7 +92,8 @@ def mjc_loop_joint_xforms(
     A CONNECT anchor is a point in ``body1``'s frame. A WELD follows MuJoCo: ``anchor`` is a point in ``body2``'s frame
     (the world when ``body2`` is -1) that is held at ``relpose``'s position in ``body1``'s frame, and ``relpose``'s
     rotation is ``body2``'s orientation relative to ``body1``. A ``relpose`` whose quaternion is all zeros (MuJoCo's
-    default) keeps the relative pose of the builder's current body poses.
+    default) keeps the relative pose of the builder's current body poses. A weld to the world holds its body at the
+    builder's current pose, which already carries the importer's transform and scale.
     """
     if body2 >= 0:
         parent = body1
@@ -116,9 +119,11 @@ def mjc_loop_joint_xforms(
                 wp.transform_multiply(wp.transform_inverse(body_pose(child)), world_frame),
             )
         # MuJoCo's weld residual: body1 * relpose.p == body2 * anchor and body1.q * relpose.q == body2.q
-        if body2 >= 0:
+        if body1 >= 0 and body2 >= 0:
             return parent, child, relpose, anchor_frame
-        return parent, child, anchor_frame, relpose
+        # The world side is in asset coordinates; place it on the body's frame at the body's current pose instead.
+        child_frame = relpose if body2 < 0 else anchor_frame
+        return parent, child, wp.transform_multiply(body_pose(child), child_frame), child_frame
 
     body1_xform = body_pose(body1)
     child_xform_world = builder.body_q[child]
@@ -163,20 +168,19 @@ def mjc_add_equality_loop_joint(
         # The weld frames put the anchor on body2 and its held position (relpose) on body1, which is the point
         # MuJoCo's weld residual pins; a BALL joint on those frames pins it the same way and leaves rotation free.
         add_joint = builder.add_joint_ball
-        warnings.warn(
-            f"MuJoCo weld {label!r} has torquescale=0, which MuJoCo enforces as a point constraint with rotation "
-            "free; it is converted to a BALL loop joint (rotation free) instead of a FIXED one. SolverMuJoCo "
-            "enforces the original weld row.",
-            NewtonWarning,
-            stacklevel=3,
+        logger.warning(
+            "MuJoCo weld %r has torquescale=0, which MuJoCo enforces as a point constraint with rotation free; it is "
+            "converted to a BALL loop joint (rotation free) instead of a FIXED one. SolverMuJoCo enforces the "
+            "original weld row.",
+            label,
         )
     elif weld and torquescale != 1.0:
-        warnings.warn(
-            f"MuJoCo weld {label!r} has torquescale={torquescale:g}; it is converted to a FIXED loop joint, which "
-            "solvers that enforce loop joints (such as SolverSteel) hold as a hard weld: torquescale, solref and "
-            "solimp are not used. SolverMuJoCo enforces the original weld row.",
-            NewtonWarning,
-            stacklevel=3,
+        logger.warning(
+            "MuJoCo weld %r has torquescale=%g; it is converted to a FIXED loop joint, which solvers that enforce loop "
+            "joints (such as SolverSteel) hold as a hard weld: torquescale, solref and solimp are not used. "
+            "SolverMuJoCo enforces the original weld row.",
+            label,
+            torquescale,
         )
     joint_idx = add_joint(
         parent=parent,

@@ -6350,14 +6350,57 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         held = wp.transform_multiply(relpose, wp.transform(wp.vec3(-0.05, 0.0, 0.0), wp.quat_identity()))
         assert_same_pose(wp.transform_multiply(x_p, wp.transform_inverse(x_c)), held)
 
-        # Weld to the world: body1's held pose is the inverse of relpose.
+        # Weld to the world: the frame on body1 is relpose, and the world frame holds it at body1's current pose.
         relpose = wp.transform(wp.vec3(0.4, 0.0, 1.0), wp.quat(0.7071068, 0.0, 0.0, 0.7071068))
         parent, child, x_p, x_c = weld("world")
         self.assertEqual((parent, child), (-1, b))
-        assert_same_pose(wp.transform_multiply(x_p, wp.transform_inverse(x_c)), wp.transform_inverse(relpose))
+        assert_same_pose(x_c, relpose)
+        assert_same_pose(x_p, wp.transform_multiply(pose(b), relpose))
+
+    def test_converted_weld_frames_follow_import_xform_and_scale(self):
+        """Weld frames authored at a satisfied pose coincide after an import transform and scale."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="weld_xform">
+    <worldbody>
+        <body name="a" pos="0.1 0 0.5" euler="0 30 0">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05"/>
+            <body name="b" pos="0.3 0 0">
+                <joint type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+        <body name="c" pos="0.4 0 1">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+    <equality>
+        <weld name="pair" body1="a" body2="b" relpose="0.3 0 0 1 0 0 0"/>
+        <weld name="world" body1="c" relpose="-0.4 0 -1 1 0 0 0"/>
+    </equality>
+</mujoco>
+"""
+        xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the welds parallel the hinges
+            builder.add_mjcf(mjcf, xform=xform, scale=2.0)
+
+        for label in ("pair", "world"):
+            with self.subTest(weld=label):
+                j = builder.joint_label.index(f"weld_xform/{label}")
+                parent, child = builder.joint_parent[j], builder.joint_child[j]
+                world_p = builder.joint_X_p[j]
+                if parent >= 0:
+                    world_p = wp.transform_multiply(builder.body_q[parent], world_p)
+                world_c = wp.transform_multiply(builder.body_q[child], builder.joint_X_c[j])
+                np.testing.assert_allclose(np.array(world_p.p), np.array(world_c.p), atol=1e-5)
+                q_p, q_c = np.array(world_p.q), np.array(world_c.q)
+                np.testing.assert_allclose(q_p * np.sign(q_p @ q_c), q_c, atol=1e-5)
 
     def test_converted_weld_torquescale_selects_the_loop_joint(self):
-        """torquescale 0 converts a weld to a BALL loop joint on its anchor, other values to FIXED; both warn unless 1."""
+        """torquescale 0 converts a weld to a BALL loop joint on its anchor, other values to FIXED; both log unless 1."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="weld_ts">
     <worldbody>
@@ -6378,12 +6421,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with self.assertLogs("newton", level="WARNING") as logs, warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the welds parallel the hinges
             builder.add_mjcf(mjcf)
-        torquescale_caught = [w for w in caught if "torquescale" in str(w.message)]
-        self.assertTrue(all(w.category is newton.exceptions.NewtonWarning for w in torquescale_caught))
-        torquescale_warnings = [str(w.message) for w in torquescale_caught]
+        torquescale_warnings = [line for line in logs.output if "torquescale" in line]
         self.assertEqual(len(torquescale_warnings), 2, torquescale_warnings)
         self.assertIn("'weld_ts/point' has torquescale=0", torquescale_warnings[0])
         self.assertIn("'weld_ts/scaled' has torquescale=0.5", torquescale_warnings[1])

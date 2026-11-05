@@ -2911,7 +2911,7 @@ def parse_mjcf(
 
                 relpose_list = [float(x) for x in relpose.split()]
                 relpose_transform = wp.transform(
-                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
+                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]) * scale,
                     wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
                 )
 
@@ -2952,7 +2952,7 @@ def parse_mjcf(
                     body2_idx, anchor_vec = site2_info
                     relpose_list = [float(x) for x in relpose.split()]
                     relpose_transform = wp.transform(
-                        wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
+                        wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]) * scale,
                         wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
                     )
                     if verbose:
