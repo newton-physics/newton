@@ -141,6 +141,8 @@ def _parse_colliders(
     # resolve them once per prototype prim, shape type, and bound physics material.
     # Values hold the first instance path, whose collected schema attributes are shared.
     instance_properties: dict[tuple[str, Any, str], tuple[str, _ColliderProperties]] = {}
+    # Colliders under one instance or body share their ancestors' authored scale products.
+    authored_scale_cache: dict[Any, tuple[Any, bool]] = {}
 
     # Approximated colliders whose prim is viewport geometry, and which therefore keep
     # their authored topology as a visual shape. See the approximation pass below.
@@ -172,7 +174,9 @@ def _parse_colliders(
                 if verbose:
                     logger.info("collision shape %s (%s), body = %s", prim.GetPath(), prim.GetTypeName(), body_path)
                 body_id = path_body_map.get(body_path, -1)
-                scale = usd.get_scale(prim, local=False, xform_cache=xform_cache)
+                scale = usd._get_scale(
+                    prim, local=False, xform_cache=xform_cache, authored_scale_cache=authored_scale_cache
+                )
                 collision_group = builder.default_shape_cfg.collision_group
                 collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
                 material = material_specs[""]

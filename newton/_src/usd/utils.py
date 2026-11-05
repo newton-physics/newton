@@ -333,6 +333,25 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     Returns:
         The scale as a Warp vec3.
     """
+    return _get_scale(prim, local=local, xform_cache=xform_cache)
+
+
+def _get_scale(
+    prim: Usd.Prim,
+    *,
+    local: bool,
+    xform_cache: UsdGeom.XformCache | None,
+    authored_scale_cache: dict[Any, tuple[np.ndarray, bool]] | None = None,
+) -> wp.vec3:
+    """Implement :func:`get_scale`, optionally reusing ancestors' authored world scales.
+
+    Args:
+        prim: The USD prim to query.
+        local: Whether to return the local scale instead of the world scale.
+        xform_cache: Optional USD XformCache for world transforms.
+        authored_scale_cache: Optional per-stage mapping from prim path to the product of
+            authored world scale ops, filled in place. Reuse it only while the stage is unchanged.
+    """
     mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
     # USD stores basis vectors in rows. Only their lengths are needed here;
     # constructing a Warp matrix and extracting its quaternion is unnecessary.
@@ -340,7 +359,7 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     basis = mat[:3, :3].astype(np.float64)
     scale = np.sqrt(np.sum(basis * basis, axis=1).astype(np.float32))
 
-    authored_scale = _get_authored_scale(prim, local=local)
+    authored_scale = _get_authored_scale(prim, local=local, cache=authored_scale_cache)
     if authored_scale is not None:
         sign = np.sign(authored_scale)
         sign[sign == 0.0] = 1.0
@@ -349,43 +368,62 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     return wp.vec3(*scale)
 
 
-def _get_authored_scale(prim: Usd.Prim, local: bool = True) -> np.ndarray | None:
-    """Return the product of authored scale ops, preserving negative signs."""
+def _get_authored_scale(
+    prim: Usd.Prim, local: bool = True, cache: dict[Any, tuple[np.ndarray, bool]] | None = None
+) -> np.ndarray | None:
+    """Return the product of authored scale ops, preserving negative signs.
+
+    Args:
+        prim: The USD prim to query.
+        local: Whether to use only the prim's own ops instead of all ancestors' ops.
+        cache: Optional mapping from prim path to the product of authored world scale ops,
+            filled in place for world queries so prims sharing ancestors reuse their products.
+    """
     if UsdGeom is None:
         return None
+    if local:
+        scale, found = _accumulate_authored_scale(UsdGeom.Xformable(prim), np.ones(3, dtype=np.float32), False)
+    else:
+        scale, found = _get_world_authored_scale(prim, {} if cache is None else cache)
+    return scale.copy() if found else None
 
-    prims = [prim]
-    if not local:
-        prims = []
-        current = prim
-        while current and current.IsValid() and not current.IsPseudoRoot():
-            prims.append(current)
-            current = current.GetParent()
-        prims.reverse()
 
-    scale = np.ones(3, dtype=np.float32)
-    found = False
-    for p in prims:
-        xformable = UsdGeom.Xformable(p)
-        if not xformable:
+def _accumulate_authored_scale(xformable: UsdGeom.Xformable, scale: np.ndarray, found: bool) -> tuple[np.ndarray, bool]:
+    """Multiply ``scale`` in place by an xformable's authored scale ops, in op order."""
+    if not xformable:
+        return scale, found
+    for op in xformable.GetOrderedXformOps():
+        if op.GetOpType() != UsdGeom.XformOp.TypeScale:
             continue
-        if not local and xformable.GetResetXformStack():
-            scale = np.ones(3, dtype=np.float32)
-            found = False
-        for op in xformable.GetOrderedXformOps():
-            if op.GetOpType() != UsdGeom.XformOp.TypeScale:
-                continue
-            value = op.Get()
-            if value is None:
-                continue
-            op_scale = np.array(value, dtype=np.float32)
-            if op.IsInverseOp():
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    op_scale = np.divide(1.0, op_scale, out=np.ones_like(op_scale), where=op_scale != 0.0)
-            scale *= op_scale
-            found = True
+        value = op.Get()
+        if value is None:
+            continue
+        op_scale = np.array(value, dtype=np.float32)
+        if op.IsInverseOp():
+            with np.errstate(divide="ignore", invalid="ignore"):
+                op_scale = np.divide(1.0, op_scale, out=np.ones_like(op_scale), where=op_scale != 0.0)
+        scale *= op_scale
+        found = True
+    return scale, found
 
-    return scale if found else None
+
+def _get_world_authored_scale(prim: Usd.Prim, cache: dict[Any, tuple[np.ndarray, bool]]) -> tuple[np.ndarray, bool]:
+    """Return the product of authored scale ops from the root down to ``prim``, cached per path."""
+    if not prim or not prim.IsValid() or prim.IsPseudoRoot():
+        return np.ones(3, dtype=np.float32), False
+    path = prim.GetPath()
+    cached = cache.get(path)
+    if cached is not None:
+        return cached
+    xformable = UsdGeom.Xformable(prim)
+    if xformable and xformable.GetResetXformStack():
+        scale, found = np.ones(3, dtype=np.float32), False
+    else:
+        parent_scale, found = _get_world_authored_scale(prim.GetParent(), cache)
+        scale = parent_scale.copy()
+    result = _accumulate_authored_scale(xformable, scale, found)
+    cache[path] = result
+    return result
 
 
 def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:
@@ -438,6 +476,22 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
     return wp.transform(xform_pos, xform_rot)
 
 
+def _normalized_quat(x: float, y: float, z: float, w: float) -> wp.quat:
+    """Return ``wp.normalize(wp.quat(x, y, z, w))`` without a Warp builtin dispatch.
+
+    Importing large scenes converts one rotation per prim, where the builtin dispatch
+    dominates. Float32 arithmetic in Warp's order keeps the result bit-identical.
+    """
+    f32 = np.float32
+    with np.errstate(all="ignore"):
+        x, y, z, w = f32(x), f32(y), f32(z), f32(w)
+        length = f32(math.sqrt(f32(f32(f32(x * x) + f32(y * y)) + f32(z * z)) + f32(w * w)))
+        if length > f32(0.0):
+            inv_length = f32(1.0) / length
+            return wp.quat(x * inv_length, y * inv_length, z * inv_length, w * inv_length)
+    return wp.quat(0.0, 0.0, 0.0, 1.0)
+
+
 def value_to_warp(v: Any, warp_dtype: Any | None = None) -> Any:
     """
     Convert a USD value (such as Gf.Quat, Gf.Vec3, or float) to a Warp value.
@@ -452,7 +506,7 @@ def value_to_warp(v: Any, warp_dtype: Any | None = None) -> Any:
         The converted value.
     """
     if warp_dtype is wp.quat or (hasattr(v, "real") and hasattr(v, "imaginary")):
-        return wp.normalize(wp.quat(*v.imaginary, v.real))
+        return _normalized_quat(*v.imaginary, v.real)
     if warp_dtype is not None:
         # assume the type is a vector, matrix, or scalar
         if hasattr(v, "__len__"):
