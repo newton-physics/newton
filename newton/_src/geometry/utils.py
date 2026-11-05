@@ -1127,6 +1127,8 @@ def _scan_tiles_kernel(
                     running += counts[idx]
             if t == 0 and tile == active_tiles - 1:
                 total[0] = prefix + tile_sum
+            # The blocks' first tickets cover every tile when there are no more tiles than blocks.
+            working = active_tiles > block_count
     finished = wp.int64(0)
     if t == 0:
         finished = wp.atomic_add(scratch, 1, wp.int64(1))
