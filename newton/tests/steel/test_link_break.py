@@ -572,6 +572,26 @@ class TestSteelLinkBreak(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             builder.collapse_fixed_joints()
+        # A converted MuJoCo weld keeps its equality row, so collapsing it does not warn.
+        mjcf = """
+        <mujoco>
+          <worldbody>
+            <body name="a" pos="0 0 1">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.05"/>
+              <body name="b" pos="0.3 0 0">
+                <joint type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.05"/>
+              </body>
+            </body>
+          </worldbody>
+          <equality><weld body1="a" body2="b"/></equality>
+        </mujoco>
+        """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            newton.ModelBuilder().add_mjcf(mjcf, collapse_fixed_joints=True)
+        self.assertFalse([w for w in caught if "loop-closing" in str(w.message)])
         if USD_AVAILABLE:
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"does not preserve FIXED loop-closing joints"):

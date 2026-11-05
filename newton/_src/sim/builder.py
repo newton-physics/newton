@@ -7833,11 +7833,23 @@ class ModelBuilder:
         incoming = {}
         for j in range(self.joint_count):
             incoming.setdefault(self.joint_child[j], []).append(j)
+        # A converted MuJoCo weld keeps its equality row, which SolverMuJoCo enforces and SolverSteel rejects once
+        # collapsing drops the joint (target kind 1 is a joint).
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        equality_joints = set()
+        if target_kind_attr is not None and target_attr is not None and target_attr.values:
+            for eq_idx, target in enumerate(target_attr.values):
+                kinds = target_kind_attr.values
+                if target is not None and kinds and eq_idx < len(kinds) and kinds[eq_idx] is not None:
+                    if int(kinds[eq_idx]) == 1:
+                        equality_joints.add(int(target))
         loop_welds = [
             j
             for j in range(self.joint_count)
             if self.joint_type[j] == JointType.FIXED
             and self.joint_articulation[j] < 0
+            and j not in equality_joints
             and any(k != j and self.joint_articulation[k] >= 0 for k in incoming[self.joint_child[j]])
         ]
         if loop_welds:
