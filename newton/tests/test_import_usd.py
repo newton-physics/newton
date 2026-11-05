@@ -885,6 +885,67 @@ class TestImportUsdPhysics(unittest.TestCase):
             self.assertAlmostEqual(newton_attrs[path]["newton:contactMargin"], 0.01, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_instanced_material_subsets_share_render_meshes(self):
+        """Share material-subset render meshes across instances with per-instance labels."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        box = newton.Mesh.create_box(
+            0.5,
+            0.5,
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        UsdGeom.Xform.Define(stage, "/Prototype")
+        mesh = UsdGeom.Mesh.Define(stage, "/Prototype/Mesh")
+        mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in box.vertices.tolist()])
+        face_count = len(box.indices) // 3
+        mesh.CreateFaceVertexCountsAttr().Set([3] * face_count)
+        mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+
+        colors = {"Red": (1.0, 0.0, 0.0), "Blue": (0.0, 0.0, 1.0)}
+        for name, face_indices in (("Red", range(4)), ("Blue", range(4, 8))):
+            material = UsdShade.Material.Define(stage, f"/Looks/{name}")
+            shader = UsdShade.Shader.Define(stage, f"/Looks/{name}/Shader")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*colors[name]))
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            subset = UsdGeom.Subset.CreateGeomSubset(
+                mesh, name, UsdGeom.Tokens.face, list(face_indices), familyName="materialBind"
+            )
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(material)
+
+        UsdGeom.Xform.Define(stage, "/World")
+        for index in range(3):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{index}")
+            instance.GetPrim().GetReferences().AddInternalReference("/Prototype")
+            instance.GetPrim().SetInstanceable(True)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World")
+        shape_map = result["path_shape_map"]
+
+        meshes = {}
+        for index in range(3):
+            for name, color in colors.items():
+                path = f"/World/Instance{index}/Mesh/{name}"
+                shape = shape_map[path]
+                self.assertEqual(builder.shape_label[shape], path)
+                np.testing.assert_allclose(builder.shape_source[shape].color, color, atol=1e-6)
+                meshes[index, name] = builder.shape_source[shape]
+            # The faces outside both subsets keep the parent mesh as their own render mesh.
+            fallback = shape_map[f"/World/Instance{index}/Mesh"]
+            meshes[index, None] = builder.shape_source[fallback]
+            self.assertEqual(len(meshes[index, None].indices) // 3, face_count - 8)
+        for name in (*colors, None):
+            self.assertIs(meshes[0, name], meshes[1, name])
+            self.assertIs(meshes[0, name], meshes[2, name])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
         """Preserve the authored mesh for a disabled collider."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

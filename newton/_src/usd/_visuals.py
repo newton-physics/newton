@@ -62,6 +62,8 @@ class _UsdVisuals:
         self.material_props_cache: dict[str, dict[str, Any]] = {}
         self.mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
         self.material_mesh_cache: dict[tuple[str, bool, bool, tuple], Mesh] = {}
+        # Subset index (-1 for the uncovered-face fallback) and render mesh per instanced mesh.
+        self.subset_mesh_cache: dict[tuple, list[tuple[int, Mesh]]] = {}
 
     def get_material_props_cached(self, prim: Usd.Prim) -> dict[str, Any]:
         """Get material properties with caching to avoid repeated traversal."""
@@ -253,6 +255,19 @@ class _UsdVisuals:
             return []
 
         subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
+        # Instance proxies of one prototype mesh share subset topology, so instances resolving
+        # the same materials share their render meshes. Materials can still differ per instance.
+        cache_key = None
+        if prim.IsInstanceProxy():
+            cache_key = (
+                _geometry_path(prim),
+                tuple(_material_key(material_props) for _, material_props in subset_props),
+                _material_key(self.get_material_props_cached(prim)),
+            )
+            cached = self.subset_mesh_cache.get(cache_key)
+            if cached is not None:
+                prim_path = str(prim.GetPath())
+                return [(subset_props[index][0] if index >= 0 else prim_path, mesh) for index, mesh in cached]
         # Load UVs (and matching authored normals) so each submesh slices real
         # per-corner texture coordinates instead of recovering per-vertex UVs,
         # which scrambles faceVarying UV sets. UV loading unwelds vertices while
@@ -262,7 +277,8 @@ class _UsdVisuals:
         covered_faces = np.zeros(len(face_counts), dtype=bool)
 
         submeshes = []
-        for subset_path, material_props in subset_props:
+        submesh_indices = []
+        for subset_index, (subset_path, material_props) in enumerate(subset_props):
             # Split on authored binding structure, not on whether the bound material's properties
             # resolve: a subset that binds a material Newton does not recognize still becomes its
             # own (unshaded) submesh, so import topology never depends on material vocabulary.
@@ -300,8 +316,11 @@ class _UsdVisuals:
                 continue
             covered_faces[subset_indices] = True
             submeshes.append((subset_path, submesh))
+            submesh_indices.append(subset_index)
 
         if not submeshes:
+            if cache_key is not None:
+                self.subset_mesh_cache[cache_key] = []
             return []
 
         uncovered_faces = np.nonzero(~covered_faces)[0]
@@ -318,7 +337,12 @@ class _UsdVisuals:
             )
             if fallback_mesh is not None:
                 submeshes.insert(0, (str(prim.GetPath()), fallback_mesh))
+                submesh_indices.insert(0, -1)
 
+        if cache_key is not None:
+            self.subset_mesh_cache[cache_key] = [
+                (index, mesh) for index, (_, mesh) in zip(submesh_indices, submeshes, strict=True)
+            ]
         return submeshes
 
     def get_axial_visual_dimensions(
