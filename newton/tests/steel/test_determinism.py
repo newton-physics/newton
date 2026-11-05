@@ -417,8 +417,11 @@ def _capture_solve(device, solve, external):
         raise RuntimeError(f"cuStreamBeginCapture failed with {began}")
     try:
         solve()
-    finally:
-        ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
+    except BaseException:
+        if cuda.cuStreamEndCapture(stream, ctypes.byref(graph)) == 0:
+            cuda.cuGraphDestroy(graph)
+        raise
+    ended = cuda.cuStreamEndCapture(stream, ctypes.byref(graph))
     if ended != 0:
         raise RuntimeError(f"cuStreamEndCapture failed with {ended}")
     # The captured step allocates stream-ordered scratch, which the graph frees on each relaunch.
