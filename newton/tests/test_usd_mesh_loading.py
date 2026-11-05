@@ -636,7 +636,10 @@ class TestSplitCornersIntoVertices(unittest.TestCase):
 
             with mock.patch.object(_mesh_loading, "_cluster_split_groups", _scalar_cluster_split_groups):
                 expected = _mesh_loading._split_corners_into_vertices(points, indices, dirs, uvs, threshold)
-            actual = _mesh_loading._split_corners_into_vertices(points, indices, dirs, uvs, threshold)
+            # A tiny batch budget also exercises splitting the groups across many batches.
+            slots = 8 if case % 2 else _mesh_loading._CLUSTER_CHUNK_SLOTS
+            with mock.patch.object(_mesh_loading, "_CLUSTER_CHUNK_SLOTS", slots):
+                actual = _mesh_loading._split_corners_into_vertices(points, indices, dirs, uvs, threshold)
             for name, want, got in zip(
                 ("points", "indices", "normals", "uvs", "sources"), expected, actual, strict=True
             ):
