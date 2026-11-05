@@ -174,7 +174,7 @@ class CollisionSubstepScheduler:
         collision_callback: Called as ``callback(state, collision_dt)`` before
             each scheduled collision refresh. ``collision_dt`` is the planned
             horizon until the next refresh [s], capped at the frame boundary;
-            a later velocity change may trigger an earlier refresh.
+            faster observed travel may trigger an earlier refresh.
         substep_callback: Called as ``callback(state_in, state_out, dt)`` exactly
             ``substeps`` times per frame.
         frame_dt: Fixed frame duration [s].
