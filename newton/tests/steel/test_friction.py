@@ -42,7 +42,14 @@ from newton.tests.steel._fixtures import (
     select_colored_variant,
     set_torsion_radius,
 )
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+
+
+def _response_options(response):
+    """Return the solver options of a contact response; ``"colored"`` is the colored sweep of ``"propagation"``."""
+    if response == "colored":
+        return {"solve_mode": "colored", "articulated_contact_response": "propagation"}
+    return {"articulated_contact_response": response}
 
 
 def _run_squeeze(tilt_deg, steps, dt=0.005, matching="latest", substeps=1, device=None, **solver_kwargs):
@@ -50,7 +57,7 @@ def _run_squeeze(tilt_deg, steps, dt=0.005, matching="latest", substeps=1, devic
     model, jaws, box = _build_v_jaws(tilt_deg, device=device)
     kwargs = dict(_SQUEEZE_SOLVER)
     kwargs.update(solver_kwargs)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverSteel(model, **kwargs)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn", contact_matching=matching)
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
@@ -93,7 +100,7 @@ def _build_incline(theta_deg: float, mu: float):
 def _run_incline(steps: int, dt: float, **solver_kwargs):
     theta, mu = 30.0, 0.3
     model, box, _rot = _build_incline(theta, mu)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", iterations=32, baumgarte=0.05, **solver_kwargs)
+    solver = newton.solvers.SolverSteel(model, iterations=32, baumgarte=0.05, **solver_kwargs)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, broad_phase="nxn", contact_matching="latest")
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
@@ -133,9 +140,7 @@ def _mesh_incline_model(mus):
 
 def _run_mesh_incline(model, seconds: float, dt: float, iterations: int):
     """Step the inclines with friction patches; return per-step body poses and velocities, and the solver."""
-    solver = newton.solvers.SolverSteel(
-        model, solve_mode="matrix_free", iterations=iterations, friction_anchor_beta=0.2
-    )
+    solver = newton.solvers.SolverSteel(model, iterations=iterations, friction_anchor_beta=0.2)
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
@@ -158,9 +163,7 @@ class TestSteelFrictionAnchors(unittest.TestCase):
     def test_explicit_opt_out_keeps_friction_rows_velocity_only(self):
         """Preserve velocity-only rows and omit anchor state with ``friction_anchor_beta=0``."""
         model, _jaws, _box = _build_v_jaws(5.0)
-        solver = newton.solvers.SolverSteel(
-            model, solve_mode="matrix_free", **_SQUEEZE_SOLVER, friction_anchor_beta=0.0
-        )
+        solver = newton.solvers.SolverSteel(model, **_SQUEEZE_SOLVER, friction_anchor_beta=0.0)
         self.assertFalse(solver._friction_anchors_enabled)
         self.assertFalse(hasattr(solver._friction_patches, "fixed_normal"))
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn")
@@ -182,9 +185,7 @@ class TestSteelFrictionAnchors(unittest.TestCase):
     def test_anchors_do_not_require_contact_matching(self):
         """Keep patch history owned by the solver, independently of collision matching."""
         model, _jaws, _box = _build_v_jaws(5.0)
-        solver = newton.solvers.SolverSteel(
-            model, solve_mode="matrix_free", **_SQUEEZE_SOLVER, friction_anchor_beta=0.2
-        )
+        solver = newton.solvers.SolverSteel(model, **_SQUEEZE_SOLVER, friction_anchor_beta=0.2)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -299,9 +300,7 @@ class TestSteelFrictionAnchors(unittest.TestCase):
         beta = 0.3
 
         def check(model, solver_kwargs, steps=120):
-            solver = newton.solvers.SolverSteel(
-                model, solve_mode="matrix_free", friction_anchor_beta=beta, **solver_kwargs
-            )
+            solver = newton.solvers.SolverSteel(model, friction_anchor_beta=beta, **solver_kwargs)
             self.assertEqual(solver.friction_anchor_beta, beta)
             pipeline = newton.CollisionPipeline(
                 model, rigid_contact_max=256, broad_phase="nxn", contact_matching="latest"
@@ -347,9 +346,7 @@ class TestSteelFrictionAnchors(unittest.TestCase):
     def test_graph_capture_replays(self):
         """Capture and replay two steps with device-side anchor history under a CUDA graph."""
         model, jaws, box = _build_v_jaws(5.0)
-        solver = newton.solvers.SolverSteel(
-            model, solve_mode="matrix_free", friction_anchor_beta=0.05, **_SQUEEZE_SOLVER
-        )
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.05, **_SQUEEZE_SOLVER)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn", contact_matching="latest")
         contacts = pipeline.contacts()
         s0, s1 = model.state(), model.state()
@@ -530,7 +527,6 @@ class TestSteelFrictionAnchorKernels(unittest.TestCase):
         model = _build_two_world_free_model(device)
         solver = newton.solvers.SolverSteel(
             model,
-            solve_mode="matrix_free",
             friction_anchor_beta=0.2,
             articulation_constraint_max=4,
             free_body_constraint_max=4,
@@ -589,13 +585,12 @@ def _slide(
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverSteel(
         model,
-        solve_mode="matrix_free",
         friction_anchor_beta=beta,
         iterations=64,
         cfm=0.0 if locked_tangent else 1.0e-6,
         free_body_constraint_max=128,
         articulation_constraint_max=32,
-        articulated_contact_response=response,
+        **_response_options(response),
         friction_mode=mode,
     )
     solver._rigid_body_angular_damping.zero_()
@@ -932,17 +927,6 @@ def test_sparse_factors_require_the_current_mode(test, device):
             test.assertIsNone(solver._sparse_mass_matrix_size)
 
 
-def test_split_rejects_other_modes(test, device):
-    """Reject the non-default modes in the split solve; the default omitted friction stays silent."""
-    model = _box_on_slope(device, 0.3, 0.5, articulated=True)
-    for mode in MODES[1:]:
-        with test.subTest(mode=mode), warnings.catch_warnings():
-            warnings.simplefilter("error")
-            with test.assertRaisesRegex(NotImplementedError, f"friction_mode='{mode}'.*solve_mode='matrix_free'"):
-                SolverSteel(model, solve_mode="split", friction_mode=mode)
-    test.assertEqual(SolverSteel(model, solve_mode="split").friction_mode, "fixed_normal")
-
-
 # Coulomb Newton blocks whose finite root search ends below zero load; each exact root is a small positive
 # normal impulse. Values: u_n, u_t1, u_t2, G_nn, G_nt1, G_nt2, G_t1t1, G_t1t2, G_t2t2, mu.
 _ZERO_LOAD_BLOCKS = {
@@ -1061,7 +1045,7 @@ def _coulomb_newton_mf_block(device, block):
 def test_coulomb_newton_normal_impulse_stays_nonnegative(test, device):
     """Keep the coupled Coulomb Newton normal impulse at or above zero where the root search ends below zero load."""
     for name, block in _ZERO_LOAD_BLOCKS.items():
-        for route, solve in (("colored", _coulomb_newton_colored_block), ("matrix_free", _coulomb_newton_mf_block)):
+        for route, solve in (("colored", _coulomb_newton_colored_block), ("serial", _coulomb_newton_mf_block)):
             with test.subTest(block=name, route=route):
                 normal, *tangent = solve(device, np.array(block, dtype=np.float32))
                 test.assertGreaterEqual(normal, 0.0)
@@ -1084,14 +1068,6 @@ for _fn in (
     test_coulomb_newton_normal_impulse_stays_nonnegative,
 ):
     add_function_test(TestSteelFrictionMode, _fn.__name__, _fn, devices=cuda_devices)
-
-
-add_function_test(
-    TestSteelFrictionMode,
-    "test_split_rejects_other_modes",
-    test_split_rejects_other_modes,
-    devices=get_test_devices(),
-)
 
 
 def _box_on_support(device, mode, articulated, support_speed, steps=60, window=30, response="immediate"):
@@ -1125,8 +1101,7 @@ def _box_on_support(device, mode, articulated, support_speed, steps=60, window=3
     model = builder.finalize(device=device)
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
-        articulated_contact_response=response,
+        **_response_options(response),
         friction_mode=mode,
         friction_anchor_beta=0.0,
         iterations=32,
@@ -1171,7 +1146,7 @@ def test_kinematic_belt_drags_the_box(test, device):
     """
     cases = [("immediate", False, mode) for mode in MODES[1:]]
     cases += [("immediate", True, mode) for mode in ("bisection", "bisection_desaxce")]
-    cases += [("propagation_colored", articulated, mode) for articulated in (False, True) for mode in MODES[1:]]
+    cases += [("colored", articulated, mode) for articulated in (False, True) for mode in MODES[1:]]
     for response, articulated, mode in cases:
         with test.subTest(response=response, articulated=articulated, mode=mode):
             mean_vx, _, _, mf_rows = _box_on_support(device, mode, articulated, 0.5, response=response)
@@ -1217,7 +1192,6 @@ def _surface_belt(device, *, articulated=False, box_z=0.05, gap=0.0, restitution
     model = builder.finalize(device=device)
     solver = SolverSteel(
         model,
-        solve_mode="matrix_free",
         iterations=32,
         free_body_constraint_max=64,
         articulation_constraint_max=64,
@@ -1255,13 +1229,13 @@ def test_surface_velocity_belt_drags_the_box(test, device):
         (False, "immediate", "coulomb_newton", 0.0),
         (True, "immediate", "fixed_normal", 0.2),
         (True, "propagation", "fixed_normal", 0.2),
-        (True, "propagation_colored", "fixed_normal", 0.0),
+        (True, "colored", "fixed_normal", 0.0),
     ):
         with test.subTest(articulated=articulated, response=response, mode=mode, anchor_beta=anchor_beta):
             belt, _, box, step = _surface_belt(
                 device,
                 articulated=articulated,
-                articulated_contact_response=response,
+                **_response_options(response),
                 friction_mode=mode,
                 friction_anchor_beta=anchor_beta,
             )
@@ -1323,7 +1297,7 @@ def test_surface_velocity_of_a_body_variant_mesh_drives_the_body(test, device):
     builder.add_body_variants(box, variants)
     builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0))
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, friction_anchor_beta=0.2)
+    solver = SolverSteel(model, iterations=32, friction_anchor_beta=0.2)
     solver.notify_model_changed(model.select_body_variants(wp.array([1], dtype=wp.int32, device=device)))
     meshes[1].mesh.velocities.fill_(wp.vec3(0.5, 0.0, 0.0))
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=True)
@@ -1402,7 +1376,7 @@ def _ground_box(device, **solver_kwargs):
     model = builder.finalize(device=device)
     kwargs = {"iterations": 32}
     kwargs.update(solver_kwargs)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverSteel(model, **kwargs)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
     contacts = pipeline.contacts()
     states = [model.state(), model.state()]
@@ -2163,7 +2137,7 @@ def _run_rolling(
         builder.end_world()
     model = builder.finalize(device=device)
     kwargs = {} if friction_anchor_beta is None else {"friction_anchor_beta": friction_anchor_beta}
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **kwargs)
+    solver = newton.solvers.SolverSteel(model, **kwargs)
     pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
@@ -2277,7 +2251,7 @@ class TestSteelFrictionRolling(unittest.TestCase):
             body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, height), wp.quat_identity()))
             builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+        solver = newton.solvers.SolverSteel(model)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         s0, s1 = model.state(), model.state()
@@ -2306,9 +2280,7 @@ class TestSteelFrictionRolling(unittest.TestCase):
                     body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=125, mu=0.5)
                 )
                 model = builder.finalize()
-                solver = newton.solvers.SolverSteel(
-                    model, solve_mode="matrix_free", friction_anchor_beta=0.2, iterations=64
-                )
+                solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, iterations=64)
                 pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
                 contacts = pipeline.contacts()
                 s0, s1 = model.state(), model.state()
@@ -2343,7 +2315,7 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
                     kwargs = dict(_SQUEEZE_SOLVER, iterations=4)
                     if not enabled:
                         kwargs["friction_anchor_beta"] = 0.0
-                    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **kwargs)
+                    solver = newton.solvers.SolverSteel(model, **kwargs)
                     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, broad_phase="nxn")
                     contacts = pipeline.contacts()
                     s0, s1 = model.state(), model.state()
@@ -2407,9 +2379,7 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverSteel(
-            model, solve_mode="matrix_free", friction_anchor_beta=0.2, contact_gap_gate=1.0e-4
-        )
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, contact_gap_gate=1.0e-4)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
         contacts = pipeline.contacts()
         s0, s1 = model.state(), model.state()
@@ -2436,7 +2406,7 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
         box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.2)
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
         contacts = pipeline.contacts()
         s0, s1 = model.state(), model.state()
@@ -2467,9 +2437,7 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverSteel(
-            model, solve_mode="matrix_free", friction_anchor_beta=0.2, contact_gap_gate=0.001
-        )
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, contact_gap_gate=0.001)
         contacts = newton.CollisionPipeline(model, rigid_contact_max=2).contacts()
         shape_body = model.shape_body.numpy()
         boxes = np.flatnonzero(shape_body >= 0)
@@ -2503,7 +2471,7 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
         body = builder.add_body()
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=_DEVICE)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.2)
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2)
         patches = solver._friction_patches
         radius = patches.body_radius.numpy().copy()
         patches.previous.valid.fill_(1)
@@ -2552,9 +2520,7 @@ class TestSteelFrictionAnchorSelection(unittest.TestCase):
                 body = builder.add_body()
                 box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
                 model = builder.finalize()
-                solver = newton.solvers.SolverSteel(
-                    model, solve_mode="matrix_free", friction_anchor_beta=0.2, **{gate: 0.001}
-                )
+                solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, **{gate: 0.001})
                 contacts = newton.CollisionPipeline(model, rigid_contact_max=3).contacts()
                 contacts.rigid_contact_count.assign([3])
                 contacts.rigid_contact_shape0.assign([box] * 3)
@@ -2575,9 +2541,7 @@ class TestSteelFrictionAnchorSelection(unittest.TestCase):
             body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()))
             builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
             model = builder.finalize()
-            solver = newton.solvers.SolverSteel(
-                model, solve_mode="matrix_free", friction_anchor_beta=0.2, articulation_constraint_max=64
-            )
+            solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, articulation_constraint_max=64)
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, contact_matching="latest")
             contacts = pipeline.contacts()
             state = model.state()
@@ -2602,7 +2566,7 @@ class TestSteelFrictionAnchorSelection(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
         box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.2, iterations=64)
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, iterations=64)
         # A pipeline publishes the contact capacity; the contacts are written by hand and never collided.
         contacts = newton.CollisionPipeline(model, rigid_contact_max=4, soft_contact_max=0).contacts()
         contacts.rigid_contact_count.assign([4])
@@ -2657,7 +2621,7 @@ def _check_notified_friction_edit(test, device, replace, capture):
     body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.1), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", iterations=32)
+    solver = newton.solvers.SolverSteel(model, iterations=32)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
     contacts = pipeline.contacts()
     state_0, state_1, control = model.state(), model.state(), model.control()
@@ -2706,7 +2670,7 @@ def test_disabled_material_options_keep_default_patches(test, device):
     body = builder.add_body()
     builder.add_shape_sphere(body, radius=0.05)
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free")
+    solver = SolverSteel(model)
     test.assertEqual(solver.friction_anchor_beta, 0.2)
     test.assertTrue(solver._friction_anchors_enabled)
     test.assertFalse(solver._contact_torsion_enabled)
@@ -2786,7 +2750,7 @@ class _ModeScene:
         builder.replicate(world, worlds)
         self.model = builder.finalize(device=device)
         args = {
-            "articulated_contact_response": response,
+            **_response_options(response),
             "friction_mode": mode,
             "friction_anchor_beta": 0.0,
             "iterations": 32,
@@ -2852,7 +2816,7 @@ def test_colored_incline_tracks_immediate(test, device):
             with test.subTest(angle=angle, mode=mode):
                 kwargs = {"angle": angle, "iterations": 4}
                 immediate = _mode_trace(test, device, "immediate", mode, 20, **kwargs)
-                scene = _ModeScene(test, device, "propagation_colored", mode, **kwargs)
+                scene = _ModeScene(test, device, "colored", mode, **kwargs)
                 colored = scene.run(20)
                 for key, value in scene.solver.constraint_row_watermarks().items():
                     if "overflow" in key or "dropped" in key:
@@ -2860,7 +2824,7 @@ def test_colored_incline_tracks_immediate(test, device):
                 np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
                 test.assertGreater(np.abs(immediate - fixed).max(), 10.0 * _MODE_TOLERANCE)
                 steps = 6 if mode == "bisection_desaxce" else 12
-                articulated = _mode_trace(test, device, "propagation_colored", mode, steps, articulated=True, **kwargs)
+                articulated = _mode_trace(test, device, "colored", mode, steps, articulated=True, **kwargs)
                 np.testing.assert_allclose(articulated, colored[:steps], atol=_MODE_TOLERANCE, rtol=0.0)
                 if mode == "bisection":
                     dense = _mode_trace(test, device, "immediate", mode, steps, articulated=True, **kwargs)
@@ -2872,7 +2836,7 @@ def test_colored_locked_tangent_keeps_friction(test, device):
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
             velocity, direction, overflow = _slide(
-                device, 0.0, False, 0.0, True, locked_tangent=True, response="propagation_colored", mode=mode
+                device, 0.0, False, 0.0, True, locked_tangent=True, response="colored", mode=mode
             )
             np.testing.assert_allclose(velocity, direction * (0.2 * 0.3 * 9.81) * 0.5, atol=0.015, rtol=0.03)
             test.assertFalse(overflow.any())
@@ -2883,7 +2847,7 @@ def test_colored_sliding_sphere_rolls_as_on_immediate(test, device):
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
             immediate = _mode_trace(test, device, "immediate", mode, 60, scene="sphere")
-            colored = _mode_trace(test, device, "propagation_colored", mode, 60, scene="sphere")
+            colored = _mode_trace(test, device, "colored", mode, 60, scene="sphere")
             np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
             speed, spin = colored[-1, 0, 0], colored[-1, 0, 4]
             test.assertAlmostEqual(speed, 2.0 * 5.0 / 7.0, delta=0.02)
@@ -2892,7 +2856,7 @@ def test_colored_sliding_sphere_rolls_as_on_immediate(test, device):
 
 def test_coulomb_newton_keeps_frictionless_contacts_frictionless(test, device):
     """Slide a sphere on a frictionless plane without spinning it up, free and on a six-DOF joint."""
-    for response in ("immediate", "propagation_colored"):
+    for response in ("immediate", "colored"):
         for articulated in (False, True):
             with test.subTest(response=response, articulated=articulated):
                 trace = _mode_trace(
@@ -2919,7 +2883,7 @@ def test_every_colored_variant_agrees(test, device):
                     continue
                 kwargs = {"angle": _MODE_SLIP + 0.05, "iterations": 4, "variant": variant}
                 # The staged sweep packs one world per block.
-                trace = _mode_trace(test, device, "propagation_colored", mode, 20, worlds=2, **kwargs)
+                trace = _mode_trace(test, device, "colored", mode, 20, worlds=2, **kwargs)
                 if reference is None:
                     reference = trace
                 # A bisection or a slip flip turns float32 summation-order differences into larger steps.
@@ -2932,8 +2896,8 @@ def test_colored_modes_repeat_bitwise_and_replay(test, device):
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
             kwargs = {"angle": _MODE_SLIP + 0.05, "worlds": 3}
-            expected = _mode_trace(test, device, "propagation_colored", mode, 12, **kwargs)
-            captured = _ModeScene(test, device, "propagation_colored", mode, **kwargs)
+            expected = _mode_trace(test, device, "colored", mode, 12, **kwargs)
+            captured = _ModeScene(test, device, "colored", mode, **kwargs)
             trace = list(captured.run(2))
             with wp.ScopedCapture(device=device) as capture:
                 captured.step()
@@ -2948,7 +2912,7 @@ def test_colored_modes_keep_the_coupled_restrictions(test, device):
     model = _ModeScene(test, device, "immediate", "fixed_normal").model
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
-            colored = {"articulated_contact_response": "propagation_colored", "friction_mode": mode}
+            colored = {**_response_options("colored"), "friction_mode": mode}
             with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
                 solver = SolverSteel(model, **colored)
             test.assertEqual(solver.friction_anchor_beta, 0.0)
@@ -2957,11 +2921,11 @@ def test_colored_modes_keep_the_coupled_restrictions(test, device):
                 SolverSteel(model, **colored, friction_anchor_beta=0.2)
             with test.assertRaisesRegex(ValueError, "friction_mode"):
                 SolverSteel(model, **colored, friction_anchor_beta=0.0, contact_compliance=True)
-            for response in ("immediate", "propagation_colored"):
+            for response in ("immediate", "colored"):
                 with test.assertRaisesRegex(ValueError, "contact_regularization"):
                     SolverSteel(
                         model,
-                        articulated_contact_response=response,
+                        **_response_options(response),
                         friction_mode=mode,
                         friction_anchor_beta=0.0,
                         contact_regularization=1.0,
@@ -2972,7 +2936,7 @@ def test_colored_modes_keep_the_coupled_restrictions(test, device):
                 )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        default = SolverSteel(model, articulated_contact_response="propagation_colored")
+        default = SolverSteel(model, **_response_options("colored"))
     test.assertFalse(default._pgs_solve_propagation_colored_warp_kernel.key.endswith(_COUPLED_MODES))
 
 

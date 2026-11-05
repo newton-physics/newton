@@ -149,7 +149,7 @@ def _simulate(model, steps, dt, iterations=16, history=False):
     With ``history``, also return ``body_q`` [steps, body_count, 7] and ``body_qd`` [steps, body_count, 6] after every
     step. They are recorded into device buffers and read back once.
     """
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=iterations)
+    solver = SolverSteel(model, iterations=iterations)
     s0, s1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
     newton.eval_fk(model, model.joint_q, model.joint_qd, s1)
@@ -506,7 +506,7 @@ def test_link_break_preelimination_falls_back(test, device):
     model = builder.finalize(device=device)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        solver = SolverSteel(model, solve_mode="matrix_free", iterations=2, enable_bilateral_preelimination=True)
+        solver = SolverSteel(model, iterations=2, enable_bilateral_preelimination=True)
     test.assertTrue(solver._preelim_active)
     s0, s1, control = model.state(), model.state(), model.control()
     for _ in range(50):
@@ -520,7 +520,7 @@ def test_link_break_preelimination_falls_back(test, device):
     model = builder.finalize(device=device)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, enable_bilateral_preelimination=True)
+        solver = SolverSteel(model, iterations=16, enable_bilateral_preelimination=True)
     test.assertFalse(solver._preelim_active)
     test.assertTrue(any("pre-elimination capacity" in str(w.message) for w in caught))
 
