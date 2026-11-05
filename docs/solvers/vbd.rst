@@ -312,9 +312,9 @@ topological and rest-shape filters, and the tile solve. ``rigid_*``: the
 compliant ALM switch with its stabilization and retention factors, body-body
 contact history, the per-body contact list capacities, the rigid-soft barrier
 law and DAT, and the structural joint stiffness and damping. Defaults and exact
-semantics are in :class:`~newton.solvers.SolverVBD`; effects, symptoms and
-recommended values for particle systems are in the :ref:`Tuning VBD`
-parameter table.
+semantics are in :class:`~newton.solvers.SolverVBD`; recommended values for
+particle systems, and effects and symptoms for rigid bodies and cables, are
+in the :ref:`Tuning VBD` parameter table.
 
 .. _vbd-how-it-works:
 
