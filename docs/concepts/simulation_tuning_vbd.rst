@@ -359,8 +359,7 @@ ways to specify the material on :class:`Rod`.
        (:class:`Rod`)
      - Elastic material inputs used to compute section rigidities.
      - Resolution studies at fixed material.
-     - Supply exactly one of dimensionless ``poissons_ratio`` or
-       ``shear_modulus``.
+     - Supply exactly one of ``poissons_ratio`` or ``shear_modulus``.
    * - ``stretch_rigidity`` (:math:`EA`), ``shear_rigidity`` (:math:`kGA`) [N],
        ``bend_rigidity`` (:math:`EI`), ``twist_rigidity`` (:math:`GJ`) [N·m²]
        (:class:`Rod`)
@@ -677,10 +676,8 @@ before increasing ``mu``. VBD mixes body-body ``ke`` and ``kd`` with an
 arithmetic mean and ``mu`` with a geometric mean, so one stiff shape can
 dominate normal stiffness while a shape with ``mu=0`` makes its pairs
 frictionless. Unexpected slip can also come from missing contacts or an
-incomplete solve. Leave ``friction_epsilon`` at its default initially. It
-controls how friction computations handle very small sliding speeds and is
-specified in m/s. It can affect convergence at a finite iteration count;
-``mu`` still sets the Coulomb friction limit.
+incomplete solve. Leave ``friction_epsilon`` at its default initially;
+it does not change the Coulomb limit set by ``mu``.
 
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
@@ -703,15 +700,15 @@ Set ``contact_matching`` on :class:`CollisionPipeline` and
 ``rigid_contact_history`` on :class:`~newton.solvers.SolverVBD`.
 Enabling history does not enable matching automatically.
 
-For graph capture with contact history, construct the collision pipeline
-before ``SolverVBD`` so history buffers are preallocated, or run one
-uncaptured solver step with the intended contact buffers before capture.
-
 Matching identifies corresponding contacts across collision passes.
 With ``rigid_contact_history=True``, VBD uses matches to warm-start contacts
 between steps. When a solver-owned pipeline re-detects rigid contacts during
 a step (``ITERATIONS``), matches preserve ALM state within that step,
 even with ``rigid_contact_history=False``.
+
+For graph capture with contact history, construct the collision pipeline
+before ``SolverVBD`` so history buffers are preallocated, or run one
+uncaptured solver step with the intended contact buffers before capture.
 
 With history enabled, passing a pipeline with matching disabled to
 ``SolverVBD`` raises ``ValueError`` at construction. With externally supplied
@@ -794,7 +791,7 @@ separately. Measure peak demand during impacts, dense packing, and resets,
 then allocate headroom; a count at capacity may already be clipped. Check
 filters and an unnecessarily large detection gap before allocating more memory.
 
-For body-particle contacts, ``rigid_body_particle_contact_buffer_size``
+For rigid-soft contacts, ``rigid_body_particle_contact_buffer_size``
 (default 256) is a separate per-body budget. Its overflow falls back to scanning
 all stored soft contacts, preserving reactions at extra cost. It cannot recover
 contacts lost from the global ``CollisionPipeline.soft_contact_max`` storage.
@@ -1328,8 +1325,9 @@ synchronize ``state.joint_q`` or ``state.joint_qd``; call :func:`eval_ik`
 explicitly when joint coordinates or velocities are needed from body state.
 
 For an episode reset, call :meth:`~newton.solvers.SolverVBD.reset` to clear
-rigid solver history and optionally restore selected state fields from the
-model defaults. For a custom reset, assign ``state.body_q`` and
+rigid solver history. By default, it also restores particle positions and
+velocities and VBD-integrated body poses and velocities from the model
+defaults. For a custom reset, assign ``state.body_q`` and
 ``state.body_qd`` and use ``flags=0`` to preserve them. Set velocities to zero
 for a reset to rest. If authoring the reset in joint coordinates, run
 :func:`eval_fk` after reset to populate the body poses and velocities. Finish
@@ -1338,8 +1336,8 @@ all state edits before the next step.
 Also call :meth:`CollisionPipeline.reset_contact_matching` with the same
 world mask to discard correspondence and sticky geometry. Regenerate contacts
 at the final pose and leave rigid-history refresh enabled for the next
-contact-bearing step. See the reset API for partial-world and coupled-solver
-behavior.
+contact-bearing step. See :meth:`~newton.solvers.SolverVBD.reset` for
+partial-world and coupled-solver behavior.
 
 Examples
 ~~~~~~~~
@@ -1444,7 +1442,7 @@ These examples demonstrate cable setup and behavior:
      - :github:`cable_pile <newton/examples/cable/example_cable_pile.py>`
      - A cable pile settles under gravity with cable-cable contact and friction.
 
-Run, for example, ``uv run -m newton.examples cable_initial_rest_pose``.
+Run, for example, ``python -m newton.examples cable_initial_rest_pose``.
 Example settings are specific to each scene; check convergence before reusing
 them.
 

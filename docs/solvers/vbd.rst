@@ -128,7 +128,7 @@ publishes :attr:`~newton.CollisionPipeline.rigid_contact_max`, or run one uncapt
 
 Start at ``dt`` = 1/600 s with 10 iterations and adjust following
 :ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists the
-constructor arguments that matter most for particle systems, with their
+constructor arguments that matter most for tuning, with their
 effect and cost; the signature of :class:`~newton.solvers.SolverVBD` is the
 complete list.
 
@@ -889,7 +889,8 @@ Examples
 :ref:`Empirical parameter combinations <vbd-empirical-table>` on the tuning
 page lists one shipped example per scenario, from cloth drape to a gripper on
 a soft pad, and says what each one demonstrates; copy the values from the
-example file.
+example file. For cables, see the
+:ref:`cable example table <vbd-cable-examples>`.
 
 Runnable examples using :class:`~newton.solvers.SolverVBD` on GitHub:
 

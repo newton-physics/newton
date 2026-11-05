@@ -217,7 +217,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     (https://newton-physics.github.io/newton/stable/concepts/simulation_tuning_vbd.html)
     covers cloth, soft bodies, rigid bodies, cables, and their contacts:
 
-    - Parameter effects: the constructor arguments that matter for particle systems,
+    - Parameter effects: the constructor arguments that matter most for tuning,
       the model parameters, and the time step, substeps and iterations.
     - Contact handling: interaction distance, detection slack, query radius and motion
       budget; what DAT does to motion; how to set margin and gap.
@@ -2777,8 +2777,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         is enabled (from each contact's own state when ``Contacts`` was not
         collided since the previous step, otherwise through
         ``Contacts.rigid_contact_match_index``).
-        When False, the step reuses the current rigid contact lists and contact
-        state. In that mode, the caller must pass the same contact result/buffers
+        When False, the step reuses the current rigid contact lists and records
+        without reinitializing them. Pass the same contact result/buffers
         used by the previous refresh; do not run collision into the contacts
         buffer between refreshes. Passing newly collided contacts while update is
         disabled can mismatch stale per-body contact lists with current contact
