@@ -7885,7 +7885,9 @@ class ModelBuilder:
             keep_referenced_bodies: If True, bodies referenced by a custom attribute declaring
                 ``references="body"`` are not merged into the world, so the reference keeps a body
                 frame instead of becoming ``-1``. Pass ``False`` to collapse such bodies into the
-                world like any other body.
+                world like any other body. With ``False``, a MuJoCo CONNECT or WELD equality
+                constraint whose endpoints both collapse into the world cannot be converted by
+                :class:`~newton.solvers.SolverMuJoCo`.
 
         Note:
             Bodies referenced by a particle-body attachment are never merged into the world.
