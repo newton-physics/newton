@@ -1367,8 +1367,10 @@ def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="
         with test.subTest(links=links, branched=branched):
             model = _tree(device, links, branched=branched)
             options = {"solve_mode": solve_mode, "articulation_constraint_max": _ROWS}
-            fused, q, qd = _trajectory(model, use_parallel_streams=True, **options)
-            reference, q_ref, qd_ref = _trajectory(model, **options)
+            # The branched trees would take the sparse factors; this test is about the dense fused kernels.
+            with kernel_overrides({"sparse_mass_matrix": False}):
+                fused, q, qd = _trajectory(model, use_parallel_streams=True, **options)
+                reference, q_ref, qd_ref = _trajectory(model, **options)
             size = fused._size_groups[0]
             selected = {
                 "warp": fused._crba_cholesky_warp_kernels_by_size[size],

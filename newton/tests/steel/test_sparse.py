@@ -68,6 +68,18 @@ def _point_friction_patches(device):
     return patches
 
 
+def _anchored_friction_patches(device, rng, count):
+    """Return an enabled friction-patch view whose anchors sit away from the witness points."""
+    patches = FrictionPatches()
+    patches.enabled = 1
+    patches.weight = wp.ones(count, dtype=float, device=device)
+    patches.next_contact = wp.full(count, -1, dtype=int, device=device)
+    patches.point_a = wp.array(rng.normal(size=(count, 3)), dtype=wp.vec3, device=device)
+    patches.point_b = wp.array(rng.normal(size=(count, 3)), dtype=wp.vec3, device=device)
+    patches.phi = wp.zeros(count, dtype=wp.vec2, device=device)
+    return patches
+
+
 def _contact_directions(normal):
     """Return the normal and the two friction directions of a contact row triple."""
     tangent0 = np.cross(normal, (1.0, 0.0, 0.0))
@@ -130,6 +142,7 @@ def _fixture(device="cpu", joint_dof_count=(3, 2, 1, 0)):
         "shape_body": array([1, 2, 3, -1], int),
         "body_q": array([wp.transform(wp.vec3(*p), wp.quat_identity()) for p in rng.normal(size=(4, 3))], wp.transform),
         "velocity": array(rng.normal(size=dofs)),
+        "patches": _anchored_friction_patches(device, rng, 3),
     }
 
 
@@ -222,6 +235,7 @@ class TestSparseContacts(unittest.TestCase):
                 array(art_a, int),
                 array(art_b, int),
                 full(contact_count, 0, int),
+                full(contact_count, 3, int),
                 array(group, int),
                 array(np.where(articulated, dofs, 6), int),
                 array(~articulated, int),
@@ -234,6 +248,7 @@ class TestSparseContacts(unittest.TestCase):
                 array(transforms, wp.transform),
                 0,
                 0,
+                _point_friction_patches(device),
                 indices.permutation,
                 indices.row_offsets,
                 array(articulated_inverse[:, p.entry_rows, p.columns]),
@@ -337,6 +352,8 @@ class TestSparseContacts(unittest.TestCase):
         for anchors in ((0, 0), (1, 0), (0, 1)):
             with self.subTest(anchors=anchors):
                 self._check_contact_response("cpu", 1, anchors=anchors)
+        with self.subTest(patch=True):
+            self._check_contact_response("cpu", 1, patch=True)
 
     @unittest.skipUnless(wp.is_cuda_available(), "cooperative contact construction requires CUDA")
     def test_contact_response_cuda(self):
@@ -347,9 +364,14 @@ class TestSparseContacts(unittest.TestCase):
                     self._check_contact_response("cuda:0", workers, lanes=lanes)
         with self.subTest(anchors=(1, 1)):
             self._check_contact_response("cuda:0", 2, anchors=(1, 1))
+        with self.subTest(patch=True):
+            self._check_contact_response("cuda:0", 2, patch=True)
 
-    def _check_contact_response(self, device, workers, *, lanes=8, anchors=(0, 0)):
-        """Match dense contact rows for static, same-articulation, and fixed endpoints."""
+    def _check_contact_response(self, device, workers, *, lanes=8, anchors=(0, 0), patch=False):
+        """Match dense contact rows for static, same-articulation, and fixed endpoints.
+
+        With ``patch`` the friction rows of both kernels act at the patch anchors.
+        """
 
         def array(value, dtype=float):
             return wp.array(value, dtype=dtype, device=device)
@@ -361,6 +383,7 @@ class TestSparseContacts(unittest.TestCase):
         p = f["plan"]
         indices = f["indices"]
         geometry = [f[name] for name in ("point0", "point1", "normal", "shape0", "shape1", "thickness0", "thickness1")]
+        patches = f["patches"] if patch else _point_friction_patches(device)
         dense = full((1, 9, 6), 0.0)
         row_dof = full((1, 9, 6), -9, int)
         row_factor = full((1, 9, 6), -9.0)
@@ -387,7 +410,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["motion"],
                 f["shape_body"],
                 f["body_q"],
-                _point_friction_patches(device),
+                patches,
                 *anchors,
             ],
             outputs=[dense],
@@ -405,6 +428,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["art_a"],
                 f["art_b"],
                 f["path"],
+                array([3, 3, 3], int),
                 f["group"],
                 array([6], int),
                 array([0], int),
@@ -416,6 +440,7 @@ class TestSparseContacts(unittest.TestCase):
                 f["shape_body"],
                 f["body_q"],
                 *anchors,
+                patches,
                 indices.permutation,
                 indices.row_offsets,
                 f["packed"],
@@ -2004,8 +2029,14 @@ def _build_chain(device, *, links=6):
     return builder.finalize(device=device)
 
 
-def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
-    """Replicate a contacting tripod, optionally surrounded by separate free bodies."""
+def _build_model(
+    *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, boxes=False
+):
+    """Replicate a contacting tripod, optionally surrounded by separate free bodies.
+
+    With ``boxes`` the feet and the free bodies are boxes, whose resting contacts form patch regions of
+    several contacts each (spheres touch the ground at one point).
+    """
     env = newton.ModelBuilder()
     if prescribed:
         support = env.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.02), wp.quat_identity()), is_kinematic=True)
@@ -2025,7 +2056,10 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
             )
             cfg = env.default_shape_cfg.copy()
             cfg.density, cfg.mu = 0.0, 0.6
-            env.add_shape_sphere(body, radius=0.05, cfg=cfg)
+            if boxes:
+                env.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+            else:
+                env.add_shape_sphere(body, radius=0.05, cfg=cfg)
             env.add_articulation([env.add_joint_free(body)])
 
     if free_first:
@@ -2042,7 +2076,10 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
             child = env.add_link(mass=0.5, inertia=wp.mat33(np.eye(3) * 0.002))
             cfg = env.default_shape_cfg.copy()
             cfg.density, cfg.mu = 0.0, 0.6
-            env.add_shape_sphere(child, radius=0.055, cfg=cfg)
+            if boxes:
+                env.add_shape_box(child, hx=0.055, hy=0.055, hz=0.055, cfg=cfg)
+            else:
+                env.add_shape_sphere(child, radius=0.055, cfg=cfg)
             joints.append(
                 env.add_joint_revolute(
                     root,
@@ -2084,7 +2121,7 @@ def _make_solver(model, sparse, **overrides):
         "enable_joint_velocity_limits": False,
         "articulation_constraint_max": 32,
         "update_mass_matrix_interval": 4,
-        # Sparse factors solve point friction; persistent friction patches keep dense factors.
+        # Point friction by default; the patch tests pass friction_anchor_beta explicitly.
         "friction_anchor_beta": 0.0,
     }
     options.update(overrides)
@@ -2092,7 +2129,17 @@ def _make_solver(model, sparse, **overrides):
         return SolverSteel(model, **options)
 
 
-def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False):
+def _case(
+    sparse,
+    *,
+    free_count=0,
+    free_first=False,
+    robot_count=1,
+    prescribed=False,
+    heterogeneous=False,
+    boxes=False,
+    **overrides,
+):
     """Allocate a stable input state for eager and captured cache reuse."""
     model = _build_model(
         free_count=free_count,
@@ -2100,6 +2147,7 @@ def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=F
         robot_count=robot_count,
         prescribed=prescribed,
         heterogeneous=heterogeneous,
+        boxes=boxes,
     )
     solver = _make_solver(
         model,
@@ -2109,6 +2157,7 @@ def _case(sparse, *, free_count=0, free_first=False, robot_count=1, prescribed=F
             if free_count or robot_count > 1
             else {}
         ),
+        **overrides,
     )
     state, out = model.state(), model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -2139,6 +2188,36 @@ class TestSteelSparseSolver(unittest.TestCase):
                 _step(case)
             self.assert_states_close(dense[2], sparse[2])
         self.assert_sparse_state(sparse)
+
+    def test_patch_friction_matches_dense_factors(self):
+        """Pool the patch normal load and place the tangent rows at the patch anchors as the dense sweep does."""
+        for boxes in (False, True):
+            with self.subTest(boxes=boxes):
+                dense = _case(False, free_count=1, boxes=boxes, friction_anchor_beta=0.2)
+                sparse = _case(True, free_count=1, boxes=boxes, friction_anchor_beta=0.2)
+                self.assertIsNone(dense[1]._sparse_mass_matrix_size)
+                self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
+                self.assertTrue(sparse[1]._friction_anchors_enabled)
+                linked = {"articulated": False, "free": False}
+                for _ in range(32):
+                    _step(dense)
+                    _step(sparse)
+                    solver = sparse[1]
+                    for family, counts, parents, types in (
+                        ("articulated", solver._constraint_count, solver._row_parent, solver._row_type),
+                        ("free", solver._mf_constraint_count, solver._mf_row_parent, solver._mf_row_type),
+                    ):
+                        counts, parents, types = counts.numpy(), parents.numpy(), types.numpy()
+                        for world in range(counts.size):
+                            normals = np.flatnonzero(types[world, : counts[world]] == PGS_CONSTRAINT_TYPE_CONTACT)
+                            # A normal row linked to another one (a region of several contacts) pools the load.
+                            if any(0 <= parents[world, row] != row for row in normals):
+                                linked[family] = True
+                    self.assert_states_close(dense[2], sparse[2])
+                if boxes:
+                    self.assertTrue(linked["articulated"], "the box feet built no linked patch regions")
+                    self.assertTrue(linked["free"], "the free box built no linked patch regions")
+                self.assert_sparse_state(sparse)
 
     def test_moving_prescribed_support_and_reset(self):
         """Preserve nonzero prescribed contact targets, support velocity and masked reset."""
@@ -2481,8 +2560,8 @@ class TestSteelSparseSolver(unittest.TestCase):
         self.assertEqual(SolverSteel(_build_model(), **point)._sparse_mass_matrix_size, 9)
         self.assertEqual(SolverSteel(_build_model(free_count=1), **point)._sparse_mass_matrix_size, 9)
         self.assertIsNone(SolverSteel(_build_chain("cuda:0"), **point)._sparse_mass_matrix_size)
-        # The sparse kernels do not implement friction patches, the default friction.
-        self.assertIsNone(SolverSteel(_build_model())._sparse_mass_matrix_size)
+        # Persistent friction patches, the default friction, take the sparse factors too.
+        self.assertEqual(SolverSteel(_build_model())._sparse_mass_matrix_size, 9)
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""
@@ -2494,7 +2573,6 @@ class TestSteelSparseSolver(unittest.TestCase):
             {"enable_joint_velocity_limits": True},
             {"iterations": 0},
             {"articulation_constraint_max": 2048},
-            {"friction_anchor_beta": 0.2},
             {"contact_warmstart": True},
             {"contact_regularization": 0.01},
             {"velocity_iterations": 1},

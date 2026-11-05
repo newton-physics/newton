@@ -4729,18 +4729,18 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _sparse_supports_contact_options(self, model: Model) -> bool:
         """Whether the sparse factor kernels implement the configured contact law.
 
-        They solve hard point-friction contacts (one normal and two tangent rows per
-        contact) without restitution, so friction patches, warm start, regularization,
-        velocity-only iterations, normal-only contacts, restitution, contact torsion,
-        contact compliance, the propagation responses and the other friction modes keep
-        the dense path.
+        They solve hard contacts with point friction or persistent friction patches (one
+        normal row per contact and two tangent rows per point contact or surviving patch
+        anchor, the patch load pooled over the region's linked normal rows) without
+        restitution, so warm start, regularization, velocity-only iterations, normal-only
+        contacts, restitution, contact torsion, contact compliance, the propagation
+        responses and the other friction modes keep the dense path.
         """
         if (
             self._articulated_contact_response != "immediate"
             or self._friction_mode != "fixed_normal"
             or self._contact_torsion_enabled
             or self._contact_compliance
-            or self._friction_anchors_enabled
             or self._contact_warmstart
             or self._regularization_enabled
             or self._velocity_iterations > 0
@@ -9820,6 +9820,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._contact_art_a,
                         self._contact_art_b,
                         self._contact_path,
+                        self._contact_slots_needed,
                         self._art_group_idx,
                         self._articulation_response_dof_count,
                         self._is_free_rigid,
@@ -9831,6 +9832,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.shape_body,
                         state_in.body_q,
                         *self._contact_anchor_args,
+                        self._friction_patches.view,
                         self._sparse_mass_matrix_indices.permutation,
                         self._sparse_mass_matrix_indices.row_offsets,
                         self._sparse_Linv,
