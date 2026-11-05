@@ -509,13 +509,15 @@ def torque_links_source(max_constraints):
                 s_torsion_first[n] = -1;
                 torsion_head = n;
             }}
-            for (int n = m_dense - 1; n >= 0; --n) {{
-                if (world_row_type.data[off_dense + n] != {PGS_CONSTRAINT_TYPE_CONTACT}) continue;
-                int spin = world_torsion_group.data[off_dense + n];
-                if (spin < 0 || spin >= m_dense ||
-                    world_row_type.data[off_dense + spin] != {PGS_CONSTRAINT_TYPE_TORSION}) continue;
-                s_torsion_next[n] = s_torsion_first[spin];
-                s_torsion_first[spin] = n;
+            if (torsion_head >= 0) {{
+                for (int n = m_dense - 1; n >= 0; --n) {{
+                    if (world_row_type.data[off_dense + n] != {PGS_CONSTRAINT_TYPE_CONTACT}) continue;
+                    int spin = world_torsion_group.data[off_dense + n];
+                    if (spin < 0 || spin >= m_dense ||
+                        world_row_type.data[off_dense + spin] != {PGS_CONSTRAINT_TYPE_TORSION}) continue;
+                    s_torsion_next[n] = s_torsion_first[spin];
+                    s_torsion_first[spin] = n;
+                }}
             }}
         }}
         torsion_head = __shfl_sync(0xFFFFFFFF, torsion_head, 0);

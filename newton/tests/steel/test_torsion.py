@@ -35,7 +35,11 @@ from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_TORSION,
 )
-from newton._src.solvers.steel.solver_steel import _get_pgs_solve_mf_gs_kernel, _use_mfgs_torsion_links
+from newton._src.solvers.steel.solver_steel import (
+    _get_pgs_solve_mf_gs_kernel,
+    _use_mfgs_pair_cache,
+    _use_mfgs_torsion_links,
+)
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import (
     COLORED_VARIANTS,
@@ -3983,6 +3987,10 @@ class TestTorsionLinkSharedMemory(unittest.TestCase):
         self.assertFalse(
             _use_mfgs_torsion_links(2500, 0, 16, device_limit, shared_metadata=False, pair_cache=True, **options)
         )
+        # The lists cut the pair cache's resident blocks per SM from 6 to 4.
+        residency = {"shared_metadata": False, "world_count": 500, "sm_count": 100, **options}
+        self.assertTrue(_use_mfgs_pair_cache(1024, 0, 16, device_limit, **residency))
+        self.assertFalse(_use_mfgs_pair_cache(1024, 0, 16, device_limit, **residency, torsion_links=True))
 
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
@@ -4036,6 +4044,8 @@ class TestTorsionSweepLinks(unittest.TestCase):
     def test_solver_selects_links_and_matches_fallback(self):
         """Select the lists at a compact capacity and match the forced fallback bitwise."""
         options = {
+            # Ordered row slots, so both solves lay out the same rows.
+            "deterministic": wp.DeterministicMode.RUN_TO_RUN,
             "friction_anchor_beta": 0.2,
             "contact_shared_anchor": False,
             "contact_friction_shared_anchor": False,

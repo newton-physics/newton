@@ -995,6 +995,7 @@ def _use_mfgs_pair_cache(
     fuse_vel_limits: bool,
     world_count: int,
     sm_count: int,
+    torsion_links: bool = False,
 ) -> bool:
     """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
 
@@ -1009,6 +1010,7 @@ def _use_mfgs_pair_cache(
         has_drive_rows=has_drive_rows,
         fuse_vel_limits=fuse_vel_limits,
         pair_cache=True,
+        torsion_links=torsion_links,
     )
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
     # Row parents are cached as short, and the kernel's arrays are static shared memory.
@@ -6198,33 +6200,34 @@ class SolverSteel(SolverBase, CouplingInterface):
                 fuse_vel_limits=self._velocity_limits_fused,
             )
             row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            mfgs_shape = (
+                self._articulation_constraint_max,
+                mf_rows,
+                self._max_world_dofs,
+                int(getattr(model.device, "max_shared_memory_per_block", 0)),
+            )
+            mfgs_metadata = {
+                "shared_metadata": shared_metadata,
+                "has_drive_rows": self._has_drive_rows,
+                "fuse_vel_limits": self._velocity_limits_fused,
+            }
+            mfgs_residency = {"world_count": self._world_count, "sm_count": int(getattr(model.device, "sm_count", 0))}
             # The cache's prologue runs once per launch, so it pays off only when a launch runs several sweeps.
             self._mfgs_pair_cache = (
                 self._friction_mode == "fixed_normal"
                 and not self._paired_factor_coordinates
                 and not self._propagation_active
                 and self._row_schedule != "phased"
-                and _use_mfgs_pair_cache(
-                    self._articulation_constraint_max,
-                    mf_rows,
-                    self._max_world_dofs,
-                    int(getattr(model.device, "max_shared_memory_per_block", 0)),
-                    shared_metadata=shared_metadata,
-                    has_drive_rows=self._has_drive_rows,
-                    fuse_vel_limits=self._velocity_limits_fused,
-                    world_count=self._world_count,
-                    sm_count=int(getattr(model.device, "sm_count", 0)),
-                )
+                and _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency)
             )
-            self._mfgs_torsion_links = self._contact_torsion_enabled and _use_mfgs_torsion_links(
-                self._articulation_constraint_max,
-                mf_rows,
-                self._max_world_dofs,
-                int(getattr(model.device, "max_shared_memory_per_block", 0)),
-                shared_metadata=shared_metadata,
-                has_drive_rows=self._has_drive_rows,
-                fuse_vel_limits=self._velocity_limits_fused,
-                pair_cache=self._mfgs_pair_cache,
+            # With the pair cache, the lists must also keep every world resident.
+            self._mfgs_torsion_links = (
+                self._contact_torsion_enabled
+                and _use_mfgs_torsion_links(*mfgs_shape, **mfgs_metadata, pair_cache=self._mfgs_pair_cache)
+                and (
+                    not self._mfgs_pair_cache
+                    or _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency, torsion_links=True)
+                )
             )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
                 _get_pgs_solve_mf_gs_kernel,
