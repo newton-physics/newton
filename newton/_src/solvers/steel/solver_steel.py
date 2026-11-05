@@ -2186,8 +2186,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
                 shapes (other notifications and changes to static or kinematic owners wake
                 every island). Driven articulations (nonzero drive gains) and articulations with
-                passive springs (nonzero :attr:`~newton.Model.joint_stiffness`) stay awake. Sleeping is configured at construction; rebuild captured graphs
-                to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
+                passive springs (nonzero :attr:`~newton.Model.joint_stiffness`) stay awake.
+                Sleeping is configured at construction; rebuild captured graphs to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
                 or ``velocity_iterations``, or for a model without articulations, and
                 :class:`NotImplementedError` with ``articulated_contact_response="propagation"``;
                 with ``"propagation_colored"`` skipped islands are left out of the coloring, the

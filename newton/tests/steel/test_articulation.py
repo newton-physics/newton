@@ -2216,15 +2216,24 @@ SPRING_ROUTES = {
 }
 
 
+for _suffix, _kwargs in SPRING_ROUTES.items():
+    add_function_test(
+        TestSteelSprings,
+        f"test_springs_match_explicit_reference{_suffix}",
+        test_springs_match_explicit_reference,
+        devices=get_cuda_test_devices(),
+        **_kwargs,
+    )
+add_function_test(
+    TestSteelSprings,
+    "test_springs_match_explicit_reference_split",
+    test_springs_match_explicit_reference,
+    devices=get_test_devices(),
+    solve_mode="split",
+)
 for _name, _func in (
-    ("test_springs_match_explicit_reference", test_springs_match_explicit_reference),
     ("test_zero_stiffness_ignores_rest_coordinates", test_zero_stiffness_ignores_rest_coordinates),
     ("test_damped_spring_settles_at_rest_coordinate", test_damped_spring_settles_at_rest_coordinate),
-):
-    for _suffix, _kwargs in SPRING_ROUTES.items():
-        add_function_test(TestSteelSprings, f"{_name}{_suffix}", _func, devices=get_cuda_test_devices(), **_kwargs)
-    add_function_test(TestSteelSprings, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
-for _name, _func in (
     (
         "test_rest_coordinate_beyond_the_limit_preloads_the_joint",
         test_rest_coordinate_beyond_the_limit_preloads_the_joint,
