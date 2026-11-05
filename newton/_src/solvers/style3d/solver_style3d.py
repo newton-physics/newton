@@ -312,7 +312,7 @@ class SolverStyle3D(SolverBase):
                 "Style3D custom attributes are missing from the model. "
                 "Call SolverStyle3D.register_custom_attributes() before building the model."
             )
-        elif dynamics != SolverStyle3D.Dynamics.NONE and (dynamics & ~SolverStyle3D.Dynamics.ALL):
+        elif int(dynamics) & ~int(SolverStyle3D.Dynamics.ALL):
             raise ValueError(f"Unsupported dynamics flags: {dynamics!r}.")
 
         enable_deformable = bool(dynamics & SolverStyle3D.Dynamics.DEFORMABLE)
