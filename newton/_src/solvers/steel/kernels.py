@@ -145,7 +145,7 @@ def _reserve_world_row_slots(
 
 
 # Its own module: each launch block size compiles this kernel alone, not all of the Steel kernels.
-@wp.kernel(enable_backward=False, module="unique")
+@wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)
 def reserve_world_row_slots(
     world_element_start: wp.array[int],
     world_elements: wp.array[int],
