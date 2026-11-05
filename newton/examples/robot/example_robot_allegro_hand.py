@@ -14,7 +14,7 @@ self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
 Success criteria:
 - Floating Allegro hands keep a cube on each palm throughout the run.
 - The hands are manipulating the cube to make it turn.
-- Finger targets change over time, and all hands have the same movement.
+- Finger targets and positions change over time, and all hands have the same movement.
 
 Runs:
 - `python -m newton.examples robot_allegro_hand --world-count 18`
@@ -70,6 +70,70 @@ def move_hand(
 
     # update the sim time
     sim_time[world_id] += sim_dt
+
+
+@wp.struct
+class _TestMetrics:
+    """Persistent per-world failures and motion maxima for the example checks."""
+
+    target_mismatch: int
+    cube_target_mismatch: int
+    finger_mismatch: int
+    cube_lost: int
+    max_target_change: float
+    max_finger_change: float
+
+
+@wp.kernel
+def _check_hand_state(
+    joint_world_start: wp.array[int],
+    joint_q_start: wp.array[int],
+    body_world_start: wp.array[int],
+    hand_dof_count: int,
+    cube_body_offset: int,
+    joint_target_q: wp.array[float],
+    joint_q: wp.array[float],
+    body_q: wp.array[wp.transform],
+    initial_joint_target_q: wp.array[float],
+    initial_joint_q: wp.array[float],
+    initial_body_q: wp.array[wp.transform],
+    first_finger_targets: wp.array[float],
+    # outputs
+    metrics: wp.array[_TestMetrics],
+):
+    """Accumulate trajectory checks on device without synchronizing each frame."""
+    world = wp.tid()
+    coord_start = joint_q_start[joint_world_start[world]]
+    coord_end = joint_q_start[joint_world_start[world + 1]]
+    reference_start = joint_q_start[joint_world_start[0]]
+    result = metrics[world]
+
+    for i in range(hand_dof_count):
+        qi = coord_start + i
+        if joint_target_q[qi] != joint_target_q[reference_start + i]:
+            result.target_mismatch = 1
+        # Allow small solver/contact differences between otherwise identical worlds.
+        if not wp.abs(joint_q[qi] - joint_q[reference_start + i]) <= 0.01:
+            result.finger_mismatch = 1
+        result.max_target_change = wp.max(
+            result.max_target_change, wp.abs(joint_target_q[qi] - first_finger_targets[qi])
+        )
+        result.max_finger_change = wp.max(result.max_finger_change, wp.abs(joint_q[qi] - initial_joint_q[qi]))
+
+    for qi in range(coord_start + hand_dof_count, coord_end):
+        if joint_target_q[qi] != initial_joint_target_q[qi]:
+            result.cube_target_mismatch = 1
+
+    body_start = body_world_start[world]
+    world_pos = initial_body_q[body_start].p
+    cube_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
+    cube_lower[2] = 0.9
+    cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+    if not newton.math.vec_inside_limits(body_q[body_start + cube_body_offset].p, cube_lower, cube_upper):
+        result.cube_lost = 1
+
+    # Keep failures sticky so a later recovery cannot hide a bad frame.
+    metrics[world] = result
 
 
 class Example:
@@ -152,8 +216,7 @@ class Example:
         self.cube_body_offset = allegro_hand.body_count - 1
 
         self.world_time = wp.zeros(self.world_count, dtype=wp.float32)
-        self._test_initial_finger_targets = None
-        self._test_max_finger_target_change = 0.0
+        self._test_metrics = None
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
@@ -252,55 +315,50 @@ class Example:
         self.viewer.end_frame()
 
     def test_post_step(self):
-        """Check synchronized fingers and retain every cube throughout the trajectory."""
-        targets = self.control.joint_target_q.numpy().reshape(self.world_count, -1)
-        finger_targets = targets[:, : self.hand_dof_count]
-        if self._test_initial_finger_targets is None:
-            self._test_initial_finger_targets = finger_targets[0].copy()
-        else:
-            self._test_max_finger_target_change = max(
-                self._test_max_finger_target_change,
-                float(np.max(np.abs(finger_targets[0] - self._test_initial_finger_targets))),
-            )
-        np.testing.assert_array_equal(
-            finger_targets,
-            np.broadcast_to(finger_targets[0], finger_targets.shape),
-            err_msg="Replicated hands must receive identical finger targets",
+        """Accumulate finger and cube checks on device throughout the trajectory."""
+        if self._test_metrics is None:
+            self._test_metrics = wp.zeros(self.world_count, dtype=_TestMetrics, device=self.device)
+            self._test_first_finger_targets = wp.clone(self.control.joint_target_q)
+        wp.launch(
+            _check_hand_state,
+            dim=self.world_count,
+            inputs=[
+                self.model.joint_world_start,
+                self.model.joint_q_start,
+                self.model.body_world_start,
+                self.hand_dof_count,
+                self.cube_body_offset,
+                self.control.joint_target_q,
+                self.state_0.joint_q,
+                self.state_0.body_q,
+                self.model.joint_target_q,
+                self.model.joint_q,
+                self.model.body_q,
+                self._test_first_finger_targets,
+            ],
+            outputs=[self._test_metrics],
+            device=self.device,
         )
-        np.testing.assert_array_equal(
-            targets[:, self.hand_dof_count :],
-            self.model.joint_target_q.numpy().reshape(self.world_count, -1)[:, self.hand_dof_count :],
-            err_msg="Hand animation must not modify the floating cube's targets",
-        )
-
-        fingers = self.state_0.joint_q.numpy().reshape(self.world_count, -1)[:, : self.hand_dof_count]
-        # Allow small solver/contact differences between otherwise identical worlds.
-        np.testing.assert_allclose(
-            fingers,
-            np.broadcast_to(fingers[0], fingers.shape),
-            rtol=0.0,
-            atol=0.01,
-            err_msg="Replicated hands must have the same finger motion",
-        )
-
-        num_bodies_per_world = self.model.body_count // self.world_count
-        cube_positions = self.state_0.body_q.numpy().reshape(self.world_count, num_bodies_per_world, 7)[
-            :, self.cube_body_offset, :3
-        ]
-        cube_lower = self.initial_world_positions - 0.5
-        cube_lower[:, 2] = 0.9
-        cube_upper = self.initial_world_positions + 0.5
-        cubes_held = np.all((cube_positions >= cube_lower) & (cube_positions <= cube_upper), axis=1)
-        assert cubes_held.all(), f"Cubes left the hands in worlds {np.flatnonzero(~cubes_held).tolist()}"
 
     def test_final(self):
-        """Check compact viewer layout and stable hand and cube motion."""
+        """Check accumulated motion results, initial configuration, and viewer layout."""
         self.test_post_step()
+        metrics = self._test_metrics.numpy()
+        for field, message in (
+            ("target_mismatch", "Replicated hands must receive identical finger targets"),
+            ("cube_target_mismatch", "Hand animation must not modify the floating cube's targets"),
+            ("finger_mismatch", "Replicated hands must have the same finger motion"),
+            ("cube_lost", "Cubes left the hands"),
+        ):
+            failed_worlds = np.flatnonzero(metrics[field]).tolist()
+            assert not failed_worlds, f"{message}; failed worlds: {failed_worlds}"
+
         # Track the whole trajectory so runs ending at the initial sinusoidal phase still pass.
+        # model.joint_q retains the physical initial pose from before graph capture.
         if self.sim_time >= 1.0:
-            assert self._test_max_finger_target_change > 0.02, (
-                f"Finger targets moved only {self._test_max_finger_target_change:g} rad; expected more than 0.02 rad"
-            )
+            for field, label in (("max_target_change", "Finger targets"), ("max_finger_change", "Finger positions")):
+                failed_worlds = np.flatnonzero(metrics[field] <= 0.02).tolist()
+                assert not failed_worlds, f"{label} must move more than 0.02 rad; failed worlds: {failed_worlds}"
 
         hand_joints = np.flatnonzero(self.model.joint_type.numpy() == newton.JointType.REVOLUTE)
         hand_coords = self.model.joint_q_start.numpy()[hand_joints]
