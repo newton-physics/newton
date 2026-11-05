@@ -6350,15 +6350,14 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         held = wp.transform_multiply(relpose, wp.transform(wp.vec3(-0.05, 0.0, 0.0), wp.quat_identity()))
         assert_same_pose(wp.transform_multiply(x_p, wp.transform_inverse(x_c)), held)
 
-        # Weld to the world: the frame on body1 is relpose, and the world frame holds it at body1's current pose.
+        # Weld to the world: body1's held pose is the inverse of relpose.
         relpose = wp.transform(wp.vec3(0.4, 0.0, 1.0), wp.quat(0.7071068, 0.0, 0.0, 0.7071068))
         parent, child, x_p, x_c = weld("world")
         self.assertEqual((parent, child), (-1, b))
-        assert_same_pose(x_c, relpose)
-        assert_same_pose(x_p, wp.transform_multiply(pose(b), relpose))
+        assert_same_pose(wp.transform_multiply(x_p, wp.transform_inverse(x_c)), wp.transform_inverse(relpose))
 
     def test_converted_weld_frames_follow_import_xform_and_scale(self):
-        """Weld frames authored at a satisfied pose coincide after an import transform and scale."""
+        """Converted weld frames hold MuJoCo's weld targets after an import transform and scale."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="weld_xform">
     <worldbody>
@@ -6377,27 +6376,58 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
     </worldbody>
     <equality>
         <weld name="pair" body1="a" body2="b" relpose="0.3 0 0 1 0 0 0"/>
-        <weld name="world" body1="c" relpose="-0.4 0 -1 1 0 0 0"/>
+        <weld name="to_world" body1="c" relpose="-0.2 0 -1 0.9238795 0 0 0.3826834"/>
+        <weld name="from_world" body1="world" body2="c" relpose="0.6 0.1 0.9 0.9238795 0.3826834 0 0"/>
+        <weld name="pivot" body1="c" anchor="0.5 0 1.1" torquescale="0"/>
     </equality>
 </mujoco>
 """
         xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
+        scale = 2.0
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings():
+        with self.assertLogs("newton", level="WARNING"), warnings.catch_warnings():
             warnings.simplefilter("ignore")  # the welds parallel the hinges
-            builder.add_mjcf(mjcf, xform=xform, scale=2.0)
+            builder.add_mjcf(mjcf, xform=xform, scale=scale)
 
-        for label in ("pair", "world"):
-            with self.subTest(weld=label):
-                j = builder.joint_label.index(f"weld_xform/{label}")
-                parent, child = builder.joint_parent[j], builder.joint_child[j]
-                world_p = builder.joint_X_p[j]
-                if parent >= 0:
-                    world_p = wp.transform_multiply(builder.body_q[parent], world_p)
-                world_c = wp.transform_multiply(builder.body_q[child], builder.joint_X_c[j])
-                np.testing.assert_allclose(np.array(world_p.p), np.array(world_c.p), atol=1e-5)
-                q_p, q_c = np.array(world_p.q), np.array(world_c.q)
-                np.testing.assert_allclose(q_p * np.sign(q_p @ q_c), q_c, atol=1e-5)
+        def frames(label):
+            j = builder.joint_label.index(f"weld_xform/{label}")
+            return builder.joint_parent[j], builder.joint_child[j], builder.joint_X_p[j], builder.joint_X_c[j]
+
+        def assert_same_pose(actual, expected):
+            np.testing.assert_allclose(np.array(actual.p), np.array(expected.p), atol=1e-5)
+            q_a, q_e = np.array(actual.q), np.array(expected.q)
+            np.testing.assert_allclose(q_a * np.sign(q_a @ q_e), q_e, atol=1e-5)
+
+        def scaled(p, q):  # an MJCF relpose (w x y z quaternion) with its position scaled
+            return wp.transform(wp.vec3(*p) * scale, wp.quat(q[1], q[2], q[3], q[0]))
+
+        c = builder.body_label.index("weld_xform/worldbody/c")
+        with self.subTest(weld="pair"):
+            # Satisfied as authored: the frames coincide at the imported poses.
+            parent, child, x_p, x_c = frames("pair")
+            assert_same_pose(
+                wp.transform_multiply(builder.body_q[parent], x_p), wp.transform_multiply(builder.body_q[child], x_c)
+            )
+        # Not satisfied as authored: the world frames hold c at MuJoCo's targets, placed by the transform.
+        with self.subTest(weld="to_world"):
+            parent, child, x_p, x_c = frames("to_world")
+            self.assertEqual((parent, child), (-1, c))
+            target = wp.transform_inverse(scaled((-0.2, 0.0, -1.0), (0.9238795, 0.0, 0.0, 0.3826834)))
+            implied = wp.transform_multiply(x_p, wp.transform_inverse(x_c))
+            assert_same_pose(implied, wp.transform_multiply(xform, target))
+        with self.subTest(weld="from_world"):
+            parent, child, x_p, x_c = frames("from_world")
+            self.assertEqual((parent, child), (-1, c))
+            target = scaled((0.6, 0.1, 0.9), (0.9238795, 0.3826834, 0.0, 0.0))
+            implied = wp.transform_multiply(x_p, wp.transform_inverse(x_c))
+            assert_same_pose(implied, wp.transform_multiply(xform, target))
+        with self.subTest(weld="pivot"):
+            # torquescale 0 to the world pins the world anchor, placed by the transform, at the same point of c.
+            parent, child, x_p, x_c = frames("pivot")
+            self.assertEqual((parent, child), (-1, c))
+            pivot = np.array(wp.transform_point(xform, wp.vec3(0.5, 0.0, 1.1) * scale))
+            np.testing.assert_allclose(np.array(x_p.p), pivot, atol=1e-5)
+            np.testing.assert_allclose(np.array(wp.transform_point(builder.body_q[c], x_c.p)), pivot, atol=1e-5)
 
     def test_converted_weld_torquescale_selects_the_loop_joint(self):
         """torquescale 0 converts a weld to a BALL loop joint on its anchor, other values to FIXED; both log unless 1."""

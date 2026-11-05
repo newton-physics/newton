@@ -2780,6 +2780,7 @@ def parse_mjcf(
             torquescale: float,
             common: dict[str, Any],
             custom_attrs: dict[str, Any],
+            world_xform: wp.transform | None = None,
         ) -> None:
             try:
                 mjc_add_equality_loop_joint(
@@ -2793,6 +2794,7 @@ def parse_mjcf(
                     equality_label(common),
                     common["active"],
                     custom_attrs,
+                    world_xform=world_xform,
                 )
             except ValueError:
                 if verbose:
@@ -2916,6 +2918,7 @@ def parse_mjcf(
                 )
 
                 if convert_mjc_equality_constraints:
+                    # A world-side anchor or relpose is in MJCF world coordinates, which the import xform places.
                     add_converted_loop_joint(
                         EqType.WELD,
                         body1_idx,
@@ -2925,6 +2928,7 @@ def parse_mjcf(
                         torquescale,
                         common,
                         custom_attrs,
+                        world_xform=xform,
                     )
                 else:
                     _add_equality_constraint(
@@ -2958,6 +2962,7 @@ def parse_mjcf(
                     if verbose:
                         logger.info("Weld constraint (site-based): body %s to body %s", body1_idx, body2_idx)
                     if convert_mjc_equality_constraints:
+                        # A world site's anchor is already in builder coordinates; a world-side relpose is not.
                         add_converted_loop_joint(
                             EqType.WELD,
                             body1_idx,
@@ -2967,6 +2972,7 @@ def parse_mjcf(
                             torquescale,
                             common,
                             custom_attrs,
+                            world_xform=xform if body1_idx < 0 else None,
                         )
                     else:
                         _add_equality_constraint(

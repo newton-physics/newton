@@ -2437,6 +2437,7 @@ def parse_usd(
             custom_attrs: dict[str, Any],
         ) -> None:
             try:
+                # A world-side weld anchor or relpose is in stage coordinates, which incoming_world_xform places.
                 _, joint_idx = mjc_add_equality_loop_joint(
                     builder,
                     eq_type,
@@ -2448,6 +2449,7 @@ def parse_usd(
                     joint_path,
                     enabled,
                     custom_attrs,
+                    world_xform=incoming_world_xform,
                 )
             except ValueError:
                 warnings.warn(

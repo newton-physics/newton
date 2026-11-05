@@ -86,14 +86,15 @@ def mjc_loop_joint_xforms(
     anchor: wp.vec3,
     relpose: wp.transform | None = None,
     weld: bool = False,
+    world_xform: wp.transform | None = None,
 ) -> tuple[int, int, wp.transform, wp.transform]:
     """Compute Newton loop-joint endpoints and local frames for a MuJoCo body equality.
 
     A CONNECT anchor is a point in ``body1``'s frame. A WELD follows MuJoCo: ``anchor`` is a point in ``body2``'s frame
     (the world when ``body2`` is -1) that is held at ``relpose``'s position in ``body1``'s frame, and ``relpose``'s
     rotation is ``body2``'s orientation relative to ``body1``. A ``relpose`` whose quaternion is all zeros (MuJoCo's
-    default) keeps the relative pose of the builder's current body poses. A weld to the world holds its body at the
-    builder's current pose, which already carries the importer's transform and scale.
+    default) keeps the relative pose of the builder's current body poses. ``world_xform`` maps a weld's world-side
+    ``anchor`` or ``relpose``, given in asset coordinates, into the builder's world.
     """
     if body2 >= 0:
         parent = body1
@@ -104,28 +105,28 @@ def mjc_loop_joint_xforms(
     else:
         raise ValueError("At least one body is required for converted MuJoCo equality constraints.")
 
-    def body_pose(body: int) -> wp.transform:
-        return builder.body_q[body] if body >= 0 else wp.transform_identity()
-
     if weld:
+        world = world_xform if world_xform is not None else wp.transform_identity()
+
+        def pose(body: int) -> wp.transform:
+            return builder.body_q[body] if body >= 0 else world
+
+        def local(body: int, frame: wp.transform) -> wp.transform:
+            return wp.transform_multiply(wp.transform_inverse(builder.body_q[body]), frame) if body >= 0 else frame
+
         anchor_frame = wp.transform(anchor, wp.quat_identity())
         if relpose is None or not any(float(x) != 0.0 for x in relpose.q):
             # Both frames sit on body2's anchor frame at the current poses, so the weld holds them where they are.
-            world_frame = wp.transform_multiply(body_pose(body2), anchor_frame)
-            return (
-                parent,
-                child,
-                wp.transform_multiply(wp.transform_inverse(body_pose(parent)), world_frame),
-                wp.transform_multiply(wp.transform_inverse(body_pose(child)), world_frame),
-            )
+            world_frame = wp.transform_multiply(pose(body2), anchor_frame)
+            return parent, child, local(parent, world_frame), local(child, world_frame)
         # MuJoCo's weld residual: body1 * relpose.p == body2 * anchor and body1.q * relpose.q == body2.q
-        if body1 >= 0 and body2 >= 0:
-            return parent, child, relpose, anchor_frame
-        # The world side is in asset coordinates; place it on the body's frame at the body's current pose instead.
-        child_frame = relpose if body2 < 0 else anchor_frame
-        return parent, child, wp.transform_multiply(body_pose(child), child_frame), child_frame
+        frame1 = relpose if body1 >= 0 else wp.transform_multiply(world, relpose)
+        frame2 = anchor_frame if body2 >= 0 else wp.transform_multiply(world, anchor_frame)
+        if body2 >= 0:
+            return parent, child, frame1, frame2
+        return parent, child, frame2, frame1
 
-    body1_xform = body_pose(body1)
+    body1_xform = builder.body_q[body1] if body1 >= 0 else wp.transform_identity()
     child_xform_world = builder.body_q[child]
     world_anchor = wp.transform_point(body1_xform, anchor) if body1 >= 0 else anchor
     if parent >= 0:
@@ -152,6 +153,7 @@ def mjc_add_equality_loop_joint(
     label: str | None,
     enabled: bool,
     custom_attrs: dict[str, Any],
+    world_xform: wp.transform | None = None,
 ) -> tuple[int, int]:
     """Add a Newton loop joint and its authoritative MuJoCo equality row.
 
@@ -159,10 +161,13 @@ def mjc_add_equality_loop_joint(
     MuJoCo enforces as a point constraint with rotation free) becomes a BALL loop joint on the weld's anchor. Solvers
     that enforce Newton loop joints, such as :class:`~newton.solvers.SolverSteel`, hold them as hard constraints:
     ``torquescale`` only selects BALL or FIXED, and ``solref``/``solimp`` are not used. SolverMuJoCo enforces the
-    original equality row, so it keeps all of them.
+    original equality row, so it keeps all of them. ``world_xform`` places a weld's world-side frame, as in
+    :func:`mjc_loop_joint_xforms`; the equality row keeps the values as given.
     """
     weld = eq_type == EqType.WELD
-    parent, child, parent_xform, child_xform = mjc_loop_joint_xforms(builder, body1, body2, anchor, relpose, weld=weld)
+    parent, child, parent_xform, child_xform = mjc_loop_joint_xforms(
+        builder, body1, body2, anchor, relpose, weld=weld, world_xform=world_xform
+    )
     add_joint = builder.add_joint_fixed if weld else builder.add_joint_ball
     if weld and torquescale == 0.0:
         # The weld frames put the anchor on body2 and its held position (relpose) on body1, which is the point

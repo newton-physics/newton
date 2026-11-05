@@ -8890,6 +8890,59 @@ def Xform "Articulation" (
         return stage, frame0, frame1
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_converted_world_weld_frames_follow_the_import_xform(self):
+        """A converted USD weld to the world holds its body at the weld's target, placed by the import transform."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        def gf_quat(q):
+            return Gf.Quatf(float(q[3]), float(q[0]), float(q[1]), float(q[2]))
+
+        pose0 = wp.transform(
+            wp.vec3(0.3, -0.2, 1.1), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 0.0)), 0.5)
+        )
+        pose1 = wp.transform(wp.vec3(0.1, 0.2, -0.05), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3))
+        xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
+        for world_side in ("body0", "body1"):
+            with self.subTest(world_side=world_side):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+                world = UsdGeom.Xform.Define(stage, "/World")
+                stage.SetDefaultPrim(world.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                body.AddTranslateOp().Set(Gf.Vec3d(0.5, 0.0, 1.0))
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                mass.CreateMassAttr(1.0)
+                mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.01, 0.01, 0.01))
+                # The weld's frames don't coincide at the authored pose, so the body has a target to move to.
+                weld = UsdPhysics.FixedJoint.Define(stage, "/World/Weld")
+                world_pose, body_pose = (pose0, pose1) if world_side == "body0" else (pose1, pose0)
+                rel_world, rel_body = ("Body0", "Body1") if world_side == "body0" else ("Body1", "Body0")
+                weld.GetPrim().GetRelationship(f"physics:{rel_body.lower()}").SetTargets([body.GetPath()])
+                weld.GetPrim().CreateRelationship(f"physics:{rel_world.lower()}")
+                for side, pose in ((rel_world, world_pose), (rel_body, body_pose)):
+                    index = side[-1]
+                    weld.GetPrim().GetAttribute(f"physics:localPos{index}").Set(Gf.Vec3f(*pose.p))
+                    weld.GetPrim().GetAttribute(f"physics:localRot{index}").Set(gf_quat(pose.q))
+                weld.CreateExcludeFromArticulationAttr().Set(True)
+                weld.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityWeldAPI"]))
+
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "another joint already connects"):
+                    builder.add_usd(stage, xform=xform, schema_resolvers=[usd.SchemaResolverMjc()])
+                j = builder.joint_label.index("/World/Weld")
+                self.assertEqual(builder.joint_parent[j], -1)
+                # The two frames coincide when the body sits at xform * world_pose * inverse(body_pose).
+                implied = builder.joint_X_p[j] * wp.transform_inverse(builder.joint_X_c[j])
+                target = xform * world_pose * wp.transform_inverse(body_pose)
+                np.testing.assert_allclose(np.array(implied.p), np.array(target.p), atol=1e-5)
+                q_a, q_e = np.array(implied.q), np.array(target.q)
+                np.testing.assert_allclose(q_a * np.sign(q_a @ q_e), q_e, atol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_weld_holds_its_authored_pose(self):
         """SolverMuJoCo's row for a USD weld authored at a satisfied pose holds both free bodies still."""
         for target in ("body", "site", "rotated site"):
