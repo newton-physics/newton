@@ -1006,6 +1006,9 @@ SCAN_BLOCK_DIM = 256
 # A capacity that fits one tile of this block size scans without any look-back.
 SCAN_SINGLE_TILE_BLOCK_DIM = 512
 SCAN_BLOCKS_PER_SM = 8
+# Above this capacity look-back reads fewer earlier tiles per pass, which contend less on their status words.
+SCAN_WIDE_LOOKBACK_MAX_CAPACITY = 1 << 19
+SCAN_NARROW_LOOKBACK = 64
 
 # Tile status words in the scratch: the flag sits above a 32-bit tile value.
 _SCAN_TILE_SUM = wp.constant(wp.int64(1 << 32))
@@ -1052,6 +1055,7 @@ def _scan_tiles_kernel(
     num_elements: wp.array[int],
     max_elements: int,
     block_count: int,
+    lookback: int,
     scratch: wp.array[wp.int64],
     prefix_sums: wp.array[int],
     total: wp.array[int],
@@ -1091,13 +1095,15 @@ def _scan_tiles_kernel(
             else:
                 if t == 0:
                     wp.atomic_exch(scratch, 2 + tile, _scan_tile_status(_SCAN_TILE_SUM, tile_sum))
-                # Each thread reads one earlier tile's status; sum back to the nearest tile with its prefix.
+                # The first ``lookback`` threads each read one earlier tile's status; sum back to the nearest prefix.
                 window_end = tile - 1
                 searching = bool(True)
                 while searching:
                     status = _SCAN_TILE_PREFIX
                     j = window_end - t
-                    if j >= 0:
+                    if t >= lookback:
+                        status = _SCAN_TILE_SUM
+                    elif j >= 0:
                         status = wp.atomic_add(scratch, 2 + j, wp.int64(0))
                         while status == wp.int64(0):
                             status = wp.atomic_add(scratch, 2 + j, wp.int64(0))
@@ -1109,8 +1115,8 @@ def _scan_tiles_kernel(
                     if t <= nearest:
                         value = _scan_tile_value(status)
                     prefix += wp.tile_extract(wp.tile_sum(wp.tile(value)), 0)
-                    searching = nearest == block_dim
-                    window_end -= block_dim
+                    searching = nearest >= lookback
+                    window_end -= lookback
                 if t == 0:
                     wp.atomic_exch(scratch, 2 + tile, _scan_tile_status(_SCAN_TILE_PREFIX, prefix + tile_sum))
             running += prefix
@@ -1197,12 +1203,14 @@ def scan_with_total(
         return
     # Blocks loop over tiles, so a sparse scan of a large capacity launches no more than this.
     block_count = min(_scan_tile_count(capacity), wp.get_device(device).sm_count * SCAN_BLOCKS_PER_SM)
+    block_dim = _scan_block_dim(capacity)
+    lookback = block_dim if capacity <= SCAN_WIDE_LOOKBACK_MAX_CAPACITY else SCAN_NARROW_LOOKBACK
     wp.launch_tiled(
         _scan_tiles_kernel,
         dim=(block_count,),
-        inputs=[counts, num_elements, capacity, block_count, scratch],
+        inputs=[counts, num_elements, capacity, block_count, lookback, scratch],
         outputs=[prefix_sums, total],
-        block_dim=_scan_block_dim(capacity),
+        block_dim=block_dim,
         device=device,
         record_tape=False,
     )
