@@ -19,6 +19,7 @@ from ...core.reset import reset_world_selected
 from ...core.types import MAXVAL, override
 from ...exceptions import NewtonWarning
 from ...geometry.flags import MeshProperties, ShapeFlags
+from ...geometry.utils import _scan_scratch_size, scan_with_total
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..coupled.interface import CouplingInterface
@@ -9538,6 +9539,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         # Row counts of the sorted contacts, then a zero, and their exclusive scan.
         self._sorted_contact_slots_needed = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
         self._sorted_contact_slot_offsets = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
+        # Scans run on preallocated scratch, so a capture Warp does not track can record them.
+        scan_length = max(cursor_size, self._max_contacts_alloc) + 1
+        self._ordered_scan_scratch = wp.zeros(_scan_scratch_size(scan_length, device), dtype=wp.int32, device=device)
+        # scan_with_total clips this length to each scanned view, so every scan covers its whole view.
+        self._ordered_scan_length = wp.full(1, scan_length, dtype=wp.int32, device=device)
+        self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
 
     def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
@@ -9558,7 +9565,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             outputs=[requests],
             device=device,
         )
-        wp.utils.array_scan(requests, offsets, inclusive=False)
+        scan_with_total(
+            requests, offsets, self._ordered_scan_length, self._ordered_scan_total, self._ordered_scan_scratch
+        )
         wp.launch(
             assign_world_row_slots,
             dim=element_count,
@@ -9609,7 +9618,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             outputs=[segment_start, segment_end, slots_needed],
             device=device,
         )
-        wp.utils.array_scan(slots_needed, slot_offsets, inclusive=False)
+        scan_with_total(
+            slots_needed,
+            slot_offsets,
+            self._ordered_scan_length,
+            self._ordered_scan_total,
+            self._ordered_scan_scratch,
+        )
         wp.launch(
             assign_world_contact_slots,
             dim=count,
