@@ -8772,9 +8772,11 @@ def Xform "Articulation" (
             rtol=1e-6,
             atol=1e-6,
         )
+        # relpose.p is where the anchor sits in body0's frame when the joint frames coincide:
+        # localPos0 + Rz(90) * (site - (site + localPos1)) = (0.25, -0.2, 0.1) + (0.3, -0.1, 0.2).
         np.testing.assert_allclose(
             model.mujoco.equality_constraint_relpose.numpy()[weld_eq],
-            np.array([0.45, -0.5, 0.0, 0.0, 0.0, sqrt_half, sqrt_half], dtype=np.float32),
+            np.array([0.55, -0.3, 0.3, 0.0, 0.0, sqrt_half, sqrt_half], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
@@ -8796,10 +8798,96 @@ def Xform "Articulation" (
         )
         np.testing.assert_allclose(
             model.mujoco.equality_constraint_relpose.numpy()[world_eq],
-            np.array([0.3, 0.3, 0.3, 0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            np.array([0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 1.0], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
+
+    @staticmethod
+    def _authored_weld_stage(target):
+        """Build a USD weld between two free bodies whose two frames coincide at the authored poses.
+
+        ``target`` is ``"body"``, ``"site"`` or ``"rotated site"`` (the weld's body1 side). Gravity is off.
+        """
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        def rotation(axis, angle):
+            return wp.quat_from_axis_angle(wp.normalize(wp.vec3(*axis)), angle)
+
+        def gf_quat(q):
+            return Gf.Quatf(float(q[3]), float(q[0]), float(q[1]), float(q[2]))
+
+        def gf_vec(v):
+            return Gf.Vec3f(*(float(x) for x in v))
+
+        body0_pose = wp.transform(wp.vec3(0.1, -0.3, 1.0), rotation((0.0, 1.0, 1.0), 0.4))
+        frame0 = wp.transform(wp.vec3(0.25, -0.2, 0.1), rotation((0.0, 0.0, 1.0), 0.5 * math.pi))
+        local_pose1 = wp.transform(wp.vec3(0.1, 0.3, -0.2), rotation((1.0, 2.0, 3.0), 0.7))
+        site_rot = rotation((3.0, -1.0, 2.0), 0.9) if target == "rotated site" else wp.quat_identity()
+        site_xform = wp.transform(wp.vec3(0.2, -0.1, 0.3), site_rot)
+        frame1 = local_pose1 if target == "body" else site_xform * local_pose1
+        body1_pose = body0_pose * frame0 * wp.transform_inverse(frame1)
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene").CreateGravityMagnitudeAttr(0.0)
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+        bodies = []
+        for name, pose in (("Body0", body0_pose), ("Body1", body1_pose)):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            body.AddTranslateOp().Set(Gf.Vec3d(*(float(x) for x in wp.transform_get_translation(pose))))
+            body.AddOrientOp().Set(gf_quat(wp.transform_get_rotation(pose)))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr(1.0)
+            mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0, 0.15, -0.1))
+            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.01, 0.02, 0.03))
+            bodies.append(body)
+        target1 = bodies[1].GetPath()
+        if target != "body":
+            site = UsdGeom.Xform.Define(stage, "/World/Body1/Site1")
+            site.AddTranslateOp().Set(gf_vec(wp.transform_get_translation(site_xform)))
+            if target == "rotated site":
+                site.AddOrientOp().Set(gf_quat(site_rot))
+            site.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcSiteAPI"]))
+            target1 = site.GetPath()
+        weld = UsdPhysics.FixedJoint.Define(stage, "/World/EqualityWeld")
+        weld.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+        weld.CreateBody1Rel().SetTargets([target1])
+        weld.CreateLocalPos0Attr().Set(gf_vec(wp.transform_get_translation(frame0)))
+        weld.CreateLocalRot0Attr().Set(gf_quat(wp.transform_get_rotation(frame0)))
+        weld.CreateLocalPos1Attr().Set(gf_vec(wp.transform_get_translation(local_pose1)))
+        weld.CreateLocalRot1Attr().Set(gf_quat(wp.transform_get_rotation(local_pose1)))
+        weld.CreateExcludeFromArticulationAttr().Set(True)
+        weld.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityWeldAPI"]))
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_equality_weld_holds_its_authored_pose(self):
+        """SolverMuJoCo's row for a USD weld authored at a satisfied pose holds both free bodies still."""
+        for target in ("body", "site", "rotated site"):
+            for convert in (False, True):
+                with self.subTest(target=target, convert=convert):
+                    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                    SolverMuJoCo.register_custom_attributes(builder)
+                    builder.add_usd(
+                        self._authored_weld_stage(target),
+                        load_sites=False,
+                        schema_resolvers=[usd.SchemaResolverMjc()],
+                        convert_mjc_equality_constraints=convert,
+                    )
+                    model = builder.finalize()
+                    solver = SolverMuJoCo(model)
+                    state_0, state_1, control = model.state(), model.state(), model.control()
+                    start = state_0.body_q.numpy().copy()
+                    for _ in range(50):
+                        solver.step(state_0, state_1, control, None, 1.0e-3)
+                        state_0, state_1 = state_1, state_0
+                    # A satisfied weld applies no impulse, so neither body moves.
+                    np.testing.assert_allclose(state_0.body_q.numpy()[:, :3], start[:, :3], atol=1.0e-5)
+                    np.testing.assert_allclose(state_0.body_qd.numpy(), 0.0, atol=1.0e-4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_conversion_roundtrips_to_mujoco(self):

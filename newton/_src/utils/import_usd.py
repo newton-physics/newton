@@ -2537,7 +2537,9 @@ def parse_usd(
                         else site1_local_pos
                     )
                     relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
-                    relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
+                    # MuJoCo's weld holds the anchor at relpose's position in body0's frame (not body1's origin
+                    # there), so use where the anchor sits when the joint's two frames coincide.
+                    relpose_pos = local_pos0 + wp.quat_rotate(relpose_rot, anchor - local_pos1)
                     torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
                     torquescale = (
                         float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
