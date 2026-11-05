@@ -66,6 +66,14 @@ Contact geometry
    produce better force distribution for manipulation and non-convex geometry.
    See :ref:`Collisions`.
 
+Contact reduction
+   ``CollisionPipeline(reduce_contacts=...)`` controls the mesh/heightfield
+   reduction every solver consumes. The opt-in
+   ``CollisionPipeline(body_pair_reduction=...)`` reduction changes which contacts
+   the solver sees and is supported by :class:`newton.solvers.SolverSteel`
+   only. Keep it off unless it lowers the
+   measured step time, and check tipping and yaw behavior when it is on.
+
 Contact material
    Shape material arrays such as :attr:`~Model.shape_material_mu`,
    :attr:`~Model.shape_material_mu_torsional`,
@@ -286,6 +294,10 @@ repository examples spend tuning effort, not a shared solver API.
        Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
        a uniformly loaded disk of radius ``R``). ``contact_torsion_device``
        prepares these rows on the device, which CUDA graph capture requires.
+       Contacts with a mesh that has ``enable_surface_velocity`` drive the
+       tangential surface velocity through the friction rows; contacts carry
+       only a linear surface velocity per point, so the torsion rows treat a
+       spinning surface as still and resist bodies co-rotating with it.
        The experimental ``contact_compliance`` option solves hydroelastic
        contacts with positive stiffness as implicit spring-dampers instead; it
        uses point friction and prepares its rows on the device, so a compliant
@@ -300,7 +312,13 @@ repository examples spend tuning effort, not a shared solver API.
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
-       capacity and reset the world when it reports a world. The same check
+       capacity and reset the world when it reports a world. To check a step
+       without waiting for the steps queued after it, call
+       ``snapshot_constraint_status()`` after that step and
+       ``check_constraint_capacity(snapshot=True)`` later; check the last
+       snapshot when you stop stepping. A reset retakes a checked snapshot and
+       keeps an unchecked one, so its check still reports the steps before the
+       reset. The same check
        reports a tree joint disabled through ``Model.joint_enabled`` after
        construction, which no capacity fixes: discard those steps' output,
        re-enable the joint and reset the world. Contacts of a
@@ -327,9 +345,10 @@ repository examples spend tuning effort, not a shared solver API.
        worth measuring on broad trees such as hands. The
        experimental ``enable_sleeping`` freezes settled, supported islands of
        articulations and skips their rows and dynamics until a force, state
-       change, contact with a moving body, reset or model notification wakes
-       them; it saves work on scenes where many objects rest, and costs a few
-       extra launches per step when nothing sleeps. ``articulated_contact_response``
+       change, contact with a moving body or a tangentially moving mesh
+       surface, reset or model notification wakes them; it saves work on
+       scenes where many objects rest, and costs a few extra launches per
+       step when nothing sleeps. ``articulated_contact_response``
        selects how contacts of articulated bodies are solved: ``"immediate"`` rows of
        the generalized coordinates, or the matrix-free ``"propagation"`` responses,
        which solve them as body-space rows and propagate their impulses through each
@@ -337,8 +356,7 @@ repository examples spend tuning effort, not a shared solver API.
        rows, free bodies included, share one family of ``free_body_constraint_max +
        articulation_constraint_max`` rows per world, or of ``propagation_constraint_max`` rows
        when that is set. Contacts between two links of one articulation stay dense rows of
-       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set,
-       which only ``"propagation"`` accepts.
+       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set.
        Setting ``propagation_constraint_max`` lets ``free_body_constraint_max`` shrink to the
        free-body velocity-limit rows, the only free-body rows these responses keep.
        ``"propagation_colored"`` sweeps the propagation rows in parallel batches of contacts
@@ -349,14 +367,17 @@ repository examples spend tuning effort, not a shared solver API.
        shortens the ``"propagation_colored"`` sweep when one body carries contacts with
        different row counts. The saving shrinks as the world count grows, and the changed
        order can converge more slowly on stacks at a fixed iteration count, so measure the
-       full step at the target world count before switching. ``"propagation"`` solves contact
-       torsion with ``contact_torsion_device=True`` and ``velocity_iterations=0``;
-       ``"propagation_colored"`` rejects it. The propagation responses reject contact compliance,
-       sleeping and loop-closing joints, and fall back from bilateral pre-elimination to iterative
-       mimic rows with a warning.
-       ``"propagation_colored"`` supports the ``friction_mode`` values other than
-       ``"fixed_normal"`` and applies them to the articulated contacts on its propagation rows
-       as well. ``"propagation"`` requires ``"fixed_normal"``.
+       full step at the target world count before switching. ``"propagation"`` and
+       ``"propagation_colored"`` solve contact torsion with ``contact_torsion_device=True`` and
+       ``velocity_iterations=0``. ``"propagation"`` rejects contact compliance and
+       ``"propagation_colored"`` accepts it without contact torsion, which rejects the
+       hydroelastic contacts that compliance needs. The propagation responses reject
+       loop-closing joints, and fall back from bilateral pre-elimination to iterative mimic rows
+       with a warning.
+       ``"propagation_colored"`` supports sleeping, with or without contact compliance, leaving
+       sleeping articulations out of its trees, and the ``friction_mode`` values other than
+       ``"fixed_normal"``, which it applies to the articulated contacts on its propagation rows as
+       well. ``"propagation"`` rejects sleeping and requires ``"fixed_normal"``.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.

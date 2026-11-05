@@ -18,7 +18,8 @@ import warp as wp
 from ...core.reset import reset_world_selected
 from ...core.types import MAXVAL, override
 from ...exceptions import NewtonWarning
-from ...geometry.flags import ShapeFlags
+from ...geometry.flags import MeshProperties, ShapeFlags
+from ...geometry.utils import _scan_scratch_size, scan_with_total
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..coupled.interface import CouplingInterface
@@ -78,7 +79,7 @@ from .kernels import (
     allocate_rigid_velocity_limit_slots,
     allocate_world_contact_slots,
     apply_augmented_mass_diagonal_grouped,
-    apply_free_root_angular_damping,
+    apply_free_root_damping,
     apply_free_root_transport_to_predictor,
     apply_free_root_velocity_corrections,
     apply_impulses_world_par_dof,
@@ -441,8 +442,9 @@ def _validate_equality_constraints(model: Model) -> None:
         raise NotImplementedError(
             f"SolverSteel does not enforce MuJoCo equality constraints: model.mujoco.equality_constraint "
             f"rows {rows[:16].tolist()} are enabled and not converted to a Newton loop joint or mimic "
-            "constraint. Import with convert_mjc_equality_constraints=True, model the constraint with Newton "
-            "joints, or disable the rows (equality_constraint_enabled)."
+            "constraint. Import with convert_mjc_equality_constraints=True (joint equalities that omit joint2 or "
+            "target a multi-DoF joint, such as joints sharing a body, stay MuJoCo rows even then), model the "
+            "constraint with Newton joints, or disable the rows (equality_constraint_enabled)."
         )
 
 
@@ -977,6 +979,44 @@ def _use_resident_mfgs_metadata(
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
 
 
+def _use_mfgs_pair_cache(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    max_shared_memory: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    world_count: int,
+    sm_count: int,
+) -> bool:
+    """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
+
+    The caches shorten each world's serial chain but lower blocks per SM; once worlds queue for SMs, the extra waves
+    cost more than they save. The estimate ignores register, block-count and carveout limits.
+    """
+    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
+    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
+    cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
+    if not shared_metadata:
+        cache_bytes += 3 * max_constraints
+    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    block_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes + cache_bytes
+    resident_worlds = sm_count * (max_shared_memory // block_bytes)
+    # Row parents are cached as short, and the kernel's arrays are static shared memory.
+    return (
+        max_constraints <= 32767
+        and block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
+        and world_count <= resident_worlds
+    )
+
+
+def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
+    """Return the most dense friction pairs a world holds; each pair owns a normal row and two tangent rows."""
+    return max(max_constraints // 3, 1)
+
+
 _HINV_JT_MAX_CHUNK_SIZE = 32
 
 
@@ -1472,6 +1512,14 @@ class SolverSteel(SolverBase, CouplingInterface):
         }
     )
 
+    supports_body_pair_reduced_contacts: bool = True
+    """:meth:`step` accepts body-pair-reduced contacts, except with ``contact_compliance=True``, where it raises.
+
+    The compliant contact law is validated only on unreduced contacts.
+
+    .. experimental::
+    """
+
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()
     iterations = _ConstructionOption()
@@ -1534,9 +1582,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         Each body and shape attribute maps to the matching PhysX USD attribute:
 
         - ``steel:rigid_body_angular_damping`` [1/s] damps the angular velocity of free bodies and
-          floating bases as ``w *= 1 - d dt`` each step (``physxRigidBody:angularDamping``,
+          floating bases as ``w *= max(1 - d dt, 0)`` each step (``physxRigidBody:angularDamping``,
           default 0.05, as :class:`~newton.solvers.SolverFeatherstone`); joints with a parent
           body are not damped. Fill the attribute for one value on every body.
+        - ``steel:rigid_body_linear_damping`` [1/s] damps the COM velocity of the same bodies as
+          ``v *= max(1 - d dt, 0)`` each step (``physxRigidBody:linearDamping``, default 0). Keep
+          it nonnegative.
         - ``steel:rigid_body_max_linear_velocity`` [m/s] and ``steel:rigid_body_max_angular_velocity`` [rad/s]
           bound the velocity of free bodies (``physxRigidBody:maxLinearVelocity`` and
           ``physxRigidBody:maxAngularVelocity``, default unbounded).
@@ -1592,6 +1643,17 @@ class SolverSteel(SolverBase, CouplingInterface):
                 dtype=wp.float32,
                 default=_DEFAULT_ANGULAR_DAMPING,
                 usd_attribute_name="physxRigidBody:angularDamping",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="rigid_body_linear_damping",
+                namespace=_ATTRIBUTE_NAMESPACE,
+                frequency=Model.AttributeFrequency.BODY,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                usd_attribute_name="physxRigidBody:linearDamping",
             )
         )
         builder.add_custom_attribute(
@@ -1730,7 +1792,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 as a fraction of the position error removed per step.
             cfm: Constraint force mixing added to every row's effective-mass diagonal,
                 which regularizes redundant rows. Drive rows of ``drive_mode="rows"`` use
-                their exact unit response instead.
+                their exact unit response instead, and the coupled contact solves of a
+                ``friction_mode`` other than ``"fixed_normal"`` leave it off their contact blocks.
             relaxation: Successive over-relaxation factor of the PGS sweep.
             update_mass_matrix_interval: Rebuild and refactor the mass matrix every this many
                 calls to :meth:`step`; ``1`` rebuilds it every step. Larger values reuse a
@@ -1825,7 +1888,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 1; rejected with ``articulated_contact_response="immediate"``.
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
-                compatible with CUDA graph capture.
+                compatible with CUDA graph capture. The host contact torsion preparation
+                emits its overflow warning as a :class:`~newton.exceptions.NewtonWarning`
+                through :mod:`warnings` instead.
             row_watermark: Accumulate the high-water marks of the per-world row counts of
                 every row family and of the contact count on the device in every step,
                 including captured ones; read them with :meth:`constraint_row_watermarks`.
@@ -2041,34 +2106,44 @@ class SolverSteel(SolverBase, CouplingInterface):
                 carry no spin history; free-body contacts get none. Supported geometry is
                 sphere, box, capsule, cylinder, cone, ellipsoid, plane and convex mesh.
                 Requires ``contact_warmstart=False``; contacts with hydroelastic stiffness are
-                rejected, and with the immediate response, running out of
-                ``articulation_constraint_max`` raises instead of dropping rows.
+                rejected. Dense torsion rows count against ``articulation_constraint_max`` after
+                the world's other dense rows. A world whose groups do not all fit keeps the rows
+                that fit, and a world that dropped dense rows gets no dense torsion rows; both set
+                the world's :attr:`constraint_overflow` entry and warn when
+                ``warn_constraint_overflow`` is set, and other worlds step unaffected.
                 ``contact_torsion_device`` prepares the torsion rows on the device instead of
                 on the host. The host preparation is the reference implementation; it reads
                 the contacts back every step and cannot be captured in a CUDA graph. The
                 device preparation builds the same groups and rows with preallocated
                 buffers and supports CUDA graph capture of :meth:`step`. Invalid torsion
-                input (for example dense rows beyond the capacity or hydroelastic contacts)
-                makes an eager step raise before it applies torsion rows. In a captured step the
-                error is deferred: the failing step restores its output motion arrays
+                input (contact-buffer overflow, hydroelastic contacts, or a friction-patch load
+                ring that does not match its group) makes an eager step raise before it applies
+                torsion rows. In a captured step the error is deferred: the failing step
+                restores its output motion arrays
                 (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``, ``body_qdd``) to the input
                 values, while other outputs, observables and solver history still advance,
                 and :meth:`check_constraint_capacity` raises after the replays.
                 Check before using replay results, discard failed output, fix the cause and
-                :meth:`reset`. The error is solver-wide: any reset clears it, and a cause
+                :meth:`reset`. The input error is solver-wide: any reset clears it, and a cause
                 that persists latches it again on the next step. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without
-                contact torsion. With ``articulated_contact_response="propagation"``, every
+                contact torsion. With ``articulated_contact_response`` ``"propagation"`` or
+                ``"propagation_colored"``, every
                 positive-radius contact on an articulated body that is routed to propagation
                 reserves one more propagation row for torsion (same-articulation contacts stay
                 dense unless ``propagation_same_articulation_rows`` is set), so size
                 ``propagation_constraint_max``, or ``articulation_constraint_max`` and
-                ``free_body_constraint_max`` when it is unset, for it; each sweep solves the torsion rows after the other rows with the same budget. That
-                response requires ``contact_torsion_device=True`` and ``velocity_iterations=0``.
+                ``free_body_constraint_max`` when it is unset, for it. A group's torsion row takes
+                that row of its last member. The plain sweep solves the torsion rows after the
+                other rows; the colored sweep solves each in its last member's contact unit, after
+                the rows of the group's other members. Both use the same budget, and both responses
+                require ``contact_torsion_device=True`` and ``velocity_iterations=0``.
+                ``"propagation_colored"`` rejects contact torsion with ``contact_compliance``, whose
+                contacts are hydroelastic.
                 When propagation rows overflow, a group keeps the contacts that received rows
                 and the step does not raise: it sets :attr:`constraint_overflow`, warns when
                 ``warn_constraint_overflow`` is set, and :meth:`check_constraint_capacity`
-                raises. ``"propagation_colored"`` rejects contact torsion.
+                raises.
             contact_compliance: Experimental: solve contacts that carry a positive
                 :attr:`~newton.Contacts.rigid_contact_stiffness` [N/m] with an implicit
                 unilateral spring-damper law instead of the rigid normal law. The material
@@ -2080,11 +2155,13 @@ class SolverSteel(SolverBase, CouplingInterface):
                 damping term is dropped while the gap is open. Requires point friction
                 (``None`` or ``0`` for ``friction_anchor_beta``; ``None`` warns), positive
                 ``iterations``, no warm start, no velocity-only iterations, no contact
-                regularization, no shared anchors and zero shape restitution. The contacts must carry the
-                hydroelastic material arrays. The rows are prepared on the device, so :meth:`step`
-                can be captured in a CUDA graph. Invalid input (for example a compliant contact
-                lost to a row capacity, even with ``warn_constraint_overflow`` off, or a positive
-                shape restitution) makes an eager step raise. In a captured step the error is
+                regularization, no shared anchors and zero shape restitution. With
+                ``articulated_contact_response="propagation_colored"`` the colored sweep solves the
+                compliant rows, without contact torsion; ``"propagation"`` rejects it. The contacts must carry the
+                hydroelastic material arrays. The rows are prepared on the device, so
+                :meth:`step` can be captured in a CUDA graph. Invalid input (for example a
+                compliant contact lost to a row capacity, even with ``warn_constraint_overflow``
+                off, or a positive shape restitution) makes an eager step raise. In a captured step the error is
                 deferred: :meth:`check_constraint_capacity` raises after the replays, until
                 :meth:`reset`, and their results are invalid; eager steps do not report it. Contacts the allocator excludes on
                 purpose are counted in ``compliance_skipped_contact_count`` and compliant contacts
@@ -2108,10 +2185,15 @@ class SolverSteel(SolverBase, CouplingInterface):
                 every island). Driven articulations (nonzero drive gains)
                 stay awake. Sleeping is configured at construction; rebuild captured graphs
                 to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
-                or ``velocity_iterations``, or for a model without articulations;
-                :meth:`step` raises :class:`ValueError` for a nonpositive or nonfinite
-                ``dt`` and when ``state_in`` and ``state_out`` share arrays. The sleeping
-                options are runtime solver settings with no USD schema.
+                or ``velocity_iterations``, or for a model without articulations, and
+                :class:`NotImplementedError` with ``articulated_contact_response="propagation"``;
+                with ``"propagation_colored"`` skipped islands are left out of the coloring, the
+                colored sweep and the propagation trees, and, where CUDA conditional graph nodes
+                are supported, a captured step in which every articulation that can sleep sleeps
+                skips the propagation solve. :meth:`step` raises
+                :class:`ValueError` for a nonpositive or nonfinite ``dt`` and when ``state_in``
+                and ``state_out`` share arrays. The sleeping options are runtime solver settings
+                with no USD schema.
             sleep_linear_threshold: Body center-of-mass speed below which a body is quiet
                 [m/s], finite and positive.
             sleep_angular_threshold: Body angular speed below which a body is quiet [rad/s],
@@ -2152,8 +2234,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ``update_mass_matrix_interval``.
             propagation_same_articulation_rows: Solve contacts between two links of the same
                 articulation as propagation rows, with the exact cross response of the two
-                links, instead of dense rows. Requires
-                ``articulated_contact_response="propagation"``.
+                links, instead of dense rows. Requires ``articulated_contact_response``
+                ``"propagation"`` or ``"propagation_colored"``.
             propagation_cached_response: With ``articulated_contact_response="propagation"`` or
                 ``"propagation_colored"``, replace the per-iteration tree walk by cached
                 responses: the setup extracts, for each contact-active body, its joint-space
@@ -2449,10 +2531,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 f"propagation_color_order must be 'contact' or 'longest_first', got {propagation_color_order!r}"
             )
         self._propagation_color_order = propagation_color_order
-        if self._propagation_same_articulation_rows and articulated_contact_response != "propagation":
+        if self._propagation_same_articulation_rows and articulated_contact_response == "immediate":
             raise ValueError(
-                "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
-                f"got {articulated_contact_response!r}"
+                "propagation_same_articulation_rows requires articulated_contact_response 'propagation' or "
+                f"'propagation_colored', got {articulated_contact_response!r}"
             )
         # The propagation responses route contact rows, free bodies included, to the propagation
         # family, so by default its capacity absorbs both contact budgets.
@@ -2481,11 +2563,22 @@ class SolverSteel(SolverBase, CouplingInterface):
                 name
                 for name, requested in (
                     (
-                        "contact torsion",
-                        self._contact_torsion_enabled and articulated_contact_response != "propagation",
+                        "contact_compliance=True",
+                        self._contact_compliance and articulated_contact_response != "propagation_colored",
                     ),
-                    ("contact_compliance=True", self._contact_compliance),
-                    ("enable_sleeping=True", bool(enable_sleeping)),
+                    # Contact torsion rejects hydroelastic contacts, and every compliant contact is one.
+                    (
+                        "contact torsion with contact_compliance=True",
+                        self._contact_torsion_enabled
+                        and self._contact_compliance
+                        and articulated_contact_response == "propagation_colored",
+                    ),
+                    # Sleeping is tested only with the colored sweep, not with the plain sweep's
+                    # torsion and same-articulation rows.
+                    (
+                        "enable_sleeping=True",
+                        bool(enable_sleeping) and articulated_contact_response != "propagation_colored",
+                    ),
                     (
                         f"friction_mode={self._friction_mode!r}",
                         self._friction_mode != "fixed_normal" and articulated_contact_response != "propagation_colored",
@@ -2498,22 +2591,26 @@ class SolverSteel(SolverBase, CouplingInterface):
                     f"{', '.join(unsupported)} is not supported with "
                     f"articulated_contact_response={articulated_contact_response!r}"
                 )
-        # The plain propagation sweep solves the torsion rows of its contacts after its other rows.
-        self._propagation_torsion_rows = self._contact_torsion_enabled and articulated_contact_response == "propagation"
+        # The plain sweep solves the torsion rows of its contacts after its other rows; the colored
+        # sweep solves each in the contact unit of its group's last member.
+        self._propagation_torsion_rows = self._contact_torsion_enabled and articulated_contact_response != "immediate"
         if self._propagation_torsion_rows:
             if not contact_torsion_device:
                 raise NotImplementedError(
-                    "contact torsion with articulated_contact_response='propagation' requires contact_torsion_device=True"
+                    f"contact torsion with articulated_contact_response={articulated_contact_response!r} requires "
+                    "contact_torsion_device=True"
                 )
             if self._velocity_iterations > 0:
                 raise NotImplementedError(
-                    "contact torsion with articulated_contact_response='propagation' requires velocity_iterations=0"
+                    f"contact torsion with articulated_contact_response={articulated_contact_response!r} requires "
+                    "velocity_iterations=0"
                 )
 
         # Stand-ins for models without the physx attributes.
         self._default_angular_damping = wp.full(
             max(model.body_count, 1), _DEFAULT_ANGULAR_DAMPING, dtype=wp.float32, device=model.device
         )
+        self._default_linear_damping = wp.zeros(max(model.body_count, 1), dtype=wp.float32, device=model.device)
         self._unbounded_body_velocity = wp.full(
             max(model.body_count, 1), float("inf"), dtype=wp.float32, device=model.device
         )
@@ -2591,6 +2688,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._model_plan.prescribed_articulation, dtype=wp.int32, device=model.device
         )
         self._has_prescribed_response = bool(np.any(self._model_plan.prescribed_articulation != 0))
+        # A body variant row can take a surface-velocity mesh after construction.
+        self._has_surface_velocity = any(
+            properties is not None and bool(np.any(properties.numpy() & int(MeshProperties.SURFACE_VELOCITY)))
+            for properties in (
+                model._shape_mesh_properties,
+                model._variant_shape_geometry.get("_shape_mesh_properties"),
+            )
+        )
+        # Kinematic bodies and moving mesh surfaces both enter contact rows as target velocities.
+        self._has_contact_target_velocity = self._has_prescribed_response or self._has_surface_velocity
         self._compute_articulation_metadata(model)
         self._init_joint_friction(model)
         if self._enable_joint_friction:
@@ -2707,7 +2814,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._compliance = _contact_compliance.ComplianceBuffers(self)
         self._mf_target_velocity = (
             wp.zeros_like(self._mf_rhs)
-            if self._has_prescribed_response
+            if self._has_contact_target_velocity
             else wp.zeros((1, 1), dtype=wp.float32, device=model.device)
         )
         self._update_effective_armature()
@@ -2731,9 +2838,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._dummy_mf_slot_counter = wp.zeros((self._world_count,), dtype=wp.int32, device=model.device)
         self._dummy_contact_count = wp.zeros((1,), dtype=wp.int32, device=model.device)
         self._init_ordered_rows(model)
+        # Allocated here so a captured first step records no allocations.
+        self._allocate_state_aux_vars(model, self)
 
         # Capacity status is allocated before any CUDA graph capture.
-        self._row_overflow_warning_emitted = wp.zeros(4, dtype=wp.int32, device=model.device)
+        self._row_overflow_warning_emitted = wp.zeros(5, dtype=wp.int32, device=model.device)
         self.constraint_overflow = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         """Capacity failure flags, shape ``[model.world_count + 1]``, dtype ``bool``.
 
@@ -2783,6 +2892,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._dynamics_dof_active = wp.ones(model.joint_dof_count, dtype=wp.int32, device=model.device)
         self._dynamics_body_active = wp.ones(model.body_count, dtype=wp.int32, device=model.device)
         self._constraint_art_active = wp.ones(model.articulation_count, dtype=wp.int32, device=model.device)
+        self._propagation_dynamics_active = wp.zeros(1, dtype=wp.int32, device=model.device)
         self._enable_sleeping = bool(enable_sleeping)
         self._sleep_linear_threshold = float(sleep_linear_threshold)
         self._sleep_angular_threshold = float(sleep_angular_threshold)
@@ -2801,6 +2911,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
+        # Allocated by the first snapshot_constraint_status(): device copies, host copies and the snapshot's event.
+        self._status_snapshot = None
+        self._status_snapshot_host = None
+        self._status_snapshot_event = None
+        self._status_snapshot_checked = False
+        self._status_readback_stream = None
 
     def _refresh_shape_materials(self) -> None:
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
@@ -2849,6 +2965,11 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _rigid_body_angular_damping(self) -> wp.array:
         attribute = self._namespaced_attribute("rigid_body_angular_damping")
         return self._default_angular_damping if attribute is None else attribute
+
+    @property
+    def _rigid_body_linear_damping(self) -> wp.array:
+        attribute = self._namespaced_attribute("rigid_body_linear_damping")
+        return self._default_linear_damping if attribute is None else attribute
 
     @property
     def _rigid_body_max_linear_velocity(self) -> wp.array | None:
@@ -3223,7 +3344,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         is selected. Global articulations share world 0's rows, so selecting the global
         entry also discards world 0's warm-start impulses while a dynamic global
         articulation exists. Any reset, whatever its mask, also clears the solver-wide contact
-        torsion error; it clears the disabled-tree-joint and invalid-joint-friction status of the
+        torsion input error; it clears the disabled-tree-joint and invalid-joint-friction status of the
         selected worlds. The reset is launched on the device without host synchronization and can be
         captured in a CUDA graph. A full reset (``world_mask=None``) also restarts the host-side step
         cadence (mass-matrix refresh interval, ``dt`` change detection, double-buffer schedule and
@@ -3269,6 +3390,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
+            self._retake_status_snapshot()
             return
 
         # One launch covers both the status entries (world_count + 1, including the
@@ -3290,6 +3412,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._friction_anchors_enabled:
             self._friction_patches.reset(world_mask, int(self.model.world_count))
         self._clear_warmstart_history(world_mask)
+        self._retake_status_snapshot()
+
+    def _retake_status_snapshot(self) -> None:
+        """Replace a checked status snapshot taken before a reset, so it does not report what the reset cleared."""
+        if self._status_snapshot_checked and not self.model.device.is_capturing:
+            self.snapshot_constraint_status()
+            self._status_snapshot_checked = True
 
     # ------------------------------------------------------------------
     # Coupling hooks (experimental)
@@ -5948,11 +6077,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._solve_mode == "split":
             self._pack_mf_meta_kernel = None
             self._pgs_solve_mf_gs_kernel = None
+            self._mfgs_pair_cache = False
             self._init_split_kernels(model)
             return
 
         self._pack_mf_meta_kernel = _get_pack_mf_meta_kernel(self._mf_meta_packed.shape[1] // 4, device_arch)
         self._pgs_solve_mf_gs_kernel = None
+        self._mfgs_pair_cache = False
         self._init_propagation_kernels(model)
         triples = self._sparse_diagonal_contact_triples
         self._mark_independent_sparse_contact_candidates_kernel = (
@@ -5999,6 +6130,24 @@ class SolverSteel(SolverBase, CouplingInterface):
                 fuse_vel_limits=self._velocity_limits_fused,
             )
             row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            # The cache's prologue runs once per launch, so it pays off only when a launch runs several sweeps.
+            self._mfgs_pair_cache = (
+                self._friction_mode == "fixed_normal"
+                and not self._paired_factor_coordinates
+                and not self._propagation_active
+                and self._row_schedule != "phased"
+                and _use_mfgs_pair_cache(
+                    self._articulation_constraint_max,
+                    mf_rows,
+                    self._max_world_dofs,
+                    int(getattr(model.device, "max_shared_memory_per_block", 0)),
+                    shared_metadata=shared_metadata,
+                    has_drive_rows=self._has_drive_rows,
+                    fuse_vel_limits=self._velocity_limits_fused,
+                    world_count=self._world_count,
+                    sm_count=int(getattr(model.device, "sm_count", 0)),
+                )
+            )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
                 _get_pgs_solve_mf_gs_kernel,
                 self._articulation_constraint_max,
@@ -6016,6 +6165,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 skip_local_internal_worlds=self._local_internal_fast_path,
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
+                pair_cache=self._mfgs_pair_cache,
             )
             if row_phases:
                 # One kernel per row phase the schedule launches, each with its phase compiled in.
@@ -6689,6 +6839,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
+            # The compliant contact law is validated on unreduced contacts only.
+            self._require_unreduced_contacts(
+                contacts, supports_body_pair_reduced_contacts=False, configuration="contact_compliance=True"
+            )
         self.validate_observables(observables, contacts)
         if contacts is not None and contacts.rigid_contact_max > self._max_contacts_alloc:
             raise ValueError(
@@ -6988,7 +7142,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             if self._free_root_joint_count:
                 # The integrator damped the position-solve velocity; damp the published one alike.
                 wp.launch(
-                    apply_free_root_angular_damping,
+                    apply_free_root_damping,
                     dim=self._free_root_joint_count,
                     inputs=[
                         self._free_root_joint_indices,
@@ -6996,6 +7150,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._kinematic_joint_mask,
                         model.joint_child,
                         self._rigid_body_angular_damping,
+                        self._rigid_body_linear_damping,
                         dt,
                     ],
                     outputs=[self._v_out],
@@ -7040,6 +7195,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                             state_out.body_qd,
                             model.body_com,
                             self._body_to_articulation,
+                            contacts.rigid_contact_surface_velocity,
                             self._contact_world,
                             self._contact_slot,
                             self._contact_path,
@@ -7225,6 +7381,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 state_aug._joint_qdd,
                 dt,
                 self._rigid_body_angular_damping,
+                self._rigid_body_linear_damping,
                 self._dynamics_joint_active,
             ],
             outputs=[state_out.joint_q, state_out.joint_qd],
@@ -7448,7 +7605,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._mf_row_type,
                     self._mf_target_velocity,
                     self._mf_row_rebound_velocity,
-                    int(self._has_prescribed_response),
+                    int(self._has_contact_target_velocity),
                     dt,
                     self._v_out_snap,
                     self._v_hat,
@@ -7806,28 +7963,36 @@ class SolverSteel(SolverBase, CouplingInterface):
             # After the warm-start installs, so a carried contact impulse cannot reopen the projection.
             self._stage5_project_bilateral_velocity()
         if self._contact_compliance:
+            # After the propagation setup, whose contact row biases and effective masses this replaces;
+            # without compliance the setup runs inside the propagation solve, which an all-asleep step skips.
+            if self._propagation_active:
+                self._propagation_setup(state_in, state_aug, dt)
             _contact_compliance.prepare_rows(self, contacts, dt)
         self._pack_mf_meta(self._mf_rhs)
         friction_start = self._friction_start_iteration(self._iterations)
         if self._propagation_active:
-            self._propagation_setup(state_in, state_aug, dt)
-            if self._contact_warmstart:
-                self._apply_propagation_warmstart_velocity()
-            solve = functools.partial(
-                self._launch_propagation_solve,
-                self._rhs,
-                self._propagation_rhs,
-                regularize=self._regularization_enabled,
-                friction_start_iteration=friction_start,
-            )
+
+            def solve_propagation():
+                if not self._contact_compliance:
+                    self._propagation_setup(state_in, state_aug, dt)
+                if self._contact_warmstart:
+                    self._apply_propagation_warmstart_velocity()
+                self._launch_propagation_solve(
+                    self._rhs,
+                    self._propagation_rhs,
+                    self._iterations,
+                    regularize=self._regularization_enabled,
+                    friction_start_iteration=friction_start,
+                )
+
+            self._run_propagation(solve_propagation)
         else:
-            solve = functools.partial(
-                self._launch_pgs_solve,
+            self._launch_pgs_solve(
                 self._rhs,
+                self._iterations,
                 regularize=self._regularization_enabled,
                 friction_start_iteration=friction_start,
             )
-        solve(self._iterations)
 
     def _solve_split(self, state_aug: State, dt: float) -> None:
         """Assemble and solve the dense Delassus systems, then the free-body rows, into ``v_out``.
@@ -8186,14 +8351,16 @@ class SolverSteel(SolverBase, CouplingInterface):
         Per row family (``articulation``, ``free_body``, ``propagation``): the largest retained
         and requested row count of any world and step, the largest number of dropped contact
         rows, the largest excess over the capacity, and the number of overflowing world-steps;
-        and ``contact_high_water``, the largest contact count. Reads the device on the host, so
-        call it outside CUDA graph capture. Every value is ``0`` when ``row_watermark`` is off.
+        and ``contact_high_water``, the largest contact count. With ``row_watermark``, reads the
+        device on the host and raises :class:`RuntimeError` during CUDA graph capture. Every value
+        is ``0`` when ``row_watermark`` is off.
         """
-        values = (
-            self._row_watermarks.numpy().tolist()
-            if self._row_watermarks is not None
-            else [0] * (ROW_WATERMARK_CONTACT_SLOT + 1)
-        )
+        if self._row_watermarks is None:
+            values = [0] * (ROW_WATERMARK_CONTACT_SLOT + 1)
+        else:
+            if self.model.device.is_capturing:
+                raise RuntimeError("constraint_row_watermarks() must run outside CUDA graph capture")
+            values = self._row_watermarks.numpy().tolist()
         result = {}
         for family, name in enumerate(("articulation", "free_body", "propagation")):
             base = family * ROW_WATERMARK_FAMILY_STRIDE
@@ -8207,15 +8374,56 @@ class SolverSteel(SolverBase, CouplingInterface):
 
     @property
     def compliance_contact_count(self) -> int:
-        """Compliant contacts prepared by the last step (``contact_compliance`` only; synchronous readback)."""
+        """Compliant contacts prepared by the last step (``contact_compliance`` only).
+
+        With ``contact_compliance``, reads the device on the host and raises :class:`RuntimeError`
+        during CUDA graph capture.
+        """
         return 0 if self._compliance is None else _contact_compliance.counts(self)[0]
 
     @property
     def compliance_skipped_contact_count(self) -> int:
-        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only)."""
+        """Positive-stiffness contacts the row allocator excluded in the last step (``contact_compliance`` only).
+
+        With ``contact_compliance``, reads the device on the host and raises :class:`RuntimeError`
+        during CUDA graph capture.
+        """
         return 0 if self._compliance is None else _contact_compliance.counts(self)[1]
 
-    def check_constraint_capacity(self) -> None:
+    def snapshot_constraint_status(self) -> None:
+        """Copy the status that :meth:`check_constraint_capacity` reports on the device, without waiting.
+
+        Call outside capture, on the stream that steps the solver, after the steps to observe.
+        ``check_constraint_capacity(snapshot=True)`` then raises from this copy, waiting only for the work
+        enqueued on that stream before this call. A new snapshot replaces the previous one, so check it first,
+        and check the last one when stepping stops. A :meth:`reset` outside capture retakes a checked snapshot
+        and keeps an unchecked one, so a check after the reset still reports the steps before it.
+
+        Raises:
+            RuntimeError: If called during CUDA graph capture.
+        """
+        device = self.model.device
+        if device.is_capturing:
+            raise RuntimeError("snapshot_constraint_status() must run outside CUDA graph capture")
+        sources = self._status_sources()
+        # Torsion prepared on the device after the last snapshot adds a source.
+        if self._status_snapshot is None or self._status_snapshot.keys() != sources.keys():
+            self._status_snapshot = {name: wp.empty_like(array) for name, array in sources.items()}
+            # Pageable host copies: freeing pinned memory while another stream captures invalidates that capture.
+            self._status_snapshot_host = (
+                {name: wp.empty_like(array, device="cpu") for name, array in sources.items()}
+                if device.is_cuda
+                else self._status_snapshot
+            )
+        for name, array in sources.items():
+            wp.copy(self._status_snapshot[name], array)
+        if device.is_cuda:
+            if self._status_snapshot_event is None:
+                self._status_snapshot_event = wp.Event(device)
+            wp.get_stream(device).record_event(self._status_snapshot_event)
+        self._status_snapshot_checked = False
+
+    def check_constraint_capacity(self, *, snapshot: bool = False) -> None:
         """Raise if any world or the global entry lost contacts or rows, or rejected input, since its last reset.
 
         Also raises if a step saw a joint of an articulation tree disabled in
@@ -8229,7 +8437,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         and :meth:`reset`. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
         the last :meth:`reset`; a failing captured step restored its output motion arrays to the
-        input, while a failing eager step raised from :meth:`step`. With ``contact_compliance``,
+        input, while a failing eager step raised from :meth:`step`. Torsion rows dropped for
+        capacity are a capacity loss of their worlds. With ``contact_compliance``,
         also raises if a captured step rejected its compliant contacts since the last :meth:`reset`;
         discard the output of the replays since the last check.
 
@@ -8240,36 +8449,57 @@ class SolverSteel(SolverBase, CouplingInterface):
         worlds. Contacts that couple a dynamic global body, or a kinematic global articulation
         with joints, with another world are flagged too; no capacity can solve them.
 
+        Args:
+            snapshot: Report the status copied by the last :meth:`snapshot_constraint_status`, as it was after
+                the work enqueued before that call, instead of reading the live status synchronously.
+
         Raises:
-            RuntimeError: If called during graph capture, or if any entry is flagged.
+            RuntimeError: If called during graph capture, if ``snapshot`` is set before any snapshot, or if
+                any entry is flagged.
         """
         if self.model.device.is_capturing:
             raise RuntimeError("check_constraint_capacity() must run outside CUDA graph capture")
-        if self._device_torsion is not None:
+        if not snapshot:
+            arrays = self._status_sources()
+        elif self._status_snapshot is None:
+            raise RuntimeError("check_constraint_capacity(snapshot=True) needs snapshot_constraint_status() first")
+        else:
+            arrays = self._status_snapshot_host
+            if self._status_snapshot_event is not None:
+                # A side stream orders the readback after the snapshot only, not after later steps.
+                if self._status_readback_stream is None:
+                    self._status_readback_stream = wp.Stream(self.model.device)
+                stream = self._status_readback_stream
+                stream.wait_event(self._status_snapshot_event)
+                for name, array in self._status_snapshot.items():
+                    wp.copy(arrays[name], array, stream=stream)
+                wp.synchronize_stream(stream)
+            self._status_snapshot_checked = True
+        if self._device_torsion is not None and "torsion" in arrays:
             try:
-                self._device_torsion.validate()
+                self._device_torsion.validate(int(arrays["torsion"].numpy()[0]))
             except (RuntimeError, ValueError) as error:
                 raise RuntimeError(f"Steel contact torsion rejected its input: {error}") from error
         if self._compliance is not None:
             try:
-                _contact_compliance.validate(self._compliance.status, clear=False)
+                _contact_compliance.validate(arrays["compliance"], clear=False)
             except (RuntimeError, ValueError) as error:
                 raise RuntimeError(f"Steel contact compliance rejected its input: {error}") from error
-        disabled = np.flatnonzero(self._disabled_tree_joint.numpy())
+        disabled = np.flatnonzero(arrays["disabled_tree_joint"].numpy())
         if disabled.size:
             worlds = np.where(disabled == self.model.world_count, -1, disabled)
             raise RuntimeError(
                 f"Steel: Model.joint_enabled disables an articulation tree joint in worlds "
                 f"{worlds[:16].tolist()}; only loop-closing joints can be disabled."
             )
-        invalid = np.flatnonzero(self._joint_friction_invalid.numpy())
+        invalid = np.flatnonzero(arrays["joint_friction_invalid"].numpy())
         if invalid.size:
             worlds = np.where(invalid == self.model.world_count, -1, invalid)
             names = "Model.joint_friction"
             if self._namespaced_attribute("joint_friction_load_coefficient") is not None:
                 names += " or steel:joint_friction_load_coefficient"
             raise RuntimeError(f"Steel: {names} was invalid at a step in worlds {worlds[:16].tolist()}.")
-        flags = self.constraint_overflow.numpy()
+        flags = arrays["constraint_overflow"].numpy()
         worlds = np.flatnonzero(flags[:-1])
         global_flagged = bool(flags[-1])
         if worlds.size or global_flagged:
@@ -8286,6 +8516,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 "be solved per world at any capacity and need a different scene layout. Reset the "
                 "affected worlds before accepting transitions."
             )
+
+    def _status_sources(self) -> dict[str, wp.array]:
+        """Return the device status arrays :meth:`check_constraint_capacity` reports."""
+        sources = {
+            "disabled_tree_joint": self._disabled_tree_joint,
+            "joint_friction_invalid": self._joint_friction_invalid,
+            "constraint_overflow": self.constraint_overflow,
+        }
+        if self._device_torsion is not None:
+            sources["torsion"] = self._device_torsion.work.status
+        if self._compliance is not None:
+            sources["compliance"] = self._compliance.status
+        return sources
 
     def _contact_force_inputs(self, contacts: Contacts, inv_dt: float) -> list:
         """Return the inputs shared by the contact-force kernels."""
@@ -8312,7 +8555,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         ]
 
     def _prepare_augmented_state(self, state_in: State) -> "SolverSteel":
-        """Allocate the solver-owned per-step dynamics buffers on first use."""
+        """Return the solver, which holds the per-step dynamics buffers the constructor allocates."""
         if not getattr(self, "_featherstone_augmented", False):
             self._allocate_state_aux_vars(self.model, self)
         return self
@@ -9307,6 +9550,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         # Row counts of the sorted contacts, then a zero, and their exclusive scan.
         self._sorted_contact_slots_needed = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
         self._sorted_contact_slot_offsets = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
+        # Scans run on preallocated scratch, so a capture Warp does not track can record them.
+        scan_length = max(cursor_size, self._max_contacts_alloc) + 1
+        self._ordered_scan_scratch = wp.zeros(_scan_scratch_size(scan_length, device), dtype=wp.int32, device=device)
+        # scan_with_total clips this length to each scanned view, so every scan covers its whole view.
+        self._ordered_scan_length = wp.full(1, scan_length, dtype=wp.int32, device=device)
+        self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
 
     def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
@@ -9327,7 +9576,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             outputs=[requests],
             device=device,
         )
-        wp.utils.array_scan(requests, offsets, inclusive=False)
+        scan_with_total(
+            requests, offsets, self._ordered_scan_length, self._ordered_scan_total, self._ordered_scan_scratch
+        )
         wp.launch(
             assign_world_row_slots,
             dim=element_count,
@@ -9378,7 +9629,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             outputs=[segment_start, segment_end, slots_needed],
             device=device,
         )
-        wp.utils.array_scan(slots_needed, slot_offsets, inclusive=False)
+        scan_with_total(
+            slots_needed,
+            slot_offsets,
+            self._ordered_scan_length,
+            self._ordered_scan_total,
+            self._ordered_scan_scratch,
+        )
         wp.launch(
             assign_world_contact_slots,
             dim=count,
@@ -9476,7 +9733,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         model = self.model
         max_constraints = self._articulation_constraint_max
         mf_active = self._has_free_rigid_bodies
-        if self._has_prescribed_response:
+        if self._has_contact_target_velocity:
             self._mf_target_velocity.zero_()
 
         self._cross_world_contacts.zero_()
@@ -9820,6 +10077,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     contact_gap_limit=self._contact_gap_limit,
                     friction_gap_limit=self._friction_gap,
                     frozen_bodies=frozen_bodies,
+                    dt=dt,
                 )
             wp.launch(
                 allocate_world_contact_slots,
@@ -9894,6 +10152,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     model.shape_body,
                     state_in.body_q,
                     state_aug._body_v_s,
+                    contacts.rigid_contact_surface_velocity,
                     self._prescribed_articulation,
                     self._articulation_origin,
                     self._shape_mu,
@@ -10044,8 +10303,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.shape_body,
                         state_in.body_q,
                         state_aug._body_v_s,
+                        contacts.rigid_contact_surface_velocity,
                         self._prescribed_articulation,
-                        int(self._has_prescribed_response),
+                        int(self._has_contact_target_velocity),
                         self._shape_mu,
                         self._contact_slots_needed,
                         self._shape_restitution,
@@ -10562,7 +10822,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._mf_row_type,
                 self._mf_target_velocity,
                 self._mf_row_rebound_velocity,
-                int(self._has_prescribed_response),
+                int(self._has_contact_target_velocity),
                 self._body_to_articulation,
                 self._articulation_dof_start,
                 self._v_hat,
@@ -10972,11 +11232,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                 staged=staged,
                 packed=packed,
                 straight_line=self._colored_straight_line,
+                contact_compliance=self._contact_compliance,
                 friction_mode=self._friction_mode,
+                contact_torsion=self._propagation_torsion_rows,
             )
         else:
             self._pgs_solve_propagation_colored_block_kernel = _get_pgs_solve_propagation_colored_block_kernel(
-                rows, entries, _COLORED_BLOCK_DIM, bodies, device_arch, friction_mode=self._friction_mode
+                rows,
+                entries,
+                _COLORED_BLOCK_DIM,
+                bodies,
+                device_arch,
+                contact_compliance=self._contact_compliance,
+                friction_mode=self._friction_mode,
+                contact_torsion=self._propagation_torsion_rows,
             )
         # The coloring keeps a world's used-color masks in shared memory when its unit bodies
         # span few enough indices: the bodies of one world plus the global ones.
@@ -11100,6 +11369,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 state_in.body_q,
                 model.body_com,
                 state_aug._body_v_s,
+                contacts.rigid_contact_surface_velocity,
                 self._prescribed_articulation,
                 self._articulation_origin,
                 self._shape_mu,
@@ -11236,6 +11506,11 @@ class SolverSteel(SolverBase, CouplingInterface):
             device=device,
         )
 
+    @property
+    def _propagation_tree_activity(self) -> wp.array | None:
+        """Per-articulation activity the propagation trees skip on, or ``None`` when every articulation is active."""
+        return self._dynamics_art_active if self._sleep_skips_dynamics else None
+
     def _propagation_setup(self, state_in: State, state_aug: State, dt: float) -> None:
         """Factor the trees, compute the body responses and twists, and the row responses and biases.
 
@@ -11319,7 +11594,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.launch_tiled(
                     self._propagation_factor_kernels[size],
                     dim=[n_arts],
-                    inputs=[arts, *factor_inputs, *factor_terms],
+                    inputs=[arts, self._propagation_tree_activity, *factor_inputs, *factor_terms],
                     outputs=factor_outputs,
                     block_dim=32,
                     device=model.device,
@@ -11329,6 +11604,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=[n_arts],
                     inputs=[
                         arts,
+                        self._propagation_tree_activity,
                         *factor_inputs,
                         self._propagation_joint_S_flat,
                         self._propagation_body_com_rel,
@@ -11351,6 +11627,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         dim=[n_arts],
                         inputs=[
                             arts,
+                            self._propagation_tree_activity,
                             self._art_to_world,
                             self._propagation_cache_world_flag,
                             self._propagation_cache_body_count,
@@ -11372,7 +11649,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.launch(
                     factor_propagation_tree_for_size,
                     dim=n_arts,
-                    inputs=[arts, *factor_inputs, model.joint_dof_dim, *factor_terms],
+                    inputs=[arts, self._propagation_tree_activity, *factor_inputs, model.joint_dof_dim, *factor_terms],
                     outputs=factor_outputs,
                     device=model.device,
                 )
@@ -11385,6 +11662,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._body_to_articulation,
                         self._body_to_joint,
                         arts,
+                        self._propagation_tree_activity,
                         self._art_to_world,
                         *factor_inputs,
                         model.joint_dof_dim,
@@ -11488,6 +11766,21 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=model.device,
             )
 
+    def _run_propagation(self, solve) -> None:
+        """Run ``solve``; a step captured with sleeping runs it only while an articulation that can sleep is awake.
+
+        A step whose articulations all sleep keeps their frozen state, so skipping ``solve`` there
+        leaves the same outputs as an eager step. The sleeping update sets the flag this reads.
+        """
+        device = self.model.device
+        # capture_if builds a conditional node only in a capture Warp started; under another framework's
+        # capture it would read the flag back on the host, so the solve runs unconditionally there.
+        warp_capture = device.is_cuda and device.captures.get(device.stream) is not None
+        if not (self._sleep_skips_dynamics and warp_capture and wp.is_conditional_graph_supported()):
+            solve()
+            return
+        wp.capture_if(self._propagation_dynamics_active, on_true=solve)
+
     def _propagation_refresh_twists(self, *, force: bool) -> None:
         """Recompute the propagation body twists from ``v_out``.
 
@@ -11504,6 +11797,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=[n_arts],
                     inputs=[
                         arts,
+                        self._propagation_tree_activity,
                         self._art_to_world,
                         self._dense_contact_world_flag,
                         int(force),
@@ -11526,6 +11820,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=n_arts,
                     inputs=[
                         arts,
+                        self._propagation_tree_activity,
                         self._art_to_world,
                         self._dense_contact_world_flag,
                         int(force),
@@ -11602,6 +11897,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=[n_arts],
                     inputs=[
                         arts,
+                        self._propagation_tree_activity,
                         self._art_to_world,
                         guard,
                         *tree_inputs,
@@ -11622,6 +11918,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     dim=n_arts,
                     inputs=[
                         arts,
+                        self._propagation_tree_activity,
                         *tree_inputs,
                         model.joint_dof_dim,
                         self._propagation_joint_S_flat,
@@ -11876,6 +12173,10 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._propagation_row_type,
             self._propagation_row_parent,
             self._propagation_row_mu,
+            self._propagation_torsion_first,
+            self._propagation_torsion_next,
+            self._propagation_torsion_row_radius,
+            self._compliance_off_gamma if self._compliance is None else self._compliance.propagation_gamma,
             self._color_world_row_order,
             self._color_world_offsets,
             self._propagation_body_list,
@@ -14836,6 +15137,7 @@ def _get_pgs_solve_mf_gs_kernel(
     joint_friction: bool = False,
     contact_compliance: bool = False,
     row_phase: int | None = None,
+    pair_cache: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -14888,6 +15190,8 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_torsion: Emit the contact torsion pass.
         row_phases: Honor the ``row_phase`` launch argument.
         row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
+        pair_cache: Set up each dense friction pair's 2x2 operator once per launch, and with streamed metadata keep a
+            compact shared copy of the row types and parents.
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
@@ -14908,6 +15212,8 @@ def _get_pgs_solve_mf_gs_kernel(
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if row_phase is not None and not row_phases:
         raise ValueError("row_phase requires row_phases")
+    if pair_cache and (friction_mode != "fixed_normal" or factor_coordinates):
+        raise ValueError("the friction-pair cache requires the fixed-normal pair solve")
     if factor_coordinates and (
         friction_mode != "fixed_normal"
         or has_drive_rows
@@ -14944,6 +15250,16 @@ def _get_pgs_solve_mf_gs_kernel(
     )
     dense_dot = lanes("            if ({d} < " + str(D) + ") my_sum += cur_dJ_{k} * s_v[{d}];")
     # A friction pair's sibling J v and cross term J_i Y_sib, with row i's J from the prefetch registers.
+    dense_sib_dot = lanes(
+        "                        if ({d} < "
+        + str(D)
+        + ") sibling_residual += J_world.data[sib_row_base + {d}] * s_v[{d}];"
+    )
+    prologue_cross = lanes(
+        "            if ({d} < "
+        + str(D)
+        + ") cross += J_world.data[row_base + {d}] * Y_world.data[sib_row_base + {d}];"
+    )
     dense_pair_dot = lanes(
         "                    if ({d} < "
         + str(D)
@@ -15041,6 +15357,62 @@ def _get_pgs_solve_mf_gs_kernel(
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
     torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    pair_cache_capacity = _mfgs_pair_cache_capacity(M_D)
+    # Streamed metadata rereads row types and parents every sweep (patch chains, torsion members).
+    row_cache = pair_cache and not shared_metadata
+    row_cache_build = (
+        f"""
+    __shared__ unsigned char s_row_type[{M_D}];
+    __shared__ short s_row_parent[{M_D}];
+    {{
+        const int* row_type_source = &world_row_type.data[off_dense];
+        const int* row_parent_source = &world_row_parent.data[off_dense];
+        for (int r = lane; r < m_dense; r += 32) {{
+            s_row_type[r] = (unsigned char)row_type_source[r];
+            s_row_parent[r] = (short)row_parent_source[r];
+        }}
+        __syncwarp();
+    }}"""
+        if row_cache
+        else ""
+    )
+    pair_cache_build = (
+        f"""{row_cache_build}
+    // Each dense friction pair's 2x2 operator depends only on its rows, so it is set up once per launch.
+    __shared__ short s_pair_slot[{M_D}];
+    __shared__ float s_pair_op[5][{pair_cache_capacity}];
+    if (contact_rows) {{
+        int pairs = 0;
+        for (int i = 0; i < dense_main_end; i++) {{
+            if ((s_meta_dense[i] & {type_mask}) != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
+            if (i != ((s_meta_dense[i] >> {type_bits}) - 1) + 1) continue;
+            if (pairs >= {pair_cache_capacity}) {{
+                if (lane == 0) s_pair_slot[i] = -1;
+                continue;
+            }}
+            int row_base = jy_world_base + i * {D};
+            int sib_row_base = jy_world_base + (i + 1) * {D};
+            float cross = 0.0f;
+{prologue_cross}
+            cross = warp_sum(cross);
+            float scale, largest, smallest, vx, vy;
+            friction_pair_setup(s_diag_dense[i], cross, s_diag_dense[i + 1], scale, largest, smallest, vx, vy);
+            if (lane == 0) {{
+                s_pair_slot[i] = pairs;
+                s_pair_op[0][pairs] = scale;
+                s_pair_op[1][pairs] = largest;
+                s_pair_op[2][pairs] = smallest;
+                s_pair_op[3][pairs] = vx;
+                s_pair_op[4][pairs] = vy;
+            }}
+            ++pairs;
+        }}
+        __syncwarp();
+    }}
+"""
+        if pair_cache
+        else ""
+    )
     joint_friction_projection = (
         f""" else if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)}) {{
                 // Joint friction box [-f dt, f dt]; mu holds the bound.
@@ -15079,6 +15451,38 @@ def _get_pgs_solve_mf_gs_kernel(
         torsion_sweep = f"        if (contact_rows) {{\n{torsion_sweep}\n        }}"
 
     friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
+    dense_pair_solve = (
+        """                    float sibling_residual = 0.0f;
+                    float cross = 0.0f;
+"""
+        + dense_pair_dot
+        + """
+                    sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
+                    cross = warp_sum(cross);
+                    float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
+                        residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
+"""
+    )
+    if pair_cache:
+        # The launch prologue set up the pair's operator; only its sibling residual changes between sweeps.
+        dense_pair_solve = (
+            """                    const int pair_slot = s_pair_slot[i];
+                    float2 pair;
+                    if (pair_slot >= 0) {
+                        float sibling_residual = 0.0f;
+"""
+            + dense_sib_dot
+            + """
+                        sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
+                        pair = friction_pair_solve(s_pair_op[0][pair_slot], s_pair_op[1][pair_slot],
+                            s_pair_op[2][pair_slot], s_pair_op[3][pair_slot], s_pair_op[4][pair_slot],
+                            residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
+                    } else {
+"""
+            + dense_pair_solve.replace("float2 pair = ", "pair = ")
+            + """                    }
+"""
+        )
     dense_friction_update = f"""                // The first tangent row solves both tangents of its contact; the second
                 // row's impulse was written by the first.
                 int parent_idx = (s_meta_dense[i] >> {type_bits}) - 1;
@@ -15095,14 +15499,7 @@ def _get_pgs_solve_mf_gs_kernel(
                          patch_row = ((s_meta_dense[patch_row] >> {type_bits}) - 1))
                         lambda_n += s_lam_dense[patch_row];
                     float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
-                    float sibling_residual = 0.0f;
-                    float cross = 0.0f;
-{dense_pair_dot}
-                    sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
-                    cross = warp_sum(cross);
-                    float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
-                        residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
-                    float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+{dense_pair_solve}                    float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
                     float scale = mag > radius ? radius / mag : 1.0f;
                     new_impulse = pair.x * scale;
                     float sib_delta = pair.y * scale - s_lam_dense[sib];
@@ -15250,7 +15647,7 @@ def _get_pgs_solve_mf_gs_kernel(
         s_v[d] = global_dof >= 0 ? v_out.data[global_dof] : 0.0f;
     }}
     __syncwarp();
-
+{pair_cache_build}
 {dense_pipe_decl}
 
     for (int iter = 0; iter < iterations; iter++) {{
@@ -15498,6 +15895,11 @@ def _get_pgs_solve_mf_gs_kernel(
         snippet = re.sub(r"s_meta_dense\[i\] & \d+", "world_row_type.data[off_dense + i]", snippet)
         if "s_meta_dense" in snippet:
             raise RuntimeError("streaming the dense row metadata left a reference to the shared array")
+        snippet = _prefetch_streamed_dense_metadata(snippet)
+    if row_cache:
+        # Every later row type or parent read comes from the compact shared copy.
+        snippet = re.sub(r"world_row_type\.data\[off_dense \+ ([^\]]+)\]", r"s_row_type[\1]", snippet)
+        snippet = re.sub(r"world_row_parent\.data\[off_dense \+ ([^\]]+)\]", r"s_row_parent[\1]", snippet)
 
     helpers = (
         FRICTION_PAIR_CUDA
@@ -15530,6 +15932,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 joint_friction,
                 contact_compliance,
                 row_phase,
+                pair_cache,
             )
             + "_local",
         )
@@ -15675,6 +16078,7 @@ def _get_pgs_solve_mf_gs_kernel(
         joint_friction,
         contact_compliance,
         row_phase,
+        pair_cache,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -15696,12 +16100,14 @@ def _mf_gs_kernel_name(
     joint_friction: bool,
     contact_compliance: bool,
     row_phase: int | None = None,
+    pair_cache: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
         f"pgs_solve_mf_gs_{max_constraints}_{free_body_constraint_max}_{max_world_dofs}"
         f"_vlim{int(has_dense_velocity_limit_rows)}_drive{int(has_drive_rows)}_fvl{int(fuse_vel_limits)}"
         f"{'' if shared_metadata else '_gmeta'}"
+        f"{'_paircache' if pair_cache else ''}"
         f"{'_torsion' if contact_torsion else ''}"
         f"{('_phased' if row_phase is None else f'_phase{row_phase}') if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
@@ -15709,6 +16115,56 @@ def _mf_gs_kernel_name(
         f"{'_jfric' if joint_friction else ''}"
         f"{'_compliance' if contact_compliance else ''}"
     )
+
+
+def _prefetch_streamed_dense_metadata(snippet: str) -> str:
+    """Load row i+1's streamed metadata with its prefetched J and Y rows in the MF-GS dense sweep.
+
+    The dense rows form a serial chain, so each row otherwise waits on these global loads.
+    """
+
+    def loads(row: str, indent: str) -> str:
+        return "".join(
+            f"{indent}{line}\n"
+            for line in (
+                f"pre_row_type = world_row_type.data[off_dense + {row}];",
+                f"pre_row_parent = world_row_parent.data[off_dense + {row}];",
+                f"pre_diag = world_diag.data[off_dense + {row}];",
+                f"pre_rhs = rhs_bias.data[off_dense + {row}];",
+                f"pre_row_w = regularize != 0 ? world_row_w.data[off_dense + {row}] : 1.0f;",
+            )
+        )
+
+    def after_line(source: str, fragment: str, text: str) -> str:
+        if source.count(fragment) != 1:
+            raise RuntimeError(f"expected one generated-source fragment {fragment.strip()!r}")
+        line_end = source.index("\n", source.index(fragment)) + 1
+        return source[:line_end] + text + source[line_end:]
+
+    start = snippet.index("// Dense rows, prefetching the response of the next row.")
+    end = snippet.index("// Free-body contact and friction rows, prefetching the next row.")
+    sweep = snippet[start:end]
+    sweep = after_line(sweep, "        if (dense_main_end > 0) {", loads("0", " " * 12))
+    sweep = after_line(
+        sweep,
+        "        for (int i = 0; i < dense_main_end; i++) {",
+        "            const int cur_row_type = pre_row_type, cur_row_parent = pre_row_parent;\n"
+        "            const float cur_diag = pre_diag, cur_rhs = pre_rhs, cur_row_w = pre_row_w;\n",
+    )
+    sweep = after_line(sweep, "int next_jy_base = ", loads("i + 1", " " * 16))
+    for source, register in (
+        ("world_row_type.data[off_dense + i]", "cur_row_type"),
+        ("world_row_parent.data[off_dense + i]", "cur_row_parent"),
+        ("world_diag.data[off_dense + (i)]", "cur_diag"),
+        ("rhs_bias.data[off_dense + (i)]", "cur_rhs"),
+        ("world_row_w.data[off_dense + i]", "cur_row_w"),
+    ):
+        sweep = sweep.replace(source, register)
+    declarations = (
+        "        int pre_row_type = 0, pre_row_parent = -1;\n"
+        "        float pre_diag = 0.0f, pre_rhs = 0.0f, pre_row_w = 1.0f;\n        "
+    )
+    return snippet[:start] + declarations + sweep + snippet[end:]
 
 
 def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
@@ -17729,7 +18185,12 @@ PROPAGATION_UNIT_STD_WORD = 6 + PROPAGATION_UNIT_RING
 
 
 def _colored_standard_unit(
-    acc: dict, ring: str, setup: str, friction: str = "true", friction_mode: str = "fixed_normal"
+    acc: dict,
+    ring: str,
+    setup: str,
+    friction: str = "true",
+    contact_compliance: bool = False,
+    friction_mode: str = "fixed_normal",
 ) -> str:
     """CUDA solving one standard contact unit straight-line, on register twists.
 
@@ -17742,7 +18203,8 @@ def _colored_standard_unit(
     ``acc`` maps payload fields to expressions: ``eff``, ``rhs``, ``w``, ``mu`` take a row
     index; ``Ja``, ``Jb``, ``Ma``, ``Mb`` a row and a component. ``ring`` adds the contact
     row's patch-ring members to ``lambda_n``; ``setup`` declares ``fp[5]``, the friction
-    pair's operator setup. Any ``friction_mode`` but fixed_normal solves the contact row and
+    pair's operator setup. ``contact_compliance`` adds ``gamma * lambda`` (``acc["gamma"]``) to
+    the contact row's residual. Any ``friction_mode`` but fixed_normal solves the contact row and
     its pair again together after the contact row (see :func:`_colored_coupled_contact`).
     """
 
@@ -17758,6 +18220,7 @@ def _colored_standard_unit(
             for e in range(6)
         )
 
+    rhs0 = f"({acc['rhs'](0)} + {acc['gamma'](0)} * old0)" if contact_compliance else acc["rhs"](0)
     friction_block = (
         f"""
                     if (!({friction})) {{
@@ -17830,7 +18293,7 @@ def _colored_standard_unit(
                     if (eff0 > 0.0f) {{
                         const float old0 = lambda_n;
                         const float w0 = regularize ? {acc["w"](0)} : 1.0f;
-                        float new0 = old0 + omega * (-({dot(0)} + {acc["rhs"](0)}) * eff0 * w0 - (1.0f - w0) * old0);
+                        float new0 = old0 + omega * (-({dot(0)} + {rhs0}) * eff0 * w0 - (1.0f - w0) * old0);
                         if (new0 < 0.0f) new0 = 0.0f;
                         const float d0 = new0 - old0;
                         imp[0] = new0;
@@ -17847,13 +18310,16 @@ def _colored_standard_unit(
 """
 
 
-def _colored_standard_unit_reference(friction: str = "true", friction_mode: str = "fixed_normal") -> str:
+def _colored_standard_unit_reference(
+    friction: str = "true", contact_compliance: bool = False, friction_mode: str = "fixed_normal"
+) -> str:
     """The standard-unit solve with every field loaded from global memory (reference body)."""
     o = "(world_base + start_slot + {r})"
     acc = {
         "imp": lambda r: f"propagation_impulses.data[world_base + start_slot + {r}]",
         "eff": lambda r: f"__ldg(&propagation_eff_mass_inv.data[world_base + start_slot + {r}])",
         "rhs": lambda r: f"__ldg(&propagation_rhs.data[world_base + start_slot + {r}])",
+        "gamma": lambda r: f"__ldg(&compliance_gamma.data[world_base + start_slot + {r}])",
         "w": lambda r: f"propagation_row_w.data[world_base + start_slot + {r}]",
         "mu": lambda r: f"__ldg(&propagation_row_mu.data[world_base + start_slot + {r}])",
         "Ja": lambda r, k: f"__ldg(&propagation_J_a.data[{o.format(r=r)} * 6 + {k}])",
@@ -17877,7 +18343,9 @@ def _colored_standard_unit_reference(friction: str = "true", friction_mode: str 
                             {cross}
                             friction_pair_setup(e1 > 0.0f ? 1.0f / e1 : 0.0f, cross, e2 > 0.0f ? 1.0f / e2 : 0.0f, fp[0], fp[1], fp[2], fp[3], fp[4]);
                         }}"""
-    return _colored_standard_unit(acc, ring, setup, friction=friction, friction_mode=friction_mode)
+    return _colored_standard_unit(
+        acc, ring, setup, friction=friction, contact_compliance=contact_compliance, friction_mode=friction_mode
+    )
 
 
 def _colored_coupled_contact(J, M, rhs, mu, old, qd, ok) -> str:
@@ -17985,12 +18453,139 @@ def _colored_coupled_row_loop(*, apply: bool, global_twists: bool = False) -> st
     return code
 
 
+def _colored_unit_torsion_row(first: str, *, shared: bool, end: str = "") -> str:
+    """CUDA solving a colored unit's contact torsion row, the unit row ``first`` when it is one.
+
+    A group's row sits in the torsion row of its last member, whose unit takes the group's highest color, so it
+    runs after every member's rows of the sweep and takes the plain sweep's residual budget; the other torsion
+    rows are inert. ``shared`` reads the twists from the color loop's local slots, otherwise from the global
+    bodies. ``end`` also ends the unit.
+    """
+    torsion_type = int(PGS_CONSTRAINT_TYPE_TORSION)
+    friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
+    if shared:
+
+        def locate(row_off: str) -> str:
+            return f"""const int ba = propagation_body_a.data[{row_off}];
+                    const int bb = propagation_body_b.data[{row_off}];
+                    const int la = (ba >= 0) ? propagation_body_local_slot.data[ba] : -1;
+                    const int lb = (bb >= 0) ? propagation_body_local_slot.data[bb] : -1;"""
+
+        def qd(side: str, k: str) -> str:
+            return f"s_qd[l{side} * 6 + {k}]"
+
+        def imp(side: str, k: str) -> str:
+            return f"s_imp[l{side} * 6 + {k}]"
+
+    else:
+
+        def locate(row_off: str) -> str:
+            return f"""const int la = propagation_body_a.data[{row_off}];
+                    const int lb = propagation_body_b.data[{row_off}];"""
+
+        def qd(side: str, k: str) -> str:
+            return f"propagation_body_qd.data[l{side} * 6 + {k}]"
+
+        def imp(side: str, k: str) -> str:
+            return f"propagation_body_impulses.data[l{side} * 6 + {k}]"
+
+    def apply(row_off: str, delta: str) -> str:
+        return f"""for (int e = 0; e < 6; ++e) {{
+                        if (la >= 0) {{
+                            {qd("a", "e")} += propagation_MiJt_a.data[({row_off}) * 6 + e] * {delta};
+                            {imp("a", "e")} += propagation_J_a.data[({row_off}) * 6 + e] * {delta};
+                        }}
+                        if (lb >= 0) {{
+                            {qd("b", "e")} += propagation_MiJt_b.data[({row_off}) * 6 + e] * {delta};
+                            {imp("b", "e")} += propagation_J_b.data[({row_off}) * 6 + e] * {delta};
+                        }}
+                    }}"""
+
+    pair = f"""n + 2 < m &&
+                        propagation_row_type.data[world_base + n + 1] == {friction_type} &&
+                        propagation_row_parent.data[world_base + n + 1] == n &&
+                        propagation_row_type.data[world_base + n + 2] == {friction_type} &&
+                        propagation_row_parent.data[world_base + n + 2] == n"""
+    end_check = f"if ({end}) break;" if end else ""
+    return f"""
+            do {{
+                {end_check}
+                const int slot = start_slot + ({first});
+                if (slot >= m) break;
+                const int off = world_base + slot;
+                if (propagation_row_type.data[off] != {torsion_type}) break;
+                // An inert torsion row has no lead contact.
+                if (propagation_row_parent.data[off] < 0) break;
+                {{
+                    {locate("off")}
+                    // With no responding body the group's units are not ordered by color.
+                    if (la < 0 && lb < 0) break;
+                }}
+                // The row carries its group's undivided coefficient.
+                const float mu = fmaxf(propagation_row_mu.data[off], 0.0f);
+                float normal_load = 0.0f;
+                float sliding_used = 0.0f;
+                for (int n = propagation_torsion_first.data[off]; n >= 0; n = propagation_torsion_next.data[world_base + n]) {{
+                    normal_load += fmaxf(propagation_impulses.data[world_base + n], 0.0f);
+                    // Only a normal followed by its own tangent pair consumes sliding budget.
+                    if ({pair}) {{
+                        const float a = propagation_impulses.data[world_base + n + 1];
+                        const float b = propagation_impulses.data[world_base + n + 2];
+                        sliding_used += sqrtf(a * a + b * b);
+                    }}
+                }}
+                const float normal_budget = mu * normal_load;
+                // Later members can lower the group's load after earlier tangent pairs were solved: project
+                // the pairs onto the final load and apply their velocity response.
+                if (sliding_used > normal_budget) {{
+                    const float scale = normal_budget / sliding_used;
+                    sliding_used = 0.0f;
+                    for (int n = propagation_torsion_first.data[off]; n >= 0; n = propagation_torsion_next.data[world_base + n]) {{
+                        if (!({pair})) continue;
+                        for (int t = 1; t <= 2; ++t) {{
+                            const int row_off = world_base + n + t;
+                            const float old_tangent = propagation_impulses.data[row_off];
+                            const float delta = old_tangent * scale - old_tangent;
+                            if (delta != 0.0f) {{
+                                propagation_impulses.data[row_off] = old_tangent * scale;
+                                {locate("row_off")}
+                                {apply("row_off", "delta")}
+                            }}
+                        }}
+                        const float a = propagation_impulses.data[world_base + n + 1];
+                        const float b = propagation_impulses.data[world_base + n + 2];
+                        sliding_used += sqrtf(a * a + b * b);
+                    }}
+                }}
+                const float bound = propagation_torsion_row_radius.data[off] * fmaxf(normal_budget - sliding_used, 0.0f);
+                {locate("off")}
+                float spin_dot = 0.0f;
+                for (int k = 0; k < 6; ++k) {{
+                    if (la >= 0) spin_dot += propagation_J_a.data[off * 6 + k] * {qd("a", "k")};
+                    if (lb >= 0) spin_dot += propagation_J_b.data[off * 6 + k] * {qd("b", "k")};
+                }}
+                const float residual = spin_dot + propagation_rhs.data[off];
+                const float old_spin = propagation_impulses.data[off];
+                const float spin_eff_inv = propagation_eff_mass_inv.data[off];
+                const float trial = spin_eff_inv > 0.0f ? old_spin - omega * residual * spin_eff_inv : 0.0f;
+                const float next_spin = fminf(fmaxf(trial, -bound), bound);
+                const float spin_delta = next_spin - old_spin;
+                if (spin_delta != 0.0f) {{
+                    propagation_impulses.data[off] = next_spin;
+                    {apply("off", "spin_delta")}
+                }}
+            }} while (0);
+"""
+
+
 def _colored_prefetch_unit_body(
     contact_type: int,
     friction_type: int,
     staged: bool = False,
     packed: bool = False,
+    contact_compliance: bool = False,
     friction_mode: str = "fixed_normal",
+    contact_torsion: bool = False,
 ) -> str:
     """CUDA body solving one contact unit on a single lane with its rows prefetched.
 
@@ -18005,10 +18600,13 @@ def _colored_prefetch_unit_body(
     With ``staged`` the lane's first unit of each color reads its payload from the
     shared buffer ``s_pay`` that the color loop filled with ``cp.async`` during the
     previous color (layout: :func:`_get_colored_payload_pack_kernel`); other units load directly.
-    Any ``friction_mode`` but fixed_normal solves each contact row and its pair together at the
-    pair's first row (see :func:`_colored_coupled_contact`).
+    ``contact_compliance`` adds ``gamma * lambda`` to each contact row's residual. Any
+    ``friction_mode`` but fixed_normal solves each contact row and its pair together at the
+    pair's first row (see :func:`_colored_coupled_contact`). ``contact_torsion`` also solves the
+    unit's contact torsion row (see :func:`_colored_unit_torsion_row`).
     """
     P = 3
+    end_window = "{ unit_rest = rr; unit_done = true; break; }" if contact_torsion else "{ unit_done = true; break; }"
 
     def reg(i: int) -> dict:
         return {
@@ -18017,6 +18615,7 @@ def _colored_prefetch_unit_body(
             "ba": f"p_ba[{i}]",
             "bb": f"p_bb[{i}]",
             "rhs": f"p_rhs[{i}]",
+            "gamma": f"__ldg(&compliance_gamma.data[world_base + start_slot + {i}])",
             "w": f"p_w[{i}]",
             "mu": f"p_mu[{i}]",
             "par": f"p_par[{i}]",
@@ -18035,6 +18634,7 @@ def _colored_prefetch_unit_body(
             "ba": f"propagation_body_a.data[{o}]",
             "bb": f"propagation_body_b.data[{o}]",
             "rhs": f"propagation_rhs.data[{o}]",
+            "gamma": f"compliance_gamma.data[{o}]",
             "w": f"propagation_row_w.data[{o}]",
             "mu": f"propagation_row_mu.data[{o}]",
             "par": f"propagation_row_parent.data[{o}]",
@@ -18134,6 +18734,7 @@ def _colored_prefetch_unit_body(
                     if (sib_delta != 0.0f) {{ {body_update(sib, "sib_delta")} }}
                     new_impulse = c1;
 """
+        rhs = f"({me['rhs']} + {me['gamma']} * {me['imp']})" if contact_compliance else me["rhs"]
         jv_a = " ".join(f"jv += {me['Ja'](k)} * s_qd[la * 6 + {k}];" for k in range(6))
         jv_b = " ".join(f"jv += {me['Jb'](k)} * s_qd[lb * 6 + {k}];" for k in range(6))
         return f"""
@@ -18155,7 +18756,7 @@ def _colored_prefetch_unit_body(
                 float jv = 0.0f;
                 if (la >= 0) {{ {jv_a} }}
                 if (lb >= 0) {{ {jv_b} }}
-                const float residual = jv + {me["rhs"]};
+                const float residual = jv + {rhs};
                 const float old_impulse = {me["imp"]};
                 const float w = regularize ? {me["w"]} : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -18180,7 +18781,7 @@ def _colored_prefetch_unit_body(
         rows = []
         for r in range(P):
             sib = reg(r + 1) if r + 1 < P else glob("world_base + slot + 1")
-            code = solve_row(reg(r), sib, "{ unit_done = true; break; }", setup=(r == 1))
+            code = solve_row(reg(r), sib, end_window, setup=(r == 1))
             if registers:
                 code = in_registers(code)
             rows.append(
@@ -18295,6 +18896,7 @@ def _colored_prefetch_unit_body(
         "imp": lambda r: f"u_imp[{r}]",
         "eff": lambda r: f"p_eff[{r}]",
         "rhs": lambda r: f"p_rhs[{r}]",
+        "gamma": lambda r: f"__ldg(&compliance_gamma.data[world_base + start_slot + {r}])",
         "w": lambda r: f"p_w[{r}]",
         "mu": lambda r: f"p_mu[{r}]",
         "Ja": lambda r, k: f"p_Ja[{r}][{k}]",
@@ -18332,8 +18934,22 @@ def _colored_prefetch_unit_body(
                         #pragma unroll
                         for (int q = 0; q < 5; ++q) fp[q] = u_fp[q];"""
     standard = _colored_standard_unit(
-        acc, ring, setup, friction=f"um[{PROPAGATION_UNIT_STD_WORD}] == 1", friction_mode=friction_mode
+        acc,
+        ring,
+        setup,
+        friction=f"um[{PROPAGATION_UNIT_STD_WORD}] == 1",
+        contact_compliance=contact_compliance,
+        friction_mode=friction_mode,
     )
+    unit_rest_decl = rest = standard_rest = ""
+    if contact_torsion:
+        unit_rows = f"um[{5 + PROPAGATION_UNIT_RING}]"
+        unit_rest_decl = f"\n                int unit_rest = {P};"
+        # The window ends at the unit's first row that is not a sliding row.
+        rest = _colored_unit_torsion_row("unit_rest", shared=True, end=f"unit_rest >= {unit_rows}")
+        # A straight-line unit's torsion row follows its sliding pair (kind 1) or its lone contact row (kind 2).
+        first = f"(um[{PROPAGATION_UNIT_STD_WORD}] == 1 ? 3 : 1)"
+        standard_rest = _colored_unit_torsion_row(first, shared=True, end=f"{first} >= {unit_rows}")
     return f"""
             {{
                 int p_type[{P}], p_ba[{P}], p_bb[{P}], p_par[{P}];
@@ -18358,10 +18974,10 @@ def _colored_prefetch_unit_body(
                 for (int q = 0; q < {PROPAGATION_UNIT_RING}; ++q)
                     u_ring_imp[q] = (q < u_ring_n) ? propagation_impulses.data[world_base + um[4 + q]] : 0.0f;
                 if (um[{PROPAGATION_UNIT_STD_WORD}] != 0) {{
-{standard}
+{standard}{standard_rest}
                 }} else {{
                 bool unit_done = false;
-                bool window_done = false;
+                bool window_done = false;{unit_rest_decl}
                 if ((u_la != u_lb || u_la < 0) && {same_bodies}) {{
                     float qa[6], qb[6], ia[6], ib[6];
                     #pragma unroll
@@ -18394,7 +19010,7 @@ def _colored_prefetch_unit_body(
                         const int off = world_base + slot;
 {tail}
                     }}
-                }}
+                }}{rest}
                 }}
             }}
 """
@@ -18411,7 +19027,9 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     staged: bool = False,
     packed: bool = False,
     straight_line: bool = True,
+    contact_compliance: bool = False,
     friction_mode: str = "fixed_normal",
+    contact_torsion: bool = False,
 ) -> "wp.Kernel":
     """Build the warp-per-world colored sweep, one lane per contact unit.
 
@@ -18422,19 +19040,32 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     the step's unit records, ``packed`` from a packed payload, ``staged`` copies the next
     color's payload to shared memory while a color solves, and ``straight_line`` solves the
     standard units without the row loop; with fixed_normal every variant gives the same result
-    bitwise. Any other ``friction_mode`` solves each contact row and its sliding pair together at
-    the pair's first row (see :func:`_colored_coupled_contact`); the variants then agree up to
-    float32 summation order.
+    bitwise. ``contact_compliance`` adds ``compliance_gamma * lambda`` to every contact row's
+    residual; the coefficient is zero on rigid rows. Any other ``friction_mode`` solves each
+    contact row and its sliding pair together at the pair's first row (see
+    :func:`_colored_coupled_contact`); the variants then agree up to float32 summation order.
+    ``contact_torsion`` solves each unit's contact torsion row after its other rows (see
+    :func:`_colored_unit_torsion_row`).
     """
+    if contact_compliance and friction_mode != "fixed_normal":
+        raise ValueError(f"contact_compliance requires friction_mode='fixed_normal', got {friction_mode!r}")
     M = propagation_max_constraints
     NE = n_color_entries
     MB = max(int(max_propagation_bodies), 1)
+    # The torsion row follows the unit's last solved row, so the row loops keep their row index.
+    row_loop = "int rr = 0;\n            for (; ; ++rr)" if contact_torsion else "for (int rr = 0; ; ++rr)"
+    rest = _colored_unit_torsion_row("rr", shared=True) if contact_torsion else ""
     # Lanes per unit of the row loop below.
     R = 1
     W = int(worlds_per_block)
     contact_type = int(PGS_CONSTRAINT_TYPE_CONTACT)
     friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
     gmask = f"(1u << (grp * {R}))"
+    rhs_term = "__ldg(&propagation_rhs.data[off])"
+    tail_rhs_term = "propagation_rhs.data[off]"
+    if contact_compliance:
+        rhs_term = f"({rhs_term} + compliance_gamma.data[off] * propagation_impulses.data[off])"
+        tail_rhs_term = f"({tail_rhs_term} + compliance_gamma.data[off] * propagation_impulses.data[off])"
 
     coop_pair = """                            sib = parent_idx + 2;
                             const int sib_off = world_base + sib;
@@ -18517,7 +19148,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                 }}
 """
     coop_body = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -18548,7 +19179,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                 float sib_delta = 0.0f;
                 int sib = -1;
 {coop_parent_decl}                if (gl == 0) {{
-                    const float residual = partial + __ldg(&propagation_rhs.data[off]);
+                    const float residual = partial + {rhs_term};
                     const float old_impulse = propagation_impulses.data[off];
                     const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                     float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -18597,11 +19228,11 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     tail_body = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -18620,7 +19251,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                 float jv = 0.0f;
                 if (la >= 0) for (int k = 0; k < 6; ++k) jv += propagation_J_a.data[off * 6 + k] * s_qd[la * 6 + k];
                 if (lb >= 0) for (int k = 0; k < 6; ++k) jv += propagation_J_b.data[off * 6 + k] * s_qd[lb * 6 + k];
-                const float residual = jv + propagation_rhs.data[off];
+                const float residual = jv + {tail_rhs_term};
                 const float old_impulse = propagation_impulses.data[off];
                 const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -18651,11 +19282,12 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     if R == 1 and straight_line:
         # The reference body solves standard units with the code every variant uses.
+        reference_rest = _colored_unit_torsion_row("(standard ? 3 : 1)", shared=True) if contact_torsion else ""
         coop_body = f"""
             int std_la = -1, std_lb = -1;
             bool standard = false;
@@ -18684,14 +19316,20 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             if (standard || lone) {{
                 const int u_la = std_la;
                 const int u_lb = std_lb;
-{_colored_standard_unit_reference(friction="standard", friction_mode=friction_mode)}
+{_colored_standard_unit_reference(friction="standard", contact_compliance=contact_compliance, friction_mode=friction_mode)}{reference_rest}
             }} else {{
 {coop_body}
             }}"""
     _prefetch = R == 1 and bool(prefetch)
     if _prefetch:
         coop_body = _colored_prefetch_unit_body(
-            contact_type, friction_type, staged=staged, packed=packed or staged, friction_mode=friction_mode
+            contact_type,
+            friction_type,
+            staged=staged,
+            packed=packed or staged,
+            contact_compliance=contact_compliance,
+            friction_mode=friction_mode,
+            contact_torsion=contact_torsion,
         )
     staged = bool(staged) and _prefetch
     if staged:
@@ -18897,6 +19535,10 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -18930,6 +19572,10 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -18964,6 +19610,10 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            propagation_torsion_first,
+            propagation_torsion_next,
+            propagation_torsion_row_radius,
+            compliance_gamma,
             world_row_order,
             world_color_offsets,
             propagation_body_list,
@@ -18984,7 +19634,8 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
 
     name = (
         f"pgs_solve_propagation_colored_warp_{M}_{NE}_r{R}_w{W}_mb{MB}_pf{int(_prefetch)}_st{int(staged)}"
-        f"_pk{int(bool(packed or staged))}_sl{int(bool(straight_line))}"
+        f"_pk{int(bool(packed or staged))}_sl{int(bool(straight_line))}{'_cc' if contact_compliance else ''}"
+        f"{'_tor' if contact_torsion else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
     )
     pgs_solve_propagation_colored_warp_template.__name__ = name
@@ -19001,14 +19652,20 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     block_dim: int,
     max_propagation_bodies: int,
     device_arch: str,
+    contact_compliance: bool = False,
     friction_mode: str = "fixed_normal",
+    contact_torsion: bool = False,
 ) -> "wp.Kernel":
     """Build the block-per-world colored sweep, one thread per contact unit.
 
     Colors run in sequence with ``__syncthreads()`` between them; units past the color cap run
-    in order on thread 0. Used when the warp sweep's per-world staging does not fit. Any
+    in order on thread 0. Used when the warp sweep's per-world staging does not fit.
+    ``contact_compliance`` adds ``compliance_gamma * lambda`` to every contact row's residual. Any
     ``friction_mode`` but fixed_normal solves each contact row and its sliding pair together.
+    ``contact_torsion`` solves each unit's contact torsion row after its other rows.
     """
+    if contact_compliance and friction_mode != "fixed_normal":
+        raise ValueError(f"contact_compliance requires friction_mode='fixed_normal', got {friction_mode!r}")
     M = propagation_max_constraints
     NE = n_color_entries
     B = int(block_dim)
@@ -19017,6 +19674,12 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     # Shared staging of each body's twist and deferred impulse, 48 bytes a body, up to a cap.
     MB = max(int(max_propagation_bodies), 1)
     use_staging = MB <= 384
+    # The torsion row follows the unit's last solved row, so the row loops keep their row index.
+    row_loop = "int rr = 0;\n            for (; ; ++rr)" if contact_torsion else "for (int rr = 0; ; ++rr)"
+    rest = _colored_unit_torsion_row("rr", shared=use_staging) if contact_torsion else ""
+    rhs_term = "__ldg(&propagation_rhs.data[off])"
+    if contact_compliance:
+        rhs_term = f"({rhs_term} + compliance_gamma.data[off] * propagation_impulses.data[off])"
 
     global_pair = """                        int sib = parent_idx + 2;
                         const int sib_off = world_base + sib;
@@ -19110,7 +19773,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         staged_pair = _colored_coupled_row_loop(apply=True)
 
     unit_solve_body = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -19145,7 +19808,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         jv += j.x * v.x + j.y * v.y;
                     }}
                 }}
-                const float residual = jv + __ldg(&propagation_rhs.data[off]);
+                const float residual = jv + {rhs_term};
                 const float old_impulse = propagation_impulses.data[off];
                 const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -19200,11 +19863,11 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     unit_solve_body_staged = f"""
-            for (int rr = 0; ; ++rr) {{
+            {row_loop} {{
                 const int slot = start_slot + rr;
                 if (slot >= m) break;
                 const int off = world_base + slot;
@@ -19237,7 +19900,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         jv += j.x * s_qd[lb * 6 + 2 * k] + j.y * s_qd[lb * 6 + 2 * k + 1];
                     }}
                 }}
-                const float residual = jv + __ldg(&propagation_rhs.data[off]);
+                const float residual = jv + {rhs_term};
                 const float old_impulse = propagation_impulses.data[off];
                 const float w = regularize ? propagation_row_w.data[off] : 1.0f;
                 float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
@@ -19284,7 +19947,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                         }}
                     }}
                 }}
-            }}
+            }}{rest}
 """
 
     body = unit_solve_body_staged if use_staging else unit_solve_body
@@ -19369,6 +20032,10 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -19398,6 +20065,10 @@ def _get_pgs_solve_propagation_colored_block_kernel(
         propagation_row_type: wp.array2d[int],
         propagation_row_parent: wp.array2d[int],
         propagation_row_mu: wp.array2d[float],
+        propagation_torsion_first: wp.array2d[int],
+        propagation_torsion_next: wp.array2d[int],
+        propagation_torsion_row_radius: wp.array2d[float],
+        compliance_gamma: wp.array2d[float],
         world_row_order: wp.array[int],
         world_color_offsets: wp.array[int],
         propagation_body_list: wp.array2d[int],
@@ -19428,6 +20099,10 @@ def _get_pgs_solve_propagation_colored_block_kernel(
             propagation_row_type,
             propagation_row_parent,
             propagation_row_mu,
+            propagation_torsion_first,
+            propagation_torsion_next,
+            propagation_torsion_row_radius,
+            compliance_gamma,
             world_row_order,
             world_color_offsets,
             propagation_body_list,
@@ -19444,7 +20119,8 @@ def _get_pgs_solve_propagation_colored_block_kernel(
 
     stag = "sb" if use_staging else "gb"
     name = (
-        f"pgs_solve_propagation_colored_units_{M}_{NE}_bd{B}_{stag}{MB}"
+        f"pgs_solve_propagation_colored_units_{M}_{NE}_bd{B}_{stag}{MB}{'_cc' if contact_compliance else ''}"
+        f"{'_tor' if contact_torsion else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
     )
     pgs_solve_propagation_colored_block_template.__name__ = name
@@ -19875,6 +20551,7 @@ def _get_factor_propagation_tree_revolute_kernel(
     const int art = group_to_art.data[group_idx];
     const int joint_start = articulation_start.data[art];
     const int joint_end = articulation_start.data[art + 1];
+    if (articulation_active.data && articulation_active.data[art] == 0) return;
 
     for (int joint = joint_start; joint < joint_end; ++joint) {
         const int body = joint_child.data[joint];
@@ -20172,6 +20849,7 @@ def _get_factor_propagation_tree_revolute_kernel(
     def factor_propagation_tree_revolute_native(
         group_idx: int,
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         articulation_start: wp.array[int],
         joint_parent: wp.array[int],
         joint_child: wp.array[int],
@@ -20193,6 +20871,7 @@ def _get_factor_propagation_tree_revolute_kernel(
 
     def factor_propagation_tree_revolute_template(  # pragma: no cover - compiled by wp.kernel
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         articulation_start: wp.array[int],
         joint_parent: wp.array[int],
         joint_child: wp.array[int],
@@ -20215,6 +20894,7 @@ def _get_factor_propagation_tree_revolute_kernel(
         factor_propagation_tree_revolute_native(
             group_idx,
             group_to_art,
+            articulation_active,
             articulation_start,
             joint_parent,
             joint_child,
@@ -20273,6 +20953,7 @@ def _get_propagation_tree_body_response_revolute_kernel(
     const int art = group_to_art.data[group_idx];
     const int joint_start = articulation_start.data[art];
     const int joint_end = articulation_start.data[art + 1];
+    if (articulation_active.data && articulation_active.data[art] == 0) return;
 
     for (int joint = joint_start; joint < joint_end; ++joint) {
 //FREE_ROOT_RESPONSE
@@ -20415,6 +21096,7 @@ def _get_propagation_tree_body_response_revolute_kernel(
     def propagation_tree_body_response_revolute_native(
         group_idx: int,
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         articulation_start: wp.array[int],
         joint_parent: wp.array[int],
         joint_child: wp.array[int],
@@ -20432,6 +21114,7 @@ def _get_propagation_tree_body_response_revolute_kernel(
 
     def propagation_tree_body_response_revolute_template(  # pragma: no cover - compiled by wp.kernel
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         articulation_start: wp.array[int],
         joint_parent: wp.array[int],
         joint_child: wp.array[int],
@@ -20450,6 +21133,7 @@ def _get_propagation_tree_body_response_revolute_kernel(
         propagation_tree_body_response_revolute_native(
             group_idx,
             group_to_art,
+            articulation_active,
             articulation_start,
             joint_parent,
             joint_child,
@@ -20592,6 +21276,7 @@ def _get_propagate_tree_impulses_revolute_kernel(
     if (guard_world >= 0 && cache_world_flag.data[guard_world] != 0) return;
     const int joint_start = articulation_start.data[art];
     const int joint_end = articulation_start.data[art + 1];
+    if (articulation_active.data && articulation_active.data[art] == 0) return;
     const int n_joints = joint_end - joint_start;
 
     __shared__ float s_pA[{joints_cap} * 6];
@@ -20768,6 +21453,7 @@ def _get_propagate_tree_impulses_revolute_kernel(
     def propagate_tree_impulses_revolute_native(
         group_idx: int,
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         art_to_world: wp.array[int],
         cache_world_flag: wp.array[int],
         articulation_start: wp.array[int],
@@ -20786,6 +21472,7 @@ def _get_propagate_tree_impulses_revolute_kernel(
 
     def propagate_tree_impulses_revolute_template(  # pragma: no cover - compiled by wp.kernel
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         art_to_world: wp.array[int],
         cache_world_flag: wp.array[int],
         articulation_start: wp.array[int],
@@ -20805,6 +21492,7 @@ def _get_propagate_tree_impulses_revolute_kernel(
         propagate_tree_impulses_revolute_native(
             group_idx,
             group_to_art,
+            articulation_active,
             art_to_world,
             cache_world_flag,
             articulation_start,
@@ -20993,6 +21681,7 @@ def _get_propagation_tree_cached_response_kernel(
     if (n_active > {C}) n_active = {C};
     const int joint_start = articulation_start.data[art];
     const int joint_end = articulation_start.data[art + 1];
+    if (articulation_active.data && articulation_active.data[art] == 0) return;
     const int n_joints = joint_end - joint_start;
     const int art_dof_start = joint_qd_start.data[joint_start];
 
@@ -21191,6 +21880,7 @@ def _get_propagation_tree_cached_response_kernel(
     def propagation_tree_cached_response_native(
         group_idx: int,
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         art_to_world: wp.array[int],
         cache_world_flag: wp.array[int],
         propagation_body_count: wp.array[int],
@@ -21212,6 +21902,7 @@ def _get_propagation_tree_cached_response_kernel(
 
     def propagation_tree_cached_response_template(  # pragma: no cover - compiled by wp.kernel
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         art_to_world: wp.array[int],
         cache_world_flag: wp.array[int],
         propagation_body_count: wp.array[int],
@@ -21234,6 +21925,7 @@ def _get_propagation_tree_cached_response_kernel(
         propagation_tree_cached_response_native(
             group_idx,
             group_to_art,
+            articulation_active,
             art_to_world,
             cache_world_flag,
             propagation_body_count,
@@ -21467,6 +22159,7 @@ def _get_refresh_propagation_tree_body_qd_warp_kernel(size: int, max_joints: int
     }}
     const int joint_start = articulation_start.data[art];
     const int joint_end = articulation_start.data[art + 1];
+    if (articulation_active.data && articulation_active.data[art] == 0) return;
     const int n_joints = joint_end - joint_start;
 
     __shared__ float s_bd[{joints_cap} * 6];
@@ -21535,6 +22228,7 @@ def _get_refresh_propagation_tree_body_qd_warp_kernel(size: int, max_joints: int
     def refresh_propagation_tree_body_qd_warp_native(
         group_idx: int,
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         art_to_world: wp.array[int],
         dense_contact_world_flag: wp.array[int],
         force_refresh: int,
@@ -21551,6 +22245,7 @@ def _get_refresh_propagation_tree_body_qd_warp_kernel(size: int, max_joints: int
 
     def refresh_propagation_tree_body_qd_warp_template(  # pragma: no cover - compiled by wp.kernel
         group_to_art: wp.array[int],
+        articulation_active: wp.array[int],
         art_to_world: wp.array[int],
         dense_contact_world_flag: wp.array[int],
         force_refresh: int,
@@ -21568,6 +22263,7 @@ def _get_refresh_propagation_tree_body_qd_warp_kernel(size: int, max_joints: int
         refresh_propagation_tree_body_qd_warp_native(
             group_idx,
             group_to_art,
+            articulation_active,
             art_to_world,
             dense_contact_world_flag,
             force_refresh,
@@ -22988,8 +23684,8 @@ _MF_COULOMB_NEWTON_FRICTION_SOURCE = """
 
                                 float rT0 = -last_s0;
                                 float rT1 = -last_s1;
-                                float rN = -(wNT0 * rT0 + wNT1 * rT1 + bN) / WN;
-                                new_lambda_n = rN;
+                                // The finite search can end just below zero load; the exact root is non-negative.
+                                new_lambda_n = fmaxf(-(wNT0 * rT0 + wNT1 * rT1 + bN) / WN, 0.0f);
                                 new_lambda_t1 = rT0;
                                 new_lambda_t2 = rT1;
                                 // The root search stops within a tolerance and leaves a residual tangent at mu = 0.
