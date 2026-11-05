@@ -2000,7 +2000,14 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
         steel_kernels.PGS_CONSTRAINT_TYPE_FRICTION,
         steel_kernels.PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
     )
-    layouts = {"first": [0, 1], "last": [38, 39], "between_contacts": [3, 10, 17, 33], "none": []}
+    layouts = {
+        "first": [0, 1],
+        "last": [38, 39],
+        "between_contacts": [3, 10, 17, 33],
+        # Rows 5 and 37 share a lane, which must keep the later row as its upper bound.
+        "same_lane": [5, 37],
+        "none": [],
+    }
     worlds = len(layouts)
     types = np.full((worlds, rows), steel_kernels.PGS_CONSTRAINT_TYPE_JOINT_LIMIT, np.int32)
     parents = np.full((worlds, rows), -1, np.int32)
