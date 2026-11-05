@@ -2749,6 +2749,15 @@ def parse_mjcf(
             return f"{articulation_label}/{common['name']}"
         return common["name"]
 
+    def parse_weld_relpose(relpose: str) -> wp.transform:
+        """Parse a weld ``relpose``, scaling its position and normalizing its quaternion like other MJCF quaternions."""
+        values = relpose.split()
+        pos = wp.vec3(*[float(x) * scale for x in values[:3]])
+        if all(float(x) == 0.0 for x in values[3:7]):
+            # All zeros is MuJoCo's "keep the relative pose at qpos0", which normalizing would turn into identity.
+            return wp.transform(pos, wp.quat(0.0, 0.0, 0.0, 0.0))
+        return wp.transform(pos, parse_orientation({"quat": " ".join(values[3:7])}))
+
     def parse_equality_constraints(equality):
         def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
             """Look up a site by name and return its body index and position (anchor).
@@ -2911,11 +2920,7 @@ def parse_mjcf(
                 body1_idx = body_name_to_idx.get(body1_name, -1) if body1_name else -1
                 body2_idx = body_name_to_idx.get(body2_name, -1) if body2_name else -1
 
-                relpose_list = [float(x) for x in relpose.split()]
-                relpose_transform = wp.transform(
-                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]) * scale,
-                    wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
-                )
+                relpose_transform = parse_weld_relpose(relpose)
 
                 if convert_mjc_equality_constraints:
                     # A world-side anchor or relpose is in MJCF world coordinates, which the import xform places.
@@ -2954,11 +2959,7 @@ def parse_mjcf(
                         continue
                     body1_idx, _ = site1_info
                     body2_idx, anchor_vec = site2_info
-                    relpose_list = [float(x) for x in relpose.split()]
-                    relpose_transform = wp.transform(
-                        wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]) * scale,
-                        wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
-                    )
+                    relpose_transform = parse_weld_relpose(relpose)
                     if verbose:
                         logger.info("Weld constraint (site-based): body %s to body %s", body1_idx, body2_idx)
                     if convert_mjc_equality_constraints:

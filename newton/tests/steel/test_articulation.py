@@ -850,6 +850,44 @@ def test_imported_weld_with_zero_torquescale_leaves_rotation_free(test, device):
     test.assertAlmostEqual(swing, th, delta=0.05 * abs(th))
 
 
+def test_imported_weld_with_unnormalized_relpose_holds_the_same_pose(test, device):
+    """Normalize an imported weld's relpose quaternion, so a scaled one gives the same frames and held pose."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="paddle" pos="0 0 1" euler="0 45 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><weld body1="paddle" anchor="0 0 1" relpose="0 0 0 {quat}"/></equality>
+    </mujoco>
+    """
+    held = {}
+    for label, quat in (("unit", "0.9238795 0 -0.3826834 0"), ("scaled", "1.847759 0 -0.7653668 0")):
+        b = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(b)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the FIXED loop joint parallels the hinge
+            b.add_mjcf(mjcf.format(quat=quat))
+        model = b.finalize(device=device)
+        solver = SolverSteel(model, solve_mode="matrix_free", iterations=16)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(30):
+            solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        held[label] = (
+            model.joint_X_p.numpy()[1],
+            model.joint_X_c.numpy()[1],
+            model.mujoco.equality_constraint_relpose.numpy()[0],
+            state_0.body_q.numpy()[0],
+        )
+    for unit, scaled in zip(held["unit"], held["scaled"], strict=True):
+        np.testing.assert_allclose(scaled, unit, atol=1.0e-6)
+    # The relpose is the authored pose, so the weld holds the paddle against gravity at its 45 degree tilt.
+    test.assertGreater(abs(float(held["unit"][3][3:] @ model.body_q.numpy()[0, 3:])), 1.0 - 1.0e-6)
+
+
 def _expect_one_warning(test, category, pattern, call):
     """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
     with warnings.catch_warnings(record=True) as caught:
@@ -1078,6 +1116,7 @@ for _name in (
     "test_imported_connect_equality_is_enforced",
     "test_imported_weld_equality_holds_the_authored_pose",
     "test_imported_weld_with_zero_torquescale_leaves_rotation_free",
+    "test_imported_weld_with_unnormalized_relpose_holds_the_same_pose",
     "test_open_closure_on_floating_base_conserves_angular_momentum",
     "test_open_world_closure_pulls_at_child_anchor",
     "test_open_closure_from_fixed_root_pulls_at_child_anchor",
