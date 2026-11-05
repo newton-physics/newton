@@ -126,9 +126,8 @@ needs its warm-start buffers allocated before capture, on every device:
 construct the :class:`~newton.CollisionPipeline` before the solver, which
 publishes :attr:`~newton.CollisionPipeline.rigid_contact_max`, or run one uncaptured step first.
 
-For cloth and soft bodies, start at ``dt`` = 1/600 s with 10 iterations and
-adjust following :ref:`vbd-rules-of-thumb`. For rigid bodies and cables, see
-:ref:`vbd-rigid-cable-tuning`. The :ref:`Tuning VBD` parameter table lists the
+Start at ``dt`` = 1/600 s with 10 iterations and adjust following
+:ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists the
 constructor arguments that matter most for particle systems, with their
 effect and cost; the signature of :class:`~newton.solvers.SolverVBD` is the
 complete list.
@@ -887,9 +886,10 @@ damping coefficient.
 Examples
 --------
 
-:ref:`vbd-empirical-table` on the tuning page lists one shipped example per
-scenario, from cloth drape to a gripper on a soft pad, and says what each one
-demonstrates; copy the values from the example file.
+:ref:`Empirical parameter combinations <vbd-empirical-table>` on the tuning
+page lists one shipped example per scenario, from cloth drape to a gripper on
+a soft pad, and says what each one demonstrates; copy the values from the
+example file.
 
 Runnable examples using :class:`~newton.solvers.SolverVBD` on GitHub:
 
