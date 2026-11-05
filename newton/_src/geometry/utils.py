@@ -198,9 +198,9 @@ def compute_inertia_box_mesh(
         arg = 6.0 * (eigvals[j] + eigvals[k] - eigvals[i]) / volume
         half_extents[i] = 0.5 * np.sqrt(max(arg, 0.0))
 
-    # Convert the eigenvector matrix (columns = principal axes in mesh frame)
-    # to a quaternion.
-    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.T.flatten().tolist()))
+    # The eigenvector matrix (columns = principal axes in mesh frame) rotates the
+    # principal-axis frame to the mesh frame; wp.mat33 takes its values row by row.
+    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.flatten().tolist()))
 
     return wp.vec3(*np.array(com)), wp.vec3(*half_extents), rotation
 

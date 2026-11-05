@@ -4719,15 +4719,13 @@ f 4 5 8
             s = builder.shape_scale[0]
             # Sorted half-extents should match the original box dims.
             np.testing.assert_allclose(sorted([s[0], s[1], s[2]]), [0.5, 1.0, 2.0], atol=0.05)
-            # Eigenvector signs are platform-dependent, so just verify the
-            # rotation is non-trivial.  Warp XYZW identity = [0, 0, 0, 1].
-            t = builder.shape_transform[0]
-            q = t.q
-            q_np = np.array([q[0], q[1], q[2], q[3]])
-            self.assertFalse(
-                np.allclose(np.abs(q_np), [0, 0, 0, 1], atol=0.1),
-                "Expected non-identity rotation for rotated mesh",
-            )
+            # The fitted box's longest axis (Z) is the mesh box's rotated x axis and its
+            # shortest (X) the rotated y axis; eigenvector signs are platform-dependent.
+            q = builder.shape_transform[0].q
+            long_axis = np.array(wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0)))
+            short_axis = np.array(wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0)))
+            self.assertAlmostEqual(abs(long_axis @ [cos_a, sin_a, 0.0]), 1.0, places=4)
+            self.assertAlmostEqual(abs(short_axis @ [-sin_a, cos_a, 0.0]), 1.0, places=4)
 
     def test_fit_with_fitscale(self):
         """fitscale attribute scales the fitted primitive."""

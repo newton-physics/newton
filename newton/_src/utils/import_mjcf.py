@@ -1775,17 +1775,14 @@ def parse_mjcf(
                             fit_to_mesh = False
 
                         if fit_to_mesh:
-                            # Build a rotation that maps the sorted principal axes
-                            # to the standard frame (X, Y, Z).  The eigenvectors in
-                            # principal_rot are in the original eigenvalue order; we
-                            # need to reorder columns to match the sorted half-extents.
-                            # Rows of warp mat33 = basis vectors of the rotated frame.
+                            # Rotate the geom so that its axes are the principal axes. The
+                            # columns of rot_mat are the principal axes in the mesh frame, in
+                            # eigenvalue order; reorder them to match the sorted half-extents,
+                            # so the axis with the largest half-extent becomes the geom's Z.
                             rot_mat = np.array(wp.quat_to_matrix(principal_rot)).reshape(3, 3)
-                            # rot_mat rows are the principal axes; reorder them so
-                            # the axis with the largest half-extent becomes row 2 (Z).
-                            sorted_mat = rot_mat[sort_order, :]
+                            sorted_mat = rot_mat[:, sort_order]
                             if np.linalg.det(sorted_mat) < 0:
-                                sorted_mat[0, :] = -sorted_mat[0, :]
+                                sorted_mat[:, 0] = -sorted_mat[:, 0]
                             fit_rot = wp.quat_from_matrix(wp.mat33(*sorted_mat.flatten().tolist()))
 
                             # Shift the geom origin to the mesh COM and rotate to
