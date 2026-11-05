@@ -2772,17 +2772,20 @@ def accumulate_connect_wrenches_from_impulses(
         force = e * (world_impulses[world, slot] * inv_dt * inv_norm)
         _add_point_force(body_p, force, p_a, body_to_articulation, articulation_origin, body_contact_wrench)
         _add_point_force(body_c, -force, p_b, body_to_articulation, articulation_origin, body_contact_wrench)
-    for i in range(connect_rows[k] - 3):
+    rows = connect_rows[k]
+    if rows < 5:
+        return
+    dirs, _phi = _connect_rotation_rows(
+        rows, body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
+    )
+    for i in range(rows - 3):
         slot = base_slot + 3 + i
         if slot >= world_constraint_count[world] or world_row_type[world, slot] != PGS_CONSTRAINT_TYPE_CONNECT:
             continue
         inv_norm = connect_row_inv_norm[k, 3 + i]
         if inv_norm == 0.0:
             continue
-        e, _phi = _connect_rotation_row(
-            i, connect_rows[k], body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
-        )
-        torque = e * (world_impulses[world, slot] * inv_dt * inv_norm)
+        torque = dirs[i] * (world_impulses[world, slot] * inv_dt * inv_norm)
         if body_p >= 0:
             wp.atomic_add(body_contact_wrench, body_p, wp.spatial_vector(wp.vec3(0.0), torque))
         wp.atomic_add(body_contact_wrench, body_c, wp.spatial_vector(wp.vec3(0.0), -torque))
@@ -3384,8 +3387,7 @@ def _connect_weld_rotation(
 
 
 @wp.func
-def _connect_rotation_row(
-    i: int,
+def _connect_rotation_rows(
     rows: int,
     body_p: int,
     body_c: int,
@@ -3396,10 +3398,10 @@ def _connect_rotation_row(
     joint_X_c: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
 ):
-    """Return the direction ``e`` and position error ``phi`` of rotation row ``i`` of a closure.
+    """Return the directions (matrix rows) and position errors of a closure's rotation rows.
 
     REVOLUTE (5 rows): the two normals of the live hinge axis, realigning toward the nearer axis direction.
-    FIXED (6 rows): the three world axes, ``phi = e . r`` with ``r`` the weld's rotation vector.
+    FIXED (6 rows): the three world axes, ``phi = r`` with ``r`` the weld's rotation vector.
     """
     if rows == 5:
         a_p, a_c, e1, e2 = _connect_hinge_frame(
@@ -3409,14 +3411,8 @@ def _connect_rotation_row(
         # A closure has no joint coordinate, so it holds the hinge line and realigns toward the nearer direction.
         if wp.dot(a_c, a_p) < 0.0:
             misalign = -misalign
-        e = e1
-        if i == 1:
-            e = e2
-        return e, wp.dot(e, misalign)
-    r = _connect_weld_rotation(body_p, body_c, joint, joint_X_p, joint_X_c, body_q)
-    e = wp.vec3(0.0)
-    e[i] = 1.0
-    return e, r[i]
+        return wp.matrix_from_rows(e1, e2, wp.vec3(0.0)), wp.vec3(wp.dot(e1, misalign), wp.dot(e2, misalign), 0.0)
+    return wp.identity(n=3, dtype=float), _connect_weld_rotation(body_p, body_c, joint, joint_X_p, joint_X_c, body_q)
 
 
 @wp.func
@@ -3657,15 +3653,19 @@ def populate_connect_J_for_size(
                 world_target_velocity,
             )
 
+        rows = connect_rows[k]
+        if rows < 5:
+            continue
+        dirs, phis = _connect_rotation_rows(
+            rows, body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
+        )
         omega_a = wp.vec3(0.0, 0.0, 0.0)
         if prescribed and body_p >= 0:
             omega_a = wp.spatial_bottom(body_qd[body_p])
         # Rotation rows: two hinge-alignment rows for REVOLUTE, three weld rows for FIXED.
-        for i in range(connect_rows[k] - 3):
+        for i in range(rows - 3):
             slot = base_slot + 3 + i
-            e, phi_rot = _connect_rotation_row(
-                i, connect_rows[k], body_p, body_c, joint, joint_axis, joint_qd_start, joint_X_p, joint_X_c, body_q
-            )
+            e = dirs[i]
             target = float(0.0)
             if prescribed:
                 target = -wp.dot(e, omega_a)
@@ -3701,7 +3701,7 @@ def populate_connect_J_for_size(
                 slot,
                 n_dofs,
                 world,
-                phi_rot,
+                phis[i],
                 target,
                 J_group,
                 world_row_type,
