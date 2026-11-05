@@ -182,8 +182,8 @@ from .kernels import (
     refresh_propagation_free_body_qd_from_vout,
     refresh_propagation_tree_body_qd_for_size,
     remove_free_root_transport_from_qdd,
+    reserve_world_row_slots,
     reserve_world_row_slots_serial,
-    reserve_world_row_slots_warp,
     reset_row_warmstart,
     rhs_accum_world_par_art,
     rhs_accum_world_par_row,
@@ -9514,9 +9514,12 @@ class SolverSteel(SolverBase, CouplingInterface):
             elements = listed[np.argsort(element_world[listed], kind="stable")]
             counts = np.bincount(element_world[listed], minlength=self._world_count)
             start = np.concatenate(([0], np.cumsum(counts))).astype(np.int32)
+            # One reservation block per world: a power of two of 32 to 1024 threads, enough for its largest world.
+            block_dim = min(1024, max(32, 1 << (int(counts.max(initial=0)) - 1).bit_length()))
             return (
                 wp.array(start, dtype=wp.int32, device=device),
                 wp.array(elements.astype(np.int32), dtype=wp.int32, device=device),
+                block_dim,
             )
 
         art_world = self._art_to_world.numpy()
@@ -9534,7 +9537,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             cursor_size = max(cursor_size, self._free_rigid_body_count)
         self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
         for size in self._size_groups:
-            self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])
+            self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])[:2]
 
         sort_capacity = 2 * self._max_contacts_alloc
         self._contact_sort_keys = wp.zeros(sort_capacity, dtype=wp.int32, device=device)
@@ -9558,16 +9561,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             launch(ROW_SLOTS_ATOMIC)
             return
         device = self.model.device
-        world_element_start, world_elements = world_index
+        world_element_start, world_elements, block_dim = world_index
         self._row_cursor.zero_()
         launch(ROW_SLOTS_COUNT)
         if device.is_cuda:
             wp.launch_tiled(
-                reserve_world_row_slots_warp,
+                reserve_world_row_slots,
                 dim=[self._world_count],
                 inputs=[world_element_start, world_elements],
                 outputs=[world_slot_counter, self._row_cursor],
-                block_dim=32,
+                block_dim=block_dim,
                 device=device,
             )
         else:
@@ -12400,7 +12403,7 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
             if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
-                // One warp owns the articulation; see reserve_world_row_slots_warp.
+                // One warp owns the articulation; see reserve_world_row_slots.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
             }}
@@ -12537,7 +12540,7 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
             if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
-                // One warp owns the articulation; see reserve_world_row_slots_warp.
+                // One warp owns the articulation; see reserve_world_row_slots.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
             }}

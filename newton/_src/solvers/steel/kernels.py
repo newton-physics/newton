@@ -61,7 +61,7 @@ CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 
 # Row-slot reservation modes of the joint-row families. ATOMIC reserves from the per-world counter, so a
 # family's rows land in thread-scheduling order. COUNT and WRITE run a family twice around a scan of the
-# counted rows (:func:`reserve_world_row_slots_warp`), so each element's rows land in world-element order.
+# counted rows (:func:`reserve_world_row_slots`), so each element's rows land in world-element order.
 ROW_SLOTS_ATOMIC = wp.constant(0)
 ROW_SLOTS_COUNT = wp.constant(1)
 ROW_SLOTS_WRITE = wp.constant(2)
@@ -93,11 +93,15 @@ def reserve_world_rows(
 
 @wp.func_native("""
 #if defined(__CUDA_ARCH__)
+    __shared__ int warp_totals[32];
+    const int lane = thread & 31;
+    const int warp = thread >> 5;
+    const int warp_count = blockDim.x >> 5;
     const int start = world_element_start.data[world];
     const int end = world_element_start.data[world + 1];
     int slot = world_slot_counter.data[world];
-    for (int base = start; base < end; base += 32) {
-        const int i = base + lane;
+    for (int base = start; base < end; base += blockDim.x) {
+        const int i = base + thread;
         int element = -1;
         int count = 0;
         if (i < end) {
@@ -109,25 +113,40 @@ def reserve_world_rows(
             const int below = __shfl_up_sync(0xFFFFFFFF, inclusive, offset);
             if (lane >= offset) inclusive += below;
         }
-        if (i < end) element_row_cursor.data[element] = slot + inclusive - count;
-        slot += __shfl_sync(0xFFFFFFFF, inclusive, 31);
+        if (lane == 31) warp_totals[warp] = inclusive;
+        __syncthreads();
+        if (warp == 0) {
+            int total = lane < warp_count ? warp_totals[lane] : 0;
+            for (int offset = 1; offset < 32; offset <<= 1) {
+                const int below = __shfl_up_sync(0xFFFFFFFF, total, offset);
+                if (lane >= offset) total += below;
+            }
+            warp_totals[lane] = total;
+        }
+        __syncthreads();
+        const int warp_offset = warp > 0 ? warp_totals[warp - 1] : 0;
+        if (i < end) element_row_cursor.data[element] = slot + warp_offset + inclusive - count;
+        slot += warp_totals[warp_count - 1];
+        // Every thread reads the totals before the next chunk overwrites them.
+        __syncthreads();
     }
-    if (lane == 0) world_slot_counter.data[world] = slot;
+    if (thread == 0) world_slot_counter.data[world] = slot;
 #endif
 """)
-def _reserve_world_row_slots_warp(
+def _reserve_world_row_slots(
     world: int,
-    lane: int,
+    thread: int,
     world_element_start: wp.array[int],
     world_elements: wp.array[int],
     world_slot_counter: wp.array[int],
     element_row_cursor: wp.array[int],
 ):
-    """Scan one world's element row counts into first slots with one warp, 32 elements at a time."""
+    """Scan one world's element row counts into first slots with one block, a block's width at a time."""
 
 
-@wp.kernel(enable_backward=False)
-def reserve_world_row_slots_warp(
+# Its own module: each launch block size compiles this kernel alone, not all of the Steel kernels.
+@wp.kernel(enable_backward=False, module="unique")
+def reserve_world_row_slots(
     world_element_start: wp.array[int],
     world_elements: wp.array[int],
     # in/out
@@ -136,12 +155,10 @@ def reserve_world_row_slots_warp(
 ):
     """Turn a COUNT pass's row counts into first slots in world-element order and advance the world counters.
 
-    Launch tiled with one 32-thread block per world (CUDA only).
+    Launch tiled with one block per world and a multiple of 32 threads, at most 1024 (CUDA only).
     """
-    world, lane = wp.tid()
-    _reserve_world_row_slots_warp(
-        world, lane, world_element_start, world_elements, world_slot_counter, element_row_cursor
-    )
+    world, thread = wp.tid()
+    _reserve_world_row_slots(world, thread, world_element_start, world_elements, world_slot_counter, element_row_cursor)
 
 
 @wp.kernel(enable_backward=False)
@@ -152,7 +169,7 @@ def reserve_world_row_slots_serial(
     world_slot_counter: wp.array[int],
     element_row_cursor: wp.array[int],
 ):
-    """The one-thread-per-world form of :func:`reserve_world_row_slots_warp`, for CPU."""
+    """The one-thread-per-world form of :func:`reserve_world_row_slots`, for CPU."""
     world = wp.tid()
     slot = world_slot_counter[world]
     for i in range(world_element_start[world], world_element_start[world + 1]):

@@ -1991,7 +1991,7 @@ add_function_test(
 def test_world_row_slot_reservation_matches_prefix_sums(test, device):
     """Give each element its world's counter plus the earlier row counts of that world, in world-element order.
 
-    Worlds hold no elements, a few, exactly one warp's worth, and many more than a warp.
+    Worlds hold no elements, a few, exactly one warp's worth, and more than the largest block.
     """
     rng = np.random.default_rng(11)
     sizes = [0, 3, 32, 33, 0, 1500, 7]
@@ -2007,28 +2007,29 @@ def test_world_row_slot_reservation_matches_prefix_sums(test, device):
         for i in range(lo, hi):
             expected_cursor[elements[i]] = expected_counters[world]
             expected_counters[world] += counts[elements[i]]
-    cursor = wp.array(counts, dtype=int, device=device)
-    world_counters = wp.array(counters, dtype=int, device=device)
     inputs = [wp.array(starts, dtype=int, device=device), wp.array(elements, dtype=int, device=device)]
-    if wp.get_device(device).is_cuda:
-        wp.launch_tiled(
-            steel_kernels.reserve_world_row_slots_warp,
-            dim=[len(sizes)],
-            inputs=inputs,
-            outputs=[world_counters, cursor],
-            block_dim=32,
-            device=device,
-        )
-    else:
-        wp.launch(
-            steel_kernels.reserve_world_row_slots_serial,
-            dim=len(sizes),
-            inputs=inputs,
-            outputs=[world_counters, cursor],
-            device=device,
-        )
-    np.testing.assert_array_equal(cursor.numpy(), expected_cursor)
-    np.testing.assert_array_equal(world_counters.numpy(), expected_counters)
+    for block_dim in (32, 256, 1024) if wp.get_device(device).is_cuda else (None,):
+        cursor = wp.array(counts, dtype=int, device=device)
+        world_counters = wp.array(counters, dtype=int, device=device)
+        if block_dim is None:
+            wp.launch(
+                steel_kernels.reserve_world_row_slots_serial,
+                dim=len(sizes),
+                inputs=inputs,
+                outputs=[world_counters, cursor],
+                device=device,
+            )
+        else:
+            wp.launch_tiled(
+                steel_kernels.reserve_world_row_slots,
+                dim=[len(sizes)],
+                inputs=inputs,
+                outputs=[world_counters, cursor],
+                block_dim=block_dim,
+                device=device,
+            )
+        np.testing.assert_array_equal(cursor.numpy(), expected_cursor, err_msg=f"block_dim={block_dim}")
+        np.testing.assert_array_equal(world_counters.numpy(), expected_counters, err_msg=f"block_dim={block_dim}")
 
 
 class TestSteelWorldRowSlotReservation(unittest.TestCase):
