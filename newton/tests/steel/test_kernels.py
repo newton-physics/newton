@@ -1993,13 +1993,14 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
 
     The pass walks only the span of each world's velocity-limit rows, so this places them at the span's ends.
     """
-    rows, dofs = 24, 12
+    # More than 32 rows, so each lane's span scan takes a second stride.
+    rows, dofs = 40, 12
     contact, friction, vlim = (
         steel_kernels.PGS_CONSTRAINT_TYPE_CONTACT,
         steel_kernels.PGS_CONSTRAINT_TYPE_FRICTION,
         steel_kernels.PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
     )
-    layouts = {"first": [0, 1], "last": [22, 23], "between_contacts": [3, 10, 17], "none": []}
+    layouts = {"first": [0, 1], "last": [38, 39], "between_contacts": [3, 10, 17, 33], "none": []}
     worlds = len(layouts)
     types = np.full((worlds, rows), steel_kernels.PGS_CONSTRAINT_TYPE_JOINT_LIMIT, np.int32)
     parents = np.full((worlds, rows), -1, np.int32)
