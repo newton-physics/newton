@@ -527,8 +527,6 @@ def rigid_bodies_indexing_kernel(
 @wp.kernel
 def joint_conversion_kernel(
     # Inputs:
-    model_joint_world: wp.array[wp.int32],
-    model_joint_world_start: wp.array[wp.int32],
     model_joint_parent: wp.array[wp.int32],
     model_joint_child: wp.array[wp.int32],
     model_joint_type: wp.array[wp.int32],
@@ -547,7 +545,6 @@ def joint_conversion_kernel(
     joint_limit_upper: wp.array[wp.float32],
     body_is_immovable: wp.array[wp.int32],
     # Outputs:
-    joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
     joint_act_type: wp.array[wp.int32],
     joint_dof_act_types: wp.array[wp.int32],
@@ -563,9 +560,6 @@ def joint_conversion_kernel(
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
-
-    world_id = model_joint_world[joint_id]
-    joint_jid[joint_id] = joint_id - model_joint_world_start[world_id]
 
     # Determine Kamino joint type
     type_j = model_joint_type[joint_id]
@@ -1646,7 +1640,6 @@ def convert_joints(
 
     # Create joint property arrays
     with wp.ScopedDevice(model.device):
-        joint_jid = wp.empty(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_act_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_act_types = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
@@ -1673,8 +1666,6 @@ def convert_joints(
         dim=model.joint_count,
         inputs=[
             # Inputs:
-            model.joint_world,
-            model.joint_world_start,
             model.joint_parent,
             model.joint_child,
             model.joint_type,
@@ -1693,7 +1684,6 @@ def convert_joints(
             model.joint_limit_upper,
             model_bodies.is_immovable,
             # Outputs:
-            joint_jid,
             joint_dof_type,
             joint_act_type,
             joint_dof_act_types,
@@ -2102,7 +2092,6 @@ def convert_joints(
         num_joints=model.joint_count,
         label=model.joint_label,
         wid=model.joint_world,
-        jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
         dof_act_types=joint_dof_act_types,

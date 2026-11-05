@@ -1,0 +1,1 @@
+Raise a `RuntimeError` when `SolverSteel.constraint_row_watermarks()` is called during CUDA graph capture with `row_watermark=True`. It reads the device on the host; a call during capture failed with a CUDA error and invalidated the capture.

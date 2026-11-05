@@ -843,7 +843,7 @@ def test_watermarks_record_capacity_overflow(test, device, solve_mode="matrix_fr
 
 
 def test_watermarks_accumulate_in_captured_steps(test, device):
-    """Accumulate the same marks under CUDA graph replay as in eager steps."""
+    """Accumulate the same marks under CUDA graph replay as in eager steps; reading them during capture raises."""
     results = []
     for capture in (False, True):
         model = _scene(device)
@@ -868,6 +868,8 @@ def test_watermarks_accumulate_in_captured_steps(test, device):
             substep()
             with wp.ScopedCapture(device) as capture_scope:
                 substep()
+                with test.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
+                    solver.constraint_row_watermarks()
             for _ in range(9):
                 wp.capture_launch(capture_scope.graph)
         else:

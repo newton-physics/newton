@@ -804,10 +804,8 @@ def test_articulated_contact_response_validation(test, device):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, f"articulated_contact_response must be .*got '{response}'"):
                 SolverSteel(model, articulated_contact_response=response)
-    for response in ("immediate", "propagation_colored"):
-        with test.subTest(response=response):
-            with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
-                SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
+    with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
+        SolverSteel(model, articulated_contact_response="immediate", propagation_same_articulation_rows=True)
 
     # The propagation responses solve trees of different articulation sizes in one model.
     mixed = newton.ModelBuilder()
@@ -844,7 +842,14 @@ def test_propagation_rejects_unsupported_options(test, device):
                 SolverSteel(model, articulated_contact_response=response)
         set_torsion_radius(model, 0.0)
         compliance = {"contact_compliance": True, "friction_anchor_beta": 0.0}
-        options = [({"enable_sleeping": True}, "enable_sleeping")]
+        options = []
+        if response == "propagation":
+            options.append(({"enable_sleeping": True}, "enable_sleeping"))
+        else:
+            with test.subTest(response=response, option="enable_sleeping"):
+                test.assertIsNotNone(
+                    SolverSteel(model, articulated_contact_response=response, enable_sleeping=True)._sleeping
+                )
         accepted = [
             {"drive_mode": "rows"},
             {"contact_regularization": 0.02},

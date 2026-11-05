@@ -14,7 +14,6 @@ import warp as wp
 
 import newton
 from newton import Contacts
-from newton._src.sim import JointType
 from newton._src.solvers.kamino._src.core.joints import JointDoFType
 from newton._src.solvers.kamino._src.kinematics.joints import (
     gimbal_reciprocal_axes,

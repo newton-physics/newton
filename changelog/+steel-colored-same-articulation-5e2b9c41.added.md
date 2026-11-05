@@ -1,0 +1,1 @@
+Accept `propagation_same_articulation_rows=True` with `SolverSteel` `articulated_contact_response="propagation_colored"`, which solves contacts between two links of one articulation as colored propagation rows with the exact cross response of the two links.

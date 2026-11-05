@@ -8882,13 +8882,17 @@ def gather_propagation_unit_meta(
                 walk = row_parent[world, walk]
             overflow = offset | (count << 20)
     unit_meta[base + 7 + PROPAGATION_UNIT_RING] = overflow
-    # Rows of the unit: its first row and the friction rows following it.
+    # Rows of the unit: its first row and the friction rows following it, then its contact torsion row.
     m = wp.min(constraint_count[world], int(row_type.shape[1]))
     rows = int(1)
     while slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_FRICTION:
         rows += 1
-    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows
+    torsion = int(0)
+    if slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_TORSION:
+        torsion = 1
+    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows + torsion
     # Straight-line kinds: a contact row with its friction pair on the unit's two bodies, or a lone contact row.
+    # The sweep solves a torsion row after either.
     standard = int(0)
     if (
         straight_line != 0
@@ -9188,6 +9192,7 @@ def flatten_propagation_joint_S(
 @wp.kernel
 def factor_propagation_tree_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -9218,6 +9223,9 @@ def factor_propagation_tree_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
@@ -9530,6 +9538,7 @@ def compute_propagation_tree_body_response_for_size(
     body_to_articulation: wp.array[int],
     body_to_joint: wp.array[int],
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     art_to_world: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
@@ -9562,6 +9571,9 @@ def compute_propagation_tree_body_response_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     world = art_to_world[art]
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
@@ -9697,6 +9709,7 @@ def compute_propagation_tree_body_response_for_size(
 @wp.kernel
 def refresh_propagation_tree_body_qd_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     art_to_world: wp.array[int],
     dense_contact_world_flag: wp.array[int],
     force_refresh: int,
@@ -9718,6 +9731,9 @@ def refresh_propagation_tree_body_qd_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     if force_refresh == 0:
         world = art_to_world[art]
         if world >= 0 and dense_contact_world_flag[world] == 0:
@@ -9778,6 +9794,7 @@ def refresh_propagation_free_body_qd_from_vout(
 @wp.kernel
 def propagate_tree_impulses_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -9807,6 +9824,9 @@ def propagate_tree_impulses_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 

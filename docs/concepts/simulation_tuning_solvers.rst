@@ -66,6 +66,14 @@ Contact geometry
    produce better force distribution for manipulation and non-convex geometry.
    See :ref:`Collisions`.
 
+Contact reduction
+   ``CollisionPipeline(reduce_contacts=...)`` controls the mesh/heightfield
+   reduction every solver consumes. The opt-in
+   ``CollisionPipeline(body_pair_reduction=...)`` reduction changes which contacts
+   the solver sees and is supported by :class:`newton.solvers.SolverSteel`
+   only. Keep it off unless it lowers the
+   measured step time, and check tipping and yaw behavior when it is on.
+
 Contact material
    Shape material arrays such as :attr:`~Model.shape_material_mu`,
    :attr:`~Model.shape_material_mu_torsional`,
@@ -348,8 +356,7 @@ repository examples spend tuning effort, not a shared solver API.
        rows, free bodies included, share one family of ``free_body_constraint_max +
        articulation_constraint_max`` rows per world, or of ``propagation_constraint_max`` rows
        when that is set. Contacts between two links of one articulation stay dense rows of
-       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set,
-       which only ``"propagation"`` accepts.
+       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set.
        Setting ``propagation_constraint_max`` lets ``free_body_constraint_max`` shrink to the
        free-body velocity-limit rows, the only free-body rows these responses keep.
        ``"propagation_colored"`` sweeps the propagation rows in parallel batches of contacts
@@ -360,15 +367,17 @@ repository examples spend tuning effort, not a shared solver API.
        shortens the ``"propagation_colored"`` sweep when one body carries contacts with
        different row counts. The saving shrinks as the world count grows, and the changed
        order can converge more slowly on stacks at a fixed iteration count, so measure the
-       full step at the target world count before switching. ``"propagation"`` solves contact
-       torsion with ``contact_torsion_device=True`` and ``velocity_iterations=0``;
-       ``"propagation_colored"`` rejects it. ``"propagation"`` rejects contact compliance and
-       ``"propagation_colored"`` accepts it without contact torsion. The propagation responses
-       reject sleeping and loop-closing joints, and fall back from bilateral pre-elimination to
-       iterative mimic rows with a warning.
-       ``"propagation_colored"`` supports the ``friction_mode`` values other than
-       ``"fixed_normal"`` and applies them to the articulated contacts on its propagation rows
-       as well. ``"propagation"`` requires ``"fixed_normal"``.
+       full step at the target world count before switching. ``"propagation"`` and
+       ``"propagation_colored"`` solve contact torsion with ``contact_torsion_device=True`` and
+       ``velocity_iterations=0``. ``"propagation"`` rejects contact compliance and
+       ``"propagation_colored"`` accepts it without contact torsion, which rejects the
+       hydroelastic contacts that compliance needs. The propagation responses reject
+       loop-closing joints, and fall back from bilateral pre-elimination to iterative mimic rows
+       with a warning.
+       ``"propagation_colored"`` supports sleeping, with or without contact compliance, leaving
+       sleeping articulations out of its trees, and the ``friction_mode`` values other than
+       ``"fixed_normal"``, which it applies to the articulated contacts on its propagation rows as
+       well. ``"propagation"`` rejects sleeping and requires ``"fixed_normal"``.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
