@@ -197,6 +197,34 @@ def _compute_particle_volume_density(
     particle_density[i] = particle_mass[i] / v
 
 
+@wp.kernel
+def _refresh_particle_masks(
+    model_flags: wp.array[wp.int32],
+    is_collider_particle: wp.array[wp.int32],
+    particle_volume: wp.array[float],
+    transfer_flags: wp.array[wp.int32],
+    material_flags: wp.array[wp.int32],
+    material_particle_volume: wp.array[float],
+):
+    """Derive the transfer and material masks from ``model.particle_flags``.
+
+    Collider particles are never active for either transfer or material;
+    proxy particles transfer momentum but carry no material.
+    """
+    i = wp.tid()
+    f = model_flags[i]
+    if is_collider_particle[i] != 0:
+        f = f & ~newton.ParticleFlags.ACTIVE
+    transfer_flags[i] = f
+    if f & newton.ParticleFlags.PROXY:
+        f = f & ~newton.ParticleFlags.ACTIVE
+    material_flags[i] = f
+    if f & newton.ParticleFlags.ACTIVE:
+        material_particle_volume[i] = particle_volume[i]
+    else:
+        material_particle_volume[i] = 0.0
+
+
 def _get_body_collision_shapes(model: newton.Model, body_index: int):
     """Returns the ids of the shapes of a body with active collision flags."""
 
@@ -348,6 +376,7 @@ class ImplicitMPMModel:
         - Cached extrema (``min_young_modulus``, ``max_hardening``) and feature
           flags (``has_viscosity``, ``has_dilatancy``) used to toggle code
           paths without rescanning every step.
+        - The transfer and material particle masks (see :meth:`refresh_particle_flags`).
         """
         model = self.model
 
@@ -381,38 +410,71 @@ class ImplicitMPMModel:
 
         self._refresh_particle_flags_and_extrema()
 
-    def _refresh_particle_flags_and_extrema(self):
-        """Refresh transfer/material particle masks and material extrema."""
+    def refresh_particle_flags(self):
+        """Refresh the transfer and material particle masks from ``model.particle_flags``.
+
+        Runs a single kernel that writes the existing ``particle_flags``,
+        ``material_particle_flags`` and ``material_particle_volume`` arrays in
+        place: no host synchronization or allocation, so it may be called every
+        step and recorded in a CUDA graph. The material extrema do not depend on
+        particle activity, so activating or deactivating particles never changes
+        the solver's code paths.
+        """
         model = self.model
-        active_flag = int(newton.ParticleFlags.ACTIVE)
-        proxy_flag = int(newton.ParticleFlags.PROXY)
+        wp.launch(
+            _refresh_particle_masks,
+            dim=model.particle_count,
+            inputs=[model.particle_flags, self._is_collider_particle, self.particle_volume],
+            outputs=[self.particle_flags, self.material_particle_flags, self.material_particle_volume],
+            device=model.device,
+        )
 
-        transfer_flags = model.particle_flags.numpy().copy()
-        material_flags = transfer_flags.copy()
+    def _refresh_particle_flags_and_extrema(self):
+        """Refresh the collider-particle mask, the particle masks and the material extrema."""
+        model = self.model
+        num_particles = model.particle_count
+        with wp.ScopedDevice(model.device):
+            # Allocated once and then written in place, so arrays bound in captured graphs stay valid.
+            self.particle_flags = _reuse_or_allocate(getattr(self, "particle_flags", None), num_particles, wp.int32)
+            self.material_particle_flags = _reuse_or_allocate(
+                getattr(self, "material_particle_flags", None), num_particles, wp.int32
+            )
+            self.material_particle_volume = _reuse_or_allocate(
+                getattr(self, "material_particle_volume", None), num_particles
+            )
+            self._is_collider_particle = _reuse_or_allocate(
+                getattr(self, "_is_collider_particle", None), num_particles, wp.int32
+            )
 
+        is_collider_particle = np.zeros(num_particles, dtype=np.int32)
         collider_particle_ids = getattr(self.collider, "collider_particle_ids", None)
         if collider_particle_ids is not None:
             collider_particle_ids_np = collider_particle_ids.numpy()
             if collider_particle_ids_np.size:
-                transfer_flags[collider_particle_ids_np] &= ~active_flag
-                material_flags[collider_particle_ids_np] &= ~active_flag
+                is_collider_particle[collider_particle_ids_np] = 1
+        self._is_collider_particle.assign(is_collider_particle)
 
-        proxy_mask = (material_flags & proxy_flag) != 0
-        material_flags[proxy_mask] &= ~active_flag
+        self.refresh_particle_flags()
+        self._refresh_material_extrema(is_collider_particle)
 
-        self.particle_flags = wp.array(transfer_flags, dtype=wp.int32, device=model.device)
-        self.material_particle_flags = wp.array(material_flags, dtype=wp.int32, device=model.device)
+    def _refresh_material_extrema(self, is_collider_particle: np.ndarray):
+        """Compute the material extrema over every particle that can carry material.
 
-        material_active = (material_flags & active_flag) != 0
-        material_particle_volume = self.particle_volume.numpy().copy()
-        material_particle_volume[~material_active] = 0.0
-        self.material_particle_volume = wp.array(material_particle_volume, dtype=float, device=model.device)
+        Collider and proxy particles never carry material, so they are excluded.
+        Inactive particles are included, so that activation flags can change at
+        runtime without host synchronization. Unset ``model.mpm.*`` attributes
+        default to rigid material without hardening, viscosity or dilatancy, and
+        so do not enable additional code paths.
+        """
+        proxy_flag = int(newton.ParticleFlags.PROXY)
+        material_capable = (is_collider_particle == 0) & ((self.model.particle_flags.numpy() & proxy_flag) == 0)
 
-        if np.any(material_active):
-            self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()[material_active]))
-            self.max_hardening = float(np.max(self.material_parameters.hardening.numpy()[material_active]))
-            self.has_viscosity = bool(np.any(self.material_parameters.viscosity.numpy()[material_active] > 0.0))
-            self.has_dilatancy = bool(np.any(self.material_parameters.dilatancy.numpy()[material_active] > 0.0))
+        if np.any(material_capable):
+            params = self.material_parameters
+            self.min_young_modulus = float(np.min(params.young_modulus.numpy()[material_capable]))
+            self.max_hardening = float(np.max(params.hardening.numpy()[material_capable]))
+            self.has_viscosity = bool(np.any(params.viscosity.numpy()[material_capable] > 0.0))
+            self.has_dilatancy = bool(np.any(params.dilatancy.numpy()[material_capable] > 0.0))
         else:
             self.min_young_modulus = math.inf
             self.max_hardening = 0.0

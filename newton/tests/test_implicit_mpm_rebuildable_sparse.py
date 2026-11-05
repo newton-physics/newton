@@ -534,6 +534,111 @@ def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
     np.testing.assert_allclose(settle(8192, capture=True), reference, atol=1.0e-6)
 
 
+def test_particle_flags_notify_refreshes_masks_in_place(test, device):
+    """Verify PARTICLE_FLAGS refreshes the particle masks in place, with activity-independent extrema."""
+    active = int(newton.ParticleFlags.ACTIVE)
+    proxy = int(newton.ParticleFlags.PROXY)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for i, flags in enumerate((active, active, 0, active | proxy)):
+        builder.add_particle(
+            wp.vec3(0.01 + 0.05 * i, 0.01, 0.01),
+            wp.vec3(0.0),
+            mass=1.0,
+            radius=0.01 * (i + 1),
+            flags=flags,
+            custom_attributes={"mpm:viscosity": 10.0 if i == 2 else 0.0},
+        )
+    model = builder.finalize(device=device)
+    solver = _make_sparse_solver(model, max_active_cell_count=8)
+    mpm_model = solver._mpm_model
+    masks = (mpm_model.particle_flags, mpm_model.material_particle_flags, mpm_model.material_particle_volume)
+    pointers = [array.ptr for array in masks]
+    volume = mpm_model.particle_volume.numpy()
+
+    # The inactive viscous particle selects the viscous code path before it is ever activated.
+    test.assertTrue(mpm_model.has_viscosity)
+
+    def check_masks(flags):
+        material = np.where(flags & proxy, flags & ~active, flags)
+        np.testing.assert_array_equal(mpm_model.particle_flags.numpy(), flags)
+        np.testing.assert_array_equal(mpm_model.material_particle_flags.numpy(), material)
+        np.testing.assert_array_equal(
+            mpm_model.material_particle_volume.numpy(), np.where(material & active, volume, 0.0)
+        )
+        test.assertEqual([array.ptr for array in masks], pointers)
+        test.assertTrue(mpm_model.has_viscosity)
+
+    check_masks(model.particle_flags.numpy())
+
+    flags = model.particle_flags.numpy()
+    flags[0] &= ~active
+    flags[2] |= active
+    model.particle_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+    check_masks(flags)
+
+    flags[1] &= ~active
+    model.particle_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    check_masks(flags)
+
+
+def test_particle_flags_notify_in_cuda_graph(test, device):
+    """Verify particle activity notified inside a CUDA graph matches eager MODEL_PROPERTIES notifications."""
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture requires the Warp memory pool")
+
+    active = int(newton.ParticleFlags.ACTIVE)
+    cluster = [(0.01 + 0.02 * i, 0.5 + 0.02 * j, 0.01 + 0.02 * k) for i in range(2) for j in range(2) for k in range(2)]
+    positions = cluster + [(x + 1.0, y, z) for x, y, z in cluster]
+    model = _make_particle_model(device, positions)
+    all_active = model.particle_flags.numpy()
+    second_frozen = all_active.copy()
+    second_frozen[len(cluster) :] &= ~active
+    phases = (second_frozen, all_active, second_frozen)
+
+    def run(capture):
+        model.particle_flags.assign(all_active)
+        solver = _make_sparse_solver(model, max_active_cell_count=64, solver="auto")
+        state_0, state_1 = model.state(), model.state()
+        solver.step(state_0, state_1, None, None, 0.005)  # builds the inner solve graph before capture
+        state_0, state_1 = state_1, state_0
+
+        def two_steps():
+            solver.step(state_0, state_1, None, None, 0.005)
+            solver.step(state_1, state_0, None, None, 0.005)
+
+        graph = None
+        if capture:
+            with wp.ScopedCapture(device=device) as scope:
+                solver.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+                two_steps()
+            graph = scope.graph
+
+        results = []
+        for flags in phases:
+            before = state_0.particle_q.numpy()
+            model.particle_flags.assign(flags)
+            if capture:
+                wp.capture_launch(graph)
+            else:
+                solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+                two_steps()
+            results.append((before, state_0.particle_q.numpy()))
+        solver.check_sparse_grid_rebuild_status()
+        return results
+
+    eager = run(capture=False)
+    graph = run(capture=True)
+    for (eager_before, eager_after), (graph_before, graph_after), flags in zip(eager, graph, phases, strict=True):
+        frozen = (flags & active) == 0
+        np.testing.assert_array_equal(eager_after[frozen], eager_before[frozen])
+        np.testing.assert_array_equal(graph_after[frozen], graph_before[frozen])
+        test.assertTrue(np.all(graph_after[~frozen, 1] < graph_before[~frozen, 1]))
+        np.testing.assert_allclose(graph_after, eager_after, rtol=1.0e-5, atol=1.0e-6)
+
+
 class TestImplicitMPMRebuildableSparse(unittest.TestCase):
     pass
 
@@ -672,6 +777,21 @@ add_function_test(
     TestImplicitMPMRebuildableSparse,
     "test_rebuildable_sparse_warmstarts_collider_impulses",
     test_rebuildable_sparse_warmstarts_collider_impulses,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_particle_flags_notify_refreshes_masks_in_place",
+    test_particle_flags_notify_refreshes_masks_in_place,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_particle_flags_notify_in_cuda_graph",
+    test_particle_flags_notify_in_cuda_graph,
     devices=cuda_devices,
     check_output=False,
 )

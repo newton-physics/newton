@@ -2245,8 +2245,18 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Refresh solver data derived from the model.
+
+        ``ModelFlags.MODEL_PROPERTIES`` rebinds the particle material arrays and
+        recomputes volumes, material extrema and particle masks on the host.
+        ``ModelFlags.PARTICLE_FLAGS`` only refreshes the particle masks, in a
+        single kernel without host synchronization, so particles can be
+        activated or deactivated every step, including inside a CUDA graph.
+        """
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
+        elif flags & ModelFlags.PARTICLE_FLAGS:
+            self._mpm_model.refresh_particle_flags()
 
     @override
     def coupling_eval_gravity_acceleration(
