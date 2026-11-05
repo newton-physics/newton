@@ -8,6 +8,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.implicit_mpm.rasterized_collisions import stabilize_collider_velocity
+from newton._src.solvers.implicit_mpm.solver_implicit_mpm import _WARP_AT_LEAST_1_19
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -94,12 +95,14 @@ def test_sdf_gradient_normals_particle_contacts(test, device):
     with wp.ScopedDevice(device):
         model, _ = _make_contact_solver(device, 0.3, (0.0, 0.0, 0.0), 0.0, 0.0)
         model.set_gravity((0.0, 0.0, -10.0))
-        solver = SolverImplicitMPM(
-            model,
-            config=SolverImplicitMPM.Config(
-                voxel_size=1.0, collider_basis="pic8", collider_normal_from_sdf_gradient=True, air_drag=1.0e-6
-            ),
+        config = SolverImplicitMPM.Config(
+            voxel_size=1.0, collider_basis="pic8", collider_normal_from_sdf_gradient=True, air_drag=1.0e-6
         )
+        if not _WARP_AT_LEAST_1_19:
+            with test.assertRaisesRegex(ValueError, "Warp 1.19"):
+                SolverImplicitMPM(model, config=config)
+            return
+        solver = SolverImplicitMPM(model, config=config)
         state = model.state()
         for _ in range(60):
             solver.step(state, state, None, None, 0.02)
