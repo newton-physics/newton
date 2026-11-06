@@ -256,7 +256,10 @@ _PAIRED_RESPONSE_WARPS_PER_BLOCK = 4
 _LOCAL_PAIR_BLOCKS_PER_SM = 8
 # The articulation-local solve runs a serial O(dofs^2) triangular solve per row.
 _LOCAL_INTERNAL_MAX_DOF = 16
-# Conservative batch limit for the serial contact-bearing owners; contact-free owners stay eligible.
+# Batch limit for the serial contact-bearing owners (the pair and residual-pair solves), in worlds per SM: the
+# residual owner caps its grid at min(world_count, sm_count) warps, so above one world per SM its worlds
+# serialize per warp, and the pair owner measured neutral against the general sweep from there up; the
+# contact-free single owner stays eligible at every count.
 _LOCAL_CONTACT_WORLDS_PER_SM = 1
 _LOCAL_SOLVE_MAX_ROWS = 20
 _LOCAL_RESIDUAL_MAX_ROWS = 40
@@ -4868,8 +4871,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         normal row per contact and two tangent rows per point contact or surviving patch
         anchor, the patch load pooled over the region's linked normal rows), so the
         propagation responses, the other friction modes, contact torsion, contact compliance,
-        warm start, regularization, velocity-only iterations, a friction gap threshold, late
-        friction (``contact_friction_position_iterations``) and restitution keep the dense path.
+        warm start, regularization, velocity-only iterations, a friction gap threshold and late
+        friction (``contact_friction_position_iterations``) keep the dense path, and so does enabled
+        restitution when a shape has a positive restitution coefficient (with all coefficients zero
+        it does not).
         """
         if (
             self._articulated_contact_response != "immediate"
@@ -6583,7 +6588,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         friction_start_iteration: int = 0,
         iteration_offset: int = 0,
     ) -> None:
-        """Run the general sweep over its world queue and the articulation-local solves.
+        """Run the general sweep, one warp per world, and the articulation-local solves.
 
         With ``use_parallel_streams`` the residual-pair, pair and single-articulation solves run
         on streams of their own, admitted before the general sweep so the scarce paired worlds
@@ -15958,7 +15963,7 @@ def _get_pgs_solve_mf_gs_kernel(
     snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + helpers, 1)
 
     if skip_local_internal_worlds:
-        return _mf_gs_queue_kernel(
+        return _mf_gs_skip_local_kernel(
             snippet,
             _mf_gs_kernel_name(
                 max_constraints,
@@ -16214,7 +16219,7 @@ def _prefetch_streamed_dense_metadata(snippet: str) -> str:
     return snippet[:start] + declarations + sweep + snippet[end:]
 
 
-def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
+def _mf_gs_skip_local_kernel(snippet: str, name: str) -> "wp.Kernel":
     """Wrap a matrix-free Gauss-Seidel snippet that skips locally owned worlds.
 
     Warp ``w`` solves world ``w``; the snippet returns at once for a world that ``local_solve_owner``
