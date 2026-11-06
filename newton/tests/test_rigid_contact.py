@@ -8,6 +8,8 @@ import warp as wp
 
 import newton
 from newton._src.core import quat_between_axes
+from newton._src.geometry.contact_data import ContactData, contact_passes_gap_check
+from newton._src.sim.collide import ContactWriterData, write_contact, write_contact_speculative
 from newton._src.solvers.semi_implicit.kernels_contact import eval_body_contact_forces
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -962,8 +964,75 @@ solvers = {
 }
 
 
+@wp.kernel
+def _write_translated_contacts(writer: ContactWriterData, admission: wp.array[int], reserve: bool, speculative: bool):
+    i = wp.tid()
+    contact = ContactData()
+    contact.shape_a = 2 * i
+    contact.shape_b = 2 * i + 1
+    contact.contact_point_center = wp.transform_get_translation(writer.body_q[2 * i]) + wp.vec3(0.03125, 0.015625, 0.0)
+    contact.contact_normal_a_to_b = wp.vec3(2.0, 1.0, 2.0) / 3.0
+    contact.contact_distance = wp.where(i % 2 == 0, 0.0027499, 0.0027501)
+    contact.radius_eff_a = 0.012
+    contact.radius_eff_b = 0.017
+    contact.margin_a = 0.0005
+    contact.margin_b = 0.00025
+    contact.gap_sum = 0.002
+    admission[i] = int(contact_passes_gap_check(contact))
+    index = wp.where(reserve, i, -1)
+    if speculative:
+        write_contact_speculative(contact, writer, index)
+    else:
+        write_contact(contact, writer, index)
+
+
 class TestRigidContact(unittest.TestCase):
-    pass
+    def test_translated_contact_writer(self):
+        """Preserve local anchors and gap decisions under a common translation."""
+        device = "cpu"
+        q = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        poses = [
+            wp.transform(wp.vec3(origin + offset, origin, 0.25), q)
+            for origin in (0.0, 32.0, 64.0)
+            for _ in range(2)
+            for offset in (0.0, 0.0625)
+        ]
+        contacts = newton.Contacts(6, 0, device=device)
+        writer = ContactWriterData()
+        writer.contact_max = contacts.rigid_contact_max
+        writer.body_q = wp.array(poses, dtype=wp.transform, device=device)
+        writer.shape_body = wp.array(np.arange(len(poses)), dtype=int, device=device)
+        writer.shape_gap = wp.full(len(poses), 0.001, dtype=float, device=device)
+        writer.contact_count = contacts.rigid_contact_count
+        for field in (
+            "shape0",
+            "shape1",
+            "point0",
+            "point1",
+            "offset0",
+            "offset1",
+            "normal",
+            "margin0",
+            "margin1",
+            "tids",
+        ):
+            setattr(writer, f"out_{field}", getattr(contacts, f"rigid_contact_{field}"))
+        writer.shape_transform = writer.body_q
+        writer.shape_linear_velocity = wp.zeros(len(poses), dtype=wp.vec3, device=device)
+        writer.shape_angular_velocity = writer.shape_linear_velocity
+        admission = wp.empty(6, dtype=int, device=device)
+        for speculative in (False, True):
+            with self.subTest(speculative=speculative, reserve=True):
+                wp.launch(_write_translated_contacts, 6, [writer, admission, True, speculative], device=device)
+                for points in (contacts.rigid_contact_point0, contacts.rigid_contact_point1):
+                    local = points.numpy().reshape(3, 2, 3)
+                    np.testing.assert_allclose(local, np.broadcast_to(local[:1], local.shape), rtol=0, atol=1e-7)
+            with self.subTest(speculative=speculative, reserve=False):
+                writer.contact_count.zero_()
+                wp.launch(_write_translated_contacts, 6, [writer, admission, False, speculative], device=device)
+                count = int(writer.contact_count.numpy()[0])
+                self.assertEqual(sorted(writer.out_shape0.numpy()[:count].tolist()), [0, 4, 8])
+                np.testing.assert_array_equal(admission.numpy(), [1, 0, 1, 0, 1, 0])
 
 
 add_function_test(
