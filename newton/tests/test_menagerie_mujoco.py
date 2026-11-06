@@ -2080,8 +2080,7 @@ class TestMenagerieNativeMJCF_UR5eAllegro(TestMenagerieNativeMJCF):
         for step in range(steps):
             solver.step(self._newton_state, self._newton_state, self._newton_control, None, self._dt)
             _mujoco_warp.step(models[1], data[1])
-            # Instantaneous constraint forces amplify float32 contact-solve differences.
-            for field, tolerance in (("qpos", 2e-6), ("qvel", 1e-4), ("qfrc_constraint", 2e-4)):
+            for field, tolerance in (("qpos", 2e-6), ("qvel", 1e-4), ("qfrc_constraint", 1e-4)):
                 actual, expected = (getattr(d, field).numpy() for d in data)
                 self.assertTrue(np.isfinite(actual).all(), f"{field}, step {step}")
                 self.assertTrue(np.isfinite(expected).all(), f"reference {field}, step {step}")
