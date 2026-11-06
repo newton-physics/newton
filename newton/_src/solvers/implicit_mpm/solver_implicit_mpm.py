@@ -81,7 +81,6 @@ from .implicit_mpm_solver_kernels import (
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
-    inertial_delassus_scale,
     integrate_active_fraction,
     integrate_elastic_parameters,
     integrate_fraction,
@@ -108,7 +107,6 @@ from .implicit_mpm_solver_kernels import (
     mat13,
     mat31,
     mat66,
-    max_particle_density,
     node_color,
     record_volume_rebuild_status,
     reset_mpm_collider_history,
@@ -3956,16 +3954,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ):
         mpm_model = self._mpm_model
 
-        # A full cell's inertial Delassus scale, dt^2 / (rho dx^2), sets the rheology regularization
-        max_density = wp.zeros(shape=(1,), dtype=float)
-        wp.launch(
-            max_particle_density,
-            dim=mpm_model.particle_density.shape[0],
-            inputs=[mpm_model.particle_density, mpm_model.material_particle_flags, max_density],
-        )
-        scratch.delassus_scale = wp.empty(shape=(1,), dtype=float)
-        dt_over_dx_sq = dt * dt / (self.voxel_size * self.voxel_size)
-        wp.launch(inertial_delassus_scale, dim=1, inputs=[dt_over_dx_sq, max_density, scratch.delassus_scale])
+        # A full cell's inertial Delassus scale, dt^2 / (rho dx^2) for the densest material, sets the
+        # rheology regularization; a unit density keeps it positive without positive-density material
+        max_density = mpm_model.max_particle_density if mpm_model.max_particle_density > 0.0 else 1.0
+        delassus_scale = dt * dt / (self.voxel_size * self.voxel_size * max_density)
+        scratch.delassus_scale = wp.full(shape=(1,), value=delassus_scale, dtype=float)
 
         with self._timer("Strain-node particle volumes"):
             fem.integrate(
