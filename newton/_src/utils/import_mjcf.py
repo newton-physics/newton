@@ -20,7 +20,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
-from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
+from ..geometry.utils import compute_aabb, compute_inertia_box, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import dcmotor
@@ -137,6 +137,156 @@ def _load_mujoco_msh(filename: str) -> tuple[np.ndarray, np.ndarray | None, np.n
     return vertices, faces if nface else None, normals, texcoords
 
 
+def _is_mujoco_msh(mesh_asset: dict) -> bool:
+    """Return whether a parsed MJCF mesh asset is a MuJoCo binary ``.msh`` file."""
+    mesh_file, content_type = mesh_asset.get("file"), mesh_asset.get("content_type")
+    return bool(mesh_file) and (
+        content_type == "model/vnd.mujoco.msh" or (not content_type and mesh_file.lower().endswith(".msh"))
+    )
+
+
+_MESH_INERTIA_MODES = frozenset({"legacy", "exact", "convex", "shell"})
+_MJ_MINVAL = 1e-15  # MuJoCo's mjMINVAL
+
+
+def _combine_meshes(meshes: Sequence[Mesh]) -> tuple[np.ndarray, np.ndarray]:
+    """Concatenate submeshes into one vertex array and one triangle index array.
+
+    Args:
+        meshes: Submeshes of one mesh asset.
+
+    Returns:
+        Vertices [m], shape (N, 3), and triangle vertex indices, shape (F, 3).
+    """
+    offsets = np.cumsum([0] + [len(mesh.vertices) for mesh in meshes[:-1]])
+    vertices = np.concatenate([mesh.vertices for mesh in meshes])
+    faces = np.concatenate([mesh.indices.reshape(-1, 3) + offset for mesh, offset in zip(meshes, offsets, strict=True)])
+    return vertices, faces
+
+
+def _mesh_hull_faces(
+    vertices: np.ndarray, maxhullvert: int, hull_vertices: np.ndarray | None = None
+) -> np.ndarray | None:
+    """Return the outward-facing triangles of the convex hull that MuJoCo builds for a mesh.
+
+    Uses the qhull options of ``mjCMesh::MakeGraph`` in MuJoCo's ``user_mesh.cc``, including ``Q9``
+    when the hull is limited. Like MuJoCo, qhull runs before the mesh's scale and reference pose,
+    because they change which vertices a limited hull keeps.
+
+    Args:
+        vertices: Mesh vertices [m], shape (N, 3).
+        maxhullvert: Hull vertex limit; 0 means no limit.
+        hull_vertices: The same vertices before the mesh's scale and reference pose, shape (N, 3).
+            Defaults to ``vertices``.
+
+    Returns:
+        Hull triangle vertex indices, outward-facing in the frame of ``vertices``, shape (F, 3), or
+        ``None`` when the vertices are colocated, collinear or coplanar.
+    """
+    from scipy.spatial import ConvexHull, QhullError
+
+    options = f"Qt Q9 TA{maxhullvert - 4}" if maxhullvert > 0 else "Qt"
+    try:
+        hull = ConvexHull(vertices if hull_vertices is None else hull_vertices, qhull_options=options)
+    except QhullError:
+        return None
+    faces = hull.simplices.copy()
+    # qhull does not orient simplices; flip those that face the centroid of the hull's vertices,
+    # which stays inside the hull under the scale and reference pose.
+    relative = vertices[faces] - vertices[np.unique(faces)].mean(axis=0)
+    flip = np.einsum("fi,fi->f", relative[:, 0], np.cross(relative[:, 1], relative[:, 2])) < 0.0
+    faces[flip] = faces[flip][:, ::-1]
+    return faces
+
+
+def _mesh_mass_properties(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    mode: str,
+    maxhullvert: int,
+    hull_vertices: np.ndarray | None = None,
+) -> tuple[float, np.ndarray, np.ndarray] | None:
+    """Return a mesh's unit-density mass, center of mass and inertia for an MJCF ``inertia`` mode.
+
+    Follows ``mjCMesh::Process`` in MuJoCo's ``user_mesh.cc``. A first pass finds the center of
+    mass from tetrahedra with their apex at the area-weighted face centroid. A second pass
+    recomputes the volume and inertia about that center. ``legacy`` sums absolute tetrahedron
+    volumes, ``convex`` uses the convex hull, and ``shell`` puts the mass on the surface.
+
+    Args:
+        vertices: Mesh vertices [m], shape (N, 3).
+        faces: Triangle vertex indices, shape (F, 3).
+        mode: ``"legacy"``, ``"exact"``, ``"convex"``, or ``"shell"``.
+        maxhullvert: Hull vertex limit for ``convex``; 0 means no limit.
+        hull_vertices: ``vertices`` before the mesh's scale and reference pose, on which MuJoCo
+            builds the ``convex`` hull. Defaults to ``vertices``.
+
+    Returns:
+        Mass [kg] (volume [m^3] or area [m^2] at unit density), center of mass [m] and inertia
+        tensor about it [kg*m^2], or ``None`` when the surface area or volume is below
+        MuJoCo's ``mjMINVAL``, where MuJoCo rejects the mesh.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    triangles = vertices[np.asarray(faces, dtype=np.int64).reshape(-1, 3)]
+    areas = 0.5 * np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1)
+    total_area = areas.sum()
+    if total_area < _MJ_MINVAL:
+        return None
+    facecen = (areas[:, None] * triangles.mean(axis=1)).sum(axis=0) / total_area
+    if mode == "convex":
+        hull_faces = _mesh_hull_faces(vertices, maxhullvert, hull_vertices)
+        if hull_faces is None:
+            return None
+        triangles = vertices[hull_faces]
+
+    def volumes(apex: np.ndarray) -> np.ndarray:
+        """Return the volumes of the tetrahedra between ``apex`` and each triangle."""
+        relative = triangles - apex
+        signed = np.einsum("fi,fi->f", relative[:, 0], np.cross(relative[:, 1], relative[:, 2])) / 6.0
+        return np.abs(signed) if mode == "legacy" else signed
+
+    if mode == "shell":
+        com = facecen
+    else:
+        weights = volumes(facecen)
+        if weights.sum() < _MJ_MINVAL:
+            return None
+        com = (weights[:, None] * (0.75 * triangles.mean(axis=1) + 0.25 * facecen)).sum(axis=0) / weights.sum()
+    relative = triangles - com
+    weights = areas if mode == "shell" else volumes(com)
+    mass = float(weights.sum())
+    if mass < _MJ_MINVAL:
+        return None
+    sums = relative.sum(axis=1)
+    second = np.einsum("fi,fj->fij", sums, sums) + np.einsum("fvi,fvj->fij", relative, relative)
+    second = (weights[:, None, None] * second).sum(axis=0) / (12.0 if mode == "shell" else 20.0)
+    return mass, com, np.trace(second) * np.eye(3) - second
+
+
+def _has_inconsistent_orientation(vertices: np.ndarray, faces: np.ndarray) -> bool:
+    """Return whether two faces traverse an edge in the same direction, as MuJoCo checks for ``inertia="exact"``.
+
+    Follows ``mjCMesh::Process`` in MuJoCo's ``user_mesh.cc``, which skips faces with an area of at most
+    ``sqrt(mjMINVAL)``. Vertices at the same position count as one, because a mesh file loaded as several
+    submeshes repeats the vertices that they share.
+
+    Args:
+        vertices: Mesh vertices [m], shape (N, 3).
+        faces: Triangle vertex indices, shape (F, 3).
+
+    Returns:
+        Whether MuJoCo would reject the mesh's faces for ``inertia="exact"``.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    faces = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
+    triangles = vertices[faces]
+    areas = 0.5 * np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1)
+    _, unique = np.unique(vertices, axis=0, return_inverse=True)
+    faces = unique.reshape(-1)[faces[areas > np.sqrt(_MJ_MINVAL)]]
+    edges = np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
+    return len(np.unique(edges, axis=0)) < len(edges)
+
+
 def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
     """Parse and validate an MJCF mesh reference pose."""
     try:
@@ -177,6 +327,17 @@ def _apply_mesh_ref_pose(
         lengths = np.linalg.norm(normals, axis=1, keepdims=True)
         normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
     return vertices, normals
+
+
+def _undo_mesh_ref_pose(
+    vertices: np.ndarray, refpos: np.ndarray, refquat: np.ndarray, scaling: np.ndarray
+) -> np.ndarray:
+    """Map vertices from :func:`_apply_mesh_ref_pose` back to the frame of the mesh asset."""
+    rotation = np.asarray(
+        wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+        dtype=np.float64,
+    ).reshape(3, 3)
+    return (np.asarray(vertices, dtype=np.float64) / scaling) @ rotation.T + refpos
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -788,6 +949,14 @@ def parse_mjcf(
             mesh_name = mesh_attrib.get("name")
             mesh_scale = np.array(mesh_attrib.get("scale", "1.0 1.0 1.0").split(), dtype=np.float32)
             maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
+            # MuJoCo defaults to "legacy" inertia; its convex hull is unlimited unless maxhullvert is authored.
+            inertia_mode = mesh_attrib.get("inertia", "legacy")
+            if inertia_mode not in _MESH_INERTIA_MODES:
+                raise ValueError(
+                    f"MJCF mesh {mesh_name or mesh_file!r} has unsupported inertia {inertia_mode!r}; "
+                    f"expected one of {sorted(_MESH_INERTIA_MODES)}."
+                )
+            inertia_hullvert = max(int(mesh_attrib.get("maxhullvert", "-1")), 0)
 
             if mesh_file:
                 fname = os.path.join(mesh_dir, mesh_file)
@@ -803,6 +972,8 @@ def parse_mjcf(
                     "refpos": refpos,
                     "refquat": refquat,
                     "maxhullvert": maxhullvert,
+                    "inertia": inertia_mode,
+                    "inertia_hullvert": inertia_hullvert,
                 }
             elif "vertex" in mesh_attrib:
                 name = mesh_name
@@ -875,6 +1046,8 @@ def parse_mjcf(
                     "refquat": refquat,
                     "scale": mesh_scale,
                     "maxhullvert": maxhullvert,
+                    "inertia": inertia_mode,
+                    "inertia_hullvert": inertia_hullvert,
                 }
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
@@ -962,6 +1135,81 @@ def parse_mjcf(
     # meshes loaded from files, keyed by file and load arguments, so a mesh asset
     # referenced by several geoms (e.g. visual and collision, or mirrored links) is parsed once
     mesh_file_cache: dict[tuple, list[Mesh]] = {}
+    # unit-density mass properties of each mesh asset and scale in its inertia mode, or None where MuJoCo rejects it
+    mesh_inertia_cache: dict[tuple, tuple[float, np.ndarray, np.ndarray] | None] = {}
+    # vertices of .msh files without faces, keyed by file, or None for a file with faces
+    msh_vertices_without_faces: dict[str, np.ndarray | None] = {}
+    # inertia="exact" mesh assets whose face orientation has been checked
+    exact_orientation_checked: set[str] = set()
+
+    def mesh_hull_source(mesh_name: str) -> np.ndarray | None:
+        """Return the vertices of a mesh asset without faces, whose faces MuJoCo takes from their convex hull."""
+        mesh_asset = mesh_assets[mesh_name]
+        if "vertices" in mesh_asset:
+            return mesh_asset["vertices"] if mesh_asset["faces"] is None else None
+        if not _is_mujoco_msh(mesh_asset):
+            return None
+        path = mesh_asset["file"]
+        if path not in msh_vertices_without_faces:
+            vertices, faces, _, _ = _load_mujoco_msh(path)
+            msh_vertices_without_faces[path] = vertices if faces is None else None
+        return msh_vertices_without_faces[path]
+
+    def mode_sets_mass(mesh_name: str) -> bool:
+        """Return whether a mesh asset's mass properties come from mesh_inertia() rather than from Mesh().
+
+        Mesh() computes exact properties, but of the collision hull for a mesh without faces.
+        """
+        return mesh_assets[mesh_name]["inertia"] != "exact" or mesh_hull_source(mesh_name) is not None
+
+    def mesh_inertia(
+        mesh_name: str, scaling: np.ndarray, maxhullvert: int, meshes: list[Mesh] | None = None
+    ) -> tuple[float, np.ndarray, np.ndarray] | None:
+        """Return a mesh asset's unit-density mass properties in its ``inertia`` mode, as MuJoCo computes them.
+
+        Args:
+            mesh_name: Name of the ``<mesh>`` asset.
+            scaling: Per-axis scale of the asset times the import scale.
+            maxhullvert: Collision hull vertex limit.
+            meshes: The asset's submeshes as a geom loaded them, so the file need not be loaded again.
+
+        Returns:
+            Mass [kg], center of mass [m] and inertia tensor about it [kg*m^2], or ``None`` when the mesh
+            has too little surface area or volume for its mode, where MuJoCo rejects it.
+        """
+        key = (mesh_name, tuple(float(v) for v in np.asarray(scaling, dtype=np.float64).reshape(-1)))
+        if key not in mesh_inertia_cache:
+            mesh_asset = mesh_assets[mesh_name]
+            mode, hullvert = mesh_asset["inertia"], mesh_asset["inertia_hullvert"]
+            refpos, refquat = mesh_asset["refpos"], mesh_asset["refquat"]
+            source = mesh_hull_source(mesh_name)
+            if source is None:
+                # MuJoCo reads a mesh file as one mesh, so combine its submeshes. A material override changes
+                # only how a file splits into submeshes, so reuse a geom's load, except for a limited hull:
+                # qhull's choice can depend on the vertex order, so it uses the asset loaded without overrides.
+                if meshes is None or (mode == "convex" and hullvert > 0):
+                    meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert)
+                vertices, faces = _combine_meshes(meshes)
+                hull_vertices = _undo_mesh_ref_pose(vertices, refpos, refquat, scaling)
+            else:
+                # MuJoCo gives a mesh without faces the faces of its convex hull, limited only by an
+                # authored maxhullvert (mjCMesh::CopyGraph); Newton's collision hull may keep fewer.
+                hull_vertices = np.asarray(source, dtype=np.float64)
+                vertices = _apply_mesh_ref_pose(hull_vertices, None, refpos, refquat, scaling)[0]
+                faces = _mesh_hull_faces(vertices, hullvert, hull_vertices)
+            properties = (
+                None if faces is None else _mesh_mass_properties(vertices, faces, mode, hullvert, hull_vertices)
+            )
+            if properties is None:
+                logger.warning(
+                    'MJCF mesh %r has too little surface area or volume for inertia="%s" and adds no mass; '
+                    "MuJoCo rejects it.%s",
+                    mesh_name,
+                    mode,
+                    "" if mode == "shell" else ' Use inertia="shell" to give a surface mesh mass.',
+                )
+            mesh_inertia_cache[key] = properties
+        return mesh_inertia_cache[key]
 
     def load_mesh_asset(
         mesh_name: str,
@@ -970,12 +1218,79 @@ def parse_mjcf(
         override_color: tuple[float, float, float] | None = None,
         override_texture: str | None = None,
     ) -> list[Mesh]:
+        """Load a mesh asset's submeshes with the mass properties of its ``inertia`` mode.
+
+        Args:
+            mesh_name: Name of the ``<mesh>`` asset.
+            scaling: Per-axis scale of the asset times the import scale.
+            maxhullvert: Collision hull vertex limit.
+            override_color: Optional material color.
+            override_texture: Optional material texture.
+
+        Returns:
+            Submeshes whose mass properties add up to the whole mesh.
+        """
+        meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert, override_color, override_texture)
+        if not mode_sets_mass(mesh_name):
+            if mesh_name not in exact_orientation_checked:
+                exact_orientation_checked.add(mesh_name)
+                mesh_asset = mesh_assets[mesh_name]
+                vertices, faces = _combine_meshes(meshes)
+                vertices = _undo_mesh_ref_pose(vertices, mesh_asset["refpos"], mesh_asset["refquat"], scaling)
+                if _has_inconsistent_orientation(vertices, faces):
+                    logger.warning(
+                        'MJCF mesh %r has faces with inconsistent orientation, which MuJoCo rejects for inertia="exact"; '
+                        "Newton uses its exact signed volume anyway.",
+                        mesh_name,
+                    )
+            # Newton's mesh mass properties already use the exact signed volume.
+            return meshes
+        properties = mesh_inertia(mesh_name, scaling, maxhullvert, meshes)
+        if properties is None:
+            # MuJoCo rejects such a mesh; give it no mass rather than another mode's mass.
+            shares = [(0.0, np.zeros(3), np.zeros((3, 3)))] * len(meshes)
+        else:
+            mass, com, inertia = properties
+            # Split the properties by surface area so the submeshes add up to the whole mesh. A color or
+            # texture override loads a mesh file as one submesh instead of one per material.
+            areas = np.array(
+                [
+                    np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum()
+                    for t in (mesh.vertices[mesh.indices.reshape(-1, 3)] for mesh in meshes)
+                ]
+            )
+            shares = [(mass * float(share), com, inertia * float(share)) for share in areas / areas.sum()]
+        for mesh, (mass, com, inertia) in zip(meshes, shares, strict=True):
+            mesh.mass = mass
+            mesh.com = wp.vec3(com)
+            mesh.inertia = wp.mat33(inertia)
+            mesh.has_inertia = True
+        return meshes
+
+    def load_mesh_asset_geometry(
+        mesh_name: str,
+        scaling: np.ndarray,
+        maxhullvert: int,
+        override_color: tuple[float, float, float] | None = None,
+        override_texture: str | None = None,
+    ) -> list[Mesh]:
+        """Load a mesh asset's submeshes, with exact mass properties only for ``inertia="exact"``.
+
+        Args:
+            mesh_name: Name of the ``<mesh>`` asset.
+            scaling: Per-axis scale of the asset times the import scale.
+            maxhullvert: Collision hull vertex limit.
+            override_color: Optional material color.
+            override_texture: Optional material texture.
+
+        Returns:
+            Submeshes after the asset's scale and reference pose.
+        """
         mesh_asset = mesh_assets[mesh_name]
+        # Mesh() computes exact mass properties; other modes are set by load_mesh_asset().
+        compute_exact = mesh_asset["inertia"] == "exact"
         mesh_file = mesh_asset.get("file")
-        content_type = mesh_asset.get("content_type")
-        if mesh_file and (
-            content_type == "model/vnd.mujoco.msh" or (not content_type and mesh_file.lower().endswith(".msh"))
-        ):
+        if _is_mujoco_msh(mesh_asset):
             vertices, faces, normals, texcoords = _load_mujoco_msh(mesh_file)
         elif mesh_file:
             refpos = mesh_asset["refpos"]
@@ -990,6 +1305,7 @@ def parse_mjcf(
                     maxhullvert,
                     None if override_color is None else tuple(float(v) for v in override_color),
                     override_texture,
+                    compute_exact,
                 )
             cached = mesh_file_cache.get(cache_key) if cache_key is not None else None
             if cached is None:
@@ -999,6 +1315,7 @@ def parse_mjcf(
                     maxhullvert=maxhullvert,
                     override_color=override_color,
                     override_texture=override_texture,
+                    compute_inertia=compute_exact,
                 )
                 if cache_key is not None:
                     mesh_file_cache[cache_key] = cached
@@ -1016,7 +1333,7 @@ def parse_mjcf(
                         indices=mesh.indices,
                         normals=normals,
                         uvs=mesh.uvs,
-                        compute_inertia=mesh.has_inertia,
+                        compute_inertia=mesh.has_inertia and compute_exact,
                         is_solid=mesh.is_solid,
                         maxhullvert=mesh.maxhullvert,
                         color=mesh.color,
@@ -1058,6 +1375,7 @@ def parse_mjcf(
                 faces,
                 normals=normals,
                 uvs=texcoords,
+                compute_inertia=compute_exact,
                 maxhullvert=maxhullvert,
                 color=override_color,
                 texture=override_texture,
@@ -1464,9 +1782,10 @@ def parse_mjcf(
                     scaling = np.asarray(mesh_assets[mesh_name]["scale"]) * scale
                     maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
-                    m_meshes = load_mesh_asset(mesh_name, scaling, maxhullvert)
+                    # The AABB fit uses the geometry; the inertia-box fit uses the mode's mass properties.
+                    m_meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert)
                     # Combine all sub-meshes into one vertex array for fitting.
-                    all_vertices = np.concatenate([m.vertices for m in m_meshes], axis=0)
+                    all_vertices, all_faces = _combine_meshes(m_meshes)
 
                     fitscale = parse_float(geom_attrib, "fitscale", 1.0)
 
@@ -1496,21 +1815,16 @@ def parse_mjcf(
                             center_offset = wp.vec3(*center)
                             tf = tf * wp.transform(center_offset, wp.quat_identity())
                     else:
-                        # Equivalent inertia box mode (default): compute the box whose
-                        # inertia tensor matches the mesh.
-                        all_indices = np.concatenate(
-                            [
-                                m.indices.reshape(-1, 3) + offset
-                                for m, offset in zip(
-                                    m_meshes,
-                                    np.cumsum([0] + [len(m.vertices) for m in m_meshes[:-1]]),
-                                    strict=True,
-                                )
-                            ],
-                            axis=0,
-                        ).flatten()
-
-                        com, half_extents, principal_rot = compute_inertia_box_mesh(all_vertices, all_indices)
+                        # Equivalent inertia box mode (default): compute the box whose inertia tensor
+                        # matches the mesh's in its inertia mode, as mjCMesh::FitGeom does.
+                        properties = mesh_inertia(mesh_name, scaling, maxhullvert, m_meshes)
+                        if properties is None:
+                            # MuJoCo rejects the mesh (mesh_inertia() warns); keep the exact volume's box.
+                            com, half_extents, principal_rot = compute_inertia_box_mesh(
+                                all_vertices, all_faces.flatten()
+                            )
+                        else:
+                            com, half_extents, principal_rot = compute_inertia_box(*properties)
                         # Sort half-extents so the largest is last (Z), matching MuJoCo's
                         # convention where capsule/cylinder axis aligns with Z.
                         he_arr = np.array([*half_extents])
@@ -1534,17 +1848,14 @@ def parse_mjcf(
                             fit_to_mesh = False
 
                         if fit_to_mesh:
-                            # Build a rotation that maps the sorted principal axes
-                            # to the standard frame (X, Y, Z).  The eigenvectors in
-                            # principal_rot are in the original eigenvalue order; we
-                            # need to reorder columns to match the sorted half-extents.
-                            # Rows of warp mat33 = basis vectors of the rotated frame.
+                            # Rotate the geom so that its axes are the principal axes. The
+                            # columns of rot_mat are the principal axes in the mesh frame, in
+                            # eigenvalue order; reorder them to match the sorted half-extents,
+                            # so the axis with the largest half-extent becomes the geom's Z.
                             rot_mat = np.array(wp.quat_to_matrix(principal_rot)).reshape(3, 3)
-                            # rot_mat rows are the principal axes; reorder them so
-                            # the axis with the largest half-extent becomes row 2 (Z).
-                            sorted_mat = rot_mat[sort_order, :]
+                            sorted_mat = rot_mat[:, sort_order]
                             if np.linalg.det(sorted_mat) < 0:
-                                sorted_mat[0, :] = -sorted_mat[0, :]
+                                sorted_mat[:, 0] = -sorted_mat[:, 0]
                             fit_rot = wp.quat_from_matrix(wp.mat33(*sorted_mat.flatten().tolist()))
 
                             # Shift the geom origin to the mesh COM and rotate to
@@ -1598,7 +1909,12 @@ def parse_mjcf(
                     override_texture=texture,
                 )
                 explicit_mesh_density = None
-                if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
+                # A mesh that its inertia mode gives no mass adds none (see load_mesh_asset); a zero
+                # density keeps compute_inertia_shape() from falling back to the exact volume.
+                if mode_sets_mass(geom_attrib["mesh"]) and all(m.has_inertia and m.mass == 0.0 for m in m_meshes):
+                    explicit_mesh_density = 0.0
+                    explicit_mass_handled = True
+                elif geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
                     unit_density_mass = sum(
                         compute_inertia_shape(
                             GeoType.MESH,
