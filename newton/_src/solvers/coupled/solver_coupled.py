@@ -948,7 +948,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
             entry.control = _entry_control(entry.view)
-            if _view_has_kinematic_particles(entry.view):
+            if _entry_has_kinematic_particles(entry):
                 if entry.substeps > 1:
                     raise NotImplementedError(
                         f"Entry '{entry.name}' uses substeps={entry.substeps} with ParticleFlags.KINEMATIC particles; "
@@ -3916,11 +3916,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
             self._refresh_gravity_accelerations()
 
 
-def _view_has_kinematic_particles(view: ModelView) -> bool:
+def _entry_has_kinematic_particles(entry: SolverEntry) -> bool:
+    view = entry.view
     if not int(view.particle_count) or view.particle_flags is None:
         return False
-    kinematic = int(ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC)
-    return bool(np.any((view.particle_flags.numpy() & kinematic) == kinematic))
+    flags = view.particle_flags.numpy()
+    owned = np.ones(flags.shape[0], dtype=bool)
+    owned[entry.particle_dynamics_disabled_local_indices.numpy()] = False
+    return bool(np.any(flags[owned] & int(ParticleFlags.KINEMATIC)))
 
 
 def _entry_control(view: ModelView) -> Control:
