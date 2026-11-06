@@ -1555,7 +1555,8 @@ def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
             "origin": wp.zeros_like(solver._articulation_origin),
             "joint_S_s": wp.zeros_like(aug._joint_S_s),
             "body_I_s": wp.zeros_like(aug._body_I_s),
-            "terms": wp.zeros_like(solver._body_inertia_terms),
+            # The solver keeps a one-row stand-in for the inertia terms (it never asks for them); size them per body here.
+            "terms": wp.zeros((model.body_count, 12), dtype=wp.float32, device=device),
             "body_v_s": wp.zeros_like(aug._body_v_s),
             "body_f_s": wp.zeros_like(aug._body_f_s),
             "body_a_s": wp.zeros_like(aug._body_a_s),
