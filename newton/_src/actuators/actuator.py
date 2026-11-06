@@ -272,6 +272,9 @@ class Actuator:
             drive: Drive that computes raw effort.
             delay: Optional Delay instance for input delay.
             clamping: List of Clamping objects (post-drive effort bounds).
+                Clamps appended to :attr:`clamping` later take effect in the
+                explicit mode once finalized; create actuator states and call
+                :meth:`set_effort_mode_implicit` after appending.
             pos_indices: Indices into coordinate-shaped arrays (positions =
                 ``state.joint_q``). Defaults to *indices*. Differs from
                 *indices* when position and velocity arrays have different
