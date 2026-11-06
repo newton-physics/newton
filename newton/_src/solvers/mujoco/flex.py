@@ -15,6 +15,7 @@ import warp as wp
 from ...core._warnings import _external_warning_stacklevel
 from ...core.types import vec5
 from ...exceptions import NewtonWarning
+from ...geometry import ParticleFlags
 from ...sim import Model, ModelBuilder
 from ._authoring import _ensure_mujoco_attributes, _prepare_custom_frequency_row, _vector
 
@@ -108,9 +109,9 @@ def add_flex(
     """Add a MuJoCo flex over existing Newton tetrahedra, triangles, or springs.
 
     Exactly one element source must be given. Its elements, and their particles,
-    must belong to :attr:`~newton.ModelBuilder.current_world`. The flex is only
-    simulated by :class:`~newton.solvers.SolverMuJoCo` with ``use_flex=True``;
-    elements without an authored flex are grouped into one flex per dimension.
+    must belong to :attr:`~newton.ModelBuilder.current_world`. The flex only
+    affects :class:`~newton.solvers.SolverMuJoCo`; elements without an authored
+    flex are grouped into one flex per dimension.
 
     Args:
         builder: Model builder receiving the flex.
@@ -198,6 +199,36 @@ def add_flex(
     for i in indices:
         owner[int(i)] = flex
     return flex
+
+
+def _converted_elements(model: Model) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Return each element source's connectivity and a mask of the elements to convert.
+
+    An element is converted when at least one of its particles is
+    :attr:`~newton.ParticleFlags.ACTIVE`. Elements over inactive particles only
+    belong to another solver, such as a coupled entry that does not own them.
+    """
+    if model.particle_count == 0:
+        return {}
+    active = model.particle_flags.numpy() & int(ParticleFlags.ACTIVE) != 0
+    converted = {}
+    for source, (dim, _, _, field) in ELEMENTS.items():
+        indices = getattr(model, field)
+        if indices is not None and indices.size:
+            elems = indices.numpy().reshape(-1, dim + 1)
+            converted[source] = (elems, active[elems].any(axis=1))
+    return converted
+
+
+def _flex_particles(model: Model) -> np.ndarray:
+    """Return a mask of the particles that are vertices of a converted element.
+
+    Other particles, such as MPM grains, have no MuJoCo representation and are left to other solvers.
+    """
+    mask = np.zeros(model.particle_count, dtype=bool)
+    for elems, keep in _converted_elements(model).values():
+        mask[elems[keep]] = True
+    return mask
 
 
 def _uniform(values: np.ndarray, what: str) -> Any:

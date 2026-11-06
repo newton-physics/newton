@@ -68,7 +68,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         _add_rope(builder, 2.0)
         model = builder.finalize()
 
-        mj_model = SolverMuJoCo(model, use_flex=True).mj_model
+        mj_model = SolverMuJoCo(model).mj_model
 
         np.testing.assert_array_equal(mj_model.flex_dim, [3, 2, 1])
         # The soft grid's surface triangles are covered by its 3D flex, so the 2D flex holds only the cloth.
@@ -101,7 +101,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         builder.add_ground_plane()
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model, use_flex=True)
+        solver = SolverMuJoCo(model)
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         for _ in range(150):
@@ -140,7 +140,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.tri_flex.numpy().reshape(2, -1)[:, 0], [0, 2])
         np.testing.assert_array_equal(model.mujoco.spring_flex.numpy(), [1, 1, 3, 3])
 
-        solver = SolverMuJoCo(model, use_flex=True)
+        solver = SolverMuJoCo(model)
         mj_model = solver.mj_model
         np.testing.assert_array_equal(mj_model.flex_dim, [2, 2, 1])
         self.assertEqual(solver._mujoco.mj_id2name(mj_model, solver._mujoco.mjtObj.mjOBJ_FLEX, 0), "sheet")
@@ -177,13 +177,13 @@ class TestMuJoCoFlex(unittest.TestCase):
             mujoco.add_flex(builder, triangles=triangles)
         builder.end_world()
 
-    def test_use_flex_requires_mujoco_contacts(self):
+    def test_flexes_require_mujoco_contacts(self):
         """Flex particles cannot use Newton contacts, so the combination is rejected."""
         builder = _builder()
         _add_cloth(builder, 0.0)
         model = builder.finalize()
         with self.assertRaises(ValueError):
-            SolverMuJoCo(model, use_flex=True, use_mujoco_contacts=False)
+            SolverMuJoCo(model, use_mujoco_contacts=False)
 
     def test_cloth_springs_are_kept(self):
         """Cloth springs form their own 1D flex even though the cloth covers their particles."""
@@ -202,7 +202,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         )
         model = builder.finalize()
 
-        mj_model = SolverMuJoCo(model, use_flex=True).mj_model
+        mj_model = SolverMuJoCo(model).mj_model
         np.testing.assert_array_equal(mj_model.flex_dim, [2, 1])
         self.assertEqual(mj_model.flex_elemnum[1], model.spring_count)
         np.testing.assert_allclose(mj_model.flex_edgestiffness[1], 10.0)
@@ -231,7 +231,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         ground = builder.add_ground_plane(cfg=ground_cfg)
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model, use_flex=True)
+        solver = SolverMuJoCo(model)
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         for _ in range(150):
@@ -260,6 +260,40 @@ class TestMuJoCoFlex(unittest.TestCase):
         np.testing.assert_allclose(state_0.particle_q.numpy(), model.particle_q.numpy())
         np.testing.assert_allclose(state_0.particle_qd.numpy(), 0.0)
 
+    def test_only_active_element_particles_are_simulated(self):
+        """Free particles and elements of inactive particles are left to other solvers."""
+        builder = _builder()
+        _add_cloth(builder, 0.0)
+        cloth_particles = builder.particle_count
+        _add_cloth(builder, 1.0)
+        for p in range(cloth_particles, builder.particle_count):
+            builder.particle_flags[p] &= ~int(newton.ParticleFlags.ACTIVE)
+        builder.add_particle((2.0, 0.0, 1.0), (0.0, 0.0, 0.0), 0.01)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.nflex, 1)
+        self.assertEqual(solver.mj_model.nv, 3 * cloth_particles)
+
+        state_0, state_1 = model.state(), model.state()
+        state_0.particle_qd.fill_(1.0)
+        solver.step(state_0, state_1, model.control(), None, 1.0e-3)
+        q, qd = state_1.particle_q.numpy(), state_1.particle_qd.numpy()
+        self.assertFalse(np.allclose(q[:cloth_particles], model.particle_q.numpy()[:cloth_particles]))
+        np.testing.assert_array_equal(q[cloth_particles:], model.particle_q.numpy()[cloth_particles:])
+        np.testing.assert_array_equal(qd[cloth_particles:], 1.0)
+
+        solver.reset(state_1)
+        np.testing.assert_array_equal(state_1.particle_qd.numpy()[cloth_particles:], 1.0)
+
+        # Models with only free particles, such as MPM sand, convert no particles.
+        builder = _builder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1)
+        builder.add_particle((0.0, 0.0, 1.0), (0.0, 0.0, 0.0), 0.01)
+        model = builder.finalize()
+        self.assertEqual(SolverMuJoCo(model, use_mujoco_contacts=False).mj_model.nv, 6)
+
     def test_worlds_must_share_flex_layout(self):
         """Worlds whose elements or authored flexes differ are rejected."""
         builder = _builder()
@@ -271,7 +305,7 @@ class TestMuJoCoFlex(unittest.TestCase):
             builder.end_world()
         model = builder.finalize()
         with self.assertRaises(ValueError):
-            SolverMuJoCo(model, use_flex=True)
+            SolverMuJoCo(model)
 
 
 if __name__ == "__main__":

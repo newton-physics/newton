@@ -3622,20 +3622,24 @@ def wake_changed_trees_kernel(
 @wp.kernel(enable_backward=False)
 def reset_particle_state_kernel(
     world_mask: wp.array[wp.bool],
-    particles_per_world: int,
+    particle_qpos_adr: wp.array[wp.int32],
+    particle_pinned_body: wp.array[wp.int32],
     default_particle_q: wp.array[wp.vec3],
     default_particle_qd: wp.array[wp.vec3],
     particle_q: wp.array[wp.vec3],
     particle_qd: wp.array[wp.vec3],
 ):
-    """Reset per-world particle positions/velocities to the model defaults.
+    """Reset per-world flex particle positions/velocities to the model defaults.
 
-    ``particle_q`` and/or ``particle_qd`` may be ``None`` to leave that quantity untouched.
+    Particles without a flex body are skipped. ``particle_q`` and/or ``particle_qd``
+    may be ``None`` to leave that quantity untouched.
     """
     worldid, p = wp.tid()
     if world_mask and not world_mask[worldid]:
         return
-    i = worldid * particles_per_world + p
+    if particle_qpos_adr[p] < 0 and particle_pinned_body[p] < 0:
+        return
+    i = worldid * particle_qpos_adr.shape[0] + p
     if particle_q:
         particle_q[i] = default_particle_q[i]
     if particle_qd:

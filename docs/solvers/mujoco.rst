@@ -745,16 +745,23 @@ already be enabled in the imported model.
 Particles and flexes
 --------------------
 
-With ``use_flex=True``, :class:`~newton.solvers.SolverMuJoCo` simulates Newton
-particles as MuJoCo
+:class:`~newton.solvers.SolverMuJoCo` simulates the springs, triangles, and
+tetrahedra of its model as MuJoCo
 `flexes <https://mujoco.readthedocs.io/en/stable/XMLreference.html#deformable-flex>`__.
-By default particles are ignored so that another solver can simulate them.
-Each particle becomes a MuJoCo body with three slide joints placed at its
-initial position, and ``State.particle_q`` / ``particle_qd`` are synchronized
-with those joints every step. Particles with zero mass or without
-:attr:`~newton.ParticleFlags.ACTIVE` get no joints. They are pinned at their
-``particle_q`` in each world and follow it when it changes.
-:meth:`~newton.solvers.SolverMuJoCo.reset` restores particles with
+Like rigid bodies, deformables are simulated whenever they are in the model the
+solver receives; to split them between solvers, use
+:class:`~newton.solvers.experimental.coupled.SolverCoupled`, whose entries see
+only the particles they own. Elements whose particles all lack
+:attr:`~newton.ParticleFlags.ACTIVE` belong to another solver and are skipped.
+Particles that belong to no element, such as MPM grains, have no MuJoCo
+representation and are left untouched.
+
+Each particle of a converted element becomes a MuJoCo body with three slide
+joints placed at its initial position, and ``State.particle_q`` /
+``particle_qd`` are synchronized with those joints every step. Particles with
+zero mass or without :attr:`~newton.ParticleFlags.ACTIVE` get no joints. They
+are pinned at their ``particle_q`` in each world and follow it when it changes.
+:meth:`~newton.solvers.SolverMuJoCo.reset` restores flex particles with
 :attr:`~newton.StateFlags.PARTICLE_Q` and :attr:`~newton.StateFlags.PARTICLE_QD`.
 
 Elements that no authored flex covers are grouped into one flex per
@@ -788,8 +795,8 @@ warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
 friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
 shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, including
 shapes that do not collide with other shapes, but not with themselves. Flex
-contacts require ``use_mujoco_contacts=True``; the solver rejects
-``use_flex=True`` otherwise. In exported contacts, the flex side has shape
+contacts require ``use_mujoco_contacts=True``; the solver rejects models with
+flexes otherwise. In exported contacts, the flex side has shape
 ``-1``. With separate worlds, every world must have the same elements and
 authored flexes.
 
