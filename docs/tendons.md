@@ -258,7 +258,13 @@ and reject unsupported semantics rather than silently discard them.
 - Segment compliance applies to the straight free spans. Wrapped arc length is
   included in material transport but is not independently stretchable.
 - Free-span rest lengths are limited to at least `1.0e-6 m` during material
-  transfer and dynamic-route transitions.
+  transfer and dynamic-route transitions. If enforcing this floor adds material
+  beyond float32 roundoff at the accepted pose, XPBD and VBD emit an `ERROR`
+  diagnostic identifying the tendon and added length. This can happen when
+  growing wrapped arcs exhaust the available material, or material transfers
+  have not converged. The diagnostic also runs during CUDA graph replay, without
+  host synchronization. It does not stop the simulation or repair the material
+  budget; reported rest lengths and tensions are invalid after this error.
 - Fixed roller wraps must remain in `[0, pi]`. Zero wrap is a valid tangent
   boundary; crossing below zero or beyond pi is unsupported and emits a
   diagnostic from the accepted pose. The diagnostic does not repair the route.

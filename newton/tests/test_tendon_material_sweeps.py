@@ -3,6 +3,9 @@
 
 """Material-sweep regressions independent of rigid-body convergence."""
 
+import math
+import subprocess
+import sys
 import unittest
 
 import numpy as np
@@ -11,6 +14,7 @@ import warp as wp
 import newton
 from newton._src.sim.tendon import TendonGuideType
 from newton._src.solvers.tendon_kernels import _material_sweep_contact_error, solve_tendon_material
+from newton.tests.test_tendon_capstan import build_explicit_inactive_dynamic_route, build_kinematic_rolling_transport
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -103,6 +107,7 @@ def solve_material_case(
         sweeps,
         tol,
         atol,
+        1,
         wp.zeros(count + 1, device=device),
     ]
     wp.launch(solve_tendon_material, dim=1, inputs=inputs, device=device)
@@ -116,6 +121,96 @@ def solve_material_case(
     stretch_np = stretch.numpy()
     result = np.maximum(stretch_np / compliance + damping.numpy(), 0.0)
     return result, rest_gpu.numpy(), rest, int(sweep_count.numpy()[0])
+
+
+def test_rolling_material_exhaustion_diagnostic(test, device):
+    """Report an exhausted wrap budget once, at the accepted pose, including graph replay."""
+    # Native CPU/CUDA printf buffering cannot reliably be nested inside the
+    # test runner's stdout capture on Windows. Process exit flushes both.
+    script = (
+        "import sys, unittest; import warp as wp; "
+        "from newton.tests.test_tendon_material_sweeps import _run_material_exhaustion_cases; "
+        "_run_material_exhaustion_cases(unittest.TestCase(), wp.get_device(sys.argv[1]), bool(int(sys.argv[2])))"
+    )
+    for exhausted in (False, True):
+        with test.subTest(exhausted=exhausted):
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(device), str(int(exhausted))],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+            test.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            diagnostic = result.stdout + result.stderr
+            expected = (8 if device.is_cuda else 4) if exhausted else 0
+            test.assertEqual(diagnostic.count("ERROR: Tendon 0 material rest-length floor"), expected, diagnostic)
+            test.assertNotIn("supported wrap range", diagnostic)
+
+
+def _run_material_exhaustion_cases(test, device, exhausted):
+    """Exercise changing wraps and dynamic activation with valid and exhausted budgets."""
+    for dynamic in (False, True):
+        with wp.ScopedDevice(device):
+            if dynamic:
+                model, candidate = build_explicit_inactive_dynamic_route(device)
+                moved_body = int(model.tendon_guide_body.numpy()[candidate])
+            else:
+                model, _ = build_kinematic_rolling_transport(mu=0.2)
+                moved_body = int(model.tendon_guide_body.numpy()[2])
+        model.body_color_groups = [wp.array([i], dtype=int, device=device) for i in range(model.body_count)]
+        model.tendon_segment_compliance.fill_(0.1)
+        for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+            solver = solver_type(model, iterations=4)
+            state, output, control = model.state(), model.state(), model.control()
+            solver.reset(state)
+            solver.step(state, output, control, None, 1.0 / 60.0)
+            state.assign(output)
+            baseline = model.state()
+            baseline.assign(state)
+            initial_arc = float(0.0)
+            if not dynamic:
+                radial_l = solver.tendon_segment_attachment_r.numpy()[0]
+                radial_r = solver.tendon_segment_attachment_l.numpy()[1]
+                initial_arc = 0.1 * abs(math.atan2(np.cross(radial_l, radial_r)[2], np.dot(radial_l, radial_r)))
+            graph = None
+            if device.is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    solver.step(state, output, control, None, 1.0 / 60.0)
+                graph = capture.graph
+
+            # The first trial needs material from the other span, but has enough
+            # overall. The second exceeds the entire budget. The third releases
+            # material from the arc. All three use supported positive wraps.
+            cases = ((0.001, 0.02),) if exhausted else ((0.003, 0.02), (0.001, -0.02))
+            if dynamic:
+                cases = ((0.001 if exhausted else 1.0, 0.0),)
+            for free_rest, angle in cases:
+                for use_graph in (False, True) if graph is not None else (False,):
+                    with test.subTest(solver=solver_type.__name__, dynamic=dynamic, rest=free_rest, graph=use_graph):
+                        solver.reset(state, flags=0)
+                        state.assign(baseline)
+                        state.tendon_segment_rest_length.assign([free_rest, 0.0] if dynamic else [free_rest / 2.0] * 2)
+                        poses = state.body_q.numpy()
+                        poses[moved_body, :3] = (
+                            (0.0, 0.0, 0.0) if dynamic else (0.4 * math.cos(angle), 0.4 * math.sin(angle), 0.0)
+                        )
+                        state.body_q.assign(poses)
+                        if use_graph:
+                            wp.capture_launch(graph)
+                        else:
+                            solver.step(state, output, control, None, 1.0 / 60.0)
+                        if dynamic:
+                            test.assertTrue(bool(output.tendon_guide_active.numpy()[candidate]))
+                        if not exhausted:
+                            arc = initial_arc + 0.1 * angle
+                            if dynamic:
+                                radial_l = solver.tendon_segment_attachment_r.numpy()[0]
+                                radial_r = solver.tendon_segment_attachment_l.numpy()[1]
+                                arc = 0.1 * abs(math.atan2(np.cross(radial_l, radial_r)[1], np.dot(radial_l, radial_r)))
+                            total_material = float(output.tendon_segment_rest_length.numpy().sum()) + arc
+                            test.assertAlmostEqual(total_material, free_rest + initial_arc, delta=2.0e-7)
+    wp.synchronize_device(device)
 
 
 def test_adaptive_sweeps_exhausted_span(test, device):
@@ -482,6 +577,12 @@ add_function_test(
     TestTendonMaterialSweeps,
     "test_adaptive_sweeps_exhausted_span",
     test_adaptive_sweeps_exhausted_span,
+    devices=devices,
+)
+add_function_test(
+    TestTendonMaterialSweeps,
+    "test_rolling_material_exhaustion_diagnostic",
+    test_rolling_material_exhaustion_diagnostic,
     devices=devices,
 )
 add_function_test(

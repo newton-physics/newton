@@ -2907,9 +2907,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # The final body update changes tendon geometry after the last
             # in-iteration material solve. Accept its route state before
             # reporting tension or carrying rest lengths into the next step.
-            # This accepted state is also where the unsupported-wrap
-            # diagnostic is meaningful (mid-iteration predictor overshoot is
-            # not), so report it here.
+            # Report wrap and material-budget errors at the accepted pose;
+            # mid-iteration predictor overshoot can still recover.
             self._update_tendon_routing(state_in, dt, True)
             self._snapshot_tendon_segment_length_reference(state_in.body_q, dt)
 
@@ -4318,7 +4317,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
-    def _update_tendon_routing(self, state_in: State, dt: float, report_unsupported_wrap: bool) -> None:
+    def _update_tendon_routing(self, state_in: State, dt: float, report_diagnostics: bool) -> None:
         """Update VBD routed-tendon geometry and rolling rest transfer for this iteration."""
         model = self.model
         if model.tendon_segment_count == 0:
@@ -4359,7 +4358,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             device=self.device,
         )
 
-        self._update_tendon_cone_rows(model, state_in.body_q, report_unsupported_wrap)
+        self._update_tendon_cone_rows(model, state_in.body_q, report_diagnostics)
 
         wp.launch(
             kernel=solve_tendon_material,
@@ -4407,6 +4406,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
                 self.tendon_settle_atol,
+                int(report_diagnostics),
                 self._tendon_guide_material_transfer,
             ],
             device=self.device,

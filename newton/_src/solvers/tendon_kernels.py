@@ -1147,6 +1147,7 @@ def solve_tendon_material(
     tendon_max_sweeps: int,
     tendon_settle_tol: float,
     tendon_settle_atol: float,
+    report_material_exhaustion: int,
     guide_material_transfer: wp.array[float],
 ):
     """Update free-span rest-length transfer for one tendon.
@@ -1159,6 +1160,8 @@ def solve_tendon_material(
 
     XPBD derives damping from body velocities. VBD sets ``damping_from_pose_delta``
     to use the current and previous accepted poses, matching its force evaluation.
+    Report material added by rest floors only for the accepted pose; intermediate
+    iterates can recover through body motion or neighboring material transfers.
     """
     tendon_id = wp.tid()
     guide_start = tendon_start[tendon_id]
@@ -1174,6 +1177,7 @@ def solve_tendon_material(
     seg_offset = guide_start - tendon_id
 
     min_rest = 1.0e-6
+    material_added = float(0.0)
 
     for s in range(num_segs):
         seg = seg_offset + s
@@ -1202,15 +1206,20 @@ def solve_tendon_material(
         arc_rest = wrapped_arc_length(
             seg_attachment_r[seg_left], seg_attachment_l[seg_right], center, tendon_guide_radius[guide_idx], normal
         )
-        free_rest = seg_rest_length_step[seg_left] - arc_rest
-        if free_rest < 2.0 * min_rest:
-            free_rest = 2.0 * min_rest
+        raw_free_rest = seg_rest_length_step[seg_left] - arc_rest
+        free_rest = wp.max(raw_free_rest, 2.0 * min_rest)
 
         len_l = seg_length[seg_left]
         len_r = seg_length[seg_right]
         free_len = wp.max(len_l + len_r, 1.0e-8)
         rest_l = wp.max(min_rest, free_rest * len_l / free_len)
         rest_r = wp.max(min_rest, free_rest - rest_l)
+        if report_material_exhaustion != 0:
+            # Allow float32 cancellation in the arc subtraction and split.
+            roundoff = 1.0e-6 * wp.max(wp.max(wp.abs(seg_rest_length_step[seg_left]), arc_rest), min_rest)
+            added = rest_l + rest_r - raw_free_rest
+            if added > roundoff:
+                material_added = material_added + added
         seg_rest_length[seg_left] = rest_l
         seg_rest_length[seg_right] = rest_r
 
@@ -1372,8 +1381,8 @@ def solve_tendon_material(
                     delta = wp.min(delta, max_delta)
                     delta = -delta
 
-                # Bound the pair together, including an exhausted rolling trial,
-                # so enforcing the rest floor cannot create cable material.
+                # Bound the pair together when its total rest budget is feasible.
+                # Neighbor updates may replenish an infeasible pair in later sweeps.
                 lower = min_rest - (len_l - d_l_raw)
                 upper = len_r - d_r_raw - min_rest
                 if lower <= upper:
@@ -1466,4 +1475,21 @@ def solve_tendon_material(
             seg = seg_offset + s_wb
             if seg_active[seg] != 0:
                 len_wb = seg_length[seg]
-                seg_rest_length[seg] = wp.max(len_wb - seg_stretch[seg], min_rest)
+                raw_rest = len_wb - seg_stretch[seg]
+                if report_material_exhaustion != 0:
+                    # The rest floor is often reached within a few float32 ulps.
+                    # Diagnose a material deficit, not reconstruction roundoff.
+                    roundoff = 1.0e-6 * wp.max(wp.max(wp.abs(len_wb), wp.abs(seg_stretch[seg])), min_rest)
+                    added = min_rest - raw_rest
+                    if added > roundoff:
+                        material_added = material_added + added
+                seg_rest_length[seg] = wp.max(raw_rest, min_rest)
+
+    if report_material_exhaustion != 0 and material_added > 0.0:
+        wp.printf(
+            "ERROR: Tendon %d material rest-length floor added %g m of cable. "
+            "The accepted material solve cannot conserve cable length; rest lengths and tensions are invalid. "
+            "Check wrapped-arc growth, available cable material, and material-solver convergence.\n",
+            tendon_id,
+            material_added,
+        )

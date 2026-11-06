@@ -759,6 +759,7 @@ class TendonStateMixin:
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
                 self.tendon_settle_atol,
+                0,
                 self._tendon_guide_material_transfer,
             ],
             device=model.device,
