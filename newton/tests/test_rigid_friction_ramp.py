@@ -160,16 +160,41 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
     return model, box_ids
 
 
-def simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames):
-    dt_sub = SIM_DT / SIM_SUBSTEPS
-    for _ in range(num_frames):
+class FrameStepper:
+    """Replay one captured frame on CUDA; per-launch overhead dominates these small scenes."""
+
+    def __init__(self, solver, model, state_0, state_1, control, collision_pipeline, contacts):
+        # An even substep count returns both states to their roles, so one captured frame replays as-is.
+        assert SIM_SUBSTEPS % 2 == 0
+        self.solver = solver
+        self.state_0 = state_0
+        self.state_1 = state_1
+        self.control = control
+        self.collision_pipeline = collision_pipeline
+        self.contacts = contacts
+        self.graph = None
+        device = model.device
+        if device.is_cuda and wp.is_mempool_enabled(device):
+            with wp.ScopedCapture(device) as capture:
+                self._simulate_frame()
+            self.graph = capture.graph
+
+    def _simulate_frame(self):
+        dt_sub = SIM_DT / SIM_SUBSTEPS
+        state_0, state_1 = self.state_0, self.state_1
         for _ in range(SIM_SUBSTEPS):
             state_0.clear_forces()
-            if contacts is not None:
-                collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, dt_sub)
+            if self.contacts is not None:
+                self.collision_pipeline.collide(state_0, self.contacts)
+            self.solver.step(state_0, state_1, self.control, self.contacts, dt_sub)
             state_0, state_1 = state_1, state_0
-    return state_0, state_1
+
+    def simulate(self, num_frames):
+        for _ in range(num_frames):
+            if self.graph is not None:
+                wp.capture_launch(self.graph)
+            else:
+                self._simulate_frame()
 
 
 def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds):
@@ -211,10 +236,11 @@ def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds, nat
         collision_pipeline = newton.CollisionPipeline(model)
         contacts = collision_pipeline.contacts()
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, SETTLE_FRAMES)
+    stepper = FrameStepper(solver, model, state_0, state_1, control, collision_pipeline, contacts)
+    stepper.simulate(SETTLE_FRAMES)
     settle_q = state_0.body_q.numpy().copy()
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, MEASURE_FRAMES)
+    stepper.simulate(MEASURE_FRAMES)
     final_q = state_0.body_q.numpy()
     final_qd = state_0.body_qd.numpy()
 
@@ -299,9 +325,8 @@ def test_friction_stopping_distance(
     contacts = collision_pipeline.contacts() if collision_pipeline is not None else None
 
     # Establish resting contacts so the measurement excludes landing impulses.
-    state_0, state_1 = simulate(
-        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_SETTLE_FRAMES
-    )
+    stepper = FrameStepper(solver, model, state_0, state_1, control, collision_pipeline, contacts)
+    stepper.simulate(STOPPING_SETTLE_FRAMES)
     initial_q = state_0.body_q.numpy().copy()
 
     qd = state_0.body_qd.numpy()
@@ -323,16 +348,14 @@ def test_friction_stopping_distance(
     t_stop_max = STOPPING_V0 / (min(STOPPING_MUS) * g)
     num_frames = int(math.ceil(1.5 * t_stop_max / SIM_DT))
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames)
+    stepper.simulate(num_frames)
 
     final_q = state_0.body_q.numpy().copy()
     final_qd = state_0.body_qd.numpy().copy()
 
     # A trailing displacement is insensitive to one-frame normal contact jitter
     # while still detecting residual sliding after the stopping-distance check.
-    state_0, state_1 = simulate(
-        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_REST_FRAMES
-    )
+    stepper.simulate(STOPPING_REST_FRAMES)
     rest_q = state_0.body_q.numpy()
     rest_qd = state_0.body_qd.numpy()
 
@@ -576,6 +599,7 @@ class TestRigidFrictionRamp(unittest.TestCase):
         print(f"\nFriction-ramp grid with '{solver_name}' solver for {VIEWER_FRAMES} frames...")
         print("Close the viewer window or press Ctrl+C to stop.")
 
+        stepper = FrameStepper(solver, model, state_0, state_1, control, collision_pipeline, contacts)
         sim_time = 0.0
         try:
             for _ in range(VIEWER_FRAMES):
@@ -585,7 +609,7 @@ class TestRigidFrictionRamp(unittest.TestCase):
                     viewer.log_contacts(contacts, state_0)
                 viewer.end_frame()
 
-                state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, 1)
+                stepper.simulate(1)
                 sim_time += SIM_DT
                 time.sleep(SIM_DT)
         except KeyboardInterrupt:
@@ -629,6 +653,7 @@ class TestRigidFrictionRamp(unittest.TestCase):
         print(f"\nStopping-distance scene with '{solver_name}' solver for {VIEWER_FRAMES} frames...")
         print("Close the viewer window or press Ctrl+C to stop.")
 
+        stepper = FrameStepper(solver, model, state_0, state_1, control, collision_pipeline, contacts)
         sim_time = 0.0
         try:
             for _ in range(VIEWER_FRAMES):
@@ -638,7 +663,7 @@ class TestRigidFrictionRamp(unittest.TestCase):
                     viewer.log_contacts(contacts, state_0)
                 viewer.end_frame()
 
-                state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, 1)
+                stepper.simulate(1)
                 sim_time += SIM_DT
                 time.sleep(SIM_DT)
         except KeyboardInterrupt:
