@@ -787,6 +787,13 @@ dimension:
        ``spring_damping``. Stretch only: 1D flexes resist bending only when
        ``young`` is set through ``add_flex``.
 
+MuJoCo applies 1D edge stiffness as an explicit passive force, while the
+``"discrete"`` integrator solves 2D and 3D elasticity implicitly. A spring
+chain with stiffness ``k`` and particle mass ``m`` is stable only for time
+steps below about ``sqrt(m / k)``; stiffer cables than solvers such as
+:class:`~newton.solvers.SolverVBD` handle at the same step size need smaller
+steps in MuJoCo.
+
 A triangle whose particles all belong to a tetrahedral flex is skipped, so the
 surface triangles of a tetrahedral mesh do not form a second flex. Springs are
 always converted, as in Newton's other solvers.
