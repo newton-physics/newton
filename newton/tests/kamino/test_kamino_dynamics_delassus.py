@@ -161,7 +161,7 @@ class TestDelassusSizing(unittest.TestCase):
                 )
                 delassus = DelassusOperator()
                 with patch.multiple(wp, **_allocation_patches(AssertionError("Dense buffer allocation attempted"))):
-                    with self.assertRaisesRegex(ValueError, "Kamino.*dense Delassus") as error:
+                    with self.assertRaisesRegex(OverflowError, "Kamino.*dense Delassus") as error:
                         delassus.finalize(model=model, data=DataKamino())
                 self.assertEqual(delassus.num_maxsize, expected_size)
                 for guidance in (

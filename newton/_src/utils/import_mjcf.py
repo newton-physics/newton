@@ -76,6 +76,24 @@ _ACTUATOR_SHORTCUT_DEFAULTS = {
     },
 }
 
+# Vector attributes that MuJoCo reads with fewer values than their length, keeping
+# the remaining components from the default class (MuJoCo's mjcf_read_table.inc).
+_SOLVER_LIMIT_VECTORS = frozenset({"solreflimit", "solimplimit", "solreffriction", "solimpfriction"})
+_ACTUATOR_VECTORS = frozenset({"gear", "damping"})
+_MJCF_PARTIAL_VECTORS = {
+    "geom": frozenset({"size", "friction", "solref", "solimp", "fluidcoef"}),
+    "site": frozenset({"size"}),
+    "joint": _SOLVER_LIMIT_VECTORS,
+    "tendon": _SOLVER_LIMIT_VECTORS,
+    "pair": frozenset({"friction", "solref", "solreffriction", "solimp"}),
+    "equality": frozenset({"solref", "solimp"}),
+    "general": _ACTUATOR_VECTORS | {"dynprm", "gainprm", "biasprm"},
+    **dict.fromkeys(
+        ("motor", "position", "velocity", "intvelocity", "pid", "damper", "cylinder", "muscle", "dcmotor"),
+        _ACTUATOR_VECTORS,
+    ),
+}
+
 
 def _parse_actuator_parameters(value: str) -> vec10:
     # Actuator parameters use zero-padding, unlike parse_vec's shorthand rules.
@@ -715,10 +733,7 @@ def parse_mjcf(
             if key in attrib:
                 if isinstance(attrib[key], dict):
                     attrib[key] = merge_attrib(attrib[key], value, tag=key)
-                elif (
-                    tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "muscle", "dcmotor"}
-                    and key == "damping"
-                ):
+                elif key in _MJCF_PARTIAL_VECTORS.get(tag, ()):
                     # MuJoCo overrides only the supplied prefix of these vectors.
                     values = value.split()
                     attrib[key] = " ".join(values + attrib[key].split()[len(values) :])
@@ -1267,7 +1282,7 @@ def parse_mjcf(
             if geom_class is not None and is_ignored_class(geom_class):
                 continue
             geom_defaults = resolve_class_defaults(geom_class, defaults)
-            geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib)
+            geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib, tag="geom")
 
             raw_geom_name = geom.attrib.get("name")
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
@@ -1912,12 +1927,10 @@ def parse_mjcf(
             # Sites are typically hidden by default
             visible = False
 
-            # Expand to 3-element vector if needed
-            if len(site_size) == 2:
-                # Two values (e.g., capsule/cylinder: radius, half-height)
-                radius = site_size[0]
-                half_height = site_size[1]
-                site_size = wp.vec3(radius, half_height, 0.0)
+            # MuJoCo ignores the third size component of a cylinder site, whereas
+            # Newton interprets a cylinder's scale[2] as its barrel radius.
+            if geo_type == GeoType.CYLINDER:
+                site_size[2] = 0.0
 
             # Add site using builder.add_site()
             site_label = f"{label_prefix}/{site_name}" if label_prefix else site_name
@@ -1928,7 +1941,6 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
-                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
