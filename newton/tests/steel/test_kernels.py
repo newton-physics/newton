@@ -1502,7 +1502,9 @@ def test_register_lower_inverse_matches_the_serial_inversion(test, device):
             device=device,
         )
         kernel = solver_steel._get_inverse_cholesky_register_kernel(n_dofs, device.arch, lower_only=True)
-        wp.launch(kernel, dim=n_arts * 32, inputs=[L, group_to_art, mask], outputs=[actual], block_dim=256, device=device)
+        wp.launch(
+            kernel, dim=n_arts * 32, inputs=[L, group_to_art, mask], outputs=[actual], block_dim=256, device=device
+        )
         expected_np, actual_np = expected.numpy(), actual.numpy()
         np.testing.assert_array_equal(actual_np[2], 42.0, err_msg=f"n_dofs={n_dofs}: masked articulation was written")
         refreshed = [0, 1, 3, 4]

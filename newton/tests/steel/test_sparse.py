@@ -1751,6 +1751,72 @@ class TestSteelSparsePGS(unittest.TestCase):
         expected[0, 0] = 1.0
         np.testing.assert_array_equal(delta.numpy(), expected)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "sparse PGS requires CUDA")
+    def test_cuda_free_patch_friction_pools_the_linked_normal_load(self):
+        """Bound a free-body friction row by the pooled load of its region's linked normal rows."""
+        device = "cuda:0"
+
+        def array(value, dtype=float):
+            return wp.array(value, dtype=dtype, device=device)
+
+        # World 0: normal A (row 0, no load) linked to normal B (row 3, load 2); friction rows 1 and 2 belong to A.
+        rows_per_world = 4
+        meta = np.zeros((2 * rows_per_world, 4), dtype=np.int32)
+        meta[:, 0] = 0xFFFF  # Active endpoint at offset zero; static endpoint -1.
+        meta[1, 1] = meta[2, 1] = np.float32(1.0).view(
+            np.int32
+        )  # The normal rows keep their impulses (no inverse diagonal).
+        meta[0, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (3 << 16)
+        meta[3, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (0 << 16)
+        meta[1, 3] = meta[2, 3] = PGS_CONSTRAINT_TYPE_FRICTION | (0 << 16)
+        rows = np.zeros((2, rows_per_world, 6), dtype=np.float32)
+        rows[0, 0, 2] = rows[0, 3, 2] = 1.0  # normals along z
+        rows[0, 1, 0] = 1.0  # friction along x
+        rows[0, 2, 1] = 1.0  # friction along y
+        velocity = np.zeros((2, 6), dtype=np.float32)
+        velocity[0, 0] = 5.0  # sliding along x, so the friction row wants a large opposing impulse
+        impulses = array([[0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 0.0]])
+        delta = wp.zeros((2, 6), device=device)
+        wp.launch_tiled(
+            _get_pgs_solve_sparse_kernel(1, 6, 6, free_body_constraint_max=rows_per_world),
+            dim=[1],
+            inputs=[
+                2,
+                array([0, 0], int),
+                array([[0.0], [0.0]]),
+                array([[1.0], [1.0]]),
+                array([[0.0], [0.0]]),
+                array(np.full((2, 1, 6), -1), int),
+                array(np.zeros((2, 1, 6))),
+                array(np.zeros((2, 1, 12))),
+                array([[0.0], [0.0]]),
+                array([[0], [0]], int),
+                array([[-1], [-1]], int),
+                array([[0.0], [0.0]]),
+                array(np.ones((2, 6)), int),
+                array(np.arange(12).reshape(2, 6), int),
+                array(velocity.reshape(-1)),
+                array([rows_per_world, 0], int),
+                array(meta, int),
+                impulses,
+                array(rows),
+                array(np.zeros_like(rows)),
+                array(rows),
+                array(np.zeros_like(rows)),
+                array([[0.0, 0.5, 0.5, 0.0], [0.0, 0.0, 0.0, 0.0]]),
+                1,
+                1.0,
+            ],
+            outputs=[delta],
+            block_dim=64,
+            device=device,
+        )
+        # Pooled over the region the Coulomb radius is 0.5 * (0 + 2) = 1; A's own load alone would allow no friction.
+        np.testing.assert_allclose(impulses.numpy()[0], [0.0, -1.0, 0.0, 2.0], atol=1.0e-6)
+        expected = np.zeros((2, 6))
+        expected[0, 0] = -1.0
+        np.testing.assert_allclose(delta.numpy(), expected, atol=1.0e-6)
+
     def test_mixed_factor_sweeps_preserve_supplied_response(self):
         """Preserve dense-then-MF row order and distinct free-body responses."""
         factor, z, r, jacobian, response, initial, bias, types, parents, mu, diagonal = _mixed_problem()
@@ -2029,9 +2095,7 @@ def _build_chain(device, *, links=6):
     return builder.finalize(device=device)
 
 
-def _build_model(
-    *, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, boxes=False
-):
+def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, boxes=False):
     """Replicate a contacting tripod, optionally surrounded by separate free bodies.
 
     With ``boxes`` the feet and the free bodies are boxes, whose resting contacts form patch regions of
@@ -2198,6 +2262,15 @@ class TestSteelSparseSolver(unittest.TestCase):
                 self.assertIsNone(dense[1]._sparse_mass_matrix_size)
                 self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
                 self.assertTrue(sparse[1]._friction_anchors_enabled)
+                # Slide the free body so its pooled patch friction carries load: the one-joint articulation is the free body.
+                model = dense[0]
+                starts = model.articulation_start.numpy()
+                free_joint = int(starts[np.flatnonzero(np.diff(starts) == 1)[-1]])
+                qd_start = int(model.joint_qd_start.numpy()[free_joint])
+                for case in (dense, sparse):
+                    joint_qd = case[2].joint_qd.numpy()
+                    joint_qd[qd_start] = 0.3
+                    case[2].joint_qd.assign(joint_qd)
                 linked = {"articulated": False, "free": False}
                 for _ in range(32):
                     _step(dense)
@@ -2207,11 +2280,11 @@ class TestSteelSparseSolver(unittest.TestCase):
                         ("articulated", solver._constraint_count, solver._row_parent, solver._row_type),
                         ("free", solver._mf_constraint_count, solver._mf_row_parent, solver._mf_row_type),
                     ):
-                        counts, parents, types = counts.numpy(), parents.numpy(), types.numpy()
-                        for world in range(counts.size):
-                            normals = np.flatnonzero(types[world, : counts[world]] == PGS_CONSTRAINT_TYPE_CONTACT)
+                        counts_np, parents_np, types_np = counts.numpy(), parents.numpy(), types.numpy()
+                        for world in range(counts_np.size):
+                            normals = np.flatnonzero(types_np[world, : counts_np[world]] == PGS_CONSTRAINT_TYPE_CONTACT)
                             # A normal row linked to another one (a region of several contacts) pools the load.
-                            if any(0 <= parents[world, row] != row for row in normals):
+                            if any(0 <= parents_np[world, row] != row for row in normals):
                                 linked[family] = True
                     self.assert_states_close(dense[2], sparse[2])
                 if boxes:

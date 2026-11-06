@@ -1460,8 +1460,8 @@ class SolverSteel(SolverBase, CouplingInterface):
     On CUDA, branched articulations use sparse mass factors when
     every articulated (non-free-body) response group shares one joint topology with at most
     64 DOFs, joint velocity-limit and joint friction rows are disabled, the model has no mimic or loop-closing
-    joints, drives are augmented and contacts use hard point friction
-    (``friction_anchor_beta=0``, no warm start, regularization, velocity-only iterations,
+    joints, drives are augmented and contacts use hard point friction or persistent friction patches
+    (``sparse_factor_patches=True``, the default; no warm start, regularization, velocity-only iterations,
     friction gap threshold, restitution, contact torsion or compliance): the mass matrix is assembled and factored in
     the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
     that support them.

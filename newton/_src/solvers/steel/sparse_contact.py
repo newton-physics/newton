@@ -379,7 +379,13 @@ def _get_sparse_contact_response_kernel(
                         direction = tangent1
                     # Shared anchors and patch friction move the row's points as in the dense builder.
                     row_point_a, row_point_b = contact_row_points(
-                        c, row, point_a, point_b, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+                        c,
+                        row,
+                        point_a,
+                        point_b,
+                        contact_shared_anchor,
+                        contact_friction_shared_anchor,
+                        friction_patches,
                     )
                     # J = [direction, (point - origin) x direction] dot motion.
                     wrench_a = wp.vec3(0.0)
