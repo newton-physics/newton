@@ -417,8 +417,8 @@ class ImplicitMPMModel:
         ``material_particle_flags`` and ``material_particle_volume`` arrays in
         place: no host synchronization or allocation, so it may be called every
         step and recorded in a CUDA graph. The material extrema do not depend on
-        particle activity, so activating or deactivating particles never changes
-        the solver's code paths.
+        the ``ACTIVE`` or ``PROXY`` flags, so changing them never changes the
+        solver's code paths.
         """
         model = self.model
         wp.launch(
@@ -460,14 +460,14 @@ class ImplicitMPMModel:
     def _refresh_material_extrema(self, is_collider_particle: np.ndarray):
         """Compute the material extrema over every particle that can carry material.
 
-        Collider and proxy particles never carry material, so they are excluded.
-        Inactive particles are included, so that activation flags can change at
-        runtime without host synchronization. Unset ``model.mpm.*`` attributes
-        default to rigid material without hardening, viscosity or dilatancy, and
-        so do not enable additional code paths.
+        Collider particles never carry material, so they are excluded. Inactive
+        and proxy particles are included, so that the ``ACTIVE`` and ``PROXY``
+        flags can change at runtime (see :meth:`refresh_particle_flags`) without
+        host synchronization. Unset ``model.mpm.*`` attributes default to rigid
+        material without hardening, viscosity or dilatancy, and so do not enable
+        additional code paths.
         """
-        proxy_flag = int(newton.ParticleFlags.PROXY)
-        material_capable = (is_collider_particle == 0) & ((self.model.particle_flags.numpy() & proxy_flag) == 0)
+        material_capable = is_collider_particle == 0
 
         if np.any(material_capable):
             params = self.material_parameters

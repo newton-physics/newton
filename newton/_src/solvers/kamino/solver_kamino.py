@@ -1369,6 +1369,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Newton contacts read shape geometry directly, and the Kamino detector rejects models
             # with body variants at construction, so nothing caches what this flag changes.
             | ModelFlags.SHAPE_TYPE_AND_SOURCE
+            # Kamino simulates no particles, so there are no particle masks to refresh.
+            | ModelFlags.PARTICLE_FLAGS
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:

@@ -535,7 +535,7 @@ def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
 
 
 def test_particle_flags_notify_refreshes_masks_in_place(test, device):
-    """Verify PARTICLE_FLAGS refreshes the particle masks in place, with activity-independent extrema."""
+    """Verify PARTICLE_FLAGS refreshes the particle masks in place, with flag-independent extrema."""
     active = int(newton.ParticleFlags.ACTIVE)
     proxy = int(newton.ParticleFlags.PROXY)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
@@ -547,7 +547,7 @@ def test_particle_flags_notify_refreshes_masks_in_place(test, device):
             mass=1.0,
             radius=0.01 * (i + 1),
             flags=flags,
-            custom_attributes={"mpm:viscosity": 10.0 if i == 2 else 0.0},
+            custom_attributes={"mpm:viscosity": 10.0 if i == 2 else 0.0, "mpm:dilatancy": 0.5 if i == 3 else 0.0},
         )
     model = builder.finalize(device=device)
     solver = _make_sparse_solver(model, max_active_cell_count=8)
@@ -556,8 +556,9 @@ def test_particle_flags_notify_refreshes_masks_in_place(test, device):
     pointers = [array.ptr for array in masks]
     volume = mpm_model.particle_volume.numpy()
 
-    # The inactive viscous particle selects the viscous code path before it is ever activated.
+    # The inactive viscous particle and the dilatant proxy particle select their code paths up front.
     test.assertTrue(mpm_model.has_viscosity)
+    test.assertTrue(mpm_model.has_dilatancy)
 
     def check_masks(flags):
         material = np.where(flags & proxy, flags & ~active, flags)
@@ -568,12 +569,18 @@ def test_particle_flags_notify_refreshes_masks_in_place(test, device):
         )
         test.assertEqual([array.ptr for array in masks], pointers)
         test.assertTrue(mpm_model.has_viscosity)
+        test.assertTrue(mpm_model.has_dilatancy)
 
     check_masks(model.particle_flags.numpy())
 
     flags = model.particle_flags.numpy()
     flags[0] &= ~active
     flags[2] |= active
+    model.particle_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+    check_masks(flags)
+
+    flags[3] &= ~proxy
     model.particle_flags.assign(flags)
     solver.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
     check_masks(flags)

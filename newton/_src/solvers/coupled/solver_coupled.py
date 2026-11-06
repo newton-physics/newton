@@ -3853,6 +3853,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
             ):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
 
+            if flags & int(ModelFlags.PARTICLE_FLAGS):
+                self._refresh_particle_flag_view_overrides(entry)
+
             if flags & int(ModelFlags.SHAPE_PROPERTIES):
                 cfg = self._entry_configs_by_name[entry.name]
                 self._apply_entry_shape_visibility(
@@ -3915,6 +3918,27 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.view._refresh_body_inertial_properties(entry.body_local_to_global)
         if entry.body_dynamics_disabled_local_indices.shape[0] > 0:
             entry.view.disable_body_dynamics(entry.body_dynamics_disabled_local_indices)
+
+    def _refresh_particle_flag_view_overrides(self, entry: SolverEntry) -> None:
+        """Re-derive a view-local ``particle_flags`` copy from the parent model.
+
+        Gathers the parent flags into the existing view array, then re-applies
+        the entry's disabled and proxy particle marks. Only kernels are
+        launched, so the refresh can be recorded in a CUDA graph.
+        """
+        view_flags = object.__getattribute__(entry.view, "_overrides").get("particle_flags")
+        if view_flags is None or view_flags.shape[0] == 0:
+            # Views without an override read the parent flags directly.
+            return
+        wp.launch(
+            _gather_particle_flags_kernel,
+            dim=view_flags.shape[0],
+            inputs=[entry.particle_local_to_global, self.model.particle_flags],
+            outputs=[view_flags],
+            device=self.model.device,
+        )
+        entry.view.disable_particles(entry.particle_dynamics_disabled_local_indices)
+        entry.view.mark_proxy_particles(entry.proxy_particle_local_indices)
 
     def notify_model_changed(self, flags: int) -> None:
         """Forward model change notifications to all sub-solvers."""
@@ -4452,6 +4476,20 @@ def _add_mapped_body_forces_kernel(
         return
 
     dst_f[local_id] = dst_f[local_id] + src_f[global_id]
+
+
+@wp.kernel(enable_backward=False)
+def _gather_particle_flags_kernel(
+    particle_local_to_global: wp.array[int],
+    src_flags: wp.array[wp.int32],
+    dst_flags: wp.array[wp.int32],
+):
+    local_id = wp.tid()
+    global_id = particle_local_to_global[local_id]
+    if global_id < 0:
+        return
+
+    dst_flags[local_id] = src_flags[global_id]
 
 
 @wp.kernel(enable_backward=False)
