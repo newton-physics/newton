@@ -60,6 +60,9 @@ class ModelFlags(IntEnum):
         Body variants, including this flag, may change without a deprecation period.
     """
 
+    PARTICLE_FLAGS = 1 << 13
+    """Indicates particle_flags updates, such as particles activated or deactivated at runtime. Solvers that cache masks derived from particle_flags refresh them on the device, without host synchronization, so the notification may be issued every step and recorded in a CUDA graph."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -74,6 +77,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
         | SHAPE_TYPE_AND_SOURCE
+        | PARTICLE_FLAGS
     )
     """Indicates all property updates."""
 

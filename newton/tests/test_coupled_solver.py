@@ -4519,6 +4519,42 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         self.assertNotEqual(dst_view.particle_flags.numpy()[0] & proxy_flag, 0)
         self.assertEqual(self.model.particle_flags.numpy()[0] & proxy_flag, 0)
 
+    def test_particle_flags_notify_refreshes_view_flags_in_place(self):
+        """PARTICLE_FLAGS re-derives view-local particle flags while keeping disabled and proxy marks."""
+        coupled = self._make_coupled()
+        active = int(newton.ParticleFlags.ACTIVE)
+        proxy = int(newton.ParticleFlags.PROXY)
+        views = {name: coupled.view(name) for name in ("src", "dst")}
+        pointers = {name: view.particle_flags.ptr for name, view in views.items()}
+
+        def view_flags(name):
+            local_to_global = coupled._entries[name].particle_local_to_global.numpy()
+            return dict(zip(local_to_global.tolist(), views[name].particle_flags.numpy().tolist(), strict=True))
+
+        def check(parent_flags):
+            src, dst = view_flags("src"), view_flags("dst")
+            # src owns particle 0; particle 1 belongs to dst and stays disabled in the src view.
+            self.assertEqual(src[0], parent_flags[0])
+            self.assertEqual(src.get(1, 0) & active, 0)
+            # dst owns particle 1 and keeps particle 0 as a proxy.
+            self.assertEqual(dst[1], parent_flags[1])
+            self.assertEqual(dst[0], parent_flags[0] | proxy)
+            for name, view in views.items():
+                self.assertEqual(view.particle_flags.ptr, pointers[name])
+
+        flags = self.model.particle_flags.numpy()
+        check(flags)
+
+        flags[:] &= ~active
+        self.model.particle_flags.assign(flags)
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+        check(flags)
+
+        flags[:] |= active
+        self.model.particle_flags.assign(flags)
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_FLAGS)
+        check(flags)
+
     def test_xpbd_ignores_proxy_proxy_particle_contacts(self):
         flags = int(newton.ParticleFlags.ACTIVE) | int(newton.ParticleFlags.PROXY)
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
