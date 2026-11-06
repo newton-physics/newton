@@ -30,10 +30,12 @@ _CARD_COLORS = (
 class PokerCardsScene(SceneInputs):
     """Let all cards settle freely, then observe passive motion for 60 seconds.
 
-    Geometry, masses, materials, seed and collision settings come from
+    Geometry, masses, authored materials, seed and collision settings come from
     ``newton/examples/cloth/example_cloth_poker_cards.py``. The ball is absent.
     The source's massless platform body becomes an equivalent world-fixed box.
     The benchmark uses ten substeps instead of the source's twenty.
+    The shared contact policy then caps the cube and particle contact
+    coefficients at ten times the numerical elastic reference.
     """
 
     def __init__(self, name: str, *, device=None, substeps=10, iterations=10):

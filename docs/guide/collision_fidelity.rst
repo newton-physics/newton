@@ -13,6 +13,11 @@ It does not patch the solver or add contact behavior. Unsupported cases stay
 in the catalog with a reason. The duck recipe requires a second dynamics
 solver and is excluded from VBD execution.
 
+The benchmark enables rigid-soft DAT for particle scenes and disables fast
+math. It keeps VBD's default rigid formulation. The shared contact policy
+caps contact coefficients after the scene supplies its authored values.
+These are public solver and model settings. Results record their actual values.
+
 Run a case
 ----------
 
@@ -21,15 +26,15 @@ List cases without building a scene or downloading assets:
 
 .. code-block:: console
 
-   uv run python asv/run_collision_fidelity.py --list
+   uv run --extra examples python asv/run_collision_fidelity.py --list
 
 Run a short construction and stepping check, then the full task:
 
 .. code-block:: console
 
-   uv run python asv/run_collision_fidelity.py \
+   uv run --extra examples python asv/run_collision_fidelity.py \
        --case m3_franka_tote_empty --profile smoke --out results/tote-smoke
-   uv run python asv/run_collision_fidelity.py \
+   uv run --extra examples python asv/run_collision_fidelity.py \
        --case m3_franka_tote_empty --profile full --out results/tote-full
 
 Use ``--all`` for the complete catalog. Repeat ``--case`` to select several
@@ -38,6 +43,9 @@ scene. Rendering is optional and is not imported by numerical runs.
 Each output directory contains one JSON file per case and ``summary.json``.
 Existing results are not overwritten. A runtime error gives a nonzero exit
 status. An unsupported case produces an explicit result without a physics run.
+An empty output directory is allowed. The first run claims it with
+``.collision-fidelity-run``. Use a new directory after a completed or interrupted
+run. Concurrent commands cannot share an output directory.
 
 The smoke profile runs at most one physical second. It does not report a
 completed long hold. ``--duration`` can stop a run early; the missing coverage
@@ -59,6 +67,8 @@ Each case has its
 own cache setup. Its scalar tracks share one simulation result. Selecting
 one case does not run the full catalog. CUDA support is checked inside cache
 setup. Full tasks are outside the ``Fast*`` PR timing selection.
+An unfiltered ASV run still includes these full tasks. Their complete runtime
+has not yet been measured.
 
 ASV's ``--quick`` flag does not shorten the physics schedule. Use the standalone
 smoke profile for a short check. The Newton commit is the revision under test;
@@ -133,6 +143,8 @@ An overall Pass requires every applicable required criterion to pass. An
 established required violation gives Fail. Missing evidence otherwise gives
 Incomplete. No weighted score is used. Acceptance limits remain unset where
 they have not been established. These cases still produce raw measurements.
+No current case can receive an overall Pass. Required measurements or
+acceptance rules are still missing. Incomplete is not a measured failure.
 
 The summary reports pass counts, evaluated counts and applicable counts.
 Pass rate is ``pass / (pass + fail)``. Evaluation coverage is
@@ -148,11 +160,16 @@ capacity checks are unavailable through this observer. The benchmark does
 not add solver hooks to obtain them.
 
 The contact-coefficient policy caps contact values at ten times the declared
-elastic reference. Cloth and rod coefficients use N/m. The historical numeric
-policy for tetrahedral solids compares the material coefficient in Pa with
-the contact coefficient in N/m. This is a parameter policy, not a dimensionless
-physical stiffness ratio. Asset notices distinguish synthetic material values
-from measured properties.
+elastic reference. Newton declares cloth and tetrahedral material coefficients
+in Pa, while contact coefficients use N/m. Their cap compares numerical
+values with different units. Rod stretch and shear coefficients use N/m.
+This is a parameter policy, not a general physical stiffness ratio. Asset
+notices distinguish synthetic material values from measured properties.
+
+Procedural assets need to preserve their size, connected structure, openings,
+seams and grasp regions. They need not have identical vertex bytes or triangle
+order on every platform. Generated mesh hashes identify the actual inputs;
+they are provenance, not an acceptance test.
 
 Historical evidence
 -------------------

@@ -22,7 +22,7 @@ def create_solver(
 ):
     """Return a public solver and its owned collision pipeline.
 
-    The contact cap compares numerical coefficients for tetrahedral materials;
+    The contact cap compares numerical coefficients for cloth and tet materials;
     their units differ from contact stiffness. It is not a fidelity criterion.
     Kinematic bodies use authored endpoint poses and ordinary internal rigid
     integration. The solver owns all collision passes and history updates.
@@ -87,6 +87,7 @@ class SceneInputs:
             else None,
             "initial_fixed_particle_count": model.collision_fidelity_initial_fixed_particles,
             "fixture_notes": getattr(self, "fixture_notes", []),
+            "boundary_notes": getattr(self, "boundary_notes", []),
         }
 
 

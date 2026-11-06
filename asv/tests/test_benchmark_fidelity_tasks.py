@@ -14,6 +14,8 @@ import warp as wp
 import newton
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+from collision_fidelity.catalog import load_cases
+from collision_fidelity.protocol import Timeline
 from collision_fidelity.tasks import criterion_results, sample_task
 
 
@@ -114,6 +116,17 @@ class TestFidelityTasks(unittest.TestCase):
         )
         for name in ("grasp", "hold", "transport", "place_release", "friction_separation"):
             self.assertEqual(result[name]["status"], "not_applicable")
+
+    def test_freefall_does_not_require_static_support_penetration(self):
+        """Exclude fixed-support penetration for the two support-free controls."""
+        cases = load_cases()
+        for case_id in ("s3_cloth_10substeps", "s3_pads_10substeps"):
+            with self.subTest(case=case_id):
+                case = cases[case_id]
+                self.assertFalse(case["applicability"]["penetration"])
+                result = criterion_results([], Timeline(case).protocol)
+                self.assertEqual(result["penetration"]["status"], "not_applicable")
+                self.assertEqual(result["dynamic"]["status"], "incomplete")
 
     def test_bounds_use_actual_radius_and_margin(self):
         """Bound every particle shell and original rigid box with actual model radii."""

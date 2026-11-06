@@ -20,7 +20,7 @@ import newton
 
 from .public_vbd import SceneInputs, create_solver, set_command_time
 
-SCENE_IDS = ("c6_crossed_cables", "c7_cylinder_wrap", "c8_bundle_squeeze", "c8_pile_pickup")
+SCENE_IDS = ("c6_crossed_cables", "c7_cylinder_wrap")
 __all__ = ["SCENE_IDS", "build_scene"]
 
 
@@ -92,11 +92,14 @@ class _CableScene(SceneInputs):
         self.time = 0.0
         self.frame_dt = 1.0 / 60.0
         self.duration = 9.0 if duration is None else float(duration)
+        if (
+            isinstance(substeps, bool)
+            or not isinstance(substeps, (int, np.integer))
+            or not 2 <= substeps <= 10
+            or substeps % 2
+        ):
+            raise ValueError("Cable scene substeps must be an even integer in [2, 10] for the declared scene protocol")
         self.substeps = int(substeps)
-        if self.substeps < 2 or self.substeps % 2:
-            raise ValueError(
-                "Cable scene substeps must be a positive even integer >= 2 for the declared scene protocol"
-            )
         self.dt = self.sim_dt = self.frame_dt / self.substeps
         self.iterations = int(iterations)
         self.radius = 0.009

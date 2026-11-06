@@ -62,6 +62,7 @@ def _drive_boundary(
     rest: wp.array[wp.vec3],
     mode: int,
     dt: float,
+    release: bool,
     flags: wp.array[int],
     q0: wp.array[wp.vec3],
     q1: wp.array[wp.vec3],
@@ -71,7 +72,7 @@ def _drive_boundary(
     i = wp.tid()
     vi = indices[i]
     t = clock[0]
-    if mode == 1 and t >= 2.8:
+    if release:
         flags[vi] = flags[vi] | 1
     else:
         flags[vi] = flags[vi] & ~1
@@ -198,7 +199,6 @@ class SoftScene(SceneInputs):
         friction=0.5,
         substeps=None,
         iterations=None,
-        **_kwargs,
     ):
         if scene_id not in SCENE_IDS:
             raise ValueError(f"Unknown soft scene {scene_id!r}")
@@ -453,6 +453,7 @@ class SoftScene(SceneInputs):
                     self._rest,
                     self.mode,
                     self.dt,
+                    self.mode == 1 and command_time_s >= 2.8,
                     self.model.particle_flags,
                     self._state0.particle_q,
                     self._state1.particle_q,

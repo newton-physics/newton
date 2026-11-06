@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Opt-in full collision-fidelity cases; each cache runs exactly one scene.
+"""Full collision-fidelity cases; each cache runs exactly one scene.
 
 Select a case by its class name. Full holds last 60 simulated seconds and can
 take hours of wall time. No physics backend is imported during discovery.
+Unfiltered ASV runs include these cases; selecting a class limits the workload.
 ASV caches are local to its benchmark execution; no persistent prepared-state
 cache is read. The JSON result records the installed source and environment.
 """
@@ -13,7 +14,7 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from collision_fidelity.catalog import load_cases
 from collision_fidelity.version import semantic_version as _version
 
@@ -56,9 +57,16 @@ class _FidelityTracks:
     """Share one cached scene result across measurements and coverage tracks."""
 
     def setup(self, result):
-        """Skip unavailable execution where ASV catches NotImplementedError."""
-        if result.get("execution", {}).get("status") == "unsupported":
-            raise NotImplementedError(result["execution"].get("reason", "Unsupported scene"))
+        """Surface execution errors while retaining measured numerical failures."""
+        execution = result.get("execution", {})
+        status = execution.get("status")
+        if status == "unsupported":
+            raise NotImplementedError(execution.get("reason", "Unsupported scene"))
+        if status in ("error", "invalid"):
+            message = f"Collision-fidelity execution {status}: {execution.get('reason', 'No reason recorded')}"
+            if execution.get("traceback"):
+                message += f"\n{execution['traceback']}"
+            raise RuntimeError(message)
 
     def track_jitter(self, result):
         """Report worst-point, worst-window Jitter only with full declared coverage."""

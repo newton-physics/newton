@@ -219,6 +219,10 @@ class FidelityObserver:
             gravity = np.asarray(self._freefall["gravity_m_s2"], dtype=float)
             if end <= start or not np.isfinite([start, end, *gravity]).all() or gravity.shape != (3,):
                 raise ValueError("Invalid gravity_only_interval")
+            self._freefall = {**self._freefall, "start_s": start, "end_s": end, "gravity_m_s2": gravity.tolist()}
+            if "body_indices" in self._freefall:
+                self._freefall["body_indices"] = np.asarray(self._freefall["body_indices"], dtype=int).tolist()
+            self.protocol["gravity_only_interval"] = self._freefall
 
     @property
     def all_samples_finite(self):

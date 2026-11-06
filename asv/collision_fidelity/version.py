@@ -19,7 +19,11 @@ def _source_and_assets():
     digest = hashlib.sha256()
     files = (
         sorted(root.glob("*.py"))
-        + sorted(path for path in (root / "assets").rglob("*") if path.is_file())
+        + sorted(
+            path
+            for path in (root / "assets").rglob("*")
+            if path.is_file() and path.suffix not in (".md", ".rst") and not path.name.endswith("LICENSE.txt")
+        )
         + [root.parent / "benchmarks/simulation/bench_collision_fidelity.py"]
     )
     for path in files:
@@ -41,5 +45,6 @@ def semantic_version(case_id):
     records the installed Newton/Warp revisions; those do not invalidate this
     cross-revision measurement series. ASV's execution-local cache still has a
     separate source-line key for each case and is never a prepared-state cache.
+    Asset documentation and license text do not change measurement semantics.
     """
     return _case_version(load_cases()[case_id], _source_and_assets())

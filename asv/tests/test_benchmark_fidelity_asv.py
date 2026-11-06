@@ -7,6 +7,7 @@ import importlib.util
 import inspect
 import json
 import math
+import pickle
 import subprocess
 import sys
 import tempfile
@@ -125,6 +126,36 @@ class TestFidelityAsv(unittest.TestCase):
         self.assertEqual(tracks.track_overall(result), 0)
         self.assertEqual(tracks.track_finite_completion(result), 0)
         self.assertTrue(math.isnan(tracks.track_rigid_soft_penetration_fixed_supports(result)))
+
+    def test_actual_asv_reports_execution_errors_and_retains_nonfinite_tracks(self):
+        """Expose execution errors through ASV without skipping numerical outcomes."""
+        entry = str(Path(asv.__file__).with_name("benchmark.py"))
+        benchmark = "simulation.bench_collision_fidelity.CollisionFidelityM3FrankaToteEmpty.track_overall"
+        for status in ("error", "invalid", "nonfinite"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                result = {
+                    "execution": {"status": status, "reason": "recorded failure", "traceback": "recorded traceback"},
+                    "criteria": {"overall": {"status": "fail"}},
+                }
+                directory = Path(temporary)
+                (directory / "cache.pickle").write_bytes(pickle.dumps(result))
+                output = directory / "result.json"
+                run = subprocess.run(
+                    [sys.executable, entry, "run", str(ASV / "benchmarks"), benchmark, "{}", "None", str(output)],
+                    cwd=directory,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if status == "nonfinite":
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertEqual(json.loads(output.read_text()), 0.0)
+                else:
+                    self.assertNotEqual(run.returncode, 0)
+                    self.assertIn(status, run.stderr)
+                    self.assertIn("recorded failure", run.stderr)
+                    self.assertIn("recorded traceback", run.stderr)
+                    self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

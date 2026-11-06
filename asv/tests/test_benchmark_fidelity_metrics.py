@@ -126,6 +126,29 @@ class TestFidelityMetrics(unittest.TestCase):
         self.assertAlmostEqual(result["max_mass_weighted_velocity_error_m_s"], 0)
         self.assertEqual(result["total_mass_kg"], 4)
 
+    def test_freefall_interval_is_normalized_without_changing_input(self):
+        """Accept array-valued gravity and serialize the validated interval."""
+        current = scene(1)
+        interval = {
+            "start_s": "0",
+            "end_s": "0.5",
+            "gravity_m_s2": np.array([0, 0, -10]),
+            "body_indices": np.array([], dtype=np.int32),
+        }
+        observer = FidelityObserver(current.model, {"gravity_only_interval": interval})
+        observer.frame(current.state, 0.0)
+        for i in range(1, 51):
+            t = i / 100
+            observer.observe(state([[0, 0, 0]], [[0, 0, -10 * t]]), t, 0.01)
+        result = observer.result()
+        self.assertEqual(result["freefall"]["status"], "measured")
+        self.assertEqual(
+            json.loads(json.dumps(result, allow_nan=False))["freefall"]["interval"],
+            {"start_s": 0.0, "end_s": 0.5, "gravity_m_s2": [0.0, 0.0, -10.0], "body_indices": []},
+        )
+        self.assertEqual(interval["start_s"], "0")
+        self.assertIsInstance(interval["gravity_m_s2"], np.ndarray)
+
     def test_penetration_uses_finite_box_and_particle_shell(self):
         """Measure a physical box gap without extending the tabletop beyond its edge."""
         current = scene()

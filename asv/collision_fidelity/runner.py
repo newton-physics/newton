@@ -112,8 +112,23 @@ def _revision(module):
     root = Path(module.__file__).resolve().parent.parent
     if not (root / ".git").exists():
         return None
-    result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _close_viewer(viewer, execution):
+    """Report export failure without losing completed physics or an earlier error."""
+    try:
+        viewer.close()
+    except Exception as error:
+        execution["usd_export_error"] = f"{type(error).__name__}: {error}"
+        if execution["status"] == "completed":
+            execution.update(status="error", reason=f"USD export failed: {execution['usd_export_error']}")
 
 
 def _sample_capacity(solver, record):
@@ -166,6 +181,8 @@ def run_case(
         raise ValueError("Duration must be finite and positive")
     case = cases[case_id]
     timeline = Timeline(case)
+    if duration is not None and duration < timeline.dt:
+        raise ValueError(f"Duration must cover at least one physical substep ({timeline.dt:g} s)")
     result = {
         "schema_version": 1,
         "case_id": case_id,
@@ -279,7 +296,7 @@ def run_case(
         execution.update(status="error", reason=f"{type(error).__name__}: {error}", traceback=traceback.format_exc())
     finally:
         if viewer is not None:
-            viewer.close()
+            _close_viewer(viewer, execution)
         result["wall_time_s"] = time.perf_counter() - started
     if observer is not None:
         result["measurements"] = observer.result()

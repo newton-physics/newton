@@ -15,6 +15,7 @@ from newton.solvers import SolverVBD
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+from collision_fidelity.contact_stiffness import apply_contact_policy
 from collision_fidelity.public_vbd import create_solver
 from collision_fidelity.scenes import build_scene
 
@@ -51,6 +52,30 @@ class TestCollisionFidelitySceneInputs(unittest.TestCase):
         np.testing.assert_array_equal(model.shape_material_ke.numpy(), [1000.0])
         np.testing.assert_array_equal(model.particle_q.numpy(), positions)
         np.testing.assert_array_equal(model.tri_materials.numpy(), material)
+        policy = model.collision_benchmark_contact_policy
+        self.assertEqual(policy["reference_terms"][0]["units"], "Pa")
+        self.assertFalse(policy["dimensionally_comparable"])
+        self.assertEqual(apply_contact_policy(model, {"max_ratio": 10.0, "tet_policy": "numeric"}), policy)
+        material[:, :2] *= 0.5
+        model.tri_materials.assign(material)
+        with self.assertRaisesRegex(ValueError, "Elastic reference changed"):
+            apply_contact_policy(model, {"max_ratio": 10.0, "tet_policy": "numeric"})
+
+    def test_rod_contact_cap_includes_axial_stretch(self):
+        """Use the smaller stretch coefficient even when both shear slots are larger."""
+        builder = newton.ModelBuilder()
+        builder.add_rod(
+            rod=newton.Rod([wp.vec3(0.0, 0.0, z) for z in (0.0, 0.1, 0.2)], radius=0.01),
+            cfg=newton.ModelBuilder.ShapeConfig(ke=5000.0),
+            stretch_stiffness=100.0,
+            shear_stiffness=200.0,
+        )
+        model = builder.finalize(device="cpu")
+        model.soft_contact_ke = 5000.0
+        report = apply_contact_policy(model, {"max_ratio": 10.0, "tet_policy": "numeric"})
+        self.assertEqual(report["reference_coefficient"], 100.0)
+        self.assertEqual(model.soft_contact_ke, 1000.0)
+        np.testing.assert_array_equal(model.shape_material_ke.numpy(), [1000.0, 1000.0])
 
     def test_freefall_has_no_supports_or_pins(self):
         """Keep the analytic control free of physical supports and driven points."""
@@ -63,6 +88,8 @@ class TestCollisionFidelitySceneInputs(unittest.TestCase):
         self.assertTrue(np.all(scene.model.particle_mass.numpy() > 0))
         np.testing.assert_allclose(scene.model.gravity.numpy(), [[0.0, 0.0, -9.81]])
         self.assertAlmostEqual(scene.dt, 1.0 / 600.0)
+        scene.boundary_notes = ["No supports or prescribed points."]
+        self.assertEqual(scene.metrics()["boundary_notes"], scene.boundary_notes)
 
     def test_duck_remains_explicitly_unsupported(self):
         """Do not silently replace the archived second-solver articulated recipe."""

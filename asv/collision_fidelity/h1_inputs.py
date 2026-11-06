@@ -15,7 +15,11 @@ def load_input(case_id):
     if case_id not in ("j3_h1_jacket", "r7_h1_towel", "r7_h1_sheet", "r7_h1_gusset_bag"):
         raise ValueError(f"No H1 input fixture for {case_id}")
     folder = Path(__file__).with_name("assets") / "h1"
-    metadata = json.loads((folder / f"{case_id}.json").read_text())
+    manifest = json.loads((folder.parent / "manifest.json").read_text())
+    metadata_bytes = (folder / f"{case_id}.json").read_bytes()
+    if hashlib.sha256(metadata_bytes).hexdigest() != manifest["initial_state_fixtures"][case_id]["metadata_sha256"]:
+        raise ValueError(f"H1 input metadata checksum mismatch: {case_id}")
+    metadata = json.loads(metadata_bytes)
     path = folder / f"{case_id}.npz"
     if hashlib.sha256(path.read_bytes()).hexdigest() != metadata["npz_sha256"]:
         raise ValueError(f"H1 input fixture checksum mismatch: {case_id}")

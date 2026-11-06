@@ -54,7 +54,7 @@ def build_pouch_mesh():
         name="pouch_grip_refined",
         resolution="front and back refined; depth strips retain coarse spacing",
         body_grid=[24, 4, 24],
-        construction="Original welded pouch panels; unchanged dimensions, area, open rim, and material",
+        construction="Original welded pouch panels; unchanged dimensions, area, and open rim",
         source_mesh="Original procedural pouch in assets.py",
         geometry_change="Retessellation only: 24 cells in X/Z, 4 across narrow Y depth",
     )

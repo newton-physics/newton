@@ -593,6 +593,15 @@ def add_solid_asset(
 def validate_asset(mesh: AssetMesh) -> dict:
     """Check finite coordinates, connectivity, manifold edges and tet volume."""
     v, t = mesh.vertices.astype(float), mesh.triangles
+    for name, indices, width in (("triangles", t, 3), ("tetrahedra", mesh.tetrahedra, 4)):
+        if indices is not None and (
+            indices.ndim != 2
+            or indices.shape[1] != width
+            or not np.issubdtype(indices.dtype, np.integer)
+            or np.any(indices < 0)
+            or np.any(indices >= len(v))
+        ):
+            raise ValueError(f"{name} must contain {width} valid integer vertex indices per element")
     area = 0.5 * np.linalg.norm(np.cross(v[t[:, 1]] - v[t[:, 0]], v[t[:, 2]] - v[t[:, 0]]), axis=1)
     lengths = np.stack([np.linalg.norm(v[t[:, (i + 1) % 3]] - v[t[:, i]], axis=1) for i in range(3)], axis=1)
     angles = []

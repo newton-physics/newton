@@ -2,6 +2,7 @@
   "schema_version": 1,
   "source_repository": "https://github.com/AnkaChan/newton",
   "source_commit": "50045b89b546a9a791812fa8d22413e04be4f416",
+  "procedural_geometry_hash_scope": "Archived coarse-mesh fingerprints for provenance only. Triangle ordering and diagonal choices may vary across platforms; structural tests, not hash equality, check the test mechanism.",
   "procedural_geometry_sha256": {
     "patch": "921eff0f1f3300d4a2bc1324cc70df1317bb72df25ede5f310dec2600323624d",
     "towel": "b5dcb71b3568d7992d6eebc6e30fccc58dc32699658d06ae884f04c607871a1d",
@@ -79,7 +80,7 @@
       "metadata_path": "h1/r7_h1_gusset_bag.json",
       "metadata_sha256": "3cec395d8fac8f6f92b98693936200ef5f1672273079ade994065f116f86d088",
       "license": "Apache-2.0; BSD-3-Clause source geometry",
-      "notice": "STYLE3D-LICENSE.txt and pinned unitree_h1/LICENSE"
+      "notice": "pinned unitree_h1/LICENSE"
     },
     "r7_h1_sheet": {
       "path": "h1/r7_h1_sheet.npz",
@@ -87,7 +88,7 @@
       "metadata_path": "h1/r7_h1_sheet.json",
       "metadata_sha256": "66b398ef2ca4fe9e338001c5c21856c217ed967ee0c828640f9c24be89ac03bd",
       "license": "Apache-2.0; BSD-3-Clause source geometry",
-      "notice": "STYLE3D-LICENSE.txt and pinned unitree_h1/LICENSE"
+      "notice": "pinned unitree_h1/LICENSE"
     },
     "r7_h1_towel": {
       "path": "h1/r7_h1_towel.npz",
@@ -95,16 +96,16 @@
       "metadata_path": "h1/r7_h1_towel.json",
       "metadata_sha256": "18223b9e55f08be1d9c93dcc2d66883a73f586a26b9b4f1e766ad9c30f266fb3",
       "license": "Apache-2.0; BSD-3-Clause source geometry",
-      "notice": "STYLE3D-LICENSE.txt and pinned unitree_h1/LICENSE"
+      "notice": "pinned unitree_h1/LICENSE"
     }
   },
   "runtime_generator_sources": {
     "assets.py": {
-      "sha256": "993cc7731bd17423f3029942a5fb7c1f93efb7d4e995d5d9667c119ea4179c71",
+      "sha256": "a5aa67c543a6d7d60e93844c82b4ac2702c7c9d45f299fd22475fb0f996d751f",
       "license": "Apache-2.0"
     },
     "pouch_mesh.py": {
-      "sha256": "0f2f7493cff07307b2ce4e26673e5f5f5f7f5471eb5d892fdbb9eb5fa3ff3c47",
+      "sha256": "a13c69612d71a6115a5a9dbb20f251d94d0156f32569df32956922458f6ce20e",
       "license": "Apache-2.0"
     }
   }

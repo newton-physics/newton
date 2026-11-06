@@ -3,9 +3,13 @@
 
 """Validate H1 initialization inputs without importing a legacy runtime."""
 
+import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -25,12 +29,33 @@ class TestH1Inputs(unittest.TestCase):
                 metadata, arrays = load_input(name)
                 self.assertEqual(arrays["state0.particle_q"].shape, (count, 3))
                 self.assertEqual(arrays["rest.vertices"].shape, (count, 3))
-                self.assertTrue(all(not key.startswith(("solver", "prepare", "driver0._")) for key in arrays))
+                self.assertTrue(
+                    all(not key.startswith(("solver", "prepare", "driver0._", "driver1._")) for key in arrays)
+                )
                 self.assertEqual(metadata["case_id"], name)
                 for index in range(2):
                     times = arrays[f"driver{index}.times"]
                     self.assertTrue(np.all(np.diff(times) > 0))
                     self.assertEqual(arrays[f"driver{index}.fingers"].shape, (len(times), 12))
+
+    def test_changed_fixture_metadata_is_rejected(self):
+        """Reject altered commands or metadata even when the array file is intact."""
+        from collision_fidelity import h1_inputs  # noqa: PLC0415
+
+        source = Path(h1_inputs.__file__).with_name("assets")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "assets" / "h1"
+            folder.mkdir(parents=True)
+            shutil.copyfile(source / "manifest.json", root / "assets" / "manifest.json")
+            case_id = "r7_h1_towel"
+            shutil.copyfile(source / "h1" / f"{case_id}.npz", folder / f"{case_id}.npz")
+            metadata = json.loads((source / "h1" / f"{case_id}.json").read_text())
+            metadata["case_id"] = "altered"
+            (folder / f"{case_id}.json").write_text(json.dumps(metadata))
+            with patch.object(h1_inputs, "__file__", str(root / "h1_inputs.py")):
+                with self.assertRaisesRegex(ValueError, "metadata checksum"):
+                    h1_inputs.load_input(case_id)
 
     def test_towel_closed_thumb_correction_is_explicit(self):
         """Only closed thumb/mimic columns differ from the preserved input."""

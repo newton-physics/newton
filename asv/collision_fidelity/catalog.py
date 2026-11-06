@@ -11,7 +11,7 @@ def load_cases():
     """Return independent case records keyed by their stable identifier."""
     manifest = json.loads(Path(__file__).with_name("cases.json").read_text())
     cases = {case["case_id"]: case for case in manifest["cases"]}
-    if len(cases) != manifest["case_count"]:
+    if len(cases) != len(manifest["cases"]) or len(cases) != manifest["case_count"]:
         raise ValueError("Duplicate or missing collision-fidelity case identifier")
     return cases
 

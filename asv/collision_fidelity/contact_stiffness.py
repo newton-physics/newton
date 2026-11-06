@@ -3,8 +3,9 @@
 
 """Apply a recorded, down-only contact cap before any preparation or capture.
 
-Cloth uses membrane coefficients and rods use their stretch/shear slots.
-Tet coefficients require an explicit numeric comparison or an E*length proxy.
+Cloth uses a numerical comparison of membrane coefficients in Pa with contact
+coefficients in N/m. Rods use their stretch/shear slots in N/m. Tet coefficients
+require an explicit numeric comparison or an E*length proxy.
 Neither policy establishes that a grasp succeeds; that needs a simulation.
 """
 
@@ -56,9 +57,10 @@ def _references(model, tet_policy):
             {
                 "material": "cloth",
                 "source": "tri_materials[:, :2]",
-                "units": "N/m",
+                "units": "Pa",
                 "value": _positive_min(tri[:, :2]),
-                "physical_units_match": True,
+                "physical_units_match": False,
+                "meaning": "Numerical coefficient comparison only; Pa and N/m are different units.",
             }
         )
     tet = _values(model, "tet_materials")
@@ -108,7 +110,7 @@ def _references(model, tet_policy):
         if rods.size:
             starts = _values(model, "joint_qd_start").astype(int)
             ke = _values(model, "joint_target_ke")
-            linear = np.concatenate([ke[starts[j] : starts[j] + 2] for j in rods])
+            linear = np.concatenate([ke[starts[j] : starts[j] + 3] for j in rods])
             terms.append(
                 {
                     "material": "rod",
@@ -144,6 +146,8 @@ def apply_contact_policy(model, policy):
             raise ValueError("Do not switch contact policy on a prepared model; build a fresh scene")
         if _material_summary(model) != previous["effective"]:
             raise ValueError("Contact materials changed after the policy was applied")
+        if policy is not None and _references(model, identity["tet_policy"]) != previous["reference_terms"]:
+            raise ValueError("Elastic reference changed after the policy was applied; build a fresh scene")
         return previous
     authored = _material_summary(model)
     report = {
