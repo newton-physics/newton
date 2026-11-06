@@ -3033,6 +3033,7 @@ def eval_rigid_tau_and_augmented_drives(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     articulation_origin: wp.array[wp.vec3],
+    drive_joint_qd: wp.array[float],
     augment_drives: bool,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
@@ -3091,7 +3092,7 @@ def eval_rigid_tau_and_augmented_drives(
         joint_q_start,
         joint_dof_dim,
         joint_q,
-        joint_qd,
+        drive_joint_qd,
         joint_damping,
         augment_drives,
         joint_target_ke,
@@ -3122,7 +3123,10 @@ def build_mass_update_mask(
     """Refresh active factors whose timestep differs, including during graph replay."""
     tid = wp.tid()
     flag = 1 if global_flag != 0 else 0
-    if mass_update_requested[tid] != 0 or mass_factor_dt[tid] != dt:
+    # Ignore float-rounding jitter, but retain relative sensitivity for tiny timesteps.
+    factor_dt = mass_factor_dt[tid]
+    dt_changed = wp.abs(factor_dt - dt) > 1.0e-6 * wp.max(wp.abs(factor_dt), wp.abs(dt))
+    if mass_update_requested[tid] != 0 or dt_changed:
         flag = 1
     if articulation_active[tid] == 0:
         flag = 0

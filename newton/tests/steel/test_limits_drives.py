@@ -1589,6 +1589,17 @@ def test_passive_damping_with_changing_timestep(test, device, solve_mode="matrix
                 velocity /= 1.0 + dt * 100.0
                 np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
 
+            # A one-ULP jitter must reuse the factor, including with a long refresh interval.
+            factor_dt = solver._mass_factor_dt.numpy().copy()
+            jitter_dt = float(np.nextafter(np.float32(0.005), np.float32(1.0)))
+            for dt in (jitter_dt, 0.005, jitter_dt):
+                solver.step(state, output, control, None, dt)
+                state, output = output, state
+                velocity /= 1.0 + dt * 100.0
+                np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
+                np.testing.assert_array_equal(solver._mass_update_mask.numpy(), [0])
+                np.testing.assert_array_equal(solver._mass_factor_dt.numpy(), factor_dt)
+
             model.joint_damping.fill_(1.0e8)
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
             for dt in (1.0e-8, 1.5e-8, 1.5e-8):
@@ -1596,6 +1607,36 @@ def test_passive_damping_with_changing_timestep(test, device, solve_mode="matrix
                 state, output = output, state
                 velocity /= 1.0 + dt * 1.0e8
                 np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
+
+
+def test_passive_damping_after_velocity_prescaling(test, device):
+    """Damp the prescaled velocity without reversing an over-limit joint."""
+    for joint_type in ("prismatic", "revolute", "d6"):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        if joint_type == "d6":
+            joint = builder.add_joint_d6(
+                -1, body, linear_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=0.0)]
+            )
+        else:
+            joint = getattr(builder, f"add_joint_{joint_type}")(-1, body, armature=0.0)
+        builder.add_articulation([joint])
+        builder.joint_damping[:] = [10000.0] * len(builder.joint_damping)
+        builder.joint_velocity_limit[:] = [1.0] * len(builder.joint_velocity_limit)
+        model = builder.finalize(device=device)
+        for drive_mode in ("augmented", "rows"):
+            with test.subTest(joint_type=joint_type, drive_mode=drive_mode):
+                solver = SolverSteel(model, drive_mode=drive_mode, enable_joint_velocity_limits=True)
+                state, output = model.state(), model.state()
+                control = model.control()
+                for sign in (-1.0, 1.0):
+                    velocity = np.zeros(model.joint_dof_count, dtype=np.float32)
+                    velocity[0] = sign * 10.0
+                    state.joint_qd.assign(velocity)
+                    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                    solver.step(state, output, control, None, 0.01)
+                    velocity[0] = sign / 101.0
+                    np.testing.assert_allclose(output.joint_qd.numpy(), velocity, atol=1.0e-6)
 
 
 def test_near_singular_passive_damping(test, device, solve_mode="matrix_free"):
@@ -1654,6 +1695,17 @@ def test_passive_damping_replay_after_timestep_change(test, device):
                 solver.step(state, output, control, None, 0.005)
                 np.testing.assert_allclose(output.joint_qd.numpy(), [2.0 / 3.0], atol=1.0e-6)
 
+            # Replay a near-identical timestep without rebuilding the cached factor.
+            factor_dt = solver._mass_factor_dt.numpy().copy()
+            jitter_dt = float(np.nextafter(np.float32(0.005), np.float32(1.0)))
+            with wp.ScopedCapture(device=device) as capture:
+                solver.step(state, output, control, None, jitter_dt)
+            for _ in range(2):
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(output.joint_qd.numpy(), [2.0 / 3.0], atol=1.0e-6)
+                np.testing.assert_array_equal(solver._mass_update_mask.numpy(), [0])
+                np.testing.assert_array_equal(solver._mass_factor_dt.numpy(), factor_dt)
+
 
 class TestSteelAugmentedDrives(unittest.TestCase):
     pass
@@ -1668,6 +1720,14 @@ for _name, _func in (
 ):
     add_function_test(TestSteelAugmentedDrives, _name, _func, devices=devices)
     add_function_test(TestSteelAugmentedDrives, f"{_name}_split", _func, devices=split_devices, solve_mode="split")
+
+
+add_function_test(
+    TestSteelAugmentedDrives,
+    "test_passive_damping_after_velocity_prescaling",
+    test_passive_damping_after_velocity_prescaling,
+    devices=devices,
+)
 
 
 add_function_test(
