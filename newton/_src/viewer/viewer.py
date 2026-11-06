@@ -3417,11 +3417,18 @@ class ViewerBase(ABC):
         self.model_shape_color = packed["colors"][0] if total_instances else None
         self.model_shape_opacity = packed["opacities"][0] if total_instances else None
 
+        shape_to_batch = [None] * len(self._shape_to_batch)
         for b_idx, batch in enumerate(batches):
             lo, hi = offsets[b_idx], offsets[b_idx + 1]
             for name, (values, kind) in packed.items():
                 setattr(batch, name, values[lo:hi] if hi > lo else empty[kind])
             batch.model_shapes = all_instances["model_shapes"][lo:hi]
+            # Variant rows may move between batches or become empty. Consumers
+            # such as selection outlines must follow the displayed instances.
+            for shape in batch.model_shapes:
+                shape_to_batch[shape] = batch
+
+        self._shape_to_batch = shape_to_batch
 
         slot_to_shape = all_instances["model_shapes"].astype(np.int32)
         shape_to_slot = np.full(len(self._shape_to_batch), -1, dtype=np.int32)

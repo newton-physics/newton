@@ -17,6 +17,7 @@ from newton._src.viewer import viewer_gl
 from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.gui.viewport import ViewportControls
+from newton._src.viewer.gui.workspace import ViewerWorkspace
 from newton._src.viewer.kernels import compact
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_joint_selection import _JointDrawList
@@ -283,6 +284,74 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         elif instancer is not None:
                             self.assertTrue(instancer.hidden)
                     self.assertEqual(actual, expected)
+
+    def test_workspace_picking_and_selection_batches(self) -> None:
+        """Pick and outline current plain, variant, and SDF instances through the workspace."""
+        variant = newton.ModelBuilder()
+        body = variant.add_body()
+        variant.add_shape_sphere(body, radius=0.4)
+        expanded = newton.ModelBuilder()
+        body = expanded.add_body()
+        for x in (0.0, 2.0):
+            expanded.add_shape_sphere(body, xform=wp.transform((x, 0, 0), wp.quat_identity()), radius=0.4)
+        builder = newton.ModelBuilder()
+        builder.add_body_variants(builder.add_body(), [variant, expanded])
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        workspace = ViewerWorkspace(
+            SimpleNamespace(
+                _viewer=viewer,
+                ui=SimpleNamespace(dpi_scale=1.0),
+                console_capture=None,
+                stop_following_selection=lambda: None,
+            )
+        )
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            for variants in (False, True):
+                with self.subTest(device=device, variants=variants):
+                    model = (builder if variants else variant).finalize(device=device)
+                    viewer.set_model(model)
+                    workspace.bind(None)
+                    for choice in (1, 0, 1) if variants else (0,):
+                        if variants:
+                            changed = model.select_body_variants(wp.array([choice], dtype=int, device=device))
+                            viewer.notify_model_changed(changed)
+                        viewer.begin_frame(0.0)
+                        viewer.log_state(model.state())
+                        viewer.end_frame()
+                        for x in (0.0, 2.0):
+                            viewer.set_camera((x, -3, 0), 0, 0)
+                            viewer.camera.look_at((x, 0, 0))
+                            workspace.select_from_screen(32, 24, lambda x, y: (x, y))
+                            expected = ("body", 0) if x == 0 or (variants and choice == 1) else None
+                            self.assertEqual(workspace.selected, expected)
+                            workspace._sync_selection_outline()
+                            self.assertEqual(bool(viewer.renderer._selection_instances), expected is not None)
+
+        if wp.is_cuda_available():
+            with wp.ScopedDevice("cuda:0"):
+                mesh = newton.Mesh.create_box(0.3, 0.3, 0.3)
+                mesh.build_sdf(max_resolution=8)
+                builder = newton.ModelBuilder()
+                # A non-SDF shape in the selection must be skipped by the SDF lookup.
+                plain = builder.add_shape_sphere(-1, radius=0.2)
+                shapes = [
+                    builder.add_shape_mesh(-1, mesh=mesh, xform=wp.transform((x, 0, 0), wp.quat_identity()))
+                    for x in (1.0, 2.0)
+                ]
+                model = builder.finalize()
+            viewer.set_model(model)
+            workspace.bind(None)
+            viewer.show_collision = True
+            viewer.show_visual = False
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            workspace.select(("shape", plain))
+            workspace.select(("shape", shapes[1]), toggle=True)
+            workspace._sync_selection_outline()
+            batch = next(iter(viewer._sdf_isomesh_instances.values()))
+            self.assertIn((viewer.objects[batch.name], 1), viewer.renderer._selection_instances)
 
     def test_point_prototypes_follow_model_device(self) -> None:
         """Reuse device-local point/splat meshes across CPU/CUDA model changes."""

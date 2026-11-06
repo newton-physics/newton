@@ -606,11 +606,9 @@ class ViewerWorkspace:
             if self._selection_shapes:
                 for batch in sdf_batches.values():
                     for shape in self._selection_shapes:
-                        try:
-                            index = batch.model_shapes.index(shape)
-                        except ValueError:
-                            continue
-                        bindings.append((batch.name, index))
+                        bindings.extend(
+                            (batch.name, int(index)) for index in np.flatnonzero(batch.model_shapes == shape)
+                        )
             self._selection_bindings = bindings
             self._selection_binding_key = binding_key
         # Resolve names each frame because a batch's buffers can be replaced
@@ -726,6 +724,9 @@ class ViewerWorkspace:
                 model.shape_world,
                 viewer.world_offsets if viewer.world_offsets is not None else ray.offsets,
                 viewer._visible_worlds_mask,
+                # Null arrays disable variant filtering for ordinary models.
+                model._shape_variant_row,
+                model._shape_variant_shape,
             ],
             device=model.device,
         )
