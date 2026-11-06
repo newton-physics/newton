@@ -38,12 +38,7 @@ from functools import cache
 import warp as wp
 
 from ._array_ptr import get_float32_array_offset_ptr, get_int32_array_offset_ptr
-from ._tile_builtins import (
-    HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
-    HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
-    HAS_TILE_MATMUL_TRANSPOSE_UPDATE,
-    make_tile_matmul_left_transpose_update_func,
-)
+from ._tile_builtins import HAS_TILE_MATMUL_TRANSPOSE_UPDATE
 
 ###
 # Module interface
@@ -560,6 +555,7 @@ def make_llt_blocked_rcm_solve_kernel(
         x_hat: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
+        """Solve active systems in RCM order and scatter the results."""
         tid, tid_block = wp.tid()
         num_threads_per_block = wp.block_dim()
 
@@ -635,15 +631,8 @@ def make_llt_blocked_rcm_solve_kernel(
                             continue
                         L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
                         x_tile = wp.tile_load(x_hat_i, shape=(block_size, 1), offset=(j, 0))
-                        if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                            wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
-                        elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                            wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
-                                rhs_tile, L_tile, x_tile, -1.0
-                            )
-                        else:
-                            L_T_tile = wp.tile_transpose(L_tile)
-                            wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                        L_T_tile = wp.tile_transpose(L_tile)
+                        wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
 
                 wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)
                 wp.tile_store(x_hat_i, rhs_tile, offset=(i, 0))
@@ -680,6 +669,7 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
+        """Solve active systems in place using the RCM tile pattern."""
         tid, tid_block = wp.tid()
         num_threads_per_block = wp.block_dim()
 
@@ -744,15 +734,8 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
                         continue
                     L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
                     x_tile = wp.tile_load(x_i, shape=(block_size, 1), offset=(j, 0))
-                    if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
-                    elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
-                            rhs_tile, L_tile, x_tile, -1.0
-                        )
-                    else:
-                        L_T_tile = wp.tile_transpose(L_tile)
-                        wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                    L_T_tile = wp.tile_transpose(L_tile)
+                    wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
 
             wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)
             wp.tile_store(x_i, rhs_tile, offset=(i, 0))
