@@ -535,6 +535,7 @@ class Contacts:
 
         self.rigid_contact_max = rigid_contact_max
         self.soft_contact_max = soft_contact_max
+        self._rigid_contact_body_pair_reduced = False
 
     def clear(self, bump_generation: bool = True):
         """
@@ -601,6 +602,20 @@ class Contacts:
         # else: Optimized path (default) - only counter clear needed
         #   Collision detection overwrites all active contacts [0, contact_count)
         #   Solvers only read [0, contact_count), so stale data is never accessed
+
+    @property
+    def rigid_contact_body_pair_reduced(self) -> bool:
+        """Whether this buffer holds body-pair-reduced rigid contacts.
+
+        Fixed when :meth:`newton.CollisionPipeline.contacts` allocates the buffer
+        from a pipeline with body-pair reduction whose scene has primitive or
+        convex contact pairs. Only such a pipeline can
+        collide into it, and solvers that are not validated for reduced contacts
+        reject it, eagerly or under CUDA graph capture alike.
+
+        .. experimental::
+        """
+        return self._rigid_contact_body_pair_reduced
 
     @property
     def device(self):

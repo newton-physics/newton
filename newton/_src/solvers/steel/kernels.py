@@ -13,7 +13,7 @@ from ...sim.articulation import (
 )
 from ...sim.contacts import GENERATION_SENTINEL
 from ..featherstone.kernels import jcalc_motion
-from .friction import contact_tangent_basis, friction_pair_candidate
+from .friction import contact_tangent_basis
 from .friction_patches import WARP_DETERMINISM_OFF, FrictionPatches, warmstart_dt_scale
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
@@ -333,6 +333,20 @@ def compute_com_transforms(
     tid = wp.tid()
     com = body_com[tid]
     body_X_com[tid] = wp.transform(com, wp.quat_identity())
+
+
+@wp.kernel
+def mask_passive_spring_stiffness(
+    joint_stiffness: wp.array[float],
+    spring_dof_mask: wp.array[wp.int32],
+    # outputs
+    spring_stiffness: wp.array[float],
+):
+    dof = wp.tid()
+    if spring_dof_mask[dof] != 0:
+        spring_stiffness[dof] = joint_stiffness[dof]
+    else:
+        spring_stiffness[dof] = 0.0
 
 
 @wp.kernel
@@ -683,8 +697,8 @@ def jcalc_tau(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     coord_start: int,
     dof_start: int,
@@ -724,8 +738,8 @@ def jcalc_tau(
             S_s = joint_S_s[j]
             # Passive spring/damping applied explicitly; the drive gains stay on the
             # implicit augmented path. These joint types have one coordinate per DOF,
-            # so coord_start + i addresses the axis position.
-            passive_f = joint_spring_stiffness[j] * (joint_spring_ref[j] - joint_q[coord_start + i])
+            # so coord_start + i addresses the axis position and its rest coordinate.
+            passive_f = joint_stiffness[j] * (joint_rest_q[coord_start + i] - joint_q[coord_start + i])
             passive_f -= joint_damping[j] * joint_qd[j]
             # total torque / force on the joint (drive forces handled via augmented mass)
             value = -wp.dot(S_s, body_f_s) + joint_f[j] + passive_f
@@ -1703,8 +1717,8 @@ def accumulate_articulation_tau(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_fb_s: wp.array[wp.spatial_vector],
@@ -1750,8 +1764,8 @@ def accumulate_articulation_tau(
             joint_f,
             joint_q,
             joint_qd,
-            joint_spring_stiffness,
-            joint_spring_ref,
+            joint_stiffness,
+            joint_rest_q,
             joint_damping,
             joint_q_start[i],
             dof_start,
@@ -1782,8 +1796,8 @@ def eval_rigid_tau(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_fb_s: wp.array[wp.spatial_vector],
@@ -1813,8 +1827,8 @@ def eval_rigid_tau(
         joint_f,
         joint_q,
         joint_qd,
-        joint_spring_stiffness,
-        joint_spring_ref,
+        joint_stiffness,
+        joint_rest_q,
         joint_damping,
         joint_S_s,
         body_fb_s,
@@ -1859,8 +1873,8 @@ def _get_tree_tau_kernel(lanes: int):
         joint_f: wp.array[float],
         joint_q: wp.array[float],
         joint_qd: wp.array[float],
-        joint_spring_stiffness: wp.array[float],
-        joint_spring_ref: wp.array[float],
+        joint_stiffness: wp.array[float],
+        joint_rest_q: wp.array[float],
         joint_damping: wp.array[float],
         joint_S_s: wp.array[wp.spatial_vector],
         body_fb_s: wp.array[wp.spatial_vector],
@@ -1912,8 +1926,8 @@ def _get_tree_tau_kernel(lanes: int):
                             joint_f,
                             joint_q,
                             joint_qd,
-                            joint_spring_stiffness,
-                            joint_spring_ref,
+                            joint_stiffness,
+                            joint_rest_q,
                             joint_damping,
                             joint_q_start[joint],
                             joint_qd_start[joint],
@@ -3043,8 +3057,8 @@ def eval_rigid_tau_and_augmented_drives(
     joint_f: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
-    joint_spring_stiffness: wp.array[float],
-    joint_spring_ref: wp.array[float],
+    joint_stiffness: wp.array[float],
+    joint_rest_q: wp.array[float],
     joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_fb_s: wp.array[wp.spatial_vector],
@@ -3086,8 +3100,8 @@ def eval_rigid_tau_and_augmented_drives(
         joint_f,
         joint_q,
         joint_qd,
-        joint_spring_stiffness,
-        joint_spring_ref,
+        joint_stiffness,
+        joint_rest_q,
         joint_damping,
         joint_S_s,
         body_fb_s,
@@ -7629,16 +7643,6 @@ def scatter_qdd_from_groups(
         joint_qdd[dof_start + i] = qdd_group[idx, i, 0]
 
 
-# =============================================================================
-# Split-Mode Kernels (dense Delassus solve and standalone free-body solve)
-# =============================================================================
-# Split mode assembles the dense rows of each world into a Delassus matrix
-# ``C = J H^-1 J^T`` and solves them in impulse space, then solves the free-body
-# rows against the resulting velocity. These Warp kernels run on every device and
-# are the CPU implementation; CUDA selects native one-warp-per-world variants built
-# in ``solver_steel.py`` when they fit shared memory.
-
-
 @wp.kernel
 def build_joint_limit_rows(
     articulation_dof_start: wp.array[int],
@@ -7701,381 +7705,10 @@ def build_joint_limit_rows(
 
 
 @wp.kernel
-def delassus_par_row_col(
-    J_group: wp.array3d[float],
-    Y_group: wp.array3d[float],
-    group_to_art: wp.array[int],
-    art_to_world: wp.array[int],
-    world_constraint_count: wp.array[int],
-    n_dofs: int,
-    max_constraints: int,
-    n_arts: int,
-    # outputs
-    world_C: wp.array3d[float],
-    world_diag: wp.array2d[float],
-):
-    """Accumulate one size group's Delassus contribution ``C += J Y^T``, one entry per thread.
-
-    Launched over ``n_arts * max_constraints * max_constraints`` threads. The diagonal is
-    accumulated separately so the constraint force mixing can be added to it alone.
-    """
-    tid = wp.tid()
-    j = tid % max_constraints
-    i = (tid // max_constraints) % max_constraints
-    idx = tid // (max_constraints * max_constraints)
-    if idx >= n_arts:
-        return
-    art = group_to_art[idx]
-    world = art_to_world[art]
-    n_constraints = world_constraint_count[world]
-    if i >= n_constraints or j >= n_constraints:
-        return
-    val = float(0.0)
-    for k in range(n_dofs):
-        val += J_group[idx, i, k] * Y_group[idx, j, k]
-    if val != 0.0:
-        wp.atomic_add(world_C, world, i, j, val)
-        if i == j:
-            wp.atomic_add(world_diag, world, i, val)
-
-
-@wp.kernel
-def rhs_accum_world_par_art(
-    world_constraint_count: wp.array[int],
-    art_to_world: wp.array[int],
-    art_dof_start: wp.array[int],
-    velocity: wp.array[float],
-    group_to_art: wp.array[int],
-    J_group: wp.array3d[float],
-    n_dofs: int,
-    # outputs
-    world_rhs: wp.array2d[float],
-):
-    """Add one size group's ``J v`` to the dense right-hand side, one articulation per thread."""
-    idx = wp.tid()
-    art = group_to_art[idx]
-    world = art_to_world[art]
-    n_constraints = world_constraint_count[world]
-    dof_start = art_dof_start[art]
-    for c in range(n_constraints):
-        jv = float(0.0)
-        for d in range(n_dofs):
-            jv += J_group[idx, c, d] * velocity[dof_start + d]
-        wp.atomic_add(world_rhs, world, c, jv)
-
-
-@wp.kernel
-def rhs_accum_world_par_row(
-    world_constraint_count: wp.array[int],
-    world_group_start: wp.array[int],
-    world_groups: wp.array[int],
-    group_to_art: wp.array[int],
-    art_dof_start: wp.array[int],
-    velocity: wp.array[float],
-    J_group: wp.array3d[float],
-    n_dofs: int,
-    max_constraints: int,
-    # outputs
-    world_rhs: wp.array2d[float],
-):
-    """Add one size group's ``J v`` to the dense right-hand side, summing a world's articulations in a fixed order."""
-    tid = wp.tid()
-    world = tid // max_constraints
-    c = tid - world * max_constraints
-    if c >= world_constraint_count[world]:
-        return
-    jv = float(0.0)
-    for i in range(world_group_start[world], world_group_start[world + 1]):
-        group_idx = world_groups[i]
-        dof_start = art_dof_start[group_to_art[group_idx]]
-        for d in range(n_dofs):
-            jv += J_group[group_idx, c, d] * velocity[dof_start + d]
-    world_rhs[world, c] = world_rhs[world, c] + jv
-
-
-@wp.kernel
-def pgs_solve_loop(
-    world_constraint_count: wp.array[int],
-    world_diag: wp.array2d[float],
-    world_C: wp.array3d[float],
-    world_rhs: wp.array2d[float],
-    iterations: int,
-    omega: float,
-    world_row_type: wp.array2d[int],
-    world_row_parent: wp.array2d[int],
-    world_row_mu: wp.array2d[float],
-    friction_start_iteration: int,
-    iteration_offset: int,
-    # in/out
-    world_impulses: wp.array2d[float],
-):
-    """Projected Gauss-Seidel on the dense Delassus system of one world per thread.
-
-    The residual of row ``i`` is ``rhs_i + sum_j C_ij lambda_j``. Contact and joint-limit
-    rows are unilateral; the first friction row of a contact solves both tangents on the
-    Coulomb disk of the current normal impulse (:func:`friction_pair_candidate`). Friction
-    rows hold zero impulse in iterations before ``friction_start_iteration``, counted from
-    ``iteration_offset``.
-    """
-    world = wp.tid()
-    m = world_constraint_count[world]
-    if m == 0:
-        return
-    for it in range(iterations):
-        for i in range(m):
-            row_type = world_row_type[world, i]
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and iteration_offset + it < friction_start_iteration:
-                world_impulses[world, i] = 0.0
-                continue
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != world_row_parent[world, i] + 1:
-                continue
-
-            w = world_rhs[world, i]
-            for j in range(m):
-                w += world_C[world, i, j] * world_impulses[world, j]
-
-            denom = world_diag[world, i]
-            if denom <= 0.0 and row_type != PGS_CONSTRAINT_TYPE_FRICTION:
-                continue
-
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION:
-                parent_idx = world_row_parent[world, i]
-                radius = wp.max(world_row_mu[world, i] * world_impulses[world, parent_idx], 0.0)
-                if radius <= 0.0:
-                    world_impulses[world, i] = 0.0
-                    world_impulses[world, i + 1] = 0.0
-                    continue
-                sib = parent_idx + 2
-                sibling_residual = world_rhs[world, sib]
-                for j in range(m):
-                    sibling_residual += world_C[world, sib, j] * world_impulses[world, j]
-                trial = friction_pair_candidate(
-                    denom,
-                    world_C[world, i, sib],
-                    world_diag[world, sib],
-                    wp.vec2(w, sibling_residual),
-                    wp.vec2(world_impulses[world, i], world_impulses[world, sib]),
-                    radius,
-                    omega,
-                )
-                magnitude = wp.length(trial)
-                if magnitude > radius:
-                    trial *= radius / magnitude
-                world_impulses[world, i] = trial[0]
-                world_impulses[world, sib] = trial[1]
-            else:
-                delta = -w / denom
-                new_impulse = world_impulses[world, i] + omega * delta
-                if new_impulse < 0.0:
-                    new_impulse = 0.0
-                world_impulses[world, i] = new_impulse
-
-
-@wp.kernel
-def apply_impulses_world_par_dof(
-    group_to_art: wp.array[int],
-    art_to_world: wp.array[int],
-    art_dof_start: wp.array[int],
-    n_dofs: int,
-    n_arts: int,
-    world_constraint_count: wp.array[int],
-    Y_group: wp.array3d[float],
-    world_impulses: wp.array2d[float],
-    v_hat: wp.array[float],
-    # outputs
-    v_out: wp.array[float],
-):
-    """Write ``v_out = v_hat + Y lambda`` for one size group, one (articulation, DOF) per thread."""
-    tid = wp.tid()
-    local_dof = tid % n_dofs
-    idx = tid // n_dofs
-    if idx >= n_arts:
-        return
-    art = group_to_art[idx]
-    world = art_to_world[art]
-    delta_v = float(0.0)
-    for c in range(world_constraint_count[world]):
-        delta_v += Y_group[idx, c, local_dof] * world_impulses[world, c]
-    global_dof = art_dof_start[art] + local_dof
-    v_out[global_dof] = v_hat[global_dof] + delta_v
-
-
-@wp.func
-def _mf_row_velocity(
-    world: int,
-    row: int,
-    mf_J_a: wp.array3d[float],
-    mf_J_b: wp.array3d[float],
-    dof_a: int,
-    dof_b: int,
-    v_out: wp.array[float],
-):
-    jv = float(0.0)
-    if dof_a >= 0:
-        for k in range(6):
-            jv += mf_J_a[world, row, k] * v_out[dof_a + k]
-    if dof_b >= 0:
-        for k in range(6):
-            jv += mf_J_b[world, row, k] * v_out[dof_b + k]
-    return jv
-
-
-@wp.func
-def _mf_apply_impulse(
-    world: int,
-    row: int,
-    mf_MiJt_a: wp.array3d[float],
-    mf_MiJt_b: wp.array3d[float],
-    dof_a: int,
-    dof_b: int,
-    delta_impulse: float,
-    v_out: wp.array[float],
-):
-    for k in range(6):
-        if dof_a >= 0:
-            v_out[dof_a + k] = v_out[dof_a + k] + mf_MiJt_a[world, row, k] * delta_impulse
-        if dof_b >= 0:
-            v_out[dof_b + k] = v_out[dof_b + k] + mf_MiJt_b[world, row, k] * delta_impulse
-
-
-@wp.kernel
-def pgs_solve_mf_loop(
-    mf_constraint_count: wp.array[int],
-    mf_body_a: wp.array2d[int],
-    mf_body_b: wp.array2d[int],
-    mf_MiJt_a: wp.array3d[float],
-    mf_MiJt_b: wp.array3d[float],
-    mf_J_a: wp.array3d[float],
-    mf_J_b: wp.array3d[float],
-    mf_eff_mass_inv: wp.array2d[float],
-    mf_rhs: wp.array2d[float],
-    mf_row_type: wp.array2d[int],
-    mf_row_parent: wp.array2d[int],
-    mf_row_mu: wp.array2d[float],
-    body_to_articulation: wp.array[int],
-    art_dof_start: wp.array[int],
-    iterations: int,
-    omega: float,
-    friction_start_iteration: int,
-    iteration_offset: int,
-    # in/out
-    mf_impulses: wp.array2d[float],
-    v_out: wp.array[float],
-):
-    """Projected Gauss-Seidel on the free-body rows of one world per thread.
-
-    ``J v`` is recomputed from ``v_out`` for every row and each impulse change is applied
-    immediately through ``M^-1 J^T``. Rows are laid out as ``[contacts and friction]
-    [velocity limits]``, so the velocity limits have the last word in each sweep; they
-    are stateless and apply only the impulse needed for the current overshoot. Friction
-    rows hold zero impulse in iterations before ``friction_start_iteration``, counted from
-    ``iteration_offset``.
-    """
-    world = wp.tid()
-    m = mf_constraint_count[world]
-    for it in range(iterations):
-        for i in range(m):
-            row_type = mf_row_type[world, i]
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and iteration_offset + it < friction_start_iteration:
-                mf_impulses[world, i] = 0.0
-                continue
-            parent_idx = mf_row_parent[world, i]
-            if row_type == PGS_CONSTRAINT_TYPE_FRICTION and i != parent_idx + 1:
-                continue
-            eff_inv = mf_eff_mass_inv[world, i]
-            if eff_inv <= 0.0 and row_type != PGS_CONSTRAINT_TYPE_FRICTION:
-                continue
-
-            ba = mf_body_a[world, i]
-            bb = mf_body_b[world, i]
-            dof_a = int(-1)
-            dof_b = int(-1)
-            if ba >= 0:
-                dof_a = art_dof_start[body_to_articulation[ba]]
-            if bb >= 0:
-                dof_b = art_dof_start[body_to_articulation[bb]]
-
-            residual = _mf_row_velocity(world, i, mf_J_a, mf_J_b, dof_a, dof_b, v_out) + mf_rhs[world, i]
-            old_impulse = mf_impulses[world, i]
-            delta = -residual * eff_inv
-            new_impulse = old_impulse + omega * delta
-            delta_impulse = float(0.0)
-            if row_type == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT:
-                new_impulse = float(0.0)
-                if residual < 0.0:
-                    new_impulse = delta
-                delta_impulse = new_impulse
-            elif row_type == PGS_CONSTRAINT_TYPE_FRICTION:
-                sib = parent_idx + 2
-                radius = wp.max(mf_row_mu[world, i] * mf_impulses[world, parent_idx], 0.0)
-                pair_residual = wp.vec2(mf_rhs[world, i], mf_rhs[world, sib])
-                cross = float(0.0)
-                for k in range(6):
-                    if dof_a >= 0:
-                        pair_residual[0] += mf_J_a[world, i, k] * v_out[dof_a + k]
-                        pair_residual[1] += mf_J_a[world, sib, k] * v_out[dof_a + k]
-                        cross += mf_J_a[world, i, k] * mf_MiJt_a[world, sib, k]
-                    if dof_b >= 0:
-                        pair_residual[0] += mf_J_b[world, i, k] * v_out[dof_b + k]
-                        pair_residual[1] += mf_J_b[world, sib, k] * v_out[dof_b + k]
-                        cross += mf_J_b[world, i, k] * mf_MiJt_b[world, sib, k]
-                first_diag = float(0.0)
-                if eff_inv > 0.0:
-                    first_diag = 1.0 / eff_inv
-                sibling_inv = mf_eff_mass_inv[world, sib]
-                sibling_diag = float(0.0)
-                if sibling_inv > 0.0:
-                    sibling_diag = 1.0 / sibling_inv
-                trial = friction_pair_candidate(
-                    first_diag,
-                    cross,
-                    sibling_diag,
-                    pair_residual,
-                    wp.vec2(old_impulse, mf_impulses[world, sib]),
-                    radius,
-                    omega,
-                )
-                magnitude = wp.length(trial)
-                if magnitude > radius:
-                    trial *= radius / magnitude
-                sibling_delta = trial[1] - mf_impulses[world, sib]
-                mf_impulses[world, sib] = trial[1]
-                _mf_apply_impulse(world, sib, mf_MiJt_a, mf_MiJt_b, dof_a, dof_b, sibling_delta, v_out)
-                new_impulse = trial[0]
-                delta_impulse = new_impulse - old_impulse
-            else:
-                if new_impulse < 0.0:
-                    new_impulse = 0.0
-                delta_impulse = new_impulse - old_impulse
-            mf_impulses[world, i] = new_impulse
-            _mf_apply_impulse(world, i, mf_MiJt_a, mf_MiJt_b, dof_a, dof_b, delta_impulse, v_out)
-
-
-@wp.kernel
 def scale_array_inplace(values: wp.array[float], scale: float):
     """Multiply every entry of ``values`` by ``scale``."""
     i = wp.tid()
     values[i] = values[i] * scale
-
-
-@wp.kernel
-def vector_add_inplace(a: wp.array[float], b: wp.array[float]):
-    """Add ``b`` to ``a`` element-wise."""
-    i = wp.tid()
-    a[i] = a[i] + b[i]
-
-
-@wp.kernel
-def compute_delta_and_accumulate(
-    v_out: wp.array[float],
-    v_snap: wp.array[float],
-    v_accum: wp.array[float],
-):
-    """Accumulate ``delta = v_out - v_snap`` into ``v_accum`` and store ``delta`` in ``v_snap``."""
-    i = wp.tid()
-    delta = v_out[i] - v_snap[i]
-    v_accum[i] = v_accum[i] + delta
-    v_snap[i] = delta
 
 
 # ---------------------------------------------------------------------------
@@ -8677,7 +8310,7 @@ def accumulate_propagation_warmstart_body_impulses_ordered(
             )
 
 
-# Coloring of the propagation contact units ("propagation_colored").
+# Coloring of the propagation contact units (solve_mode="colored").
 #
 # Two units conflict when they share a body with a response: their twist updates and deferred
 # impulses overlap. The units of one color are body-disjoint and solve in parallel; colors run in
@@ -8882,13 +8515,17 @@ def gather_propagation_unit_meta(
                 walk = row_parent[world, walk]
             overflow = offset | (count << 20)
     unit_meta[base + 7 + PROPAGATION_UNIT_RING] = overflow
-    # Rows of the unit: its first row and the friction rows following it.
+    # Rows of the unit: its first row and the friction rows following it, then its contact torsion row.
     m = wp.min(constraint_count[world], int(row_type.shape[1]))
     rows = int(1)
     while slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_FRICTION:
         rows += 1
-    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows
+    torsion = int(0)
+    if slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_TORSION:
+        torsion = 1
+    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows + torsion
     # Straight-line kinds: a contact row with its friction pair on the unit's two bodies, or a lone contact row.
+    # The sweep solves a torsion row after either.
     standard = int(0)
     if (
         straight_line != 0
@@ -9188,6 +8825,7 @@ def flatten_propagation_joint_S(
 @wp.kernel
 def factor_propagation_tree_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -9218,6 +8856,9 @@ def factor_propagation_tree_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 
@@ -9530,6 +9171,7 @@ def compute_propagation_tree_body_response_for_size(
     body_to_articulation: wp.array[int],
     body_to_joint: wp.array[int],
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     art_to_world: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
@@ -9562,6 +9204,9 @@ def compute_propagation_tree_body_response_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     world = art_to_world[art]
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
@@ -9697,6 +9342,7 @@ def compute_propagation_tree_body_response_for_size(
 @wp.kernel
 def refresh_propagation_tree_body_qd_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     art_to_world: wp.array[int],
     dense_contact_world_flag: wp.array[int],
     force_refresh: int,
@@ -9718,6 +9364,9 @@ def refresh_propagation_tree_body_qd_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     if force_refresh == 0:
         world = art_to_world[art]
         if world >= 0 and dense_contact_world_flag[world] == 0:
@@ -9778,6 +9427,7 @@ def refresh_propagation_free_body_qd_from_vout(
 @wp.kernel
 def propagate_tree_impulses_for_size(
     group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
     articulation_start: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -9807,6 +9457,9 @@ def propagate_tree_impulses_for_size(
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
+    if articulation_active.shape[0] > 0:
+        if articulation_active[art] == 0:
+            return
     joint_start = articulation_start[art]
     joint_end = articulation_start[art + 1]
 

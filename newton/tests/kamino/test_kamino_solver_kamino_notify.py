@@ -254,14 +254,13 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         bodies = solver._model_kamino.bodies
         joints = solver._model_kamino.joints
         geoms = solver._model_kamino.geoms
-        gravity = solver._model_kamino.gravity
 
         # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
         # ``body_inv_mass`` and ``body_inv_inertia`` are intentionally excluded:
         # Kamino owns masked copies so it can zero KINEMATIC rows without
         # mutating the underlying Newton model.
         aliased_properties = [
-            ("gravity", gravity, "vector"),
+            ("gravity", solver._model_kamino, "gravity"),
             ("body_mass", bodies, "m_i"),
             ("body_com", bodies, "i_r_com_i"),
             ("body_inertia", bodies, "i_I_i"),

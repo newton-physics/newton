@@ -4967,18 +4967,20 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_numeric_once_parsing(self):
-        """Test parsing of ONCE frequency numeric options from USD PhysicsScene (5 options)."""
+        """Test parsing of ONCE frequency numeric options from USD PhysicsScene (7 options)."""
         from pxr import Usd
 
         test_cases = [
-            ("iterations", "30", 30),
-            ("ls_iterations", "15", 15),
-            ("ccd_iterations", "25", 25),
-            ("sdf_iterations", "20", 20),
-            ("sdf_initpoints", "50", 50),
+            ("iterations", "int", "30", 30),
+            ("ls_iterations", "int", "15", 15),
+            ("ccd_iterations", "int", "25", 25),
+            ("sdf_iterations", "int", "20", 20),
+            ("sdf_initpoints", "int", "50", 50),
+            ("noslip_iterations", "int", "5", 5),
+            ("noslip_tolerance", "float", "1e-10", 1e-10),
         ]
 
-        for option_name, usd_value, expected in test_cases:
+        for option_name, usd_type, usd_value, expected in test_cases:
             with self.subTest(option=option_name):
                 usd_content = f"""#usda 1.0
 (
@@ -4993,7 +4995,7 @@ def Xform "World"
         prepend apiSchemas = ["MjcSceneAPI"]
     )
     {{
-        int mjc:option:{option_name} = {usd_value}
+        {usd_type} mjc:option:{option_name} = {usd_value}
     }}
 
     def Xform "Articulation" (
@@ -5037,7 +5039,7 @@ def Xform "World"
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
                 self.assertEqual(len(value), 1)  # ONCE frequency
-                self.assertEqual(value[0], expected)
+                np.testing.assert_allclose(value[0], expected, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_enum_once_parsing(self):
@@ -11514,8 +11516,53 @@ def Xform "Body" (
         self.assertIsNone(loaded_mesh.opacity)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_primvars_only_fill_what_the_material_lacks(self):
+        """Read displayColor and displayOpacity only where a bound material leaves color or opacity unset."""
+        from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+        def load(material_color, material_opacity, display_color, display_opacity):
+            stage = Usd.Stage.CreateInMemory()
+            mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+            mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+            mesh.CreateFaceVertexCountsAttr().Set([3])
+            mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+            primvars = UsdGeom.PrimvarsAPI(mesh)
+            primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1).Set(
+                [display_color]
+            )
+            primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1).Set(
+                [display_opacity]
+            )
+            material = UsdShade.Material.Define(stage, "/Look")
+            shader = UsdShade.Shader.Define(stage, "/Look/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            if material_color is not None:
+                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(material_color)
+            if material_opacity is not None:
+                shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(material_opacity)
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+            # The overridden primvar holds an invalid value, so reading it would log a warning.
+            with self.assertNoLogs("newton", level="WARNING"):
+                return usd.get_mesh(mesh.GetPrim())
+
+        nan = float("nan")
+        with self.subTest(name="material_sets_both"):
+            loaded_mesh = load((0.8, 0.2, 0.1), 0.37, (1.5, 0.5, 0.5), nan)
+            np.testing.assert_allclose(loaded_mesh.color, color_linear_to_srgb((0.8, 0.2, 0.1)), atol=1e-6, rtol=1e-6)
+            self.assertAlmostEqual(loaded_mesh.opacity, 0.37, places=6)
+        with self.subTest(name="material_sets_color"):
+            loaded_mesh = load((0.8, 0.2, 0.1), None, (1.5, 0.5, 0.5), 0.5)
+            np.testing.assert_allclose(loaded_mesh.color, color_linear_to_srgb((0.8, 0.2, 0.1)), atol=1e-6, rtol=1e-6)
+            self.assertAlmostEqual(loaded_mesh.opacity, 0.5, places=6)
+        with self.subTest(name="material_sets_opacity"):
+            loaded_mesh = load(None, 0.37, (0.2, 0.4, 0.6), nan)
+            np.testing.assert_allclose(loaded_mesh.color, color_linear_to_srgb((0.2, 0.4, 0.6)), atol=1e-6, rtol=1e-6)
+            self.assertAlmostEqual(loaded_mesh.opacity, 0.37, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_varying_display_opacity_uses_first_value_and_warns(self):
-        """Warn and use the first varying displayOpacity value."""
+        """Log a warning and use the first varying displayOpacity value."""
         from pxr import Sdf, Usd, UsdGeom
 
         stage = Usd.Stage.CreateInMemory()
@@ -11527,45 +11574,59 @@ def Xform "Body" (
             "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
         ).Set([0.2, 0.6, 0.8])
 
-        with self.assertWarnsRegex(UserWarning, "using the first value"):
+        with self.assertLogs("newton", level="WARNING") as caught:
             loaded_mesh = usd.get_mesh(mesh.GetPrim())
+        self.assertTrue(any("using the first value" in m for m in caught.output), caught.output)
 
         self.assertAlmostEqual(loaded_mesh.opacity, 0.2, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_tet_mesh_display_appearance_imports_to_surface_triangles(self):
-        """Import TetMesh display color and opacity onto generated surface triangles."""
+        """Import TetMesh display color and opacity onto surface triangles, clamping or dropping an invalid color."""
         from pxr import Sdf, Usd, UsdGeom
 
-        stage = Usd.Stage.CreateInMemory()
-        tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
-        tet_mesh.CreatePointsAttr().Set(
-            [
-                (0.0, 0.0, 0.0),
-                (1.0, 0.0, 0.0),
-                (0.0, 1.0, 0.0),
-                (0.0, 0.0, 1.0),
-            ]
+        cases = (
+            ("valid", (0.2, 0.4, 0.6), None, color_linear_to_srgb((0.2, 0.4, 0.6))),
+            ("out_of_range", (1.5, -0.25, 0.5), "clamping imported color", color_linear_to_srgb((1.0, 0.0, 0.5))),
+            # A dropped color leaves the builder's default triangle color.
+            ("non_finite", (float("nan"), 0.5, 0.5), "ignoring non-finite imported color", (0.7, 0.5, 0.3)),
         )
-        tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
-        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
-            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
-        ).Set([0.44])
-        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
-            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
-        ).Set([(0.2, 0.4, 0.6)])
+        for name, authored_color, message, expected_color in cases:
+            with self.subTest(name=name):
+                stage = Usd.Stage.CreateInMemory()
+                tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
+                tet_mesh.CreatePointsAttr().Set(
+                    [
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        (0.0, 1.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                    ]
+                )
+                tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
+                UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+                    "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+                ).Set([0.44])
+                UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+                    "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+                ).Set([authored_color])
 
-        loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
-        expected_color = usd_utils.resolve_material_properties_for_prim(tet_mesh.GetPrim())["color"]
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+                builder = newton.ModelBuilder()
+                if message is None:
+                    loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        builder.add_usd(stage)
+                    self.assertFalse(hasattr(loaded_mesh, "opacity"))
+                    self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
+                    self.assertNotIn("displayColor", loaded_mesh.custom_attributes)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as caught:
+                        builder.add_usd(stage)
+                    self.assertIn(f"/SoftTet.primvars:displayColor: {message}", "\n".join(caught.output))
 
-        self.assertFalse(hasattr(loaded_mesh, "opacity"))
-        self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
-        self.assertNotIn("displayColor", loaded_mesh.custom_attributes)
-        self.assertEqual(builder.tri_count, 4)
-        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
-        np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
+                self.assertEqual(builder.tri_count, 4)
+                np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
+                np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_drawability_follows_purpose_not_material(self):
@@ -14298,6 +14359,53 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             newton.utils.color_linear_to_srgb(linear_color),
             atol=1e-6,
         )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_invalid_color_and_opacity_are_clamped_or_dropped_with_source(self):
+        """Clamp or drop invalid primvar and shader values, logging the attribute each came from."""
+        from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        nan = float("nan")
+        cases = (
+            ("primvar", "color", (1.5, -0.25, 0.5), color_linear_to_srgb((1.0, 0.0, 0.5)), "clamping imported color"),
+            ("primvar", "color", (nan, 0.5, 0.5), None, "ignoring non-finite imported color"),
+            ("primvar", "opacity", 1.5, 1.0, "clamping imported opacity"),
+            ("shader", "color", (1.5, 0.5, 0.5), color_linear_to_srgb((1.0, 0.5, 0.5)), "clamping imported color"),
+            ("shader", "opacity", nan, None, "ignoring non-finite imported opacity"),
+        )
+        for source, key, value, expected, message in cases:
+            with self.subTest(source=source, key=key, value=value):
+                stage = Usd.Stage.CreateInMemory()
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+                mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+                mesh.CreateFaceVertexCountsAttr().Set([3])
+                mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+                if source == "primvar":
+                    name = "displayColor" if key == "color" else "displayOpacity"
+                    type_name = Sdf.ValueTypeNames.Color3fArray if key == "color" else Sdf.ValueTypeNames.FloatArray
+                    UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(name, type_name, UsdGeom.Tokens.constant, 1).Set([value])
+                    attr_path = f"/World/Mesh.primvars:{name}"
+                else:
+                    name = "diffuseColor" if key == "color" else "opacity"
+                    type_name = Sdf.ValueTypeNames.Color3f if key == "color" else Sdf.ValueTypeNames.Float
+                    material = UsdShade.Material.Define(stage, "/World/Looks/Material")
+                    shader = UsdShade.Shader.Define(stage, "/World/Looks/Material/PreviewSurface")
+                    shader.CreateIdAttr("UsdPreviewSurface")
+                    shader.CreateInput(name, type_name).Set(value)
+                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+                    attr_path = f"/World/Looks/Material/PreviewSurface.inputs:{name}"
+
+                with self.assertLogs("newton", level="WARNING") as caught:
+                    material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+                self.assertIn(f"{attr_path}: {message}", "\n".join(caught.output))
+                if expected is None:
+                    self.assertIsNone(material_props[key])
+                else:
+                    np.testing.assert_allclose(material_props[key], expected, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_ancestor_binding_overrides_unapplied_mesh_binding(self):

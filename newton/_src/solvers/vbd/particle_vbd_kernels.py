@@ -2591,9 +2591,11 @@ def gather_particle_body_contact_force_and_hessian(
             force += weight * contact_force
             hessian += (weight * weight) * contact_hessian
 
-    # Plain write, no atomics: later spring/self-contact kernels accumulate on top.
-    particle_forces[particle_index] = force
-    particle_hessians[particle_index] = hessian
+    # Accumulate rather than overwrite: particle-body attachments of this color were already added before the
+    # contact pass. One thread owns each particle of the color, so a plain read-modify-write is enough (``+=`` on
+    # an array would compile to an atomic).
+    particle_forces[particle_index] = particle_forces[particle_index] + force
+    particle_hessians[particle_index] = particle_hessians[particle_index] + hessian
 
 
 @wp.kernel

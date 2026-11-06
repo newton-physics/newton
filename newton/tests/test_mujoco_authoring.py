@@ -415,8 +415,8 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
 
         pair = mujoco.add_contact_pair(
             builder,
-            shape0,
-            shape1,
+            geom1=shape0,
+            geom2=shape1,
             condim=4,
             friction=(0.8, 0.7, 0.01, 0.02, 0.03),
             margin=0.01,

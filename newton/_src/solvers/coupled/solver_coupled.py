@@ -3030,6 +3030,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         contacts) own their own buffers internally.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._distribute_state(state_in, dt=dt)
         self._active_observables = observables
         try:
@@ -3815,6 +3816,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
         filtered._soft_contact_points_persist = contacts._soft_contact_points_persist
+        # Entry solvers check this stamp; the filtered rows are as reduced as their source.
+        filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
