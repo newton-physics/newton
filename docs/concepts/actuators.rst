@@ -617,8 +617,9 @@ The following built-in drives support the implicit mode (neural drives require
 the ONNX backend):
 :class:`~newton.actuators.DrivePD`,
 :class:`~newton.actuators.DrivePID`,
-:class:`~newton.actuators.DriveNeuralMLP` and
-:class:`~newton.actuators.DriveNeuralLSTM`.
+:class:`~newton.actuators.DriveNeuralMLP`,
+:class:`~newton.actuators.DriveNeuralLSTM` and
+:class:`~newton.actuators.DriveNeuralGRU`.
 
 The neural drives enter the solve as a per-step linearization of the
 network. Its slopes come from a Warp autodiff pass over the loaded network, so
