@@ -1346,6 +1346,7 @@ def eval_rigid_fk_kinematics(
     joint_dof_dim: wp.array2d[int],
     body_com: wp.array[wp.vec3],
     articulation_active: wp.array[int],
+    reuse_valid: wp.array[int],
     # outputs
     body_q: wp.array[wp.transform],
     body_q_com: wp.array[wp.transform],
@@ -1353,14 +1354,19 @@ def eval_rigid_fk_kinematics(
     joint_S_s: wp.array[wp.spatial_vector],
     body_v_s: wp.array[wp.spatial_vector],
     body_a_s: wp.array[wp.spatial_vector],
+    valid_out: wp.array[int],
 ):
     """Propagate articulation poses, motion subspaces, velocities and accelerations.
 
     The serial part of :func:`eval_rigid_fk_id`; :func:`finalize_body_dynamics` forms the
-    per-body inertias and bias wrenches from these results in parallel.
+    per-body inertias and bias wrenches from these results in parallel. An articulation whose
+    ``reuse_valid`` entry is set keeps its stored results; every computed articulation sets its
+    ``valid_out`` entry.
     """
     index = wp.tid()
     if articulation_active[index] == 0:
+        return
+    if reuse_valid[index] != 0:
         return
     start = articulation_start[index]
     end = articulation_joint_end[index]
@@ -1426,6 +1432,7 @@ def eval_rigid_fk_kinematics(
             body_a_s,
         )
         cached_child = child
+    valid_out[index] = 1
 
 
 @wp.kernel(module=_KINEMATICS_KERNEL_MODULE, enable_backward=False)
@@ -1445,6 +1452,7 @@ def finalize_body_dynamics(
     body_v_s: wp.array[wp.spatial_vector],
     body_a_s: wp.array[wp.spatial_vector],
     body_active: wp.array[int],
+    articulation_reuse: wp.array[int],
     # outputs
     body_I_s: wp.array[wp.spatial_matrix],
     body_inertia_terms: wp.array2d[float],
@@ -1455,11 +1463,14 @@ def finalize_body_dynamics(
 
     One thread per body, after :func:`eval_rigid_fk_kinematics`; the same arithmetic as the
     per-joint tail of :func:`eval_rigid_fk_id` plus :func:`update_body_qd_from_featherstone`.
-    Bodies outside every articulation are left to copy_unarticulated_body_state.
+    Bodies outside every articulation are left to copy_unarticulated_body_state; bodies of an
+    articulation whose ``articulation_reuse`` entry is set keep their stored results.
     """
     body = wp.tid()
     articulation = body_to_articulation[body]
     if body_active[body] == 0 or articulation < 0:
+        return
+    if articulation_reuse[articulation] != 0:
         return
     origin = articulation_origin[articulation]
     X_sm = body_q_com[body]
@@ -1495,6 +1506,16 @@ def finalize_body_dynamics(
     com_rel = com_world - origin
     v_com = wp.spatial_top(v_s) + wp.cross(wp.spatial_bottom(v_s), com_rel)
     body_qd[body] = wp.spatial_vector(v_com, wp.spatial_bottom(v_s))
+
+
+@wp.kernel(enable_backward=False)
+def invalidate_fk_id_articulations(
+    articulations: wp.array[int],
+    # outputs
+    valid: wp.array[int],
+):
+    """Drop the carried kinematics of the listed articulations."""
+    valid[articulations[wp.tid()]] = 0
 
 
 @wp.func_native("""

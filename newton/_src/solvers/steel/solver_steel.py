@@ -201,6 +201,7 @@ from .kernels import (
     subtract_arrays,
     trisolve_loop,
     finalize_body_dynamics,
+    invalidate_fk_id_articulations,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
     zero_unattached_parent_wrenches,
@@ -578,8 +579,9 @@ def _reset_solver_status(
     overflow: wp.array[wp.bool],
     disabled_tree_joint: wp.array[wp.bool],
     joint_friction_invalid: wp.array[wp.bool],
+    fk_id_valid: wp.array[int],
 ):
-    """Clear the status of selected worlds and request a mass refresh of their articulations.
+    """Clear the status of selected worlds, request a mass refresh of their articulations and drop their carried kinematics.
 
     ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid`` and ``world_mask`` share the
     ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
@@ -594,6 +596,7 @@ def _reset_solver_status(
     if tid < mass_update_requested.shape[0]:
         if not world_mask or reset_world_selected(articulation_world[tid], world_mask, world_count):
             mass_update_requested[tid] = 1
+            fk_id_valid[tid] = 0
 
 
 @wp.kernel
@@ -1634,6 +1637,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     use_parallel_streams = _ConstructionOption()
     double_buffer = _ConstructionOption()
     friction_anchor_beta = _ConstructionOption()
+    reuse_kinematics = _ConstructionOption()
     contact_regularization = _ConstructionOption()
     velocity_iterations = _ConstructionOption()
     velocity_drive_mode = _StepOption(_velocity_drive_mode)
@@ -1827,6 +1831,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         enable_bilateral_preelimination: bool = False,
         bilateral_preelimination_include_mimics: bool = True,
         parallel_tree: bool = False,
+        reuse_kinematics: bool = True,
         use_parallel_streams: bool = False,
         double_buffer: bool = False,
         friction_anchor_beta: float | None = None,
@@ -2038,6 +2043,14 @@ class SolverSteel(SolverBase, CouplingInterface):
                 Unbranched articulations, models whose joints are not ordered parent before
                 child, and CPU devices keep the serial traversal. Broad trees can benefit; narrow trees can be
                 slower, so measure the full step before enabling it.
+            reuse_kinematics: Carry the kinematics and inverse-dynamics terms the solver forms when it
+                publishes a step's body state into the next step, instead of re-deriving them from the
+                joint coordinates (CUDA, no gradients, no joint velocity limits, no sleeping, no parallel
+                tree). The carried terms are dropped by :meth:`reset` for the selected worlds, by
+                :meth:`notify_model_changed` for joint, body and model property changes, by a coupler's
+                input-state notice, and when the next input state is another object; a caller that
+                overwrites ``joint_q`` or ``joint_qd`` of the next input state in place must call
+                :meth:`notify_state_changed`.
             use_parallel_streams: Run the factorization, unconstrained solve and response
                 kernels of each articulation-size group on a CUDA stream of its own, so groups
                 of different sizes overlap. Results are unchanged; CPU devices and models with
@@ -2925,6 +2938,22 @@ class SolverSteel(SolverBase, CouplingInterface):
             if enable_sleeping
             else None
         )
+        # Carry the end-of-step kinematics and inverse-dynamics terms into the next step's first stage.
+        self._reuse_kinematics_enabled = bool(
+            reuse_kinematics
+            and model.device.is_cuda
+            and model.articulation_count
+            and model.joint_count
+            and not model.requires_grad
+            and not self._enable_joint_velocity_limits
+            and self._tree_plan is None
+            and self._sleeping is None
+        )
+        count = max(model.articulation_count, 1)
+        self._fk_id_valid = wp.zeros(count, dtype=wp.int32, device=model.device)
+        self._fk_id_none = wp.zeros(count, dtype=wp.int32, device=model.device)
+        self._fk_id_scratch = wp.zeros(count, dtype=wp.int32, device=model.device)
+        self._fk_id_source_state = None
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         # Allocated by the first snapshot_constraint_status(): device copies, host copies and the snapshot's event.
@@ -3175,6 +3204,15 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._sleeping is not None:
             self._sleeping.notify(flags)
         dof_inertial = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        if flags & (
+            ModelFlags.JOINT_PROPERTIES
+            | dof_inertial
+            | ModelFlags.BODY_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.MODEL_PROPERTIES
+        ):
+            # The carried kinematics and inverse-dynamics terms read these properties.
+            self._fk_id_valid.zero_()
         if flags & ModelFlags.BODY_PROPERTIES:
             self._update_kinematic_state()
         if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
@@ -3347,6 +3385,31 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     @override
+    def notify_state_changed(self, articulations: "wp.array[int] | None" = None) -> None:
+        """Drop the carried kinematics after writing joint state outside :meth:`step`.
+
+        With ``reuse_kinematics`` the solver keeps the kinematics and inverse-dynamics terms it
+        formed when publishing a step, for the next step's input state. Overwriting that state's
+        ``joint_q`` or ``joint_qd`` in place makes them stale; call this so the next step
+        re-derives them. :meth:`reset` with a world mask does this for the selected worlds.
+
+        Args:
+            articulations: Device array of the articulation indices whose joint state changed;
+                ``None`` drops every articulation's carried terms.
+        """
+        if not self._reuse_kinematics_enabled:
+            return
+        if articulations is None:
+            self._fk_id_valid.zero_()
+            return
+        wp.launch(
+            invalidate_fk_id_articulations,
+            dim=articulations.shape[0],
+            inputs=[articulations],
+            outputs=[self._fk_id_valid],
+            device=self.model.device,
+        )
+
     def reset(
         self,
         state: State,
@@ -3426,9 +3489,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self.constraint_overflow,
                 self._disabled_tree_joint,
                 self._joint_friction_invalid,
+                self._fk_id_valid,
             ],
             device=self.model.device,
         )
+        if world_mask is None:
+            self._fk_id_source_state = None
         if self._friction_anchors_enabled:
             self._friction_patches.reset(world_mask, int(self.model.world_count))
         self._clear_warmstart_history(world_mask)
@@ -3467,9 +3533,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         del state, dt
         self._require_coupling_support()
+        kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
+        if kinematic:
+            # The coupler wrote the input state; the carried kinematics are stale.
+            self._fk_id_valid.zero_()
         if not self._friction_anchors_enabled or not self._coupling_iteration_restarts:
             return
-        kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
         # step() runs both, so a graph captured from the coupled step records them; a reset cancels both.
         if iteration_restart:
             self._coupling_patch_history_restore_pending = True
@@ -8197,7 +8266,14 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _stage1_fk_id(self, state_in: State, state_aug: State, state_out: State) -> wp.array:
         """Evaluate forward kinematics and the inverse-dynamics bias; return the predictor's input velocity."""
         model = self.model
-        state_aug._body_f_s.zero_()
+        reuse = self._fk_id_none
+        if self._reuse_kinematics_enabled:
+            # Carried terms belong to the state object they were published into (host check; baked under capture).
+            if state_in is not self._fk_id_source_state:
+                self._fk_id_valid.zero_()
+            reuse = self._fk_id_valid
+        else:
+            state_aug._body_f_s.zero_()
         if self._enable_joint_velocity_limits:
             # Scale velocities that already exceed their limit before predicting.
             wp.copy(self._qd_work, state_in.joint_qd)
@@ -8300,6 +8376,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 model.joint_dof_dim,
                 model.body_com,
                 self._dynamics_art_active,
+                reuse,
             ],
             outputs=[
                 state_in.body_q,
@@ -8308,6 +8385,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 state_aug._joint_S_s,
                 state_aug._body_v_s,
                 state_aug._body_a_s,
+                self._fk_id_scratch,
             ],
             block_dim=16,
             device=model.device,
@@ -8332,6 +8410,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     state_aug._body_v_s,
                     state_aug._body_a_s,
                     self._dynamics_body_active,
+                    reuse,
                 ],
                 outputs=[state_aug._body_I_s, self._body_inertia_terms, state_aug._body_f_s, state_out.body_qd],
                 device=model.device,
@@ -10533,8 +10612,77 @@ class SolverSteel(SolverBase, CouplingInterface):
         return sleeping is not None and sleeping.skip_constraints and sleeping.skip_dynamics
 
     def _stage7_update_kinematics(self, state_out: State) -> None:
-        """Publish the maximal-coordinate body state of the integrated joint state."""
+        """Publish the maximal-coordinate body state of the integrated joint state.
+
+        With ``reuse_kinematics`` the publication runs the first stage's kernels on the integrated
+        coordinates and keeps their results for the next step, which then skips its own.
+        """
         model = self.model
+        if self._reuse_kinematics_enabled:
+            state_aug = self
+            wp.launch(
+                eval_rigid_fk_kinematics,
+                dim=model.articulation_count,
+                inputs=[
+                    model.articulation_start,
+                    self._articulation_joint_end,
+                    model.joint_type,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    state_out.joint_q,
+                    state_out.joint_qd,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    self._body_X_com,
+                    model.joint_axis,
+                    model.joint_dof_dim,
+                    model.body_com,
+                    self._dynamics_art_active,
+                    self._fk_id_none,
+                ],
+                outputs=[
+                    state_out.body_q,
+                    state_aug._body_q_com,
+                    self._articulation_origin,
+                    state_aug._joint_S_s,
+                    state_aug._body_v_s,
+                    state_aug._body_a_s,
+                    self._fk_id_valid,
+                ],
+                block_dim=16,
+                device=model.device,
+            )
+            if model.body_count:
+                # The next step refreshes the composite inertia on its own cadence; materialize for it.
+                next_refresh = ((self._step + 1) % self._update_mass_matrix_interval) == 0
+                wp.launch(
+                    finalize_body_dynamics,
+                    dim=model.body_count,
+                    inputs=[
+                        self._body_to_articulation,
+                        state_out.body_q,
+                        state_aug._body_q_com,
+                        model.body_com,
+                        model.body_mass,
+                        model.body_inertia,
+                        self._is_free_rigid,
+                        self._articulation_origin,
+                        int(next_refresh),
+                        0,
+                        model.body_world,
+                        model.gravity,
+                        state_aug._body_v_s,
+                        state_aug._body_a_s,
+                        self._dynamics_body_active,
+                        self._fk_id_none,
+                    ],
+                    outputs=[state_aug._body_I_s, self._body_inertia_terms, state_aug._body_f_s, state_out.body_qd],
+                    device=model.device,
+                )
+            self._fk_id_source_state = state_out
+            return
         if self._tree_plan is None:
             # Sleeping islands that skipped their dynamics keep their frozen bodies.
             mask = self._dynamics_art_mask if self._sleep_skips_dynamics else None

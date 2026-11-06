@@ -1623,10 +1623,12 @@ def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
                 outputs=[fused["body_qd"]],
                 device=device,
             )
+            none = wp.zeros(model.articulation_count, dtype=wp.int32, device=device)
+            valid = wp.zeros(model.articulation_count, dtype=wp.int32, device=device)
             wp.launch(
                 steel_kernels.eval_rigid_fk_kinematics,
                 dim=model.articulation_count,
-                inputs=[*common, solver._dynamics_art_active],
+                inputs=[*common, solver._dynamics_art_active, none],
                 outputs=[
                     split["body_q"],
                     split["body_q_com"],
@@ -1634,10 +1636,12 @@ def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
                     split["joint_S_s"],
                     split["body_v_s"],
                     split["body_a_s"],
+                    valid,
                 ],
                 block_dim=16,
                 device=device,
             )
+            np.testing.assert_array_equal(valid.numpy(), 1)
             wp.launch(
                 steel_kernels.finalize_body_dynamics,
                 dim=model.body_count,
@@ -1657,12 +1661,98 @@ def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
                     split["body_v_s"],
                     split["body_a_s"],
                     solver._dynamics_body_active,
+                    none,
                 ],
                 outputs=[split["body_I_s"], split["terms"], split["body_f_s"], split["body_qd"]],
                 device=device,
             )
             for name in fused:
                 np.testing.assert_array_equal(split[name].numpy(), fused[name].numpy(), err_msg=name)
+
+
+def _carry_trajectory(model, steps, reuse, edit=None):
+    """Step with alternating state objects, applying ``edit(solver, state_in, step)`` between steps; record the states."""
+    solver = SolverSteel(model, solve_mode="matrix_free", reuse_kinematics=reuse)
+    states = [model.state(), model.state()]
+    newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
+    control = model.control()
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    history = []
+    for step in range(steps):
+        if edit is not None:
+            edit(solver, states[0], step)
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, 1.0 / 240.0)
+        history.append(tuple(getattr(states[1], name).numpy().copy() for name in ("joint_q", "joint_qd", "body_q", "body_qd")))
+        states.reverse()
+    return solver, history
+
+
+def _assert_histories_equal(test, expected, actual):
+    for step, (want, got) in enumerate(zip(expected, actual, strict=True)):
+        for name, a, b in zip(("joint_q", "joint_qd", "body_q", "body_qd"), want, got, strict=True):
+            np.testing.assert_array_equal(b, a, err_msg=f"{name} at step {step}")
+
+
+def test_reused_kinematics_match_the_recomputed_trajectory(test, device):
+    """Carry the published kinematics into the next step and reproduce the recomputing solver bitwise."""
+    model = _build_contact_scene(device)
+    reference_solver, reference = _carry_trajectory(model, 24, reuse=False)
+    carried_solver, carried = _carry_trajectory(model, 24, reuse=True)
+    test.assertFalse(reference_solver._reuse_kinematics_enabled)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    test.assertTrue(np.all(carried_solver._fk_id_valid.numpy() == 1))
+    _assert_histories_equal(test, reference, carried)
+
+
+def test_reused_kinematics_follow_resets_and_notices(test, device):
+    """Re-derive the carried terms after a masked reset, a state notice or a new input state; stay stale without them."""
+    model = _build_contact_scene(device)
+    world_mask = np.zeros(model.world_count + 1, dtype=bool)
+    world_mask[1] = True
+
+    def teleport(state):
+        joint_q = state.joint_q.numpy()
+        start = int(model.articulation_start.numpy()[int(np.flatnonzero(model.articulation_world.numpy() == 1)[0])])
+        q_start = int(model.joint_q_start.numpy()[start])
+        joint_q[q_start : q_start + 3] += 0.3
+        state.joint_q.assign(joint_q)
+
+    def reset_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            solver.reset(state, world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
+
+    def notice_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            solver.notify_state_changed()
+
+    def stale_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+
+    _, reference = _carry_trajectory(model, 12, reuse=False, edit=stale_edit)
+    for label, edit in (("reset", reset_edit), ("notice", notice_edit)):
+        with test.subTest(label):
+            _, carried = _carry_trajectory(model, 12, reuse=True, edit=edit)
+            _assert_histories_equal(test, reference, carried)
+    with test.subTest("stale"):
+        _, stale = _carry_trajectory(model, 12, reuse=True, edit=stale_edit)
+        # Without a notice the step after the in-place write keeps the carried poses of the edited world.
+        test.assertFalse(np.array_equal(stale[8][2], reference[8][2]))
+        for step in range(8):
+            np.testing.assert_array_equal(stale[step][2], reference[step][2])
+
+
+class TestSteelReusedKinematics(unittest.TestCase):
+    pass
+
+
+for _fn in (test_reused_kinematics_match_the_recomputed_trajectory, test_reused_kinematics_follow_resets_and_notices):
+    add_function_test(TestSteelReusedKinematics, _fn.__name__, _fn, devices=cuda_devices)
 
 
 class TestSteelSplitKinematics(unittest.TestCase):
