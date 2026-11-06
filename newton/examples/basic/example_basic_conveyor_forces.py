@@ -177,7 +177,6 @@ def identify_belt_contact(
     body_q: wp.array[wp.transform],
     conv_surface_normal: wp.array[wp.vec3],
     conv_threshold: wp.array[wp.float32],
-    use_contact_offsets: wp.int32,
 ) -> BeltContact:
     """Decide whether contact ``i`` is a belt/body contact and extract its inputs for the force model."""
     out = BeltContact()
@@ -198,16 +197,12 @@ def identify_belt_contact(
     if conv0 >= 0 and conv1 < 0:
         conv = conv0
         body = shape_body[shape1]
-        body_point_local = rigid_contact_point1[i]
-        if use_contact_offsets != 0:
-            body_point_local += rigid_contact_offset1[i]
+        body_point_local = rigid_contact_point1[i] + rigid_contact_offset1[i]
         normal_toward_body = normal
     elif conv1 >= 0 and conv0 < 0:
         conv = conv1
         body = shape_body[shape0]
-        body_point_local = rigid_contact_point0[i]
-        if use_contact_offsets != 0:
-            body_point_local += rigid_contact_offset0[i]
+        body_point_local = rigid_contact_point0[i] + rigid_contact_offset0[i]
         normal_toward_body = -normal
     else:
         return out
@@ -250,7 +245,6 @@ def classify_belt_contacts(
     body_q: wp.array[wp.transform],
     conv_surface_normal: wp.array[wp.vec3],
     conv_threshold: wp.array[wp.float32],
-    use_contact_offsets: wp.int32,
     # output
     belt_contacts: wp.array[BeltContact],
     body_contact_count: wp.array[wp.int32],
@@ -273,7 +267,6 @@ def classify_belt_contacts(
         body_q,
         conv_surface_normal,
         conv_threshold,
-        use_contact_offsets,
     )
     belt_contacts[i] = c
     if c.valid == 1:
@@ -457,8 +450,6 @@ class ConveyorForceModel:
         self.model = model
         self.solver_type = solver_type
         self.device = model.device
-        # MuJoCo reporting replaces Newton support points with geometry-surface points.
-        self._use_contact_offsets = solver_type != "mujoco"
         self._field_type: list[int] = []
         self._const_vel: list[wp.vec3] = []
         self._pivot_point: list[wp.vec3] = []
@@ -657,7 +648,6 @@ class ConveyorForceModel:
                 state_post.body_q,
                 self.conv_surface_normal,
                 self.conv_threshold,
-                int(self._use_contact_offsets),
             ],
             outputs=[self.belt_contacts, self.body_contact_count],
             device=self.device,
