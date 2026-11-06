@@ -1,15 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run existing MJCF tests against either importer without changing their assertions."""
+"""Run unchanged MJCF tests through legacy, native, or freshly converted USD imports."""
 
 import argparse
 import importlib
 import json
 import sys
+import tempfile
 import unittest
 from collections import Counter
 from contextlib import ExitStack
+from pathlib import Path
 from unittest import mock
 
 import newton
@@ -73,7 +75,7 @@ class _ComparisonResult(unittest.TextTestResult):
         self.current["status"] = "unexpected_success"
 
 
-def _run(importer, modules, pattern):
+def _run(importer, modules, pattern, artifacts=None):
     loader = unittest.TestLoader()
     if pattern:
         loader.testNamePatterns = [f"*{pattern}*"]
@@ -97,21 +99,35 @@ def _run(importer, modules, pattern):
                 result.current["import_calls"] += 1
             else:
                 result.fixture_import_calls += 1
-            return function(*args, **kwargs)
+            first = len(getattr(function, "records", []))
+            try:
+                return function(*args, **kwargs)
+            finally:
+                for record in getattr(function, "records", [])[first:]:
+                    record["test"] = result.current["test"] if result.current is not None else "<fixture>"
 
         return call
 
-    method = getattr(newton.ModelBuilder, "add_mjcf_native" if importer == "native" else "add_mjcf")
-    parser = importlib.import_module(
-        "newton._src.solvers.mujoco.import_mjcf_native" if importer == "native" else "newton._src.utils.import_mjcf"
-    ).parse_mjcf
     with ExitStack() as stack:
+        if importer == "usd":
+            from newton.tests.mjcf_usd_comparison import UsdComparisonImporter  # noqa: PLC0415
+
+            directory = artifacts or stack.enter_context(tempfile.TemporaryDirectory())
+            method = parser = UsdComparisonImporter(directory)
+        else:
+            method = getattr(newton.ModelBuilder, "add_mjcf_native" if importer == "native" else "add_mjcf")
+            parser = importlib.import_module(
+                "newton._src.solvers.mujoco.import_mjcf_native"
+                if importer == "native"
+                else "newton._src.utils.import_mjcf"
+            ).parse_mjcf
         stack.enter_context(mock.patch.object(newton.ModelBuilder, "add_mjcf", counted(method)))
         for module in modules:
             if hasattr(module, "parse_mjcf"):
                 stack.enter_context(mock.patch.object(module, "parse_mjcf", counted(parser)))
         print(f"\nMJCF importer: {importer}", file=sys.stderr, flush=True)
         runner.run(suite)
+        result.conversions = method.records if importer == "usd" else []
     executed = {record["test"] for record in result.records}
     for name in selected:
         if name not in executed:
@@ -121,23 +137,30 @@ def _run(importer, modules, pattern):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--importer", choices=("legacy", "native", "both"), default="both")
+    parser.add_argument("--importer", choices=("legacy", "native", "usd", "both", "all"), default="both")
     parser.add_argument("--output", required=True, help="JSON results, including tracebacks and import call counts")
+    parser.add_argument("--artifacts", help="Keep freshly converted USD assets in this directory")
     parser.add_argument("-k", default=None, help="Test name substring")
     parser.add_argument("modules", nargs="*", default=DEFAULT_MODULES)
     args = parser.parse_args()
+    if args.importer in ("usd", "all"):
+        # USD caches its schema registry on first use, including inside other test routes.
+        importlib.import_module("mujoco_usd_converter")
     modules = [importlib.import_module(name) for name in args.modules]
     report = {}
     success = True
-    for importer in ("legacy", "native") if args.importer == "both" else (args.importer,):
-        result = _run(importer, modules, args.k)
+    importers = {"both": ("legacy", "native"), "all": ("legacy", "native", "usd")}.get(args.importer, (args.importer,))
+    for importer in importers:
+        result = _run(importer, modules, args.k, args.artifacts)
         report[importer] = {
             "summary": dict(Counter(record["status"] for record in result.records)),
             "fixture_errors": result.fixture_errors,
             "fixture_import_calls": result.fixture_import_calls,
             "tests": result.records,
+            "conversions": result.conversions,
         }
         success = success and result.wasSuccessful()
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as output:
             json.dump(report, output, indent=2)
     for importer, results in report.items():
