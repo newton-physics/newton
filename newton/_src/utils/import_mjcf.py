@@ -476,11 +476,13 @@ def parse_mjcf(
         verbose: If True, log additional information about parsing the MJCF.
         skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
-            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-            equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-            and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
-            target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
-            with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+            becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+            and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+            ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+            ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
+            joint (such as joints sharing a body) are preserved this way even when True, with a
+            :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
             Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
             an identity rest orientation. Default is False.
@@ -2750,6 +2752,15 @@ def parse_mjcf(
             return f"{articulation_label}/{common['name']}"
         return common["name"]
 
+    def parse_weld_relpose(relpose: str) -> wp.transform:
+        """Parse a weld ``relpose``, scaling its position and normalizing its quaternion like other MJCF quaternions."""
+        values = relpose.split()
+        pos = wp.vec3(*[float(x) * scale for x in values[:3]])
+        if all(float(x) == 0.0 for x in values[3:7]):
+            # All zeros is MuJoCo's "keep the relative pose at qpos0", which normalizing would turn into identity.
+            return wp.transform(pos, wp.quat(0.0, 0.0, 0.0, 0.0))
+        return wp.transform(pos, parse_orientation({"quat": " ".join(values[3:7])}))
+
     def parse_equality_constraints(equality):
         def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
             """Look up a site by name and return its body index and position (anchor).
@@ -2781,6 +2792,7 @@ def parse_mjcf(
             torquescale: float,
             common: dict[str, Any],
             custom_attrs: dict[str, Any],
+            world_xform: wp.transform | None = None,
         ) -> None:
             try:
                 mjc_add_equality_loop_joint(
@@ -2794,6 +2806,7 @@ def parse_mjcf(
                     equality_label(common),
                     common["active"],
                     custom_attrs,
+                    world_xform=world_xform,
                 )
             except ValueError:
                 if verbose:
@@ -2910,13 +2923,10 @@ def parse_mjcf(
                 body1_idx = body_name_to_idx.get(body1_name, -1) if body1_name else -1
                 body2_idx = body_name_to_idx.get(body2_name, -1) if body2_name else -1
 
-                relpose_list = [float(x) for x in relpose.split()]
-                relpose_transform = wp.transform(
-                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
-                    wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
-                )
+                relpose_transform = parse_weld_relpose(relpose)
 
                 if convert_mjc_equality_constraints:
+                    # A world-side anchor or relpose is in MJCF world coordinates, which the import xform places.
                     add_converted_loop_joint(
                         EqType.WELD,
                         body1_idx,
@@ -2926,6 +2936,7 @@ def parse_mjcf(
                         torquescale,
                         common,
                         custom_attrs,
+                        world_xform=xform,
                     )
                 else:
                     _add_equality_constraint(
@@ -2951,14 +2962,11 @@ def parse_mjcf(
                         continue
                     body1_idx, _ = site1_info
                     body2_idx, anchor_vec = site2_info
-                    relpose_list = [float(x) for x in relpose.split()]
-                    relpose_transform = wp.transform(
-                        wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
-                        wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
-                    )
+                    relpose_transform = parse_weld_relpose(relpose)
                     if verbose:
                         logger.info("Weld constraint (site-based): body %s to body %s", body1_idx, body2_idx)
                     if convert_mjc_equality_constraints:
+                        # A world site's anchor is already in builder coordinates; a world-side relpose is not.
                         add_converted_loop_joint(
                             EqType.WELD,
                             body1_idx,
@@ -2968,6 +2976,7 @@ def parse_mjcf(
                             torquescale,
                             common,
                             custom_attrs,
+                            world_xform=xform if body1_idx < 0 else None,
                         )
                     else:
                         _add_equality_constraint(

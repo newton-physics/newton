@@ -2723,7 +2723,9 @@ class TestModelJoints(unittest.TestCase):
                     with self.assertWarnsRegex(UserWarning, "undefined semantics"):
                         builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
-                builder.collapse_fixed_joints(joints_to_keep=keep)
+                # "fix" parallels the child's free joint, so it is a FIXED loop-closing joint.
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
+                    builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
                 # add_body() gives each body a free joint; only assert on ours.
                 if order == "fixed_kept_first":
