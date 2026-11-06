@@ -3501,6 +3501,46 @@ class TestSteelLocalOwners(unittest.TestCase):
                 assert_state_parity(selected, general)
 
     @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
+    def test_general_sweep_beside_the_owners_launches_one_block_per_world(self):
+        """Launch one block per world for the sweep beside the owners and match the general owner on a large batch."""
+        device = wp.get_cuda_device()
+        world_count = 8 * device.sm_count + 1
+        model = _build_mixed_response_model(device, world_count=world_count, friction=0.7)
+        cases = []
+        for kernel in ("tiled", "par_row"):
+            with kernel_overrides({"hinv_jt_kernel": kernel}):
+                solver = SolverSteel(
+                    model,
+                    enable_joint_limits=True,
+                    joint_limit_activation_gap=0.0,
+                    friction_anchor_beta=0.0,
+                    iterations=8,
+                    articulation_constraint_max=64,
+                    free_body_constraint_max=32,
+                )
+            state_in, state_out = model.state(), model.state()
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            pipeline = newton.CollisionPipeline(model, reduce_contacts=False, contact_matching="latest")
+            cases.append([solver, state_in, state_out, pipeline, pipeline.contacts(), model.control()])
+        general, selected = cases
+        self.assertFalse(general[0]._local_internal_fast_path)
+        self.assertTrue(selected[0]._local_internal_fast_path)
+        self.assertEqual(selected[0]._local_general_solver_blocks, world_count)
+        for _ in range(2):
+            for case in cases:
+                solver, state_in, state_out, pipeline, contacts, control = case
+                state_in.clear_forces()
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+                case[1], case[2] = state_out, state_in
+            for field in ("joint_q", "joint_qd"):
+                np.testing.assert_allclose(
+                    getattr(selected[1], field).numpy(), getattr(general[1], field).numpy(), rtol=5.0e-4, atol=2.0e-6
+                )
+        self.assertTrue((selected[0]._constraint_count.numpy() > 0).all())
+        np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_GENERAL)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
     def test_contact_owners_remain_available_at_sm_count(self):
         """Preserve paired and residual owners at the small-batch boundary."""
         device = wp.get_cuda_device()
