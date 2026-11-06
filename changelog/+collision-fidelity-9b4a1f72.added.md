@@ -1,1 +1,1 @@
-Add standalone and ASV collision-fidelity benchmarks for standard VBD, with scene selection, jitter and speed measurements, fixed-support penetration measurements, and explicit task outcomes and measurement coverage.
+Add standalone and opt-in ASV collision-fidelity benchmarks for standard VBD, with scene selection, Jitter and speed measurements, fixed-support penetration measurements, explicit task outcomes and coverage, and optional MP4 recording with a local review page.

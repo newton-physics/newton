@@ -3,14 +3,15 @@
 
 """Full collision-fidelity cases; each cache runs exactly one scene.
 
-Select a case by its class name. Full holds last 60 simulated seconds and can
-take hours of wall time. No physics backend is imported during discovery.
-Unfiltered ASV runs include these cases; selecting a class limits the workload.
+Set NEWTON_COLLISION_FIDELITY_FULL=1 and select a case by its class name to run
+these workloads. Full holds last 60 simulated seconds and can take hours of
+wall time. Without explicit opt-in, caches skip before importing a backend.
 ASV caches are local to its benchmark execution; no persistent prepared-state
 cache is read. The JSON result records the installed source and environment.
 """
 
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -22,7 +23,14 @@ _CASES = load_cases()
 
 
 def _run_case(case_id):
-    """Check support and CUDA inside the unparameterized case cache itself."""
+    """Check opt-in, support and CUDA before constructing the full case cache."""
+    if os.environ.get("NEWTON_COLLISION_FIDELITY_FULL") != "1":
+        return {
+            "execution": {
+                "status": "disabled",
+                "reason": "Full collision-fidelity ASV workloads are disabled; set NEWTON_COLLISION_FIDELITY_FULL=1 to opt in.",
+            }
+        }
     support = _CASES[case_id].get("support", {})
     if support.get("status") == "unsupported":
         return {"execution": {"status": "unsupported", "reason": support.get("reason", "Unsupported scene")}}
@@ -60,7 +68,7 @@ class _FidelityTracks:
         """Surface execution errors while retaining measured numerical failures."""
         execution = result.get("execution", {})
         status = execution.get("status")
-        if status == "unsupported":
+        if status in ("disabled", "unsupported"):
             raise NotImplementedError(execution.get("reason", "Unsupported scene"))
         if status in ("error", "invalid"):
             message = f"Collision-fidelity execution {status}: {execution.get('reason', 'No reason recorded')}"
@@ -88,29 +96,36 @@ class _FidelityTracks:
 
     track_rigid_soft_penetration_fixed_supports.unit = "mm"
 
-    def track_complete_stationary_windows(self, result):
-        """Expose the count of valid complete windows, including failed-run prefixes."""
-        return _value(result, "stability", "complete_window_count")
+    def track_missing_stationary_windows(self, result):
+        """Report declared minus complete windows; invalid or missing counts are NaN."""
+        stability = result.get("measurements", {}).get("stability", {})
+        declared = stability.get("declared_complete_window_count")
+        complete = stability.get("complete_window_count")
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in (declared, complete)):
+            return math.nan
+        return declared - complete if 0 <= complete <= declared else math.nan
 
-    track_complete_stationary_windows.unit = "windows"
+    track_missing_stationary_windows.unit = "windows"
 
-    def track_declared_stationary_windows(self, result):
-        """Expose the required window count rather than hiding unobserved intervals."""
-        return _value(result, "stability", "declared_complete_window_count")
+    def track_incomplete_run(self, result):
+        """Report known incomplete/nonfinite execution as one; missing evidence is NaN."""
+        execution = result.get("execution", {})
+        finite = result.get("measurements", {}).get("finite", {}).get("all_samples_finite")
+        if (
+            execution.get("status") == "nonfinite"
+            or execution.get("full_timeline_completed") is False
+            or finite is False
+        ):
+            return 1.0
+        return 0.0 if _finite_complete(result) else math.nan
 
-    track_declared_stationary_windows.unit = "windows"
+    track_incomplete_run.unit = "incomplete=1"
 
-    def track_finite_completion(self, result):
-        """Report one only for a complete finite scheduled timeline, not task success."""
-        return int(_finite_complete(result))
+    def track_overall_failure(self, result):
+        """Encode confirmed Fail as one, Pass as zero, and missing evidence as NaN."""
+        return {"fail": 1.0, "pass": 0.0}.get(result.get("criteria", {}).get("overall", {}).get("status"), math.nan)
 
-    track_finite_completion.unit = "completed=1"
-
-    def track_overall(self, result):
-        """Encode confirmed Fail as zero, Pass as one, and missing evidence as NaN."""
-        return {"fail": 0.0, "pass": 1.0}.get(result.get("criteria", {}).get("overall", {}).get("status"), math.nan)
-
-    track_overall.unit = "pass=1, fail=0"
+    track_overall_failure.unit = "failure=1"
 
 
 # Each explicit setup_cache definition has a different source line. ASV uses

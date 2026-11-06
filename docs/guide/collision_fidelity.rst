@@ -53,12 +53,48 @@ remains visible. The full profile extends declared manipulation holds to
 60 seconds. Other motion keeps its authored speed. Passive tests keep their
 declared schedules. Every case uses at most ten substeps per frame.
 
+Record and review videos
+------------------------
+
+Add ``--video`` to record each selected case as an MP4 and write an
+``index.html`` review page beside the JSON results. It works with ``--all``
+and repeated ``--case`` selections. Recording uses Newton's public OpenGL
+viewer and needs the examples extra, a working graphics driver, and FFmpeg
+with the libx264 encoder. Install FFmpeg on PATH or use the optional
+``imageio-ffmpeg`` wheel:
+
+.. code-block:: console
+
+   uv run --extra examples --with imageio-ffmpeg python asv/run_collision_fidelity.py \
+       --all --profile smoke --video --out results/fidelity-video-smoke
+
+Use ``--profile full`` for the complete schedules. This can take hours.
+Each recorded case runs in its own process. Videos show the same trajectory
+used for measurements, at the native frame rate, with the authored camera
+held fixed. The camera covers intended motion; escaped objects can leave
+the view. Capture includes the initial state. JSON records physical frame
+times and encoded duration separately.
+
+Open ``index.html`` in a browser. It shows the selected cases, videos,
+measurements, outcomes and coverage. Time step, substeps and iterations stay
+visible. Descriptions and material, contact and mesh details are folded.
+Unsupported cases remain listed without a video. Videos start as not visually
+reviewed; visual inspection does not change formal criterion outcomes.
+
+Video errors are separate from physics results. A recording failure gives a
+nonzero CLI exit status, preserves the measured result, and allows later cases
+to run. Recorded wall time includes rendering and encoding. Do not compare it
+with a run that has rendering disabled. ASV never enables video recording.
+On a headless machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` selects
+the graphics device. Select a GPU compatible with the simulation's CUDA/OpenGL
+interop. Its index can differ from the CUDA index when devices are remapped.
+
 Run through ASV
 ---------------
 
 .. code-block:: console
 
-   uvx --with virtualenv asv run --launch-method spawn HEAD^! \
+   NEWTON_COLLISION_FIDELITY_FULL=1 uvx --with virtualenv asv run --launch-method spawn HEAD^! \
        --bench CollisionFidelity
 
 Use an ASV class name such as ``--bench CollisionFidelityM3FrankaToteEmpty``
@@ -67,8 +103,9 @@ Each case has its
 own cache setup. Its scalar tracks share one simulation result. Selecting
 one case does not run the full catalog. CUDA support is checked inside cache
 setup. Full tasks are outside the ``Fast*`` PR timing selection.
-An unfiltered ASV run still includes these full tasks. Their complete runtime
-has not yet been measured.
+Without ``NEWTON_COLLISION_FIDELITY_FULL=1``, the full cases skip before
+importing a physics backend. This also applies to unfiltered ASV runs.
+Their complete runtime has not yet been measured.
 
 ASV's ``--quick`` flag does not shorten the physics schedule. Use the standalone
 smoke profile for a short check. The Newton commit is the revision under test;
@@ -146,9 +183,15 @@ they have not been established. These cases still produce raw measurements.
 No current case can receive an overall Pass. Required measurements or
 acceptance rules are still missing. Incomplete is not a measured failure.
 
-The summary reports pass counts, evaluated counts and applicable counts.
-Pass rate is ``pass / (pass + fail)``. Evaluation coverage is
-``(pass + fail) / applicable``. Unsupported cases are counted separately.
+The summary reports pass, fail, evaluated and applicable counts.
+Failure rate is ``fail / (pass + fail)``. Unevaluated fraction is
+``incomplete / (pass + fail + incomplete)``. Zero denominators give no value.
+Unsupported and N/A cases are counted separately and excluded from these rates.
+ASV reports per-case Overall failure as 1 for Fail, 0 for Pass, and NaN for
+Incomplete. Missing stationary windows are declared minus complete windows.
+The incomplete-run flag is 1 for known incomplete or nonfinite execution,
+0 for a full finite timeline, and NaN for missing evidence. It does not score
+task success. The declared window count remains in result metadata.
 Mean motion values average per-case maxima with complete required interval
 coverage. Penetration means require complete trajectory coverage. Each mean
 lists its contributing cases. A valid hold measurement remains useful even
@@ -182,4 +225,4 @@ the current benchmark and do not validate the current PR head:
 * `Poker cards without a moving ball <https://kanna.ankachen.com/artifacts/newton-poker-cards-no-ball/index.html>`__.
 
 This addition is a runtime benchmark. It adds no public solver API, USD schema
-or importer behavior. Optional USD output uses the existing viewer.
+or importer behavior. Optional USD and MP4 output use the existing viewers.

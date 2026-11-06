@@ -34,8 +34,8 @@ def summarize_results(results: list[dict]) -> dict:
             **counts,
             "evaluated": evaluated,
             "applicable": applicable,
-            "pass_rate": counts["pass"] / evaluated if evaluated else None,
-            "evaluation_coverage": evaluated / applicable if applicable else None,
+            "failure_rate": counts["fail"] / evaluated if evaluated else None,
+            "unevaluated_fraction": counts["incomplete"] / applicable if applicable else None,
         }
     for field, destination, multiplier in (
         ("jitter_m", "jitter_mm", 1000.0),
@@ -156,6 +156,32 @@ def _sample_capacity(solver, record):
     return overflow
 
 
+def _record_video_frame(recorder, recording, state, time_s):
+    """Keep frame capture errors separate from the measured physical outcome."""
+    if recording.get("status") == "error":
+        return
+    try:
+        recorder.record(state, time_s)
+    except Exception as error:
+        recording.update(status="error", error=f"{type(error).__name__}: {error}")
+
+
+def _close_video(recorder, recording, execution):
+    """Finalize available frames without overwriting a physics failure."""
+    capture_error = recording.get("error")
+    try:
+        recorder.close()
+    except Exception as error:
+        message = f"{type(error).__name__}: {error}"
+        recording.update(status="error", error=f"{capture_error}; {message}" if capture_error else message)
+        return
+    if capture_error:
+        recording.update(status="partial" if recording.get("sha256") else "error", error=capture_error)
+    elif execution.get("status") != "completed":
+        recording["status"] = "partial" if recording.get("sha256") else "error"
+    recording["physical_time_s"] = execution.get("time_s", 0.0)
+
+
 def run_case(
     case_id: str,
     *,
@@ -163,6 +189,7 @@ def run_case(
     device: str | None = None,
     duration: float | None = None,
     usd_path: str | Path | None = None,
+    video_path: str | Path | None = None,
 ) -> dict:
     """Execute one case and return measurements, coverage and explicit outcomes.
 
@@ -197,10 +224,14 @@ def run_case(
             "solver": "Standard VBD",
         },
     }
+    if video_path is not None:
+        result["recording"] = {"status": "pending", "path": Path(video_path).name}
     support = case.get("support", {})
     if support.get("status") == "unsupported":
         result["execution"]["reason"] = support["reason"]
         result["criteria"]["overall"] = {"status": "unsupported", "applicable": False, "reason": support["reason"]}
+        if video_path is not None:
+            result["recording"].update(status="unsupported", reason=support["reason"])
         return result
 
     import warp as wp  # noqa: PLC0415
@@ -214,6 +245,7 @@ def run_case(
     started = time.perf_counter()
     observer = None
     viewer = None
+    recorder = None
     frames = []
     execution = result["execution"]
     execution["status"] = "error"
@@ -261,6 +293,15 @@ def run_case(
                 stop = min(stop, duration)
             planned_steps = min(timeline.steps, math.ceil(stop / timeline.dt - 1e-9))
             execution.update(planned_steps=planned_steps, full_timeline_steps=timeline.steps)
+            if video_path is not None:
+                try:
+                    from .recording import VideoRecorder  # noqa: PLC0415
+
+                    recorder = VideoRecorder(scene, Path(video_path), fps=1.0 / timeline.frame_dt)
+                    result["recording"] = recorder.metadata
+                    _record_video_frame(recorder, result["recording"], scene.state, 0.0)
+                except Exception as error:
+                    result["recording"].update(status="error", error=f"{type(error).__name__}: {error}")
             if usd_path is not None:
                 from newton.viewer import ViewerUSD  # noqa: PLC0415
 
@@ -287,6 +328,8 @@ def run_case(
                         viewer.begin_frame(end)
                         viewer.log_state(state)
                         viewer.end_frame()
+                    if recorder is not None:
+                        _record_video_frame(recorder, result["recording"], state, end)
             else:
                 execution.update(status="completed", completed=True)
             execution["full_timeline_completed"] = execution["completed"] and execution["steps"] == timeline.steps
@@ -295,9 +338,15 @@ def run_case(
     except Exception as error:
         execution.update(status="error", reason=f"{type(error).__name__}: {error}", traceback=traceback.format_exc())
     finally:
+        if recorder is not None:
+            _close_video(recorder, result["recording"], execution)
+        elif video_path is not None and result["recording"]["status"] == "pending":
+            result["recording"].update(status="error", error="Scene setup failed before recording started")
         if viewer is not None:
             _close_viewer(viewer, execution)
         result["wall_time_s"] = time.perf_counter() - started
+        if video_path is not None:
+            result["wall_time_includes_recording"] = True
     if observer is not None:
         result["measurements"] = observer.result()
     result["task_observations"] = frames

@@ -20,6 +20,65 @@ from collision_fidelity.protocol import Timeline
 
 
 class TestFidelityRunner(unittest.TestCase):
+    def test_recording_reads_live_states_without_changing_steps(self):
+        """Observe a real two-frame free fall without adding steps or stale buffers."""
+        from collision_fidelity import recording  # noqa: PLC0415
+
+        samples = []
+
+        class Recorder:
+            def __init__(self, scene, path, *, fps):
+                self.metadata = {"status": "recording"}
+
+            def record(self, state, time_s):
+                samples.append((time_s, float(state.particle_q.numpy()[:, 2].mean())))
+
+            def close(self):
+                self.metadata["status"] = "completed"
+
+        case_id = "s3_pads_10substeps"
+        duration = 2 * get_case(case_id)["frame_dt_s"]
+        baseline = runner.run_case(case_id, device="cpu", duration=duration)
+        with patch.object(recording, "VideoRecorder", Recorder):
+            result = runner.run_case(case_id, device="cpu", duration=duration, video_path="not-written.mp4")
+        self.assertEqual(result["execution"], baseline["execution"])
+        self.assertEqual(result["measurements"], baseline["measurements"])
+        self.assertEqual(len(samples), 3)
+        self.assertEqual(samples[0][0], 0.0)
+        self.assertAlmostEqual(samples[-1][0], duration)
+        self.assertGreater(samples[0][1], samples[1][1])
+        self.assertGreater(samples[1][1], samples[2][1])
+        self.assertEqual(result["recording"]["status"], "completed")
+
+    def test_unsupported_video_does_not_import_renderer(self):
+        """Leave an explicit video outcome when a case cannot run with VBD."""
+        result = runner.run_case("r2_franka_duck", video_path="duck.mp4")
+        self.assertEqual(result["recording"]["status"], "unsupported")
+        self.assertEqual(result["execution"]["steps"], 0)
+
+    def test_capture_failure_does_not_change_physics_outcome(self):
+        """Preserve the completed physical timeline after a frame capture fails."""
+        recording = {"status": "recording", "frame_count": 0}
+        recorder = SimpleNamespace(record=lambda state, time: (_ for _ in ()).throw(RuntimeError("capture failed")))
+        runner._record_video_frame(recorder, recording, object(), 0.0)
+        self.assertEqual(recording["status"], "error")
+        self.assertIn("capture failed", recording["error"])
+        execution = {"status": "completed", "completed": True, "steps": 10}
+        recorder.close = lambda: None
+        runner._close_video(recorder, recording, execution)
+        self.assertEqual(execution, {"status": "completed", "completed": True, "steps": 10})
+
+    def test_video_close_failure_keeps_original_physics_failure(self):
+        """Keep the two error channels separate even if finalizing the MP4 fails."""
+        recording = {"status": "recording", "frame_count": 2}
+        recorder = SimpleNamespace(close=lambda: (_ for _ in ()).throw(RuntimeError("encoder failed")))
+        execution = {"status": "nonfinite", "reason": "Nonfinite state observed", "steps": 10}
+        runner._close_video(recorder, recording, execution)
+        self.assertEqual(recording["status"], "error")
+        self.assertIn("encoder failed", recording["error"])
+        self.assertEqual(execution["status"], "nonfinite")
+        self.assertEqual(execution["reason"], "Nonfinite state observed")
+
     def test_duration_shorter_than_substep_is_rejected(self):
         """Reject a zero-step or overshooting duration before scene construction."""
         dt = Timeline(get_case("r2_franka_duck")).dt

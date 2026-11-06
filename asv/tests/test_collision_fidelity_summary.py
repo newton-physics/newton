@@ -23,12 +23,33 @@ class TestFidelitySummary(unittest.TestCase):
         ]
         summary = summarize_results(results)
         self.assertEqual(summary["case_count"], 4)
-        self.assertEqual(summary["criteria"]["overall"]["pass_rate"], 0.5)
+        self.assertEqual(summary["criteria"]["overall"]["failure_rate"], 0.5)
         self.assertEqual(summary["criteria"]["overall"]["evaluated"], 2)
         self.assertEqual(summary["criteria"]["overall"]["applicable"], 3)
         self.assertEqual(summary["criteria"]["overall"]["unsupported"], 1)
-        self.assertEqual(summary["criteria"]["overall"]["evaluation_coverage"], 2 / 3)
+        self.assertEqual(summary["criteria"]["overall"]["unevaluated_fraction"], 1 / 3)
         self.assertIsNone(summary["means"]["jitter_mm"]["value"])
+
+    def test_unknown_outcomes_do_not_become_failures(self):
+        """Keep an empty failure-rate denominator unavailable, with missing coverage visible."""
+        summary = summarize_results(
+            [
+                {
+                    "case_id": "a",
+                    "execution": {"status": "completed"},
+                    "criteria": {"overall": {"status": "incomplete"}},
+                },
+                {
+                    "case_id": "b",
+                    "execution": {"status": "completed"},
+                    "criteria": {"overall": {"status": "not_applicable"}},
+                },
+            ]
+        )
+        overall = summary["criteria"]["overall"]
+        self.assertIsNone(overall["failure_rate"])
+        self.assertEqual(overall["unevaluated_fraction"], 1)
+        self.assertEqual(overall["fail"], 0)
 
     def test_partial_hold_is_excluded_from_full_hold_mean(self):
         """Average per-case maxima only when the required windows are complete."""
