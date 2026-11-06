@@ -4967,18 +4967,20 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_numeric_once_parsing(self):
-        """Test parsing of ONCE frequency numeric options from USD PhysicsScene (5 options)."""
+        """Test parsing of ONCE frequency numeric options from USD PhysicsScene (7 options)."""
         from pxr import Usd
 
         test_cases = [
-            ("iterations", "30", 30),
-            ("ls_iterations", "15", 15),
-            ("ccd_iterations", "25", 25),
-            ("sdf_iterations", "20", 20),
-            ("sdf_initpoints", "50", 50),
+            ("iterations", "int", "30", 30),
+            ("ls_iterations", "int", "15", 15),
+            ("ccd_iterations", "int", "25", 25),
+            ("sdf_iterations", "int", "20", 20),
+            ("sdf_initpoints", "int", "50", 50),
+            ("noslip_iterations", "int", "5", 5),
+            ("noslip_tolerance", "float", "1e-10", 1e-10),
         ]
 
-        for option_name, usd_value, expected in test_cases:
+        for option_name, usd_type, usd_value, expected in test_cases:
             with self.subTest(option=option_name):
                 usd_content = f"""#usda 1.0
 (
@@ -4993,7 +4995,7 @@ def Xform "World"
         prepend apiSchemas = ["MjcSceneAPI"]
     )
     {{
-        int mjc:option:{option_name} = {usd_value}
+        {usd_type} mjc:option:{option_name} = {usd_value}
     }}
 
     def Xform "Articulation" (
@@ -5037,7 +5039,7 @@ def Xform "World"
                 self.assertTrue(hasattr(model.mujoco, option_name))
                 value = getattr(model.mujoco, option_name).numpy()
                 self.assertEqual(len(value), 1)  # ONCE frequency
-                self.assertEqual(value[0], expected)
+                np.testing.assert_allclose(value[0], expected, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_enum_once_parsing(self):

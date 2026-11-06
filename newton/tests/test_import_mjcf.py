@@ -5658,11 +5658,13 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 self.assertTrue(np.allclose(value[0], expected))
 
     def test_option_numeric_once_parsing(self):
-        """Test parsing of ONCE frequency numeric options from MJCF (3 options)."""
+        """Test parsing of ONCE frequency numeric options from MJCF (5 options)."""
         test_cases = [
             ("ccd_iterations", "25", 25),
             ("sdf_iterations", "20", 20),
             ("sdf_initpoints", "50", 50),
+            ("noslip_iterations", "5", 5),
+            ("noslip_tolerance", "1e-10", 1e-10),
         ]
 
         for option_name, mjcf_value, expected in test_cases:
@@ -5677,7 +5679,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 value = getattr(model.mujoco, option_name).numpy()
                 # ONCE frequency: single value, not per-world
                 self.assertEqual(len(value), 1)
-                self.assertEqual(value[0], expected)
+                np.testing.assert_allclose(value[0], expected, rtol=1e-6)
 
     def test_option_enum_once_parsing(self):
         """Test parsing of ONCE frequency enum options from MJCF (4 options)."""

@@ -130,7 +130,8 @@ repository examples spend tuning effort, not a shared solver API.
      - ``iterations``, ``ls_iterations``, ``solver``, ``integrator``, ``cone``,
        ``jacobian``, ``impratio``, ``tolerance``, ``ls_tolerance``,
        ``ccd_iterations``, ``ccd_tolerance``, ``sdf_iterations``,
-       ``sdf_initpoints``, ``nconmax``, ``njmax``, ``use_mujoco_contacts``,
+       ``sdf_initpoints``, ``noslip_iterations``, ``noslip_tolerance``,
+       ``nconmax``, ``njmax``, ``use_mujoco_contacts``,
        ``enable_multiccd``, ``disable_contacts``, ``use_mujoco_cpu``.
      - Uses MuJoCo or MuJoCo Warp semantics. Newton's constructor supports the
        listed options, not every option from external MuJoCo documentation.
