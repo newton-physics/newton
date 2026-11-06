@@ -14,7 +14,14 @@ import warp as wp
 import newton
 from newton._src.geometry.collision_core import post_process_minkowski_only
 from newton._src.geometry.contact_data import ContactData
-from newton._src.geometry.multicontact import create_build_manifold
+from newton._src.geometry.multicontact import (
+    EPS,
+    IncrementalPlaneTracker,
+    _SamplePoints,
+    add_contact_feature_point,
+    create_build_manifold,
+    update_incremental_plane_tracker,
+)
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -814,6 +821,51 @@ add_function_test(
     "test_crossed_plank_sliver_contact_split",
     test_crossed_plank_sliver_contact_split,
     devices=get_test_devices(),
+)
+
+
+@wp.kernel(enable_backward=False)
+def _contact_feature_duplicates_kernel(counts: wp.array[int], segment: wp.array[wp.vec3]):
+    projected = wp.zeros(shape=(5,), dtype=wp.vec2)
+    points = _SamplePoints()
+    count = int(0)
+    for i in range(3):
+        point = wp.vec3(float(i), float(i % 2), 0.0)
+        count, added = add_contact_feature_point(projected, points, count, wp.vec2(point[0], point[1]), point, EPS)
+        if added:
+            points[count - 1] = point
+    # Revisit both the reference and a non-reference vertex with the captured projection-rounding error.
+    for i in range(2):
+        point = points[i]
+        count, added = add_contact_feature_point(
+            projected, points, count, wp.vec2(point[0], point[1] + 1.52587890625e-5), point, EPS
+        )
+        if added:
+            points[count - 1] = point
+        counts[i] = count
+    # A different 3D point with the same projection must still be merged.
+    count, _ = add_contact_feature_point(projected, points, count, wp.vec2(0.0), wp.vec3(0.0, 0.0, 1.0), EPS)
+    counts[2] = count
+    tracker = IncrementalPlaneTracker()
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(-20.0, 0.0, 0.0), 0)
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(0.0, 160.0, 0.0), 1)
+    tracker = update_incremental_plane_tracker(tracker, wp.vec3(-20.0, 0.0, 0.0), 2)
+    segment[0] = tracker.previous_point - tracker.reference_point
+
+
+def test_contact_feature_duplicates(test, device):
+    """Merge repeated support vertices without losing the existing line segment."""
+    counts = wp.zeros(3, dtype=int, device=device)
+    segment = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_contact_feature_duplicates_kernel, 1, outputs=[counts, segment], device=device)
+    with test.subTest(feature="support identity"):
+        np.testing.assert_array_equal(counts.numpy(), [3, 3, 3])
+    with test.subTest(feature="line segment"):
+        np.testing.assert_array_equal(segment.numpy(), [[20.0, 160.0, 0.0]])
+
+
+add_function_test(
+    TestBoxContactNormal, "test_contact_feature_duplicates", test_contact_feature_duplicates, devices=get_test_devices()
 )
 
 

@@ -165,6 +165,10 @@ def update_incremental_plane_tracker(
     elif current_point_id == 1:
         tracker.previous_point = current_point
     else:
+        # Preserve a nonzero segment when the reference vertex is revisited.
+        reference = tracker.reference_point
+        if current_point[0] == reference[0] and current_point[1] == reference[1] and current_point[2] == reference[2]:
+            return tracker
         if check_planarity and tracker.largest_area_sq > 0.0:
             offset = wp.dot(tracker.normal, current_point - tracker.reference_point)
             if offset * offset > EPS * EPS * tracker.largest_area_sq:
@@ -714,6 +718,27 @@ def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.ve
     return arr_count + 1, True
 
 
+@wp.func
+def add_contact_feature_point(
+    projected: wp.array[wp.vec2],
+    points: _SamplePoints,
+    count: int,
+    point_2d: wp.vec2,
+    point_3d: wp.vec3,
+    eps: float,
+) -> tuple[int, bool]:
+    """Append a projection unless its source or projected position is already present.
+
+    The caller stores accepted source points in ``points`` at the returned index minus one.
+    """
+    # Repeated support vertices can project differently after floating-point rounding.
+    for i in range(count):
+        previous = points[i]
+        if point_3d[0] == previous[0] and point_3d[1] == previous[1] and point_3d[2] == previous[2]:
+            return count, False
+    return add_avoid_duplicates_vec2(projected, count, point_2d, eps)
+
+
 def create_build_manifold(support_func: Any, writer_func: Any, post_process_contact: Any, _support_funcs: Any = None):
     """
     Factory function to create manifold generation functions with a specific support mapping function.
@@ -810,6 +835,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         position_b: wp.vec3,
         quaternion_a: wp.quat,
         quaternion_b: wp.quat,
+        minimum_distance: float,
     ) -> tuple[int, float]:
         """
         Extract up to 4 contact points from two convex contact polygons and write them immediately.
@@ -839,6 +865,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             position_b: World position of shape B (for post_process_contact).
             quaternion_a: Orientation of shape A (for post_process_contact).
             quaternion_b: Orientation of shape B (for post_process_contact).
+            minimum_distance: Support-plane lower bound on signed contact distance, including rounding tolerance [m].
 
         Returns:
             Tuple of (loop_count, normal_dot) where:
@@ -872,6 +899,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             else:
                 result = wp.vec4i(0, 1, 2, 3)
 
+            written_count = int(0)
             for i in range(loop_count):
                 ia = int(result[i])
 
@@ -883,19 +911,23 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 contact_point_local = 0.5 * (a + b)
                 signed_distance = wp.dot(b - a, normal_local)
 
-                # Transform from A-local to world space
-                contact_point_world = wp.quat_rotate(orientation_a, contact_point_local) + position_a_world
+                # A manifold point cannot penetrate beyond the support-plane bound.
+                if signed_distance >= minimum_distance:
+                    # Transform from A-local to world space
+                    contact_point_world = wp.quat_rotate(orientation_a, contact_point_local) + position_a_world
 
-                contact_data = contact_template
-                contact_data.contact_point_center = contact_point_world
-                contact_data.contact_normal_a_to_b = normal_world
-                contact_data.contact_distance = signed_distance
-                contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | i
+                    contact_data = contact_template
+                    contact_data.contact_point_center = contact_point_world
+                    contact_data.contact_normal_a_to_b = normal_world
+                    contact_data.contact_distance = signed_distance
+                    contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | written_count
 
-                contact_data = post_process_contact(
-                    contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
-                )
-                writer_func(contact_data, writer_data, -1)
+                    contact_data = post_process_contact(
+                        contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
+                    )
+                    writer_func(contact_data, writer_data, -1)
+                    written_count += 1
+            loop_count = written_count
         else:
             normal_dot = 0.0
             loop_count = 0
@@ -1146,7 +1178,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_a_3d = support_contact_feature(geom_a, dir_a, feature_normal_a, data_provider)
             projected_a = pt_a_3d - center
             pt_a_2d = wp.vec2(wp.dot(tangent_a, projected_a), wp.dot(tangent_b, projected_a))
-            a_count, was_added_a = add_avoid_duplicates_vec2(a_buffer, a_count, pt_a_2d, EPS)
+            a_count, was_added_a = add_contact_feature_point(a_buffer, points_a, a_count, pt_a_2d, pt_a_3d, EPS)
             if was_added_a:
                 points_a[a_count - 1] = pt_a_3d
                 plane_tracker_a = update_incremental_plane_tracker(plane_tracker_a, pt_a_3d, a_count - 1, planar_a)
@@ -1157,7 +1189,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_b_3d = wp.quat_rotate(relative_orientation_b, pt_b_local) + relative_position_b
             projected_b = pt_b_3d - center
             pt_b_2d = wp.vec2(wp.dot(tangent_a, projected_b), wp.dot(tangent_b, projected_b))
-            b_count, was_added_b = add_avoid_duplicates_vec2(b_buffer, b_count, pt_b_2d, EPS)
+            b_count, was_added_b = add_contact_feature_point(b_buffer, points_b, b_count, pt_b_2d, pt_b_3d, EPS)
             if was_added_b:
                 points_b[b_count - 1] = pt_b_3d
                 plane_tracker_b = update_incremental_plane_tracker(plane_tracker_b, pt_b_3d, b_count - 1, planar_b)
@@ -1276,6 +1308,14 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 count_out = 0
                 normal_dot = 0.0
             else:
+                support_a = support_func(geom_a, normal, data_provider)
+                support_b = (
+                    wp.quat_rotate(relative_orientation_b, support_func(geom_b, local_normal_b, data_provider))
+                    + relative_position_b
+                )
+                minimum_distance = wp.dot(support_b - support_a, normal)
+                # Account for float32 rounding when subtracting large support coordinates.
+                tolerance = EPS + 9.5367431640625e-7 * (wp.length(support_a) + wp.length(support_b))
                 num_manifold_points, normal_dot = extract_4_point_contact_manifolds(
                     a_buffer,
                     a_count,
@@ -1298,6 +1338,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                     position_b_ws,
                     quaternion_a_ws,
                     quaternion_b_ws,
+                    minimum_distance - tolerance,
                 )
                 count_out = wp.min(num_manifold_points, 4)
 
