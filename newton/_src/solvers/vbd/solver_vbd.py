@@ -513,6 +513,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``Model.soft_contact_kd`` and the shape's ``Model.shape_material_kd``) also acts while a
                 contact separates. With the default ``True`` the normal damper and its Hessian act while the
                 gap closes and while it opens, for every contact that is still within its contact radius.
+                The self-contact damper acts on the change of the contact distance over the substep, so a
+                rigid motion of a contact pair gives no damping force.
                 With ``False`` the damper acts only while the gap closes and leaves the rebound undamped; in
                 the card stack of ``example_cloth_poker_cards`` (issue #3494) that stack kept bouncing, and a
                 larger ``soft_contact_kd`` made it worse. Two-sided damping also opposes the opening motion,

@@ -707,7 +707,9 @@ relative displacement of the two closest points over the step and
 with :math:`\mu = \mathtt{soft\_contact\_mu}`. Unlike IPC, the contact normal
 is held constant inside the block solve; the kernel notes that this improves
 stability. Damping (``damp_collision``) acts on the gap rate :math:`\dot d =
-\mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h`:
+(d - d_{\text{prev}})/h`, the change of the contact distance over the substep;
+:math:`d_{\text{prev}}` is the distance at the substep-start positions from its own
+closest point, so a rigid motion of the pair gives :math:`\dot d = 0`. The force is
 :math:`\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}` with the
 Hessian :math:`(\mathtt{soft\_contact\_kd}/h)\,\mathbf{n}\mathbf{n}^T`. By default
 (``soft_contact_damping_bidirectional=True``) it acts while the gap closes and

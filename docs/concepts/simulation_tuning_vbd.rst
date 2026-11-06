@@ -865,8 +865,8 @@ Work through these steps in order and stop at the first one that fixes it.
    (:ref:`vbd-stiffness-ratio`).
 2. If not fixed, tune the self-contact damping, :attr:`~newton.Model.soft_contact_kd`,
    and keep ``soft_contact_damping_bidirectional`` at its default ``True``.
-   This damper acts on the normal relative velocity of a contact pair. With
-   ``True`` it acts while the pair closes and while it opens, so the rebound
+   This damper acts on the rate at which the distance of a contact pair
+   changes. With ``True`` it acts while the pair closes and while it opens, so the rebound
    is damped too. With ``False`` it acts only while the pair closes, the
    behaviour of earlier releases, and leaves the rebound undamped. With that
    closing-only damper a stack of thin layers, such as the cards in

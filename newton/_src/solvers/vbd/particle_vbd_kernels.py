@@ -895,6 +895,11 @@ def damp_collision(
 ):
     """Damp collision with the contact gap rate, not absolute vertex motion.
 
+    ``gap_rate`` is the change of the contact distance over the substep divided by
+    ``dt``; the distance at the anchor positions comes from its own closest point, so
+    a rigid motion of the contact pair gives zero. The force acts along the current
+    contact normal, the gradient of that distance.
+
     By default only a closing gap (``gap_rate < 0``) is damped. With
     ``contact_damping_bidirectional`` the same linear damper and its Hessian also
     act while the gap opens, so the force resists the relative normal motion in
@@ -1016,7 +1021,12 @@ def evaluate_edge_edge_contact(
         #     )
         # # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the edge-edge distance over the substep. The distance at the anchor
+        # positions comes from its own closest-point pair, so a rigid motion of both edges gives zero.
+        st_anchor = wp.closest_point_edge_edge(
+            pos_anchor[e1_v1], pos_anchor[e1_v2], pos_anchor[e2_v1], pos_anchor[e2_v2], edge_edge_parallel_epsilon
+        )
+        gap_rate = (dis - st_anchor[2]) / dt
 
         damping_force, damping_hessian = damp_collision(
             gap_rate, v_bary, collision_normal, collision_damping, dt, contact_damping_bidirectional
@@ -1133,7 +1143,12 @@ def evaluate_edge_edge_contact_2_vertices(
         #     )
         # # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the edge-edge distance over the substep. The distance at the anchor
+        # positions comes from its own closest-point pair, so a rigid motion of both edges gives zero.
+        st_anchor = wp.closest_point_edge_edge(
+            pos_anchor[e1_v1], pos_anchor[e1_v2], pos_anchor[e2_v1], pos_anchor[e2_v2], edge_edge_parallel_epsilon
+        )
+        gap_rate = (dis - st_anchor[2]) / dt
 
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
@@ -1229,7 +1244,15 @@ def evaluate_vertex_triangle_collision_force_hessian(
             )
         # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the vertex-triangle distance over the substep. The distance at the
+        # anchor positions comes from its own closest point, so a rigid motion of the pair gives zero.
+        closest_p_anchor, _bary_anchor, _feature_type_anchor = triangle_closest_point(
+            pos_anchor[tri_indices[tri, 0]],
+            pos_anchor[tri_indices[tri, 1]],
+            pos_anchor[tri_indices[tri, 2]],
+            pos_anchor[v],
+        )
+        gap_rate = (dis - wp.length(pos_anchor[v] - closest_p_anchor)) / dt
 
         damping_force, damping_hessian = damp_collision(
             gap_rate, v_bary, collision_normal, collision_damping, dt, contact_damping_bidirectional
@@ -1312,7 +1335,15 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             )
         # fmt: on
 
-        gap_rate = wp.dot(collision_normal, dx) / dt
+        # Damping rate: change of the vertex-triangle distance over the substep. The distance at the
+        # anchor positions comes from its own closest point, so a rigid motion of the pair gives zero.
+        closest_p_anchor, _bary_anchor, _feature_type_anchor = triangle_closest_point(
+            pos_anchor[tri_indices[tri, 0]],
+            pos_anchor[tri_indices[tri, 1]],
+            pos_anchor[tri_indices[tri, 2]],
+            pos_anchor[v],
+        )
+        gap_rate = (dis - wp.length(pos_anchor[v] - closest_p_anchor)) / dt
 
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
