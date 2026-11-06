@@ -285,19 +285,18 @@ def accumulate_belt_load(
     belt_contacts: wp.array[BeltContact],
     conv_velocity_group: wp.array[wp.int32],
     # outputs
-    body_loaded_count: wp.array[wp.int32],
     body_load: wp.array[wp.float32],
     body_point_sum: wp.array[wp.vec3],
     body_group_min: wp.array[wp.int32],
     body_group_max: wp.array[wp.int32],
 ):
+    """Accumulate each body's total belt normal load, contact centroid sum, and velocity-group range."""
     i = wp.tid()
     c = belt_contacts[i]
-    if c.valid == 0 or c.normal_force <= 0.0:
+    if c.valid == 0:
         return
     wp.atomic_min(body_group_min, c.body, conv_velocity_group[c.conv])
     wp.atomic_max(body_group_max, c.body, conv_velocity_group[c.conv])
-    wp.atomic_add(body_loaded_count, c.body, 1)
     wp.atomic_add(body_load, c.body, c.normal_force)
     wp.atomic_add(body_point_sum, c.body, c.point)
 
@@ -305,24 +304,25 @@ def accumulate_belt_load(
 @wp.kernel
 def accumulate_belt_load_moment(
     belt_contacts: wp.array[BeltContact],
-    body_loaded_count: wp.array[wp.int32],
+    body_contact_count: wp.array[wp.int32],
     body_point_sum: wp.array[wp.vec3],
     # outputs
     body_point_cov: wp.array[wp.mat33],
     body_load_moment: wp.array[wp.vec3],
 ):
+    """Accumulate each body's contact-point covariance and first moment of the normal load about the centroid."""
     i = wp.tid()
     c = belt_contacts[i]
-    if c.valid == 0 or c.normal_force <= 0.0:
+    if c.valid == 0:
         return
-    d = c.point - body_point_sum[c.body] / float(body_loaded_count[c.body])
+    d = c.point - body_point_sum[c.body] / float(body_contact_count[c.body])
     wp.atomic_add(body_point_cov, c.body, wp.outer(d, d))
     wp.atomic_add(body_load_moment, c.body, d * c.normal_force)
 
 
 @wp.kernel
 def redistribute_belt_load(
-    body_loaded_count: wp.array[wp.int32],
+    body_contact_count: wp.array[wp.int32],
     body_load: wp.array[wp.float32],
     body_point_sum: wp.array[wp.vec3],
     body_point_cov: wp.array[wp.mat33],
@@ -341,11 +341,11 @@ def redistribute_belt_load(
     """
     i = wp.tid()
     c = belt_contacts[i]
-    if c.valid == 0 or c.normal_force <= 0.0:
+    if c.valid == 0:
         return
     if body_group_min[c.body] == body_group_max[c.body]:
         return
-    n = float(body_loaded_count[c.body])
+    n = float(body_contact_count[c.body])
     cov = body_point_cov[c.body]
     eps = 1.0e-4 * wp.trace(cov) + 1.0e-9
     g = wp.inverse(cov + wp.identity(n=3, dtype=wp.float32) * eps) * body_load_moment[c.body]
@@ -610,7 +610,6 @@ class ConveyorForceModel:
         self.conv_velocity_group = wp.array(conv_velocity_group, dtype=wp.int32, device=d)
         self.body_group_min = wp.zeros(self.model.body_count, dtype=wp.int32, device=d)
         self.body_group_max = wp.zeros(self.model.body_count, dtype=wp.int32, device=d)
-        self.body_loaded_count = wp.zeros(self.model.body_count, dtype=wp.int32, device=d)
         self.body_load = wp.zeros(self.model.body_count, dtype=wp.float32, device=d)
         self.body_point_sum = wp.zeros(self.model.body_count, dtype=wp.vec3, device=d)
         self.body_point_cov = wp.zeros(self.model.body_count, dtype=wp.mat33, device=d)
@@ -663,7 +662,6 @@ class ConveyorForceModel:
             outputs=[self.belt_contacts, self.body_contact_count],
             device=self.device,
         )
-        self.body_loaded_count.zero_()
         self.body_group_min.fill_(np.iinfo(np.int32).max)
         self.body_group_max.fill_(-1)
         self.body_load.zero_()
@@ -675,7 +673,6 @@ class ConveyorForceModel:
             dim=contacts.rigid_contact_max,
             inputs=[self.belt_contacts, self.conv_velocity_group],
             outputs=[
-                self.body_loaded_count,
                 self.body_load,
                 self.body_point_sum,
                 self.body_group_min,
@@ -686,7 +683,7 @@ class ConveyorForceModel:
         wp.launch(
             accumulate_belt_load_moment,
             dim=contacts.rigid_contact_max,
-            inputs=[self.belt_contacts, self.body_loaded_count, self.body_point_sum],
+            inputs=[self.belt_contacts, self.body_contact_count, self.body_point_sum],
             outputs=[self.body_point_cov, self.body_load_moment],
             device=self.device,
         )
@@ -694,7 +691,7 @@ class ConveyorForceModel:
             redistribute_belt_load,
             dim=contacts.rigid_contact_max,
             inputs=[
-                self.body_loaded_count,
+                self.body_contact_count,
                 self.body_load,
                 self.body_point_sum,
                 self.body_point_cov,
