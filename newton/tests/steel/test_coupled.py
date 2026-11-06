@@ -24,7 +24,7 @@ DT = 1.0 / 480.0
 
 
 def _steel(view, **kwargs):
-    return SolverSteel(view, solve_mode="matrix_free", **kwargs)
+    return SolverSteel(view, **kwargs)
 
 
 def _build_box_cloth(
@@ -438,7 +438,7 @@ def _undamped(solver):
 def test_articulated_graph_capture_matches_eager(test, device):
     """Match eager stepping with graph replay of an articulated source across proxy iterations and friction models."""
     options = {
-        "solve_mode": "matrix_free",
+        "solve_mode": "serial",
         "articulated_contact_response": "immediate",
         "iterations": 16,
         "articulation_constraint_max": 32,
@@ -770,7 +770,6 @@ def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, 
         )
         bodies, _ = builder.add_rod(
             rod=cable,
-            body_frame_origin="start",
             cfg=newton.ModelBuilder.ShapeConfig(density=1400.0, ke=5.0e4, kd=1.0e1, mu=0.9, margin=0.001, gap=0.002),
             stretch_stiffness=2.0e5,
             stretch_damping=2.0e-2,
@@ -987,7 +986,7 @@ def test_split_articulation_gets_free_root(test, device):
     """Step a split arm subtree on its view's FREE root like the same arm built on a FREE root."""
 
     def steel(view):
-        return SolverSteel(view, solve_mode="split")
+        return SolverSteel(view)
 
     world_count = 2
     model, bodies_per_world, joints_per_world = _build_split_arm(device, base=True, world_count=world_count)

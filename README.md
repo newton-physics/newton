@@ -184,14 +184,20 @@ python -m newton.examples --describe robot_omniwheel
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_mimic_joint.jpg" alt="Mimic Joint">
       </a>
     </td>
-    <td width="33%"></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_multi_solver_overlay.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_multi_solver_overlay.jpg" alt="Multi-Solver Overlay">
+      </a>
+    </td>
     <td width="33%"></td>
   </tr>
   <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples basic_mimic_joint</code>
     </td>
-    <td width="33%"></td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_multi_solver_overlay</code>
+    </td>
     <td width="33%"></td>
   </tr>
   <tr>
@@ -1094,6 +1100,29 @@ python -m newton.examples --describe robot_omniwheel
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples steel_determinism_arms</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3"><h3>MuJoCo Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mujoco/example_mujoco_sleeping.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_sleeping.jpg" alt="MuJoCo Sleeping">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_sleeping</code>
+    </td>
+    <td align="center" width="33%">
     </td>
     <td align="center" width="33%">
     </td>

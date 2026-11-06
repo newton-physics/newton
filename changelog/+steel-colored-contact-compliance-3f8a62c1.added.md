@@ -1,0 +1,1 @@
+Accept the experimental `contact_compliance=True` of `newton.solvers.SolverSteel` with `solve_mode="colored"` and `articulated_contact_response="propagation"`. The colored sweep solves compliant contacts with the same device-prepared coefficients and `gamma * lambda` residual term as the immediate response, and the step stays CUDA graph capturable.

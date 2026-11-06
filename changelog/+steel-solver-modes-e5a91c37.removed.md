@@ -1,0 +1,1 @@
+Remove the `SolverSteel` split solve, which solved articulated contacts through a dense Delassus matrix per world and offered no benefit over the matrix-free solve. `solve_mode="split"` now runs the matrix-free `solve_mode="serial"` with a `NewtonDeprecationWarning`, so results differ from earlier releases; omit `solve_mode`.

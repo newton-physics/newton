@@ -1,0 +1,1 @@
+Fixes SolverSteel deterministic=RUN_TO_RUN, which no release has shipped; its pending +steel-deterministic-5c81e2a7.added.md entry covers the mode.
