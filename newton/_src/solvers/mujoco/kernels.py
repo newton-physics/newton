@@ -1436,14 +1436,23 @@ def create_convert_mjw_contacts_to_newton_kernel():
             normal = mj_contact_frame[contact_idx][0]
             pos_world = mj_contact_pos[contact_idx]
 
-            rigid_contact_shape0[output_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
-            rigid_contact_shape1[output_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[1]]
+            # A flex side of the contact has geom -1; it has no Newton shape and stays in world frame.
+            shape_a = int(-1)
+            shape_b = int(-1)
+            body_a = int(0)
+            body_b = int(0)
+            if geoms_mjw[0] >= 0:
+                shape_a = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
+                body_a = mj_geom_bodyid[geoms_mjw[0]]
+            if geoms_mjw[1] >= 0:
+                shape_b = mjc_geom_to_newton_shape[world, geoms_mjw[1]]
+                body_b = mj_geom_bodyid[geoms_mjw[1]]
+            rigid_contact_shape0[output_idx] = shape_a
+            rigid_contact_shape1[output_idx] = shape_b
             rigid_contact_normal[output_idx] = normal
 
             # MuJoCo stores the contact midpoint in world coordinates. Reconstruct
             # the two surface points and express them in Newton's body frames.
-            body_a = mj_geom_bodyid[geoms_mjw[0]]
-            body_b = mj_geom_bodyid[geoms_mjw[1]]
             X_wb_a = wp.transform_identity()
             X_wb_b = wp.transform_identity()
             if body_a > 0:
@@ -3611,6 +3620,29 @@ def wake_changed_trees_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def reset_particle_state_kernel(
+    world_mask: wp.array[wp.bool],
+    particles_per_world: int,
+    default_particle_q: wp.array[wp.vec3],
+    default_particle_qd: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    particle_qd: wp.array[wp.vec3],
+):
+    """Reset per-world particle positions/velocities to the model defaults.
+
+    ``particle_q`` and/or ``particle_qd`` may be ``None`` to leave that quantity untouched.
+    """
+    worldid, p = wp.tid()
+    if world_mask and not world_mask[worldid]:
+        return
+    i = worldid * particles_per_world + p
+    if particle_q:
+        particle_q[i] = default_particle_q[i]
+    if particle_qd:
+        particle_qd[i] = default_particle_qd[i]
+
+
+@wp.kernel(enable_backward=False)
 def reset_joint_state_kernel(
     world_mask: wp.array[wp.bool],
     coords_per_world: int,
@@ -3697,19 +3729,25 @@ def convert_warp_particles_to_mj_kernel(
     particle_q0: wp.array[wp.vec3],
     particle_qpos_adr: wp.array[wp.int32],
     particle_qvel_adr: wp.array[wp.int32],
+    particle_pinned_body: wp.array[wp.int32],
     # outputs
     qpos: wp.array2d[wp.float32],
     qvel: wp.array2d[wp.float32],
+    body_pos: wp.array2d[wp.vec3],
 ):
-    """Write particle positions, as displacements from ``particle_q0``, and velocities to flex slide joints."""
+    """Write particles to their flex bodies: slide joints hold the displacement from ``particle_q0``
+    and the velocity, and pinned particles set their static body's per-world position."""
     world, p = wp.tid()
     if world_mask and not world_mask[world]:
         return
+    i = world * particle_qpos_adr.shape[0] + p
     qa = particle_qpos_adr[p]
     if qa < 0:
+        body = particle_pinned_body[p]
+        if body >= 0:
+            body_pos[world, body] = particle_q[i]
         return
     va = particle_qvel_adr[p]
-    i = world * particle_qpos_adr.shape[0] + p
     x = particle_q[i] - particle_q0[p]
     v = particle_qd[i]
     for k in range(3):

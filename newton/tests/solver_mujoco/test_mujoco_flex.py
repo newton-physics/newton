@@ -165,6 +165,8 @@ class TestMuJoCoFlex(unittest.TestCase):
             mujoco.add_flex(builder, triangles=triangles, edgestiffness=1.0)
         with self.assertRaises(ValueError):
             mujoco.add_flex(builder, triangles=triangles, elastic2d="wrinkle")
+        with self.assertRaises(ValueError):
+            mujoco.add_flex(builder, triangles=triangles, poisson=0.3)
         with self.assertRaises(IndexError):
             mujoco.add_flex(builder, springs=[builder.spring_count])
         mujoco.add_flex(builder, springs=springs)
@@ -182,6 +184,94 @@ class TestMuJoCoFlex(unittest.TestCase):
         model = builder.finalize()
         with self.assertRaises(ValueError):
             SolverMuJoCo(model, use_flex=True, use_mujoco_contacts=False)
+
+    def test_cloth_springs_are_kept(self):
+        """Cloth springs form their own 1D flex even though the cloth covers their particles."""
+        builder = _builder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.01,
+            add_springs=True,
+            spring_ke=10.0,
+        )
+        model = builder.finalize()
+
+        mj_model = SolverMuJoCo(model, use_flex=True).mj_model
+        np.testing.assert_array_equal(mj_model.flex_dim, [2, 1])
+        self.assertEqual(mj_model.flex_elemnum[1], model.spring_count)
+        np.testing.assert_allclose(mj_model.flex_edgestiffness[1], 10.0)
+
+    def test_pins_and_contacts_in_each_world(self):
+        """Pins stay at each world's position, particle-only colliders hold the cloth, and
+        flex contacts export without a Newton shape on the flex side."""
+        cloth = _builder()
+        cloth.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.01,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+            particle_radius=0.02,
+            fix_left=True,
+        )
+        builder = _builder()
+        builder.replicate(cloth, 2, spacing=(1.0, 0.0, 0.0))
+        ground_cfg = newton.ModelBuilder.ShapeConfig(gap=0.0, has_shape_collision=False, has_particle_collision=True)
+        ground = builder.add_ground_plane(cfg=ground_cfg)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, use_flex=True)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        for _ in range(150):
+            solver.step(state_0, state_1, control, None, 2.0e-3)
+            state_0, state_1 = state_1, state_0
+
+        q0 = model.particle_q.numpy().reshape(2, -1, 3)
+        q = state_0.particle_q.numpy().reshape(2, -1, 3)
+        pinned = np.flatnonzero(model.particle_mass.numpy()[: q.shape[1]] == 0.0)
+        np.testing.assert_allclose(q[:, pinned], q0[:, pinned])
+        # Each cloth hangs from its own world's pins, so the worlds stay one spacing apart.
+        np.testing.assert_allclose(q[1, :, 0] - q[0, :, 0], 1.0, atol=1.0e-3)
+        free = np.setdiff1d(np.arange(q.shape[1]), pinned)
+        self.assertGreater(q[:, free, 2].min(), 0.0)
+
+        contacts = newton.Contacts(solver.get_max_contact_count(), 0, device=model.device)
+        solver.update_contacts(contacts, state_0)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        shapes = np.stack(
+            [contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count]], axis=1
+        )
+        np.testing.assert_array_equal(np.sort(shapes, axis=1), np.tile([-1, ground], (count, 1)))
+
+        solver.reset(state_0)
+        np.testing.assert_allclose(state_0.particle_q.numpy(), model.particle_q.numpy())
+        np.testing.assert_allclose(state_0.particle_qd.numpy(), 0.0)
+
+    def test_worlds_must_share_flex_layout(self):
+        """Worlds whose elements or authored flexes differ are rejected."""
+        builder = _builder()
+        for authored in (True, False):
+            builder.begin_world()
+            triangles = _add_cloth(builder, 0.0)
+            if authored:
+                mujoco.add_flex(builder, triangles=triangles)
+            builder.end_world()
+        model = builder.finalize()
+        with self.assertRaises(ValueError):
+            SolverMuJoCo(model, use_flex=True)
 
 
 if __name__ == "__main__":

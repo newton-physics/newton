@@ -752,7 +752,10 @@ By default particles are ignored so that another solver can simulate them.
 Each particle becomes a MuJoCo body with three slide joints placed at its
 initial position, and ``State.particle_q`` / ``particle_qd`` are synchronized
 with those joints every step. Particles with zero mass or without
-:attr:`~newton.ParticleFlags.ACTIVE` get no joints and stay pinned.
+:attr:`~newton.ParticleFlags.ACTIVE` get no joints. They are pinned at their
+``particle_q`` in each world and follow it when it changes.
+:meth:`~newton.solvers.SolverMuJoCo.reset` restores particles with
+:attr:`~newton.StateFlags.PARTICLE_Q` and :attr:`~newton.StateFlags.PARTICLE_QD`.
 
 Elements that no authored flex covers are grouped into one flex per
 dimension:
@@ -777,14 +780,18 @@ dimension:
        ``spring_damping``. Stretch only: 1D flexes resist bending only when
        ``young`` is set through ``add_flex``.
 
-An element whose particles all belong to a higher-dimensional flex is skipped,
-so the surface triangles of a tetrahedral mesh do not form a second flex.
+A triangle whose particles all belong to a tetrahedral flex is skipped, so the
+surface triangles of a tetrahedral mesh do not form a second flex. Springs are
+always converted, as in Newton's other solvers.
 MuJoCo stores one material per flex, so non-uniform values are averaged with a
 warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
 friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
-shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, but not with
-themselves. Flex contacts require ``use_mujoco_contacts=True``; the solver
-rejects ``use_flex=True`` otherwise.
+shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, including
+shapes that do not collide with other shapes, but not with themselves. Flex
+contacts require ``use_mujoco_contacts=True``; the solver rejects
+``use_flex=True`` otherwise. In exported contacts, the flex side has shape
+``-1``. With separate worlds, every world must have the same elements and
+authored flexes.
 
 To control a flex directly, use ``add_flex`` from
 :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` on existing Newton

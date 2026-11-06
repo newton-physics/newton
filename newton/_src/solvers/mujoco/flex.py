@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ...core._warnings import _external_warning_stacklevel
 from ...core.types import vec5
 from ...exceptions import NewtonWarning
 from ...sim import Model, ModelBuilder
@@ -89,7 +90,7 @@ def add_flex(
     springs: Sequence[int] | None = None,
     label: str | None = None,
     young: float | None = None,
-    poisson: float = 0.0,
+    poisson: float | None = None,
     damping: float = 0.0,
     edgestiffness: float | None = None,
     edgedamping: float | None = None,
@@ -119,7 +120,7 @@ def add_flex(
         label: Optional flex label.
         young: Young's modulus [Pa]. ``None`` derives it and ``poisson`` from the
             elements' Lamé parameters (springs have none, so 1D flexes stay stretch-only).
-        poisson: Poisson ratio, used when ``young`` is given.
+        poisson: Poisson ratio; requires ``young``.
         damping: Rayleigh damping coefficient [s].
         edgestiffness: 1D edge stiffness [N/m]. ``None`` uses the spring stiffness.
         edgedamping: 1D edge damping [N·s/m]. ``None`` uses the spring damping.
@@ -152,6 +153,8 @@ def add_flex(
         raise ValueError(f"add_flex requires at least one element in {source}.")
     if dim != 2 and (thickness is not None or elastic2d is not None):
         raise ValueError("thickness and elastic2d only apply to triangles.")
+    if young is None and poisson is not None:
+        raise ValueError("poisson requires young.")
     if dim != 1 and (edgestiffness is not None or edgedamping is not None):
         raise ValueError("edgestiffness and edgedamping only apply to springs.")
 
@@ -174,7 +177,7 @@ def add_flex(
     values = {
         "mujoco:flex_label": label or "",
         "mujoco:flex_young": derived(young),
-        "mujoco:flex_poisson": float(poisson),
+        "mujoco:flex_poisson": 0.0 if poisson is None else float(poisson),
         "mujoco:flex_damping": float(damping),
         "mujoco:flex_edgestiffness": derived(edgestiffness),
         "mujoco:flex_edgedamping": derived(edgedamping),
@@ -204,7 +207,7 @@ def _uniform(values: np.ndarray, what: str) -> Any:
             f"A MuJoCo flex uses a single {what}; averaging non-uniform Newton values. "
             "Use newton.solvers.mujoco.add_flex to split them into separate flexes.",
             NewtonWarning,
-            stacklevel=3,
+            stacklevel=_external_warning_stacklevel(),
         )
     return values.mean(axis=0)
 
