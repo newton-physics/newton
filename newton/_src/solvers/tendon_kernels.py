@@ -13,6 +13,66 @@ from ..sim.tendon import TendonGuideFlags, TendonGuideType
 
 
 @wp.func
+def _material_sweep_contact_error(
+    tension_l: float,
+    tension_r: float,
+    ratio: float,
+    transfer: float,
+    can_decrease: bool,
+    can_increase: bool,
+) -> float:
+    """Check friction complementarity in the feasible material-transfer directions."""
+    increase_error = tension_l - ratio * tension_r
+    decrease_error = tension_r - ratio * tension_l
+    if transfer > 0.0:
+        decrease_error = -increase_error
+    elif transfer < 0.0:
+        increase_error = -decrease_error
+    # Positive transfer takes material from the right span. At its rest floor,
+    # further transfer is impossible, but returning material must remain allowed.
+    if not can_increase:
+        increase_error = 0.0
+    if not can_decrease:
+        decrease_error = 0.0
+    return wp.max(wp.max(increase_error, decrease_error), 0.0)
+
+
+@wp.func
+def _material_sweep_guide_converged(
+    guide: int,
+    stretch: wp.array[float],
+    length: wp.array[float],
+    compliance: wp.array[float],
+    damping: wp.array[float],
+    ratio: wp.array[float],
+    cone_l: wp.array[int],
+    cone_r: wp.array[int],
+    transfer: wp.array[float],
+    min_rest: float,
+    rtol: float,
+    atol: float,
+) -> bool:
+    """Check an active guide after both adjacent spans have their final sweep values."""
+    left = cone_l[guide]
+    right = cone_r[guide]
+    damping_l = damping[left] if compliance[left] > 0.0 else 0.0
+    damping_r = damping[right] if compliance[right] > 0.0 else 0.0
+    tension_l = wp.max(stretch[left] / wp.max(compliance[left], 1.0e-30) + damping_l, 0.0)
+    tension_r = wp.max(stretch[right] / wp.max(compliance[right], 1.0e-30) + damping_r, 0.0)
+    # Compare bounds at stretch scale; reconstructed rest lengths can round
+    # a depleted span slightly above its floor.
+    error = _material_sweep_contact_error(
+        tension_l,
+        tension_r,
+        ratio[guide],
+        transfer[guide],
+        stretch[left] < length[left] - min_rest,
+        stretch[right] < length[right] - min_rest,
+    )
+    return error <= atol + rtol * wp.max(tension_l, tension_r)
+
+
+@wp.func
 def tendon_body_pose(body_q: wp.array[wp.transform], body: int) -> wp.transform:
     """Use world coordinates for guides attached to body -1."""
     if body < 0:
@@ -1092,16 +1152,22 @@ def solve_tendon_material(
     adaptive_cone_sweeps: int,
     tendon_max_sweeps: int,
     tendon_settle_tol: float,
+    tendon_settle_atol: float,
+    report_material_exhaustion: int,
+    guide_material_transfer: wp.array[float],
 ):
     """Update free-span rest-length transfer for one tendon.
 
     With adaptive sweeps enabled, the capstan cone is relaxed by up to ``tendon_max_sweeps``
-    Gauss-Seidel passes and stops when the tension change relative to the first
-    sweep's peak tension falls below ``tendon_settle_tol``. Otherwise, the
-    established fixed 4/32-sweep policy is used.
+    Gauss-Seidel passes. Early-out checks every final contact's force residual
+    against ``tendon_settle_atol + tendon_settle_tol * max(T_left, T_right)``.
+    Zero relative tolerance disables early-out. Without adaptive sweeps,
+    the established fixed 4/32-sweep policy is used.
 
     XPBD derives damping from body velocities. VBD sets ``damping_from_pose_delta``
     to use the current and previous accepted poses, matching its force evaluation.
+    Report material added by rest floors only for the accepted pose; intermediate
+    iterates can recover through body motion or neighboring material transfers.
     """
     tendon_id = wp.tid()
     guide_start = tendon_start[tendon_id]
@@ -1117,14 +1183,17 @@ def solve_tendon_material(
     seg_offset = guide_start - tendon_id
 
     min_rest = 1.0e-6
+    material_added = float(0.0)
 
     for s in range(num_segs):
         seg = seg_offset + s
         seg_damping_tension[seg] = 0.0
         seg_rest_length[seg] = seg_route_rest_length[seg]
 
+    nonlocal_cone_rows = int(0)
     for i in range(1, num_guides - 1):
         guide_idx = guide_start + i
+        guide_material_transfer[guide_idx] = 0.0
         if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
             continue
         if tendon_guide_route_rest_length[guide_idx] <= 0.0:
@@ -1143,15 +1212,20 @@ def solve_tendon_material(
         arc_rest = wrapped_arc_length(
             seg_attachment_r[seg_left], seg_attachment_l[seg_right], center, tendon_guide_radius[guide_idx], normal
         )
-        free_rest = seg_rest_length_step[seg_left] - arc_rest
-        if free_rest < 2.0 * min_rest:
-            free_rest = 2.0 * min_rest
+        raw_free_rest = seg_rest_length_step[seg_left] - arc_rest
+        free_rest = wp.max(raw_free_rest, 2.0 * min_rest)
 
         len_l = seg_length[seg_left]
         len_r = seg_length[seg_right]
         free_len = wp.max(len_l + len_r, 1.0e-8)
         rest_l = wp.max(min_rest, free_rest * len_l / free_len)
         rest_r = wp.max(min_rest, free_rest - rest_l)
+        if report_material_exhaustion != 0:
+            # Allow float32 cancellation in the arc subtraction and split.
+            roundoff = 1.0e-6 * wp.max(wp.max(wp.abs(seg_rest_length_step[seg_left]), arc_rest), min_rest)
+            added = rest_l + rest_r - raw_free_rest
+            if added > roundoff:
+                material_added = material_added + added
         seg_rest_length[seg_left] = rest_l
         seg_rest_length[seg_right] = rest_r
 
@@ -1202,9 +1276,26 @@ def solve_tendon_material(
                             seg_attachment_r[seg],
                         )
 
+        # Rolling supplies the full no-slip trial; friction decides how much
+        # can stick. Applying a beta-scaled increment after projection would
+        # leave the final material state outside the cone.
+        if apply_rolling_transfer != 0:
+            for i_roll in range(1, num_guides - 1):
+                guide_idx = guide_start + i_roll
+                if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
+                    continue
+                if not tendon_guide_active[guide_idx]:
+                    continue
+                seg_left = tendon_guide_cone_seg_l[guide_idx]
+                seg_right = tendon_guide_cone_seg_r[guide_idx]
+                if seg_left < 0 or seg_right < 0:
+                    continue
+                seg_stretch[seg_left] = seg_stretch[seg_left] - seg_rolling_delta_r[seg_left]
+                seg_stretch[seg_right] = seg_stretch[seg_right] - seg_rolling_delta_l[seg_right]
+
         material_sweep_count = int(4)
         if adaptive_cone_sweeps != 0:
-            material_sweep_count = wp.min(tendon_max_sweeps, 256)
+            material_sweep_count = tendon_max_sweeps
         else:
             # Preserve the established fixed policy for callers that disable adaptive convergence.
             for i_policy in range(1, num_guides - 1):
@@ -1212,14 +1303,13 @@ def solve_tendon_material(
                     material_sweep_count = int(32)
 
         converged = int(0)
-        settle_tension_reference = float(0.0)
-        for material_sweep in range(256):
-            if material_sweep >= material_sweep_count or converged != 0:
+        for material_sweep in range(material_sweep_count):
+            if converged != 0:
                 break
 
             tendon_cone_sweep_count[tendon_id] = tendon_cone_sweep_count[tendon_id] + 1
-            sweep_dtension = float(0.0)
-            sweep_maxtension = float(0.0)
+            converged = int(adaptive_cone_sweeps != 0 and tendon_settle_tol > 0.0)
+            previous_guide = int(-1)
             for order in range(1, num_guides - 1):
                 i = order
                 if material_sweep % 2 == 1:
@@ -1240,12 +1330,11 @@ def solve_tendon_material(
                 if seg_left < 0 or seg_right < 0:
                     continue
 
-                if material_sweep == 0 and is_rolling:
-                    # The common mode is material exchanged with the changing wrapped arc. Apply
-                    # it before relaxation so the capstan projection sees the conserved cable.
-                    common_rest_delta = 0.5 * (seg_rolling_delta_r[seg_left] + seg_rolling_delta_l[seg_right])
-                    seg_stretch[seg_left] = seg_stretch[seg_left] - common_rest_delta
-                    seg_stretch[seg_right] = seg_stretch[seg_right] - common_rest_delta
+                # Reuse the loaded row indices; topology stays fixed throughout
+                # this material solve. Nonlocal rows need a final shared-span check.
+                if material_sweep == 0:
+                    if seg_left != seg_offset + i - 1 or seg_right != seg_offset + i:
+                        nonlocal_cone_rows = int(1)
 
                 cap_ratio = tendon_guide_cap_ratio[guide_idx]
 
@@ -1253,8 +1342,14 @@ def solve_tendon_material(
                 len_r = seg_length[seg_right]
                 # Project the same unilateral Kelvin-Voigt tension used by
                 # solve_tendon_stretch, including damping at zero stretch.
-                d_l_raw = seg_stretch[seg_left]
-                d_r_raw = seg_stretch[seg_right]
+                # Retract this guide's previous transfer, retaining neighbor
+                # updates. Reprojecting net slip lets a later sweep undo an
+                # excessive earlier transfer rather than stop inside the cone.
+                previous_transfer = guide_material_transfer[guide_idx]
+                current_l = seg_stretch[seg_left]
+                current_r = seg_stretch[seg_right]
+                d_l_raw = current_l + previous_transfer
+                d_r_raw = current_r - previous_transfer
 
                 # use the true per-segment compliance for the cone: the precise stretch state
                 # above removes the conditioning need for the old 1e-8 floor, and clamping here
@@ -1266,14 +1361,12 @@ def solve_tendon_material(
                 comp_r = wp.max(compliance_r, 1.0e-30)
                 damping_tension_l = seg_damping_tension[seg_left] if compliance_l > 0.0 else 0.0
                 damping_tension_r = seg_damping_tension[seg_right] if compliance_r > 0.0 else 0.0
-                effective_stretch_l = wp.max(d_l_raw + comp_l * damping_tension_l, 0.0)
-                effective_stretch_r = wp.max(d_r_raw + comp_r * damping_tension_r, 0.0)
-                force_l = effective_stretch_l / comp_l
-                force_r = effective_stretch_r / comp_r
+                effective_stretch_l = d_l_raw + comp_l * damping_tension_l
+                effective_stretch_r = d_r_raw + comp_r * damping_tension_r
+                force_l = wp.max(effective_stretch_l / comp_l, 0.0)
+                force_r = wp.max(effective_stretch_r / comp_r, 0.0)
                 delta = float(0.0)
                 max_delta = float(0.0)
-
-                sweep_maxtension = wp.max(sweep_maxtension, wp.max(force_l, force_r))
 
                 if force_l > force_r * cap_ratio:
                     # rest_right -= delta must keep rest_right >= min_rest.
@@ -1284,10 +1377,6 @@ def solve_tendon_material(
                     )
                     delta = wp.max(delta, 0.0)
                     delta = wp.min(delta, max_delta)
-                    # rest_left += delta => d_l -= delta ; rest_right -= delta => d_r += delta
-                    seg_stretch[seg_left] = d_l_raw - delta
-                    seg_stretch[seg_right] = d_r_raw + delta
-                    sweep_dtension = wp.max(sweep_dtension, wp.max(delta / comp_l, delta / comp_r))
                 elif force_r > force_l * cap_ratio:
                     max_delta = wp.max(len_l - d_l_raw - min_rest, 0.0)
                     max_delta = wp.min(max_delta, effective_stretch_r)
@@ -1296,51 +1385,94 @@ def solve_tendon_material(
                     )
                     delta = wp.max(delta, 0.0)
                     delta = wp.min(delta, max_delta)
-                    seg_stretch[seg_left] = d_l_raw + delta
-                    seg_stretch[seg_right] = d_r_raw - delta
-                    sweep_dtension = wp.max(sweep_dtension, wp.max(delta / comp_l, delta / comp_r))
+                    delta = -delta
 
-            # Keep the normalization scale fixed so an unloading cable can settle as both the
-            # tension and its change approach zero. A per-sweep scale would shrink with the
-            # residual and keep their ratio finite long after the absolute change is negligible.
-            if material_sweep == 0:
-                settle_tension_reference = sweep_maxtension
-            rel_change = sweep_dtension / wp.max(settle_tension_reference, 1.0e-30)
-            if adaptive_cone_sweeps != 0 and rel_change < tendon_settle_tol:
-                converged = 1
+                # Bound the pair together when its total rest budget is feasible.
+                # Neighbor updates may replenish an infeasible pair in later sweeps.
+                lower = min_rest - (len_l - d_l_raw)
+                upper = len_r - d_r_raw - min_rest
+                if lower <= upper:
+                    delta = wp.clamp(delta, lower, upper)
+                else:
+                    delta = previous_transfer
+                change = delta - previous_transfer
+                if lower < delta and delta < upper:
+                    # Compute the small sliding correction at stretch scale.
+                    # Subtracting two large net transfers loses force accuracy.
+                    current_effective_l = current_l + comp_l * damping_tension_l
+                    current_effective_r = current_r + comp_r * damping_tension_r
+                    if delta > 0.0 and delta < max_delta:
+                        change = (comp_r * current_effective_l - cap_ratio * comp_l * current_effective_r) / (
+                            comp_r + cap_ratio * comp_l
+                        )
+                        delta = previous_transfer + change
+                    elif delta < 0.0 and -delta < max_delta:
+                        change = (cap_ratio * comp_r * current_effective_l - comp_l * current_effective_r) / (
+                            comp_l + cap_ratio * comp_r
+                        )
+                        delta = previous_transfer + change
+                seg_stretch[seg_left] = current_l - change
+                seg_stretch[seg_right] = current_r + change
+                guide_material_transfer[guide_idx] = delta
 
-        # Apply the friction-limited differential transport once after material relaxation so
-        # cone sweeps cannot iteratively erode it.
-        if apply_rolling_transfer != 0:
-            for i_roll in range(1, num_guides - 1):
-                guide_idx = guide_start + i_roll
-                if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
-                    continue
-                if not tendon_guide_active[guide_idx]:
-                    continue
+                # For ordinary routes the preceding guide is final after its
+                # neighbor updates their shared span (reverse on odd sweeps).
+                # Use this cheap check to reject unconverged sweeps early.
+                if converged != 0 and previous_guide >= 0:
+                    if not _material_sweep_guide_converged(
+                        previous_guide,
+                        seg_stretch,
+                        seg_length,
+                        seg_active_compliance,
+                        seg_damping_tension,
+                        tendon_guide_cap_ratio,
+                        tendon_guide_cone_seg_l,
+                        tendon_guide_cone_seg_r,
+                        guide_material_transfer,
+                        min_rest,
+                        tendon_settle_tol,
+                        tendon_settle_atol,
+                    ):
+                        converged = int(0)
+                previous_guide = guide_idx
 
-                seg_left = tendon_guide_cone_seg_l[guide_idx]
-                seg_right = tendon_guide_cone_seg_r[guide_idx]
-                if seg_left < 0 or seg_right < 0:
-                    continue
-
-                cap_ratio = tendon_guide_cap_ratio[guide_idx]
-                beta = (cap_ratio - 1.0) / (cap_ratio + 1.0)
-
-                # Apply only the friction-limited differential mode after relaxation. The common
-                # mode above is independent of friction and already accounts for wrapped material.
-                rolling_delta_diff = 0.5 * (seg_rolling_delta_r[seg_left] - seg_rolling_delta_l[seg_right])
-                len_al = seg_length[seg_left]
-                len_ar = seg_length[seg_right]
-                rest_l = len_al - seg_stretch[seg_left]
-                rest_r = len_ar - seg_stretch[seg_right]
-                rolling_transfer = rolling_delta_diff * beta
-                # Bound the zero-sum transfer as a pair. Clamping either span independently would
-                # discard the clipped amount and create cable material at the minimum rest length.
-                rolling_transfer = wp.max(rolling_transfer, min_rest - rest_l)
-                rolling_transfer = wp.min(rolling_transfer, rest_r - min_rest)
-                seg_stretch[seg_left] = seg_stretch[seg_left] - rolling_transfer
-                seg_stretch[seg_right] = seg_stretch[seg_right] + rolling_transfer
+            # Ordinary rows only need their last guide checked here. Skipped
+            # spans (e.g. coincident pinholes) can make more than two rows share
+            # a span, invalidating fused checks. Certify all rows in that case,
+            # but only when the fused checks would otherwise permit early-out.
+            if converged != 0 and previous_guide >= 0:
+                check_start = previous_guide
+                check_end = previous_guide + 1
+                if nonlocal_cone_rows != 0:
+                    check_start = guide_start + 1
+                    check_end = guide_end - 1
+                for guide_idx in range(check_start, check_end):
+                    if nonlocal_cone_rows != 0:
+                        guide_type = tendon_guide_type[guide_idx]
+                        is_rolling = guide_type == int(TendonGuideType.ROLLER) and tendon_guide_active[guide_idx]
+                        is_pinhole = guide_type == int(TendonGuideType.PINHOLE)
+                        if not (
+                            (apply_rolling_transfer != 0 and is_rolling) or (apply_pinhole_slip != 0 and is_pinhole)
+                        ):
+                            continue
+                        if tendon_guide_cone_seg_l[guide_idx] < 0 or tendon_guide_cone_seg_r[guide_idx] < 0:
+                            continue
+                    if not _material_sweep_guide_converged(
+                        guide_idx,
+                        seg_stretch,
+                        seg_length,
+                        seg_active_compliance,
+                        seg_damping_tension,
+                        tendon_guide_cap_ratio,
+                        tendon_guide_cone_seg_l,
+                        tendon_guide_cone_seg_r,
+                        guide_material_transfer,
+                        min_rest,
+                        tendon_settle_tol,
+                        tendon_settle_atol,
+                    ):
+                        converged = int(0)
+                        break
 
         # rebuild rest lengths from the telescoped stretch state (one cancellation per call,
         # paid once instead of every sweep -- this is what keeps the capstan accurate for stiff
@@ -1349,4 +1481,21 @@ def solve_tendon_material(
             seg = seg_offset + s_wb
             if seg_active[seg] != 0:
                 len_wb = seg_length[seg]
-                seg_rest_length[seg] = wp.max(len_wb - seg_stretch[seg], min_rest)
+                raw_rest = len_wb - seg_stretch[seg]
+                if report_material_exhaustion != 0:
+                    # The rest floor is often reached within a few float32 ulps.
+                    # Diagnose a material deficit, not reconstruction roundoff.
+                    roundoff = 1.0e-6 * wp.max(wp.max(wp.abs(len_wb), wp.abs(seg_stretch[seg])), min_rest)
+                    added = min_rest - raw_rest
+                    if added > roundoff:
+                        material_added = material_added + added
+                seg_rest_length[seg] = wp.max(raw_rest, min_rest)
+
+    if report_material_exhaustion != 0 and material_added > 0.0:
+        wp.printf(
+            "ERROR: Tendon %d material rest-length floor added %g m of cable. "
+            "The accepted material solve cannot conserve cable length; rest lengths and tensions are invalid. "
+            "Check wrapped-arc growth, available cable material, and material-solver convergence.\n",
+            tendon_id,
+            material_added,
+        )
