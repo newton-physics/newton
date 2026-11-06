@@ -85,7 +85,7 @@ per-file asset directories and missing-include ``FileNotFoundError``.
 MuJoCo validates the expanded document, including object-name uniqueness;
 repeated includes do not automatically rename objects.
 
-The converter supports the following rigid-body features:
+The importer supports the following rigid-body features:
 
 .. list-table::
    :header-rows: 1
@@ -188,10 +188,20 @@ validates ranges and infers activation dimensions. Disabled angular ranges keep
 MuJoCo's authored-unit convention. Both importers store disabled ranges in
 ``mujoco.dof_limit_range``; later finite Newton bounds take precedence.
 
+Passive joint stiffness and rest positions populate ``joint_stiffness`` and
+``joint_rest_q`` during import, so other Newton solvers can consume them.
+File values override builder defaults, including explicit zeros. Scalar rest
+positions use ``springref - ref`` when either value is authored; otherwise
+``default_joint_cfg.rest_q`` applies in Newton units. Automatic ``springdamper``
+still resolves again against assembled inertia during ``SolverMuJoCo`` construction.
+
 Fixed tendons and joint equalities use the shared Newton joint-reference fields
 for scalar joints. Compound joints additionally retain the selected DOF;
 tendon equalities use the shared tendon-reference fields. Site equalities
 retain shape references because body and joint IDs cannot represent their targets.
+One-ended joint equalities remain MuJoCo equality rows rather than Newton mimic
+constraints. Scaling adjusts polynomial coefficients for slide and linear-tendon
+coordinates.
 
 Joint ``solreflimit`` values, including inherited defaults, take precedence
 over builder limit gains. When omitted, customized builder ``limit_ke`` /
@@ -489,14 +499,75 @@ at the solver boundary:
   runtime observables (``qpos``, sensors) match the authored MJCF and
   native MuJoCo exactly.
 * Attributes in the ``mujoco.*`` custom-attribute namespace (for example
-  ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
-  data and remain in MuJoCo's absolute units.
+  authored ``actuator_ctrlrange``) are native MuJoCo data and remain in
+  MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
 :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` or the broad
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
-Native MuJoCo attributes remain absolute and are not shifted.
+Native MuJoCo attributes remain absolute and are not shifted. Core
+:attr:`~newton.Model.joint_rest_q` values are relative to the authored pose;
+the solver exports them as ``qpos_spring = joint_rest_q + ref`` for scalar
+joints.
+
+.. _mujoco-joint-spring-migration:
+
+Passive spring migration
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+MuJoCo's ``ref`` is the coordinate assigned to the authored pose;
+``springref`` is the spring equilibrium in that coordinate system.
+Newton stores the relative coordinate ``rest_q = springref - ref``,
+after conversion to meters or radians. If ``springref`` is omitted,
+MuJoCo defaults it to zero, giving ``rest_q = -ref``.
+
+.. deprecated:: 1.8
+
+    Use :attr:`~newton.Model.joint_stiffness` instead of
+    ``model.mujoco.dof_passive_stiffness``. The old name remains a warning
+    alias to the same DOF-sized array for at least one minor release.
+    Reads and writes through this alias emit a ``NewtonDeprecationWarning``.
+    In-place updates affect the core array directly.
+
+Legacy ``mujoco:dof_passive_stiffness`` and ``mujoco:dof_springref``
+custom-attribute inputs remain accepted by registered builders but are also
+deprecated since Newton 1.8. Finalization converts explicit programmatic inputs
+once into the core arrays and emits a ``NewtonDeprecationWarning``.
+Ordinary MJCF and USD spring imports populate the core arrays without these
+deprecation warnings. For a legacy stiffness
+input without ``springref``, the default is zero in MuJoCo coordinates
+(``rest_q = -ref``), unless a core rest coordinate is already configured.
+An explicit ``rest_q=0.0`` also takes precedence over that default; use
+``rest_q=None`` to leave it unspecified. Conflicting explicitly configured
+core rest coordinates and authored legacy rest values raise an error.
+
+Runtime ``model.mujoco.dof_springref`` is deprecated since Newton 1.8. When the
+model has no joints with more coordinates than DOFs (free, ball, distance, or
+rod) and no nonzero ``mujoco:dof_ref`` at finalization, the DOF and coordinate
+layouts coincide and ``springref`` equals ``rest_q``, so the old name remains a
+warning alias to :attr:`~newton.Model.joint_rest_q` for at least one minor
+release. The alias
+tracks ``rest_q``, so it no longer reports the absolute spring reference if
+``dof_ref`` is edited later. For other models, reads, assignments, and
+deletions raise an ``AttributeError`` with migration guidance. Replace runtime
+accesses with ``joint_rest_q``, subtract ``ref`` from legacy values, and index
+by :attr:`~newton.Model.joint_q_start`.
+
+To change a spring at runtime, edit :attr:`~newton.Model.joint_stiffness`
+or :attr:`~newton.Model.joint_rest_q` and notify the solver with
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`. Subsequent ``dof_ref``
+changes leave the Newton rest coordinate fixed and export
+``qpos_spring = joint_rest_q + ref``, regardless of whether the spring was
+authored through core fields, legacy builder inputs, MJCF, or USD. This replaces
+the legacy rule that kept the absolute MuJoCo spring reference fixed.
+
+BALL rest quaternions are transformed from the child joint frame to MuJoCo's
+body frame. A :attr:`~newton.ModelFlags.JOINT_PROPERTIES` notification refreshes
+this conversion after child-frame edits, using the last published rest pose.
+Use :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` to publish rest
+edits separately, or :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` for a full
+joint DOF update.
 
 
 Geometry types
@@ -571,7 +642,18 @@ Geometry types
 non-colliding reference frames used for sensor attachment and spatial
 tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``CYLINDER``, and
 ``BOX`` are MuJoCo-native site geom types; other types silently fall
-back to ``SPHERE``.
+back to ``SPHERE``. MuJoCo ignores the third size component of a cylinder
+site, so the MJCF importer sets ``scale[2]`` (Newton's barrel radius) of
+cylinder sites to ``0.0``.
+
+.. deprecated:: 1.8
+
+    The ``mujoco:site_size_is_display`` shape attribute is no longer populated
+    by the MJCF importer. Passing it to :meth:`~newton.ModelBuilder.add_site`
+    emits a ``NewtonDeprecationWarning``; if it is ``True``, ``scale[2]`` of a
+    cylinder site is set to ``0.0``. Remove the attribute, and set ``scale[2]``
+    to ``0.0`` directly where it was ``True``. The attribute will be removed in
+    a future release.
 
 Several Newton collision features — for example non-convex trimesh,
 SDF-based contacts, and hydroelastic contacts — are not part of the
@@ -744,12 +826,11 @@ the mode from user code.
 
 .. note::
 
-   ``use_mujoco_contacts=True`` and the MuJoCo CPU backend do not
-   apply the per-contact two-body factor — MuJoCo's internal
-   ``contact_params`` averages per-geom ``solref``, which cannot
-   reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
-   fall back to the legacy ``convert_solref(ke, kd, 1, 1)``
-   approximation on those paths.
+   ``use_mujoco_contacts=True`` does not apply the per-contact two-body
+   factor — MuJoCo's internal ``contact_params`` averages per-geom
+   ``solref``, which cannot reproduce the inverse-mass sum.
+   ``SOLREF_MODE_FORCE_SPACE`` shapes fall back to the legacy
+   ``convert_solref(ke, kd, 1, 1)`` approximation on that path.
 
 For parameter interpretation, stability tradeoffs, and task-oriented guidance,
 see :ref:`Tuning MuJoCo`.
@@ -760,9 +841,8 @@ Contact friction ``solreffriction`` mapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
-``solreffriction`` when the MuJoCo Warp backend uses elliptic friction cones
-(``use_mujoco_cpu=False``, ``cone="elliptic"``) with Newton contacts
-(``use_mujoco_contacts=False``). It targets the force-space friction slope
+``solreffriction`` with elliptic friction cones (``cone="elliptic"``) and Newton
+contacts (``use_mujoco_contacts=False``). It targets the force-space friction slope
 ``f = -kf * v`` below the Coulomb limit. The mapping is exact when the sum of
 MuJoCo's translational ``body_invweight0`` values matches the contact's inverse
 effective mass (the relevant diagonal of :math:`J M^{-1} J^T`) and the contact
@@ -1227,8 +1307,8 @@ Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
 worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
-and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
-assets, scales, and convex-hull counts may differ across worlds. Collision
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
+heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
 flags may also differ when Newton supplies contacts. Native MuJoCo contacts
 require matching collision flags, groups, and exclusions for corresponding geom
 slots. With native contacts,
@@ -1498,7 +1578,9 @@ such as MJCF ``solreflimit`` or USD ``mjc:solreflimit`` remain in the
 ``mujoco`` namespace and do not overwrite Newton's generic force-space
 joint-limit gains.
 
-MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
+MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`;
+``stiffness`` maps to :attr:`~newton.Model.joint_stiffness`, and scalar
+``springref - ref`` maps to :attr:`~newton.Model.joint_rest_q`.
 When importing MuJoCo-authored USD, opt into that mapping explicitly::
 
     from newton.usd import SchemaResolverMjc, SchemaResolverNewton
@@ -1701,9 +1783,9 @@ Updating joint force properties
 
 Use :attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` with
 :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` to publish joint
-friction, damping, target gains/modes, effort limits, passive stiffness, and
+friction, damping, target gains/modes, effort limits, :attr:`~newton.Model.joint_stiffness`, and
 limit coefficients/bounds. This includes the MuJoCo ``solreffriction``,
-``solimpfriction``, ``dof_passive_stiffness``, ``limit_margin``, ``solimplimit``,
+``solimpfriction``, ``limit_margin``, ``solimplimit``,
 and ``solreflimit`` custom attributes. Optional attributes that are absent
 retain their solver values. General MuJoCo actuator properties still use
 :attr:`~newton.ModelFlags.ACTUATOR_PROPERTIES`.
@@ -1718,7 +1800,7 @@ host model and cannot be captured.
 
 Use :attr:`~newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES` for
 :attr:`~newton.Model.joint_armature` changes. Reference-pose changes, including
-MuJoCo ``dof_ref`` and ``dof_springref``, use
+MuJoCo ``dof_ref`` and :attr:`~newton.Model.joint_rest_q`, use
 :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`. These paths recompute constants;
 reference updates also shift limit ranges to the new reference. Both flags
 are intended for reset-time or domain-randomization changes. Constant

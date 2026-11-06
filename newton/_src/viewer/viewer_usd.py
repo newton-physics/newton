@@ -170,9 +170,9 @@ class ViewerUSD(ViewerBase):
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
-        layer._texture_paths: dict[str, str] = {}
+        layer._texture_paths: dict[str, tuple[Any, str, str]] = {}  # mesh -> (texture object, digest, file)
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
-        layer._instance_appearance: dict[str, dict[str, np.ndarray]] = {}
+        layer._instance_appearance: dict[str, dict[str, Any]] = {}
 
     def _reset_stage(self):
         self.stage.GetRootLayer().Clear()
@@ -329,6 +329,14 @@ class ViewerUSD(ViewerBase):
         matching the smooth default of the OpenGL viewer. Source subdivision
         control surfaces are not reconstructed from the triangles.
 
+        Texture arrays are cached by object identity; a new array with the same
+        pixels reuses the exported file after decoding and hashing it. Reuse the
+        same array for unchanged frames to avoid that work. Pass a new array or
+        path to replace an image; in-place edits are not detected. A call that omits ``texture`` or
+        ``uvs`` removes a texture bound by an earlier call, as in ViewerGL, while
+        omitted colors and material values persist. Material bindings are not
+        time-sampled, so a replacement applies to the whole export.
+
         Args:
             name: Mesh name or Sdf.Path string.
             points: Vertex positions as a warp array of wp.vec3.
@@ -376,13 +384,16 @@ class ViewerUSD(ViewerBase):
         mesh_prim.GetExtentAttr().Set(UsdGeom.Mesh.ComputeExtent(points_np), self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
-        self._mesh_appearance[name] = {
-            "texture": texture if valid_texture else None,
-            "color": color,
-            "roughness": roughness,
-            "metallic": metallic,
-            "opacity": opacity,
-        }
+        previous_texture = self._mesh_appearance.get(name, {}).get("texture")
+        appearance = self._mesh_appearance.setdefault(name, {})
+        for key, value in (("color", color), ("roughness", roughness), ("metallic", metallic), ("opacity", opacity)):
+            if value is not None:
+                appearance[key] = value
+        appearance["texture"] = texture if valid_texture else None
+        appearance["texture_path"] = self._resolve_texture_path(name, texture) if valid_texture else None
+        color, roughness, metallic, opacity = (
+            appearance.get(key) for key in ("color", "roughness", "metallic", "opacity")
+        )
 
         normals_np = (
             normals.numpy().astype(np.float32) if normals is not None else compute_vertex_normals(points_np, indices_np)
@@ -401,12 +412,18 @@ class ViewerUSD(ViewerBase):
         if valid_texture:
             material = self._get_preview_surface_material(
                 name,
-                texture=texture,
+                texture=appearance["texture_path"],
                 opacity=opacity,
                 roughness=roughness,
                 metallic=metallic,
             )
-        elif color is not None or roughness is not None or metallic is not None or opacity is not None:
+        elif (
+            color is not None
+            or roughness is not None
+            or metallic is not None
+            or opacity is not None
+            or previous_texture is not None
+        ):
             material = self._get_preview_surface_material(
                 name,
                 color=color,
@@ -419,6 +436,10 @@ class ViewerUSD(ViewerBase):
 
         if material is not None:
             self._bind_material(mesh_prim.GetPrim(), material)
+            material_path = str(material.GetPath())
+            if material_path != appearance.get("material_path"):
+                appearance["material_path"] = material_path
+                self._refresh_mesh_instance_materials(name)
 
         # how to hide the prototype mesh but not the instances in USD?
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
@@ -533,8 +554,9 @@ class ViewerUSD(ViewerBase):
         if isinstance(texture, str):
             return os.path.abspath(texture)
 
-        if mesh_name in self._texture_paths:
-            return self._texture_paths[mesh_name]
+        cached = self._texture_paths.get(mesh_name)
+        if cached is not None and cached[0] is texture:
+            return cached[2]
 
         from ..utils.texture import load_texture  # noqa: PLC0415
 
@@ -544,18 +566,24 @@ class ViewerUSD(ViewerBase):
 
         tex_dir = os.path.dirname(self.output_path)
         safe_name = mesh_name.replace("/", "_").replace("\\", "_")
-        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
-        try:
-            self._save_texture_atomic(tex_array, tex_path)
-        except Exception as exc:
-            warnings.warn(
-                f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
-                NewtonWarning,
-                stacklevel=2,
-            )
-            return None
+        # Renderers cache images by path. Do not overwrite an earlier texture
+        # when its replacement needs to be loaded by an already-open scene.
+        digest = hashlib.blake2s(str(tex_array.shape).encode() + tex_array.tobytes(), digest_size=8).hexdigest()
+        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}_{digest}.png")
+        if (cached is None or cached[1] != digest) and not os.path.exists(tex_path):
+            try:
+                self._save_texture_atomic(tex_array, tex_path)
+            except Exception as exc:
+                warnings.warn(
+                    f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. "
+                    "Mesh will render without texture.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                return None
 
-        self._texture_paths[mesh_name] = tex_path
+        # A new array object with the same pixels keeps its export.
+        self._texture_paths[mesh_name] = (texture, digest, tex_path)
         return tex_path
 
     @staticmethod
@@ -671,6 +699,14 @@ class ViewerUSD(ViewerBase):
         safe = mesh_name.replace("/", "_").lstrip("_")
         return f"{self._root_path}/Materials/mat_{safe}"
 
+    @override
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        if flags & newton.ModelFlags.SHAPE_TYPE_AND_SOURCE and self._shape_geometry_changed():
+            raise NotImplementedError(
+                "ViewerUSD does not support shape geometry changes such as body variant selection."
+            )
+        super().notify_model_changed(flags)
+
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes
     @override
@@ -733,6 +769,8 @@ class ViewerUSD(ViewerBase):
 
         appearance_changed = colors is not None or materials is not None or opacities is not None
         appearance = self._instance_appearance.setdefault(name, {})
+        appearance["mesh"] = mesh
+        appearance["count"] = len(xforms)
         if colors is not None:
             appearance["colors"] = np.asarray(colors, dtype=np.float32)
         if materials is not None:
@@ -754,7 +792,7 @@ class ViewerUSD(ViewerBase):
             cached_opacities = None
 
         mesh_appearance = self._mesh_appearance.get(mesh, {})
-        mesh_texture = mesh_appearance.get("texture")
+        mesh_texture = mesh_appearance.get("texture_path")
         mesh_opacity = mesh_appearance.get("opacity")
 
         for i in range(len(xforms)):
@@ -822,6 +860,47 @@ class ViewerUSD(ViewerBase):
                     metallic=metallic,
                 )
                 self._bind_material(instance, material)
+
+    def _refresh_mesh_instance_materials(self, mesh: str) -> list[tuple[str, int, str]]:
+        """Refresh local instance overrides after the prototype material changes."""
+        updated = []
+        base = self._mesh_appearance[mesh]
+        mesh_path = Sdf.Path(self._get_path(mesh))
+        for name, appearance in self._instance_appearance.items():
+            if appearance.get("mesh") != mesh:
+                continue
+            for i in range(appearance["count"]):
+                instance = self.stage.GetPrimAtPath(self._get_path(name) + f"/instance_{i}")
+                if not instance or not instance.GetRelationship("material:binding").HasAuthoredTargets():
+                    continue
+                # Reusing a USD group name can leave instances on its previous prototype.
+                references = instance.GetMetadata("references")
+                if not references or not any(ref.primPath == mesh_path for ref in references.GetAppliedItems()):
+                    continue
+                # A binding inherited through the prototype needs no local override.
+                binding_path = instance.GetPath().AppendProperty("material:binding")
+                if not self.stage.GetRootLayer().GetRelationshipAtPath(binding_path):
+                    updated.append((name, i, base["material_path"]))
+                    continue
+                colors = appearance.get("colors")
+                params = appearance.get("materials")
+                opacities = appearance.get("opacities")
+                color = colors[i] if colors is not None else base.get("color")
+                material_params = params[i] if params is not None else None
+                use_texture = base.get("texture_path") is not None and (
+                    material_params is None or material_params[3] > 0.5
+                )
+                material = self._get_preview_surface_material(
+                    mesh,
+                    texture=base.get("texture_path") if use_texture else None,
+                    color=None if use_texture else color,
+                    roughness=float(material_params[0]) if material_params is not None else None,
+                    metallic=float(material_params[1]) if material_params is not None else None,
+                    opacity=float(opacities[i]) if opacities is not None else base.get("opacity"),
+                )
+                self._bind_material(instance, material)
+                updated.append((name, i, str(material.GetPath())))
+        return updated
 
     # log a set of instances as a point instancer, faster but less flexible
     def log_instances_point_instancer(

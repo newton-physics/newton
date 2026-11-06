@@ -15,9 +15,6 @@ construction.
     please file issues or discussion threads.
 """
 
-import warnings
-from typing import TYPE_CHECKING
-
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
@@ -38,7 +35,6 @@ from ._src.actuators import (
     parse_actuator_prim,
     register_actuator_component,
 )
-from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",
@@ -60,48 +56,3 @@ __all__ = [
     "parse_actuator_prim",
     "register_actuator_component",
 ]
-
-if TYPE_CHECKING:
-    Clamping = ClampingBase
-    Controller = DriveBase
-    ControllerNeuralLSTM = DriveNeuralLSTM
-    ControllerNeuralMLP = DriveNeuralMLP
-    ControllerPD = DrivePD
-    ControllerPID = DrivePID
-
-_DEPRECATED_SYMBOLS = {
-    "Clamping": ClampingBase,
-    "Controller": DriveBase,
-    "ControllerNeuralLSTM": DriveNeuralLSTM,
-    "ControllerNeuralMLP": DriveNeuralMLP,
-    "ControllerPD": DrivePD,
-    "ControllerPID": DrivePID,
-}
-
-__deprecated_symbols__ = {
-    "Clamping": "Deprecated in 1.6; use ClampingBase instead.",
-    "Controller": "Deprecated in 1.6; use DriveBase instead.",
-    "ControllerNeuralLSTM": "Deprecated in 1.6; use DriveNeuralLSTM instead.",
-    "ControllerNeuralMLP": "Deprecated in 1.6; use DriveNeuralMLP instead.",
-    "ControllerPD": "Deprecated in 1.6; use DrivePD instead.",
-    "ControllerPID": "Deprecated in 1.6; use DrivePID instead.",
-}
-
-
-def __getattr__(name: str):
-    try:
-        value = _DEPRECATED_SYMBOLS[name]
-    except KeyError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-
-    replacement = value.__name__
-    warnings.warn(
-        f"newton.actuators.{name} is deprecated in Newton 1.6; use newton.actuators.{replacement} instead.",
-        NewtonDeprecationWarning,
-        stacklevel=2,
-    )
-    return value
-
-
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_DEPRECATED_SYMBOLS))

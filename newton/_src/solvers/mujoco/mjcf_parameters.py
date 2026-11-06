@@ -146,8 +146,6 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         ("native_equality_auto_relpose", "mujoco:equality_constraint", wp.bool, False, None),
         ("native_equality_site1", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_equality_site2", "mujoco:equality_constraint", wp.int32, -1, "shape"),
-        ("native_equality_dof1", "mujoco:equality_constraint", wp.int32, -1, "joint_dof"),
-        ("native_equality_dof2", "mujoco:equality_constraint", wp.int32, -1, "joint_dof"),
     ):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -169,7 +167,7 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
         return {}
     fields = {name: getattr(attrs, f"native_joint_{name}").numpy() for name in _NATIVE_JOINT_FIELDS}
     ranges = attrs.dof_limit_range.numpy()
-    stiffness = attrs.dof_passive_stiffness.numpy()
+    stiffness = model.joint_stiffness.numpy()
     actgravcomp = attrs.jnt_actgravcomp.numpy()
     damping, armature, friction = (
         model.joint_damping.numpy(),
@@ -212,7 +210,7 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
 def _sync_native_joint_parameters(model: Model, native: mujoco.MjModel, resolved: dict[int, int]) -> None:
     if not resolved:
         return
-    stiffness, damping = model.mujoco.dof_passive_stiffness.numpy(), model.joint_damping.numpy()
+    stiffness, damping = model.joint_stiffness.numpy(), model.joint_damping.numpy()
     dofs_per_world = model.joint_dof_count // max(model.world_count, 1)
     for dof, j in resolved.items():
         width = 6 if native.jnt_type[j] == 0 else 3 if native.jnt_type[j] == 1 else 1
@@ -221,7 +219,7 @@ def _sync_native_joint_parameters(model: Model, native: mujoco.MjModel, resolved
             damping[offset + dof : offset + dof + width] = native.dof_damping[
                 native.jnt_dofadr[j] : native.jnt_dofadr[j] + width
             ]
-    model.mujoco.dof_passive_stiffness.assign(stiffness)
+    model.joint_stiffness.assign(stiffness)
     model.joint_damping.assign(damping)
 
 

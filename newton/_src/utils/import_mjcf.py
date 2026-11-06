@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import MAXVAL, Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
@@ -73,6 +74,24 @@ _ACTUATOR_SHORTCUT_DEFAULTS = {
         "mujoco:actuator_biastype": 0,  # none
         "mujoco:actuator_ctrllimited": 1,  # true
     },
+}
+
+# Vector attributes that MuJoCo reads with fewer values than their length, keeping
+# the remaining components from the default class (MuJoCo's mjcf_read_table.inc).
+_SOLVER_LIMIT_VECTORS = frozenset({"solreflimit", "solimplimit", "solreffriction", "solimpfriction"})
+_ACTUATOR_VECTORS = frozenset({"gear", "damping"})
+_MJCF_PARTIAL_VECTORS = {
+    "geom": frozenset({"size", "friction", "solref", "solimp", "fluidcoef"}),
+    "site": frozenset({"size"}),
+    "joint": _SOLVER_LIMIT_VECTORS,
+    "tendon": _SOLVER_LIMIT_VECTORS,
+    "pair": frozenset({"friction", "solref", "solreffriction", "solimp"}),
+    "equality": frozenset({"solref", "solimp"}),
+    "general": _ACTUATOR_VECTORS | {"dynprm", "gainprm", "biasprm"},
+    **dict.fromkeys(
+        ("motor", "position", "velocity", "intvelocity", "pid", "damper", "cylinder", "muscle", "dcmotor"),
+        _ACTUATOR_VECTORS,
+    ),
 }
 
 
@@ -477,8 +496,12 @@ def parse_mjcf(
         convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-            and finalize under ``model.mujoco.equality_constraint_*``.
-        convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
+            and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
+            target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
+            with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+        convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
+            Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
+            an identity rest orientation. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
             where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
@@ -518,6 +541,7 @@ def parse_mjcf(
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
     dcmotor_parameters = dcmotor.resolve_mjcf_parameters(root)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
+    start_body_count = len(builder.body_mass)
 
     contact_sections = root.findall("contact")
 
@@ -613,6 +637,12 @@ def parse_mjcf(
     inertia_group_range = tuple(int(value) for value in compiler_attribs.get("inertiagrouprange", "0 5").split())
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
+    bound_mass = float(compiler_attribs.get("boundmass", 0.0))
+    bound_inertia = float(compiler_attribs.get("boundinertia", 0.0)) * scale**2
+    balance_inertia_value = compiler_attribs.get("balanceinertia", "false").lower()
+    if balance_inertia_value not in {"false", "true"}:
+        raise ValueError(f"MJCF compiler balanceinertia must be 'false' or 'true'; got {balance_inertia_value!r}.")
+    balance_inertia = balance_inertia_value == "true"
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -703,10 +733,7 @@ def parse_mjcf(
             if key in attrib:
                 if isinstance(attrib[key], dict):
                     attrib[key] = merge_attrib(attrib[key], value, tag=key)
-                elif (
-                    tag in {"general", "motor", "position", "velocity", "intvelocity", "damper", "muscle", "dcmotor"}
-                    and key == "damping"
-                ):
+                elif key in _MJCF_PARTIAL_VECTORS.get(tag, ()):
                     # MuJoCo overrides only the supplied prefix of these vectors.
                     values = value.split()
                     attrib[key] = " ".join(values + attrib[key].split()[len(values) :])
@@ -1240,7 +1267,7 @@ def parse_mjcf(
             if geom_class is not None and is_ignored_class(geom_class):
                 continue
             geom_defaults = resolve_class_defaults(geom_class, defaults)
-            geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib)
+            geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib, tag="geom")
 
             raw_geom_name = geom.attrib.get("name")
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
@@ -1885,12 +1912,10 @@ def parse_mjcf(
             # Sites are typically hidden by default
             visible = False
 
-            # Expand to 3-element vector if needed
-            if len(site_size) == 2:
-                # Two values (e.g., capsule/cylinder: radius, half-height)
-                radius = site_size[0]
-                half_height = site_size[1]
-                site_size = wp.vec3(radius, half_height, 0.0)
+            # MuJoCo ignores the third size component of a cylinder site, whereas
+            # Newton interprets a cylinder's scale[2] as its barrel radius.
+            if geo_type == GeoType.CYLINDER:
+                site_size[2] = 0.0
 
             # Add site using builder.add_site()
             site_label = f"{label_prefix}/{site_name}" if label_prefix else site_name
@@ -1901,7 +1926,6 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
-                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
@@ -2171,6 +2195,7 @@ def parse_mjcf(
             parent matches the parent_body parameter from parse_mjcf. Only root bodies respect the
             floating/base_joint parameters; nested bodies use their defined joints from the MJCF.
         """
+        nonlocal approximated_spring_rest
         # Infer if this is a root body by checking if parent matches the outer parent_body parameter
         # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
         is_mjcf_root = parent == parent_body
@@ -2251,12 +2276,13 @@ def parse_mjcf(
             # linear_axes/angular_axes) and only assigned DOF indices after the loop.
             linear_dof_attrs: list[dict[str, Any]] = []
             angular_dof_attrs: list[dict[str, Any]] = []
-            # MJCF joint name -> (is_linear, index into linear_dof_attrs/angular_dof_attrs)
+            # (MJCF joint name, is_linear, index into linear/angular_dof_attrs)
             mjcf_joint_dof_slots: list[tuple[str, bool, int]] = []
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
             ball_damping = default_joint_damping
+            ball_stiffness = builder.default_joint_cfg.stiffness
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_attrib = resolve_element_attrib(joint, "joint", defaults)
@@ -2284,6 +2310,8 @@ def parse_mjcf(
                         parsing_mode="mjcf",
                         context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                     )
+                    dof_attr.pop("mujoco:dof_passive_stiffness", None)
+                    dof_attr.pop("mujoco:dof_springref", None)
                     if has_solreflimit_mode:
                         # The raw vec2 cannot distinguish authored
                         # solreflimit="0 0" from the "not authored" sentinel.
@@ -2301,6 +2329,7 @@ def parse_mjcf(
                     # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
                     ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
+                    ball_stiffness = parse_float(joint_attrib, "stiffness", builder.default_joint_cfg.stiffness)
                     break
                 is_angular = joint_type_str == "hinge"
                 is_linear = joint_type_str == "slide"
@@ -2339,7 +2368,6 @@ def parse_mjcf(
                         joint_ref_value *= scale
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
-
                 disabled_range = None
                 if limited == "true" and (not has_range or joint_range[0] >= joint_range[1]):
                     raise ValueError("Joint range lower bound must be smaller than upper bound.")
@@ -2381,6 +2409,15 @@ def parse_mjcf(
                             raise ValueError("Joint actuatorfrcrange lower bound must be smaller than upper bound.")
                         effort_limit = max(abs(lower), abs(upper))
 
+                rest_q = builder.default_joint_cfg.rest_q
+                if "springref" in joint_attrib or "ref" in joint_attrib:
+                    rest_q = parse_float(joint_attrib, "springref", 0.0) - parse_float(joint_attrib, "ref", 0.0)
+                    if is_angular:
+                        if use_degrees:
+                            rest_q = np.deg2rad(rest_q)
+                    else:
+                        rest_q *= scale
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -2390,6 +2427,8 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     damping=parse_float(joint_attrib, "damping", default_joint_damping),
+                    stiffness=parse_float(joint_attrib, "stiffness", builder.default_joint_cfg.stiffness),
+                    rest_q=rest_q,
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
@@ -2404,8 +2443,10 @@ def parse_mjcf(
                 )
                 if disabled_range is not None:
                     dof_attr["mujoco:dof_limit_range"] = disabled_range
+                dof_attr.pop("mujoco:dof_passive_stiffness", None)
+                dof_attr.pop("mujoco:dof_springref", None)
                 if is_linear:
-                    for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
+                    for attr_name in ("mujoco:dof_ref", "mujoco:limit_margin"):
                         if attr_name in dof_attr:
                             dof_attr[attr_name] *= scale
                 if has_solreflimit_mode:
@@ -2456,6 +2497,10 @@ def parse_mjcf(
                     joint_type = JointType.REVOLUTE
                 elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
                     joint_type = JointType.BALL
+                    if any(axis.stiffness != 0.0 and axis.rest_q not in (None, 0.0) for axis in angular_axes):
+                        approximated_spring_rest = True
+                    for axis in angular_axes:
+                        axis.rest_q = 0.0
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
@@ -2563,6 +2608,7 @@ def parse_mjcf(
                     armature=joint_armature[-1] if joint_armature else None,
                     friction=ball_friction,
                     damping=ball_damping,
+                    stiffness=ball_stiffness,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
@@ -2972,6 +3018,7 @@ def parse_mjcf(
                             common["name"],
                         )
 
+        mujoco_only_joint_equalities = []
         for joint in equality.findall("joint"):
             attribs = resolve_element_attrib(joint, "equality")
             common = parse_common_attributes(attribs)
@@ -2986,11 +3033,34 @@ def parse_mjcf(
                         "Joint constraint: %s coupled to %s with polycoef %s", joint1_name, joint2_name, polycoef
                     )
 
-                joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
-                joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
+                endpoints = []
+                for name in (joint1_name, joint2_name):
+                    if not name:
+                        # MuJoCo fixes joint1 to the polynomial's constant term when joint2 is omitted.
+                        endpoints.append((-1, -1))
+                        continue
+                    key = sanitize_name(name)
+                    if key not in joint_name_to_idx:
+                        raise ValueError(f"Joint equality '{common['name']}' references unknown joint '{name}'.")
+                    endpoints.append((joint_name_to_idx[key], mjcf_joint_name_to_dof.get(key, -1)))
+                if joint2_name and endpoints[0] == endpoints[1]:
+                    raise ValueError(f"Joint equality '{common['name']}' uses joint '{joint1_name}' as both endpoints.")
+                (joint1_idx, joint1_dof), (joint2_idx, joint2_dof) = endpoints
+                custom_attrs["mujoco:equality_constraint_joint1_dof"] = joint1_dof
+                custom_attrs["mujoco:equality_constraint_joint2_dof"] = joint2_dof
                 polycoef_values = mjc_parse_polycoef(polycoef)
+                # Slide coordinates are imported in scaled lengths: q1 = sum(c_k q2^k)
+                # becomes s1 q1 = sum(c_k s1 / s2^k (s2 q2)^k).
+                s1 = scale if sanitize_name(joint1_name) in mjcf_slide_joint_names else 1.0
+                s2 = scale if joint2_name and sanitize_name(joint2_name) in mjcf_slide_joint_names else 1.0
+                polycoef_values = [c * s1 / s2**k for k, c in enumerate(polycoef_values)]
+                # Newton mimic constraints couple two whole scalar joints; other
+                # endpoints stay MuJoCo equality rows resolved per DoF.
+                scalar_pair = joint2_idx >= 0 and all(
+                    sum(builder.joint_dof_dim[index]) == 1 for index in (joint1_idx, joint2_idx)
+                )
 
-                if convert_mjc_equality_constraints:
+                if convert_mjc_equality_constraints and scalar_pair:
                     if mjc_polycoef_has_higher_order(polycoef_values):
                         warnings.warn(
                             f"Joint equality '{common['name']}' uses higher-order polycoef terms. "
@@ -3009,6 +3079,8 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
+                    if convert_mjc_equality_constraints:
+                        mujoco_only_joint_equalities.append(common["name"] or f"joint1={joint1_name}")
                     _add_equality_constraint(
                         builder,
                         constraint_type=EqType.JOINT,
@@ -3019,6 +3091,18 @@ def parse_mjcf(
                         enabled=common["active"],
                         custom_attributes=custom_attrs,
                     )
+
+        if mujoco_only_joint_equalities:
+            shown = ", ".join(mujoco_only_joint_equalities[:5])
+            if len(mujoco_only_joint_equalities) > 5:
+                shown += ", ..."
+            warnings.warn(
+                f"{len(mujoco_only_joint_equalities)} joint equalities omit joint2 or target a multi-DoF joint, "
+                f"such as joints sharing a body ({shown}), so they stay MuJoCo equality constraints instead of "
+                "mimic constraints. SolverMuJoCo enforces them; other solvers ignore them.",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
         # TODO: add support for equality constraint type "flex" once Newton supports it
@@ -3054,6 +3138,7 @@ def parse_mjcf(
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
+    approximated_spring_rest = False
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
     # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
     # Maps individual MJCF joint names to their specific DOF index.
@@ -3147,6 +3232,15 @@ def parse_mjcf(
         )
 
     # -----------------
+    # Report once outside the recursive body parser so the warning points to the caller.
+    if approximated_spring_rest:
+        warnings.warn(
+            "Converting three hinges to a ball joint uses an identity spring rest orientation; "
+            "set convert_3d_hinge_to_ball_joints=False to preserve scalar spring rest coordinates.",
+            NewtonWarning,
+            stacklevel=3,
+        )
+
     # add equality constraints
 
     if not skip_equality_constraints:
@@ -3869,6 +3963,35 @@ def parse_mjcf(
     if not visual_shapes:
         for shape_idx in collider_shapes:
             builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
+
+    # MuJoCo applies compiler inertia guards after all body mass properties have
+    # been accumulated. Restrict them to this import so an existing builder is
+    # not affected.
+    for body_idx in range(start_body_count, len(builder.body_mass)):
+        mass = builder.body_mass[body_idx]
+        inertia = np.array(builder.body_inertia[body_idx], dtype=np.float64).reshape(3, 3)
+        inertia = 0.5 * (inertia + inertia.T)
+        principal_inertia, principal_axes = np.linalg.eigh(inertia)
+
+        mass = max(mass, bound_mass)
+        principal_inertia = np.maximum(principal_inertia, bound_inertia)
+        if mass < 0.0 or np.any(principal_inertia < 0.0):
+            raise ValueError("MJCF body mass and inertia must be nonnegative.")
+
+        # Allow accumulated float32 storage and rotation error at the triangle
+        # boundary without replacing a valid anisotropic inertia with its mean.
+        triangle_tolerance = 8.0 * np.finfo(np.float32).eps * principal_inertia[2]
+        if principal_inertia[0] + principal_inertia[1] < principal_inertia[2] - triangle_tolerance:
+            if not balance_inertia:
+                raise ValueError("MJCF body inertia must satisfy A + B >= C; use 'balanceinertia' to fix.")
+            principal_inertia[:] = np.mean(principal_inertia)
+
+        inertia = principal_axes @ np.diag(principal_inertia) @ principal_axes.T
+        inertia = wp.mat33(inertia.astype(np.float32))
+        builder.body_mass[body_idx] = mass
+        builder.body_inv_mass[body_idx] = 1.0 / mass if mass > 0.0 else 0.0
+        builder.body_inertia[body_idx] = inertia
+        builder.body_inv_inertia[body_idx] = wp.inverse(inertia) if any(inertia) else inertia
 
     end_shape_count = len(builder.shape_type)
 

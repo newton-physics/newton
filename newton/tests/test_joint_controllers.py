@@ -57,8 +57,8 @@ def test_revolute_controller(
         parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=pos_target_val,
-        target_vel=vel_target_val,
+        target_q=pos_target_val,
+        target_qd=vel_target_val,
         armature=0.0,
         # limit_lower=-wp.pi,
         # limit_upper=wp.pi,
@@ -284,8 +284,8 @@ def test_free_plus_revolute_position_target(
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=target_pos,
-        target_vel=0.0,
+        target_q=target_pos,
+        target_qd=0.0,
         target_ke=target_ke,
         target_kd=0.0,
         armature=0.0,
@@ -348,8 +348,8 @@ def test_effort_limit_clamping(
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=0.0,
-        target_vel=0.0,
+        target_q=0.0,
+        target_qd=0.0,
         armature=0.0,
         limit_ke=0.0,
         limit_kd=0.0,
@@ -434,8 +434,8 @@ def test_qfrc_actuator(
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=0.0,
-        target_vel=0.0,
+        target_q=0.0,
+        target_qd=0.0,
         armature=0.0,
         limit_ke=0.0,
         limit_kd=0.0,
@@ -589,8 +589,7 @@ def test_free_joint_qfrc_actuator_frame(
 
 
 def _steel(model):
-    # The matrix-free solve is CUDA-only; split is the CPU route.
-    return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+    return newton.solvers.SolverSteel(model)
 
 
 devices = get_test_devices()

@@ -1,3 +1,4 @@
 Add experimental `ModelBuilder.add_mjcf_native()` to import MJCF through MuJoCo's native parser and compiler, preserving supported parameters through Newton composition and resolving inertia-dependent parameters when constructing `SolverMuJoCo`. Compound scalar joints share the first authored joint's anchor, matching legacy import. The existing `add_mjcf()` entry point remains available with its current parsing behavior and dependencies.
 Add experimental `ModelBuilder.CustomAttribute.mjcf_native_value_transformer` to extract typed native fields and standard MJCF user data into custom attributes.
 Preserve actuator damping, armature, and DC-motor control signatures through the native importer, along with mesh roughness, metallic values, and RGB/RGBA texture bindings.
+Populate core joint stiffness and rest positions from native MJCF, with authored values taking precedence over builder defaults, and reuse shared compound-joint equality references.

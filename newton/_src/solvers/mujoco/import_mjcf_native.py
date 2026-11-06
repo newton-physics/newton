@@ -155,6 +155,16 @@ def _scale_spec(spec: mujoco.MjSpec, scale: float) -> None:
         pair.margin *= scale
         pair.gap *= scale
     for equality in spec.equalities:
+        if equality.type == mujoco.mjtEq.mjEQ_JOINT:
+            first = spec.joint(equality.name1)
+            second = spec.joint(equality.name2) if equality.name2 else None
+            s1 = scale if first is not None and first.type == mujoco.mjtJoint.mjJNT_SLIDE else 1.0
+            s2 = scale if second is not None and second.type == mujoco.mjtJoint.mjJNT_SLIDE else 1.0
+            equality.data[:5] *= s1 / np.power(s2, np.arange(5))
+        elif equality.type == mujoco.mjtEq.mjEQ_TENDON:
+            s1 = scale if equality.name1 in linear_tendons else 1.0
+            s2 = scale if equality.name2 in linear_tendons else 1.0
+            equality.data[:5] *= s1 / np.power(s2, np.arange(5))
         if equality.type in (mujoco.mjtEq.mjEQ_CONNECT, mujoco.mjtEq.mjEQ_WELD):
             equality.data[:3] *= scale
         if equality.type == mujoco.mjtEq.mjEQ_WELD:
@@ -188,9 +198,7 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
             damping=float(model.dof_damping[model.jnt_dofadr[first]]),
             armature=float(model.dof_armature[model.jnt_dofadr[first]]) * armature_scale,
             friction=float(model.dof_frictionloss[model.jnt_dofadr[first]]),
-            custom_attributes={
-                key: {0: value} for key, value in attributes(dof_passive_stiffness=model.jnt_stiffness[first]).items()
-            },
+            stiffness=float(model.jnt_stiffness[first]),
         )
         return joint, {first: builder.joint_qd_start[joint]}
     ordered = sorted(selected, key=lambda j: model.jnt_type[j] != int(mujoco.mjtJoint.mjJNT_SLIDE))
@@ -200,8 +208,6 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
         ref = float(model.qpos0[model.jnt_qposadr[j]])
         values = attributes(
             dof_ref=ref,
-            dof_springref=model.qpos_spring[model.jnt_qposadr[j]],
-            dof_passive_stiffness=model.jnt_stiffness[j],
             limit_margin=model.jnt_margin[j],
             solimplimit=model.jnt_solimp[j],
             solreffriction=model.dof_solref[d],
@@ -213,6 +219,8 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
         axis = ModelBuilder.JointDofConfig(
             axis=model.jnt_axis[j],
             damping=float(model.dof_damping[d]),
+            stiffness=float(model.jnt_stiffness[j]),
+            rest_q=float(model.qpos_spring[model.jnt_qposadr[j]]) - ref,
             armature=float(model.dof_armature[d]) * armature_scale,
             friction=float(model.dof_frictionloss[d]),
             actuator_mode=JointTargetMode.NONE,
@@ -482,6 +490,7 @@ def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes, custo
 def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attributes, convert, custom):
     import mujoco
 
+    mujoco_only = []
     for i in range(model.neq):
         kind = EqType(int(model.eq_type[i]))
         first, second = int(model.eq_obj1id[i]), int(model.eq_obj2id[i])
@@ -492,8 +501,6 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
             native_equality_auto_relpose=False,
             native_equality_site1=-1,
             native_equality_site2=-1,
-            native_equality_dof1=-1,
-            native_equality_dof2=-1,
         )
         attrs.update(custom("mujoco:equality_constraint", spec.equalities[i]))
         label, active = model.equality(i).name, bool(model.eq_active0[i])
@@ -521,8 +528,8 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
                 continue
             for side, target in enumerate((first, second), 1):
                 if target >= 0 and builder.joint_type[joints[target]] == JointType.D6:
-                    attrs.update(attributes(**{f"native_equality_dof{side}": dofs[target]}))
-            scalar = all(builder.joint_type[joints[j]] != JointType.D6 for j in (first, second) if j >= 0)
+                    attrs.update(attributes(**{f"equality_constraint_joint{side}_dof": dofs[target]}))
+            scalar = second >= 0 and all(sum(builder.joint_dof_dim[joints[j]]) == 1 for j in (first, second))
             if convert and scalar:
                 if mjc_polycoef_has_higher_order(data[:5]):
                     warnings.warn(
@@ -536,6 +543,8 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
                     builder, joints[first], joints.get(second, -1), data[:5], label, active, attrs
                 )
             else:
+                if convert:
+                    mujoco_only.append(label or f"joint1={model.joint(first).name}")
                 row = _add_equality_constraint(
                     builder,
                     kind,
@@ -602,6 +611,14 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
             )
 
         builder._process_custom_attributes(row, attrs, "mujoco:equality_constraint")
+
+    if mujoco_only:
+        warnings.warn(
+            f"{len(mujoco_only)} joint equalities omit joint2 or target a multi-DoF joint, "
+            f"so they stay MuJoCo equality constraints: {', '.join(mujoco_only)}.",
+            NewtonWarning,
+            stacklevel=3,
+        )
 
 
 def _contacts(builder, spec, model, bodies, geoms, attributes, start_shape, self_collisions, custom):
@@ -726,6 +743,7 @@ def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoc
         defaults,
         "joint",
         damping=str(builder.default_joint_cfg.damping),
+        stiffness=str(builder.default_joint_cfg.stiffness),
         armature=str(builder.default_joint_cfg.armature),
     )
     gap = builder.default_shape_cfg.gap
@@ -744,13 +762,29 @@ def _parse_spec(builder: ModelBuilder, source: str, scale: float) -> tuple[mujoc
         return mujoco.MjSpec.from_file(filename, include={filename: xml.encode("utf-8")})
 
     spec = parse()
-    # Only unauthored limits change when the lowest-priority fallback changes.
+    # Changing fallbacks reveals which values were omitted, including inherited defaults.
     joint_defaults.set("solreflimit", "0.03 1")
+    joint_defaults.set("ref", "1")
+    joint_defaults.set("springref", "1")
     probe = parse()
     default_limits = [
         not np.array_equal(joint.solref_limit, other.solref_limit, equal_nan=True)
         for joint, other in zip(spec.joints, probe.joints, strict=True)
     ]
+    for joint, other in zip(spec.joints, probe.joints, strict=True):
+        if (
+            builder.default_joint_cfg.rest_q is not None
+            and joint.ref != other.ref
+            and joint.springref != other.springref
+        ):
+            if joint.type == mujoco.mjtJoint.mjJNT_SLIDE:
+                joint.springref = builder.default_joint_cfg.rest_q / scale
+            elif joint.type == mujoco.mjtJoint.mjJNT_HINGE:
+                joint.springref = (
+                    np.rad2deg(builder.default_joint_cfg.rest_q)
+                    if spec.compiler.degree
+                    else builder.default_joint_cfg.rest_q
+                )
     return spec, default_limits
 
 
@@ -993,6 +1027,7 @@ def parse_mjcf(
                 source_dof = int(model.jnt_dofadr[native_joint])
                 for k in range(count):
                     builder.joint_damping[dof + k] = float(model.dof_damping[source_dof + k])
+                    builder.joint_stiffness[dof + k] = float(model.jnt_stiffness[native_joint])
                     builder.joint_armature[dof + k] = float(model.dof_armature[source_dof + k]) * armature_scale
                     builder.joint_friction[dof + k] = float(model.dof_frictionloss[source_dof + k])
                     if model.jnt_type[native_joint] != mujoco.mjtJoint.mjJNT_FREE:
@@ -1008,7 +1043,6 @@ def parse_mjcf(
                     native_joint_actfrclimited=int(source_joint.actfrclimited),
                     native_joint_dampingpoly=source_joint.damping[1:],
                     native_joint_stiffnesspoly=source_joint.stiffness[1:],
-                    dof_passive_stiffness=model.jnt_stiffness[native_joint],
                     limit_margin=model.jnt_margin[native_joint],
                     solreflimit=(0.0, 0.0) if default_limits[native_joint] else model.jnt_solref[native_joint],
                     solimplimit=model.jnt_solimp[native_joint],
@@ -1175,19 +1209,17 @@ def parse_mjcf(
             pose = _transform(model.site_pos[i], model.site_quat[i])
             if native_body == 0:
                 pose = placement * pose
+            site_size = model.site_size[i].copy()
+            if model.site_type[i] == mujoco.mjtGeom.mjGEOM_CYLINDER:
+                site_size[2] = 0
             sites[i] = builder.add_site(
                 body=bodies[native_body] if native_body else -1,
                 xform=pose,
                 type=shape_types[int(model.site_type[i])],
-                scale=model.site_size[i],
+                scale=site_size,
                 visible=False,
                 label=f"{body_labels[native_body]}/{sanitize_name(model.site(i).name or f'site_{i}')}",
-                custom_attributes=(
-                    attributes(site_size_is_display=True)
-                    if model.site_type[i] == mujoco.mjtGeom.mjGEOM_CYLINDER
-                    else {}
-                )
-                | custom(frequency.SHAPE, spec.sites[i]),
+                custom_attributes=custom(frequency.SHAPE, spec.sites[i]),
             )
 
     tendons = _tendons(builder, spec, model, joint_ids, joints, geoms, sites, attributes, custom)

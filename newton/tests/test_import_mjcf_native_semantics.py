@@ -344,8 +344,8 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             (model.mujoco.geom_priority, reference.geom_priority),
             (model.mujoco.geom_solmix, reference.geom_solmix),
             (model.mujoco.dof_ref, reference.qpos0),
-            (model.mujoco.dof_springref, reference.qpos_spring),
-            (model.mujoco.dof_passive_stiffness, reference.jnt_stiffness),
+            (model.joint_rest_q, reference.qpos_spring - reference.qpos0),
+            (model.joint_stiffness, reference.jnt_stiffness),
             (model.mujoco.jnt_actgravcomp, reference.jnt_actgravcomp),
             (model.mujoco.actuator_gainprm, reference.actuator_gainprm),
             (model.mujoco.actuator_biasprm, reference.actuator_biasprm),
@@ -431,6 +431,35 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 np.testing.assert_allclose(builder.joint_damping, [*[0] * 6, 7, *[0] * 6, 9])
                 np.testing.assert_allclose(builder.joint_armature, [*[0] * 6, 2, *[0] * 6, 2])
                 np.testing.assert_allclose(builder.shape_gap, 0.3 if gap is None else gap)
+
+    def test_native_passive_spring_defaults(self):
+        """Publish passive springs in core fields with file defaults taking precedence."""
+        for kind in ("hinge", "slide"):
+            for angle in ("degree", "radian"):
+                for authored, stiffness, rest in (
+                    ("", 7, None),
+                    ('stiffness="0" springref="0"', 0, 0),
+                    ('ref="0"', 7, 0),
+                    ('ref=".2"', 7, -0.2),
+                    ('stiffness="3" ref=".2" springref=".5"', 3, 0.3),
+                ):
+                    with self.subTest(kind=kind, angle=angle, authored=authored):
+                        xml = f'''<mujoco><compiler angle="{angle}"/>
+                            <default><joint {authored}/></default><worldbody><body>
+                            <joint type="{kind}"/><geom size=".1"/>
+                            </body></worldbody></mujoco>'''
+                        expected_rest = 0.7 if rest is None else rest
+                        if rest is not None:
+                            expected_rest *= 2 if kind == "slide" else np.pi / 180 if angle == "degree" else 1
+                        builder = newton.ModelBuilder()
+                        builder.default_joint_cfg.stiffness = 7
+                        builder.default_joint_cfg.rest_q = 0.7
+                        builder.add_mjcf_native(xml, scale=2)
+                        np.testing.assert_allclose(builder.joint_stiffness, stiffness)
+                        np.testing.assert_allclose(builder.joint_rest_q, expected_rest, atol=1e-7)
+                        model = builder.finalize()
+                        np.testing.assert_array_equal(model.joint_stiffness.numpy(), builder.joint_stiffness)
+                        np.testing.assert_allclose(model.joint_rest_q.numpy(), expected_rest, atol=1e-7)
 
     def test_native_builder_defaults_with_includes(self):
         import mujoco
@@ -749,6 +778,8 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             template.add_mjcf_native(xml, convert_mjc_equality_constraints=False)
             builder.add_world(template)
             expected.append(mujoco.MjModel.from_xml_string(xml).eq_data[0])
+        expected = np.array(expected)
+        expected[:, 11] = 0  # SolverMuJoCo freezes inferred weld poses after initialization.
         solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0], expected)
         solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
@@ -801,6 +832,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     )
                 solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
                 reference = mujoco.MjModel.from_xml_string(xml.replace('pos="1 0 0"', 'pos="3 0 0"'))
+                reference.eq_data[:, 11] = 0  # Match the shared solver's frozen-pose policy.
                 np.testing.assert_allclose(solver.mj_model.eq_data, reference.eq_data)
                 solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0], reference.eq_data)

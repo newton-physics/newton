@@ -114,9 +114,11 @@ class TestImportMjcfNative(unittest.TestCase):
             solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
         for field in fields:
             with self.subTest(field=field):
-                np.testing.assert_allclose(
-                    getattr(solver.mj_model, field), getattr(reference, field), atol=3e-6, rtol=3e-5
-                )
+                expected = getattr(reference, field)
+                if field == "eq_data":
+                    expected = expected.copy()
+                    expected[:, 11] = 0  # SolverMuJoCo freezes inferred weld poses after initialization.
+                np.testing.assert_allclose(getattr(solver.mj_model, field), expected, atol=3e-6, rtol=3e-5)
         return builder, solver, reference
 
     def test_independent_entry_points(self):
@@ -712,6 +714,35 @@ class TestImportMjcfNative(unittest.TestCase):
         self.assertEqual(builder.custom_attributes["mujoco:iterations"].values[0], 17)
         self.assertAlmostEqual(builder.custom_attributes["mujoco:tolerance"].values[0], 0.0002)
 
+    def test_scaled_scalar_equalities(self):
+        """Scale joint and tendon polynomials and preserve one-ended equality rows."""
+        for kind in ("joint", "tendon"):
+            for first, second, expected in (
+                ("s", "", [0.2, 1, 0.6, 0, 0]),
+                ("s", "h", [0.2, 1, 0.6, 0, 0]),
+                ("h", "s", [0.1, 0.25, 0.075, 0, 0]),
+            ):
+                with self.subTest(kind=kind, first=first, second=second):
+                    other = f'{kind}2="{second}"' if second else ""
+                    xml = f'''<mujoco><worldbody>
+                        <body><joint name="h"/><geom size=".1"/></body>
+                        <body><joint name="s" type="slide"/><geom size=".1"/></body></worldbody>
+                        <tendon><fixed name="h"><joint joint="h" coef="1"/></fixed>
+                        <fixed name="s"><joint joint="s" coef="1"/></fixed></tendon>
+                        <equality><{kind} {kind}1="{first}" {other} polycoef=".1 .5 .3 0 0"/></equality></mujoco>'''
+                    builder = newton.ModelBuilder()
+                    warning = (
+                        self.assertWarnsRegex(newton.exceptions.NewtonWarning, "omit joint2")
+                        if kind == "joint" and not second
+                        else nullcontext()
+                    )
+                    with warning:
+                        builder.add_mjcf_native(xml, scale=2, convert_mjc_equality_constraints=not second)
+                    model = builder.finalize()
+                    self.assertEqual(model.constraint_mimic_count, 0)
+                    solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
+                    np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], expected, atol=1e-7)
+
     def test_native_control_routing(self):
         """Map representable servos to joint targets and preserve other actuators."""
         import mujoco
@@ -1026,7 +1057,8 @@ class TestImportMjcfNative(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(xml)
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml)
-        solver = SolverMuJoCo(builder.finalize())
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "does not support actuator group disabling"):
+            solver = SolverMuJoCo(builder.finalize())
         self.assertEqual(solver.mj_model.opt.enableflags, reference.opt.enableflags)
         self.assertEqual(solver.mj_model.opt.disableflags & reference.opt.disableflags, reference.opt.disableflags)
         for field in ("disableactuator", "o_margin", "o_solref", "o_solimp", "o_friction"):
