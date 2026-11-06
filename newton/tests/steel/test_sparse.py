@@ -1763,9 +1763,8 @@ class TestSteelSparsePGS(unittest.TestCase):
         rows_per_world = 4
         meta = np.zeros((2 * rows_per_world, 4), dtype=np.int32)
         meta[:, 0] = 0xFFFF  # Active endpoint at offset zero; static endpoint -1.
-        meta[1, 1] = meta[2, 1] = np.float32(1.0).view(
-            np.int32
-        )  # The normal rows keep their impulses (no inverse diagonal).
+        # The normal rows keep their impulses (no inverse diagonal); the friction rows get one.
+        meta[1, 1] = meta[2, 1] = np.float32(1.0).view(np.int32)
         meta[0, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (3 << 16)
         meta[3, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (0 << 16)
         meta[1, 3] = meta[2, 3] = PGS_CONSTRAINT_TYPE_FRICTION | (0 << 16)
@@ -2254,43 +2253,46 @@ class TestSteelSparseSolver(unittest.TestCase):
         self.assert_sparse_state(sparse)
 
     def test_patch_friction_matches_dense_factors(self):
-        """Pool the patch normal load and place the tangent rows at the patch anchors as the dense sweep does."""
-        for boxes in (False, True):
-            with self.subTest(boxes=boxes):
-                dense = _case(False, free_count=1, boxes=boxes, friction_anchor_beta=0.2)
-                sparse = _case(True, free_count=1, boxes=boxes, friction_anchor_beta=0.2)
-                self.assertIsNone(dense[1]._sparse_mass_matrix_size)
-                self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
-                self.assertTrue(sparse[1]._friction_anchors_enabled)
-                # Slide the free body so its pooled patch friction carries load: the one-joint articulation is the free body.
-                model = dense[0]
-                starts = model.articulation_start.numpy()
-                free_joint = int(starts[np.flatnonzero(np.diff(starts) == 1)[-1]])
-                qd_start = int(model.joint_qd_start.numpy()[free_joint])
-                for case in (dense, sparse):
-                    joint_qd = case[2].joint_qd.numpy()
-                    joint_qd[qd_start] = 0.3
-                    case[2].joint_qd.assign(joint_qd)
-                linked = {"articulated": False, "free": False}
-                for _ in range(32):
-                    _step(dense)
-                    _step(sparse)
-                    solver = sparse[1]
-                    for family, counts, parents, types in (
-                        ("articulated", solver._constraint_count, solver._row_parent, solver._row_type),
-                        ("free", solver._mf_constraint_count, solver._mf_row_parent, solver._mf_row_type),
-                    ):
-                        counts_np, parents_np, types_np = counts.numpy(), parents.numpy(), types.numpy()
-                        for world in range(counts_np.size):
-                            normals = np.flatnonzero(types_np[world, : counts_np[world]] == PGS_CONSTRAINT_TYPE_CONTACT)
-                            # A normal row linked to another one (a region of several contacts) pools the load.
-                            if any(0 <= parents_np[world, row] != row for row in normals):
-                                linked[family] = True
-                    self.assert_states_close(dense[2], sparse[2])
-                if boxes:
-                    self.assertTrue(linked["articulated"], "the box feet built no linked patch regions")
-                    self.assertTrue(linked["free"], "the free box built no linked patch regions")
-                self.assert_sparse_state(sparse)
+        """Pool the patch normal load and place the tangent rows at the patch anchors as the dense sweep does.
+
+        Box feet and a box object rest on several contacts each, so their patch regions link normal
+        rows on the articulated and the free-body rows; the free body slides so its friction carries load.
+        """
+        dense = _case(False, free_count=1, boxes=True, friction_anchor_beta=0.2)
+        sparse = _case(True, free_count=1, boxes=True, friction_anchor_beta=0.2)
+        self.assertIsNone(dense[1]._sparse_mass_matrix_size)
+        self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
+        self.assertTrue(sparse[1]._friction_anchors_enabled)
+        # The one-joint articulation is the free body.
+        model = dense[0]
+        starts = model.articulation_start.numpy()
+        free_joint = int(starts[np.flatnonzero(np.diff(starts) == 1)[-1]])
+        qd_start = int(model.joint_qd_start.numpy()[free_joint])
+        for case in (dense, sparse):
+            joint_qd = case[2].joint_qd.numpy()
+            joint_qd[qd_start] = 0.3
+            case[2].joint_qd.assign(joint_qd)
+        linked = {"articulated": False, "free": False}
+        for _ in range(32):
+            _step(dense)
+            _step(sparse)
+            solver = sparse[1]
+            for family, counts, parents, types in (
+                ("articulated", solver._constraint_count, solver._row_parent, solver._row_type),
+                ("free", solver._mf_constraint_count, solver._mf_row_parent, solver._mf_row_type),
+            ):
+                if linked[family]:
+                    continue
+                counts_np, parents_np, types_np = counts.numpy(), parents.numpy(), types.numpy()
+                for world in range(counts_np.size):
+                    normals = np.flatnonzero(types_np[world, : counts_np[world]] == PGS_CONSTRAINT_TYPE_CONTACT)
+                    # A normal row linked to another one (a region of several contacts) pools the load.
+                    if any(0 <= parents_np[world, row] != row for row in normals):
+                        linked[family] = True
+            self.assert_states_close(dense[2], sparse[2])
+        self.assertTrue(linked["articulated"], "the box feet built no linked patch regions")
+        self.assertTrue(linked["free"], "the free box built no linked patch regions")
+        self.assert_sparse_state(sparse)
 
     def test_moving_prescribed_support_and_reset(self):
         """Preserve nonzero prescribed contact targets, support velocity and masked reset."""
@@ -2646,7 +2648,6 @@ class TestSteelSparseSolver(unittest.TestCase):
             {"enable_joint_velocity_limits": True},
             {"iterations": 0},
             {"articulation_constraint_max": 2048},
-            {"friction_anchor_beta": 0.2, "sparse_factor_patches": False},
             {"contact_warmstart": True},
             {"contact_regularization": 0.01},
             {"velocity_iterations": 1},
@@ -2657,6 +2658,11 @@ class TestSteelSparseSolver(unittest.TestCase):
                 solver = _make_solver(model, True, **options)
                 self.assertIsNone(solver._sparse_mass_matrix_size)
                 self.assertGreater(solver._J_by_size[9].size, 1)
+        # The kernel override keeps the dense factors with persistent friction patches on, as with point friction.
+        solver = _make_solver(model, False, friction_anchor_beta=0.2)
+        self.assertTrue(solver._friction_anchors_enabled)
+        self.assertIsNone(solver._sparse_mass_matrix_size)
+        self.assertGreater(solver._J_by_size[9].size, 1)
 
 
 def _build_y_tree(device, *, mimic=False, legacy_mimic=False, closure=False, closure_enabled=True):

@@ -237,7 +237,6 @@ repository examples spend tuning effort, not a shared solver API.
        ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
-       ``sparse_factor_patches``,
        ``contact_regularization``, ``velocity_iterations``,
        ``contact_warmstart``, ``restitution_velocity_threshold``,
        ``contact_friction_scale``, ``contact_friction_position_iterations``,
@@ -341,8 +340,7 @@ repository examples spend tuning effort, not a shared solver API.
        branched articulations of one shared
        topology select sparse mass factors automatically from the model's
        structure when contacts use hard point friction or persistent friction
-       patches (``sparse_factor_patches``, on by default; ``False`` keeps the
-       dense factors for models with patches), not from a performance estimate
+       patches, not from a performance estimate
        (depending on the topology and the world count they can be faster or
        markedly slower);
        ``parallel_tree`` traverses independent tree branches in parallel and is

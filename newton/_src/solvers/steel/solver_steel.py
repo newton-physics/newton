@@ -1461,8 +1461,8 @@ class SolverSteel(SolverBase, CouplingInterface):
     every articulated (non-free-body) response group shares one joint topology with at most
     64 DOFs, joint velocity-limit and joint friction rows are disabled, the model has no mimic or loop-closing
     joints, drives are augmented and contacts use hard point friction or persistent friction patches
-    (``sparse_factor_patches=True``, the default; no warm start, regularization, velocity-only iterations,
-    friction gap threshold, restitution, contact torsion or compliance): the mass matrix is assembled and factored in
+    (no warm start, regularization, velocity-only iterations, friction gap threshold, restitution,
+    contact torsion or compliance): the mass matrix is assembled and factored in
     the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
     that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
@@ -1629,7 +1629,6 @@ class SolverSteel(SolverBase, CouplingInterface):
     use_parallel_streams = _ConstructionOption()
     double_buffer = _ConstructionOption()
     friction_anchor_beta = _ConstructionOption()
-    sparse_factor_patches = _ConstructionOption()
     contact_regularization = _ConstructionOption()
     velocity_iterations = _ConstructionOption()
     velocity_drive_mode = _StepOption(_velocity_drive_mode)
@@ -1826,7 +1825,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         use_parallel_streams: bool = False,
         double_buffer: bool = False,
         friction_anchor_beta: float | None = None,
-        sparse_factor_patches: bool = True,
         contact_regularization: float = 0.0,
         velocity_iterations: int = 0,
         velocity_drive_mode: Literal["freeze", "active"] = "freeze",
@@ -2057,10 +2055,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 by body pair and geometry, independently of collision contact matching. A
                 one-anchor region has no torsional friction of its own. Call :meth:`reset`
                 after teleporting a body to discard its history.
-            sparse_factor_patches: Keep the sparse mass factors of branched articulations when
-                persistent friction patches are on (the default): the sparse contact rows act at the
-                patch anchors and the sparse sweep pools each region's normal load. ``False`` keeps
-                the dense factors for models with patches, the selection before this option existed.
             contact_regularization: Dimensionless regularization ``g`` of penetrating
                 contact rows (``friction_mode="fixed_normal"`` only).
                 Each iteration moves a row's impulse toward the rigid solution
@@ -2493,7 +2487,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._bilateral_preelimination_include_mimics = bool(bilateral_preelimination_include_mimics)
         self._friction_anchor_beta = _finite_non_negative("friction_anchor_beta", friction_anchor_beta)
         self._friction_anchors_enabled = self._friction_anchor_beta > 0.0
-        self._sparse_factor_patches = bool(sparse_factor_patches)
         self._contact_regularization = _finite_non_negative("contact_regularization", contact_regularization)
         if self._contact_regularization > _MAX_CONTACT_REGULARIZATION:
             raise ValueError(
@@ -4738,17 +4731,16 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         They solve hard contacts with point friction or persistent friction patches (one
         normal row per contact and two tangent rows per point contact or surviving patch
-        anchor, the patch load pooled over the region's linked normal rows) without
-        restitution, so warm start, regularization, velocity-only iterations, normal-only
-        contacts, restitution, contact torsion, contact compliance, the propagation
-        responses and the other friction modes keep the dense path.
+        anchor, the patch load pooled over the region's linked normal rows), so the
+        propagation responses, the other friction modes, contact torsion, contact compliance,
+        warm start, regularization, velocity-only iterations, a friction gap threshold, late
+        friction (``contact_friction_position_iterations``) and restitution keep the dense path.
         """
         if (
             self._articulated_contact_response != "immediate"
             or self._friction_mode != "fixed_normal"
             or self._contact_torsion_enabled
             or self._contact_compliance
-            or (self._friction_anchors_enabled and not self._sparse_factor_patches)
             or self._contact_warmstart
             or self._regularization_enabled
             or self._velocity_iterations > 0
