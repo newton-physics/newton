@@ -3687,3 +3687,57 @@ def collect_overflow_kernel(
 
     # Merge Newton bits and this world's mujoco-warp bits into the output.
     overflow_out[worldid] = newton_bits | mjw_overflow[worldid]
+
+
+@wp.kernel
+def convert_warp_particles_to_mj_kernel(
+    particle_q: wp.array[wp.vec3],
+    particle_qd: wp.array[wp.vec3],
+    world_mask: wp.array[wp.bool],
+    particle_q0: wp.array[wp.vec3],
+    particle_qpos_adr: wp.array[wp.int32],
+    particle_qvel_adr: wp.array[wp.int32],
+    # outputs
+    qpos: wp.array2d[wp.float32],
+    qvel: wp.array2d[wp.float32],
+):
+    """Write particle positions, as displacements from ``particle_q0``, and velocities to flex slide joints."""
+    world, p = wp.tid()
+    if world_mask and not world_mask[world]:
+        return
+    qa = particle_qpos_adr[p]
+    if qa < 0:
+        return
+    va = particle_qvel_adr[p]
+    i = world * particle_qpos_adr.shape[0] + p
+    x = particle_q[i] - particle_q0[p]
+    v = particle_qd[i]
+    for k in range(3):
+        qpos[world, qa + k] = x[k]
+        qvel[world, va + k] = v[k]
+
+
+@wp.kernel
+def convert_mj_particles_to_warp_kernel(
+    qpos: wp.array2d[wp.float32],
+    qvel: wp.array2d[wp.float32],
+    particle_q0: wp.array[wp.vec3],
+    particle_qpos_adr: wp.array[wp.int32],
+    particle_qvel_adr: wp.array[wp.int32],
+    particle_q_in: wp.array[wp.vec3],
+    particle_qd_in: wp.array[wp.vec3],
+    # outputs
+    particle_q: wp.array[wp.vec3],
+    particle_qd: wp.array[wp.vec3],
+):
+    """Read flex slide joints back into particle state; pinned particles keep their input state."""
+    world, p = wp.tid()
+    i = world * particle_qpos_adr.shape[0] + p
+    qa = particle_qpos_adr[p]
+    if qa < 0:
+        particle_q[i] = particle_q_in[i]
+        particle_qd[i] = particle_qd_in[i]
+        return
+    va = particle_qvel_adr[p]
+    particle_q[i] = particle_q0[p] + wp.vec3(qpos[world, qa], qpos[world, qa + 1], qpos[world, qa + 2])
+    particle_qd[i] = wp.vec3(qvel[world, va], qvel[world, va + 1], qvel[world, va + 2])

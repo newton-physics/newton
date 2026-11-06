@@ -1,181 +1,212 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Map Newton particles and their springs, triangles, and tetrahedra to MuJoCo flexes."""
+"""Programmatic authoring helpers for MuJoCo flexes."""
 
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import warp as wp
 
+from ...core.types import vec5
 from ...exceptions import NewtonWarning
-from ...geometry import ParticleFlags
-from ...sim import Model
-from .collision_masks import mujoco_mask_to_signed
+from ...sim import Model, ModelBuilder
+from ._authoring import _ensure_mujoco_attributes, _prepare_custom_frequency_row, _vector
+
+ELASTIC2D = {"none": 0, "bend": 1, "stretch": 2, "both": 3}
+SELFCOLLIDE = {"none": 0, "narrow": 1, "bvh": 2, "sap": 3, "auto": 4}
+
+# Per-flex attributes as (dtype, default). A negative ``young``, ``edgestiffness``,
+# ``edgedamping``, ``radius``, or sliding ``friction`` means "derive from the Newton
+# elements and particles", which is also how elements without an authored flex convert.
+FLEX_ATTRIBUTES = {
+    "label": (str, ""),
+    "young": (wp.float32, -1.0),
+    "poisson": (wp.float32, 0.0),
+    "damping": (wp.float32, 0.0),
+    "edgestiffness": (wp.float32, -1.0),
+    "edgedamping": (wp.float32, -1.0),
+    "thickness": (wp.float32, 1.0),
+    "elastic2d": (wp.int32, ELASTIC2D["stretch"]),
+    "radius": (wp.float32, -1.0),
+    "selfcollide": (wp.int32, SELFCOLLIDE["none"]),
+    "friction": (wp.vec3, wp.vec3(-1.0, 0.005, 0.0001)),
+    "margin": (wp.float32, 0.0),
+    "gap": (wp.float32, 0.0),
+    "solref": (wp.vec2, wp.vec2(0.02, 1.0)),
+    "solimp": (vec5, vec5(0.9, 0.95, 0.001, 0.5, 2.0)),
+}
+
+# Newton element source -> (flex dim, per-element attribute naming its ``mujoco:flex`` row, frequency, indices).
+ELEMENTS = {
+    "tetrahedra": (3, "tet_flex", Model.AttributeFrequency.TETRAHEDRON, "tet_indices"),
+    "triangles": (2, "tri_flex", Model.AttributeFrequency.TRIANGLE, "tri_indices"),
+    "springs": (1, "spring_flex", Model.AttributeFrequency.SPRING, "spring_indices"),
+}
 
 
-def add_particle_flexes(
-    mujoco: Any, spec: Any, model: Model, particles: np.ndarray, particle_geoms: set[str]
-) -> list[Any]:
-    """Add a body per particle and one flex per element dimension to ``spec``.
+def _register_flex_attributes(builder: ModelBuilder) -> None:
+    """Declare the ``mujoco:flex`` rows and the per-element flex assignments on ``builder``."""
+    builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="flex", namespace="mujoco"))
+    for name, (dtype, default) in FLEX_ATTRIBUTES.items():
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name=f"flex_{name}", frequency="mujoco:flex", dtype=dtype, default=default, namespace="mujoco"
+            )
+        )
+    for _, attribute, frequency, _ in ELEMENTS.values():
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name=attribute,
+                frequency=frequency,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="mujoco:flex",
+            )
+        )
 
-    Each simulated particle becomes a body at its initial position with three
-    slide joints, so its MuJoCo coordinates are the displacement from that
-    position. Massless or inactive particles get no joints and stay pinned.
 
-    Tetrahedra, triangles, and springs become 3D, 2D, and 1D flexes. An element
-    whose particles all belong to a higher-dimensional flex is skipped, so the
-    surface triangles of a tetrahedral mesh are not duplicated. Flexes collide
-    with the geoms named in ``particle_geoms`` but not with themselves.
+def _choice(value: str | int, options: dict[str, int], name: str) -> int:
+    if isinstance(value, str):
+        if value not in options:
+            raise ValueError(f"{name} must be one of {', '.join(options)}, got {value!r}.")
+        return options[value]
+    if int(value) not in options.values():
+        raise ValueError(f"{name} must be in [0, {len(options)}), got {value!r}.")
+    return int(value)
+
+
+def add_flex(
+    builder: ModelBuilder,
+    *,
+    tetrahedra: Sequence[int] | None = None,
+    triangles: Sequence[int] | None = None,
+    springs: Sequence[int] | None = None,
+    label: str | None = None,
+    young: float | None = None,
+    poisson: float = 0.0,
+    damping: float = 0.0,
+    edgestiffness: float | None = None,
+    edgedamping: float | None = None,
+    thickness: float | None = None,
+    elastic2d: str | int | None = None,
+    radius: float | None = None,
+    selfcollide: str | int = "none",
+    friction: Sequence[float] | None = None,
+    margin: float = 0.0,
+    gap: float = 0.0,
+    solref: Sequence[float] = (0.02, 1.0),
+    solimp: Sequence[float] = (0.9, 0.95, 0.001, 0.5, 2.0),
+    custom_attributes: dict[str, Any] | None = None,
+) -> int:
+    """Add a MuJoCo flex over existing Newton tetrahedra, triangles, or springs.
+
+    Exactly one element source must be given. Its elements, and their particles,
+    must belong to :attr:`~newton.ModelBuilder.current_world`. The flex is only
+    simulated by :class:`~newton.solvers.SolverMuJoCo` with ``use_flex=True``;
+    elements without an authored flex are grouped into one flex per dimension.
+
+    Args:
+        builder: Model builder receiving the flex.
+        tetrahedra: Newton tetrahedron indices; creates a 3D flex.
+        triangles: Newton triangle indices; creates a 2D flex.
+        springs: Newton spring indices; creates a 1D flex.
+        label: Optional flex label.
+        young: Young's modulus [Pa]. ``None`` derives it and ``poisson`` from the
+            elements' Lamé parameters (springs have none, so 1D flexes stay stretch-only).
+        poisson: Poisson ratio, used when ``young`` is given.
+        damping: Rayleigh damping coefficient [s].
+        edgestiffness: 1D edge stiffness [N/m]. ``None`` uses the spring stiffness.
+        edgedamping: 1D edge damping [N·s/m]. ``None`` uses the spring damping.
+        thickness: 2D shell thickness [m], defaults to 1 so that Newton's
+            per-area triangle stiffness carries over.
+        elastic2d: 2D elasticity: ``"none"``, ``"bend"``, ``"stretch"`` (default), or ``"both"``.
+        radius: Collision radius [m]. ``None`` uses the largest particle radius.
+        selfcollide: ``"none"`` (default), ``"narrow"``, ``"bvh"``, ``"sap"``, or ``"auto"``.
+        friction: Sliding, torsional, and rolling friction. ``None`` uses
+            ``particle_mu`` with MuJoCo's default torsional and rolling friction.
+        margin: Contact inclusion margin [m].
+        gap: Inactive contact gap [m].
+        solref: Contact constraint reference parameters.
+        solimp: Contact constraint impedance parameters.
+        custom_attributes: Additional registered ``mujoco:flex`` attributes.
 
     Returns:
-        The MuJoCo bodies created for ``particles``, in the same order.
+        The ``mujoco:flex`` row index.
     """
-    if len(particles) == 0:
-        return []
+    _ensure_mujoco_attributes(builder, "mujoco:flex_young")
+    sources = {
+        k: v for k, v in (("tetrahedra", tetrahedra), ("triangles", triangles), ("springs", springs)) if v is not None
+    }
+    if len(sources) != 1:
+        raise ValueError("add_flex requires exactly one of tetrahedra, triangles, or springs.")
+    ((source, indices),) = sources.items()
+    dim, attribute, _, field = ELEMENTS[source]
+    indices = np.asarray(indices, dtype=np.int64).ravel()
+    if indices.size == 0:
+        raise ValueError(f"add_flex requires at least one element in {source}.")
+    if dim != 2 and (thickness is not None or elastic2d is not None):
+        raise ValueError("thickness and elastic2d only apply to triangles.")
+    if dim != 1 and (edgestiffness is not None or edgedamping is not None):
+        raise ValueError("edgestiffness and edgedamping only apply to springs.")
 
-    # Reserve a mask bit that no geom uses as contype. Flexes collide only with geoms
-    # that carry it in their conaffinity, which leaves rigid filtering unchanged.
-    used = 0
-    for geom in spec.geoms:
-        used |= geom.contype & 0xFFFFFFFF
-    free = ~used & 0xFFFFFFFF
-    if not free:
-        warnings.warn("No free MuJoCo collision bit is left; flexes will not collide.", NewtonWarning, stacklevel=3)
-    bit = mujoco_mask_to_signed(free & -free)
-    for geom in spec.geoms:
-        mask = geom.conaffinity | bit if geom.name in particle_geoms else geom.conaffinity & ~bit
-        geom.conaffinity = mujoco_mask_to_signed(mask)
+    elements = np.asarray(getattr(builder, field), dtype=np.int64).reshape(-1, dim + 1)
+    if indices.min() < 0 or indices.max() >= len(elements):
+        raise IndexError(f"{source} indices must be in [0, {len(elements)}).")
+    owner = builder.custom_attributes[f"mujoco:{attribute}"].values
+    taken = [int(i) for i in indices if owner.get(int(i), -1) >= 0]
+    if taken:
+        raise ValueError(f"{source} {taken[:5]} already belong to a flex.")
+    worlds = np.unique(np.asarray(builder.particle_world)[elements[indices]])
+    if worlds.tolist() != [builder.current_world]:
+        raise ValueError(
+            f"{source} use particles from worlds {worlds.tolist()}, but the flex is added to world {builder.current_world}."
+        )
 
-    q = model.particle_q.numpy()[particles]
-    mass = model.particle_mass.numpy()[particles]
-    radius = model.particle_radius.numpy()[particles]
-    simulated = (mass > 0.0) & (model.particle_flags.numpy()[particles] & int(ParticleFlags.ACTIVE) != 0)
+    def derived(value: float | None) -> float:
+        return -1.0 if value is None else float(value)
 
-    bodies = []
-    for i, p in enumerate(particles):
-        body = spec.worldbody.add_body(name=f"particle_{p}", pos=q[i])
-        if simulated[i]:
-            body.mass = mass[i]
-            body.ipos = [0.0, 0.0, 0.0]
-            body.inertia = [0.4 * mass[i] * radius[i] ** 2] * 3
-            body.explicitinertial = True
-            for axis in np.eye(3):
-                body.add_joint(type=mujoco.mjtJoint.mjJNT_SLIDE, axis=axis)
-        bodies.append(body)
-
-    local = np.full(model.particle_count, -1, dtype=np.int64)
-    local[particles] = np.arange(len(particles))
-    claimed = np.zeros(model.particle_count, dtype=bool)
-    for dim, indices, params in (
-        (3, model.tet_indices, model.tet_materials),
-        (2, model.tri_indices, model.tri_materials),
-        (1, model.spring_indices, model.spring_stiffness),
-    ):
-        if indices is None or indices.size == 0:
-            continue
-        elems = indices.numpy().reshape(-1, dim + 1)
-        keep = np.all(local[elems] >= 0, axis=1) & ~np.all(claimed[elems], axis=1)
-        if not np.any(keep):
-            continue
-        elems = elems[keep]
-        claimed[elems] = True
-        verts = np.unique(elems)
-
-        flex = spec.add_flex()
-        flex.name = f"flex_{dim}d"
-        flex.dim = dim
-        flex.vertbody = [bodies[i].name for i in local[verts]]
-        flex.elem = np.searchsorted(verts, elems).ravel().tolist()
-        flex.radius = float(radius[local[verts]].max())
-        flex.friction[0] = model.particle_mu
-        flex.contype = bit
-        flex.conaffinity = 0
-        flex.selfcollide = mujoco.mjtFlexSelf.mjFLEXSELF_NONE
-
-        if dim == 1:
-            values = np.stack([params.numpy(), model.spring_damping.numpy()], axis=1)[keep]
-            flex.edgestiffness, flex.edgedamping = _uniform(values, "spring stiffness and damping")
-        else:
-            # Newton materials store Lame parameters (mu, lambda) in their first two columns.
-            mu, lam = _uniform(params.numpy()[keep, :2], f"{dim}D element material")
-            if mu + lam > 0.0:
-                flex.young = mu * (3.0 * lam + 2.0 * mu) / (mu + lam)
-                flex.poisson = lam / (2.0 * (mu + lam))
-            if dim == 2:
-                # Newton triangle stiffness is per unit area, and MuJoCo membrane
-                # stiffness is young * thickness, so a unit thickness passes it through.
-                flex.thickness = 1.0
-                flex.elastic2d = 2  # stretch only
-    return bodies
+    values = {
+        "mujoco:flex_label": label or "",
+        "mujoco:flex_young": derived(young),
+        "mujoco:flex_poisson": float(poisson),
+        "mujoco:flex_damping": float(damping),
+        "mujoco:flex_edgestiffness": derived(edgestiffness),
+        "mujoco:flex_edgedamping": derived(edgedamping),
+        "mujoco:flex_thickness": 1.0 if thickness is None else float(thickness),
+        "mujoco:flex_elastic2d": _choice("stretch" if elastic2d is None else elastic2d, ELASTIC2D, "elastic2d"),
+        "mujoco:flex_radius": derived(radius),
+        "mujoco:flex_selfcollide": _choice(selfcollide, SELFCOLLIDE, "selfcollide"),
+        "mujoco:flex_friction": _vector(
+            builder, "mujoco:flex_friction", (-1.0, 0.005, 0.0001) if friction is None else friction, 3
+        ),
+        "mujoco:flex_margin": float(margin),
+        "mujoco:flex_gap": float(gap),
+        "mujoco:flex_solref": _vector(builder, "mujoco:flex_solref", solref, 2),
+        "mujoco:flex_solimp": _vector(builder, "mujoco:flex_solimp", solimp, 5),
+    }
+    row = _prepare_custom_frequency_row(builder, "mujoco:flex", values, custom_attributes)
+    flex = builder.add_custom_values(**row)["mujoco:flex_young"]
+    for i in indices:
+        owner[int(i)] = flex
+    return flex
 
 
-def _uniform(values: np.ndarray, what: str) -> np.ndarray:
-    """Return the mean row of ``values``, warning if the rows differ, since MuJoCo stores one value per flex."""
+def _uniform(values: np.ndarray, what: str) -> Any:
+    """Return the mean of ``values`` along the first axis, warning if they differ, since a flex has one material."""
     if np.ptp(values, axis=0).any():
         warnings.warn(
-            f"MuJoCo flexes use a single {what}; averaging non-uniform Newton values.", NewtonWarning, stacklevel=4
+            f"A MuJoCo flex uses a single {what}; averaging non-uniform Newton values. "
+            "Use newton.solvers.mujoco.add_flex to split them into separate flexes.",
+            NewtonWarning,
+            stacklevel=3,
         )
     return values.mean(axis=0)
 
 
-def particle_coord_adr(mj_model: Any, bodies: list[Any]) -> tuple[np.ndarray, np.ndarray]:
-    """Return the qpos and qvel start of each particle body's slide joints, or -1 for pinned particles."""
-    jnt = mj_model.body_jntadr[[body.id for body in bodies]]
-    return (
-        np.where(jnt >= 0, mj_model.jnt_qposadr[jnt], -1).astype(np.int32),
-        np.where(jnt >= 0, mj_model.jnt_dofadr[jnt], -1).astype(np.int32),
-    )
-
-
-@wp.kernel
-def particles_to_mj_kernel(
-    particle_q: wp.array[wp.vec3],
-    particle_qd: wp.array[wp.vec3],
-    world_mask: wp.array[wp.bool],
-    particle_q0: wp.array[wp.vec3],
-    qpos_adr: wp.array[wp.int32],
-    qvel_adr: wp.array[wp.int32],
-    qpos: wp.array2d[wp.float32],
-    qvel: wp.array2d[wp.float32],
-):
-    world, p = wp.tid()
-    if world_mask and not world_mask[world]:
-        return
-    qa = qpos_adr[p]
-    if qa < 0:
-        return
-    va = qvel_adr[p]
-    i = world * qpos_adr.shape[0] + p
-    x = particle_q[i] - particle_q0[p]
-    v = particle_qd[i]
-    for k in range(3):
-        qpos[world, qa + k] = x[k]
-        qvel[world, va + k] = v[k]
-
-
-@wp.kernel
-def mj_to_particles_kernel(
-    qpos: wp.array2d[wp.float32],
-    qvel: wp.array2d[wp.float32],
-    particle_q0: wp.array[wp.vec3],
-    qpos_adr: wp.array[wp.int32],
-    qvel_adr: wp.array[wp.int32],
-    particle_q_prev: wp.array[wp.vec3],
-    particle_qd_prev: wp.array[wp.vec3],
-    particle_q: wp.array[wp.vec3],
-    particle_qd: wp.array[wp.vec3],
-):
-    world, p = wp.tid()
-    i = world * qpos_adr.shape[0] + p
-    qa = qpos_adr[p]
-    if qa < 0:
-        particle_q[i] = particle_q_prev[i]
-        particle_qd[i] = particle_qd_prev[i]
-        return
-    va = qvel_adr[p]
-    particle_q[i] = particle_q0[p] + wp.vec3(qpos[world, qa], qpos[world, qa + 1], qpos[world, qa + 2])
-    particle_qd[i] = wp.vec3(qvel[world, va], qvel[world, va + 1], qvel[world, va + 2])
+__all__ = ["add_flex"]
