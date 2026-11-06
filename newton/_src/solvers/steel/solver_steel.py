@@ -1457,9 +1457,9 @@ class SolverSteel(SolverBase, CouplingInterface):
     On CUDA, branched articulations use sparse mass factors when
     every articulated (non-free-body) response group shares one joint topology with at most
     64 DOFs, joint velocity-limit and joint friction rows are disabled, the model has no mimic or loop-closing
-    joints, drives are augmented and contacts use hard point friction
-    (``friction_anchor_beta=0``, no warm start, regularization, velocity-only iterations,
-    friction gap threshold, restitution, contact torsion or compliance): the mass matrix is assembled and factored in
+    joints, drives are augmented and contacts use hard point friction or persistent friction patches
+    (no warm start, regularization, velocity-only iterations, friction gap threshold, restitution,
+    contact torsion or compliance): the mass matrix is assembled and factored in
     the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
     that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
@@ -4693,18 +4693,18 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _sparse_supports_contact_options(self, model: Model) -> bool:
         """Whether the sparse factor kernels implement the configured contact law.
 
-        They solve hard point-friction contacts (one normal and two tangent rows per
-        contact) without restitution, so friction patches, warm start, regularization,
-        velocity-only iterations, normal-only contacts, restitution, contact torsion,
-        contact compliance, the propagation responses and the other friction modes keep
-        the dense path.
+        They solve hard contacts with point friction or persistent friction patches (one
+        normal row per contact and two tangent rows per point contact or surviving patch
+        anchor, the patch load pooled over the region's linked normal rows), so the
+        propagation responses, the other friction modes, contact torsion, contact compliance,
+        warm start, regularization, velocity-only iterations, a friction gap threshold, late
+        friction (``contact_friction_position_iterations``) and restitution keep the dense path.
         """
         if (
             self._articulated_contact_response != "immediate"
             or self._friction_mode != "fixed_normal"
             or self._contact_torsion_enabled
             or self._contact_compliance
-            or self._friction_anchors_enabled
             or self._contact_warmstart
             or self._regularization_enabled
             or self._velocity_iterations > 0
@@ -5961,6 +5961,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._crba_cholesky_kernels_by_size = {}
         self._crba_cholesky_warp_kernels_by_size = {}
         self._inverse_cholesky_kernels_by_size = {}
+        self._inverse_lower_kernels_by_size = {}
         self._init_paired_response_kernels(model)
         self._fused_drive_dof_K = (
             wp.zeros(max(model.joint_dof_count, 1), dtype=wp.float32, device=model.device)
@@ -5999,6 +6000,14 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._inverse_cholesky_kernels_by_size[size] = (
                 _get_inverse_cholesky_register_kernel(size, device_arch)
                 if size == self._paired_response_secondary_size and not self._paired_factor_coordinates
+                else None
+            )
+            # The factor-coordinate paired response reads L^-1 of both sizes; one lane per column replaces the
+            # serial per-articulation inversion.
+            self._inverse_lower_kernels_by_size[size] = (
+                _get_inverse_cholesky_register_kernel(size, device_arch, lower_only=True)
+                if self._paired_factor_coordinates
+                and size in (self._paired_response_primary_size, self._paired_response_secondary_size)
                 else None
             )
             self._triangular_solve_kernels_by_size[size] = (
@@ -6943,13 +6952,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._stage2_cholesky_loop(size)
             if size in self._Linv_by_size:
-                wp.launch(
-                    invert_lower_factor_grouped,
-                    dim=self._n_arts_by_size[size],
-                    inputs=[self._group_to_art[size], self._mass_update_mask, size, self._L_by_size[size]],
-                    outputs=[self._Linv_by_size[size]],
-                    device=model.device,
-                )
+                self._stage2_invert_lower_factor(size)
             if self._inverse_cholesky_kernels_by_size[size] is not None:
                 wp.launch(
                     self._inverse_cholesky_kernels_by_size[size],
@@ -8750,6 +8753,29 @@ class SolverSteel(SolverBase, CouplingInterface):
             device=model.device,
         )
 
+    def _stage2_invert_lower_factor(self, size: int) -> None:
+        """Form L^-1 of the group's refreshed factors, one warp lane per column where the paired response reads it."""
+        model = self.model
+        n_arts = self._n_arts_by_size[size]
+        lower_kernel = self._inverse_lower_kernels_by_size[size]
+        if lower_kernel is not None:
+            wp.launch(
+                lower_kernel,
+                dim=n_arts * 32,
+                inputs=[self._L_by_size[size], self._group_to_art[size], self._mass_update_mask],
+                outputs=[self._Linv_by_size[size]],
+                block_dim=256,
+                device=model.device,
+            )
+            return
+        wp.launch(
+            invert_lower_factor_grouped,
+            dim=n_arts,
+            inputs=[self._group_to_art[size], self._mass_update_mask, size, self._L_by_size[size]],
+            outputs=[self._Linv_by_size[size]],
+            device=model.device,
+        )
+
     def _stage2_cholesky_tiled(self, size: int):
         if size == self._paired_response_primary_size and not self._paired_factor_coordinates:
             wp.launch_tiled(
@@ -9754,6 +9780,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._contact_art_a,
                         self._contact_art_b,
                         self._contact_path,
+                        self._contact_slots_needed,
                         self._art_group_idx,
                         self._articulation_response_dof_count,
                         self._is_free_rigid,
@@ -9765,6 +9792,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.shape_body,
                         state_in.body_q,
                         *self._contact_anchor_args,
+                        self._friction_patches.view,
                         self._sparse_mass_matrix_indices.permutation,
                         self._sparse_mass_matrix_indices.row_offsets,
                         self._sparse_Linv,

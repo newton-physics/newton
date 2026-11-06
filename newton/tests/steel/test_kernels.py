@@ -1375,8 +1375,10 @@ def test_fused_assembly_matches_the_separate_pipeline(test, device, solve_mode="
         with test.subTest(links=links, branched=branched):
             model = _tree(device, links, branched=branched)
             options = {"solve_mode": solve_mode, "articulation_constraint_max": _ROWS}
-            fused, q, qd = _trajectory(model, use_parallel_streams=True, **options)
-            reference, q_ref, qd_ref = _trajectory(model, **options)
+            # The branched trees would take the sparse factors; this test is about the dense fused kernels.
+            with kernel_overrides({"sparse_mass_matrix": False}):
+                fused, q, qd = _trajectory(model, use_parallel_streams=True, **options)
+                reference, q_ref, qd_ref = _trajectory(model, **options)
             size = fused._size_groups[0]
             selected = {
                 "warp": fused._crba_cholesky_warp_kernels_by_size[size],
@@ -1482,6 +1484,56 @@ add_function_test(
     "test_fused_assembly_is_selected_only_where_supported",
     test_fused_assembly_is_selected_only_where_supported,
     devices=get_test_devices(),
+)
+
+
+def test_register_lower_inverse_matches_the_serial_inversion(test, device):
+    """Match the per-articulation forward substitution column for column on refreshed lower factors."""
+    rng = np.random.default_rng(7)
+    for n_dofs in (6, 23):
+        n_arts = 5
+        factors = np.zeros((n_arts, n_dofs, n_dofs), dtype=np.float32)
+        for art in range(n_arts):
+            a = rng.standard_normal((n_dofs, n_dofs)).astype(np.float64)
+            factors[art] = np.linalg.cholesky(a @ a.T + n_dofs * np.eye(n_dofs)).astype(np.float32)
+        L = wp.array(factors, dtype=wp.float32, device=device)
+        group_to_art = wp.array(np.arange(n_arts, dtype=np.int32), dtype=wp.int32, device=device)
+        # The third articulation is not refreshed; both kernels must leave its stale inverse alone.
+        mask = wp.array(np.array([1, 1, 0, 1, 1], dtype=np.int32), dtype=wp.int32, device=device)
+        expected = wp.full((n_arts, n_dofs, n_dofs), 42.0, dtype=wp.float32, device=device)
+        actual = wp.full((n_arts, n_dofs, n_dofs), 42.0, dtype=wp.float32, device=device)
+        wp.launch(
+            steel_kernels.invert_lower_factor_grouped,
+            dim=n_arts,
+            inputs=[group_to_art, mask, n_dofs, L],
+            outputs=[expected],
+            device=device,
+        )
+        kernel = solver_steel._get_inverse_cholesky_register_kernel(n_dofs, device.arch, lower_only=True)
+        wp.launch(
+            kernel, dim=n_arts * 32, inputs=[L, group_to_art, mask], outputs=[actual], block_dim=256, device=device
+        )
+        expected_np, actual_np = expected.numpy(), actual.numpy()
+        np.testing.assert_array_equal(actual_np[2], 42.0, err_msg=f"n_dofs={n_dofs}: masked articulation was written")
+        refreshed = [0, 1, 3, 4]
+        np.testing.assert_allclose(
+            actual_np[refreshed], expected_np[refreshed], rtol=1.0e-5, atol=1.0e-6, err_msg=f"n_dofs={n_dofs}"
+        )
+        identity = np.einsum("aij,ajk->aik", factors[refreshed], actual_np[refreshed])
+        np.testing.assert_allclose(
+            identity, np.broadcast_to(np.eye(n_dofs), identity.shape), atol=2.0e-4, err_msg=f"n_dofs={n_dofs}: L L^-1"
+        )
+
+
+class TestSteelRegisterLowerInverse(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelRegisterLowerInverse,
+    "test_register_lower_inverse_matches_the_serial_inversion",
+    test_register_lower_inverse_matches_the_serial_inversion,
+    devices=cuda_devices,
 )
 
 
