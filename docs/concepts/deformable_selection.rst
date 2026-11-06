@@ -417,6 +417,9 @@ mask membership. It is not the same as ArticulationView's
 ``get_model_articulation_mask()``, which maps a view mask to model articulation
 IDs. Neither call changes the view's fixed membership.
 
+See the runnable examples ``python -m newton.examples selection_articulations``
+and ``python -m newton.examples selection_deformables`` for complete scenes.
+
 Getter buffers
 ---------------
 
