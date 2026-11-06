@@ -1276,7 +1276,12 @@ def eval_rigid_fk_id(
     body_f_s: wp.array[wp.spatial_vector],
     body_a_s: wp.array[wp.spatial_vector],
 ):
-    """Evaluate articulation poses and the inverse-dynamics bias wrenches."""
+    """Evaluate articulation poses and the inverse-dynamics bias wrenches in one serial pass.
+
+    The solver runs :func:`eval_rigid_fk_kinematics` and :func:`finalize_body_dynamics` instead, and the
+    parallel tree has kernels of its own over :func:`compute_link_velocity`; this fused kernel remains the
+    bitwise reference the split is tested against.
+    """
     index = wp.tid()
     if articulation_active[index] == 0:
         return

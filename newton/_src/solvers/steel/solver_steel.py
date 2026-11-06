@@ -614,6 +614,17 @@ def _invalidate_fk_id_worlds(
 
 
 @wp.kernel
+def _drop_carried_kinematics_on_status(
+    status: wp.array[int],
+    # outputs
+    fk_id_valid: wp.array[int],
+):
+    """Drop every articulation's carried kinematics while the device torsion status holds a latched error."""
+    if status[0] != 0:
+        fk_id_valid[wp.tid()] = 0
+
+
+@wp.kernel
 def _flag_disabled_tree_joints(
     joint_enabled: wp.array[bool],
     joint_articulation: wp.array[int],
@@ -2061,15 +2072,16 @@ class SolverSteel(SolverBase, CouplingInterface):
                 forms when it publishes a step's body state into the next step, instead of re-deriving
                 them from the joint coordinates (CUDA, no gradients, no joint velocity limits, no
                 sleeping, no parallel tree, and no FREE or DISTANCE joint other than the first joint of
-                its articulation). Off by default: every step then re-derives the kinematics from its
-                input state and publishes through :func:`newton.eval_fk`, as before. With the carry on,
+                its articulation); the attribute of the same name reports whether the carry runs. Off by
+                default: every step then re-derives the kinematics from its input state and publishes
+                through :func:`newton.eval_fk`, as before. With the carry on,
                 the terms belong to the state object they were published into: :meth:`reset` drops
                 them for the selected worlds, :meth:`notify_model_changed` drops them for joint, body
                 and model property changes, a coupler's input-state notice drops them, and a step whose
                 input state is another object recomputes them; a caller that overwrites or replaces
                 ``joint_q``, ``joint_qd`` or ``body_q`` of that state outside :meth:`step` must call
                 :meth:`notify_state_changed` (or :meth:`reset` with a world mask) first. The published
-                body velocities then come from the solver's own kinematics and differ from
+                body poses and velocities then come from the solver's own kinematics and can differ from
                 :func:`newton.eval_fk`'s in their last bit.
             use_parallel_streams: Run the factorization, unconstrained solve and response
                 kernels of each articulation-size group on a CUDA stream of its own, so groups
@@ -2959,7 +2971,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else None
         )
         # Carry the end-of-step kinematics and inverse-dynamics terms into the next step's first stage.
-        self._reuse_kinematics = bool(reuse_kinematics)
+        reuse_requested = bool(reuse_kinematics)
         # A FREE or DISTANCE joint that is not the first joint of its articulation (a free joint below another
         # body, or a second free root) references its twist at the articulation origin, which the generic
         # eval_fk publication does not, so such models keep publishing through eval_fk.
@@ -2972,7 +2984,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             not_first = (np.arange(model.joint_count) != first_joint) | (model.joint_parent.numpy() >= 0)
             extra_free_joint = bool(np.any(free_like & (joint_articulation >= 0) & not_first))
         self._reuse_kinematics_enabled = bool(
-            self._reuse_kinematics
+            reuse_requested
             and model.device.is_cuda
             and model.articulation_count
             and model.joint_count
@@ -2982,6 +2994,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             and self._sleeping is None
             and not extra_free_joint
         )
+        # The public attribute reports whether the carry runs, as ``deterministic`` reports the mode in effect.
+        self._reuse_kinematics = self._reuse_kinematics_enabled
         count = max(model.articulation_count, 1)
         self._fk_id_valid = wp.zeros(count, dtype=wp.int32, device=model.device)
         self._fk_id_none = wp.zeros(count, dtype=wp.int32, device=model.device)
@@ -7297,6 +7311,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._accumulate_row_watermarks(contacts)
         if self._device_torsion is not None:
             self._device_torsion.end_step(state_out)
+            if self._reuse_kinematics_enabled and self._device_torsion.deferred_errors:
+                # A latched torsion error rolled state_out back to its input, which the carry published for the
+                # integrated coordinates no longer describes; the drop runs on the device, so it holds on replay.
+                wp.launch(
+                    _drop_carried_kinematics_on_status,
+                    dim=self.model.articulation_count,
+                    inputs=[self._device_torsion.work.status],
+                    outputs=[self._fk_id_valid],
+                    device=self.model.device,
+                )
         self._step += 1
         return state_out
 

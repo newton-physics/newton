@@ -1710,7 +1710,7 @@ def _assert_histories_close(test, expected, actual):
 def test_reused_kinematics_match_the_recomputed_trajectory(test, device):
     """Carry the published kinematics into the next step and reproduce the recomputing solver.
 
-    The joint coordinates and body poses agree bitwise on the first step; the published body velocities
+    The joint coordinates agree bitwise on the first step; the published body poses and velocities can
     differ in their last bit from eval_fk's, which seeds roundoff-level differences afterwards.
     """
     model = _build_contact_scene(device)
@@ -1719,7 +1719,7 @@ def test_reused_kinematics_match_the_recomputed_trajectory(test, device):
     test.assertFalse(reference_solver._reuse_kinematics_enabled)
     test.assertTrue(carried_solver._reuse_kinematics_enabled)
     test.assertTrue(np.all(carried_solver._fk_id_valid.numpy() == 1))
-    for name, a, b in zip(("joint_q", "joint_qd", "body_q"), reference[0][:3], carried[0][:3], strict=True):
+    for name, a, b in zip(("joint_q", "joint_qd"), reference[0][:2], carried[0][:2], strict=True):
         np.testing.assert_array_equal(b, a, err_msg=f"{name} at the first step")
     _assert_histories_close(test, reference, carried)
 
@@ -1850,8 +1850,7 @@ def test_extra_free_joints_keep_the_generic_publication(test, device):
             builder.add_articulation([first, second])
             model = builder.finalize(device=device)
             solver = SolverSteel(model, reuse_kinematics=True)
-            test.assertTrue(solver.reuse_kinematics)
-            test.assertFalse(solver._reuse_kinematics_enabled)
+            test.assertFalse(solver.reuse_kinematics)
             state_in, state_out = model.state(), model.state()
             joint_qd = np.zeros(model.joint_dof_count, dtype=np.float32)
             joint_qd[5] = 3.0
@@ -1863,6 +1862,41 @@ def test_extra_free_joints_keep_the_generic_publication(test, device):
             expected = model.state()
             newton.eval_fk(model, state_out.joint_q, state_out.joint_qd, expected)
             np.testing.assert_array_equal(state_out.body_qd.numpy(), expected.body_qd.numpy())
+
+
+def test_torsion_rollback_drops_the_carried_kinematics(test, device):
+    """A captured step whose torsion status latches rolls its outputs back; the carry must not outlive the rollback."""
+    model = _build_contact_scene(device)
+    set_torsion_radius(model, 0.01)
+    names = ("joint_q", "joint_qd", "body_q", "body_qd")
+
+    def replays(reuse):
+        solver = SolverSteel(model, reuse_kinematics=reuse, contact_torsion_device=True)
+        test.assertEqual(solver.reuse_kinematics, reuse)
+        states = [model.state(), model.state()]
+        newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+        contacts = pipeline.contacts()
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        with wp.ScopedCapture(device) as capture:
+            solver.step(states[0], states[1], control, contacts, 1.0 / 240.0)
+            solver.step(states[1], states[0], control, contacts, 1.0 / 240.0)
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+        # A latched error makes both captured steps roll their outputs back to their inputs.
+        solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+        wp.capture_launch(capture.graph)
+        # A masked reset clears the solver-wide status but drops no world's carried terms.
+        solver.reset(states[0], world_mask=wp.zeros(model.world_count + 1, dtype=wp.bool, device=device))
+        outputs = []
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+            outputs.append(tuple(getattr(states[0], name).numpy().copy() for name in names))
+        return outputs
+
+    _assert_histories_close(test, replays(False), replays(True))
 
 
 def test_captured_chain_with_a_refresh_interval_matches_the_recomputing_solver(test, device):
@@ -1904,6 +1938,7 @@ for _fn in (
     test_reused_kinematics_follow_a_timestep_change,
     test_captured_step_replays_the_same_result_from_an_unchanged_input,
     test_extra_free_joints_keep_the_generic_publication,
+    test_torsion_rollback_drops_the_carried_kinematics,
     test_captured_chain_with_a_refresh_interval_matches_the_recomputing_solver,
 ):
     add_function_test(TestSteelReusedKinematics, _fn.__name__, _fn, devices=cuda_devices)

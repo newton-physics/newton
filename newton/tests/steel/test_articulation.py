@@ -4081,10 +4081,7 @@ def test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows(test, device):
         with context:
             if not gain:
                 warnings.simplefilter("error", newton.exceptions.NewtonWarning)
-            # The velocity-limit solver cannot carry its kinematics, so neither side does: the poses compare bitwise.
-            _, _, poses, solver = _run_closure(
-                builder, joint, device, steps=100, solve_mode="serial", reuse_kinematics=False, **solver_options
-            )
+            _, _, poses, solver = _run_closure(builder, joint, device, steps=100, solve_mode="serial", **solver_options)
         return poses, int(solver._constraint_count.numpy()[0])
 
     reference, reference_rows = run(drive_mode="rows")
