@@ -94,10 +94,15 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         # body frame).  Using the AABB diagonal gives a tighter and
         # always-correct enclosing radius regardless of where the
         # authoring origin sits relative to the geometry.
-        verts = np.asarray(src.vertices, dtype=np.float64) * np.asarray(scale, dtype=np.float64)
-        aabb_lo = verts.min(axis=0)
-        aabb_hi = verts.max(axis=0)
-        return float(0.5 * np.linalg.norm(aabb_hi - aabb_lo))
+        # Scaling a box only scales its extents, so shapes sharing a mesh reuse its cached bounds.
+        get_local_bounds = getattr(src, "_get_local_bounds", None)
+        if get_local_bounds is not None:
+            aabb_lo, aabb_hi = get_local_bounds()
+        else:
+            vertices = np.asarray(src.vertices, dtype=np.float64)
+            aabb_lo, aabb_hi = vertices.min(axis=0), vertices.max(axis=0)
+        extent = (aabb_hi - aabb_lo) * np.abs(np.asarray(scale, dtype=np.float64))
+        return float(0.5 * np.linalg.norm(extent))
     elif geo_type == GeoType.PLANE:
         # Use magnitudes for the finite-vs-infinite check so that legacy callers that
         # pass negative components still classify correctly. The infinite-plane sentinel
@@ -723,8 +728,8 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
           well-formed ``(verts, faces)`` pair with ``M >= 3`` and ``K >= 2``.
         - ``verts`` is always a subset of the true convex hull's vertex set.
         - For full-rank (rank-3) inputs, the output is a closed 3D convex hull
-          with outward-facing triangle windings, unchanged from the pre-degeneracy
-          behavior.
+          with outward-facing triangle windings, including hulls capped by
+          ``maxhullvert``.
 
     Degenerate outputs (rank < 3):
         - **Coplanar (rank 2):** a flat, zero-volume triangle soup covering the
@@ -871,20 +876,15 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     verts = vertices.astype(np.float32)
     faces = hull.simplices.astype(np.int32)
 
-    # fix winding order of faces
-    centre_f = verts.mean(0)
-    for i, tri in enumerate(faces):
-        a, b, c = verts[tri]
-        normal = np.cross(b - a, c - a)
-        if np.dot(normal, a - centre_f) < 0:
-            faces[i] = tri[[0, 2, 1]]
+    # Qhull leaves simplex winding arbitrary; flip faces whose normal opposes their facet's outward normal.
+    a, b, c = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]
+    inward = np.einsum("ij,ij->i", np.cross(b - a, c - a), hull.equations[:, :3]) < 0
+    faces[inward] = faces[inward][:, [0, 2, 1]]
 
     # trim vertices to only those that are used in the faces
-    unique_verts = np.unique(faces.flatten())
+    unique_verts, faces_flat = np.unique(faces, return_inverse=True)
     verts = verts[unique_verts]
-    # update face indices to use the new vertex indices
-    mapping = {v: i for i, v in enumerate(unique_verts)}
-    faces = np.array([mapping[v] for v in faces.flatten()], dtype=np.int32).reshape(faces.shape)
+    faces = faces_flat.reshape(faces.shape).astype(np.int32)
 
     return verts, faces
 

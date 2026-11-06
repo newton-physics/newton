@@ -1,0 +1,1 @@
+Allow experimental `enable_sleeping=True` with `SolverSteel(solve_mode="colored", articulated_contact_response="propagation")`; the coloring and colored sweep leave out the contacts of skipped sleeping islands.

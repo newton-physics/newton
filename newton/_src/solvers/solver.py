@@ -636,10 +636,17 @@ class SolverBase:
             )
         if collision_pipeline is not None and collision_pipeline.model is not model:
             raise ValueError("collision_pipeline and solver must use the same model")
+        pipeline_contacts = None if collision_pipeline is None else collision_pipeline.contacts()
+        if (
+            pipeline_contacts is not None
+            and pipeline_contacts.rigid_contact_body_pair_reduced
+            and not type(self).supports_body_pair_reduced_contacts
+        ):
+            raise ValueError(f"{type(self).__name__} cannot own a pipeline with body-pair contact reduction")
         self.collision_pipeline = collision_pipeline
         """The solver-owned collision pipeline, or ``None`` when detection is driven externally."""
         if collision_pipeline is not None:
-            self._pipeline_contacts = collision_pipeline.contacts()
+            self._pipeline_contacts = pipeline_contacts
         elif not hasattr(self, "_pipeline_contacts"):
             # Preserve contact storage assigned by existing SolverBase subclasses
             # before calling super().__init__().
@@ -1135,6 +1142,54 @@ class SolverBase:
         """
         self._normalize_reset_world_mask(world_mask)
 
+    supports_body_pair_reduced_contacts: bool = False
+    """Whether this solver's default configuration accepts body-pair-reduced contacts.
+
+    A :class:`newton.CollisionPipeline` built with ``body_pair_reduction``
+    compacts rigid contacts to each patch's depth and sampled footprint
+    representatives and, when the scene has primitive or convex contact pairs,
+    stamps the buffers it allocates (:attr:`Contacts.rigid_contact_body_pair_reduced`).  A solver may only
+    declare support after a conformance test demonstrates that it consumes
+    contact depth with the reducer's signed-separation convention.  The built-in
+    solvers that do not declare support raise in :meth:`step` when given a
+    stamped buffer, and :class:`SolverBase` rejects an owned pipeline that
+    stamps its buffers at construction.  A custom solver that does not declare
+    support should check the stamp itself.
+
+    .. experimental::
+    """
+
+    def _require_unreduced_contacts(
+        self,
+        contacts: Contacts | None,
+        *,
+        supports_body_pair_reduced_contacts: bool | None = None,
+        configuration: str | None = None,
+    ) -> None:
+        """Raise if ``contacts`` was allocated by a pipeline with body-pair reduction.
+
+        Args:
+            contacts: Contact buffer the solver will consume.
+            supports_body_pair_reduced_contacts: Per-call capability override.
+                ``None`` uses the solver class declaration.
+            configuration: Optional configuration label included in an error.
+        """
+        if supports_body_pair_reduced_contacts is None:
+            supports_body_pair_reduced_contacts = type(self).supports_body_pair_reduced_contacts
+        if supports_body_pair_reduced_contacts or not isinstance(contacts, Contacts):
+            return
+        if contacts.rigid_contact_body_pair_reduced:
+            subject = type(self).__name__
+            if configuration:
+                raise ValueError(
+                    f"{subject} with {configuration} is not validated for body-pair-reduced contacts; "
+                    f"disable body_pair_reduction or {configuration}"
+                )
+            raise ValueError(
+                f"{subject} is not validated for body-pair-reduced contacts; disable body_pair_reduction "
+                "or use a solver with supports_body_pair_reduced_contacts=True"
+            )
+
     def step(
         self,
         state_in: State,
@@ -1191,13 +1246,19 @@ class SolverBase:
         * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
         * ``ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES``: Joint reference poses
           or spring references have changed, including Rod rest rotations in
-          ``Model.joint_target_q``.
+          ``Model.joint_rest_q``.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
           tensors have changed.
-        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms or geometry have
-          changed.
+        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms, scales, or
+          materials have changed.
+        * ``ModelFlags.SHAPE_TYPE_AND_SOURCE``: Shapes changed type or source,
+          for example variant rows that took other variant shapes or were
+          emptied by :meth:`~newton.Model.select_body_variants`. Pass the flags
+          to every solver: some cache data derived from shapes, such as
+          :class:`~newton.solvers.SolverVBD`'s body radii for rigid-soft
+          contact truncation.
         * ``ModelFlags.MODEL_PROPERTIES``: Model global properties (e.g.,
           gravity) have changed.
         * ``ModelFlags.CONSTRAINT_PROPERTIES``: Constraint definitions,

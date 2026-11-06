@@ -1,0 +1,1 @@
+Add an experimental `return_source_point_indices` option to `newton.usd.get_mesh()` that maps each loaded vertex back to its authored point and returns `(mesh, uv_indices, source_point_indices)`, with `None` for UV indices when not requested or unavailable.

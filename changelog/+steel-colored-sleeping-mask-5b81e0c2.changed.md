@@ -1,0 +1,1 @@
+Skip the propagation trees of sleeping articulations in `SolverSteel(solve_mode="colored", articulated_contact_response="propagation")`, and its whole propagation solve in captured steps where every articulation that can sleep sleeps. No migration is required.

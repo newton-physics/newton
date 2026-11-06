@@ -211,6 +211,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         with wp.ScopedTimer("simulate", False):
             particle_f = None
