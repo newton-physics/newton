@@ -2070,11 +2070,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                 slower, so measure the full step before enabling it.
             reuse_kinematics: Opt in to carrying the kinematics and inverse-dynamics terms the solver
                 forms when it publishes a step's body state into the next step, instead of re-deriving
-                them from the joint coordinates (CUDA, no gradients, no joint velocity limits, no
-                sleeping, no parallel tree, and no FREE or DISTANCE joint other than the first joint of
-                its articulation); the attribute of the same name reports whether the carry runs. Off by
-                default: every step then re-derives the kinematics from its input state and publishes
-                through :func:`newton.eval_fk`, as before. With the carry on,
+                them from the joint coordinates. The carry runs on CUDA only and stays off with
+                gradients, joint velocity limits, sleeping, the parallel tree, or a FREE or DISTANCE
+                joint that is not the first joint of its articulation; the attribute of the same name
+                reports whether it runs. Off by default: every step then re-derives the kinematics
+                from its input state and publishes through :func:`newton.eval_fk`, as before. With the
+                carry on,
                 the terms belong to the state object they were published into: :meth:`reset` drops
                 them for the selected worlds, :meth:`notify_model_changed` drops them for joint, body
                 and model property changes, a coupler's input-state notice drops them, and a step whose
@@ -3448,9 +3449,11 @@ class SolverSteel(SolverBase, CouplingInterface):
             state: The state the next step reads, whose joint or body arrays were written.
             world_mask: Boolean device array of shape ``(world_count + 1,)`` selecting the worlds
                 whose state changed, in the layout :meth:`reset` and :meth:`notify_model_changed`
-                use; ``None`` selects every world.
+                use and validated as they validate it (dtype, device and length) before anything
+                else; ``None`` selects every world.
         """
         del state
+        world_mask = self._normalize_reset_world_mask(world_mask)
         if not self._reuse_kinematics_enabled:
             return
         if world_mask is None:

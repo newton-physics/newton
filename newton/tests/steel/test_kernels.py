@@ -1864,6 +1864,25 @@ def test_extra_free_joints_keep_the_generic_publication(test, device):
             np.testing.assert_array_equal(state_out.body_qd.numpy(), expected.body_qd.numpy())
 
 
+def test_state_notice_validates_its_world_mask(test, device):
+    """Reject a short, host or non-boolean world mask as reset does, whether or not the carry runs."""
+    model = _build_contact_scene(device)
+    state = model.state()
+    bad_masks = (
+        (wp.ones(model.world_count, dtype=wp.bool, device=device), ValueError),
+        (wp.ones(model.world_count + 1, dtype=wp.bool, device="cpu"), ValueError),
+        (wp.ones(model.world_count + 1, dtype=wp.int32, device=device), TypeError),
+    )
+    for reuse in (True, False):
+        solver = SolverSteel(model, reuse_kinematics=reuse)
+        test.assertEqual(solver.reuse_kinematics, reuse)
+        for mask, error in bad_masks:
+            with test.subTest(reuse=reuse, shape=mask.shape, dtype=str(mask.dtype), device=str(mask.device)):
+                with test.assertRaisesRegex(error, "world_mask"):
+                    solver.notify_state_changed(state, world_mask=mask)
+        solver.notify_state_changed(state, world_mask=wp.ones(model.world_count + 1, dtype=wp.bool, device=device))
+
+
 def test_torsion_rollback_drops_the_carried_kinematics(test, device):
     """A captured step whose torsion status latches rolls its outputs back; the carry must not outlive the rollback."""
     model = _build_contact_scene(device)
@@ -1938,6 +1957,7 @@ for _fn in (
     test_reused_kinematics_follow_a_timestep_change,
     test_captured_step_replays_the_same_result_from_an_unchanged_input,
     test_extra_free_joints_keep_the_generic_publication,
+    test_state_notice_validates_its_world_mask,
     test_torsion_rollback_drops_the_carried_kinematics,
     test_captured_chain_with_a_refresh_interval_matches_the_recomputing_solver,
 ):
