@@ -635,6 +635,7 @@ add_example_batch(
         {
             "devices": test_devices,
             "test_options": {"num-frames": 600, "solver": "xpbd"},
+            "test_options_cpu": {"num-frames": 100},
             "test_suffix": "xpbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },

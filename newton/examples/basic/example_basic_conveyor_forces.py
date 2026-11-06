@@ -731,6 +731,28 @@ class ConveyorForceModel:
         )
 
 
+@wp.kernel
+def track_transported_bodies(
+    body_q: wp.array[wp.transform],
+    tracked_body_ids: wp.array[wp.int32],
+    start_pos: wp.array[wp.vec3],
+    min_supported_height: wp.float32,
+    sim_time: wp.float32,
+    # in/out
+    max_travel: wp.array[wp.float32],
+    fall_time: wp.array[wp.float32],
+    fall_pos: wp.array[wp.vec3],
+):
+    """Track each box's furthest displacement from its spawn and when it first leaves the circuit."""
+    i = wp.tid()
+    p = wp.transform_get_translation(body_q[tracked_body_ids[i]])
+    max_travel[i] = wp.max(max_travel[i], wp.length(p - start_pos[i]))
+    # Written as a negated comparison so a non-finite height also counts as leaving the circuit.
+    if not (p[2] > min_supported_height) and fall_time[i] < 0.0:
+        fall_time[i] = sim_time
+        fall_pos[i] = p
+
+
 # ---------------------------------------------------------------------------
 # Example scene configuration
 # ---------------------------------------------------------------------------
@@ -992,8 +1014,15 @@ class Example:
             )
         self.conveyor.finalize(self.contacts, self.solver_observables)
 
-        self.tracked_start_pos = self.state_0.body_q.numpy()[self.tracked_bodies, :3].copy()
-        self.max_travel = np.zeros(len(self.tracked_bodies))
+        # Per-box test bookkeeping, updated on the device by test_post_step.
+        num_tracked = len(self.tracked_bodies)
+        self.tracked_body_ids = wp.array(self.tracked_bodies, dtype=wp.int32, device=self.model.device)
+        self.tracked_start_pos = wp.array(
+            self.state_0.body_q.numpy()[self.tracked_bodies, :3], dtype=wp.vec3, device=self.model.device
+        )
+        self.max_travel = wp.zeros(num_tracked, dtype=wp.float32, device=self.model.device)
+        self.fall_time = wp.full(num_tracked, -1.0, dtype=wp.float32, device=self.model.device)
+        self.fall_pos = wp.zeros(num_tracked, dtype=wp.vec3, device=self.model.device)
 
         self.viewer.set_model(self.model)
         pos, pitch, yaw = _look_at(eye=(2.0, -14.0, 12.0), target=(-2.0, -4.0, 0.5))
@@ -1172,27 +1201,33 @@ class Example:
         self.viewer.end_frame()
 
     def test_post_step(self):
-        """Verify every box is still on the circuit and record its furthest displacement."""
-        pos = self.state_0.body_q.numpy()[self.tracked_bodies, :3]
-        fallen = np.flatnonzero(~(pos[:, 2] > MIN_SUPPORTED_HEIGHT))
-        if len(fallen):
-            i = int(fallen[0])
-            raise AssertionError(
-                f"transported body {self.tracked_bodies[i]} left the circuit at t={self.sim_time:.2f} s: "
-                f"position {np.array2string(pos[i], precision=3)}"
-            )
-        # Track how far each box has ever been from its spawn, so test_final can tell a
-        # box that is genuinely carried from one that never left the belt it started on.
-        travel = np.linalg.norm(pos - self.tracked_start_pos, axis=1)
-        np.maximum(self.max_travel, travel, out=self.max_travel)
+        """Record when a box first leaves the circuit and how far each box has traveled."""
+        wp.launch(
+            track_transported_bodies,
+            dim=len(self.tracked_bodies),
+            inputs=[
+                self.state_0.body_q,
+                self.tracked_body_ids,
+                self.tracked_start_pos,
+                MIN_SUPPORTED_HEIGHT,
+                self.sim_time,
+            ],
+            outputs=[self.max_travel, self.fall_time, self.fall_pos],
+            device=self.model.device,
+        )
 
     def test_final(self):
         """Verify every box stayed on the circuit and was actually carried by the belts."""
         body_q = self.state_0.body_q.numpy()
         assert np.all(np.isfinite(body_q)), "non-finite body pose"
-        for b in self.tracked_bodies:
-            z = float(body_q[b][2])
-            assert z > MIN_SUPPORTED_HEIGHT, f"transported body {b} left the circuit: z={z:.4f}"
+        fall_time = self.fall_time.numpy()
+        fallen = np.flatnonzero(fall_time >= 0.0)
+        if len(fallen):
+            i = int(fallen[np.argmin(fall_time[fallen])])
+            raise AssertionError(
+                f"transported body {self.tracked_bodies[i]} left the circuit at t={fall_time[i]:.2f} s: "
+                f"position {np.array2string(self.fall_pos.numpy()[i], precision=3)}"
+            )
 
         # The transport checks below are the point of this test, so a run too short to
         # reach full belt speed must fail rather than silently skip them.
@@ -1202,10 +1237,11 @@ class Example:
         )
 
         # Pose validity alone does not establish transport, so require measurable displacement.
-        stalled = int(np.argmin(self.max_travel))
-        assert self.max_travel[stalled] > MIN_TRAVEL, (
+        max_travel = self.max_travel.numpy()
+        stalled = int(np.argmin(max_travel))
+        assert max_travel[stalled] > MIN_TRAVEL, (
             f"transported body {self.tracked_bodies[stalled]} was never carried off its start pose: "
-            f"{self.max_travel[stalled]:.3f} m"
+            f"{max_travel[stalled]:.3f} m"
         )
         # Individual boxes briefly slow at belt seams and in the turn, so this is a
         # fleet average rather than a per-box floor.
