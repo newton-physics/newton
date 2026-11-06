@@ -5,10 +5,12 @@ from .base import ClampingBase
 from .clamping_dc_motor import ClampingDCMotor
 from .clamping_max_effort import ClampingMaxEffort
 from .clamping_position_based import ClampingPositionBased
+from .clamping_thermal import ClampingThermal
 
 __all__ = [
     "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
+    "ClampingThermal",
 ]

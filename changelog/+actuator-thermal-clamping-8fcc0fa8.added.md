@@ -1,0 +1,1 @@
+Add stateful actuator clamping: `ClampingBase` gains optional `State`, `is_stateful()`, `state()`, `prepare()`, and `update_state()` hooks, `Actuator.State.clamping_states` holds their state, and `Actuator.applied_effort` and `Actuator.computed_effort` expose the effort of the last step.

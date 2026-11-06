@@ -16,7 +16,7 @@ import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import numpy as np
@@ -33,6 +33,7 @@ from newton.actuators import (
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
+    ClampingThermal,
     Delay,
     DriveBase,
     DriveNeuralGRU,
@@ -2991,6 +2992,328 @@ def _solve_clamped_effort(
         else:
             hi = mid
     return 0.5 * (lo + hi)
+
+
+def _thermal_clamp(n: int, device: wp.Device | None = None, **kwargs: float) -> ClampingThermal:
+    """Build a :class:`ClampingThermal` for *n* actuators from scalar arguments."""
+    resolved = ClampingThermal.resolve_arguments(kwargs)
+    return ClampingThermal(**{k: wp.full(n, v, dtype=wp.float32, device=device) for k, v in resolved.items()})
+
+
+class TestClampingThermal(unittest.TestCase):
+    """Two-node thermal clamp: heating, derating, cut-off, and state lifecycle."""
+
+    # Joint-side motor of a large humanoid joint.
+    PARAMS: ClassVar[dict[str, float]] = {
+        "max_effort": 80.0,
+        "torque_constant": 1.5,
+        "winding_resistance": 0.2,
+        "resistance_temperature_coefficient": 0.00393,
+        "heat_capacity_winding": 40.0,
+        "heat_capacity_housing": 300.0,
+        "thermal_resistance_winding_housing": 0.5,
+        "thermal_resistance_housing_ambient": 1.5,
+        "temperature_ambient": 25.0,
+    }
+
+    def _setup(self, n: int = 2, device: wp.Device | None = None, **overrides: float):
+        """Build an actuator applying feedforward effort through a thermal clamp at rest."""
+        device = wp.get_device(device)
+        clamp = _thermal_clamp(n, device, **{**self.PARAMS, **overrides})
+        zeros = wp.zeros(n, dtype=wp.float32, device=device)
+        actuator = Actuator(
+            indices=wp.array(np.arange(n), dtype=wp.uint32, device=device),
+            drive=DrivePD(kp=zeros, kd=wp.zeros_like(zeros)),
+            clamping=[clamp],
+        )
+        sim_state = types.SimpleNamespace(joint_q=wp.zeros_like(zeros), joint_qd=wp.zeros_like(zeros))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=wp.zeros_like(zeros),
+            joint_target_qd=wp.zeros_like(zeros),
+            joint_act=wp.zeros_like(zeros),
+            joint_f=wp.zeros_like(zeros),
+        )
+        return actuator, clamp, sim_state, sim_control
+
+    @staticmethod
+    def _run(actuator, sim_state, sim_control, states, steps: int, dt: float):
+        """Step *steps* times, swapping the double-buffered states; return the current state."""
+        a, b = states
+        for _ in range(steps):
+            sim_control.joint_f.zero_()
+            actuator.step(sim_state, sim_control, a, b, dt=dt)
+            a, b = b, a
+        return a, b
+
+    def test_is_stateful_and_allocates_clamping_state(self):
+        """Report a thermal clamp as stateful and start its state at ambient temperature."""
+        actuator, clamp, _, _ = self._setup(temperature_ambient=31.0)
+        self.assertTrue(clamp.is_stateful())
+        self.assertTrue(actuator.is_stateful())
+        state = actuator.state()
+        self.assertEqual(len(state.clamping_states), 1)
+        thermal = state.clamping_states[0]
+        self.assertIsInstance(thermal, ClampingThermal.State)
+        np.testing.assert_allclose(thermal.temperature_winding.numpy(), 31.0)
+        np.testing.assert_allclose(thermal.temperature_housing.numpy(), 31.0)
+        self.assertFalse(thermal.cutoff_active.numpy().any())
+
+    def test_stateless_clamps_leave_clamping_states_empty(self):
+        """Keep clamping_states empty when no clamp is stateful."""
+        n = 2
+        delay = Delay(delay_steps=wp.ones(n, dtype=wp.int32), max_delay=1)
+        actuator = Actuator(
+            indices=wp.array(np.arange(n), dtype=wp.uint32),
+            drive=DrivePD(kp=wp.ones(n, dtype=wp.float32), kd=wp.zeros(n, dtype=wp.float32)),
+            delay=delay,
+            clamping=[ClampingMaxEffort(max_effort=wp.ones(n, dtype=wp.float32))],
+        )
+        self.assertEqual(actuator.state().clamping_states, ())
+
+    def test_steady_state_matches_continuous_rating(self):
+        """Converge to the analytic steady state of the network under a constant effort.
+
+        With the conduction terms integrated by backward Euler, very large
+        steps converge to the fixed point ``T_w = T_a + P(T_w) (R_wh + R_ha)``.
+        """
+        p = self.PARAMS
+        efforts = [20.0, -35.0]
+        actuator, _, sim_state, sim_control = self._setup()
+        sim_control.joint_act.assign(np.array(efforts, dtype=np.float32))
+        state, _ = self._run(actuator, sim_state, sim_control, (actuator.state(), actuator.state()), 2000, 100.0)
+
+        r_total = p["thermal_resistance_winding_housing"] + p["thermal_resistance_housing_ambient"]
+        alpha, r25, ta = p["resistance_temperature_coefficient"], p["winding_resistance"], p["temperature_ambient"]
+        for i, effort in enumerate(efforts):
+            k = r25 * (effort / p["torque_constant"]) ** 2 * r_total
+            t_w = (ta + k * (1.0 - alpha * 25.0)) / (1.0 - k * alpha)
+            p_loss = r25 * (1.0 + alpha * (t_w - 25.0)) * (effort / p["torque_constant"]) ** 2
+            t_h = ta + p_loss * p["thermal_resistance_housing_ambient"]
+            self.assertAlmostEqual(float(state.clamping_states[0].temperature_winding.numpy()[i]), t_w, places=2)
+            self.assertAlmostEqual(float(state.clamping_states[0].temperature_housing.numpy()[i]), t_h, places=2)
+
+    def test_transient_matches_fine_integration(self):
+        """Match a fine-step reference within the first-order error of a coarse step."""
+        actuator, _, sim_state, sim_control = self._setup(n=1)
+        sim_control.joint_act.fill_(60.0)
+        sim_state.joint_qd.fill_(4.0)
+        actuator.clamping[0].iron_loss_coefficient.fill_(0.05)
+
+        temps = []
+        for dt, steps in ((1.0e-3, 30000), (0.05, 600)):
+            state, _ = self._run(actuator, sim_state, sim_control, (actuator.state(), actuator.state()), steps, dt)
+            temps.append(float(state.clamping_states[0].temperature_winding.numpy()[0]))
+        self.assertGreater(temps[0], 40.0)
+        self.assertAlmostEqual(temps[1], temps[0], delta=0.01 * (temps[0] - 25.0))
+
+    def test_large_step_does_not_overshoot(self):
+        """Stay between ambient and steady state when the step exceeds every time constant."""
+        actuator, _, sim_state, sim_control = self._setup(n=1, heat_capacity_winding=0.1)
+        sim_control.joint_act.fill_(30.0)
+        state, _ = self._run(actuator, sim_state, sim_control, (actuator.state(), actuator.state()), 1, 100.0)
+        t_w = float(state.clamping_states[0].temperature_winding.numpy()[0])
+        self.assertTrue(np.isfinite(t_w))
+        self.assertGreater(t_w, 25.0)
+        self.assertLess(t_w, 25.0 + 0.2 * 1.01 * (30.0 / 1.5) ** 2 * 2.0 * 1.5)
+
+    def test_derating_scales_the_effort_limit(self):
+        """Scale the limit linearly between the derating temperatures."""
+        actuator, clamp, sim_state, sim_control = self._setup(
+            n=3, temperature_derating_start=60.0, temperature_derating_end=100.0
+        )
+        state, nxt = actuator.state(), actuator.state()
+        state.clamping_states[0].temperature_winding.assign(np.array([50.0, 80.0, 120.0], dtype=np.float32))
+        sim_control.joint_act.fill_(1000.0)
+        actuator.step(sim_state, sim_control, state, nxt, dt=1.0e-3)
+        np.testing.assert_allclose(clamp.effort_limit.numpy(), [80.0, 40.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(actuator.applied_effort.numpy(), [80.0, 40.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(actuator.computed_effort.numpy(), 1000.0)
+        np.testing.assert_allclose(sim_control.joint_f.numpy(), [80.0, 40.0, 0.0], atol=1e-4)
+
+    def test_cutoff_latches_until_release(self):
+        """Hold the effort at zero from the cut-off until the winding cools to the release temperature."""
+        actuator, clamp, sim_state, sim_control = self._setup(
+            n=1, temperature_cutoff=90.0, temperature_release=70.0, heat_capacity_winding=1.0
+        )
+        state, nxt = actuator.state(), actuator.state()
+        thermal = state.clamping_states[0]
+        dt = 1.0e-3
+
+        def step(effort: float) -> float:
+            nonlocal state, nxt
+            sim_control.joint_act.fill_(effort)
+            sim_control.joint_f.zero_()
+            actuator.step(sim_state, sim_control, state, nxt, dt=dt)
+            state, nxt = nxt, state
+            return float(sim_control.joint_f.numpy()[0])
+
+        thermal.temperature_winding.fill_(89.0)
+        thermal.temperature_housing.fill_(89.0)
+        self.assertAlmostEqual(step(80.0), 80.0, places=3)
+        for _ in range(20):
+            step(80.0)
+        self.assertTrue(bool(state.clamping_states[0].cutoff_active.numpy()[0]))
+        self.assertEqual(step(80.0), 0.0)
+
+        state.clamping_states[0].temperature_winding.fill_(75.0)
+        self.assertEqual(step(80.0), 0.0)
+        self.assertTrue(bool(state.clamping_states[0].cutoff_active.numpy()[0]))
+        state.clamping_states[0].temperature_winding.fill_(65.0)
+        step(80.0)
+        self.assertFalse(bool(state.clamping_states[0].cutoff_active.numpy()[0]))
+        self.assertAlmostEqual(step(80.0), 80.0, places=3)
+        self.assertLess(float(clamp.effort_limit.numpy()[0]), 80.0 + 1e-6)
+
+    def test_reset_with_mask_and_assign(self):
+        """Reset only masked entries to the ambient temperature, and copy states with assign."""
+        actuator, clamp, _, _ = self._setup(n=3)
+        state, other = actuator.state(), actuator.state()
+        thermal = state.clamping_states[0]
+        thermal.temperature_winding.fill_(70.0)
+        thermal.temperature_housing.fill_(50.0)
+        thermal.cutoff_active.fill_(True)
+        clamp.temperature_ambient.assign(np.array([20.0, 21.0, 22.0], dtype=np.float32))
+
+        other.assign(state)
+        np.testing.assert_allclose(other.clamping_states[0].temperature_winding.numpy(), 70.0)
+        self.assertTrue(other.clamping_states[0].cutoff_active.numpy().all())
+
+        state.reset(wp.array([True, False, True], dtype=wp.bool))
+        np.testing.assert_allclose(thermal.temperature_winding.numpy(), [20.0, 70.0, 22.0])
+        np.testing.assert_allclose(thermal.temperature_housing.numpy(), [20.0, 50.0, 22.0])
+        np.testing.assert_array_equal(thermal.cutoff_active.numpy(), [False, True, False])
+
+    def test_stacks_after_dc_motor(self):
+        """Apply the tighter of the effort-speed envelope and the thermal limit."""
+        n = 2
+        thermal = _thermal_clamp(n, **self.PARAMS, temperature_derating_start=60.0, temperature_derating_end=100.0)
+        dc = ClampingDCMotor(
+            saturation_effort=wp.full(n, 100.0, dtype=wp.float32),
+            velocity_limit=wp.full(n, 10.0, dtype=wp.float32),
+            max_motor_effort=wp.full(n, 100.0, dtype=wp.float32),
+        )
+        zeros = wp.zeros(n, dtype=wp.float32)
+        actuator = Actuator(
+            indices=wp.array(np.arange(n), dtype=wp.uint32),
+            drive=DrivePD(kp=zeros, kd=wp.zeros_like(zeros)),
+            clamping=[dc, thermal],
+        )
+        self.assertEqual([s is None for s in actuator.state().clamping_states], [True, False])
+        state, nxt = actuator.state(), actuator.state()
+        state.clamping_states[1].temperature_winding.assign(np.array([25.0, 90.0], dtype=np.float32))
+        sim_state = types.SimpleNamespace(joint_q=wp.zeros_like(zeros), joint_qd=wp.full(n, 5.0, dtype=wp.float32))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=wp.zeros_like(zeros),
+            joint_target_qd=wp.zeros_like(zeros),
+            joint_act=wp.full(n, 500.0, dtype=wp.float32),
+            joint_f=wp.zeros_like(zeros),
+        )
+        actuator.step(sim_state, sim_control, state, nxt, dt=1.0e-3)
+        # DC envelope at 5 rad/s allows 50; thermal allows 80 cold and 20 at 90 C.
+        np.testing.assert_allclose(sim_control.joint_f.numpy(), [50.0, 20.0], atol=1e-4)
+
+    def test_step_requires_dt(self):
+        """Reject a step without dt when a clamp is stateful."""
+        actuator, _, sim_state, sim_control = self._setup()
+        with self.assertRaisesRegex(ValueError, "require dt"):
+            actuator.step(sim_state, sim_control, actuator.state(), actuator.state())
+
+    def test_resolve_arguments_validation(self):
+        """Reject inconsistent thermal parameters."""
+        with self.assertRaisesRegex(ValueError, "both be set"):
+            ClampingThermal.resolve_arguments({"temperature_derating_start": 60.0})
+        with self.assertRaisesRegex(ValueError, "must be below"):
+            ClampingThermal.resolve_arguments({"temperature_derating_start": 90.0, "temperature_derating_end": 80.0})
+        with self.assertRaisesRegex(ValueError, "must not exceed"):
+            ClampingThermal.resolve_arguments({"temperature_cutoff": 90.0, "temperature_release": 95.0})
+        with self.assertRaisesRegex(ValueError, "heat_capacity_winding"):
+            ClampingThermal.resolve_arguments({"heat_capacity_winding": 0.0})
+        self.assertEqual(ClampingThermal.resolve_arguments({"temperature_cutoff": 90.0})["temperature_release"], 90.0)
+
+    def test_implicit_mode_respects_thermal_limit(self):
+        """Bound the implicit solve by the effort limit refreshed from the state."""
+        device = wp.get_device()
+        model = _build_pendulum(device, worlds=2)
+        n = model.joint_dof_count
+        clamp = _thermal_clamp(
+            n, device, **self.PARAMS, temperature_derating_start=60.0, temperature_derating_end=100.0
+        )
+        response = JointSpaceResponse(model)
+        actuator = Actuator(
+            indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
+            drive=DrivePD(kp=wp.full(n, 1.0e4, dtype=wp.float32), kd=wp.full(n, 10.0, dtype=wp.float32)),
+            clamping=[clamp],
+        )
+        actuator.set_effort_mode_implicit(response)
+        state, control = model.state(), model.control()
+        control.joint_target_q.fill_(1.0)
+        a, b = actuator.state(), actuator.state()
+        a.clamping_states[0].temperature_winding.assign(np.array([25.0, 90.0], dtype=np.float32))
+        response.refresh(state)
+        actuator.step(state, control, a, b, dt=1.0e-3)
+        np.testing.assert_allclose(np.abs(actuator.applied_effort.numpy()), [80.0, 20.0], rtol=1e-4)
+        self.assertGreater(float(b.clamping_states[0].temperature_winding.numpy()[0]), 25.0)
+
+    def test_graph_capture_matches_eager(self):
+        """Replay a captured even-length step loop and match eager stepping."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+
+        def run(capture: bool) -> np.ndarray:
+            actuator, _, sim_state, sim_control = self._setup(
+                n=4, device=device, temperature_derating_start=40.0, temperature_derating_end=60.0
+            )
+            sim_control.joint_act.assign(np.array([20.0, 40.0, 60.0, 80.0], dtype=np.float32))
+            states = (actuator.state(), actuator.state())
+            # Build every kernel before capture.
+            states = self._run(actuator, sim_state, sim_control, states, 2, 0.01)
+            if not capture:
+                states = self._run(actuator, sim_state, sim_control, states, 400, 0.01)
+                return states[0].clamping_states[0].temperature_winding.numpy()
+            with wp.ScopedCapture(device) as cap:
+                self._run(actuator, sim_state, sim_control, states, 8, 0.01)
+            for _ in range(50):
+                wp.capture_launch(cap.graph)
+            return states[0].clamping_states[0].temperature_winding.numpy()
+
+        eager, graph = run(False), run(True)
+        self.assertGreater(eager.max(), 40.0)
+        np.testing.assert_allclose(graph, eager, rtol=1e-5)
+
+    def test_builder_replicates_and_selection_reads_state(self):
+        """Group thermal actuators in the builder and read and write their state through a view."""
+        template = newton.ModelBuilder()
+        body = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+        joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        template.add_articulation([joint], label="robot")
+        template.add_actuator(
+            DrivePD,
+            index=template.joint_qd_start[joint],
+            kp=0.0,
+            clamping=[(ClampingThermal, {**self.PARAMS, "temperature_cutoff": 100.0, "temperature_release": 80.0})],
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 3)
+        model = builder.finalize()
+        self.assertEqual(len(model.actuators), 1)
+        actuator = model.actuators[0]
+        clamp = actuator.clamping[0]
+        self.assertIsInstance(clamp, ClampingThermal)
+        np.testing.assert_allclose(clamp.temperature_cutoff.numpy(), [100.0] * 3)
+
+        view = ArticulationView(model, "robot")
+        state = actuator.state()
+        thermal = state.clamping_states[0]
+        hot = wp.array([[60.0], [70.0], [80.0]], dtype=wp.float32, device=model.device)
+        view.set_actuator_parameter(
+            actuator, thermal, "temperature_winding", hot, mask=wp.array([True, False, True], dtype=wp.bool)
+        )
+        read = view.get_actuator_parameter(actuator, thermal, "temperature_winding").numpy()
+        np.testing.assert_allclose(read[:, 0], [60.0, 25.0, 80.0])
+        view.set_actuator_parameter(actuator, clamp, "temperature_ambient", wp.full((3, 1), 30.0, dtype=wp.float32))
+        state.reset()
+        np.testing.assert_allclose(thermal.temperature_winding.numpy(), 30.0)
 
 
 class TestActuatorStep(unittest.TestCase):
