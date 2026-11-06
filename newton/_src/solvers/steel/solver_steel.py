@@ -6039,7 +6039,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 else None
             )
             # The factor-coordinate paired response reads L^-1 of both sizes; one lane per column replaces the
-            # serial per-articulation inversion, which dominated the factor stage of the 23-DOF Kuka with patches.
+            # serial per-articulation inversion.
             self._inverse_lower_kernels_by_size[size] = (
                 _get_inverse_cholesky_register_kernel(size, device_arch, lower_only=True)
                 if self._paired_factor_coordinates

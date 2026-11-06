@@ -14,6 +14,7 @@ from .kernels import (
     ROW_SLOTS_ATOMIC,
     ROW_SLOTS_COUNT,
     WARP_DETERMINISM_OFF,
+    contact_base_rows,
     contact_row_points,
 )
 
@@ -343,7 +344,7 @@ def _get_sparse_contact_response_kernel(
         total_contacts = wp.min(contact_count[0], contact_point0.shape[0])
         for c in range(worker, total_contacts, total_num_workers):
             # A normal row and, for point friction or a surviving patch anchor, two friction rows.
-            row_count = wp.min(contact_slots_needed[c], 3)
+            row_count = contact_base_rows(contact_slots_needed[c])
             if contact_path[c] != 0 or contact_slot[c] < 0 or row_count <= 0:
                 continue
             body_a = int(-1)
