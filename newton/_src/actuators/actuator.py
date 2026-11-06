@@ -343,9 +343,6 @@ class Actuator:
             delay.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
-        self._stateful_clamping = tuple(
-            (index, clamp) for index, clamp in enumerate(self.clamping) if clamp.is_stateful()
-        )
 
         self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
 
@@ -463,6 +460,15 @@ class Actuator:
     def set_effort_mode_explicit(self) -> None:
         """Switch effort computation back to the default explicit mode."""
         self._effort_mode = _EffortModeExplicit(self.drive, self.clamping, self.device)
+
+    @property
+    def _stateful_clamping(self) -> tuple[tuple[int, ClampingBase], ...]:
+        """Stateful clamps and their positions in :attr:`clamping`.
+
+        Evaluated on access so clamps appended to :attr:`clamping` after
+        construction are included.
+        """
+        return tuple((index, clamp) for index, clamp in enumerate(self.clamping) if clamp.is_stateful())
 
     def is_stateful(self) -> bool:
         """Return True if the delay, drive, or a clamp maintains internal state."""
@@ -589,8 +595,13 @@ class Actuator:
             raise ValueError(
                 "Stateful actuator requires both current_act_state and next_act_state; create them via actuator.state()"
             )
-        if self._stateful_clamping and dt is None:
+        stateful_clamping = self._stateful_clamping
+        if stateful_clamping and dt is None:
             raise ValueError("Actuators with stateful clamping require dt.")
+        if stateful_clamping and len(current_act_state.clamping_states) != len(self.clamping):
+            raise ValueError(
+                "Actuator state was created for a different clamping list; create it again with actuator.state()."
+            )
 
         positions = _require_array(sim_state, self.state_pos_attr)
         velocities = _require_array(sim_state, self.state_vel_attr)
@@ -622,7 +633,7 @@ class Actuator:
             target_vel_indices = self._sequential_indices
 
         # --- 2. Refresh state-dependent clamp bounds (read by both effort modes) ---
-        for index, clamp in self._stateful_clamping:
+        for index, clamp in stateful_clamping:
             clamp.prepare(
                 current_act_state.clamping_states[index],
                 positions,
@@ -672,7 +683,7 @@ class Actuator:
         )
 
         # --- 6. State updates (write to next_state) ---
-        for index, clamp in self._stateful_clamping:
+        for index, clamp in stateful_clamping:
             clamp.update_state(
                 current_act_state.clamping_states[index],
                 next_act_state.clamping_states[index],

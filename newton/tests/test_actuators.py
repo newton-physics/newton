@@ -3212,6 +3212,36 @@ class TestClampingThermal(unittest.TestCase):
         # DC envelope at 5 rad/s allows 50; thermal allows 80 cold and 20 at 90 C.
         np.testing.assert_allclose(sim_control.joint_f.numpy(), [50.0, 20.0], atol=1e-4)
 
+    def test_clamp_appended_after_construction(self):
+        """Pick up a stateful clamp appended to the clamping list and reject states built before it."""
+        n = 2
+        zeros = wp.zeros(n, dtype=wp.float32)
+        actuator = Actuator(
+            indices=wp.array(np.arange(n), dtype=wp.uint32),
+            drive=DrivePD(kp=zeros, kd=wp.zeros_like(zeros)),
+            delay=Delay(delay_steps=wp.zeros(n, dtype=wp.int32), max_delay=1),
+            clamping=[ClampingMaxEffort(max_effort=wp.full(n, 100.0, dtype=wp.float32))],
+        )
+        stale = actuator.state()
+        clamp = _thermal_clamp(n, **self.PARAMS, temperature_derating_start=60.0, temperature_derating_end=100.0)
+        clamp.finalize(actuator.device, actuator.num_actuators)
+        actuator.clamping.append(clamp)
+        self.assertTrue(actuator.is_stateful())
+
+        sim_state = types.SimpleNamespace(joint_q=wp.zeros_like(zeros), joint_qd=wp.zeros_like(zeros))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=wp.zeros_like(zeros),
+            joint_target_qd=wp.zeros_like(zeros),
+            joint_act=wp.full(n, 90.0, dtype=wp.float32),
+            joint_f=wp.zeros_like(zeros),
+        )
+        with self.assertRaisesRegex(ValueError, "different clamping list"):
+            actuator.step(sim_state, sim_control, stale, actuator.state(), dt=1.0e-3)
+        state, nxt = actuator.state(), actuator.state()
+        state.clamping_states[1].temperature_winding.assign(np.array([25.0, 80.0], dtype=np.float32))
+        actuator.step(sim_state, sim_control, state, nxt, dt=1.0e-3)
+        np.testing.assert_allclose(sim_control.joint_f.numpy(), [80.0, 40.0], atol=1e-4)
+
     def test_step_requires_dt(self):
         """Reject a step without dt when a clamp is stateful."""
         actuator, _, sim_state, sim_control = self._setup()
