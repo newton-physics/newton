@@ -248,6 +248,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         self._step = 0
         self._mass_matrix_dirty = False
+        # state (or the solver itself) whose system matrices the solve reads;
+        # updated every time the mass-matrix chain runs
+        self._mass_scratch_holder = self
 
         self._update_kinematic_state()
 
@@ -534,6 +537,37 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             target.body_ft_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
+
+        if model.joint_count and target is not self:
+            # Per-step system matrices. The mass-matrix chain rewrites these
+            # every step, so keeping them on the solver would alias the steps
+            # inside one gradient tape: earlier steps' adjoints would read
+            # later steps' matrix values, and later steps' covector deposits
+            # left in the shared adjoint buffers would be consumed again by
+            # earlier steps' gemm/cholesky adjoints. Attaching them to the
+            # step's output state gives every step its own scratch, matching
+            # the state-side aux arrays above. When the target is the solver
+            # itself (the requires_grad=False path) the solver-owned matrices
+            # allocated in _allocate_model_aux_vars are used instead.
+            target.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+            target.M = wp.zeros((self.M_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+            target.P = wp.empty_like(target.J, requires_grad=requires_grad)
+            target.H = wp.empty((self.H_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+            # zero since only the lower triangle is set which can trigger NaN detection
+            target.L = wp.zeros_like(target.H)
+            target.H_mimic = wp.zeros_like(target.H) if self._has_joint_mimics else None
+            if self.use_tile_gemm:
+                J_start = self.articulation_J_start.numpy()
+                M_start = self.articulation_M_start.numpy()
+                H_start = self.articulation_H_start.numpy()
+                target._J_by_size, target._M_by_size, target._H_by_size, target._L_by_size = {}, {}, {}, {}
+                for size, arts in self._group_to_art.items():
+                    joint_count, dof_count = size
+                    first, n = int(arts.numpy()[0]), arts.shape[0]
+                    target._J_by_size[size] = _group_view(target.J, J_start[first], (n, 6 * joint_count, dof_count))
+                    target._M_by_size[size] = _group_view(target.M, M_start[first], (n, 6 * joint_count, 6 * joint_count))
+                    target._H_by_size[size] = _group_view(target.H, H_start[first], (n, dof_count, dof_count))
+                    target._L_by_size[size] = _group_view(target.L, H_start[first], (n, dof_count, dof_count))
 
             target._featherstone_augmented = True
 
@@ -882,7 +916,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                 model.joint_qd_start,
                                 state_aug.joint_S_s,
                             ],
-                            outputs=[self.J],
+                            outputs=[state_aug.J],
                             device=model.device,
                         )
 
@@ -896,7 +930,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                 self.articulation_M_start,
                                 state_aug.body_I_s,
                             ],
-                            outputs=[self.M],
+                            outputs=[state_aug.M],
                             device=model.device,
                         )
 
@@ -907,13 +941,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                         kernel,
                                         dim=self._group_to_art[size].shape[0],
                                         inputs=[
-                                            self._J_by_size[size],
-                                            self._M_by_size[size],
+                                            state_aug._J_by_size[size],
+                                            state_aug._M_by_size[size],
                                             self._group_to_art[size],
                                             self.articulation_dof_start,
                                             self.joint_armature_effective,
                                         ],
-                                        outputs=[self._H_by_size[size], self._L_by_size[size]],
+                                        outputs=[state_aug._H_by_size[size], state_aug._L_by_size[size]],
                                         device=model.device,
                                         block_dim=64,
                                     )
@@ -921,8 +955,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     wp.launch_tiled(
                                         kernel,
                                         dim=self._group_to_art[size].shape[0],
-                                        inputs=[self._J_by_size[size], self._M_by_size[size]],
-                                        outputs=[self._H_by_size[size]],
+                                        inputs=[state_aug._J_by_size[size], state_aug._M_by_size[size]],
+                                        outputs=[state_aug._H_by_size[size]],
                                         device=model.device,
                                         block_dim=256,
                                     )
@@ -942,10 +976,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     self.articulation_J_start,
                                     # P start is the same as J start since it has the same dims as J
                                     self.articulation_J_start,
-                                    self.M,
-                                    self.J,
+                                    state_aug.M,
+                                    state_aug.J,
                                 ],
-                                outputs=[self.P],
+                                outputs=[state_aug.P],
                                 device=model.device,
                             )
 
@@ -964,18 +998,18 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     # P start is the same as J start since it has the same dims as J
                                     self.articulation_J_start,
                                     self.articulation_H_start,
-                                    self.J,
-                                    self.P,
+                                    state_aug.J,
+                                    state_aug.P,
                                 ],
-                                outputs=[self.H],
+                                outputs=[state_aug.H],
                                 device=model.device,
                             )
 
                         if not (self.use_tile_gemm and self.fuse_cholesky and not self._has_joint_mimics):
-                            solve_H = self.H
+                            solve_H = state_aug.H
                             solve_armature = self.joint_armature_effective
                             if self._has_joint_mimics:
-                                self.H_mimic.zero_()
+                                state_aug.H_mimic.zero_()
                                 wp.launch(
                                     reduce_mimic_inertia,
                                     dim=model.articulation_count,
@@ -989,12 +1023,12 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                         model.joint_mimic_joint,
                                         model.joint_mimic_coeffs,
                                         self.joint_armature_effective,
-                                        self.H,
+                                        state_aug.H,
                                     ],
-                                    outputs=[self.H_mimic],
+                                    outputs=[state_aug.H_mimic],
                                     device=model.device,
                                 )
-                                solve_H = self.H_mimic
+                                solve_H = state_aug.H_mimic
                                 solve_armature = self.joint_armature_zero
 
                             # compute decomposition
@@ -1008,7 +1042,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     solve_H,
                                     solve_armature,
                                 ],
-                                outputs=[self.L],
+                                outputs=[state_aug.L],
                                 device=model.device,
                             )
 
@@ -1017,17 +1051,20 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         # print("joint_tau:")
                         # print(state_aug.joint_tau.numpy())
                         # print("H:")
-                        # print(self.H.numpy())
+                        # print(state_aug.H.numpy())
                         # print("L:")
-                        # print(self.L.numpy())
+                        # print(state_aug.L.numpy())
                         self._mass_matrix_dirty = False
+                        # the solve below (and any skipped-interval step) reads the
+                        # matrices this chain run produced; remember where they live
+                        self._mass_scratch_holder = state_aug
 
                     # solve for qdd
                     state_aug.joint_qdd.zero_()
-                    solve_H = self.H
+                    solve_H = self._mass_scratch_holder.H
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
-                        solve_H = self.H_mimic
+                        solve_H = self._mass_scratch_holder.H_mimic
                         state_aug.joint_tau_mimic.zero_()
                         wp.launch(
                             reduce_mimic_forces,
@@ -1053,7 +1090,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             self.articulation_H_rows,
                             self.articulation_dof_start,
                             solve_H,
-                            self.L,
+                            self._mass_scratch_holder.L,
                             solve_tau,
                         ],
                         outputs=[
