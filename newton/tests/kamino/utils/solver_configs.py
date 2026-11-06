@@ -71,6 +71,19 @@ def make_padmm_sparse_config(**kwargs: Any) -> SolverKamino.Config:
     )
 
 
+def make_padmm_sparse_fused_config(**kwargs: Any) -> SolverKamino.Config:
+    """Create a sparse PADMM configuration with the fused conjugate residual solver (CUDA only)."""
+    return SolverKamino.Config(
+        dynamics_solver="padmm",
+        use_fk_solver=False,
+        sparse_jacobian=True,
+        sparse_dynamics=True,
+        use_collision_detector=False,
+        dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="CRF"),
+        **kwargs,
+    )
+
+
 def make_dvi_dense_config(**kwargs: Any) -> SolverKamino.Config:
     """Create a dense DVI configuration without collision detection."""
     return SolverKamino.Config(
