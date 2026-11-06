@@ -1,0 +1,6 @@
+﻿newton.utils.color\_srgb\_to\_linear
+====================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: color_srgb_to_linear

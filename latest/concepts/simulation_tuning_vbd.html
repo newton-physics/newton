@@ -1,0 +1,2848 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>VBD Tuning &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=57292b40" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+
+    <script src="../_static/documentation_options.js?v=4cc04674"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true, "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"ignoreHtmlClass": "annotation", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/simulation_tuning_vbd';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.22.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="newton" href="../api/newton.html" />
+    <link rel="prev" title="MuJoCo-Warp Contact Tuning" href="simulation_tuning_mujoco.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.9.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="deformable_selection.html">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="determinism.html">
+    Deterministic Simulation
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning_solvers.html">
+    Solver Reference
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning_mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#" aria-current="page">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_exceptions.html">
+    newton.exceptions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="selection.html">
+    Selection API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="deformable_selection.html">
+    Deformable Selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="determinism.html">
+    Deterministic Simulation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning_solvers.html">
+    Solver Reference
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning_mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#" aria-current="page">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_config.html">
+    newton.config
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_exceptions.html">
+    newton.exceptions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/diagnostics.html">Logging and Warnings</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/source_code_guidelines.html">Source Code Guidelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/review_guidelines.html">Review Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="deformable_objects.html">Deformable Objects</a></li>
+<li class="toctree-l1"><a class="reference internal" href="selection.html">Selection API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="deformable_selection.html">Deformable Selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="solver_observables.html">Solver Observables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="determinism.html">Deterministic Simulation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/vbd.html">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Simulation Tuning</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning_solvers.html">Solver Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning_mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_config.html">newton.config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_exceptions.html">newton.exceptions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tendons.html">Massless Routed Tendons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md"> Publications</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">VBD Tuning</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="vbd-tuning">
+<span id="tuning-vbd"></span><h1>VBD Tuning<a class="headerlink" href="#vbd-tuning" title="Link to this heading">#</a></h1>
+<p>This page explains how <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> reacts to its solver
+and model parameters, what typically goes wrong and how to fix it, and which
+parameter combinations are known to work. It covers cloth (triangle meshes),
+soft bodies (tetrahedral meshes), rigid bodies, and cables, including their
+contacts.
+See <a class="reference internal" href="simulation_tuning_solvers.html#tuning-solver-reference"><span class="std std-ref">Solver Tuning Reference</span></a> for the parameter reference and
+<a class="reference internal" href="../solvers/vbd.html"><span class="doc">VBD</span></a> for setup and API explanations.
+<a class="reference internal" href="simulation_tuning.html#simulation-tuning"><span class="std std-ref">Simulation Tuning</span></a> holds the diagnostic workflow that this page assumes.
+Check <a class="reference internal" href="../solvers/index.html#joint-feature-support"><span class="std std-ref">Joint Feature Support</span></a> and <a class="reference internal" href="../solvers/index.html#contact-material-support"><span class="std std-ref">Contact Material Support</span></a> before
+tuning your model.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>The specific values, mode names, and formulas on this page reflect the code
+at a point in time and can drift. Treat them as starting points and verify
+any you rely on against the cited source (for example
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> and its kernels). See
+<a class="reference internal" href="simulation_tuning.html#simulation-tuning"><span class="std std-ref">Simulation Tuning</span></a> for the full guidance.</p>
+</div>
+<section id="mental-model">
+<h2>Mental Model<a class="headerlink" href="#mental-model" title="Link to this heading">#</a></h2>
+<p>VBD treats every time step as one minimization and solves it one block at a
+time. A block is one particle (3 degrees of freedom) or one rigid body (6).
+Each block solves a small local problem: with every other block held fixed, it
+takes one Newton step that balances its inertia against the forces acting on
+it. One pass over all blocks is one iteration, and the solver runs a fixed
+number of iterations per step. The material parameters on this page enter
+through the energy terms of that minimization, and contacts are energy terms
+too; the other parameters control detection, truncation and the iteration.
+<a class="reference internal" href="../solvers/vbd.html#vbd-how-it-works"><span class="std std-ref">How VBD Works</span></a> on the backend page gives the step objective, the
+block solve and its call tree, the formula of every energy term, and the
+Divide and Truncate scheme (DAT) for particle self-contact and optional
+rigid-soft contact.</p>
+<p>The consequences for tuning are:</p>
+<ul class="simple">
+<li><p><strong>Stiff terms win the local solve.</strong> One term far stiffer than the others
+that share its vertices makes the local step serve that term and neglect the
+rest. See <a class="reference internal" href="#vbd-stiffness-ratio"><span class="std std-ref">Stiffness ratio</span></a>.</p></li>
+<li><p><strong>Information moves one ring per iteration.</strong> A vertex sees only the
+vertices it shares an element with, its one ring, so a change travels one
+ring of neighbours per iteration. A fine mesh needs more iterations to reach
+the same state. See <a class="reference internal" href="#vbd-fail-resolution"><span class="std std-ref">A fine mesh converges slowly</span></a>.</p></li>
+<li><p><strong>An unfinished solve becomes velocity.</strong> Corrections that did not settle
+inside the step come back as motion in the next step.</p></li>
+<li><p><strong>DAT caps motion between detections.</strong> DAT keeps contacts penetration-free
+by limiting how far a vertex may move between two contact detections. That
+limit, the motion budget, is a fraction of the distance out to which contact
+pairs are detected, the query radius. A small query radius means a small
+budget and visible DAT damping. See <a class="reference internal" href="#vbd-fail-dat-damping"><span class="std std-ref">DAT damping: slow, hovering or locked motion</span></a>.</p></li>
+<li><p><strong>Float32 sets a floor on the time step.</strong> See <a class="reference internal" href="#vbd-fail-small-dt"><span class="std std-ref">A smaller time step made things worse</span></a>.</p></li>
+</ul>
+</section>
+<section id="parameter-effects">
+<h2>Parameter Effects<a class="headerlink" href="#parameter-effects" title="Link to this heading">#</a></h2>
+<p>Four contact distances appear in the tables below; <a class="reference internal" href="#vbd-contact-handling"><span class="std std-ref">Contact Handling</span></a>
+has the figure, the sums per contact type and the arguments that set them. The
+<strong>interaction distance</strong> is where the contact force starts to act. For
+particle contacts, it is the self-contact margin, or the particle radius plus
+the shape margin for contact with shapes.
+The <strong>detection slack</strong> is the extra reach of detection beyond
+it, the gap, so that pairs are known before they interact. The <strong>query
+radius</strong> is their sum. The <strong>motion budget</strong> is how far one side of a pair may
+move between two detections under DAT: half of
+<code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code> times the query radius.</p>
+<section id="vbd-specific-parameters">
+<span id="vbd-solver-parameters"></span><h3>VBD-Specific Parameters<a class="headerlink" href="#vbd-specific-parameters" title="Link to this heading">#</a></h3>
+<p>The constructor arguments of <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> that matter
+most for tuning. Listed values are built-in fallbacks; the class docstring
+is the source of truth. Omitted <code class="docutils literal notranslate"><span class="pre">iterations</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_history</span></code>,
+and non-rod joint gains (<code class="docutils literal notranslate"><span class="pre">rigid_joint_*_ke</span></code> and <code class="docutils literal notranslate"><span class="pre">rigid_joint_*_kd</span></code>)
+can inherit <code class="docutils literal notranslate"><span class="pre">model.vbd</span></code> settings.</p>
+<div class="pst-scrollable-table-container"><table class="wrap-literals table">
+<colgroup>
+<col style="width: 27.0%" />
+<col style="width: 31.0%" />
+<col style="width: 21.0%" />
+<col style="width: 21.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>What it controls</p></th>
+<th class="head"><p>Raise or enable when</p></th>
+<th class="head"><p>Cost or risk</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">iterations</span></code> (10)</p></td>
+<td><p>Block-descent sweeps per substep; how far information travels and how
+far the solve converges.</p></td>
+<td><p>The object looks too soft or lags; a finer mesh. For jitter only as the
+last resort, see <a class="reference internal" href="#vbd-jitter-pipeline"><span class="std std-ref">Jitter: where to look first</span></a>.</p></td>
+<td><p>Runtime grows linearly. Does not fix a stiffness-ratio problem.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">friction_epsilon</span></code> (1e-2)</p></td>
+<td><p>Threshold for small sliding speeds [m/s]. Sets particle friction
+smoothing length to <code class="docutils literal notranslate"><span class="pre">friction_epsilon</span></code> x <code class="docutils literal notranslate"><span class="pre">dt</span></code>; also regularizes
+the compliant-ALM body-body friction solve.</p></td>
+<td><p>Particle friction chatters at rest.</p></td>
+<td><p>Slow particle creep under tangential load when large; affects
+finite-iteration convergence for compliant-ALM body-body contacts.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code> (0.85)</p></td>
+<td><p>Scale of both truncations: how close to its division plane a vertex may
+go, and the radius cap of 0.5 x this x query radius.</p></td>
+<td><p>Rarely; DAT damping with a query radius you cannot raise.</p></td>
+<td><p>Values near 1 leave no safety for detection error.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">particle_enable_self_contact</span></code> (False)</p></td>
+<td><p>Vertex-triangle and edge-edge self-contact with DAT.</p></td>
+<td><p>Cloth folds or stacks; soft bodies touch themselves.</p></td>
+<td><p>Detection cost; requires a non-<code class="docutils literal notranslate"><span class="pre">NONE</span></code> self-contact schedule.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span></code> (0.2)</p></td>
+<td><p>Interaction distance: the surface offset at which self-contact forces
+start. Always pass it together with the gap.</p></td>
+<td><p>Visible gaps between layers are too small; see
+<a class="reference internal" href="#vbd-margin-gap-guide"><span class="std std-ref">Setting margin and gap</span></a>.</p></td>
+<td><p>Rest neighbours beyond the topological filter push each other when it
+exceeds their rest distance.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">particle_self_contact_gap</span></code> (0)</p></td>
+<td><p>Detection slack: pairs are found out to margin plus gap, and the motion
+budget scales with that sum.</p></td>
+<td><p>Motion looks capped or sticky (DAT damping); fast relative motion.</p></td>
+<td><p>More candidate pairs, larger buffers.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">particle_vertex_contact_buffer_size</span></code> (32),
+<code class="docutils literal notranslate"><span class="pre">particle_edge_contact_buffer_size</span></code> (64)</p></td>
+<td><p>Candidate pairs stored per vertex and per edge. Pairs beyond the
+capacity are dropped silently.</p></td>
+<td><p>Many layers or a large gap; tunneling. See
+<a class="reference internal" href="#vbd-fail-tunneling"><span class="std std-ref">Self-contact tunneling</span></a>.</p></td>
+<td><p>Memory, detection time.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">particle_topological_contact_filter_threshold</span></code> (2)</p></td>
+<td><p>Ring distance under which candidate pairs are discarded.</p></td>
+<td><p>A coarse mesh with a large interaction distance.</p></td>
+<td><p>Values above 3 raise the cost significantly (docstring).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">particle_rest_shape_contact_exclusion_radius</span></code> (0)</p></td>
+<td><p>Pairs closer than this in the rest shape are never contacts.</p></td>
+<td><p>Seams, layered cloth, or thin regions that are close by design.</p></td>
+<td><p>Real contacts in those regions are missed too.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">particle_enable_tile_solve</span></code> (True)</p></td>
+<td><p>Tile-based elasticity kernel specialized at construction.</p></td>
+<td><p>Keep on. Rebuild the solver after changing stiffness values.</p></td>
+<td><p>None in normal use.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collision_frequency_type</span></code>, <code class="docutils literal notranslate"><span class="pre">collision_frequency</span></code>
+(<code class="docutils literal notranslate"><span class="pre">SOFT_SELF_CONTACT</span></code> slot)</p></td>
+<td><p>When self-contact detection runs. <code class="docutils literal notranslate"><span class="pre">AUTO</span></code> resolves to before and
+after the inertial step. <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code> with frequency <span class="math notranslate nohighlight">\(k\)</span>
+detects before the inertial step and then before iterations
+<span class="math notranslate nohighlight">\(k, 2k, \ldots\)</span>; the pass after the inertial step does not run,
+so a <span class="math notranslate nohighlight">\(k\)</span> above the iteration count detects less often than
+<code class="docutils literal notranslate"><span class="pre">AUTO</span></code>.</p></td>
+<td><p>Fast motion with a small gap; for jitter only as the last resort.</p></td>
+<td><p>One detection pass per refresh.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_soft_contact_use_log_barrier</span></code> (False)</p></td>
+<td><p>Rigid-soft normal law: quadratic penalty, or the self-contact barrier.</p></td>
+<td><p>Rigid-soft contacts that sink deep under load with the quadratic
+penalty: the barrier force grows like <span class="math notranslate nohighlight">\(1/d\)</span> as the gap closes.
+It does not stop a crossing; that is <code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code>.</p></td>
+<td><p>Stiffer local systems, more iterations.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code> (False)</p></td>
+<td><p>DAT truncation of rigid pose updates and particles against rigid-soft
+contact planes.</p></td>
+<td><p>Thin cloth between fast rigid parts.</p></td>
+<td><p>Rigid motion is capped by the rigid-soft query radius.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_body_particle_contact_buffer_size</span></code> (256)</p></td>
+<td><p>Rigid-soft contact records per body.</p></td>
+<td><p>Dense cloth on a large body; grippers with many vertices in contact.</p></td>
+<td><p>Memory.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_body_contact_buffer_size</span></code> (64)</p></td>
+<td><p>Body-body contact records per body.</p></td>
+<td><p>Per-body overflow warnings during impacts or dense packing (see
+<a class="reference internal" href="#vbd-contact-buffers"><span class="std std-ref">Contact capacity</span></a>).</p></td>
+<td><p>Memory; contacts beyond the limit are omitted from that body’s solve.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_history</span></code> (False)</p></td>
+<td><p>Warm-start body-body contact state between steps; requires pipeline
+contact matching (see <a class="reference internal" href="#vbd-rigid-contact-history"><span class="std std-ref">Contact history</span></a>).</p></td>
+<td><p>Persistent contacts jitter or slip; compare against a history-off
+baseline.</p></td>
+<td><p>Extra computation and memory for matching and history.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_ke</span></code> (1e5),
+<code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_ke</span></code> (1e5)</p></td>
+<td><p>Non-rod structural joint stiffness in constrained directions
+[N/m, N·m/rad]; separate from drive gains.</p></td>
+<td><p>Joint displacement or rotation under load remains too large after
+checking setup and convergence.</p></td>
+<td><p>Very large values can impede convergence. Rebuild the solver after
+changes.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_joint_linear_kd</span></code> (0),
+<code class="docutils literal notranslate"><span class="pre">rigid_joint_angular_kd</span></code> (0)</p></td>
+<td><p>Non-rod structural joint damping in constrained directions
+[N·s/m, N·m·s/rad].</p></td>
+<td><p>Constraint-error oscillations persist after release; tune after
+stiffness on an isolated joint.</p></td>
+<td><p>Excessive damping can slow settling after a disturbance. Rebuild the
+solver after changes.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Deprecated aliases remain for one release cycle: <code class="docutils literal notranslate"><span class="pre">particle_self_contact_radius</span></code>
+(legacy radius and margin pair), <code class="docutils literal notranslate"><span class="pre">particle_collision_detection_interval</span></code>
+(now the self-contact slot of the collision schedule) and
+<code class="docutils literal notranslate"><span class="pre">particle_conservative_bound_relaxation</span></code> (now
+<code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code>). New code should not use them. Passing a
+margin without a gap also triggers the legacy meaning of the margin and a
+deprecation warning, so always pass both.</p>
+<p id="vbd-rigid-compliance">Compliant ALM is the default for rigid constraints. Initially keep
+<code class="docutils literal notranslate"><span class="pre">rigid_avbd_alpha</span></code> and <code class="docutils literal notranslate"><span class="pre">rigid_avbd_gamma</span></code> at their defaults. Legacy AVBD
+is deprecated and will be removed in a future release. Revalidate scenes
+when migrating; the same settings can produce different behavior.</p>
+<p>Finite stiffness permits some stretch, joint displacement, or contact
+penetration even after convergence. If deformation is larger than expected,
+check loads, material values, rest geometry, attachments, and contact setup.
+Also check time step and iteration sensitivity rather than relying only on
+higher stiffness; see <a class="reference internal" href="simulation_tuning.html#simulation-tuning"><span class="std std-ref">Simulation Tuning</span></a>.</p>
+<p id="vbd-rigid-joint-gains">Choose non-rod structural stiffness for acceptable constrained displacement
+or rotation on an isolated joint under load. Then tune damping from
+constraint-error decay after release. For cables, see
+<a class="reference internal" href="#vbd-cable-inputs"><span class="std std-ref">materials and attachments</span></a>.</p>
+</section>
+<section id="model-parameters">
+<h3>Model Parameters<a class="headerlink" href="#model-parameters" title="Link to this heading">#</a></h3>
+<section id="cloth-and-soft-bodies">
+<h4>Cloth and soft bodies<a class="headerlink" href="#cloth-and-soft-bodies" title="Link to this heading">#</a></h4>
+<p>Model parameters are set when the geometry is added, through
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_cloth_mesh" title="newton.ModelBuilder.add_cloth_mesh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_cloth_mesh()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_cloth_grid" title="newton.ModelBuilder.add_cloth_grid"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_cloth_grid()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_soft_mesh" title="newton.ModelBuilder.add_soft_mesh"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_soft_mesh()</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_soft_grid" title="newton.ModelBuilder.add_soft_grid"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_soft_grid()</span></code></a>, under the names below. After
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> they live on the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>
+as the arrays <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_materials</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_bending_properties</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tet_materials</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_radius</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_mass" title="newton.Model.particle_mass"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_mass</span></code></a>, and as the
+scalars <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_kd" title="newton.Model.soft_contact_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_kd</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_mu" title="newton.Model.soft_contact_mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_mu</span></code></a>. The
+formulas they enter are in <a class="reference internal" href="../solvers/vbd.html#vbd-energy-terms"><span class="std std-ref">The energy terms</span></a>.</p>
+<div class="pst-scrollable-table-container"><table class="wrap-literals table">
+<colgroup>
+<col style="width: 24.0%" />
+<col style="width: 32.0%" />
+<col style="width: 20.0%" />
+<col style="width: 24.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>What it controls</p></th>
+<th class="head"><p>Raise when</p></th>
+<th class="head"><p>Cost or risk</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ka</span></code></a> [N/m]</p></td>
+<td><p>Membrane stretch and area stiffness (<span class="math notranslate nohighlight">\(\mu\)</span> and <span class="math notranslate nohighlight">\(\lambda\)</span>
+per unit area of the stable Neo-Hookean membrane).</p></td>
+<td><p>Cloth stretches visibly under its own weight.</p></td>
+<td><p>Above about 1e6, slow convergence and jitter under contact; stiffening
+only the membrane moves deformation into bending (see
+<a class="reference internal" href="#vbd-fail-membrane-only"><span class="std std-ref">Example 2: stiffening only the membrane does not stiffen the object</span></a>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_kd</span></code></a></p></td>
+<td><p>Membrane damping.</p></td>
+<td><p>In-plane ringing after impacts.</p></td>
+<td><p>Overdamped, slow drape.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_ke</span></code></a> [N]</p></td>
+<td><p>Bending stiffness of the dihedral hinge.</p></td>
+<td><p>Cloth folds too sharply or looks too limp.</p></td>
+<td><p>Stiff hinges need more iterations; raise membrane and bending together
+for a stiffer object.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_kd</span></code></a></p></td>
+<td><p>Bending damping.</p></td>
+<td><p>Bending jitter; first knob of the jitter pipeline for cloth without
+contacts.</p></td>
+<td><p>Slow unfolding.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_mu</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_lambda</span></code></a> [Pa]</p></td>
+<td><p>Volumetric Neo-Hookean shear and volume stiffness.</p></td>
+<td><p>A soft body sags or inverts too easily.</p></td>
+<td><p>Same ceiling as the membrane; <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_lambda</span></code></a> far above <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_mu</span></code></a> makes a
+stiff local system.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_damp</span></code></a> [Pa s]</p></td>
+<td><p>Volumetric viscous damping.</p></td>
+<td><p>Soft-body jitter; the soft-body knob of the jitter pipeline.</p></td>
+<td><p>Slow recovery.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a> [N/m]</p></td>
+<td><p>Contact stiffness for self-contact; averaged with the shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke" title="newton.ModelBuilder.ShapeConfig.ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ke</span></code></a> for
+rigid-soft contact.</p></td>
+<td><p>Penetration between layers or into shapes that the fix below does not
+cure.</p></td>
+<td><p>Keep within about 10x the elastic stiffness; see
+<a class="reference internal" href="#vbd-fail-contact-stiffness"><span class="std std-ref">Example 1: contact stiffness too high compared to the elasticity</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_kd" title="newton.Model.soft_contact_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_kd</span></code></a></p></td>
+<td><p>Contact damping on the gap rate, active only while approaching.</p></td>
+<td><p>Contact jitter; second knob of the jitter pipeline.</p></td>
+<td><p>Shrinks each correction by enlarging the local matrix; too much slows
+settling.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_mu" title="newton.Model.soft_contact_mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_mu</span></code></a></p></td>
+<td><p>Friction coefficient (geometric mean with the shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu" title="newton.ModelBuilder.ShapeConfig.mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu</span></code></a> for
+rigid-soft contact).</p></td>
+<td><p>Cloth slides off a gripper.</p></td>
+<td><p>Sticking, slow sliding.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_radius</span></code></a> [m]</p></td>
+<td><p>The particle’s half of the rigid-soft interaction distance; also the
+resting offset from shapes.</p></td>
+<td><p>Cloth sinks into shapes.</p></td>
+<td><p>Visible floating; a large radius with a small mesh spacing distorts
+contact geometry.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">density</span></code>, <code class="docutils literal notranslate"><span class="pre">mass</span></code></p></td>
+<td><p>Particle masses (per area for cloth, per volume for soft meshes).</p></td>
+<td><p>Never as a fix; set it from the real object.</p></td>
+<td><p>Too small a mass is an explosion cause; see
+<a class="reference internal" href="#vbd-explosion-checklist"><span class="std std-ref">Explosion: what to check, in this order</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke" title="newton.ModelBuilder.ShapeConfig.ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ke</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd" title="newton.ModelBuilder.ShapeConfig.kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kd</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu" title="newton.ModelBuilder.ShapeConfig.mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a>
+(<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a>)</p></td>
+<td><p>The shape’s half of the rigid-soft material and distance.</p></td>
+<td><p>Set once per object; the shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a> adds to the interaction
+distance.</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke" title="newton.ModelBuilder.ShapeConfig.ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ke</span></code></a> and <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd" title="newton.ModelBuilder.ShapeConfig.kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kd</span></code></a> are averaged with the particle side; <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu" title="newton.ModelBuilder.ShapeConfig.mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu</span></code></a> is the
+geometric mean, so a zero on either side removes friction. The shape
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.gap" title="newton.ModelBuilder.ShapeConfig.gap"><code class="xref py py-attr docutils literal notranslate"><span class="pre">gap</span></code></a> is a rigid-rigid broad-phase setting and does not enter
+rigid-soft detection, which uses <code class="docutils literal notranslate"><span class="pre">soft_contact_gap</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CollisionPipeline(soft_contact_gap=...)</span></code> (0.01)</p></td>
+<td><p>Rigid-soft detection slack, added on top of particle radius plus shape
+margin.</p></td>
+<td><p>Fast relative motion between cloth and shapes.</p></td>
+<td><p>More rigid-soft records; rigid-soft DAT budget grows with it.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">vel</span></code></p></td>
+<td><p>Initial velocity of the added geometry.</p></td>
+<td><p>Never as a fix; a large initial velocity is an explosion cause.</p></td>
+<td><p>See <a class="reference internal" href="#vbd-explosion-checklist"><span class="std std-ref">Explosion: what to check, in this order</span></a>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="cables">
+<span id="vbd-cable-inputs"></span><h4>Cables<a class="headerlink" href="#cables" title="Link to this heading">#</a></h4>
+<p>Create a <a class="reference internal" href="../api/_generated/newton.Rod.html#newton.Rod" title="newton.Rod"><code class="xref py py-class docutils literal notranslate"><span class="pre">Rod</span></code></a> and pass it to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_rod" title="newton.ModelBuilder.add_rod"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_rod()</span></code></a>; each
+segment becomes a capsule body connected to its neighbors by rod joints (see
+<a class="reference internal" href="articulations.html#rod-joints"><span class="std std-ref">Rod joints</span></a>). For capsule contacts, see
+<a class="reference internal" href="#vbd-rigid-contacts"><span class="std std-ref">body-body contacts</span></a>.</p>
+<p>Elastic material inputs and section rigidities are two mutually exclusive
+ways to specify the material on <a class="reference internal" href="../api/_generated/newton.Rod.html#newton.Rod" title="newton.Rod"><code class="xref py py-class docutils literal notranslate"><span class="pre">Rod</span></code></a>.</p>
+<div class="pst-scrollable-table-container"><table class="wrap-literals table">
+<colgroup>
+<col style="width: 24.0%" />
+<col style="width: 32.0%" />
+<col style="width: 20.0%" />
+<col style="width: 24.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>What it controls</p></th>
+<th class="head"><p>When to use or adjust</p></th>
+<th class="head"><p>Cost or risk</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">youngs_modulus</span></code> [Pa] and <code class="docutils literal notranslate"><span class="pre">radius</span></code> [m], plus either
+<code class="docutils literal notranslate"><span class="pre">poissons_ratio</span></code> (dimensionless) or <code class="docutils literal notranslate"><span class="pre">shear_modulus</span></code> [Pa]
+(<a class="reference internal" href="../api/_generated/newton.Rod.html#newton.Rod" title="newton.Rod"><code class="xref py py-class docutils literal notranslate"><span class="pre">Rod</span></code></a>)</p></td>
+<td><p>Elastic material inputs used to compute section rigidities.</p></td>
+<td><p>Resolution studies at fixed material.</p></td>
+<td><p>Supply exactly one of <code class="docutils literal notranslate"><span class="pre">poissons_ratio</span></code> or <code class="docutils literal notranslate"><span class="pre">shear_modulus</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stretch_rigidity</span></code> (<span class="math notranslate nohighlight">\(EA\)</span>), <code class="docutils literal notranslate"><span class="pre">shear_rigidity</span></code> (<span class="math notranslate nohighlight">\(kGA\)</span>) [N],
+<code class="docutils literal notranslate"><span class="pre">bend_rigidity</span></code> (<span class="math notranslate nohighlight">\(EI\)</span>), <code class="docutils literal notranslate"><span class="pre">twist_rigidity</span></code> (<span class="math notranslate nohighlight">\(GJ\)</span>) [N·m²]
+(<a class="reference internal" href="../api/_generated/newton.Rod.html#newton.Rod" title="newton.Rod"><code class="xref py py-class docutils literal notranslate"><span class="pre">Rod</span></code></a>)</p></td>
+<td><p>Axial, shear, bending, and torsional section rigidities.</p></td>
+<td><p>Specify each section response directly while keeping it fixed across
+segment resolutions.</p></td>
+<td><p>All four rigidities must be supplied together.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stretch_stiffness</span></code>, <code class="docutils literal notranslate"><span class="pre">shear_stiffness</span></code> [N/m],
+<code class="docutils literal notranslate"><span class="pre">bend_stiffness</span></code>, <code class="docutils literal notranslate"><span class="pre">twist_stiffness</span></code> [N·m/rad]
+(<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_rod" title="newton.ModelBuilder.add_rod"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_rod()</span></code></a>)</p></td>
+<td><p>Direct per-joint stiffness for each mode (not scaled by segment
+length).</p></td>
+<td><p>Set joint response directly at a fixed segment count.</p></td>
+<td><p>Overrides material-derived values; rescale with segment length when
+changing resolution to preserve the material.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stretch_damping</span></code>, <code class="docutils literal notranslate"><span class="pre">shear_damping</span></code> [N·s/m],
+<code class="docutils literal notranslate"><span class="pre">bend_damping</span></code>, <code class="docutils literal notranslate"><span class="pre">twist_damping</span></code> [N·m·s/rad]
+(<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_rod" title="newton.ModelBuilder.add_rod"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_rod()</span></code></a>)</p></td>
+<td><p>Direct per-joint damping for each mode (not scaled by segment length).</p></td>
+<td><p>Tune oscillation decay after release, after fitting stiffness.</p></td>
+<td><p>Not a damping ratio. Excessive damping makes motion sluggish.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Stiffness and resolution.</strong> The builder maps each rigidity to joint stiffness
+as <span class="math notranslate nohighlight">\(R / L_{\mathrm{dual}}\)</span>, where <span class="math notranslate nohighlight">\(L_{\mathrm{dual}}\)</span> is the mean rest
+length of the two adjacent segments. This lets resolution studies keep the
+intended material fixed.</p>
+<p>Without material or section-rigidity inputs on <a class="reference internal" href="../api/_generated/newton.Rod.html#newton.Rod" title="newton.Rod"><code class="xref py py-class docutils literal notranslate"><span class="pre">Rod</span></code></a> or explicit
+overrides, <code class="docutils literal notranslate"><span class="pre">add_rod</span></code> defaults stretch and shear stiffness to <code class="docutils literal notranslate"><span class="pre">1.0e5</span></code> N/m
+and bend and twist stiffness to <code class="docutils literal notranslate"><span class="pre">0.0</span></code> N·m/rad. See
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_rod" title="newton.ModelBuilder.add_rod"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_rod()</span></code></a> for topology restrictions.</p>
+<p>Refine segment count separately from time step and iterations: the new joint
+graph, masses, inertias, and contact workload require another convergence
+check. Recheck the damping transient at the final resolution too.</p>
+<p><strong>Initial and rest geometry.</strong> Initial geometry (<code class="docutils literal notranslate"><span class="pre">points</span></code>, <code class="docutils literal notranslate"><span class="pre">quaternions</span></code>)
+and rest geometry (<code class="docutils literal notranslate"><span class="pre">rest_points</span></code>, <code class="docutils literal notranslate"><span class="pre">rest_quaternions</span></code>) are distinct; rest
+defaults to the initial shape. For an ordered chain, <code class="docutils literal notranslate"><span class="pre">rest_straight=True</span></code>
+sets zero intrinsic bend and twist without changing the initial geometry
+or segment lengths. Do not supply explicit rest inputs with it. With nonzero
+bending stiffness, the cable then tends toward straight. The default
+<code class="docutils literal notranslate"><span class="pre">body_frame_origin=&quot;com&quot;</span></code> places the body origin at the segment midpoint;
+use the corresponding local offset for an endpoint attachment.</p>
+<p><strong>Attachments and fitting.</strong> Before tuning stiffness, check the initial and
+rest orientations and how the cable ends are attached. Fixing only an
+endpoint’s position allows it to rotate; fixing its orientation as well makes
+the attachment clamped.</p>
+<p>At a cable attachment, the non-rod joint and adjacent rod joint contribute
+to the endpoint body’s local solve. Stiffening or refining the cable can
+increase attachment error at a fixed time step and iteration count, even
+with unchanged attachment gains. Check attachment errors and cable
+deformation together when tuning <code class="docutils literal notranslate"><span class="pre">rigid_joint_*_ke</span></code>. Assess time step
+and iteration sensitivity with those gains held fixed.</p>
+<p>Fit stretch, shear, bend, and twist stiffness separately under static loads,
+then tune damping from oscillation decay after release. Lower stretch
+stiffness changes the material; use it only if the extra extension is
+acceptable.</p>
+<p><strong>Dahl hysteresis.</strong> Use for history-dependent cable bending and twisting.
+Call <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.register_custom_attributes" title="newton.solvers.SolverVBD.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a> on the
+builder before building the model, then set positive <code class="docutils literal notranslate"><span class="pre">model.vbd.dahl_eps_max</span></code>
+and <code class="docutils literal notranslate"><span class="pre">model.vbd.dahl_tau</span></code> for the intended rod joints before constructing
+the solver. Both default to zero; the affected bend or twist mode also needs
+positive stiffness. Tune the Dahl parameters under cyclic loading and
+unloading. <code class="docutils literal notranslate"><span class="pre">dahl_eps_max</span></code> scales the hysteretic moment relative to stiffness;
+<code class="docutils literal notranslate"><span class="pre">dahl_tau</span></code> sets the deformation scale over which it evolves. See the
+<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bundle_hysteresis.py">cable bundle hysteresis example</a>.</p>
+</section>
+<section id="time-step-substeps-and-iterations">
+<h4>Time step, substeps and iterations<a class="headerlink" href="#time-step-substeps-and-iterations" title="Link to this heading">#</a></h4>
+<p>Most shipped examples render at 60 frames per second with 10 substeps, so the
+solver runs at <code class="docutils literal notranslate"><span class="pre">dt</span></code> = 1/600 s, with 4 to 20 iterations. Start there with 10
+iterations. A smaller <code class="docutils literal notranslate"><span class="pre">dt</span></code> improves stiffness and convergence, because every
+substep adds a full set of iterations and a detection pass. It also costs the
+same factor in runtime. Do not go much below 1/3000 s: positions are stored in
+float32, and when the per-step update becomes small compared to the position
+value, part of each update is rounded away (one float32 unit at 1 m is about
+1.2e-7 m). Before that floor, reducing <code class="docutils literal notranslate"><span class="pre">dt</span></code> does more for stiffness than
+adding iterations. See <a class="reference internal" href="#vbd-rules-of-thumb"><span class="std std-ref">Rules of Thumb</span></a> for the order of operations.</p>
+</section>
+</section>
+<section id="contact-handling">
+<span id="vbd-contact-handling"></span><h3>Contact Handling<a class="headerlink" href="#contact-handling" title="Link to this heading">#</a></h3>
+<section id="particle-contacts">
+<h4>Particle contacts<a class="headerlink" href="#particle-contacts" title="Link to this heading">#</a></h4>
+<p>Four distances govern a contact. The <strong>interaction distance</strong> is where the
+contact energy starts to act. The <strong>detection slack</strong> is the extra reach of
+detection, so pairs are known before they interact. The <strong>query radius</strong> is
+their sum. The <strong>motion budget</strong> is how far one side of a pair may move
+between two detections under the Divide and Truncate scheme (DAT), the
+solver’s penetration-free truncation (<a class="reference internal" href="../solvers/vbd.html#vbd-dat"><span class="std std-ref">Penetration-free truncation (DAT)</span></a>); it scales with the
+query radius. Self-contact pairs are vertex-triangle and edge-edge pairs of
+the same particle system; rigid-soft pairs are particles, edges or faces
+against a body or static shape.</p>
+<figure class="align-center" id="id4">
+<a class="reference internal image-reference" href="../_images/vbd_tuning_contact_distances.svg"><img alt="Interaction distance, detection slack, query radius and motion budget for self-contact and rigid-soft contact" src="../_images/vbd_tuning_contact_distances.svg" style="width: 95%;" />
+</a>
+<figcaption>
+<p><span class="caption-text">Left: self-contact, shown for a vertex-triangle pair; edge-edge pairs use
+the same distances. <code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span></code> is the interaction
+distance and <code class="docutils literal notranslate"><span class="pre">particle_self_contact_gap</span></code> is added on top of it: the two
+stacked arrows sum to the query radius, drawn once more as the horizontal
+arrow. Right: rigid-soft contact, with the particle resting at the
+interaction distance <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_radius</span></code></a> plus the shape <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a>; the
+pipeline’s <code class="docutils literal notranslate"><span class="pre">soft_contact_gap</span></code> is a detection band beyond that.</span><a class="headerlink" href="#id4" title="Link to this image">#</a></p>
+</figcaption>
+</figure>
+<p>In the names of the <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> constructor arguments,
+the <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> constructor arguments and the model
+arrays, the four distances are:</p>
+<div class="pst-scrollable-table-container"><table class="wrap-literals table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 40.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Distance</p></th>
+<th class="head"><p>Self-contact</p></th>
+<th class="head"><p>Rigid-soft contact</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Interaction distance</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span></code> (solver)</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_radius</span></code></a> + shape
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.margin" title="newton.ModelBuilder.ShapeConfig.margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">margin</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>Detection slack</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">particle_self_contact_gap</span></code> (solver)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_gap</span></code> (pipeline)</p></td>
+</tr>
+<tr class="row-even"><td><p>Query radius</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span></code> + <code class="docutils literal notranslate"><span class="pre">particle_self_contact_gap</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">particle_radius</span></code> + <code class="docutils literal notranslate"><span class="pre">margin</span></code> + <code class="docutils literal notranslate"><span class="pre">soft_contact_gap</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Motion budget per side</p></td>
+<td><p>0.5 x <code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code> x query radius</p></td>
+<td><p>0.5 x <code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code> x the smallest rigid-soft
+query radius in the model, with <code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The force kernels act below the interaction distance; detection finds pairs
+out to the query radius. The default self-contact schedule detects before and
+after the inertial step of every substep, so the motion budget is refreshed
+twice per substep.</p>
+<p><strong>What DAT does to motion.</strong> DAT works on the displacement each vertex has
+accumulated since the last detection, and it has two distinct parts. Its knobs
+are <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> constructor arguments
+(<a class="reference internal" href="#vbd-solver-parameters"><span class="std std-ref">VBD-Specific Parameters</span></a>): <code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code> is the
+relaxation factor used below (default 0.85), <code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span></code>
+and <code class="docutils literal notranslate"><span class="pre">particle_self_contact_gap</span></code> set the self-contact query radius,
+<code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code> turns on the rigid-soft part, and
+<code class="docutils literal notranslate"><span class="pre">collision_frequency_type</span></code> with <code class="docutils literal notranslate"><span class="pre">collision_frequency</span></code> sets how often
+detection refreshes the budget.</p>
+<p><em>Planar truncation</em> acts per detected pair. At the detection-time positions
+DAT places a division plane between the two primitives. The plane splits the
+gap in proportion to how far each side wants to move toward the other, and each
+side keeps at least 5 percent of the gap. Each vertex of the pair may then move
+only up to its own side of the plane, scaled by the relaxation factor: motion
+toward the plane is cut at the plane, motion away from it or along it passes
+untouched. A pair whose primitives already intersect at detection time has no
+plane and is left unconstrained in that pass.</p>
+<p><em>Radius truncation</em> acts on every particle, pair or no pair. The length of the
+accumulated displacement is capped at half of the relaxation factor
+(<code class="docutils literal notranslate"><span class="pre">dat_conservative_bound_relaxation</span></code>) times the query radius. It is
+isotropic: a vertex that wants to move further is slowed
+down in every direction, not only along a contact normal. This cap is what
+makes the scheme safe between detections: two primitives farther apart than the
+query radius at detection cannot meet before the next detection, because each
+side moves at most half of the relaxation factor times that radius.</p>
+<p><em>Rigid-soft DAT</em> (<code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code>, off by default) applies both
+parts to contacts between soft geometry and shapes. Both sides of a contact are
+truncated against the same plane: the soft vertices as above, the rigid body by
+scaling its whole pose update, translation and rotation together. The budget is
+half of the relaxation factor times the smallest rigid-soft query radius (the
+pipeline’s <code class="docutils literal notranslate"><span class="pre">soft_contact_gap</span></code> plus particle radius plus shape margin). It is
+fixed when the solver is built, and it caps every dynamic body and particle in
+the model while the option is on. Kinematic bodies are not truncated. A pair
+without a certifiable separating plane freezes. The option needs a solver-owned
+collision pipeline; for fast bodies raise the pipeline gap first, then the
+detection frequency (a <code class="docutils literal notranslate"><span class="pre">RIGID</span></code> slot on <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code> needs contact matching
+in the pipeline; see <a class="reference internal" href="../solvers/vbd.html#vbd-contact-matching"><span class="std std-ref">contact matching</span></a> on the
+solver page). When self-contact is enabled too, the <code class="docutils literal notranslate"><span class="pre">RIGID</span></code> and
+<code class="docutils literal notranslate"><span class="pre">SOFT_SELF_CONTACT</span></code> slots must use the same schedule type, and the same
+frequency for <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code>; the solver raises otherwise.</p>
+<p>Both parts remove motion. A cloth that falls fast onto a shape, or a sheet
+pressed between fingers, can therefore move slower than physics would predict,
+hover at a fixed offset, or stop. This is DAT damping. The radius cap grows with
+the query radius, so the cure is more room: a larger gap first, then a larger
+margin.</p>
+<figure class="align-center" id="id5">
+<a class="reference internal image-reference" href="../_images/vbd_tuning_dat_planar_truncation.svg"><img alt="Planar division for a vertex-triangle pair in four displacement scenarios" src="../_images/vbd_tuning_dat_planar_truncation.svg" style="width: 85%;" />
+</a>
+<figcaption>
+<p><span class="caption-text">Planar truncation for a vertex-triangle pair, redrawn after the DAT paper.
+Top left:
+vertex <span class="math notranslate nohighlight">\(v\)</span>, triangle <span class="math notranslate nohighlight">\((v_a, v_b, v_c)\)</span> and the normal from the
+closest point on the triangle to <span class="math notranslate nohighlight">\(v\)</span>. The dashed line is the division
+plane. Top right: both sides approach, <span class="math notranslate nohighlight">\(v\)</span> faster, so the plane
+shifts toward the triangle and gives <span class="math notranslate nohighlight">\(v\)</span> the larger share of the gap;
+the dashed parts of the displacements, which would cross the plane, are
+truncated. Bottom left: <span class="math notranslate nohighlight">\(v\)</span> moves away and the triangle approaches,
+so the plane sits close to <span class="math notranslate nohighlight">\(v\)</span> and the triangle gets almost the whole
+gap. Bottom right: motion that stays on its own side of the plane, along it
+or away from it, passes untouched.</span><a class="headerlink" href="#id5" title="Link to this image">#</a></p>
+</figcaption>
+</figure>
+<section id="setting-margin-and-gap">
+<span id="vbd-margin-gap-guide"></span><h5>Setting margin and gap<a class="headerlink" href="#setting-margin-and-gap" title="Link to this heading">#</a></h5>
+<p>There is no single right value. The choice trades physical fidelity against
+cost and DAT damping.</p>
+<p><strong>Fidelity first.</strong> The interaction distance is where the contact force starts,
+so it is the separation you see between unloaded surfaces. Two cloth layers
+rest about one margin apart; a particle rests at about its radius plus the
+shape margin from a shape; under load the separation shrinks by the load over
+the contact stiffness. Pick the interaction distance from the thickness
+you want to show. Pairs more than two rings apart are contact candidates, so an
+interaction distance larger than their rest distance creates contact forces at
+rest. Where a mesh is close to itself by design, such as seams or layered
+panels, use <code class="docutils literal notranslate"><span class="pre">particle_rest_shape_contact_exclusion_radius</span></code> instead of a
+smaller margin.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 14.0%" />
+<col style="width: 20.0%" />
+<col style="width: 18.0%" />
+<col style="width: 16.0%" />
+<col style="width: 32.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Change</p></th>
+<th class="head"><p>Cost</p></th>
+<th class="head"><p>Separation</p></th>
+<th class="head"><p>DAT damping</p></th>
+<th class="head"><p>Other effects</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Raise the margin</p></td>
+<td><p>More active pairs</p></td>
+<td><p>Larger visible gaps</p></td>
+<td><p>Less (larger budget)</p></td>
+<td><p>Rest neighbours beyond the topological filter can push each other</p></td>
+</tr>
+<tr class="row-odd"><td><p>Raise the gap</p></td>
+<td><p>More candidate pairs, larger buffers, more expensive collision detection</p></td>
+<td><p>None</p></td>
+<td><p>Less (larger budget)</p></td>
+<td><p>Dropped pairs when the buffers overflow</p></td>
+</tr>
+<tr class="row-even"><td><p>Lower the margin</p></td>
+<td><p>Less</p></td>
+<td><p>Tighter contact</p></td>
+<td><p>More (smaller budget)</p></td>
+<td><p>Without DAT (rigid-soft default) a step that moves further than the
+interaction distance can pass through. With DAT on, tunneling stays
+possible in theory; see <a class="reference internal" href="#vbd-fail-tunneling"><span class="std std-ref">Self-contact tunneling</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>Lower the gap</p></td>
+<td><p>Less</p></td>
+<td><p>None</p></td>
+<td><p>More (smaller budget)</p></td>
+<td><p>Fewer candidates; without DAT, pairs that close by more than the query
+radius between two detections are missed</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Starting point and adjustments.</strong> Take the values of the nearest example in
+<a class="reference internal" href="#vbd-empirical-table"><span class="std std-ref">the cloth and soft-body example table</span></a>;
+they span 1 mm to 40 mm depending on the scene
+scale. Then adjust by symptom: a visible gap between layers means a smaller
+margin; slow, hovering or locked motion means a larger gap first and a larger
+margin second; dropped pairs (see <a class="reference internal" href="#vbd-fail-tunneling"><span class="std std-ref">Self-contact tunneling</span></a>) mean larger
+buffers. Keep the gap at about half to one margin unless speed asks for more.</p>
+<p><strong>Stiffness, damping and friction together.</strong> The contact stiffness sets how
+far a contact penetrates under load and how stiff the local system becomes.
+Keep it within about 10x the elastic stiffness of the material it presses on.
+Contact damping only acts while the gap closes and mostly shrinks the per
+iteration correction, so it is a second-order knob. Friction scales with the
+normal force; a contact that is too soft also has too little friction, which
+shows as slipping in grasps.</p>
+</section>
+</section>
+<section id="body-body-contacts">
+<span id="vbd-rigid-contacts"></span><h4>Body-body contacts<a class="headerlink" href="#body-body-contacts" title="Link to this heading">#</a></h4>
+<p><strong>Detection first.</strong> Shape geometry, such as a capsule radius, describes the
+body; margin shifts the contact surface; gap extends the detection distance.
+See <a class="reference internal" href="collisions.html#margin-gap-semantics"><span class="std std-ref">margin and gap semantics</span></a>. The builder’s
+<code class="docutils literal notranslate"><span class="pre">rigid_gap</span></code> defaults to 0.1 m for shapes without an explicit gap, which can
+be large beside a centimeter-scale cable. Set <code class="docutils literal notranslate"><span class="pre">builder.default_shape_cfg.gap</span></code>
+or a shape’s <code class="docutils literal notranslate"><span class="pre">ShapeConfig.gap</span></code> before adding shapes, then check fast motion
+between collision passes. Changing the builder default later does not update
+existing shapes. Choose a gap that detects the required contacts reliably.
+If those contacts exceed the available capacity, increase the relevant
+<a class="reference internal" href="#vbd-contact-buffers"><span class="std std-ref">contact buffer</span></a>.</p>
+<p><strong>Collision filtering.</strong> Directly jointed body pairs are filtered by default
+(<code class="docutils literal notranslate"><span class="pre">collision_filter_parent</span></code>), but other nearby cable segments can still
+overlap, especially with short segments or thick capsules. Unfiltered overlaps
+can produce unwanted contact forces from the first step. Inspect the initial
+geometry and exclude intentionally overlapping neighboring segments whose
+collision response is unnecessary throughout the expected motion, using
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_collision_filter_pair" title="newton.ModelBuilder.add_shape_collision_filter_pair"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_collision_filter_pair()</span></code></a> before <code class="docutils literal notranslate"><span class="pre">finalize()</span></code>.
+Correct unintended initial overlaps, and preserve self-contact needed for
+folding and tight bends. Filtering additional neighboring pairs whose
+collision response is unnecessary can also reduce contact processing and
+buffer demand.</p>
+<p><strong>Normal support before friction.</strong> Check penetration and normal-load support
+before increasing <code class="docutils literal notranslate"><span class="pre">mu</span></code>. VBD mixes body-body <code class="docutils literal notranslate"><span class="pre">ke</span></code> and <code class="docutils literal notranslate"><span class="pre">kd</span></code> with an
+arithmetic mean and <code class="docutils literal notranslate"><span class="pre">mu</span></code> with a geometric mean, so one stiff shape can
+dominate normal stiffness while a shape with <code class="docutils literal notranslate"><span class="pre">mu=0</span></code> makes its pairs
+frictionless. Unexpected slip can also come from missing contacts or an
+incomplete solve. Leave <code class="docutils literal notranslate"><span class="pre">friction_epsilon</span></code> at its default initially;
+it does not change the Coulomb limit set by <code class="docutils literal notranslate"><span class="pre">mu</span></code>.</p>
+<p><strong>Body coloring.</strong> VBD updates bodies in the same color group in parallel.
+Automatic coloring uses joint and tendon connections, but does not include
+contacts. Contacting bodies may share a color, which can slow convergence.
+For small scenes with predictable contacts, consider splitting
+existing groups in <code class="docutils literal notranslate"><span class="pre">builder.body_color_groups</span></code> to separate frequently
+contacting bodies. Make these edits after <code class="docutils literal notranslate"><span class="pre">builder.color()</span></code> and before
+<code class="docutils literal notranslate"><span class="pre">builder.finalize()</span></code>; calling <code class="docutils literal notranslate"><span class="pre">color()</span></code> again replaces them.</p>
+<p>Split existing groups without dropping or duplicating bodies; this preserves
+the original joint/tendon separation. Custom groups are not fully validated.
+More colors reduce parallelism, so compare convergence and runtime.</p>
+<section id="contact-history">
+<span id="vbd-rigid-contact-history"></span><h5>Contact history<a class="headerlink" href="#contact-history" title="Link to this heading">#</a></h5>
+<p>Set <code class="docutils literal notranslate"><span class="pre">contact_matching</span></code> on <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> and
+<code class="docutils literal notranslate"><span class="pre">rigid_contact_history</span></code> on <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a>.
+Enabling history does not enable matching automatically.</p>
+<p>Matching identifies corresponding contacts across collision passes.
+With <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=True</span></code>, VBD uses matches to warm-start contacts
+between steps. When a solver-owned pipeline re-detects rigid contacts during
+a step (<code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code>), matches preserve ALM state within that step,
+even with <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=False</span></code>.</p>
+<p>For graph capture with contact history, construct the collision pipeline
+before <code class="docutils literal notranslate"><span class="pre">SolverVBD</span></code> so history buffers are preallocated, or run one
+uncaptured solver step with the intended contact buffers before capture.</p>
+<p>With history enabled, passing a pipeline with matching disabled to
+<code class="docutils literal notranslate"><span class="pre">SolverVBD</span></code> raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> at construction. With externally supplied
+contacts, VBD raises <code class="docutils literal notranslate"><span class="pre">RuntimeError</span></code> during rigid-contact refresh if the
+buffer lacks match-index data or reports neither <code class="docutils literal notranslate"><span class="pre">&quot;latest&quot;</span></code> nor <code class="docutils literal notranslate"><span class="pre">&quot;sticky&quot;</span></code>
+as its matching mode.</p>
+<p>With compliant ALM and <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=True</span></code>, the matching modes
+behave as follows:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 80.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">contact_matching</span></code></p></th>
+<th class="head"><p>Behavior</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;disabled&quot;</span></code></p></td>
+<td><p>Incompatible with history. Use <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=False</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;latest&quot;</span></code></p></td>
+<td><p>Keep fresh geometry. Restore normal and projected tangential
+multipliers for valid matches.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;sticky&quot;</span></code></p></td>
+<td><p>Replay eligible contact geometry. Restore normal multipliers;
+tangential memory comes from the replayed material anchor.
+This matching mode is experimental.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>For a baseline, set <code class="docutils literal notranslate"><span class="pre">rigid_contact_history=False</span></code> explicitly. Use
+<code class="docutils literal notranslate"><span class="pre">contact_matching=&quot;disabled&quot;</span></code> unless rigid detection uses <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code>,
+which requires <code class="docutils literal notranslate"><span class="pre">&quot;latest&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">&quot;sticky&quot;</span></code> matching.</p>
+<p>Contact history can improve convergence and reduce jitter or unintended slip
+for persistent contacts; it does not change the authored friction coefficient.
+Compare latest matching plus history against the baseline, measuring drift,
+penetration, and total collision plus solver time. Treat sticky matching as
+a separate choice: test sliding, separation, and changing contact normals as
+well as rest. Increasing <code class="docutils literal notranslate"><span class="pre">contact_matching_pos_threshold</span></code> allows matching
+across larger position changes; decreasing
+<code class="docutils literal notranslate"><span class="pre">contact_matching_normal_dot_threshold</span></code> allows matching across larger
+changes in contact normal. See <a class="reference internal" href="collisions.html#contact-matching"><span class="std std-ref">Contact Matching</span></a>. Neither mode
+guarantees improvement or replaces convergence work.</p>
+<p>Contact matching and solver history add computation and memory costs.
+Contact matching does not guarantee a deterministic GPU rigid-contact solve.</p>
+<p>Warm starts require correspondence to the contact set actually solved in the
+previous step. New or unmatched contacts start cold; this is normal.
+Alternating contact buffers or colliding twice between steps can cold-start
+contacts even with history enabled; see
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverVBD</span></code></a> for the contact-generation contract.</p>
+<p>When a substep reuses contacts without rerunning collision detection, you can
+call <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.set_rigid_history_update" title="newton.solvers.SolverVBD.set_rigid_history_update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_rigid_history_update()</span></code></a> with <code class="docutils literal notranslate"><span class="pre">False</span></code> to
+skip rebuilding contact lists and reinitializing contact records. Reuse the
+last refreshed contact buffers unchanged, with body mass and kinematic status
+unchanged. Per-step contact/joint updates, solving, and enabled history
+snapshots still run. Keep refresh enabled after detection or reset. The flag
+resets to <code class="docutils literal notranslate"><span class="pre">True</span></code> after each step and is independent of
+<code class="docutils literal notranslate"><span class="pre">rigid_contact_history</span></code>.</p>
+</section>
+</section>
+<section id="contact-capacity">
+<span id="vbd-contact-buffers"></span><h4>Contact capacity<a class="headerlink" href="#contact-capacity" title="Link to this heading">#</a></h4>
+<p>Global storage and per-body adjacency have independent capacities. Increasing
+one does not increase the other. <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> exposes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code>: global rigid contact storage.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_triangle_pairs</span></code>: intermediate triangle pairs for mesh/heightfield
+collision and global contact reduction.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">contact_reduction_hashtable_size_factor</span></code>: global contact-reduction
+hash-table capacity relative to <code class="docutils literal notranslate"><span class="pre">max_triangle_pairs</span></code>. Increase it for
+hash-table fill/failure warnings.</p></li>
+</ul>
+<p>VBD’s <code class="docutils literal notranslate"><span class="pre">rigid_body_contact_buffer_size</span></code> (default 64) controls body-body
+contact entries per rigid body. Overflow drops contributions from that body’s
+solve. Keep <code class="docutils literal notranslate"><span class="pre">CollisionPipeline(verify_buffers=True)</span></code> diagnostics enabled
+while sizing collision buffers and check VBD’s per-body overflow warnings
+separately. Measure peak demand during impacts, dense packing, and resets,
+then allocate headroom; a count at capacity may already be clipped. Check
+filters and an unnecessarily large detection gap before allocating more memory.</p>
+<p>For rigid-soft contacts, <code class="docutils literal notranslate"><span class="pre">rigid_body_particle_contact_buffer_size</span></code>
+(default 256) is a separate per-body budget. Its overflow falls back to scanning
+all stored soft contacts, preserving reactions at extra cost. It cannot recover
+contacts lost from the global <code class="docutils literal notranslate"><span class="pre">CollisionPipeline.soft_contact_max</span></code> storage.</p>
+<p>Particle self-contact uses <code class="docutils literal notranslate"><span class="pre">particle_vertex_contact_buffer_size</span></code> and
+<code class="docutils literal notranslate"><span class="pre">particle_edge_contact_buffer_size</span></code>; see <a class="reference internal" href="#vbd-fail-tunneling"><span class="std std-ref">Self-contact tunneling</span></a> for
+overflow checks.</p>
+</section>
+</section>
+</section>
+<section id="best-practices">
+<h2>Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading">#</a></h2>
+<section id="what-can-go-wrong-and-how-to-fix-it">
+<h3>What Can Go Wrong and How to Fix It<a class="headerlink" href="#what-can-go-wrong-and-how-to-fix-it" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 28.0%" />
+<col style="width: 42.0%" />
+<col style="width: 30.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Symptom</p></th>
+<th class="head"><p>Likely cause</p></th>
+<th class="head"><p>Entry</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Cloth or a soft body jitters at a few vertices</p></td>
+<td><p>Stiffness ratio: contact far above the elasticity</p></td>
+<td><p><a class="reference internal" href="#vbd-fail-contact-stiffness"><span class="std std-ref">Example 1: contact stiffness too high compared to the elasticity</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>Raising one stiffness does not make the object stiffer</p></td>
+<td><p>Stiffness ratio: the deformation moves into the terms that stayed soft</p></td>
+<td><p><a class="reference internal" href="#vbd-fail-membrane-only"><span class="std std-ref">Example 2: stiffening only the membrane does not stiffen the object</span></a></p></td>
+</tr>
+<tr class="row-even"><td><p>A fine mesh is soft, laggy or slow to settle</p></td>
+<td><p>About one ring of information per iteration</p></td>
+<td><p><a class="reference internal" href="#vbd-fail-resolution"><span class="std std-ref">A fine mesh converges slowly</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>Motion is slower than expected, hovers or locks near contact</p></td>
+<td><p>DAT damping, small query radius</p></td>
+<td><p><a class="reference internal" href="#vbd-fail-dat-damping"><span class="std std-ref">DAT damping: slow, hovering or locked motion</span></a></p></td>
+</tr>
+<tr class="row-even"><td><p>Explosion or NaN at a few vertices</p></td>
+<td><p>Bad elements in the asset</p></td>
+<td><p><a class="reference internal" href="#vbd-fail-asset"><span class="std std-ref">Bad asset</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>A smaller <code class="docutils literal notranslate"><span class="pre">dt</span></code> made things worse</p></td>
+<td><p>Compute budget, float32 precision</p></td>
+<td><p><a class="reference internal" href="#vbd-fail-small-dt"><span class="std std-ref">A smaller time step made things worse</span></a></p></td>
+</tr>
+<tr class="row-even"><td><p>Cloth passes through itself</p></td>
+<td><p>Candidate buffers overflow, or an exclusion filter</p></td>
+<td><p><a class="reference internal" href="#vbd-fail-tunneling"><span class="std std-ref">Self-contact tunneling</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>Unexpected rigid-body or cable motion at startup</p></td>
+<td><p>Initial overlaps, rest geometry, or joint attachment frames</p></td>
+<td><p><a class="reference internal" href="#vbd-rigid-fail-startup"><span class="std std-ref">Startup checks</span></a></p></td>
+</tr>
+<tr class="row-even"><td><p>Excessive cable stretch or joint displacement</p></td>
+<td><p>Loads, stiffness, rest geometry, attachments, or incomplete convergence</p></td>
+<td><p><a class="reference internal" href="#vbd-rigid-fail-deformation"><span class="std std-ref">Deformation checks</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>Excessive body-body penetration, slip, or jitter</p></td>
+<td><p>Detection, capacity, normal support, friction, or incomplete convergence</p></td>
+<td><p><a class="reference internal" href="#vbd-rigid-fail-contact"><span class="std std-ref">Contact checks</span></a></p></td>
+</tr>
+<tr class="row-even"><td><p>Rigid-body or cable behavior changes unexpectedly after edits or reset</p></td>
+<td><p>Stale solver caches or contact history</p></td>
+<td><p><a class="reference internal" href="#vbd-rigid-fail-reset"><span class="std std-ref">Update and reset checks</span></a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<section id="id1">
+<h4>Cloth and soft bodies<a class="headerlink" href="#id1" title="Link to this heading">#</a></h4>
+<section id="jitter-where-to-look-first">
+<span id="vbd-jitter-pipeline"></span><h5>Jitter: where to look first<a class="headerlink" href="#jitter-where-to-look-first" title="Link to this heading">#</a></h5>
+<p>Work through these steps in order and stop at the first one that fixes it.</p>
+<ol class="arabic">
+<li><p>If the scene has self-contacts, check whether the self-contact stiffness is
+disproportionately high. Keep the collision stiffness within 10x of the
+elasticity stiffness: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a> against <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a> for cloth or
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_mu</span></code></a> for soft bodies. This is the stiffness ratio
+(<a class="reference internal" href="#vbd-stiffness-ratio"><span class="std std-ref">Stiffness ratio</span></a>).</p></li>
+<li><p>If not fixed, tune the self-contact damping, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_kd" title="newton.Model.soft_contact_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_kd</span></code></a>.</p></li>
+<li><p>If it is still not fixed, or there is no contact, increase the elasticity
+damping: bending damping <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_kd</span></code></a> for cloth, tet damping <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_damp</span></code></a> for
+soft bodies.</p></li>
+<li><p>Increasing the iterations or the collision detection frequency also helps,
+but both increase the computational cost. Only use them as the last resort.
+Iterations: <code class="docutils literal notranslate"><span class="pre">iterations</span></code>. Detection frequency: set the self-contact slot
+to the <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code> schedule and give it a frequency,</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverVBD</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">particle_enable_self_contact</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># plus your margin and gap</span>
+    <span class="n">collision_frequency_type</span><span class="o">=</span><span class="p">{</span>
+        <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverBase</span><span class="o">.</span><span class="n">CollisionSlot</span><span class="o">.</span><span class="n">SOFT_SELF_CONTACT</span><span class="p">:</span>
+            <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverBase</span><span class="o">.</span><span class="n">CollisionFrequencyType</span><span class="o">.</span><span class="n">ITERATIONS</span>
+    <span class="p">},</span>
+    <span class="n">collision_frequency</span><span class="o">=</span><span class="p">{</span><span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverBase</span><span class="o">.</span><span class="n">CollisionSlot</span><span class="o">.</span><span class="n">SOFT_SELF_CONTACT</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>which detects before the inertial step and then before every second
+iteration, in place of the pass after the inertial step. With
+<code class="docutils literal notranslate"><span class="pre">rigid_soft_enable_dat</span></code> on, give the <code class="docutils literal notranslate"><span class="pre">RIGID</span></code> slot the same type and
+frequency; the solver raises in <code class="docutils literal notranslate"><span class="pre">step</span></code> otherwise, because the two DAT
+families share one motion reference. A <code class="docutils literal notranslate"><span class="pre">RIGID</span></code> slot on <code class="docutils literal notranslate"><span class="pre">ITERATIONS</span></code>
+re-detects between iterations, and the solver carries each contact’s
+multipliers onto the new contact set through the pipeline’s contact
+matching. Build the pipeline with <code class="docutils literal notranslate"><span class="pre">contact_matching=&quot;latest&quot;</span></code> (or
+<code class="docutils literal notranslate"><span class="pre">&quot;sticky&quot;</span></code>); with the default <code class="docutils literal notranslate"><span class="pre">&quot;disabled&quot;</span></code> the constructor raises
+<code class="docutils literal notranslate"><span class="pre">ValueError</span></code>. The solver page explains the mechanism
+(<a class="reference internal" href="../solvers/vbd.html#vbd-contact-matching"><span class="std std-ref">contact matching</span></a>).</p>
+</li>
+</ol>
+</section>
+<section id="explosion-what-to-check-in-this-order">
+<span id="vbd-explosion-checklist"></span><h5>Explosion: what to check, in this order<a class="headerlink" href="#explosion-what-to-check-in-this-order" title="Link to this heading">#</a></h5>
+<ol class="arabic simple">
+<li><p><strong>Asset quality.</strong> Add the mesh with <code class="docutils literal notranslate"><span class="pre">validate_mesh=True</span></code> and read the
+warnings. See <a class="reference internal" href="#vbd-fail-asset"><span class="std std-ref">Bad asset</span></a>.</p></li>
+<li><p><strong>Density too small?</strong> A light vertex next to a stiff element or contact
+receives a large acceleration. Check <code class="docutils literal notranslate"><span class="pre">density</span></code> or <code class="docutils literal notranslate"><span class="pre">mass</span></code> against the
+real object; do not lower them to speed things up.</p></li>
+<li><p><strong>Stiffness too high?</strong> Compare the elastic and contact stiffness with the
+examples in <a class="reference internal" href="#vbd-empirical-table"><span class="std std-ref">the cloth and soft-body example table</span></a>.
+Above about 1e6 expect trouble.</p></li>
+<li><p><strong>Initially penetrating?</strong> The validator does not detect intersections; it
+checks element quality and manifoldness only. Inspect the start pose with
+the <a class="reference internal" href="../guide/visualization.html#debugging-with-viewers"><span class="std std-ref">viewer debugging tools</span></a>. Layers that start
+inside the interaction distance receive a large separating push in the
+first steps.</p></li>
+<li><p><strong>Initial stretch or velocity too high?</strong> Compare the start positions with
+the rest shape, and check <code class="docutils literal notranslate"><span class="pre">vel</span></code> and any prescribed motion in the first
+frame.</p></li>
+</ol>
+</section>
+<section id="stiffness-ratio">
+<span id="vbd-stiffness-ratio"></span><h5>Stiffness ratio<a class="headerlink" href="#stiffness-ratio" title="Link to this heading">#</a></h5>
+<p><strong>Symptom.</strong> One stiffness stands far above the others, and raising it made
+things worse instead of better: a few vertices jitter and do not settle with
+more iterations, or the object does not get stiffer and even wobbles or
+buckles more.</p>
+<p><strong>Cause.</strong> The stiffness ratio. Every term that acts on a vertex enters the
+same local system, so one stiffness far above the others impedes the overall
+convergence and makes some of the elasticity look less stiff. The pair depends
+on the scene: contact against the elasticity of the material it presses on,
+membrane against bending, volume against shear (the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_mu</span></code></a>, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_lambda</span></code></a> row
+of the model table), and in general any two terms that share vertices.</p>
+<p><strong>Fix.</strong> Keep the stiffnesses of terms that share vertices within about 10x of
+each other: lower the one that stands out, or raise the others with it. The
+rule is a starting point, not a universal one; after the change, check the
+behaviour the stiff term was there for, such as a grasp that must hold or a
+sheet that must not stretch. The two cases below are the common ones.</p>
+<section id="example-1-contact-stiffness-too-high-compared-to-the-elasticity">
+<span id="vbd-fail-contact-stiffness"></span><h6>Example 1: contact stiffness too high compared to the elasticity<a class="headerlink" href="#example-1-contact-stiffness-too-high-compared-to-the-elasticity" title="Link to this heading">#</a></h6>
+<p><strong>Symptom.</strong> Cloth layers or a grasped sheet jitter at a few vertices. The
+motion is fast, local, and does not settle when you add iterations.</p>
+<p><strong>Cause.</strong> The stiffness ratio: the contact stiffness is too high compared to
+the elasticity.</p>
+<p><strong>Fix.</strong> Bring <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a> to within about 10x of the membrane
+stiffness (<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a>) or the volumetric stiffness (<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_mu</span></code></a>), then check that
+grasps still hold. Lower contact stiffness also means lower friction force, so
+a grasp can slip; in the pouch scene below, lowering the contact stiffness to
+2x the membrane stiffness lost the grasp.</p>
+<figure class="align-center" id="id6">
+<a class="reference internal image-reference" href="../_images/vbd_tuning_stack_contact_stiffness.gif"><img alt="Animation of five stacked cloth layers with contact stiffness 30,000 N/m (jittering) and 4,000 N/m (still)" src="../_images/vbd_tuning_stack_contact_stiffness.gif" style="width: 95%;" />
+</a>
+<figcaption>
+<p><span class="caption-text">Five stacked cloth layers, the last two seconds of a seven-second rest,
+same time in both runs. Membrane stiffness 2,000 N/m, self-contact margin
+8 mm, gap 8 mm, <code class="docutils literal notranslate"><span class="pre">dt</span></code> = 1/300 s, 20 iterations. Left: contact stiffness
+30,000 N/m. Right: 4,000 N/m. The scene is a test scene, not a shipped
+example.</span><a class="headerlink" href="#id6" title="Link to this image">#</a></p>
+</figcaption>
+</figure>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 40.0%" />
+<col style="width: 30.0%" />
+<col style="width: 30.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Local motion of free vertices, 5 to 50 Hz band, 2 to 7 s</p></th>
+<th class="head"><p>Contact stiffness 30,000 N/m</p></th>
+<th class="head"><p>Contact stiffness 4,000 N/m</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Mean amplitude (RMS over vertices) [mm]</p></td>
+<td><p>0.93</p></td>
+<td><p>0.016</p></td>
+</tr>
+<tr class="row-odd"><td><p>95th percentile vertex [mm]</p></td>
+<td><p>1.93</p></td>
+<td><p>0.020</p></td>
+</tr>
+<tr class="row-even"><td><p>Worst vertex [mm]</p></td>
+<td><p>4.79</p></td>
+<td><p>0.024</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>“Local motion” is the motion of a vertex relative to the mean of its mesh
+neighbours, so a rigid shift of the whole stack does not count.</p>
+<p>More iterations did not remove this kind of jitter. On a pinched pouch
+(membrane 3,000 N/m, contact 50,000 N/m, <code class="docutils literal notranslate"><span class="pre">dt</span></code> = 1/300 s) the mean mesh speed
+over 0.1 s was 0.123 m/s at 20 iterations, 0.023 m/s at 40, 0.141 m/s at 100
+and 0.205 m/s at 200.</p>
+<p><strong>Reproduce.</strong> A similar setup is <code class="docutils literal notranslate"><span class="pre">example_vbd_soft_rigid_contact</span></code> with
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a> raised from 1e5 to 1e6 while <code class="docutils literal notranslate"><span class="pre">cloth_tri_ke</span></code> stays at 1e5.</p>
+</section>
+<section id="example-2-stiffening-only-the-membrane-does-not-stiffen-the-object">
+<span id="vbd-fail-membrane-only"></span><h6>Example 2: stiffening only the membrane does not stiffen the object<a class="headerlink" href="#example-2-stiffening-only-the-membrane-does-not-stiffen-the-object" title="Link to this heading">#</a></h6>
+<p><strong>Symptom.</strong> You raise <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ka</span></code></a> by orders of magnitude and the
+object still wobbles; at the highest values it buckles and wrinkles more.</p>
+<p><strong>Cause.</strong> The stiffness ratio: the membrane is far stiffer than bending. Once
+the membrane is near inextensible, the deformation energy moves into bending,
+which stayed soft.</p>
+<p><strong>Fix.</strong> Scale <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_ke</span></code></a> together with <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ka</span></code></a>. Stiffening
+both gives a monotonic stiffening with diminishing returns past the baseline.</p>
+<figure class="align-center" id="id7">
+<a class="reference internal image-reference" href="../_images/vbd_tuning_bag_stretch_sweep.gif"><img alt="Animation of a pinned bag at five membrane stiffness values from 1e3 to 1e7" src="../_images/vbd_tuning_bag_stretch_sweep.gif" style="width: 100%;" />
+</a>
+<figcaption>
+<p><span class="caption-text">A bag with rigid contents, pinned at the rim, rim driven sideways at
+0.85 Hz, seconds 3 to 6 of the run. Only the membrane stiffness changes,
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_ke</span></code></a> stays at 200 N. <code class="docutils literal notranslate"><span class="pre">dt</span></code> = 1/600 s, 10 iterations. The x100 bag
+buckles at the bottom. The scene is a test scene, not a shipped example.</span><a class="headerlink" href="#id7" title="Link to this image">#</a></p>
+</figcaption>
+</figure>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 16.0%" />
+<col style="width: 21.0%" />
+<col style="width: 21.0%" />
+<col style="width: 21.0%" />
+<col style="width: 21.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Multiplier</p></th>
+<th class="head"><p>Stretch score, membrane only</p></th>
+<th class="head"><p>Bend score, membrane only</p></th>
+<th class="head"><p>Stretch score, both scaled</p></th>
+<th class="head"><p>Bend score, both scaled</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>x0.01</p></td>
+<td><p>0.114</p></td>
+<td><p>0.012</p></td>
+<td><p>0.012</p></td>
+<td><p>0.033</p></td>
+</tr>
+<tr class="row-odd"><td><p>x0.1</p></td>
+<td><p>0.015</p></td>
+<td><p>0.008</p></td>
+<td><p>0.007</p></td>
+<td><p>0.018</p></td>
+</tr>
+<tr class="row-even"><td><p>x1</p></td>
+<td><p>0.006</p></td>
+<td><p>0.015</p></td>
+<td><p>0.006</p></td>
+<td><p>0.015</p></td>
+</tr>
+<tr class="row-odd"><td><p>x10</p></td>
+<td><p>0.006</p></td>
+<td><p>0.045</p></td>
+<td><p>0.006</p></td>
+<td><p>0.015</p></td>
+</tr>
+<tr class="row-even"><td><p>x100</p></td>
+<td><p>0.006</p></td>
+<td><p>0.179</p></td>
+<td><p>0.006</p></td>
+<td><p>0.015</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Baseline x1: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a> 1e5, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ka</span></code></a> 2e4, <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_ke</span></code></a> 200. Scores are mean
+deformation measures over the last second of each run; lower means stiffer.
+Scaling only the membrane leaves the stretch score flat from x1 on and raises
+the bend score twelve-fold. Scaling both keeps every score flat.</p>
+<p><strong>Reproduce.</strong> A similar setup is <code class="docutils literal notranslate"><span class="pre">example_cloth_hanging</span></code> with <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ke</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-attr docutils literal notranslate"><span class="pre">tri_ka</span></code></a> multiplied by 100 and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_ke</span></code></a> unchanged, compared with all
+three multiplied.</p>
+</section>
+</section>
+<section id="a-fine-mesh-converges-slowly">
+<span id="vbd-fail-resolution"></span><h5>A fine mesh converges slowly<a class="headerlink" href="#a-fine-mesh-converges-slowly" title="Link to this heading">#</a></h5>
+<p><strong>Symptom.</strong> After refining the mesh, the object looks softer, lags behind
+contacts, or needs many more frames to settle, with unchanged material values.</p>
+<p><strong>Cause.</strong> Information moves about one ring per iteration. A block is solved
+from the current values of its neighbours, colour by colour, so a change
+reaches the next ring within one iteration and crosses <span class="math notranslate nohighlight">\(N\)</span> rings in
+about <span class="math notranslate nohighlight">\(N\)</span> iterations. At fixed iterations a finer mesh is therefore less
+converged at the end of every step.</p>
+<figure class="align-center" id="id8">
+<a class="reference internal image-reference" href="../_images/vbd_tuning_one_ring.svg"><img alt="A triangle mesh patch with rings around one vertex coloured by their ring distance from it" src="../_images/vbd_tuning_one_ring.svg" style="width: 85%;" />
+</a>
+<figcaption>
+<p><span class="caption-text">A change at one vertex reaches ring <span class="math notranslate nohighlight">\(k\)</span> after about <span class="math notranslate nohighlight">\(k\)</span>
+iterations. Refining the mesh by a factor of two doubles the number of
+rings across the object and so, roughly, the iterations needed for the same
+convergence.</span><a class="headerlink" href="#id8" title="Link to this image">#</a></p>
+</figcaption>
+</figure>
+<p><strong>Fix.</strong> Use the lowest resolution that expresses the deformation you need.
+When you refine, raise <code class="docutils literal notranslate"><span class="pre">iterations</span></code> roughly in proportion to the number of
+rings across the object.</p>
+</section>
+<section id="dat-damping-slow-hovering-or-locked-motion">
+<span id="vbd-fail-dat-damping"></span><h5>DAT damping: slow, hovering or locked motion<a class="headerlink" href="#dat-damping-slow-hovering-or-locked-motion" title="Link to this heading">#</a></h5>
+<p><strong>Symptom.</strong> Near contacts, cloth falls slower than gravity, hovers at a fixed
+offset, or a pinched region stops moving.</p>
+<p><strong>Cause.</strong> The motion budget between detections is too small for the motion the
+scene asks for. The radius truncation caps the displacement since the last
+detection at 0.5 x relaxation x query radius, and the planar truncation stops a
+vertex at its division plane, so a small margin and gap cap the speed.</p>
+<p><strong>Fix.</strong> Raise <code class="docutils literal notranslate"><span class="pre">particle_self_contact_gap</span></code> first, then
+<code class="docutils literal notranslate"><span class="pre">particle_self_contact_margin</span></code>, following <a class="reference internal" href="#vbd-margin-gap-guide"><span class="std std-ref">Setting margin and gap</span></a>. For
+rigid-soft contact raise the pipeline’s <code class="docutils literal notranslate"><span class="pre">soft_contact_gap</span></code>. More frequent
+detection also refreshes the budget more often, at a cost.</p>
+</section>
+<section id="bad-asset">
+<span id="vbd-fail-asset"></span><h5>Bad asset<a class="headerlink" href="#bad-asset" title="Link to this heading">#</a></h5>
+<p><strong>Symptom.</strong> NaN or an explosion at a few vertices from the first frames,
+jitter at rest in one region, or warnings when the mesh is added.</p>
+<p><strong>Cause.</strong> Degenerate or sliver elements make the local solve ill-conditioned.</p>
+<p><strong>Fix.</strong> Run the built-in checker, then apply isotropic explicit remeshing.
+The checker is opt-in:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_cloth_mesh</span><span class="p">(</span>
+    <span class="n">pos</span><span class="o">=</span><span class="n">pos</span><span class="p">,</span> <span class="n">rot</span><span class="o">=</span><span class="n">rot</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">vel</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">),</span>
+    <span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">indices</span><span class="p">,</span> <span class="n">density</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">validate_mesh</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"shirt"</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_soft_mesh</span><span class="p">(</span>
+    <span class="n">pos</span><span class="o">=</span><span class="n">pos</span><span class="p">,</span> <span class="n">rot</span><span class="o">=</span><span class="n">rot</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">vel</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">),</span>
+    <span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">tets</span><span class="p">,</span> <span class="n">density</span><span class="o">=</span><span class="mf">100.0</span><span class="p">,</span>
+    <span class="n">k_mu</span><span class="o">=</span><span class="mf">1.0e5</span><span class="p">,</span> <span class="n">k_lambda</span><span class="o">=</span><span class="mf">1.0e5</span><span class="p">,</span> <span class="n">k_damp</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">validate_mesh</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"sponge"</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>It never raises; it warns and adds the mesh anyway. The same checks are
+available directly as <a class="reference internal" href="../api/_generated/newton.utils.validate_triangle_mesh.html#newton.utils.validate_triangle_mesh" title="newton.utils.validate_triangle_mesh"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.utils.validate_triangle_mesh()</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.utils.validate_tet_mesh.html#newton.utils.validate_tet_mesh" title="newton.utils.validate_tet_mesh"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.utils.validate_tet_mesh()</span></code></a>. The checker inspects element quality and
+manifoldness; it does not detect intersections between or inside meshes.
+Thresholds at the time of writing:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 18.0%" />
+<col style="width: 50.0%" />
+<col style="width: 32.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Mesh</p></th>
+<th class="head"><p>Check</p></th>
+<th class="head"><p>Threshold</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Triangles</p></td>
+<td><p>Small area</p></td>
+<td><p>below 1 mm² (1e-6 m²)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Triangles</p></td>
+<td><p>Sliver, longest edge over shortest altitude</p></td>
+<td><p>above 20</p></td>
+</tr>
+<tr class="row-even"><td><p>Triangles</p></td>
+<td><p>Minimum interior angle</p></td>
+<td><p>below 5°</p></td>
+</tr>
+<tr class="row-odd"><td><p>Triangles</p></td>
+<td><p>Non-manifold edge (always checked by the adjacency builder)</p></td>
+<td><p>edge shared by more than two faces</p></td>
+</tr>
+<tr class="row-even"><td><p>Tetrahedra</p></td>
+<td><p>Inverted element</p></td>
+<td><p>signed volume below 0</p></td>
+</tr>
+<tr class="row-odd"><td><p>Tetrahedra</p></td>
+<td><p>Small volume</p></td>
+<td><p>below 1 mm³ (1e-9 m³)</p></td>
+</tr>
+<tr class="row-even"><td><p>Tetrahedra</p></td>
+<td><p>Sliver, shape quality <span class="math notranslate nohighlight">\(\eta\)</span> (1 for a regular tetrahedron)</p></td>
+<td><p>below 0.01</p></td>
+</tr>
+<tr class="row-odd"><td><p>Tetrahedra</p></td>
+<td><p>Non-manifold face</p></td>
+<td><p>face shared by more than two tetrahedra</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A warning has this form (the numbers are illustrative):</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>NewtonWarning: Mesh quality warning [bag] (873 vertices, 1544 triangles):
+  - 4 sliver triangle(s) with aspect ratio &gt; 20.0 (worst: 27.3)
+  - 1 triangle(s) with minimum angle &lt; 5.0° (smallest: 4.0°)
+Consider remeshing the input geometry.
+</pre></div>
+</div>
+<p>Apply isotropic explicit remeshing, for example MeshLab’s filter
+<em>Remeshing: Isotropic Explicit Remeshing</em>, with a target edge length that is
+uniform over the asset and larger than the interaction distance. Then add the
+mesh with <code class="docutils literal notranslate"><span class="pre">validate_mesh=True</span></code> again. Remeshing at a coarse target can still
+leave slivers; the checker tells you.</p>
+</section>
+<section id="a-smaller-time-step-made-things-worse">
+<span id="vbd-fail-small-dt"></span><h5>A smaller time step made things worse<a class="headerlink" href="#a-smaller-time-step-made-things-worse" title="Link to this heading">#</a></h5>
+<p><strong>Symptom.</strong> After halving <code class="docutils literal notranslate"><span class="pre">dt</span></code> the simulation is slower, and either nothing
+improved or the object drifts and loses detail over long runs.</p>
+<p><strong>Cause.</strong> Two effects. First, a smaller <code class="docutils literal notranslate"><span class="pre">dt</span></code> costs more substeps per second,
+each with collision detection; at a fixed compute budget it takes iterations
+away from each substep. Second, positions are float32. A small <code class="docutils literal notranslate"><span class="pre">dt</span></code> gives a
+small per-step update compared to the position value, so part of each update is
+rounded away, and the loss accumulates over time.</p>
+<p><strong>Fix.</strong> Start at <code class="docutils literal notranslate"><span class="pre">dt</span></code> = 1/600 s with 10 iterations. Reduce <code class="docutils literal notranslate"><span class="pre">dt</span></code> while it
+visibly helps, but not below about 1/3000 s. Beyond that, spend the budget on
+iterations, or move the scene closer to the origin so that positions are small
+numbers.</p>
+</section>
+<section id="self-contact-tunneling">
+<span id="vbd-fail-tunneling"></span><h5>Self-contact tunneling<a class="headerlink" href="#self-contact-tunneling" title="Link to this heading">#</a></h5>
+<p><strong>Symptom.</strong> Cloth passes through itself, or one layer of a stack drops
+through another, although self-contact is enabled.</p>
+<p><strong>Cause.</strong> The candidate buffers overflow, or a filter excludes the pair. Each
+vertex stores at most <code class="docutils literal notranslate"><span class="pre">particle_vertex_contact_buffer_size</span></code> vertex-triangle
+candidates (default 32) and each edge at most
+<code class="docutils literal notranslate"><span class="pre">particle_edge_contact_buffer_size</span></code> edge-edge candidates (default 64). Pairs
+beyond the capacity are dropped silently, and a dropped pair has no force and
+no division plane; only the radius cap still limits its vertices. The
+topological filter and the rest-shape exclusion radius also
+remove pairs, by design.</p>
+<p><strong>Fix.</strong> Raise the two buffer sizes, and lower the gap if it is far above the
+margin. The detector records the number of pairs found per vertex and per edge,
+including the dropped ones, next to the buffer sizes. A count above the buffer
+size is a measured overflow. The result struct is reachable as
+<code class="docutils literal notranslate"><span class="pre">solver.trimesh_collision_info</span></code> (fields <code class="docutils literal notranslate"><span class="pre">vertex_colliding_triangles_count</span></code>,
+<code class="docutils literal notranslate"><span class="pre">vertex_colliding_triangles_buffer_sizes</span></code>, <code class="docutils literal notranslate"><span class="pre">edge_colliding_edges_count</span></code> and
+<code class="docutils literal notranslate"><span class="pre">edge_colliding_edges_buffer_sizes</span></code>); it is an experimental type and can
+change. If a filter is the cause, lower
+<code class="docutils literal notranslate"><span class="pre">particle_rest_shape_contact_exclusion_radius</span></code> or check the external filter
+maps you passed.</p>
+</section>
+</section>
+<section id="rigid-bodies-and-cables">
+<span id="vbd-rigid-problems"></span><h4>Rigid bodies and cables<a class="headerlink" href="#rigid-bodies-and-cables" title="Link to this heading">#</a></h4>
+<section id="unexpected-motion-at-startup">
+<span id="vbd-rigid-fail-startup"></span><h5>Unexpected motion at startup<a class="headerlink" href="#unexpected-motion-at-startup" title="Link to this heading">#</a></h5>
+<p>Check initial overlaps, cable rest geometry, and joint attachment frames.
+Adjust the initial geometry to remove unintended overlaps. Exclude
+intentionally overlapping neighboring segments only if their collision
+response is unnecessary throughout the expected motion. See
+<a class="reference internal" href="#vbd-cable-inputs"><span class="std std-ref">cable inputs</span></a> and
+<a class="reference internal" href="#vbd-rigid-contacts"><span class="std std-ref">rigid contact setup</span></a>.</p>
+</section>
+<section id="excessive-stretch-or-joint-displacement">
+<span id="vbd-rigid-fail-deformation"></span><h5>Excessive stretch or joint displacement<a class="headerlink" href="#excessive-stretch-or-joint-displacement" title="Link to this heading">#</a></h5>
+<p>Check loads, stiffness inputs, rest geometry, and attachments. Also check
+time step and iteration sensitivity with those inputs held fixed.
+<a class="reference internal" href="#vbd-rigid-compliance"><span class="std std-ref">Finite stiffness</span></a> permits some deformation; see
+<a class="reference internal" href="#vbd-cable-inputs"><span class="std std-ref">cable materials and attachments</span></a> and
+<a class="reference internal" href="#vbd-rigid-joint-gains"><span class="std std-ref">non-rod joint gains</span></a>.</p>
+</section>
+<section id="excessive-penetration-unexpected-slip-or-jitter">
+<span id="vbd-rigid-fail-contact"></span><h5>Excessive penetration, unexpected slip, or jitter<a class="headerlink" href="#excessive-penetration-unexpected-slip-or-jitter" title="Link to this heading">#</a></h5>
+<p>Check contact detection, including fast motion between collision passes,
+buffer overflow, and normal-load support. For unexpected slip, check both
+shapes’ <code class="docutils literal notranslate"><span class="pre">mu</span></code> values and joint/contact convergence.
+For persistent contacts, compare
+<a class="reference internal" href="#vbd-rigid-contact-history"><span class="std std-ref">contact history</span></a> against a baseline.
+See <a class="reference internal" href="#vbd-rigid-contacts"><span class="std std-ref">rigid contact setup</span></a> and
+<a class="reference internal" href="#vbd-contact-buffers"><span class="std std-ref">contact capacity</span></a>.</p>
+</section>
+<section id="unexpected-behavior-after-edits-or-reset">
+<span id="vbd-rigid-fail-reset"></span><h5>Unexpected behavior after edits or reset<a class="headerlink" href="#unexpected-behavior-after-edits-or-reset" title="Link to this heading">#</a></h5>
+<p>Check whether a model edit requires
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.notify_model_changed" title="newton.solvers.SolverVBD.notify_model_changed"><code class="xref py py-meth docutils literal notranslate"><span class="pre">notify_model_changed()</span></code></a> or rebuilding
+the solver. For resets, clear solver and collision-pipeline history and
+regenerate contacts at the final pose. See
+<a class="reference internal" href="#vbd-rigid-model-updates"><span class="std std-ref">model changes and reset</span></a>.</p>
+</section>
+</section>
+</section>
+<section id="model-changes-and-reset">
+<span id="vbd-rigid-model-updates"></span><h3>Model Changes and Reset<a class="headerlink" href="#model-changes-and-reset" title="Link to this heading">#</a></h3>
+<p>Create a new <code class="docutils literal notranslate"><span class="pre">SolverVBD</span></code> after changing construction-only settings. When
+using the tiled particle solve (<code class="docutils literal notranslate"><span class="pre">particle_enable_tile_solve</span></code>), also rebuild
+after changing triangle or edge stiffness. For rigid bodies and cables,
+rebuild after changing joint topology or DOF layout, or the non-rod reference
+configuration used to initialize drive/limit angle offsets.</p>
+<p>Rod stiffness and damping can be updated during simulation. VBD caches the
+rod gains and requires equal X/Y shear and X/Y bend coefficients on each rod
+joint. After editing model properties, call
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.notify_model_changed" title="newton.solvers.SolverVBD.notify_model_changed"><code class="xref py py-meth docutils literal notranslate"><span class="pre">notify_model_changed()</span></code></a> with the matching flag
+before the next step:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelFlags.html#newton.ModelFlags.JOINT_DOF_PROPERTIES" title="newton.ModelFlags.JOINT_DOF_PROPERTIES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelFlags.JOINT_DOF_PROPERTIES</span></code></a> for rod gains in
+<code class="docutils literal notranslate"><span class="pre">model.joint_target_ke</span></code> or <code class="docutils literal notranslate"><span class="pre">model.joint_target_kd</span></code>.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelFlags.html#newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES" title="newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES</span></code></a> for rod rest
+rotations in <code class="docutils literal notranslate"><span class="pre">model.joint_rest_q</span></code>.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelFlags.html#newton.ModelFlags.JOINT_PROPERTIES" title="newton.ModelFlags.JOINT_PROPERTIES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelFlags.JOINT_PROPERTIES</span></code></a> after toggling <code class="docutils literal notranslate"><span class="pre">model.joint_enabled</span></code>.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelFlags.html#newton.ModelFlags.BODY_PROPERTIES" title="newton.ModelFlags.BODY_PROPERTIES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelFlags.BODY_PROPERTIES</span></code></a> after changing kinematic flags.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelFlags.html#newton.ModelFlags.BODY_INERTIAL_PROPERTIES" title="newton.ModelFlags.BODY_INERTIAL_PROPERTIES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelFlags.BODY_INERTIAL_PROPERTIES</span></code></a> after changing body mass or inertia.</p></li>
+</ul>
+<p>When editing mass or inertia directly, keep <code class="docutils literal notranslate"><span class="pre">model.body_inv_mass</span></code> and
+<code class="docutils literal notranslate"><span class="pre">model.body_inv_inertia</span></code> consistent with them. The notification refreshes
+solver caches; it does not recompute these model arrays.</p>
+<p>When VBD integrates rigid bodies, it advances <code class="docutils literal notranslate"><span class="pre">state.body_q</span></code> and
+<code class="docutils literal notranslate"><span class="pre">state.body_qd</span></code> directly. <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.step" title="newton.solvers.SolverVBD.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a> does not
+synchronize <code class="docutils literal notranslate"><span class="pre">state.joint_q</span></code> or <code class="docutils literal notranslate"><span class="pre">state.joint_qd</span></code>; call <a class="reference internal" href="../api/_generated/newton.eval_ik.html#newton.eval_ik" title="newton.eval_ik"><code class="xref py py-func docutils literal notranslate"><span class="pre">eval_ik()</span></code></a>
+explicitly when joint coordinates or velocities are needed from body state.</p>
+<p>For an episode reset, call <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.reset" title="newton.solvers.SolverVBD.reset"><code class="xref py py-meth docutils literal notranslate"><span class="pre">reset()</span></code></a> to clear
+rigid solver history. By default, it also restores particle positions and
+velocities and VBD-integrated body poses and velocities from the model
+defaults. For a custom reset, assign <code class="docutils literal notranslate"><span class="pre">state.body_q</span></code> and
+<code class="docutils literal notranslate"><span class="pre">state.body_qd</span></code> and use <code class="docutils literal notranslate"><span class="pre">flags=0</span></code> to preserve them. Set velocities to zero
+for a reset to rest. If authoring the reset in joint coordinates, run
+<a class="reference internal" href="../api/_generated/newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">eval_fk()</span></code></a> after reset to populate the body poses and velocities. Finish
+all state edits before the next step.</p>
+<p>Also call <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline.reset_contact_matching" title="newton.CollisionPipeline.reset_contact_matching"><code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.reset_contact_matching()</span></code></a> with the same
+world mask to discard correspondence and sticky geometry. Regenerate contacts
+at the final pose and leave rigid-history refresh enabled for the next
+contact-bearing step. See <a class="reference internal" href="../api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD.reset" title="newton.solvers.SolverVBD.reset"><code class="xref py py-meth docutils literal notranslate"><span class="pre">reset()</span></code></a> for
+partial-world and coupled-solver behavior.</p>
+</section>
+<section id="examples">
+<h3>Examples<a class="headerlink" href="#examples" title="Link to this heading">#</a></h3>
+<section id="vbd-empirical-table">
+<span id="id2"></span><h4>Cloth and soft bodies<a class="headerlink" href="#vbd-empirical-table" title="Link to this heading">#</a></h4>
+<p>Start from an example, not from material data. Stiffness values derived from
+measured material properties (Young’s modulus, Poisson ratio, thickness) are
+usually far too high for VBD to converge at practical iteration counts. Each
+shipped example below is a working combination of material, contact and
+time-step values for its scenario. Open the example file for the complete
+configuration; the examples are maintained with the solver, so their values are
+the ones to copy. The resemblance given for each scenario is visual, at the
+example’s scale, not a material measurement.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 30.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Scenario</p></th>
+<th class="head"><p>Example</p></th>
+<th class="head"><p>What it demonstrates</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Cloth drape</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_hanging.py">cloth_hanging</a>
+(run with <code class="docutils literal notranslate"><span class="pre">--solver</span> <span class="pre">vbd</span></code>)</p></td>
+<td><p>A planar cloth fixed on one side hangs under gravity and settles on the
+ground. Resembles a heavy cotton sheet at a coarse scale.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Cloth with a robot</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py">cloth_franka</a></p></td>
+<td><p>A Franka arm folds a shirt: VBD cloth coupled with a Featherstone robot,
+in centimetre scale. Resembles cotton cloth handled by a gripper.</p></td>
+</tr>
+<tr class="row-even"><td><p>Stiff sheets</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_poker_cards.py">cloth_poker_cards</a></p></td>
+<td><p>52 cards stack on a cube and are knocked off by a sphere; high bending
+stiffness keeps their shape. Resembles playing cards, cardboard.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Inextensible sheet</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_cloth_stiff_material_hanging.py">cloth_stiff_material_hanging</a></p></td>
+<td><p>A curtain pinned along one edge swings and settles with very stiff
+membrane values. Resembles a plastic membrane that drapes but does not
+stretch.</p></td>
+</tr>
+<tr class="row-even"><td><p>Soft-body beams</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_hanging.py">softbody_hanging</a></p></td>
+<td><p>Four tetrahedral beams hang with damping from 1e4 down to 1e1, showing
+what damping does to Neo-Hookean behaviour. Resembles rubber to foam
+beams, depending on the damping.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Soft box with ribbon</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_softbody_gift.py">softbody_gift</a></p></td>
+<td><p>Four soft blocks tied by cloth straps drop and bounce while the straps
+hold the stack together. Resembles a foam box with a thin ribbon.</p></td>
+</tr>
+<tr class="row-even"><td><p>Soft-body grasp</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_franka.py">softbody_franka</a></p></td>
+<td><p>A Franka arm grasps, lifts and drops a tetrahedral rubber duck.
+Resembles a firm rubber block in a gripper.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Thin bags with contents</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_soft_rigid_contact.py">vbd_soft_rigid_contact</a></p></td>
+<td><p>Six cloth bags each hold a different rigid shape type; the bags settle,
+then lift their contents, so rigid-soft contact can be inspected per
+shape type. Resembles plastic bags holding rigid objects.</p></td>
+</tr>
+<tr class="row-even"><td><p>Tarp under fast impacts</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_vbd_dat_rigid_soft.py">vbd_dat_rigid_soft</a></p></td>
+<td><p>Heavy, fast projectiles hit sheets that catch them; rigid-soft DAT keeps
+the cloth outside the bodies where contact stiffness alone cannot.
+Resembles a tarp struck by thrown objects.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Gripper on a soft pad</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/vbd/example_vbd_gripper_soft_grid.py">vbd_gripper_soft_grid</a></p></td>
+<td><p>A parallel-jaw gripper pinches a two-triangle grid on its interior edge
+and lifts it, which needs full-surface rigid-soft contact. Resembles a
+foam pad pinched and lifted.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="vbd-cable-examples">
+<span id="id3"></span><h4>Cables<a class="headerlink" href="#vbd-cable-examples" title="Link to this heading">#</a></h4>
+<p>These examples demonstrate cable setup and behavior:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 30.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Scenario</p></th>
+<th class="head"><p>Example</p></th>
+<th class="head"><p>What it demonstrates</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Initial and rest shapes</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_initial_rest_pose.py">cable_initial_rest_pose</a></p></td>
+<td><p>Cables relax toward rest shapes that differ from their initial geometry.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Driven twist</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_twist.py">cable_twist</a></p></td>
+<td><p>Twist propagates through bent cables with different angular stiffnesses.</p></td>
+</tr>
+<tr class="row-even"><td><p>Bending hysteresis</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bundle_hysteresis.py">cable_bundle_hysteresis</a></p></td>
+<td><p>Cyclic bending leaves residual curvature; compare with <code class="docutils literal notranslate"><span class="pre">--no-dahl</span></code>
+for the elastic response.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Cable-driven table</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_cross_slide_table.py">cable_cross_slide_table</a></p></td>
+<td><p>Driven pulleys move two carriages through a cable loop with wrapping
+contact.</p></td>
+</tr>
+<tr class="row-even"><td><p>Dense cable pile</p></td>
+<td><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_pile.py">cable_pile</a></p></td>
+<td><p>A cable pile settles under gravity with cable-cable contact and friction.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Run, for example, <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">newton.examples</span> <span class="pre">cable_initial_rest_pose</span></code>.
+Example settings are specific to each scene; check convergence before reusing
+them.</p>
+</section>
+</section>
+<section id="rules-of-thumb">
+<span id="vbd-rules-of-thumb"></span><h3>Rules of Thumb<a class="headerlink" href="#rules-of-thumb" title="Link to this heading">#</a></h3>
+<p>The following rules apply to cloth and soft bodies:</p>
+<ul class="simple">
+<li><p>Use the lowest resolution that expresses the deformation you need. Raise it
+only when the degrees of freedom are not enough.</p></li>
+<li><p>Use a uniform triangulation with good element quality. Check it with
+<code class="docutils literal notranslate"><span class="pre">validate_mesh=True</span></code>, and apply isotropic explicit remeshing when it
+warns.</p></li>
+<li><p>Start at <code class="docutils literal notranslate"><span class="pre">dt</span></code> = 1/600 s and 10 iterations, and adjust from there. If you
+start from a shipped example, keep its values.</p></li>
+<li><p>Keep a copy of the last working configuration and change one parameter at a
+time, so you know what each change did and can go back. The
+<a class="reference internal" href="simulation_tuning.html#simulation-tuning"><span class="std std-ref">Simulation Tuning</span></a> page explains the one-knob rule.</p></li>
+<li><p>Start from the paradigm example closest to your task: <code class="docutils literal notranslate"><span class="pre">cloth_hanging</span></code> for
+cloth simulation, <code class="docutils literal notranslate"><span class="pre">cloth_franka</span></code> for cloth manipulation,
+<code class="docutils literal notranslate"><span class="pre">softbody_hanging</span></code> and <code class="docutils literal notranslate"><span class="pre">softbody_franka</span></code> for soft bodies,
+<code class="docutils literal notranslate"><span class="pre">vbd_gripper_soft_grid</span></code> for grippers.</p></li>
+<li><p>Keep the collision stiffness within 10x of the elasticity stiffness. A
+contact that is far stiffer than the material it presses on jitters.</p></li>
+<li><p>Always pass the self-contact margin and gap together, and keep the gap at
+about half to one margin. Raise the gap before the margin when motion looks
+damped near contacts.</p></li>
+<li><p>Scale membrane and bending stiffness together. Stiffening only the membrane
+moves the deformation into bending.</p></li>
+<li><p>Do not blindly crank up stiffness. It can be challenging for VBD to simulate
+a stiffness higher than about 1e6; a static drape can still work at higher
+values, as <code class="docutils literal notranslate"><span class="pre">cloth_stiff_material_hanging</span></code> shows at 1e8. If your stiffness
+is already very high, cranking it up further is unlikely to help and only
+creates more artifacts from the stiffness ratio. Look into, in this order:
+the resolution (is such a high resolution necessary? reducing it immediately
+improves convergence and so increases stiffness); the stiffness ratio (one
+stiffness far above the others impedes the overall convergence and makes
+some of the elasticity look less stiff, see <a class="reference internal" href="#vbd-stiffness-ratio"><span class="std std-ref">Stiffness ratio</span></a>);
+then the time step (reducing it always helps, but not below about 1/3000 s;
+more iterations also help, and before <code class="docutils literal notranslate"><span class="pre">dt</span></code> gets too small, reducing <code class="docutils literal notranslate"><span class="pre">dt</span></code>
+improves stiffness more than adding iterations).</p></li>
+<li><p>Start from an example’s values, not from measured material data. Derived
+stiffness values are usually too high for VBD to simulate.</p></li>
+<li><p>Increasing the iterations or the collision detection frequency helps, but
+both increase the computational cost. Use them as the last resort.</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mental-model">Mental Model</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#parameter-effects">Parameter Effects</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vbd-specific-parameters">VBD-Specific Parameters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#model-parameters">Model Parameters</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#cloth-and-soft-bodies">Cloth and soft bodies</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#cables">Cables</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#time-step-substeps-and-iterations">Time step, substeps and iterations</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-handling">Contact Handling</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#particle-contacts">Particle contacts</a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#setting-margin-and-gap">Setting margin and gap</a></li>
+</ul>
+</li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#body-body-contacts">Body-body contacts</a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-history">Contact history</a></li>
+</ul>
+</li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-capacity">Contact capacity</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#best-practices">Best Practices</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-can-go-wrong-and-how-to-fix-it">What Can Go Wrong and How to Fix It</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Cloth and soft bodies</a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#jitter-where-to-look-first">Jitter: where to look first</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#explosion-what-to-check-in-this-order">Explosion: what to check, in this order</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#stiffness-ratio">Stiffness ratio</a><ul class="nav section-nav flex-column">
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#example-1-contact-stiffness-too-high-compared-to-the-elasticity">Example 1: contact stiffness too high compared to the elasticity</a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#example-2-stiffening-only-the-membrane-does-not-stiffen-the-object">Example 2: stiffening only the membrane does not stiffen the object</a></li>
+</ul>
+</li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#a-fine-mesh-converges-slowly">A fine mesh converges slowly</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#dat-damping-slow-hovering-or-locked-motion">DAT damping: slow, hovering or locked motion</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#bad-asset">Bad asset</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#a-smaller-time-step-made-things-worse">A smaller time step made things worse</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#self-contact-tunneling">Self-contact tunneling</a></li>
+</ul>
+</li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#rigid-bodies-and-cables">Rigid bodies and cables</a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#unexpected-motion-at-startup">Unexpected motion at startup</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#excessive-stretch-or-joint-displacement">Excessive stretch or joint displacement</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#excessive-penetration-unexpected-slip-or-jitter">Excessive penetration, unexpected slip, or jitter</a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#unexpected-behavior-after-edits-or-reset">Unexpected behavior after edits or reset</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#model-changes-and-reset">Model Changes and Reset</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#examples">Examples</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#vbd-empirical-table">Cloth and soft bodies</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#vbd-cable-examples">Cables</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rules-of-thumb">Rules of Thumb</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.22.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

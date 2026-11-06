@@ -1,0 +1,8 @@
+﻿newton.TendonGuide
+==================
+
+.. autoclass:: newton.TendonGuide
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

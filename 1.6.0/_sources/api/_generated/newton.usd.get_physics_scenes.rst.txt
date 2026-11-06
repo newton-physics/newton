@@ -1,0 +1,6 @@
+﻿newton.usd.get\_physics\_scenes
+===============================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_physics_scenes

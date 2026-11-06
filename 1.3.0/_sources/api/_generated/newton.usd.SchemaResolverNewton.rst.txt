@@ -1,0 +1,8 @@
+﻿newton.usd.SchemaResolverNewton
+===============================
+
+.. autoclass:: newton.usd.SchemaResolverNewton
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

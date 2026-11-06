@@ -1,0 +1,8 @@
+﻿newton.utils.MeshAdjacency
+==========================
+
+.. autoclass:: newton.utils.MeshAdjacency
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

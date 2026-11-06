@@ -1,0 +1,6 @@
+﻿newton.utils.create\_straight\_cable\_points
+============================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: create_straight_cable_points
