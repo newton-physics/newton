@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton.actuators import Actuator, DrivePD
+from newton.exceptions import NewtonDeprecationWarning
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
@@ -49,12 +50,14 @@ class TestSelectionCacheLifetime(unittest.TestCase):
             with self.subTest(layout=layout):
                 live_model, live_view = self.make_view(layout, device=device)
                 live_actuator = self.make_actuator(live_model, 17.0)
-                live_buffer = live_view.get_actuator_parameter(live_actuator, live_actuator.drive, "kp")
+                with self.assertWarns(NewtonDeprecationWarning):
+                    live_buffer = live_view.get_actuator_parameter(live_actuator, live_actuator.drive, "kp")
                 live_values = live_buffer.numpy().copy()
 
                 model, view = self.make_view(layout, device=device)
                 actuator = self.make_actuator(model, 3.0)
-                values = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+                with self.assertWarns(NewtonDeprecationWarning):
+                    values = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
                 assert_np_equal(values, np.full(values.shape, 3.0))
                 refs = {
                     name: weakref.ref(obj) for name, obj in (("view", view), ("model", model), ("actuator", actuator))
@@ -63,9 +66,10 @@ class TestSelectionCacheLifetime(unittest.TestCase):
                 gc.collect()
 
                 assert_np_equal(live_buffer.numpy(), live_values)
-                assert_np_equal(
-                    live_view.get_actuator_parameter(live_actuator, live_actuator.drive, "kp").numpy(), live_values
-                )
+                with self.assertWarns(NewtonDeprecationWarning):
+                    assert_np_equal(
+                        live_view.get_actuator_parameter(live_actuator, live_actuator.drive, "kp").numpy(), live_values
+                    )
                 for name, ref in refs.items():
                     with self.subTest(source=name):
                         self.assertIsNone(ref(), f"Abandoned {name} retained for {layout}")
@@ -133,7 +137,8 @@ class TestSelectionCacheLifetime(unittest.TestCase):
         actuator = self.make_actuator(model, 3.0)
         view.get_dof_positions(state)
         view.get_dof_forces(control)
-        view.get_actuator_parameter(actuator, actuator.drive, "kp")
+        with self.assertWarns(NewtonDeprecationWarning):
+            view.get_actuator_parameter(actuator, actuator.drive, "kp")
         refs = {
             name: weakref.ref(obj) for name, obj in (("state", state), ("control", control), ("actuator", actuator))
         }

@@ -10,12 +10,18 @@ import warnings
 import weakref
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 import warp as wp
 from warp.types import is_array, type_size, type_size_in_bytes
 
+from ..actuators.view import (
+    _component_owner,
+    _gather_values,
+    _get_actuator_parameter,
+    _scatter_values,
+)
 from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
@@ -36,6 +42,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
+
+_ACTUATOR_PARAMETER_DEPRECATION_MSG = (
+    "Passing the actuator to ArticulationView.{method}() is deprecated in Newton 1.8; "
+    "omit the actuator argument and pass the parameter name before the component. "
+    "The component-only overload retains "
+    "(world, articulation, DOF) axes; reshape flattened value buffers accordingly."
+)
 
 
 @wp.kernel
@@ -220,7 +233,7 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 # ========================================================================================
-# Actuator scatter/gather kernels
+# Selected DOF indices and actuator mappings
 
 
 @wp.kernel
@@ -230,9 +243,9 @@ def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup
     ``lookup`` must be filled with -1. If an actuator lists a DOF more than once, the last entry wins.
     """
     i = wp.tid()
-    dof = int(actuator_dofs[i])
-    if dof < lookup.shape[0]:
-        wp.atomic_max(lookup, dof, i)
+    dof = actuator_dofs[i]
+    if dof < wp.uint32(lookup.shape[0]):
+        wp.atomic_max(lookup, int(dof), i)
 
 
 @wp.kernel
@@ -266,35 +279,22 @@ def _map_explicit_dofs_to_actuator_kernel(
 
 
 @wp.kernel
-def _gather_1d_kernel(
-    src: Any,
-    indices: wp.array[int],
-    dst: Any,
+def _get_regular_dof_indices_kernel(
+    offset: int,
+    stride_between_worlds: int,
+    stride_within_worlds: int,
+    slice_start: int,
+    local_indices: wp.array[int],
+    dof_indices: wp.array3d[int],
 ):
-    """Gather ``dst[tid] = src[indices[tid]]``. Index -1 means skip (leave dst unchanged)."""
-    tid = wp.tid()
-    idx = indices[tid]
-    if idx >= 0:
-        dst[tid] = src[idx]
-
-
-@wp.kernel
-def _scatter_masked_2d_kernel(
-    values: Any,
-    mapping: wp.array[int],
-    mask: wp.array[bool],
-    cols: int,
-    dst: Any,
-):
-    """Scatter ``dst[mapping[row * cols + col]] = values[row, col]`` where ``mask[row]`` is true.
-
-    Mapping entries of -1 are skipped.
-    """
-    row, col = wp.tid()
-    if mask[row]:
-        dst_idx = mapping[row * cols + col]
-        if dst_idx >= 0:
-            dst[dst_idx] = values[row, col]
+    """Materialize the selected global velocity-DOF indices of a regular layout."""
+    world, articulation, dof_index = wp.tid()
+    local_dof = slice_start + dof_index
+    if local_indices:
+        local_dof = local_indices[dof_index]
+    dof_indices[world, articulation, dof_index] = (
+        offset + world * stride_between_worlds + articulation * stride_within_worlds + local_dof
+    )
 
 
 # ========================================================================================
@@ -981,8 +981,9 @@ class ArticulationView:
     Methods that select articulations with a mask support per-world Boolean masks
     with shape ``(world_count,)`` and per-articulation Boolean masks with shape
     ``(world_count, count_per_world)``. Per-world masks select all articulations
-    in each selected world. :meth:`set_actuator_parameter` accepts only the
-    per-world layout. Masks provided as Warp arrays must be on the view's device.
+    in each selected world. The deprecated explicit-owner overload of
+    :meth:`set_actuator_parameter` accepts only the per-world layout. Masks
+    provided as Warp arrays must be on the view's device.
 
     With ``homogeneous=False``, the view's world axis holds only the model worlds that contain matching
     articulations, in model order, so worlds holding other articulations are skipped
@@ -2168,25 +2169,47 @@ class ArticulationView:
         """
         self._set_attribute_values("joint_f", target, values, mask=mask)
 
+    def get_dof_indices(self) -> wp.array3d[int]:
+        """Return the model velocity-DOF index of each selected DOF.
+
+        Each call allocates a new device array. Nonempty calls during CUDA graph capture
+        require the memory pool.
+
+        Returns:
+            Indices with shape ``(world_count, count_per_world, joint_dof_count)``, the ``dof_indices`` layout of
+            :class:`newton.selection.ActuatorView`.
+
+        Raises:
+            AttributeError: If the view has no DOF layout.
+        """
+        layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
+        if layout is None:
+            reason = self._unavailable_reasons.get(AttributeFrequency.JOINT_DOF, "the view has no DOF layout")
+            raise AttributeError(f"DOF indices are unavailable: {reason}")
+        if layout.uses_explicit_model_indices:
+            # Keep the cached layout indices private.
+            return wp.clone(layout.get_model_indices())
+        dof_indices = wp.empty(
+            (self.world_count, self.count_per_world, layout.selected_value_count), dtype=int, device=self.device
+        )
+        if dof_indices.size:
+            wp.launch(
+                _get_regular_dof_indices_kernel,
+                dim=dof_indices.shape,
+                inputs=[
+                    layout.offset,
+                    layout.stride_between_worlds,
+                    layout.stride_within_worlds,
+                    layout.slice.start if layout.slice is not None else 0,
+                    layout.indices,
+                ],
+                outputs=[dof_indices],
+                device=self.device,
+            )
+        return dof_indices
+
     # ========================================================================================
     # Utilities
-
-    def _resolve_world_mask(self, mask):
-        if mask is None:
-            return self.full_mask
-        if isinstance(mask, wp.array):
-            if mask.dtype is not wp.bool:
-                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
-            if mask.shape != (self.world_count,):
-                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
-            if mask.device != self.device:
-                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
-            return mask
-
-        try:
-            return wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
-        except Exception as error:
-            raise ValueError(f"Expected Boolean mask with shape ({self.world_count},)") from error
 
     def _resolve_mask(self, mask):
         # accept 1D and 2D Boolean masks
@@ -2456,51 +2479,32 @@ class ArticulationView:
         The cache belongs to the view and holds actuators weakly. A mapping built during graph
         capture is initialized only when that graph runs, so it is used by that graph alone.
         """
-        # views that borrow the actuator methods may not define the cache
-        cache = getattr(self, "_actuator_dof_mapping_cache", None)
-        if cache is None:
-            cache = self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
-        try:
-            mapping = cache.get(actuator)
-        except TypeError:
-            # the actuator cannot be weakly referenced; build an uncached mapping
-            cache = None
-            mapping = None
+        mapping = self._actuator_dof_mapping_cache.get(actuator)
         if mapping is None:
             mapping = self._create_actuator_dof_mapping(actuator)
-            if cache is not None and not wp.get_device(self.device).is_capturing:
-                cache[actuator] = mapping
+            if not wp.get_device(self.device).is_capturing:
+                self._actuator_dof_mapping_cache[actuator] = mapping
         return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):
+        """Map selected model DOFs to actuator parameter entries.
+
+        Each actuator entry identifies one velocity DOF. The mapping is built on
+        the device and can be created during CUDA graph capture with the memory pool enabled.
+
+        Returns:
+            Parameter indices shaped ``(world, articulation, DOF)``,
+            with ``-1`` for DOFs this actuator does not drive.
         """
-        Build mapping from view DOF positions to actuator parameter indices.
-
-        The mapping matches absolute model DOF indices, so it holds for every layout, including
-        sparse world selections, explicit model indices, and actuators whose entries are not
-        ordered as equal per-world blocks. It is built with device kernels only (a lookup from model
-        DOF to actuator entry, then a gather over the view's DOF rows), so a first access may run
-        during CUDA graph capture when the device's memory pool is enabled.
-
-        Note:
-            Assumes one DOF per actuator.
-
-        Returns array of shape (world_count * dofs_per_world,) where each element is:
-        - actuator parameter index if that DOF is actuated
-        - -1 if that DOF is not actuated by this actuator
-        """
-        # views that borrow the actuator methods may store the device as an alias string
         device = wp.get_device(self.device)
         dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
         if dof_layout is None:
-            reason = getattr(self, "_unavailable_reasons", {}).get(
-                AttributeFrequency.JOINT_DOF, "the view has no DOF layout"
-            )
+            reason = self._unavailable_reasons.get(AttributeFrequency.JOINT_DOF, "the view has no DOF layout")
             raise AttributeError(f"Actuator parameter access is unavailable: {reason}")
         mapping_shape = (self.world_count, self.count_per_world, dof_layout.selected_value_count)
 
-        if self.world_count * self.count_per_world * dof_layout.selected_value_count == 0:
-            return wp.empty(0, dtype=int, device=device)
+        if 0 in mapping_shape:
+            return wp.empty(mapping_shape, dtype=int, device=device)
 
         if device.is_cuda and wp.get_stream(device).is_capturing and not wp.is_mempool_enabled(device):
             raise RuntimeError(
@@ -2524,7 +2528,7 @@ class ArticulationView:
 
         mapping = wp.empty(mapping_shape, dtype=int, device=device)
         if dof_layout.uses_explicit_model_indices:
-            # prepared at view construction; raises a clear error if a borrowing view did not prepare it
+            # prepared at view construction
             wp.launch(
                 _map_explicit_dofs_to_actuator_kernel,
                 dim=mapping_shape,
@@ -2549,110 +2553,113 @@ class ArticulationView:
                 outputs=[mapping],
                 device=device,
             )
-        return mapping.flatten()
+        return mapping
 
-    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
-        """Read an actuator-component parameter for every DOF in this view.
+    @overload
+    def get_actuator_parameter(self, name: str, component: Any) -> wp.array: ...
 
-        The returned array covers all DOFs selected by the view (one column
-        per DOF, one row per world).  DOFs that are not driven by
-        *actuator* are left at zero; driven DOFs contain the
-        corresponding value gathered from ``component.<name>``.
+    @overload
+    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str) -> wp.array: ...
 
-        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
-        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
-        captured in a CUDA graph before then builds a mapping that only that graph uses: it
-        requires the device's memory pool, and every replay rebuilds it. Call either method once
-        before capturing to keep the build out of the graph. This method allocates its result on
-        every call, so capturing it always requires the memory pool.
+    def get_actuator_parameter(self, *args: Any, **kwargs: Any) -> wp.array:
+        """Read a component parameter for the selected DOFs.
+
+        Results have shape ``(world, articulation, DOF)``.
+        DOFs not driven by the component's actuator read as zero.
+        Nonempty reads allocate and require the CUDA memory pool during capture.
 
         Args:
-            actuator: Actuator instance whose DOF indices determine which
-                view DOFs are considered actuated.
-            component: The component that owns the parameter — a
-                :class:`~newton.actuators.DriveBase`,
-                :class:`~newton.actuators.ClampingBase`, or
-                :class:`~newton.actuators.Delay` instance.
-            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
-                ``"delay_steps"``).
+            name: Parameter name on ``component``, such as ``"kp"``.
+            component: Component owned by a model actuator, such as ``actuator.drive``.
+                Shared components use the first owner; owners must map entries to the same DOFs.
 
-        Returns:
-            Parameter values shaped ``(world_count, dofs_per_world)`` where
-            ``dofs_per_world`` is the total number of DOFs in the view (not
-            just the actuated subset).
+        .. deprecated:: 1.8
+
+            ``get_actuator_parameter(actuator, component, name)`` returns the legacy
+            ``(world, articulation * DOF)`` layout. Use ``get_actuator_parameter(name, component)``
+            to retain the articulation axis.
         """
+        if "actuator" in kwargs or (args and not isinstance(args[0], str)):
+            return self._get_legacy_actuator_parameter(*args, **kwargs)
+        return self._get_component_parameter(*args, **kwargs)
+
+    def _get_component_parameter(self, name: str, component: Any) -> wp.array:
+        actuator = _component_owner(component, self.model.actuators, "in the model")
         mapping = self._get_actuator_dof_mapping(actuator)
-        if len(mapping) == 0:
-            return wp.empty((self.world_count, 0), dtype=float, device=self.device)
+        parameter = _get_actuator_parameter(actuator, component, name)
+        return _gather_values(parameter, mapping)
 
-        src = getattr(component, name)
-        dofs_per_world = len(mapping) // self.world_count
-
-        dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
-        wp.launch(
-            _gather_1d_kernel,
-            dim=len(mapping),
-            inputs=[src, mapping],
-            outputs=[dst],
-            device=self.device,
+    def _get_legacy_actuator_parameter(self, actuator: Actuator, component: Any, name: str) -> wp.array:
+        warnings.warn(
+            _ACTUATOR_PARAMETER_DEPRECATION_MSG.format(method="get_actuator_parameter"),
+            NewtonDeprecationWarning,
+            stacklevel=3,
         )
-        return dst.reshape((self.world_count, dofs_per_world))
+        mapping = self._get_actuator_dof_mapping(actuator)
+        mapping = mapping.reshape((mapping.shape[0], mapping.shape[1] * mapping.shape[2]))
+        parameter = _get_actuator_parameter(actuator, component, name)
+        return _gather_values(parameter, mapping)
 
+    @overload
+    def set_actuator_parameter(self, name: str, component: Any, values: wp.array, *, mask=None) -> None: ...
+
+    @overload
     def set_actuator_parameter(
-        self,
-        actuator: Actuator,
-        component: Any,
-        name: str,
-        values: wp.array,
-        mask=None,
-    ) -> None:
-        """Write an actuator-component parameter for every DOF in this view.
+        self, actuator: Actuator, component: Any, name: str, values: wp.array, mask=None
+    ) -> None: ...
 
-        *values* must cover all DOFs in the view (one column per DOF, one row
-        per world).  Only entries whose DOFs are actually driven by *actuator*
-        are written back to ``component.<name>``; the rest are ignored.
+    def set_actuator_parameter(self, *args: Any, **kwargs: Any) -> None:
+        """Write a component parameter for the selected DOFs.
 
-        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
-        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
-        captured in a CUDA graph before then builds a mapping that only that graph uses: it
-        requires the device's memory pool, and every replay rebuilds it. Call either method once
-        before capturing to keep the build out of the graph.
+        DOFs not driven by the component's actuator are skipped.
+        ``values`` and ``mask`` must not alias the parameter.
+        Parameter validation follows :class:`newton.selection.ActuatorView`.
+        The first access builds a mapping; prepare it before capture or enable the CUDA memory pool.
 
         Args:
-            actuator: Actuator instance whose DOF indices determine which
-                view DOFs are considered actuated.
-            component: The component that owns the parameter — a
-                :class:`~newton.actuators.DriveBase`,
-                :class:`~newton.actuators.ClampingBase`, or
-                :class:`~newton.actuators.Delay` instance.
-            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
-                ``"delay_steps"``).
-            values: New parameter values shaped ``(world_count, dofs_per_world)``
-                where ``dofs_per_world`` is the total number of DOFs in the view.
-            mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
+            name: Parameter name on ``component``.
+            component: Component to update, as in :meth:`get_actuator_parameter`.
+            values: Values shaped like the getter's result.
+            mask: Boolean world or articulation mask, shaped ``(world_count,)`` or
+                ``(world_count, count_per_world)``. Pass by keyword.
+
+        .. deprecated:: 1.8
+
+            ``set_actuator_parameter(actuator, component, name, values, mask=None)``
+            accepts the legacy ``(world, articulation * DOF)`` values
+            and per-world masks. Use ``set_actuator_parameter(name, component, values, mask=mask)``
+            and reshape values to retain the articulation axis.
         """
-        mask = self._resolve_world_mask(mask)
+        if "actuator" in kwargs or (args and not isinstance(args[0], str)):
+            return self._set_legacy_actuator_parameter(*args, **kwargs)
+        return self._set_component_parameter(*args, **kwargs)
+
+    def _set_component_parameter(self, name: str, component: Any, values: wp.array, *, mask=None) -> None:
+        actuator = _component_owner(component, self.model.actuators, "in the model")
+        mask = self.full_mask if mask is None else self._resolve_mask(mask)
         mapping = self._get_actuator_dof_mapping(actuator)
-        if len(mapping) == 0:
-            return
+        parameter = _get_actuator_parameter(actuator, component, name)
+        _scatter_values(values, parameter, mapping, mask)
 
-        dst = getattr(component, name)
-        dofs_per_world = len(mapping) // self.world_count
-        expected_shape = (self.world_count, dofs_per_world, *dst.shape[1:])
-
-        if not is_array(values):
-            values = wp.array(values, dtype=dst.dtype, shape=expected_shape, device=self.device, copy=False)
-
-        if values.shape[:2] != expected_shape[:2]:
-            raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-
-        wp.launch(
-            _scatter_masked_2d_kernel,
-            dim=(self.world_count, dofs_per_world),
-            inputs=[values, mapping, mask, dofs_per_world],
-            outputs=[dst],
-            device=self.device,
+    def _set_legacy_actuator_parameter(
+        self, actuator: Actuator, component: Any, name: str, values: wp.array, mask=None
+    ) -> None:
+        warnings.warn(
+            _ACTUATOR_PARAMETER_DEPRECATION_MSG.format(method="set_actuator_parameter"),
+            NewtonDeprecationWarning,
+            stacklevel=3,
         )
+        mask = self.full_mask if mask is None else self._resolve_mask(mask)
+        if mask.ndim != 1:
+            raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
+        mapping = self._get_actuator_dof_mapping(actuator)
+        parameter = _get_actuator_parameter(actuator, component, name)
+        mapping = mapping.reshape((mapping.shape[0], mapping.shape[1] * mapping.shape[2]))
+        if values is None:
+            raise ValueError("Expected parameter values, got None")
+        if not is_array(values):
+            values = wp.array(values, dtype=parameter.dtype, shape=mapping.shape, device=self.device, copy=False)
+        _scatter_values(values, parameter, mapping, mask)
 
 
 @wp.kernel

@@ -12,8 +12,8 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.utils.selection import FrequencyLayout
 from newton.actuators import Actuator, DrivePD
+from newton.exceptions import NewtonDeprecationWarning
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -1983,6 +1983,7 @@ def test_sparse_world_gather_scatter_values(test, device):
             test.assertTrue(view.is_sparse)
             articulation_ids = view.articulation_ids.numpy().reshape(-1)
             rows = _articulation_rows(model, articulation_ids, include_joints)
+            assert_np_equal(view.get_dof_indices().numpy(), rows["dof"][:, None, :])
             all_rows = _articulation_rows(model, articulation_ids)
             state, control = model.state(), model.control()
 
@@ -2326,18 +2327,31 @@ for _test in (test_sparse_world_getters_capture_cold, test_attribute_access_afte
 # Actuator parameter rows
 
 
+def _get_legacy_actuator_parameter(test, view, *args, **kwargs):
+    """Assert deprecation while exercising legacy parameter reads."""
+    with test.assertWarns(NewtonDeprecationWarning):
+        return view.get_actuator_parameter(*args, **kwargs)
+
+
+def _set_legacy_actuator_parameter(test, view, *args, **kwargs):
+    """Assert deprecation while exercising legacy parameter writes."""
+    with test.assertWarns(NewtonDeprecationWarning):
+        view.set_actuator_parameter(*args, **kwargs)
+
+
 def _reversed_row_actuator(model, device):
-    """One actuator row per model DOF, listed in reverse global DOF order, with distinct gains.
+    """Reverse model DOFs and include an out-of-range unsigned entry with distinct gains.
 
     Returns ``(actuator, kp, row_of_dof)``. The actuator row differs from the DOF index, so a DOF/row
     mix-up is visible, and the rows of the last world come first, so the actuator does not own an
     equal consecutive block of rows per world in world order.
     """
     dof_count = model.joint_dof_count
-    kp = np.arange(dof_count, dtype=np.float32) * 10.0 + 1.0
+    kp = np.arange(dof_count + 1, dtype=np.float32) * 10.0 + 1.0
+    dofs = np.append(np.arange(dof_count)[::-1], np.iinfo(np.uint32).max)
     actuator = Actuator(
-        indices=wp.array(np.arange(dof_count)[::-1].copy(), dtype=wp.uint32, device=device),
-        drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(dof_count, device=device)),
+        indices=wp.array(dofs, dtype=wp.uint32, device=device),
+        drive=DrivePD(kp=wp.array(kp, device=device), kd=wp.zeros(dof_count + 1, device=device)),
     )
     row_of_dof = np.empty(dof_count, dtype=np.int64)
     row_of_dof[np.arange(dof_count)[::-1]] = np.arange(dof_count)
@@ -2353,21 +2367,41 @@ def _check_actuator_rows(test, device, layouts):
             test.assertEqual(selected_dofs.shape, (3, 7))
 
             actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
-            actual = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+            actual = _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp").numpy()
             assert_np_equal(actual, kp[row_of_dof[selected_dofs]])
 
             replacement = -(np.arange(actual.size, dtype=np.float32).reshape(actual.shape) + 1.0)
-            view.set_actuator_parameter(
+            strided_values = wp.array(np.repeat(replacement, 2, axis=1), device=device)[:, ::2]
+            _set_legacy_actuator_parameter(
+                test,
+                view,
                 actuator,
                 actuator.drive,
                 "kp",
-                replacement,
+                strided_values,
                 mask=wp.array([True, False, True], dtype=bool, device=device),
             )
             expected = kp.copy()
             expected[row_of_dof[selected_dofs[0]]] = replacement[0]
             expected[row_of_dof[selected_dofs[2]]] = replacement[2]
             assert_np_equal(actuator.drive.kp.numpy(), expected)
+
+            calibration = np.stack((kp, kp + 2.0), axis=1)
+            actuator.drive.calibration = wp.array(calibration, dtype=wp.vec2, device=device, requires_grad=True)
+            with wp.Tape() as tape:
+                selected = _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "calibration")
+            test.assertEqual(selected.shape, (3, 7))
+            assert_np_equal(selected.numpy(), calibration[row_of_dof[selected_dofs]])
+            tape.backward(grads={selected: wp.ones_like(selected)})
+            gradient = np.zeros_like(calibration)
+            gradient[row_of_dof[selected_dofs]] = 1.0
+            assert_np_equal(actuator.drive.calibration.grad.numpy(), gradient)
+            _set_legacy_actuator_parameter(
+                test, view, actuator, actuator.drive, "calibration", -selected.numpy(), mask=[True, False, True]
+            )
+            calibration[row_of_dof[selected_dofs[0]]] *= -1.0
+            calibration[row_of_dof[selected_dofs[2]]] *= -1.0
+            assert_np_equal(actuator.drive.calibration.numpy(), calibration)
 
 
 def test_sparse_world_actuator_parameters_use_selected_rows(test, device):
@@ -2407,9 +2441,13 @@ def test_sparse_world_partial_actuator_parameters(test, device):
                 [[kp[row_of_dof[d]] if d in row_of_dof else 0.0 for d in world] for world in selected_dofs],
                 dtype=np.float32,
             )
-            assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), expected)
+            assert_np_equal(
+                _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp").numpy(), expected
+            )
 
-            view.set_actuator_parameter(actuator, actuator.drive, "kp", np.full(expected.shape, -1.0, np.float32))
+            _set_legacy_actuator_parameter(
+                test, view, actuator, actuator.drive, "kp", np.full((3, 7), -1.0, np.float32)
+            )
             written = {row_of_dof[d] for world in selected_dofs for d in world if d in row_of_dof}
             expected_kp = np.array([-1.0 if row in written else kp[row] for row in range(len(kp))], dtype=np.float32)
             assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
@@ -2429,12 +2467,12 @@ def test_actuator_mapping_built_once_and_cached(test, device):
                 autospec=True,
                 side_effect=ArticulationView._create_actuator_dof_mapping,
             ) as create:
-                cold = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+                cold = _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp").numpy()
                 test.assertEqual(create.call_count, 1)
                 mapping = view._actuator_dof_mapping_cache[actuator]
-                warm = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
-                view.set_actuator_parameter(actuator, actuator.drive, "kp", cold)
-                view.get_actuator_parameter(actuator, actuator.drive, "kd")
+                warm = _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp").numpy()
+                _set_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp", cold)
+                _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kd")
                 test.assertEqual(create.call_count, 1)
                 test.assertIs(view._actuator_dof_mapping_cache[actuator], mapping)
             assert_np_equal(cold, kp[row_of_dof[selected_dofs]])
@@ -2489,7 +2527,8 @@ def test_actuator_parameters_capture_cold(test, device):
             model = _make_sparse_robot_model(layout, device)
             warm_view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             warm_actuator = make_actuator(model, device)[0]
-            warm_view.set_actuator_parameter(warm_actuator, warm_actuator.drive, "kp", np.zeros((3, 7), np.float32))
+            values = wp.zeros((3, 14), dtype=float, device=device)[:, ::2]
+            _set_legacy_actuator_parameter(test, warm_view, warm_actuator, warm_actuator.drive, "kp", values)
 
             view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             actuator, kp, row_of_dof = make_actuator(model, device)
@@ -2497,15 +2536,15 @@ def test_actuator_parameters_capture_cold(test, device):
             test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
 
             gathered = wp.zeros((3, 7), dtype=float, device=device)
-            values = wp.zeros((3, 7), dtype=float, device=device)
             mask = wp.array([False, True, False], dtype=bool, device=device)
             for cold in (True, False):
                 if not cold:
-                    view.get_actuator_parameter(actuator, actuator.drive, "kd")
+                    _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kd")
                 with _no_host_transfers():
                     with wp.ScopedCapture(device) as capture:
-                        view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
-                        wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+                        captured_dofs = view.get_dof_indices()
+                        _set_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp", values, mask=mask)
+                        wp.copy(gathered, _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp"))
                 test.assertEqual(len(view._actuator_dof_mapping_cache), 0 if cold else 1)
                 for replay in range(2):
                     actuator.drive.kp.assign(kp)
@@ -2514,6 +2553,7 @@ def test_actuator_parameters_capture_cold(test, device):
                     wp.capture_launch(capture.graph)
                     expected_kp = kp.copy()
                     expected_kp[row_of_dof[selected_dofs[1]]] = new_values[1]
+                    assert_np_equal(captured_dofs.numpy(), selected_dofs[:, None, :])
                     assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
                     assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
 
@@ -2537,7 +2577,7 @@ def _check_actuator_access_after_capture(test, device, layout, scenario):
     model = _make_sparse_robot_model(layout, device)
     warm_view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
     warm_actuator = _reversed_row_actuator(model, device)[0]
-    warm_view.get_actuator_parameter(warm_actuator, warm_actuator.drive, "kp")  # compile the kernels
+    _get_legacy_actuator_parameter(test, warm_view, warm_actuator, warm_actuator.drive, "kp")  # compile the kernels
 
     view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
     actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
@@ -2551,8 +2591,8 @@ def _check_actuator_access_after_capture(test, device, layout, scenario):
         values = wp.zeros((3, 7), dtype=float, device=device)
         gathered = wp.zeros((3, 7), dtype=float, device=device)
         with wp.ScopedCapture(device) as capture:
-            view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=graph_mask)
-            wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+            _set_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp", values, mask=graph_mask)
+            wp.copy(gathered, _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp"))
         return capture.graph, values, gathered
 
     def replay(graph, values, gathered, offset):
@@ -2564,9 +2604,11 @@ def _check_actuator_access_after_capture(test, device, layout, scenario):
         assert_np_equal(gathered.numpy(), expected_kp[rows])
 
     def eager_access(offset):
-        assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), expected_kp[rows])
+        assert_np_equal(
+            _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp").numpy(), expected_kp[rows]
+        )
         new_values = -(np.arange(21, dtype=np.float32).reshape(3, 7) + offset)
-        view.set_actuator_parameter(actuator, actuator.drive, "kp", new_values, mask=eager_mask)
+        _set_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp", new_values, mask=eager_mask)
         expected_kp[rows[0]] = new_values[0]
         expected_kp[rows[2]] = new_values[2]
         assert_np_equal(actuator.drive.kp.numpy(), expected_kp)
@@ -2575,8 +2617,8 @@ def _check_actuator_access_after_capture(test, device, layout, scenario):
     if scenario == "aborted":
         with test.assertRaisesRegex(RuntimeError, "abort capture"):
             with wp.ScopedCapture(device):
-                view.set_actuator_parameter(actuator, actuator.drive, "kp", np.zeros((3, 7), np.float32))
-                view.get_actuator_parameter(actuator, actuator.drive, "kp")
+                _set_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp", np.zeros((3, 7), np.float32))
+                _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp")
                 raise RuntimeError("abort capture")
     else:
         graphs.append(capture_access())
@@ -2609,118 +2651,20 @@ def test_actuator_capture_without_mempool_raises(test, device):
     model = _make_sparse_robot_model("dense", device)
     view = ArticulationView(model, "robot_a", verbose=False)
     actuator, kp, _row_of_dof = _world_major_actuator(model, device)
-    view.get_actuator_parameter(actuator, actuator.drive, "kd")  # compile the kernels
+    _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kd")  # compile the kernels
     view._actuator_dof_mapping_cache.clear()
     was_enabled = wp.is_mempool_enabled(device)
     wp.set_mempool_enabled(device, False)
     try:
         with test.assertRaisesRegex(RuntimeError, "memory pool"):
             with wp.ScopedCapture(device):
-                view.get_actuator_parameter(actuator, actuator.drive, "kp")
+                _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp")
     finally:
         wp.set_mempool_enabled(device, was_enabled)
     test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
-    assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), kp.reshape(3, 7))
-
-
-class _BorrowedActuatorView:
-    """A model-free view that borrows ``ArticulationView``'s actuator-parameter methods.
-
-    Callers that build actuators without a :class:`~newton.Model` provide only the placement
-    attributes those methods read, and may store ``device`` as the alias string they were given
-    rather than a :class:`warp.Device`.
-    """
-
-    def __init__(self, world_count: int, dof_count: int, device: str):
-        self.world_count = world_count
-        self.count_per_world = 1
-        self.device = device
-        self.full_mask = wp.ones(world_count, dtype=wp.bool, device=device)
-        self._actuator_dof_mapping_cache = {}
-        self.frequency_layouts = {
-            newton.Model.AttributeFrequency.JOINT_DOF: FrequencyLayout(
-                offset=0,
-                stride_between_worlds=dof_count,
-                stride_within_worlds=dof_count,
-                value_count=dof_count,
-                indices=list(range(dof_count)),
-                device=device,
-            )
-        }
-
-    get_actuator_parameter = ArticulationView.get_actuator_parameter
-    set_actuator_parameter = ArticulationView.set_actuator_parameter
-    _get_actuator_dof_mapping = ArticulationView._get_actuator_dof_mapping
-    _create_actuator_dof_mapping = ArticulationView._create_actuator_dof_mapping
-    _resolve_world_mask = ArticulationView._resolve_world_mask
-
-
-def test_borrowed_view_with_device_alias(test, device):
-    """Accept a view whose ``device`` is an alias string in borrowed actuator-parameter methods.
-
-    Covers eager get/set and, on CUDA, cold and warmed capture with replay.
-    """
-    alias = wp.get_device(device).alias
-    test.assertIsInstance(alias, str)
-    view = _BorrowedActuatorView(world_count=2, dof_count=3, device=alias)
-    kp = np.arange(1.0, 7.0, dtype=np.float32)
-    actuator = Actuator(
-        indices=wp.array(np.arange(6), dtype=wp.uint32, device=alias),
-        drive=DrivePD(kp=wp.array(kp, device=alias), kd=wp.zeros(6, device=alias)),
+    assert_np_equal(
+        _get_legacy_actuator_parameter(test, view, actuator, actuator.drive, "kp").numpy(), kp.reshape(3, 7)
     )
-
-    if wp.get_device(alias).is_cuda:
-        if not wp.is_mempool_enabled(alias):
-            test.skipTest("CUDA graph capture of allocations requires the mempool")
-        # compile the kernels on another view, then capture the target view's first access
-        _BorrowedActuatorView(world_count=2, dof_count=3, device=alias).get_actuator_parameter(
-            actuator, actuator.drive, "kd"
-        )
-        cold = wp.zeros((2, 3), dtype=float, device=alias)
-        with _no_host_transfers():
-            with wp.ScopedCapture(alias) as capture:
-                wp.copy(cold, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
-        wp.capture_launch(capture.graph)
-        assert_np_equal(cold.numpy(), kp.reshape(2, 3))
-
-    assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), kp.reshape(2, 3))
-    view.set_actuator_parameter(
-        actuator,
-        actuator.drive,
-        "kp",
-        np.array([[-1.0, -2.0, -3.0], [-4.0, -5.0, -6.0]], np.float32),
-        mask=wp.array([False, True], dtype=bool, device=alias),
-    )
-    expected = np.array([1.0, 2.0, 3.0, -4.0, -5.0, -6.0], np.float32)
-    assert_np_equal(actuator.drive.kp.numpy(), expected)
-
-    if not wp.get_device(alias).is_cuda:
-        return
-    # the calls above cached the mapping, so the same accesses capture and replay
-    gathered = wp.zeros((2, 3), dtype=float, device=alias)
-    values = wp.zeros((2, 3), dtype=float, device=alias)
-    mask = wp.array([True, False], dtype=bool, device=alias)
-    with _no_host_transfers():
-        with wp.ScopedCapture(alias) as capture:
-            view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
-            wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
-    values.assign(np.array([[10.0, 20.0, 30.0], [0.0, 0.0, 0.0]], np.float32))
-    wp.capture_launch(capture.graph)
-    expected[:3] = (10.0, 20.0, 30.0)
-    assert_np_equal(actuator.drive.kp.numpy(), expected)
-    assert_np_equal(gathered.numpy(), expected.reshape(2, 3))
-
-
-def test_borrowed_view_without_dof_layout(test, device):
-    """Name the missing DOF layout of a borrowed view that has no unavailable reasons."""
-    view = _BorrowedActuatorView(world_count=2, dof_count=3, device=device)
-    view.frequency_layouts.clear()
-    actuator = Actuator(
-        indices=wp.array(np.arange(6), dtype=wp.uint32, device=device),
-        drive=DrivePD(kp=wp.ones(6, device=device), kd=wp.zeros(6, device=device)),
-    )
-    with test.assertRaisesRegex(AttributeError, "unavailable: the view has no DOF layout"):
-        view.get_actuator_parameter(actuator, actuator.drive, "kp")
 
 
 class TestSelectionActuatorMapping(unittest.TestCase):
@@ -2732,8 +2676,6 @@ for _test, _devices in (
     (test_dense_view_reversed_actuator_order, devices),
     (test_sparse_world_partial_actuator_parameters, devices),
     (test_actuator_mapping_built_once_and_cached, devices),
-    (test_borrowed_view_with_device_alias, devices),
-    (test_borrowed_view_without_dof_layout, devices),
     (test_actuator_parameters_capture_cold, get_cuda_test_devices()),
     (test_actuator_access_after_capture_before_replay, get_cuda_test_devices()),
     (test_actuator_capture_without_mempool_raises, get_cuda_test_devices()),
