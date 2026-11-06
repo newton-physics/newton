@@ -5,12 +5,21 @@
 
 import logging
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize import rcm_batch
+from newton._src.solvers.kamino._src.linalg.factorize._tile_builtins import (
+    HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
+    _get_libmathdx_version,
+    use_native_tile_matmul_left_transpose_update,
+)
+from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
@@ -353,6 +362,71 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         )
         recompute()
         self.assertFalse(np.array_equal(recomputed.numpy(), cached))
+
+    def test_transpose_update_selection_and_probe_failure(self):
+        """Select the update at the version boundary and solve when version probing fails."""
+        if not HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE:
+            self.skipTest("The native transpose-update fallback is unavailable")
+
+        self.addCleanup(_get_libmathdx_version.cache_clear)
+        self.addCleanup(make_llt_blocked_rcm_solve_kernel.cache_clear)
+
+        cases = (
+            ("0.4.1", True, True),
+            ("0.4.2", True, False),
+            ("0.5.0", True, False),
+            ("0.4.2", False, True),
+            ("", True, True),
+            ("0.5.0rc1", True, True),
+            ("0.4.2.post1", True, True),
+        )
+        for version, gemm_enabled, expected in cases:
+            with self.subTest(version=version, gemm_enabled=gemm_enabled):
+                _get_libmathdx_version.cache_clear()
+
+                def diagnostics(report_version=version):
+                    """Provide a version report with the public API's stdout side effect."""
+                    print("Warp diagnostics")
+                    return {"libmathdx": report_version}
+
+                with (
+                    patch.object(wp, "print_diagnostics", side_effect=diagnostics) as probe,
+                    patch.object(wp.config, "enable_mathdx_gemm", gemm_enabled, create=True),
+                    redirect_stdout(StringIO()) as output,
+                ):
+                    self.assertIs(use_native_tile_matmul_left_transpose_update(), expected)
+                    self.assertIs(use_native_tile_matmul_left_transpose_update(), expected)
+                self.assertEqual(output.getvalue(), "")
+                self.assertEqual(probe.call_count, 1 if gemm_enabled else 0)
+
+        n = 17
+        rng = np.random.default_rng(self.seed)
+        dense = rng.standard_normal((n, n)).astype(np.float32)
+        matrix = dense @ dense.T + np.eye(n, dtype=np.float32)
+        rhs = rng.standard_normal(n).astype(np.float32)
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=[n], dtype=wp.float32, device=self.default_device)
+        matrix_wp = wp.array(matrix.reshape(-1), dtype=wp.float32, device=self.default_device)
+        rhs_wp = wp.array(rhs, dtype=wp.float32, device=self.default_device)
+        result_wp = wp.zeros(n, dtype=wp.float32, device=self.default_device)
+
+        _get_libmathdx_version.cache_clear()
+        make_llt_blocked_rcm_solve_kernel.cache_clear()
+        with (
+            patch.object(wp, "print_diagnostics", side_effect=RuntimeError("Unavailable")) as probe,
+            patch.object(wp.config, "enable_mathdx_gemm", True, create=True),
+        ):
+            solver = LLTBlockedRCMSolver(
+                operator=DenseLinearOperatorData(info=info, mat=matrix_wp),
+                block_size=8,
+                solve_block_dim=32,
+                device=self.default_device,
+            )
+            solver.compute(matrix_wp)
+            solver.solve(rhs_wp, result_wp)
+            probe.assert_called_once()
+
+        np.testing.assert_allclose(result_wp.numpy(), np.linalg.solve(matrix, rhs), rtol=1.0e-4, atol=1.0e-5)
 
     def test_solve_with_fewer_threads_than_tile_rows(self):
         """Verify the solve gathers every right-hand-side row."""

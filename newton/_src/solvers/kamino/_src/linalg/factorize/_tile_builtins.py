@@ -5,7 +5,9 @@
 
 import inspect
 import os
+from contextlib import redirect_stdout
 from functools import cache
+from io import StringIO
 from pathlib import Path
 
 import warp as wp
@@ -53,6 +55,31 @@ HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE = _has_warp_builtin("tile_matmul_left_tran
 HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE = (
     not HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE and _has_native_left_transpose_update_support()
 )
+
+
+@cache
+def _get_libmathdx_version() -> str:
+    """Read libmathdx from Warp's public diagnostics once without printing them."""
+    try:
+        with redirect_stdout(StringIO()):
+            return wp.print_diagnostics().get("libmathdx") or ""
+    except Exception:
+        return ""
+
+
+def use_native_tile_matmul_left_transpose_update() -> bool:
+    """Keep the native fallback unless libmathdx has optimized matrix-vector products."""
+    if not HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE:
+        return False
+    if not getattr(wp.config, "enable_mathdx_gemm", True):
+        return True
+
+    try:
+        # Query during kernel tracing so importing Kamino does not initialize Warp.
+        version = _get_libmathdx_version()
+        return not version or tuple(map(int, version.split("."))) < (0, 4, 2)
+    except Exception:
+        return True
 
 
 @cache
