@@ -21,6 +21,8 @@ _COLLIDER_ACTIVATION_DISTANCE = wp.constant(0.5)
 """Grid contact activation distance in voxel units, divided by the basis degree."""
 _PIC_COLLIDER_ACTIVATION_DISTANCE = wp.constant(0.25)
 """Particle contact activation distance in voxel units."""
+_PIC_COLLIDER_CONTACT_GAP = 1.0
+"""Predictive activation distance of particle contacts from the particle surface, in voxel units."""
 
 _INFINITY = wp.constant(1.0e12)
 """Threshold over which values are considered infinite"""
@@ -915,6 +917,15 @@ def speculative_stop_distance(voxel_size: float) -> float:
     centers stop at the larger of their radius and this distance.
     """
     return float(_PIC_COLLIDER_ACTIVATION_DISTANCE) * voxel_size
+
+
+def particle_contact_gap(voxel_size: float) -> float:
+    """Distance [m] from the particle surface within which particle contacts activate.
+
+    Particle contacts may approach at this gap divided by the timestep, so they reach the contact
+    band during the step.
+    """
+    return _PIC_COLLIDER_CONTACT_GAP * voxel_size
 
 
 def _is_speculative(field: fem.DiscreteField) -> bool:

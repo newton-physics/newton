@@ -44,6 +44,7 @@ from .rasterized_collisions import (
     build_rigidity_operator,
     collider_distance_gradients,
     interpolate_collider_normals,
+    particle_contact_gap,
     point_contact_radii,
     project_outside_collider,
     rasterize_collider,
@@ -1136,19 +1137,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Collider recovery may change without prior notice.
         """
-        collider_contact_gap: float = 1.0
-        """Predictive activation distance of particle contacts, in voxels.
-
-        Particle contacts (``"pic"`` and ``"picN"`` collider bases) activate
-        within this distance of collider surfaces and may approach at
-        ``gap / dt`` so they can reach the contact band during the step.
-        Zero keeps only the contact band. Grid collider bases keep their
-        own activation distance.
-
-        .. experimental::
-
-            Predictive contact gaps may change without prior notice.
-        """
         volume_recovery_time: float | None = None
         """Time constant of particle overpacking recovery [s].
 
@@ -1230,10 +1218,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Particle contacts stop with their centers at the larger of their radius
         and 0.25 voxels from the surface, in the band where grid contacts
         activate, so particles near walls keep sampling the volume around them
-        instead of bunching against the surface. They activate once the gap
-        from the particle surface is below the larger of
-        :attr:`collider_contact_gap` and that stopping band, and allow a normal
-        approach speed up to the remaining gap divided by the timestep.
+        instead of bunching against the surface. They activate within one
+        voxel of the particle surface, or within that stopping band if it is
+        farther, and allow a normal approach speed up to the remaining gap
+        divided by the timestep.
         """
         strain_basis: _MPMStrainBasisName = "P0"
         """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
@@ -1870,12 +1858,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if self.gs_colored_contacts and not supports_colored_contacts:
             raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
         self._collider_recovery_time = _recovery_time(config.collider_recovery_time, "collider_recovery_time")
-        if not math.isfinite(config.collider_contact_gap) or config.collider_contact_gap < 0.0:
-            raise ValueError("collider_contact_gap must be finite and nonnegative")
         self._collider_contact_gap = (
-            float(config.collider_contact_gap) * self._mpm_model.voxel_size
-            if self.collider_basis.startswith("pic")
-            else 0.0
+            particle_contact_gap(self._mpm_model.voxel_size) if self.collider_basis.startswith("pic") else 0.0
         )
         if not self.collider_basis.startswith("pic"):
             self._collider_recovery_time = None
