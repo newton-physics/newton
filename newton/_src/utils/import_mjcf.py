@@ -74,6 +74,7 @@ _ACTUATOR_SHORTCUT_DEFAULTS = {
         "mujoco:actuator_biastype": 0,  # none
         "mujoco:actuator_ctrllimited": 1,  # true
     },
+    "adhesion": {"mujoco:actuator_ctrllimited": 1},  # true; <adhesion> has no ctrllimited attribute
 }
 
 # Vector attributes that MuJoCo reads with fewer values than their length, keeping
@@ -3827,6 +3828,12 @@ def parse_mjcf(
             elif actuator_type == "damper":
                 kv = parse_float(merged_attrib, "kv", 1.0)
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+            elif actuator_type == "adhesion":
+                # Body transmission with a fixed gain and no bias; ctrlrange is always enforced.
+                gain = parse_float(merged_attrib, "gain", 1.0)
+                gainprm = vec10(gain, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
             elif actuator_type in {"general", "dcmotor"}:
