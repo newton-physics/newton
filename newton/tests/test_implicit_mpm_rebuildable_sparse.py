@@ -87,17 +87,19 @@ def test_rebuildable_sparse_refreshes_retained_topologies(test, device):
     """Verify retained function-space topologies rebuild in place."""
     del test, device
     geometry = object()
-    topologies = [SimpleNamespace(rebuild=mock.Mock()) for _ in range(3)]
+    topologies = [SimpleNamespace(rebuild=mock.Mock()) for _ in range(4)]
     scratch = ImplicitMPMScratchpad.__new__(ImplicitMPMScratchpad)
     scratch.grid = geometry
     scratch._velocity_basis = SimpleNamespace(topology=topologies[0])
     scratch._strain_basis = SimpleNamespace(topology=topologies[1])
     scratch._collision_basis = SimpleNamespace(topology=topologies[2])
+    scratch.distance_basis = SimpleNamespace(topology=topologies[3])
 
     with (
         mock.patch.object(scratch, "_create_velocity_function_space"),
         mock.patch.object(scratch, "_create_collider_function_space"),
         mock.patch.object(scratch, "_create_strain_function_space"),
+        mock.patch.object(scratch, "_create_distance_function_space"),
     ):
         scratch.rebuild_function_spaces(
             SimpleNamespace(domain=SimpleNamespace(geometry=geometry)),
