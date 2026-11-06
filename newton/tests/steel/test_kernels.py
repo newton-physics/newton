@@ -1745,19 +1745,19 @@ def test_reused_kinematics_follow_resets_and_notices(test, device):
     def notice_edit(solver, state, step):
         if step == 8:
             teleport(state)
-            solver.notify_state_changed()
+            solver.notify_state_changed(state)
 
     def stale_edit(solver, state, step):
         if step == 8:
             teleport(state)
 
-    articulations = np.flatnonzero(model.articulation_world.numpy() == 1).astype(np.int32)
+    articulations = np.flatnonzero(model.articulation_world.numpy() == 1)
     others = np.setdiff1d(np.arange(model.articulation_count), articulations)
 
     def selected_notice_edit(solver, state, step):
         if step == 8:
             teleport(state)
-            solver.notify_state_changed(wp.array(articulations, dtype=wp.int32, device=device))
+            solver.notify_state_changed(state, world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
             valid = solver._fk_id_valid.numpy()
             np.testing.assert_array_equal(valid[articulations], 0)
             np.testing.assert_array_equal(valid[others], 1)
@@ -1830,27 +1830,68 @@ def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, dev
     _assert_histories_close(test, reference, carried)
 
 
-def test_descendant_free_joints_keep_the_generic_publication(test, device):
-    """A FREE joint below another body is published through eval_fk, whose velocity convention differs."""
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    inertia = wp.mat33(np.eye(3) * 0.1)
-    root = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia)
-    child = builder.add_link(xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia)
-    builder.add_articulation([builder.add_joint_free(root), builder.add_joint_free(child, parent=root)])
-    model = builder.finalize(device=device)
-    solver = SolverSteel(model, reuse_kinematics=True)
-    test.assertTrue(solver.reuse_kinematics)
-    test.assertFalse(solver._reuse_kinematics_enabled)
-    state_in, state_out = model.state(), model.state()
-    joint_qd = np.zeros(model.joint_dof_count, dtype=np.float32)
-    joint_qd[5] = 3.0
-    joint_qd[9] = 3.0
-    state_in.joint_qd.assign(joint_qd)
-    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
-    expected = model.state()
-    newton.eval_fk(model, state_out.joint_q, state_out.joint_qd, expected)
-    np.testing.assert_array_equal(state_out.body_qd.numpy(), expected.body_qd.numpy())
+def test_extra_free_joints_keep_the_generic_publication(test, device):
+    """A FREE joint below another body, or a second free root, is published through eval_fk.
+
+    Their twists are referenced at the articulation origin, a convention eval_fk does not share.
+    """
+    for label, second_parent in (("free child", "root"), ("second free root", "world")):
+        with test.subTest(label):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            inertia = wp.mat33(np.eye(3) * 0.1)
+            root = builder.add_link(
+                xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+            other = builder.add_link(
+                xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+            first = builder.add_joint_free(root)
+            second = builder.add_joint_free(other, parent=root if second_parent == "root" else -1)
+            builder.add_articulation([first, second])
+            model = builder.finalize(device=device)
+            solver = SolverSteel(model, reuse_kinematics=True)
+            test.assertTrue(solver.reuse_kinematics)
+            test.assertFalse(solver._reuse_kinematics_enabled)
+            state_in, state_out = model.state(), model.state()
+            joint_qd = np.zeros(model.joint_dof_count, dtype=np.float32)
+            joint_qd[5] = 3.0
+            joint_qd[6] = 0.2
+            joint_qd[11] = 3.0
+            state_in.joint_qd.assign(joint_qd)
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+            expected = model.state()
+            newton.eval_fk(model, state_out.joint_q, state_out.joint_qd, expected)
+            np.testing.assert_array_equal(state_out.body_qd.numpy(), expected.body_qd.numpy())
+
+
+def test_captured_chain_with_a_refresh_interval_matches_the_recomputing_solver(test, device):
+    """Replay a captured two-step chain whose mass-refresh cadence is baked at capture, carrying against recomputing."""
+    model = _build_contact_scene(device)
+    names = ("joint_q", "joint_qd", "body_q", "body_qd")
+
+    def replays(reuse):
+        solver = SolverSteel(model, reuse_kinematics=reuse, update_mass_matrix_interval=4)
+        states = [model.state(), model.state()]
+        newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+        contacts = pipeline.contacts()
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        with wp.ScopedCapture(device) as capture:
+            solver.step(states[0], states[1], control, contacts, 1.0 / 240.0)
+            solver.step(states[1], states[0], control, contacts, 1.0 / 240.0)
+        outputs = []
+        for _ in range(6):
+            wp.capture_launch(capture.graph)
+            outputs.append(tuple(getattr(states[0], name).numpy().copy() for name in names))
+        return solver, outputs
+
+    _, reference = replays(False)
+    carried_solver, carried = replays(True)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    _assert_histories_close(test, reference, carried)
 
 
 class TestSteelReusedKinematics(unittest.TestCase):
@@ -1862,7 +1903,8 @@ for _fn in (
     test_reused_kinematics_follow_resets_and_notices,
     test_reused_kinematics_follow_a_timestep_change,
     test_captured_step_replays_the_same_result_from_an_unchanged_input,
-    test_descendant_free_joints_keep_the_generic_publication,
+    test_extra_free_joints_keep_the_generic_publication,
+    test_captured_chain_with_a_refresh_interval_matches_the_recomputing_solver,
 ):
     add_function_test(TestSteelReusedKinematics, _fn.__name__, _fn, devices=cuda_devices)
 

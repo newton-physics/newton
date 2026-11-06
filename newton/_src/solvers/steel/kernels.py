@@ -1122,6 +1122,55 @@ def compute_link_kinematics(
 
 
 @wp.func
+def write_body_dynamics(
+    body: int,
+    origin: wp.vec3,
+    gravity: wp.vec3,
+    X_sm: wp.transform,
+    mass: float,
+    inertia: wp.mat33,
+    v_s: wp.spatial_vector,
+    a_s: wp.spatial_vector,
+    write_body_inertia: int,
+    write_body_inertia_terms: int,
+    body_I_s: wp.array[wp.spatial_matrix],
+    body_inertia_terms: wp.array2d[float],
+    body_f_s: wp.array[wp.spatial_vector],
+):
+    """Form a body's spatial inertia, inertia terms and bias wrench in the solve frame centred at ``origin``.
+
+    The fused FK/ID kernel calls this inside its per-joint loop and :func:`finalize_body_dynamics`
+    one body per thread, so the two paths share one arithmetic.
+    """
+    X_sm_local = wp.transform(
+        wp.transform_get_translation(X_sm) - origin,
+        wp.transform_get_rotation(X_sm),
+    )
+    # gravity and external forces (expressed in frame aligned with s but centered at body mass)
+    f_g = mass * gravity
+    com, inertia_origin = transform_com_inertia_terms(X_sm_local, mass, inertia)
+    f_g_s = wp.spatial_vector(f_g, wp.cross(com, f_g))
+
+    if write_body_inertia != 0:
+        body_I_s[body] = assemble_com_spatial_inertia(mass, com, inertia_origin)
+    if write_body_inertia_terms != 0:
+        body_inertia_terms[body, 0] = com[0]
+        body_inertia_terms[body, 1] = com[1]
+        body_inertia_terms[body, 2] = com[2]
+        for row in range(3):
+            for col in range(3):
+                body_inertia_terms[body, 3 + 3 * row + col] = inertia_origin[row, col]
+
+    # The root's linear inertial wrench is NOT spurious: the solve frame is centred on a material
+    # point of the root body, so that point accelerates as the body rotates and this term is what
+    # carries it. SolverFeatherstone keeps it and conserves momentum; zeroing it here leaked
+    # momentum on every rotating multi-link articulation.
+    coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
+    f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
+    body_f_s[body] = f_b_s - f_g_s
+
+
+@wp.func
 def compute_link_velocity(
     i: int,
     parent: int,
@@ -1173,39 +1222,21 @@ def compute_link_velocity(
         body_a_s,
     )
 
-    # compute body forces
-    X_sm = body_q_com[child]
-    X_sm_local = wp.transform(
-        wp.transform_get_translation(X_sm) - origin,
-        wp.transform_get_rotation(X_sm),
+    write_body_dynamics(
+        child,
+        origin,
+        gravity,
+        body_q_com[child],
+        body_mass[child],
+        body_inertia[child],
+        v_s,
+        a_s,
+        write_body_inertia,
+        write_body_inertia_terms,
+        body_I_s,
+        body_inertia_terms,
+        body_f_s,
     )
-    mass = body_mass[child]
-
-    # gravity and external forces (expressed in frame aligned with s but centered at body mass)
-    f_g = mass * gravity
-    com, inertia_origin = transform_com_inertia_terms(X_sm_local, mass, body_inertia[child])
-    f_g_s = wp.spatial_vector(f_g, wp.cross(com, f_g))
-
-    # body forces
-    if write_body_inertia != 0:
-        body_I_s[child] = assemble_com_spatial_inertia(mass, com, inertia_origin)
-    if write_body_inertia_terms != 0:
-        body_inertia_terms[child, 0] = com[0]
-        body_inertia_terms[child, 1] = com[1]
-        body_inertia_terms[child, 2] = com[2]
-        for row in range(3):
-            for col in range(3):
-                body_inertia_terms[child, 3 + 3 * row + col] = inertia_origin[row, col]
-
-    # The root's linear inertial wrench is NOT spurious: the solve frame is centred on a material
-    # point of the root body, so that point accelerates as the body rotates and this term is what
-    # carries it. SolverFeatherstone keeps it and conserves momentum; zeroing it here leaked
-    # momentum on every rotating multi-link articulation.
-    coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
-
-    f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
-
-    body_f_s[child] = f_b_s - f_g_s
     return v_s, a_s
 
 
@@ -1473,49 +1504,30 @@ def finalize_body_dynamics(
     if articulation_reuse[articulation] != 0:
         return
     origin = articulation_origin[articulation]
-    X_sm = body_q_com[body]
-    X_sm_local = wp.transform(
-        wp.transform_get_translation(X_sm) - origin,
-        wp.transform_get_rotation(X_sm),
-    )
-    mass = body_mass[body]
-    f_g = mass * gravity[body_world[body]]
-    com, inertia_origin = transform_com_inertia_terms(X_sm_local, mass, body_inertia[body])
-    f_g_s = wp.spatial_vector(f_g, wp.cross(com, f_g))
-
     write_body_inertia = materialize_all_body_inertia
     if is_free_rigid[articulation] != 0:
         write_body_inertia = 1
-    if write_body_inertia != 0:
-        body_I_s[body] = assemble_com_spatial_inertia(mass, com, inertia_origin)
-    if materialize_body_inertia_terms != 0:
-        body_inertia_terms[body, 0] = com[0]
-        body_inertia_terms[body, 1] = com[1]
-        body_inertia_terms[body, 2] = com[2]
-        for row in range(3):
-            for col in range(3):
-                body_inertia_terms[body, 3 + 3 * row + col] = inertia_origin[row, col]
-
     v_s = body_v_s[body]
-    a_s = body_a_s[body]
-    coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
-    f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
-    body_f_s[body] = f_b_s - f_g_s
+    write_body_dynamics(
+        body,
+        origin,
+        gravity[body_world[body]],
+        body_q_com[body],
+        body_mass[body],
+        body_inertia[body],
+        v_s,
+        body_a_s[body],
+        write_body_inertia,
+        materialize_body_inertia_terms,
+        body_I_s,
+        body_inertia_terms,
+        body_f_s,
+    )
 
     com_world = wp.transform_point(body_q[body], body_com[body])
     com_rel = com_world - origin
     v_com = wp.spatial_top(v_s) + wp.cross(wp.spatial_bottom(v_s), com_rel)
     body_qd[body] = wp.spatial_vector(v_com, wp.spatial_bottom(v_s))
-
-
-@wp.kernel(enable_backward=False)
-def invalidate_fk_id_articulations(
-    articulations: wp.array[int],
-    # outputs
-    valid: wp.array[int],
-):
-    """Drop the carried kinematics of the listed articulations."""
-    valid[articulations[wp.tid()]] = 0
 
 
 @wp.kernel(enable_backward=False)

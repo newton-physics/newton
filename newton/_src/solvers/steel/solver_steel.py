@@ -158,7 +158,6 @@ from .kernels import (
     hinv_jt_par_row,
     hinv_jt_par_row_contact_fallback,
     integrate_generalized_joints,
-    invalidate_fk_id_articulations,
     invert_lower_factor_grouped,
     local_solve_launch_gate,
     mark_propagation_bodies,
@@ -598,6 +597,20 @@ def _reset_solver_status(
         if not world_mask or reset_world_selected(articulation_world[tid], world_mask, world_count):
             mass_update_requested[tid] = 1
             fk_id_valid[tid] = 0
+
+
+@wp.kernel
+def _invalidate_fk_id_worlds(
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    articulation_world: wp.array[int],
+    # outputs
+    fk_id_valid: wp.array[int],
+):
+    """Drop the carried kinematics of the articulations whose world ``world_mask`` selects."""
+    tid = wp.tid()
+    if reset_world_selected(articulation_world[tid], world_mask, world_count):
+        fk_id_valid[tid] = 0
 
 
 @wp.kernel
@@ -1832,7 +1845,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         enable_bilateral_preelimination: bool = False,
         bilateral_preelimination_include_mimics: bool = True,
         parallel_tree: bool = False,
-        reuse_kinematics: bool = True,
+        reuse_kinematics: bool = False,
         use_parallel_streams: bool = False,
         double_buffer: bool = False,
         friction_anchor_beta: float | None = None,
@@ -2044,15 +2057,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                 Unbranched articulations, models whose joints are not ordered parent before
                 child, and CPU devices keep the serial traversal. Broad trees can benefit; narrow trees can be
                 slower, so measure the full step before enabling it.
-            reuse_kinematics: Carry the kinematics and inverse-dynamics terms the solver forms when it
-                publishes a step's body state into the next step, instead of re-deriving them from the
-                joint coordinates (CUDA, no gradients, no joint velocity limits, no sleeping, no parallel
-                tree, no FREE or DISTANCE joint whose parent is a body). The carried terms are dropped by
-                :meth:`reset` for the selected worlds, by
-                :meth:`notify_model_changed` for joint, body and model property changes, by a coupler's
-                input-state notice, and when the next input state is another object; a caller that
-                overwrites ``joint_q`` or ``joint_qd`` of the next input state in place must call
-                :meth:`notify_state_changed`.
+            reuse_kinematics: Opt in to carrying the kinematics and inverse-dynamics terms the solver
+                forms when it publishes a step's body state into the next step, instead of re-deriving
+                them from the joint coordinates (CUDA, no gradients, no joint velocity limits, no
+                sleeping, no parallel tree, and no FREE or DISTANCE joint other than the first joint of
+                its articulation). Off by default: every step then re-derives the kinematics from its
+                input state and publishes through :func:`newton.eval_fk`, as before. With the carry on,
+                the terms belong to the state object they were published into: :meth:`reset` drops
+                them for the selected worlds, :meth:`notify_model_changed` drops them for joint, body
+                and model property changes, a coupler's input-state notice drops them, and a step whose
+                input state is another object recomputes them; a caller that overwrites or replaces
+                ``joint_q``, ``joint_qd`` or ``body_q`` of that state outside :meth:`step` must call
+                :meth:`notify_state_changed` (or :meth:`reset` with a world mask) first. The published
+                body velocities then come from the solver's own kinematics and differ from
+                :func:`newton.eval_fk`'s in their last bit.
             use_parallel_streams: Run the factorization, unconstrained solve and response
                 kernels of each articulation-size group on a CUDA stream of its own, so groups
                 of different sizes overlap. Results are unchanged; CPU devices and models with
@@ -2942,17 +2960,17 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         # Carry the end-of-step kinematics and inverse-dynamics terms into the next step's first stage.
         self._reuse_kinematics = bool(reuse_kinematics)
-        # A FREE or DISTANCE joint below another body references its twist at the root COM, which the generic
+        # A FREE or DISTANCE joint that is not the first joint of its articulation (a free joint below another
+        # body, or a second free root) references its twist at the articulation origin, which the generic
         # eval_fk publication does not, so such models keep publishing through eval_fk.
-        descendant_free = False
-        if model.joint_count:
+        extra_free_joint = False
+        if model.joint_count and model.joint_articulation is not None:
             joint_type = model.joint_type.numpy()
-            descendant_free = bool(
-                np.any(
-                    ((joint_type == int(JointType.FREE)) | (joint_type == int(JointType.DISTANCE)))
-                    & (model.joint_parent.numpy() >= 0)
-                )
-            )
+            joint_articulation = model.joint_articulation.numpy()
+            first_joint = model.articulation_start.numpy()[np.maximum(joint_articulation, 0)]
+            free_like = (joint_type == int(JointType.FREE)) | (joint_type == int(JointType.DISTANCE))
+            not_first = (np.arange(model.joint_count) != first_joint) | (model.joint_parent.numpy() >= 0)
+            extra_free_joint = bool(np.any(free_like & (joint_articulation >= 0) & not_first))
         self._reuse_kinematics_enabled = bool(
             self._reuse_kinematics
             and model.device.is_cuda
@@ -2962,7 +2980,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             and not self._enable_joint_velocity_limits
             and self._tree_plan is None
             and self._sleeping is None
-            and not descendant_free
+            and not extra_free_joint
         )
         count = max(model.articulation_count, 1)
         self._fk_id_valid = wp.zeros(count, dtype=wp.int32, device=model.device)
@@ -3179,7 +3197,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         shape friction and restitution coefficients are re-read. Shape type and source changes,
         as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes device
         contact torsion supports. Other model data, such as gravity, limits and shape
-        transforms, is read every step; with ``reuse_kinematics`` a gravity change reaches the
+        transforms, is read every step; with ``reuse_kinematics`` on, a gravity change reaches the
         carried bias wrench one step later unless ``MODEL_PROPERTIES`` is notified. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
@@ -3403,27 +3421,31 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def notify_state_changed(self, articulations: "wp.array[int] | None" = None) -> None:
-        """Drop the carried kinematics after writing joint state outside :meth:`step`.
+    def notify_state_changed(self, state: State, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
+        """Drop the carried kinematics of the selected worlds after writing ``state`` outside :meth:`step`.
 
-        With ``reuse_kinematics`` the solver keeps the kinematics and inverse-dynamics terms it
-        formed when publishing a step, for the next step's input state. Overwriting that state's
-        ``joint_q`` or ``joint_qd`` in place makes them stale; call this so the next step
-        re-derives them. :meth:`reset` with a world mask does this for the selected worlds.
+        With ``reuse_kinematics`` on, the solver keeps the kinematics and inverse-dynamics terms it
+        formed when publishing a step, for the next step's input state. Overwriting or replacing
+        that state's ``joint_q``, ``joint_qd`` or ``body_q`` makes them stale; call this so the next
+        step re-derives them for the selected worlds. :meth:`reset` does the same for its worlds
+        beside its other clears. Without the carry this is a no-op.
 
         Args:
-            articulations: Device array of the articulation indices whose joint state changed;
-                ``None`` drops every articulation's carried terms.
+            state: The state the next step reads, whose joint or body arrays were written.
+            world_mask: Boolean device array of shape ``(world_count + 1,)`` selecting the worlds
+                whose state changed, in the layout :meth:`reset` and :meth:`notify_model_changed`
+                use; ``None`` selects every world.
         """
+        del state
         if not self._reuse_kinematics_enabled:
             return
-        if articulations is None:
+        if world_mask is None:
             self._fk_id_valid.zero_()
             return
         wp.launch(
-            invalidate_fk_id_articulations,
-            dim=articulations.shape[0],
-            inputs=[articulations],
+            _invalidate_fk_id_worlds,
+            dim=self.model.articulation_count,
+            inputs=[world_mask, int(self.model.world_count), self._articulation_model_world],
             outputs=[self._fk_id_valid],
             device=self.model.device,
         )
@@ -3439,8 +3461,9 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         The simulation state is not modified. For the selected worlds this clears the
         capacity status in :attr:`constraint_overflow`, discards the warm-start impulses
-        and the friction-patch anchors, and requests a mass-matrix refresh on the next
-        step, so a teleported articulation does not reuse a stale factorization or anchor;
+        and the friction-patch anchors, requests a mass-matrix refresh on the next step and,
+        with ``reuse_kinematics`` on, drops their carried kinematics, so a teleported
+        articulation does not reuse a stale factorization, anchor or pose;
         other worlds keep their refresh cadence and history. An anchor between bodies of
         two entries (for example a global body and a world body) is discarded when either
         is selected. Global articulations share world 0's rows, so selecting the global
@@ -3538,9 +3561,10 @@ class SolverSteel(SolverBase, CouplingInterface):
     ) -> None:
         """Schedule a save or rewind of the carried friction-patch history for the next step.
 
-        When the coupler may restart a step, the next step after a kinematic write saves the history and
-        the next step after an iteration restart restores the saved copy, so repeated solves of one
-        coupled step start from the same history.
+        A kinematic write (joint or body state flags) also drops the carried kinematics of every
+        articulation with ``reuse_kinematics`` on. When the coupler may restart a step, the next step
+        after a kinematic write saves the history and the next step after an iteration restart restores
+        the saved copy, so repeated solves of one coupled step start from the same history.
 
         Args:
             state: Entry input state written by the coupler.
@@ -6881,9 +6905,9 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         Args:
             state_in: Input state. Its maximal coordinates (``body_q``) are refreshed from
-                ``joint_q`` by forward kinematics during the step; with ``reuse_kinematics`` a
-                state the previous step published into keeps its carried kinematics, so a
-                caller that overwrote its ``joint_q`` or ``joint_qd`` in place calls
+                ``joint_q`` by forward kinematics during the step; with ``reuse_kinematics`` on, a
+                state the previous step published into keeps its carried kinematics, so a caller
+                that overwrote or replaced its ``joint_q``, ``joint_qd`` or ``body_q`` calls
                 :meth:`notify_state_changed` first. Bodies outside every
                 articulation keep their ``body_q`` and ``body_qd``, which pass through to
                 ``state_out``; contacts treat their velocity as zero.
@@ -8297,10 +8321,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         model = self.model
         reuse = self._fk_id_none
         if self._reuse_kinematics_enabled:
-            if self._force_mass_update and self._update_mass_matrix_interval > 1:
-                # The last publication materialized the body inertias for the refresh cadence only; a timestep
-                # change forces a rebuild now, so the terms are re-derived with them.
-                self._fk_id_valid.zero_()
             # The carried terms belong to the state they were published into. The check runs on the device, so a
             # captured step compares its input against the latest publication on every replay: a chain that feeds
             # each step the previous one's output keeps the carry, and a step replayed from an unchanged input
@@ -10660,7 +10680,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         model = self.model
         if self._reuse_kinematics_enabled:
-            state_aug = self
             wp.launch(
                 eval_rigid_fk_kinematics,
                 dim=model.articulation_count,
@@ -10685,41 +10704,42 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ],
                 outputs=[
                     state_out.body_q,
-                    state_aug._body_q_com,
+                    self._body_q_com,
                     self._articulation_origin,
-                    state_aug._joint_S_s,
-                    state_aug._body_v_s,
-                    state_aug._body_a_s,
+                    self._joint_S_s,
+                    self._body_v_s,
+                    self._body_a_s,
                     self._fk_id_valid,
                 ],
                 block_dim=16,
                 device=model.device,
             )
             if model.body_count:
-                # The next step refreshes the composite inertia on its own cadence; materialize for it.
-                next_refresh = ((self._step + 1) % self._update_mass_matrix_interval) == 0
+                # Materialize the body inertias at every publication: whatever makes the next step rebuild the
+                # mass matrix (its cadence, a reset request, a timestep change or a captured step's baked
+                # refresh flag) then reads inertias of its input configuration.
                 wp.launch(
                     finalize_body_dynamics,
                     dim=model.body_count,
                     inputs=[
                         self._body_to_articulation,
                         state_out.body_q,
-                        state_aug._body_q_com,
+                        self._body_q_com,
                         model.body_com,
                         model.body_mass,
                         model.body_inertia,
                         self._is_free_rigid,
                         self._articulation_origin,
-                        int(next_refresh),
+                        1,
                         0,
                         model.body_world,
                         model.gravity,
-                        state_aug._body_v_s,
-                        state_aug._body_a_s,
+                        self._body_v_s,
+                        self._body_a_s,
                         self._dynamics_body_active,
                         self._fk_id_none,
                     ],
-                    outputs=[state_aug._body_I_s, self._body_inertia_terms, state_aug._body_f_s, state_out.body_qd],
+                    outputs=[self._body_I_s, self._body_inertia_terms, self._body_f_s, state_out.body_qd],
                     device=model.device,
                 )
             wp.launch(
