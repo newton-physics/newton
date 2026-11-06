@@ -2573,6 +2573,7 @@ class TestSteelSparseSolver(unittest.TestCase):
             {"enable_joint_velocity_limits": True},
             {"iterations": 0},
             {"articulation_constraint_max": 2048},
+            {"friction_anchor_beta": 0.2, "sparse_factor_patches": False},
             {"contact_warmstart": True},
             {"contact_regularization": 0.01},
             {"velocity_iterations": 1},

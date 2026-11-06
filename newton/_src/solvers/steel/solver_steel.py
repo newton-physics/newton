@@ -1629,6 +1629,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     use_parallel_streams = _ConstructionOption()
     double_buffer = _ConstructionOption()
     friction_anchor_beta = _ConstructionOption()
+    sparse_factor_patches = _ConstructionOption()
     contact_regularization = _ConstructionOption()
     velocity_iterations = _ConstructionOption()
     velocity_drive_mode = _StepOption(_velocity_drive_mode)
@@ -1825,6 +1826,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         use_parallel_streams: bool = False,
         double_buffer: bool = False,
         friction_anchor_beta: float | None = None,
+        sparse_factor_patches: bool = True,
         contact_regularization: float = 0.0,
         velocity_iterations: int = 0,
         velocity_drive_mode: Literal["freeze", "active"] = "freeze",
@@ -2055,6 +2057,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 by body pair and geometry, independently of collision contact matching. A
                 one-anchor region has no torsional friction of its own. Call :meth:`reset`
                 after teleporting a body to discard its history.
+            sparse_factor_patches: Keep the sparse mass factors of branched articulations when
+                persistent friction patches are on (the default): the sparse contact rows act at the
+                patch anchors and the sparse sweep pools each region's normal load. ``False`` keeps
+                the dense factors for models with patches, the selection before this option existed.
             contact_regularization: Dimensionless regularization ``g`` of penetrating
                 contact rows (``friction_mode="fixed_normal"`` only).
                 Each iteration moves a row's impulse toward the rigid solution
@@ -2487,6 +2493,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._bilateral_preelimination_include_mimics = bool(bilateral_preelimination_include_mimics)
         self._friction_anchor_beta = _finite_non_negative("friction_anchor_beta", friction_anchor_beta)
         self._friction_anchors_enabled = self._friction_anchor_beta > 0.0
+        self._sparse_factor_patches = bool(sparse_factor_patches)
         self._contact_regularization = _finite_non_negative("contact_regularization", contact_regularization)
         if self._contact_regularization > _MAX_CONTACT_REGULARIZATION:
             raise ValueError(
@@ -4741,6 +4748,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             or self._friction_mode != "fixed_normal"
             or self._contact_torsion_enabled
             or self._contact_compliance
+            or (self._friction_anchors_enabled and not self._sparse_factor_patches)
             or self._contact_warmstart
             or self._regularization_enabled
             or self._velocity_iterations > 0
