@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import os
 import struct
 import tempfile
@@ -26,6 +25,7 @@ from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf, parse_mjcf
 from newton._src.utils.texture import load_texture, normalize_texture
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, has_module, requires
 
 MASSLESS_FIXED_ROOT_MJCF = """
 <mujoco model="massless_fixed_root">
@@ -61,6 +61,7 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    @requires(*MUJOCO_MODULES)
     def test_compiler_balanceinertia_matches_native_mujoco(self):
         """Balance invalid inertia only when the MJCF compiler requests it."""
         body = """
@@ -87,6 +88,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inertia must satisfy"):
             newton.ModelBuilder().add_mjcf(unbalanced_mjcf, ignore_inertial_definitions=False)
 
+    @requires(*MUJOCO_MODULES)
     def test_compiler_accepts_boundary_valid_inertia(self):
         """Preserve boundary-valid principal inertia after float32 rotation."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -110,6 +112,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                         rtol=1e-6,
                     )
 
+    @requires(*MUJOCO_MODULES)
     def test_compiler_inertia_guards_preserve_existing_bodies(self):
         """Guard only imported bodies and update their inverse properties."""
         mjcf = """
@@ -154,6 +157,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertAlmostEqual(builder.body_inv_mass[imported_body], 1.0 / native_model.body_mass[1], places=6)
         np.testing.assert_allclose(imported_inv_inertia, np.linalg.inv(imported_inertia), rtol=1.0e-6, atol=1.0e-8)
 
+    @requires(*MUJOCO_MODULES)
     def test_compiler_inertia_guards_apply_bounds_before_validation(self):
         """Match native compiler bounds on negative authored mass and inertia."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -181,6 +185,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                     rtol=1e-6,
                 )
 
+    @requires(*MUJOCO_MODULES)
     def test_nested_option_flags_match_native_mujoco(self):
         """Preserve later flag overrides and apply gravity to the Newton model."""
         mjcf = """
@@ -213,6 +218,7 @@ class TestImportMjcfBasic(unittest.TestCase):
             builder.end_world()
         np.testing.assert_array_equal(builder.finalize().gravity.numpy(), [[0, 0, 0], [0, 0, -3], [0, 0, -3]])
 
+    @requires(*MUJOCO_MODULES)
     def test_option_flag_bits_match_native_mujoco(self):
         """Match each supported flag to native MuJoCo while retaining Newton defaults."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -252,6 +258,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                 self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
                 self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
 
+    @requires(*MUJOCO_MODULES)
     def test_unknown_option_flag_warns(self):
         """Warn and ignore unsupported flags without breaking Warp model construction."""
         for name in ("mysteryflag", "filterparent", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
@@ -269,6 +276,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                 solver = SolverMuJoCo(builder.finalize())
                 self.assertEqual(solver.mj_model.opt.enableflags, 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_constructor_overrides_imported_option_flags(self):
         """Resolve explicit arguments before MJCF or USD flags and Newton defaults."""
         mjcf = """
@@ -281,7 +289,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
         builders = [builder]
-        if importlib.util.find_spec("pxr") is not None:
+        if has_module("pxr.Usd"):
             from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
             stage = Usd.Stage.CreateInMemory()
@@ -391,6 +399,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
 
+    @requires("PIL", *MUJOCO_MODULES)
     def test_mujoco_binary_msh_mesh(self):
         """Preserve MSH geometry, normals, and UVs with authored or convex-hull faces."""
         import mujoco
@@ -488,6 +497,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                             self.assertIsNone(mesh.texture)
                             self.assertIsNone(mesh.roughness)
 
+    @requires("scipy")
     def test_mujoco_binary_msh_mesh_hull(self):
         """Use the inline mesh hull limit and zero-volume diagnostic for binary meshes."""
         rng = np.random.default_rng(42)
@@ -781,6 +791,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         )
         assert builder.body_count == 13
 
+    @requires("trimesh")
     def test_mjcf_maxhullvert_parsing(self):
         """Test that maxhullvert is parsed from MJCF files"""
         # Create a temporary MJCF file with maxhullvert attribute
@@ -822,6 +833,7 @@ class TestImportMjcfBasic(unittest.TestCase):
             self.assertEqual(len(model.shape_source), 3)
             self.assertEqual([mesh.maxhullvert for mesh in model.shape_source], [32, 128, 64])
 
+    @requires("trimesh")
     def test_mesh_geom_ignores_geom_size_length(self):
         obj = "\n".join(
             [
@@ -1059,6 +1071,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(actual_y, [0.0, 0.0, 1.0], atol=1e-6)
         np.testing.assert_allclose(actual_z, [0.0, -1.0, 0.0], atol=1e-6)
 
+    @requires(*MUJOCO_MODULES)
     def test_site_euler_sequence_matches_mujoco(self):
         """Non-default compiler eulerseq should match MuJoCo site orientation."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -1088,6 +1101,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
         self.assertTrue(same or negated, "Site quaternion mismatch (accounting for q/-q equivalence)")
 
+    @requires(*MUJOCO_MODULES)
     def test_body_euler_matches_mujoco(self):
         """Sweep every 3-character ``eulerseq`` from ``{x,y,z,X,Y,Z}`` (216
         combinations, including Tait-Bryan, proper-Euler, and degenerate
@@ -1138,6 +1152,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         # Sanity: at least the default-style sequences must have run.
         self.assertGreater(compared, 0, "no eulerseq combinations actually compared")
 
+    @requires(*MUJOCO_MODULES)
     def test_zaxis_matches_mujoco(self):
         """Match MuJoCo's zaxis rotation, including its near-antiparallel cutoff."""
         mujoco = SolverMuJoCo.import_mujoco()[0]
@@ -1157,6 +1172,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                 actual = wp.quat_to_matrix(wp.transform_get_rotation(builder.body_q[i]))
                 np.testing.assert_allclose(np.array(actual).reshape(9), expected, atol=1e-6)
 
+    @requires(*MUJOCO_MODULES)
     def test_compiler_merge_across_includes(self):
         """``<compiler>`` attributes merge globally across ``<include>``-expanded
         files (document order, later wins, scope is not file-local).
@@ -1671,6 +1687,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+    @requires(*MUJOCO_MODULES)
     def test_combined_joint_dof_attributes_follow_newton_dof_order(self):
         """Per-DOF attributes and actuators of combined joints must map to Newton's DOF order.
 
@@ -1728,6 +1745,7 @@ class TestImportMjcfBasic(unittest.TestCase):
 class TestMjcfSlideCoordinateScale(unittest.TestCase):
     """Tests for scale applied to MJCF slide coordinates."""
 
+    @requires(*MUJOCO_MODULES)
     def test_combined_joint_slide_scaling_follows_dof_order(self):
         """Preserve slide scaling when combined joint DOFs are reordered."""
         mjcf = """
@@ -1781,6 +1799,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.mujoco.limit_margin.numpy()[:2], [0.02, 0.02])
 
+    @requires(*MUJOCO_MODULES)
     def test_explicit_slide_position_ctrlrange_scales(self):
         """Scale explicit position targets, leaving force controls alone."""
         mjcf = """
@@ -1837,6 +1856,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
             ],
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_explicit_slide_velocity_ctrlrange_scales(self):
         """Scale slide velocity limits without changing angular controls."""
         mjcf = """
@@ -1869,6 +1889,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         actuator_mapping = solver.mjc_actuator_to_newton_actuator_idx.numpy()
         np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, np.asarray(expected)[actuator_mapping])
 
+    @requires(*MUJOCO_MODULES)
     def test_slide_intvelocity_actrange_scales(self):
         """Preserve integrated velocity activation limits in slide units."""
         mjcf = """
@@ -1901,6 +1922,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.4, 0.4], [-0.2, 0.2]])
         np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, [1, 1])
 
+    @requires(*MUJOCO_MODULES)
     def test_slide_intvelocity_inheritrange_scales_with_ref(self):
         """Derive integrated activation bounds from absolute slide limits."""
         mjcf = """
@@ -1926,6 +1948,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.6, 1.0]])
         np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, [1])
 
+    @requires(*MUJOCO_MODULES)
     def test_intvelocity_bias_and_integrator_match_native_mujoco(self):
         """Keep velocity damping and activation dynamics through export."""
         mjcf = """
@@ -2005,6 +2028,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         self.assertAlmostEqual(builder.joint_rest_q[0], 0.1)
 
 
+@requires("trimesh")
 class TestImportMjcfMeshFileCache(unittest.TestCase):
     """A mesh file referenced by several geoms is parsed once per import."""
 
@@ -2092,6 +2116,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
         v = np.asarray(builder.shape_source[shape_idx].vertices)
         return float(v.max() - v.min())
 
+    @requires("trimesh")
     def test_mesh_no_class_no_explicit_scale(self):
         """Mesh with no class and no explicit scale uses default (1,1,1)."""
         builder = self._build("""\
@@ -2107,6 +2132,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
 
+    @requires("trimesh")
     def test_mesh_explicit_scale_on_asset(self):
         """Explicit scale on <asset><mesh> is applied to vertices."""
         builder = self._build("""\
@@ -2122,6 +2148,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
 
+    @requires("trimesh")
     def test_mesh_inherits_scale_from_own_class(self):
         """Mesh with class="X" inherits scale from <default class="X"><mesh scale="..."/>."""
         builder = self._build("""\
@@ -2142,6 +2169,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 2.0, places=5)
 
+    @requires("trimesh")
     def test_mesh_explicit_scale_overrides_class_default(self):
         """Explicit scale on <mesh> overrides the class default."""
         builder = self._build("""\
@@ -2162,6 +2190,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 3.0, places=5)
 
+    @requires("trimesh")
     def test_mesh_inherits_scale_from_global_default(self):
         """Mesh with no class inherits from the root <default><mesh scale="..."/>."""
         builder = self._build("""\
@@ -2180,6 +2209,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 0.25, places=5)
 
+    @requires("trimesh")
     def test_geom_class_mesh_scale_does_not_leak_to_asset(self):
         """Geom's default class mesh scale must NOT override the asset mesh's scale.
 
@@ -2209,6 +2239,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
         # Asset mesh has no class → scale=(1,1,1), NOT 0.001 from the geom's class.
         self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
 
+    @requires("trimesh")
     def test_geom_class_mesh_scale_applied_when_asset_has_same_class(self):
         """When the asset mesh references the same class, its scale IS applied."""
         builder = self._build("""\
@@ -2232,6 +2263,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
 
+    @requires("trimesh")
     def test_mesh_reference_pose_precedes_asset_scale(self):
         """Apply a mesh reference pose before nonuniform asset scaling."""
         builder = self._build("""\
@@ -2286,6 +2318,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 class TestImportMjcfInlineMesh(unittest.TestCase):
     """Tests for MJCF mesh assets authored with inline arrays."""
 
+    @requires("scipy")
     def test_inline_mesh_builds_convex_hull_without_faces(self):
         """Build a convex hull when inline mesh faces are absent or empty."""
         for face_attribute in ("", ' face=""', ' face="   "'):
@@ -2400,6 +2433,7 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
         self.assertIsNone(builder.shape_source[4].color)
         np.testing.assert_allclose(builder.shape_opacity, [1, 1, 0.5, 0.9, 1])
 
+    @requires("scipy")
     def test_inline_mesh_applies_reference_pose_to_vertices_and_normals(self):
         """Apply the MJCF reference pose and scale to inline mesh data."""
         mjcf = """
@@ -2706,6 +2740,7 @@ class TestImportMjcfGeometry(unittest.TestCase):
             self.assertGreater(np.trace(inertia), 0.0, msg=f"Body {body_index} should have non-zero inertia")
         self.assertEqual(np.trace(model.body_inertia.numpy()[5]), 0.0)
 
+    @requires("trimesh")
     def test_explicit_small_mesh_geom_mass(self):
         """Test that a positive mass on a solid or hollow mesh sets body mass and inertia."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -2772,6 +2807,7 @@ f 4 5 8
                             rtol=1e-6,
                         )
 
+    @requires("trimesh")
     def test_zero_mass_mesh_geom_no_warning(self):
         """Regression test: mass='0' on mesh geoms must not emit a warning.
 
@@ -2881,6 +2917,7 @@ f 4 5 8
             [SOLREF_MODE_RAW, SOLREF_MODE_RAW, SOLREF_MODE_FORCE_SPACE],
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_single_mujoco_fixed_tendon_parsing(self):
         """Test that tendon parameters can be parsed from mjcf"""
         mjcf = """<?xml version="1.0" ?>
@@ -3368,6 +3405,7 @@ f 4 5 8
                 msg=f"tendon_invweight0[{i}] expected {expected:.4f}, got {invweight0[i]:.4f}",
             )
 
+    @requires(*MUJOCO_MODULES)
     def test_single_mujoco_fixed_tendon_defaults(self):
         """Test that tendon parsing uses the correct mujoco default values."""
         mjcf = """<?xml version="1.0" ?>
@@ -3639,6 +3677,7 @@ f 4 5 8
             [[0.0, 2.0], [0.0, 2.0], [-1.0, 1.0]],
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_single_mujoco_fixed_tendon_limit_parsing(self):
         """Test that tendon limits are correctly parsed."""
         mjcf = """<?xml version="1.0" ?>
@@ -3775,6 +3814,7 @@ f 4 5 8
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
 
+    @requires(*MUJOCO_MODULES)
     def test_autolimits_false_tendon(self):
         """Tests autolimits=false handling for tendon limit flags.
 
@@ -3857,6 +3897,7 @@ f 4 5 8
             msg="Tendon with explicit actuatorfrclimited='false' should have actfrclimited=0",
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_autolimits_false_actuator(self):
         """Test that autolimits=false is respected for actuator ctrllimited."""
         mjcf = """<?xml version="1.0" ?>
@@ -3953,6 +3994,7 @@ f 4 5 8
         # Should use default effort limit, not 100.0 from actuatorfrcrange
         self.assertNotAlmostEqual(effort_limit_false, 100.0, places=4)
 
+    @requires(*MUJOCO_MODULES)
     def test_single_mujoco_fixed_tendon_auto_springlength(self):
         """Test that springlength=-1 auto-computes the spring length from initial joint positions.
 
@@ -4343,6 +4385,7 @@ f 4 5 8
                     f.write(struct.pack("<fff", *v))
                 f.write(struct.pack("<H", 0))
 
+    @requires("trimesh")
     def test_fit_box_to_mesh_aabb(self):
         """type='box' mesh='...' with fitaabb='true' produces a box matching the mesh AABB."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4366,6 +4409,7 @@ f 4 5 8
             s = builder.shape_scale[0]
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
 
+    @requires("trimesh")
     def test_fit_box_applies_mesh_reference_pose(self):
         """Apply a mesh reference pose before fitting a primitive."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4393,6 +4437,7 @@ f 4 5 8
         transform = builder.shape_transform[0]
         np.testing.assert_allclose([transform.p[0], transform.p[1], transform.p[2]], [0.0, 3.0, 0.0], atol=1e-4)
 
+    @requires("trimesh")
     def test_fit_box_uses_resolved_asset_scale(self):
         """Fit a primitive using its mesh asset scale rather than geom defaults."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4423,6 +4468,7 @@ f 4 5 8
         scale = builder.shape_scale[0]
         np.testing.assert_allclose([scale[0], scale[1], scale[2]], [2.0, 1.0, 4.0], atol=1e-4)
 
+    @requires("trimesh")
     def test_fit_sphere_to_mesh_aabb(self):
         """type='sphere' mesh='...' with fitaabb='true' uses max half-extent as radius."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4446,6 +4492,7 @@ f 4 5 8
             s = builder.shape_scale[0]
             self.assertAlmostEqual(s[0], 2.0, places=4)
 
+    @requires("trimesh")
     def test_fit_capsule_to_mesh_aabb(self):
         """type='capsule' mesh='...' with fitaabb='true' fits capsule to AABB."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4470,6 +4517,7 @@ f 4 5 8
             self.assertAlmostEqual(s[0], 1.0, places=4)
             self.assertAlmostEqual(s[1], 1.0, places=4)
 
+    @requires("trimesh")
     def test_fit_box_to_mesh_inertia(self):
         """type='box' mesh='...' with fitaabb='false' (default) uses equivalent inertia box."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4498,6 +4546,7 @@ f 4 5 8
             t = builder.shape_transform[0]
             self.assertAlmostEqual(t.p[0], 3.0, places=1)
 
+    @requires("trimesh")
     def test_fit_box_to_mesh_inertia_rotated(self):
         """Inertia-box fitting aligns the primitive to the principal axes."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4564,6 +4613,7 @@ f 4 5 8
                 "Expected non-identity rotation for rotated mesh",
             )
 
+    @requires("trimesh")
     def test_fit_with_fitscale(self):
         """fitscale attribute scales the fitted primitive."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4586,6 +4636,7 @@ f 4 5 8
             s = builder.shape_scale[0]
             np.testing.assert_allclose([s[0], s[1], s[2]], [2.0, 1.0, 4.0], atol=1e-4)
 
+    @requires("trimesh")
     def test_fit_cylinder_to_mesh_aabb(self):
         """type='cylinder' mesh='...' with fitaabb='true' fits cylinder to AABB."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4610,6 +4661,7 @@ f 4 5 8
             self.assertAlmostEqual(s[0], 1.0, places=4)
             self.assertAlmostEqual(s[1], 2.0, places=4)
 
+    @requires("trimesh")
     def test_fit_ellipsoid_to_mesh_aabb(self):
         """type='ellipsoid' mesh='...' with fitaabb='true' fits ellipsoid to AABB."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4633,6 +4685,7 @@ f 4 5 8
             # Ellipsoid uses AABB half-extents directly: (1.0, 0.5, 2.0)
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
 
+    @requires("trimesh", *MUJOCO_MODULES)
     def test_mesh_geom_type_defaults(self):
         """Fit MuJoCo's default sphere to a mesh geom unless a mesh type is set or inherited."""
         mujoco = SolverMuJoCo.import_mujoco()[0]
@@ -5775,6 +5828,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             actual = geom_solmix[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
+    @requires(*MUJOCO_MODULES)
     def test_shape_gap_from_mjcf(self):
         """Test that MJCF gap attribute is parsed into shape_gap."""
         mjcf = """<?xml version="1.0" ?>
@@ -6009,6 +6063,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
         self.assertEqual(model.mujoco.equality_constraint_count, 2)
 
+    @requires(*MUJOCO_MODULES)
     def test_tendon_equality_matches_native_mujoco(self):
         """Import tendon equalities and compile them like native MuJoCo."""
         missing = '<tendon name="missing" tendon1="t0" tendon2="unknown"/>'
@@ -6215,6 +6270,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(eq_solref[0], 0.005, places=6)
         self.assertAlmostEqual(eq_solref[1], 1.0, places=6)
 
+    @requires(*MUJOCO_MODULES)
     def test_mjc_equality_conversion_roundtrips_to_mujoco(self):
         """Converted MJC equalities preserve enough metadata to recreate MuJoCo equalities."""
         mjcf = """<?xml version="1.0" ?>
@@ -7220,6 +7276,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
             )
         self.assertGreater(np.abs(native_data.qpos).max(), 1e-3, "the comparison should move the joints")
 
+    @requires(*MUJOCO_MODULES)
     def test_omitted_joint2_fixes_joint1(self):
         """Hold joint1 at the constant term, with its solver parameters, when joint2 is omitted."""
         joint = '<joint name="hip-lock" type="hinge" axis="1 0 0"/>'
@@ -7231,6 +7288,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         self.assertEqual(list(converted.eq_obj2id), [-1])
         self._assert_matches_native(native, converted)
 
+    @requires(*MUJOCO_MODULES)
     def test_equality_on_joints_sharing_a_body(self):
         """Resolve each endpoint to its own scalar MuJoCo joint when the joints share a body."""
         for first, second in (("h1", "h2"), ("h1", "s1"), ("s1", "h2")):
@@ -7249,6 +7307,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                         slide_after_hinge = joints.index("s1") > 0 if "s1" in joints else False
                         self._assert_matches_native(native, converted, dynamics=not slide_after_hinge)
 
+    @requires(*MUJOCO_MODULES)
     def test_partial_polycoef_keeps_mujoco_defaults(self):
         """Fill omitted joint polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
         native, converted, model = self._convert(
@@ -7258,6 +7317,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_count, 1)
         self._assert_matches_native(native, converted)
 
+    @requires(*MUJOCO_MODULES)
     def test_partial_tendon_polycoef_keeps_mujoco_defaults(self):
         """Fill omitted tendon polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
         native, converted, _ = self._convert(self._two_body_mjcf('<tendon tendon1="t1" tendon2="t2" polycoef="0.05"/>'))
@@ -7265,6 +7325,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         np.testing.assert_array_equal(converted.eq_type, native.eq_type)
         np.testing.assert_allclose(converted.eq_data[:, :5], native.eq_data[:, :5], atol=1e-7)
 
+    @requires(*MUJOCO_MODULES)
     def test_scale_applies_to_slide_polycoef(self):
         """Scale polycoef terms of slide endpoints with the import scale."""
         scale = 2.0
@@ -7295,6 +7356,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                 else:
                     self.assertEqual(model.constraint_mimic_count, 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_dof_selector_without_joint_raises(self):
         """Reject a DoF selector for an omitted equality endpoint instead of ignoring it."""
         builder = newton.ModelBuilder()
@@ -7308,6 +7370,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "endpoint 2 selects DoF 0 but has no joint"):
             SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
+    @requires(*MUJOCO_MODULES)
     def test_equality_on_nonscalar_joint_raises(self):
         """Reject ball and free endpoints, including hinges converted to a ball joint."""
         joints = (
@@ -7351,6 +7414,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "uses joint 'h1' as both endpoints"):
             builder.add_mjcf(self._mjcf(joints, '<joint joint1="h1" joint2="h1"/>'))
 
+    @requires(*MUJOCO_MODULES)
     def test_dof_selector_outside_its_joint_raises(self):
         """Reject a DoF selector that belongs to another joint than its endpoint."""
         builder = newton.ModelBuilder()
@@ -7364,6 +7428,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not belong to joint"):
             SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
+    @requires(*MUJOCO_MODULES)
     def test_reject_cross_world_joint_reference(self):
         """Reject a joint equality in one world that targets a joint of another world."""
         builder = newton.ModelBuilder()
@@ -7380,6 +7445,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "of another world"):
             SolverMuJoCo(model, disable_contacts=True)
 
+    @requires(*MUJOCO_MODULES)
     def test_reject_cross_world_dof_reference(self):
         """Reject a DoF selector in one world that targets a DoF of another world."""
         builder = newton.ModelBuilder()
@@ -7397,6 +7463,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "of another world"):
             SolverMuJoCo(model, disable_contacts=True)
 
+    @requires(*MUJOCO_MODULES)
     def test_reject_heterogeneous_dof_selectors(self):
         """Reject separate worlds whose joint equalities select different DoFs of the same joint."""
         joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"] + _EQUALITY_TEST_JOINTS["s1"]
@@ -8711,6 +8778,7 @@ class TestMjcfInclude(unittest.TestCase):
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
 
+    @requires("trimesh")
     def test_include_resolves_asset_paths(self):
         """Test that asset paths in included files are resolved relative to the included file."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -9530,6 +9598,8 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         self.assertEqual(actlimited[0], 2)
 
 
+@requires(*MUJOCO_MODULES)
+@requires(*MUJOCO_MODULES)
 class TestMjcfJointLimited(unittest.TestCase):
     """Compare MJCF joint ``limited`` resolution against native MuJoCo."""
 
@@ -9756,6 +9826,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         j_ovr = idx(f"{wb}/b_class/b_override/j_override")
         self.assertAlmostEqual(float(m.limit_margin.numpy()[j_ovr]), 99.0, places=5)
 
+    @requires(*MUJOCO_MODULES)
     def test_general_actuator_defaults(self):
         """ACTUATOR (general): gainprm, biasprm, dyntype, ctrllimited, forcelimited,
         ctrlrange, forcerange, gear, dynprm, actlimited, actrange, actdim, actearly."""
@@ -9881,6 +9952,7 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
     </actuator>
 </mujoco>"""
 
+    @requires(*MUJOCO_MODULES)
     def test_partial_vectors_match_native(self):
         """Match native MuJoCo for every attribute given with fewer components than its length."""
         import mujoco
@@ -10032,6 +10104,7 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
         gaintype = self.model.mujoco.actuator_gaintype.numpy()[self.POS_IDX]
         self.assertEqual(gaintype, 0, "position shortcut should have gaintype=fixed (0)")
 
+    @requires(*MUJOCO_MODULES)
     def test_mujoco_compiled_biastype_matches(self):
         """Verify compiled MuJoCo model has correct biastype after spec creation.
 
@@ -10303,6 +10376,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         }
         self.assertEqual(actual, expected)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_forwards_preserved_masks(self):
         """Forward effective imported masks instead of regenerating them from groups."""
         mjcf = """<mujoco>
@@ -10332,6 +10406,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         np.testing.assert_array_equal(solver.mj_model.geom_contype, [2, 8])
         np.testing.assert_array_equal(solver.mj_model.geom_conaffinity, [4, 16])
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_combines_preserved_masks_with_partial_filter(self):
         """Honor a Newton pair filter that narrows preserved imported masks."""
         mjcf = """<mujoco>
@@ -10372,6 +10447,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
                 expected = (name_a, name_b) != ("a0", "b0")
                 self.assertEqual(masks_allow(shapes[name_a], shapes[name_b]), expected)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_combines_separate_import_mask_domains(self):
         """Combine independent MJCF mask domains before exporting contacts."""
         mjcf = """<mujoco>
@@ -10420,6 +10496,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertEqual(len(expected_cross_import_pairs), 8)
         self.assertEqual(actual_cross_import_pairs, expected_cross_import_pairs)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_combines_independently_parsed_builders(self):
         """Keep MJCF mask domains distinct when merging builders."""
         mjcf = """<mujoco>
@@ -10511,6 +10588,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         builder.add_mjcf(mjcf)
         self.assertEqual(builder.shape_collision_group[0], 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_contype_zero_for_group_zero(self):
         """Solver sets contype=conaffinity=0 on MuJoCo geoms with collision_group=0."""
         mjcf = """<mujoco>
@@ -10536,6 +10614,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertEqual(solver.mj_model.geom_contype[geom_idx], 0)
         self.assertEqual(solver.mj_model.geom_conaffinity[geom_idx], 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_no_automatic_contacts_with_group_zero(self):
         """Overlapping geoms with collision_group=0 produce no automatic contacts."""
         # Two overlapping collision geoms with contype=conaffinity=0
@@ -10566,6 +10645,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         # Spheres overlap but contype=conaffinity=0 should prevent automatic contacts
         self.assertEqual(solver.mj_data.ncon, 0, "No automatic contacts for contype=conaffinity=0")
 
+    @requires(*MUJOCO_MODULES)
     def test_explicit_pair_generates_contacts_with_group_zero(self):
         """Explicit <pair> contacts work between collision_group=0 geoms.
 
@@ -10683,6 +10763,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         np.testing.assert_allclose(model.mujoco.pair_margin.numpy(), [1.0])
         np.testing.assert_allclose(model.mujoco.pair_gap.numpy(), [0.2])
 
+    @requires(*MUJOCO_MODULES)
     def test_explicit_pair_retains_unclassified_geoms_without_visuals(self):
         """Pair-referenced zero-mask geoms survive parse_visuals=False."""
         mjcf = """<mujoco>
@@ -10712,6 +10793,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_default_pair_retains_unclassified_geoms_without_visuals(self):
         """Retain zero-mask geoms referenced by pairs with inherited contact parameters."""
         mjcf = """<mujoco>
@@ -10743,6 +10825,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.npair, 1)
 
+    @requires(*MUJOCO_MODULES)
     def test_explicit_pairs_across_contact_sections_without_visuals(self):
         """Pairs and excludes are parsed from every top-level contact section."""
         mjcf = """<mujoco>
@@ -10787,6 +10870,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.npair, 2)
 
+    @requires(*MUJOCO_MODULES)
     def test_explicit_pair_hierarchical_labels_without_visuals(self):
         """Pair-referenced geoms match their hierarchical Newton labels."""
         mjcf = """<mujoco model="hierarchical_pair">
@@ -10889,6 +10973,7 @@ class TestJointFrictionloss(unittest.TestCase):
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 0.0, atol=1e-6)
 
+    @requires(*MUJOCO_MODULES)
     def test_frictionloss_propagates_to_mujoco(self):
         """Verify frictionloss propagates to dof_frictionloss in the MuJoCo solver."""
         mjcf = """<mujoco><worldbody>
@@ -11009,6 +11094,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
         with open(path, "wb") as f:
             f.write(sig + ihdr + idat + iend)
 
+    @requires("trimesh")
     def test_assetdir_resolves_meshes_and_textures(self):
         """Load mesh, texture, and heightfield files through compiler assetdir."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11064,6 +11150,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                     builder.add_mjcf(model_path, parse_visuals=True)
                     self.assertEqual(builder.shape_count, 2)
 
+    @requires("trimesh")
     def test_assetdir_uses_custom_resolver_for_xml_string(self):
         """Resolve a relative assetdir through a custom resolver without a base path."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11132,6 +11219,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             self.assertEqual(resolved_paths, [(None, authored_path)])
             self.assertEqual(builder.shape_count, 1)
 
+    @requires("trimesh")
     def test_assetdir_honors_strippath_for_all_file_assets(self):
         """Strip authored directories before applying assetdir."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11172,6 +11260,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder.add_mjcf(model_path, parse_visuals=True)
             self.assertEqual(builder.shape_count, 2)
 
+    @requires("trimesh")
     def test_assetdir_xml_string_preserves_default_resolver_fallback(self):
         """Resolve XML-string assets relative to the working directory by default."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11233,6 +11322,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                         os.path.join(tmpdir, expected_texturedir, "checker.png"),
                     )
 
+    @requires("trimesh")
     def test_include_with_assetdir(self):
         """Fall back to the included file's directory without prepending assetdir."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11280,6 +11370,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             self.assertEqual(builder.body_count, 1)
             self.assertEqual(builder.shape_count, 2)
 
+    @requires("trimesh")
     def test_include_with_meshdir(self):
         """Test that meshdir in included file is used to resolve mesh paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11320,6 +11411,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             self.assertEqual(builder.body_count, 1)
             self.assertGreater(builder.shape_count, 0)
 
+    @requires("trimesh")
     def test_include_with_meshdir_nested_subdir(self):
         """Search main-file, included-file, then included-asset-dir paths; custom resolvers are unchanged."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11486,6 +11578,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             root, _ = _load_and_expand_mjcf(main_path)
             self.assertEqual(root.find(".//mesh").get("file"), main_mesh)
 
+    @requires("trimesh")
     def test_include_without_meshdir_still_works(self):
         """Test that includes without meshdir resolve relative to included file."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11519,6 +11612,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
 
+    @requires("trimesh")
     def test_include_with_texturedir(self):
         """Test that texturedir in included file is used for texture paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11566,6 +11660,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path, parse_visuals=True)
 
+    @requires("trimesh")
     def test_included_meshdir_does_not_leak_to_main_assets(self):
         """Included file's meshdir must not affect main file's asset resolution."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11618,6 +11713,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
 
+    @requires("trimesh")
     def test_include_before_compiler_with_nested_includes(self):
         """Compiler lookup must use THIS file's compiler, not a nested include's stripped compiler.
 
@@ -12509,7 +12605,7 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
                 b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
             )
 
-        if importlib.util.find_spec("PIL") is not None:
+        if has_module("PIL"):
             png_payload = gray_png((high_low * 255).astype(np.uint8))
             png = '<hfield name="terrain" file="terrain.png" nrow="4" ncol="4" size="2 2 1 0.1"/>'
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)

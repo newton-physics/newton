@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 def _build_model_with_per_world_com(device, world_base_coms):
@@ -112,6 +112,7 @@ def test_perworld_com_produces_consistent_physics(test, device):
     )
 
 
+@requires(*MUJOCO_MODULES)
 class TestMultiworldBodyProperties(unittest.TestCase):
     """Verify that multi-world simulations with per-world body mass/CoM
     produce physically consistent results across all worlds."""

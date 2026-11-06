@@ -5,10 +5,10 @@ import unittest
 from unittest import mock
 
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestImportUsdCollisionGroups(unittest.TestCase):
     @staticmethod
     def _make_stage(shape_names):

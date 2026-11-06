@@ -10,10 +10,10 @@ import numpy as np
 import newton
 from newton.selection import ArticulationView
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.tests.unittest_utils import MUJOCO_MODULES, assert_np_equal, requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDTendonImport(unittest.TestCase):
     SCENE = """#usda 1.0
 (
@@ -210,6 +210,7 @@ def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         )
         self.assertEqual(int(model.mujoco.tendon_actuator_force_limited.numpy()[0]), 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_spatial_tendon_defaults_and_export(self):
         """Import explicit and default spatial types and preserve spring forces in MuJoCo."""
         import mujoco
@@ -233,6 +234,7 @@ def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
                     np.testing.assert_allclose(data.ten_length, [0.5])
                     self.assertGreater(np.linalg.norm(data.qfrc_passive), 0.0)
 
+    @requires(*MUJOCO_MODULES)
     def test_indexed_wraps_side_sites_and_pulleys(self):
         """Preserve repeated path targets, side sites, and segment pulley divisors."""
         import mujoco
@@ -271,6 +273,7 @@ def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         self.assertTrue(side_site.name.startswith("/Robot/Base/side_"))
         self.assertEqual(solver.mj_model.wrap_prm[3], 2.0)
 
+    @requires(*MUJOCO_MODULES)
     def test_cylinder_wrap_and_leading_pulley(self):
         """Import a cylinder without a side site and a pulley before the first path target."""
         import mujoco
@@ -295,6 +298,7 @@ def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         self.assertEqual(solver.mj_model.wrap_prm[0], 3.0)
         self.assertEqual(solver.mj_model.wrap_prm[2], -1.0)
 
+    @requires(*MUJOCO_MODULES)
     def test_tendon_actuator_resolution_when_actuator_comes_first(self):
         """Resolve fixed and spatial tendon actuators within the requested USD subtree."""
         import mujoco
@@ -407,6 +411,7 @@ def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
                     builder = self._import(stage)
                 self.assertEqual(builder._custom_frequency_counts.get("mujoco:tendon_wrap", 0), 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_empty_fixed_tendon_export_warns(self):
         """Emit a user-visible warning when MuJoCo export drops an empty fixed tendon."""
         stage = self._create_stage()

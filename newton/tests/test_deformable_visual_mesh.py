@@ -4,7 +4,6 @@
 """Test deformable visual mesh data, evaluation, and viewer rendering."""
 
 import contextlib
-import importlib.util
 import math
 import os
 import tempfile
@@ -20,7 +19,7 @@ import newton
 from newton._src.viewer.viewer_file import HAS_CBOR2, transfer_to_model
 from newton.exceptions import NewtonWarning
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import assert_np_equal, get_test_devices, requires
 from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
 
 
@@ -1091,7 +1090,7 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
                         self.assertGreater(pixel[2], pixel[0] + 30)
 
 
-@unittest.skipUnless(importlib.util.find_spec("pxr"), "USD is not installed")
+@requires("pxr.Usd")
 class TestDeformableVisualUSD(unittest.TestCase):
     def test_viewer_usd_exports_skinned_mesh_and_textures(self):
         """Export deformed geometry and replacement textures, skipping hidden updates."""

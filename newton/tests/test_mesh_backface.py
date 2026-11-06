@@ -25,6 +25,7 @@ import warp as wp
 import newton
 from newton._src.geometry.types import GeoType
 from newton._src.utils import is_graph_capture_allocation_enabled
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 _cuda_available = wp.is_cuda_available()
 
@@ -487,18 +488,22 @@ class TestMeshBackfaceSimulation(unittest.TestCase):
             joint_q = s0.joint_q.numpy()
             self.assertFalse(np.any(np.isnan(joint_q)), f"{shape_type.name}: NaN in joint_q")
 
+    @requires(*MUJOCO_MODULES)
     def test_sim_sphere_on_ground(self):
         """Sphere dropped on ground should settle without NaN."""
         self._run_sim_no_nan(GeoType.SPHERE, (0.0, 0.0, 0.5), (0.1,))
 
+    @requires(*MUJOCO_MODULES)
     def test_sim_box_on_ground(self):
         """Box dropped on ground should settle without NaN."""
         self._run_sim_no_nan(GeoType.BOX, (0.0, 0.0, 0.5), (0.1, 0.1, 0.1))
 
+    @requires(*MUJOCO_MODULES)
     def test_sim_capsule_on_ground(self):
         """Capsule dropped on ground should settle without NaN."""
         self._run_sim_no_nan(GeoType.CAPSULE, (0.0, 0.0, 0.5), (0.05, 0.15))
 
+    @requires(*MUJOCO_MODULES)
     def test_sim_sphere_high_velocity(self):
         """Fast-falling sphere should not produce NaN after mesh impact."""
         mesh = _make_box_ground_mesh(z=0.0)
@@ -541,6 +546,7 @@ class TestMeshBackfaceSimulation(unittest.TestCase):
         s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(200)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Valley sphere: NaN")
 
+    @requires(*MUJOCO_MODULES)
     def test_sim_shape_stuck_behind_mesh_no_nan(self):
         """Reproduce the original bug: shape behind mesh must not cause NaN.
 
@@ -629,6 +635,7 @@ def _build_heightfield_scene(shape_type, shape_pos, shape_scale=None, rough=Fals
 
 
 @unittest.skipUnless(_cuda_available, "Collision pipeline requires CUDA device")
+@requires(*MUJOCO_MODULES)
 class TestHeightfieldPrism(unittest.TestCase):
     """Test heightfield triangle prism extrusion prevents back-face trapping."""
 
@@ -767,6 +774,7 @@ def _build_heightfield_scene_xform(
 
 
 @unittest.skipUnless(_cuda_available, "Collision pipeline requires CUDA device")
+@requires(*MUJOCO_MODULES)
 class TestHeightfieldPrismSteepAndRotated(unittest.TestCase):
     """Tests with sharp inter-cell edges and rotated heightfields.
 

@@ -5,8 +5,10 @@ import unittest
 
 import newton
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestToleranceClamping(unittest.TestCase):
     def test_tolerance_clamped_to_1e6(self):
         """Test that tolerance is clamped to 1e-6 to match mujoco_warp behavior.

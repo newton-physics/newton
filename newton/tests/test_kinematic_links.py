@@ -8,7 +8,7 @@ import warp as wp
 
 import newton
 from newton import BodyFlags, ModelBuilder
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestKinematicLinks(unittest.TestCase):
@@ -782,8 +782,8 @@ solvers = {
     "steel_colored": lambda model: newton.solvers.SolverSteel(
         model, solve_mode="colored", articulated_contact_response="propagation"
     ),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+    "mujoco_cpu": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
+    "mujoco_warp": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "vbd": lambda model: newton.solvers.SolverVBD(model, rigid_compliant_alm=True),
