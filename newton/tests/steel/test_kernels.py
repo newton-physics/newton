@@ -1540,7 +1540,8 @@ add_function_test(
 def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
     """Reproduce the fused FK/ID kernel bitwise with the serial kinematics pass plus the per-body finaliser."""
     model = _build_contact_scene(device)
-    solver = SolverSteel(model, solve_mode="matrix_free")
+    # Only the solver's index maps and augmented buffers are used.
+    solver = SolverSteel(model)
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     rng = np.random.default_rng(3)
@@ -1690,21 +1691,29 @@ def _carry_trajectory(model, steps, reuse, edit=None):
     return solver, history
 
 
-def _assert_histories_equal(test, expected, actual):
+def _assert_histories_close(test, expected, actual):
+    """Allow the roundoff of publishing body velocities through the solver's own kernel instead of eval_fk."""
     for step, (want, got) in enumerate(zip(expected, actual, strict=True)):
         for name, a, b in zip(("joint_q", "joint_qd", "body_q", "body_qd"), want, got, strict=True):
-            np.testing.assert_array_equal(b, a, err_msg=f"{name} at step {step}")
+            tolerance = 2.0e-4 if name.endswith("qd") else 2.0e-5
+            np.testing.assert_allclose(b, a, rtol=2.0e-5, atol=tolerance, err_msg=f"{name} at step {step}")
 
 
 def test_reused_kinematics_match_the_recomputed_trajectory(test, device):
-    """Carry the published kinematics into the next step and reproduce the recomputing solver bitwise."""
+    """Carry the published kinematics into the next step and reproduce the recomputing solver.
+
+    The joint coordinates and body poses agree bitwise on the first step; the published body velocities
+    differ in their last bit from eval_fk's, which seeds roundoff-level differences afterwards.
+    """
     model = _build_contact_scene(device)
     reference_solver, reference = _carry_trajectory(model, 24, reuse=False)
     carried_solver, carried = _carry_trajectory(model, 24, reuse=True)
     test.assertFalse(reference_solver._reuse_kinematics_enabled)
     test.assertTrue(carried_solver._reuse_kinematics_enabled)
     test.assertTrue(np.all(carried_solver._fk_id_valid.numpy() == 1))
-    _assert_histories_equal(test, reference, carried)
+    for name, a, b in zip(("joint_q", "joint_qd", "body_q"), reference[0][:3], carried[0][:3], strict=True):
+        np.testing.assert_array_equal(b, a, err_msg=f"{name} at the first step")
+    _assert_histories_close(test, reference, carried)
 
 
 def test_reused_kinematics_follow_resets_and_notices(test, device):
@@ -1738,13 +1747,13 @@ def test_reused_kinematics_follow_resets_and_notices(test, device):
     for label, edit in (("reset", reset_edit), ("notice", notice_edit)):
         with test.subTest(label):
             _, carried = _carry_trajectory(model, 12, reuse=True, edit=edit)
-            _assert_histories_equal(test, reference, carried)
+            _assert_histories_close(test, reference, carried)
     with test.subTest("stale"):
         _, stale = _carry_trajectory(model, 12, reuse=True, edit=stale_edit)
         # Without a notice the step after the in-place write keeps the carried poses of the edited world.
-        test.assertFalse(np.array_equal(stale[8][2], reference[8][2]))
+        test.assertGreater(np.abs(stale[8][2] - reference[8][2]).max(), 1.0e-2)
         for step in range(8):
-            np.testing.assert_array_equal(stale[step][2], reference[step][2])
+            np.testing.assert_allclose(stale[step][2], reference[step][2], rtol=2.0e-5, atol=2.0e-5)
 
 
 class TestSteelReusedKinematics(unittest.TestCase):
