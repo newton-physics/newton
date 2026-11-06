@@ -195,12 +195,19 @@ def fill_contact_family_sort_keys(
     contact_path: wp.array[int],
     contact_world: wp.array[int],
     segment_count: int,
+    contact_max: int,
     # outputs
     keys: wp.array[int],
     values: wp.array[int],
+    slot_scan_length: wp.array[int],
 ):
-    """Key every contact by its solve world and row family; contacts without rows sort last."""
+    """Key every contact by its solve world and row family; contacts without rows sort last.
+
+    ``slot_scan_length`` gets the active contact count plus one, the sorted row counts the reservation reads.
+    """
     c = wp.tid()
+    if c == 0:
+        slot_scan_length[0] = wp.clamp(contact_count[0], 0, contact_max) + 1
     key = segment_count
     if c < contact_count[0] and contact_path[c] >= 0:
         key = contact_world[c] * CONTACT_ROW_FAMILIES + contact_path[c]
