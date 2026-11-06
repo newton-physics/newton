@@ -1,0 +1,1 @@
+Deprecate the `SolverSteel` spellings `solve_mode="matrix_free"`, `solve_mode="split"` and `articulated_contact_response="propagation_colored"`. They map to `solve_mode="serial"`, or to `solve_mode="colored"` with `articulated_contact_response="propagation"`, and emit a `NewtonDeprecationWarning`. Switch to the new spellings.
