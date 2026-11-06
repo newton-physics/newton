@@ -18,6 +18,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.tests.unittest_utils
+from newton._src.geometry.utils import scan_with_total
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -822,9 +823,10 @@ def _check_inherited_global_mode(device):
     from warp._src.context import Module, user_modules  # noqa: PLC0415
 
     assert wp.config.deterministic == RUN_TO_RUN
-    # Newton's collision kernels do not support Warp's deterministic lowering; only Steel's modules keep the global.
+    # Newton's collision kernels do not support Warp's deterministic lowering; Steel's modules and the
+    # geometry scan module Steel's step launches keep the global.
     for module in list(user_modules.values()):
-        if not _holds_steel_kernel(module):
+        if not _holds_steel_kernel(module) and module.name != scan_with_total.__module__:
             wp.set_module_options({"deterministic": wp.DeterministicMode.NOT_GUARANTEED}, module=module)
     model = _build_contact_scene(device)
 

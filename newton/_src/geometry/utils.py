@@ -1057,7 +1057,13 @@ __threadfence();
 def _scan_thread_fence(): ...
 
 
-@wp.kernel(enable_backward=False)
+# Its own module, outside Warp's deterministic lowering: the integer scan is exact, and its atomics only hand out
+# tiles and publish tile statuses.
+@wp.kernel(
+    enable_backward=False,
+    module="unique",
+    module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED},
+)
 def _scan_tiles_kernel(
     counts: wp.array[int],
     num_elements: wp.array[int],
