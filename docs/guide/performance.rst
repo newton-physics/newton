@@ -9,7 +9,7 @@ Performance
 ===========
 
 This guide describes how to measure and improve simulation performance, from
-Warp graph capture and host synchronization to collision detection and solver
+CUDA graph capture and host synchronization to collision detection and solver
 settings. For custom Warp kernels, see Warp's `performance guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance.html>`__.
 
@@ -40,11 +40,12 @@ Benchmarking
 ^^^^^^^^^^^^
 
 The examples accept ``--benchmark``, which uses a null viewer, warms up, and
-reports frames per second:
+reports frames per second. An optional argument limits the run to that many
+seconds; it also stops after ``--num-frames`` frames (100 by default):
 
 .. code-block:: console
 
-    uv run -m newton.examples basic_shapes --benchmark 10
+    uv run -m newton.examples basic_shapes --benchmark 10 --num-frames 1000
 
 When timing your own code, warm up the simulation and replay any captured graph
 at least once before starting the timer. Synchronize the device before and
@@ -92,8 +93,8 @@ When the step runs eagerly, :class:`warp.ScopedTimer` with ``synchronize=True``
 measures a region, and its ``cuda_filter`` option records the duration of each
 kernel and memory operation (see Warp's `CUDA activity profiling
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#cuda-activity-profiling>`__).
-:class:`~utils.EventTracer` uses CUDA events to time instrumented solver
-functions.
+:class:`~utils.EventTracer` uses CUDA events to time the functions that
+:class:`~solvers.SolverMuJoCo` instruments.
 
 For captured steps, Warp's activity timing reports the graph launch as a
 single operation. Time the graph as a whole, profile the eager version, or
@@ -154,13 +155,10 @@ profiled kernel many times:
     ncu -o h1_kernel --set full -k regex:<kernel_name> -c 5 \
         uv run -m newton.examples robot_h1 --viewer null --num-frames 20
 
-In the report, compare the kernel's achieved memory throughput and compute
-throughput with the device's peak, and check occupancy and warp stall reasons.
-A kernel far below both peaks is often limited by latency or launch
-configuration rather than by the hardware. Reading GPU performance counters
-can require administrator privileges. Warp's `Nsight Compute guide
-<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#nsight-compute-profiling>`__
-describes how to correlate the report with kernel source code.
+Reading GPU performance counters can require administrator privileges. For
+interpreting the report and correlating it with kernel source code, see Warp's
+`Nsight Compute guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#nsight-compute-profiling>`__.
 
 Memory
 ^^^^^^
@@ -276,10 +274,9 @@ and change controls between frames. Compare velocities and any relevant solver
 history as well as positions, using tolerances appropriate to the scene. For
 repeatable contact ordering, see :ref:`Deterministic Contacts`.
 
-The uncaptured warm-up frame serves two purposes. Warp compiles and loads
-kernels on their first launch, and the warm-up keeps that out of the graph.
-Some solvers and controllers also allocate buffers during their first step.
-Initialization recorded during capture repeats on every replay. For example,
+The uncaptured warm-up frame runs first-step work outside the graph. Some
+solvers and controllers allocate buffers during their first step, and
+initialization recorded during capture repeats on every replay. For example,
 zeroing a lazily allocated history buffer during capture would discard its
 warm-start data every frame. Because the warm-up advances the simulation, save
 and restore the state, including any solver history, if the run must start from
@@ -349,8 +346,8 @@ For odd counts, there are three options:
   shows this pattern.
 
 Other double-buffered data in the graph, such as :ref:`actuator state
-<stateful-actuators>`, behaves the same way. Some solvers only support capture
-with an even substep count; their API reference says so.
+<stateful-actuators>`, behaves the same way. :class:`CollisionSubstepScheduler`
+always swaps its two states and therefore requires an even substep count.
 
 What a Graph Records
 ^^^^^^^^^^^^^^^^^^^^
@@ -457,10 +454,10 @@ null`` in the examples). See :ref:`choosing-a-viewer`.
 Buffer Capacity
 ---------------
 
-Contacts and constraints are stored in buffers with a fixed capacity. Many
-operations on these buffers, such as sorting, clearing, and scanning, take time
-proportional to the capacity rather than to the number of entries in use, so an
-oversized buffer slows down every step. Insufficient capacity can drop contacts
+Contacts and constraints are stored in buffers with a fixed capacity. Some
+operations launch over the full capacity rather than the number of entries in
+use, such as contact sorting with ``deterministic=True``, so an oversized
+buffer costs time as well as memory. Insufficient capacity can drop contacts
 or constraint rows and change the simulation.
 
 Size the buffers from measurement. Run a worst-case scene at the world count
@@ -489,10 +486,9 @@ and filters to exclude pairs that should not interact, and choose a broad phase
 suited to the scene. Shared shapes (world ``-1``) collide with every world, so
 their cost grows with the world count. See :ref:`Collision Pipeline Details`.
 
-Simpler geometry and less frequent collision detection can reduce cost further,
-but may change contact locations or miss collisions. The next section describes
-these tradeoffs. Request contact sensors and solver observables only when the
-application needs their output.
+Request contact sensors and solver observables only when the application
+needs their output. Simpler geometry and less frequent detection trade accuracy
+for speed; see `Simulation Accuracy and Cost`_.
 
 .. _performance-tradeoffs:
 
@@ -523,8 +519,9 @@ Collision geometry
     Primitives and convex hulls can be cheaper than detailed meshes, but an
     approximation changes the collision surface. Use
     :meth:`ModelBuilder.approximate_meshes` where that change is acceptable.
-    For mesh-mesh contacts, build the SDFs required by the collision pipeline.
-    Coarser SDFs use less memory but lose small features. See
+    For mesh-mesh contacts, attaching an SDF with :meth:`Mesh.build_sdf`
+    usually speeds up collision detection; coarser SDFs use less memory but
+    lose small features. See
     :ref:`Collision Pipeline Details`.
 
 Contact model
@@ -549,22 +546,12 @@ Solver choice and solver options
     is cheaper but more dissipative than the default APIC scheme. See the
     :doc:`solver overview </solvers/index>` and the solver's API reference.
 
-Physically implausible behavior
-    Do not keep lowering the timestep or raising iterations to keep a scene
-    stable while it does something a real system could not, such as a policy
-    commanding joint torques or contact forces that would break the robot.
-    Making that motion stable costs time and does not make it meaningful.
-    Define limits from the task and the hardware, such as maximum joint
-    torque, contact force, body velocity, or penetration depth, check them on
-    the device, and end or reset the affected episode when a world exceeds
-    them. :ref:`Per-world reset masks` let you reset only those worlds.
-
 Multiple Worlds
 ---------------
 
 To simulate many copies of a scene, build one world and copy it with
-:meth:`ModelBuilder.replicate`. Approximate meshes and build SDFs on the
-original before replicating, so the work is done once.
+:meth:`ModelBuilder.replicate`. Mesh approximations and SDFs are computed once
+per source mesh and shared across worlds.
 
 Measure both throughput (world-steps per second) and latency (time per step)
 across several world counts. Batching can improve GPU utilization, but gains
@@ -575,9 +562,10 @@ Batch per-world updates in device kernels rather than looping over worlds in
 Python. After changing model parameters, call
 :meth:`~solvers.SolverBase.notify_model_changed` with the relevant flags.
 Partial state resets take a device mask rather than a list of indices; see
-:ref:`Per-world reset masks`.
+:ref:`Per-world reset masks`. Rather than lowering the timestep until a world
+that exceeds physical limits (such as joint torque, contact force, or
+penetration depth) stays stable, check those limits on the device and reset
+the affected worlds.
 
-A model and its solver run on a single device. To use several GPUs, run an
-independent simulation on each, for example one process per GPU, and divide the
-worlds between them. Measure aggregate throughput as well as any communication
-or coordination cost.
+A model and its solver run on a single device. To use several GPUs, run one
+simulation per device, for example one process per GPU.
