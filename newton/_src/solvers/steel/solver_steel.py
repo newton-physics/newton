@@ -30,6 +30,8 @@ from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
     prepare_torsion_velocity_pass,
+    torque_links_shared_bytes,
+    torque_links_source,
     torque_sweep_source,
     validate_torsion_step,
 )
@@ -1005,12 +1007,16 @@ def _use_resident_mfgs_metadata(
     Resident row metadata removes repeated global loads across PGS iterations,
     but larger shapes lose more throughput from the resulting occupancy drop.
     Keep at most one 4-KiB metadata working set resident and stream larger sets.
-    Drive rows add four per-row arrays and the fused velocity-limit clamp one more.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    total_shared_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes
+    metadata_bytes = _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    total_shared_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=True,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+    )
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
 
 
@@ -1025,19 +1031,23 @@ def _use_mfgs_pair_cache(
     fuse_vel_limits: bool,
     world_count: int,
     sm_count: int,
+    torsion_links: bool = False,
 ) -> bool:
     """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
 
     The caches shorten each world's serial chain but lower blocks per SM; once worlds queue for SMs, the extra waves
     cost more than they save. The estimate ignores register, block-count and carveout limits.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
-    cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
-    if not shared_metadata:
-        cache_bytes += 3 * max_constraints
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    block_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes + cache_bytes
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=True,
+        torsion_links=torsion_links,
+    )
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
     # Row parents are cached as short, and the kernel's arrays are static shared memory.
     return (
@@ -1045,6 +1055,66 @@ def _use_mfgs_pair_cache(
         and block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
         and world_count <= resident_worlds
     )
+
+
+def _use_mfgs_torsion_links(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    max_shared_memory: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool,
+) -> bool:
+    """Select the linked contact-torsion sweep when its row lists fit the static shared-memory bound.
+
+    Otherwise the sweep scans every dense row for torsion groups, with identical results.
+    """
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=pair_cache,
+        torsion_links=True,
+    )
+    return block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
+
+
+def _mfgs_block_shared_bytes(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool = False,
+    torsion_links: bool = False,
+) -> int:
+    """Return the static shared memory [B] of one matrix-free Gauss-Seidel kernel block, up to 4-byte alignment.
+
+    Every ``__shared__`` array of :func:`_get_pgs_solve_mf_gs_kernel` is counted here.
+    """
+    total = _MFGS_TILE_SHARED_STORAGE_BYTES + 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    if shared_metadata:
+        total += _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    if pair_cache:
+        total += 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
+        if not shared_metadata:
+            total += 3 * max_constraints
+    if torsion_links:
+        total += torque_links_shared_bytes(max_constraints)
+    return total
+
+
+def _mfgs_metadata_bytes(max_constraints: int, has_drive_rows: bool, fuse_vel_limits: bool) -> int:
+    """Return the resident dense-row metadata [B]; drive rows add four per-row arrays and the fused clamp one more."""
+    return 4 * max_constraints * (4 + 4 * int(has_drive_rows) + int(fuse_vel_limits))
 
 
 def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
@@ -5967,6 +6037,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mf_gs_row_phases = False
         self._pgs_solve_mf_gs_kernel = None
         self._mfgs_pair_cache = False
+        self._mfgs_torsion_links = False
         self._init_propagation_kernels(model)
         triples = self._sparse_diagonal_contact_triples
         self._mark_independent_sparse_contact_candidates_kernel = (
@@ -6013,22 +6084,33 @@ class SolverSteel(SolverBase, CouplingInterface):
                 fuse_vel_limits=self._velocity_limits_fused,
             )
             row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            mfgs_shape = (
+                self._articulation_constraint_max,
+                mf_rows,
+                self._max_world_dofs,
+                int(getattr(model.device, "max_shared_memory_per_block", 0)),
+            )
+            mfgs_metadata = {
+                "shared_metadata": shared_metadata,
+                "has_drive_rows": self._has_drive_rows,
+                "fuse_vel_limits": self._velocity_limits_fused,
+            }
+            mfgs_residency = {"world_count": self._world_count, "sm_count": int(getattr(model.device, "sm_count", 0))}
             # The cache's prologue runs once per launch, so it pays off only when a launch runs several sweeps.
             self._mfgs_pair_cache = (
                 self._friction_mode == "fixed_normal"
                 and not self._paired_factor_coordinates
                 and not self._propagation_active
                 and self._row_schedule != "phased"
-                and _use_mfgs_pair_cache(
-                    self._articulation_constraint_max,
-                    mf_rows,
-                    self._max_world_dofs,
-                    int(getattr(model.device, "max_shared_memory_per_block", 0)),
-                    shared_metadata=shared_metadata,
-                    has_drive_rows=self._has_drive_rows,
-                    fuse_vel_limits=self._velocity_limits_fused,
-                    world_count=self._world_count,
-                    sm_count=int(getattr(model.device, "sm_count", 0)),
+                and _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency)
+            )
+            # With the pair cache, the lists must also keep every world resident.
+            self._mfgs_torsion_links = (
+                self._contact_torsion_enabled
+                and _use_mfgs_torsion_links(*mfgs_shape, **mfgs_metadata, pair_cache=self._mfgs_pair_cache)
+                and (
+                    not self._mfgs_pair_cache
+                    or _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency, torsion_links=True)
                 )
             )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
@@ -6049,6 +6131,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
                 pair_cache=self._mfgs_pair_cache,
+                torsion_links=self._mfgs_torsion_links,
             )
             self._mf_gs_row_phases = row_phases
             if not model.device.is_cuda:
@@ -14727,6 +14810,7 @@ def _get_pgs_solve_mf_gs_kernel(
     contact_compliance: bool = False,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -14781,6 +14865,8 @@ def _get_pgs_solve_mf_gs_kernel(
         row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
         pair_cache: Set up each dense friction pair's 2x2 operator once per launch, and with streamed metadata keep a
             compact shared copy of the row types and parents.
+        torsion_links: Find the contact torsion rows and their members through shared row lists built once
+            per launch (``contact_torsion.torque_links_source``); the results are the same.
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
@@ -14801,6 +14887,8 @@ def _get_pgs_solve_mf_gs_kernel(
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if row_phase is not None and not row_phases:
         raise ValueError("row_phase requires row_phases")
+    if torsion_links and not contact_torsion:
+        raise ValueError("torsion_links requires contact_torsion")
     if pair_cache and (friction_mode != "fixed_normal" or factor_coordinates):
         raise ValueError("the friction-pair cache requires the fixed-normal pair solve")
     if factor_coordinates and (
@@ -14945,7 +15033,8 @@ def _get_pgs_solve_mf_gs_kernel(
         else ""
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
-    torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    torsion_sweep = torque_sweep_source(D, linked=torsion_links) if contact_torsion else ""
+    torsion_link_build = torque_links_source(M_D) if torsion_links else ""
     pair_cache_capacity = _mfgs_pair_cache_capacity(M_D)
     # Streamed metadata rereads row types and parents every sweep (patch chains, torsion members).
     row_cache = pair_cache and not shared_metadata
@@ -15237,6 +15326,7 @@ def _get_pgs_solve_mf_gs_kernel(
     }}
     __syncwarp();
 {pair_cache_build}
+{torsion_link_build}
 {dense_pipe_decl}
 
     for (int iter = 0; iter < iterations; iter++) {{
@@ -15522,6 +15612,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 contact_compliance,
                 row_phase,
                 pair_cache,
+                torsion_links,
             )
             + "_local",
         )
@@ -15668,6 +15759,7 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_compliance,
         row_phase,
         pair_cache,
+        torsion_links,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -15690,6 +15782,7 @@ def _mf_gs_kernel_name(
     contact_compliance: bool,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -15698,6 +15791,7 @@ def _mf_gs_kernel_name(
         f"{'' if shared_metadata else '_gmeta'}"
         f"{'_paircache' if pair_cache else ''}"
         f"{'_torsion' if contact_torsion else ''}"
+        f"{'_links' if torsion_links else ''}"
         f"{('_phased' if row_phase is None else f'_phase{row_phase}') if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"

@@ -20,7 +20,7 @@ from newton import GeoType
 from newton._src.solvers.steel import contact_torsion, solver_steel
 from newton._src.solvers.steel import contact_torsion as host
 from newton._src.solvers.steel._testing import kernel_overrides
-from newton._src.solvers.steel.contact_torsion import _contact_groups, _group_budget
+from newton._src.solvers.steel.contact_torsion import _TORSION_SPIN_RETIRED, _contact_groups, _group_budget
 from newton._src.solvers.steel.contact_torsion_device import (
     DeviceTorsionPreparation,
     _host_dot3,
@@ -31,8 +31,14 @@ from newton._src.solvers.steel.friction_patches import link_patch_rows
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
+    PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_TORSION,
+)
+from newton._src.solvers.steel.solver_steel import (
+    _get_pgs_solve_mf_gs_kernel,
+    _use_mfgs_pair_cache,
+    _use_mfgs_torsion_links,
 )
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import (
@@ -3935,6 +3941,330 @@ def _spinner(device, response, iterations, radius, *, spin, steps=1, graph=False
         solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
         state, output = output, state
     return state.joint_qd.numpy(), solver
+
+
+_LINK_ROWS = 40
+_LINK_DOFS = 12
+_LINK_RADIUS = 0.01
+# Tangent rows allow more traction than the group budget, so the sweep must rescale them.
+_LINK_TANGENT_MU = 1.0
+_LINK_GROUP_MU = 0.2
+
+
+class TestTorsionLinkSharedMemory(unittest.TestCase):
+    """Admit the shared row lists only within the kernel's static shared-memory limit."""
+
+    def test_selection(self):
+        """Fall back to the scan when the lists, plus resident metadata or the pair cache, exceed the limit."""
+        options = {"has_drive_rows": False, "fuse_vel_limits": False}
+        device_limit = 101376
+        self.assertTrue(
+            _use_mfgs_torsion_links(1024, 1024, 30, device_limit, shared_metadata=False, pair_cache=False, **options)
+        )
+        self.assertFalse(
+            _use_mfgs_torsion_links(8192, 512, 32, device_limit, shared_metadata=False, pair_cache=False, **options)
+        )
+        self.assertFalse(_use_mfgs_torsion_links(64, 16, 12, 0, shared_metadata=False, pair_cache=False, **options))
+        # 128 + 4 * (16 + 8 + rows) + 4 * rows is 48 KiB at rows = 6116.
+        for rows, limit, admitted in ((6116, device_limit, True), (6117, device_limit, False), (6116, 49151, False)):
+            with self.subTest(rows=rows, limit=limit):
+                self.assertEqual(
+                    _use_mfgs_torsion_links(rows, 8, 16, limit, shared_metadata=False, pair_cache=False, **options),
+                    admitted,
+                )
+        self.assertFalse(
+            _use_mfgs_torsion_links(2048, 0, 16, device_limit, shared_metadata=True, pair_cache=False, **options)
+        )
+        self.assertTrue(
+            _use_mfgs_torsion_links(2048, 0, 16, device_limit, shared_metadata=False, pair_cache=False, **options)
+        )
+        self.assertTrue(
+            _use_mfgs_torsion_links(2500, 0, 16, device_limit, shared_metadata=False, pair_cache=False, **options)
+        )
+        self.assertFalse(
+            _use_mfgs_torsion_links(2500, 0, 16, device_limit, shared_metadata=False, pair_cache=True, **options)
+        )
+        # The lists cut the pair cache's resident blocks per SM from 6 to 4.
+        residency = {"shared_metadata": False, "world_count": 500, "sm_count": 100, **options}
+        self.assertTrue(_use_mfgs_pair_cache(1024, 0, 16, device_limit, **residency))
+        self.assertFalse(_use_mfgs_pair_cache(1024, 0, 16, device_limit, **residency, torsion_links=True))
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestTorsionSweepLinks(unittest.TestCase):
+    """Run the linked and scanning sweeps on identical inputs and require bitwise equal outputs."""
+
+    def test_boundary_layouts_match_scan(self):
+        """Match the scan bitwise for empty, first-row, last-row, over-budget, invalid and retired groups."""
+        layouts = _link_layouts()
+        inputs = _link_kernel_inputs(layouts)
+        device = wp.get_device("cuda:0")
+        for shared_metadata, pair_cache, row_phase in (
+            (True, False, None),
+            (False, False, None),
+            (True, True, None),
+            (False, True, None),
+            (True, False, 4),
+        ):
+            for friction_start in (0, 3):
+                results = {}
+                for linked in (False, True):
+                    kernel = _get_pgs_solve_mf_gs_kernel(
+                        _LINK_ROWS,
+                        1,
+                        _LINK_DOFS,
+                        device.arch,
+                        shared_metadata=shared_metadata,
+                        has_drive_rows=False,
+                        has_dense_velocity_limit_rows=False,
+                        contact_torsion=True,
+                        pair_cache=pair_cache,
+                        row_phases=row_phase is not None,
+                        row_phase=row_phase,
+                        torsion_links=linked,
+                    )
+                    self.assertEqual("_torsion_links" in kernel.key, linked)
+                    results[linked] = _link_launch(kernel, inputs, friction_start, row_phase or 0)
+                with self.subTest(
+                    shared_metadata=shared_metadata,
+                    pair_cache=pair_cache,
+                    row_phase=row_phase,
+                    friction_start=friction_start,
+                ):
+                    for name in ("impulses", "v_out"):
+                        np.testing.assert_array_equal(
+                            results[True][name].view(np.uint32), results[False][name].view(np.uint32)
+                        )
+                    if friction_start == 0:
+                        _assert_link_layouts_exercised(self, layouts, results[True]["impulses"])
+
+    def test_solver_selects_links_and_matches_fallback(self):
+        """Select the lists at a compact capacity and match the forced fallback bitwise."""
+        options = {
+            # Ordered row slots, so both solves lay out the same rows.
+            "deterministic": wp.DeterministicMode.RUN_TO_RUN,
+            "friction_anchor_beta": 0.2,
+            "contact_shared_anchor": False,
+            "contact_friction_shared_anchor": False,
+            "iterations": 8,
+            "spin": 10.0,
+            "sliding": 1.0,
+        }
+        linked, solver, *_ = fixture(0.0075, **options)
+        self.assertTrue(solver._mfgs_torsion_links)
+        self.assertIn("_torsion_links", solver._pgs_solve_mf_gs_kernel.key)
+        with patch.object(solver_steel, "_use_mfgs_torsion_links", return_value=False):
+            scanned, solver, *_ = fixture(0.0075, **options)
+        self.assertFalse(solver._mfgs_torsion_links)
+        self.assertNotIn("_links", solver._pgs_solve_mf_gs_kernel.key)
+        self.assertTrue(np.any(linked["row_type"] == PGS_CONSTRAINT_TYPE_TORSION))
+        for name, value in linked.items():
+            np.testing.assert_array_equal(np.asarray(value), np.asarray(scanned[name]), err_msg=name)
+
+    def test_largest_admitted_capacity_compiles(self):
+        """Compile the linked kernel at the largest capacity the selection admits."""
+        device = wp.get_device("cuda:0")
+        self.assertTrue(
+            _use_mfgs_torsion_links(
+                6116,
+                8,
+                16,
+                device.max_shared_memory_per_block,
+                shared_metadata=False,
+                has_drive_rows=False,
+                fuse_vel_limits=False,
+                pair_cache=False,
+            )
+        )
+        kernel = _get_pgs_solve_mf_gs_kernel(
+            6116,
+            8,
+            16,
+            device.arch,
+            shared_metadata=False,
+            has_drive_rows=False,
+            has_dense_velocity_limit_rows=False,
+            contact_torsion=True,
+            torsion_links=True,
+        )
+        # The solver launches this kernel with one warp per block, which sets its tile storage.
+        wp.load_module(kernel.module, device=device, block_dim=32)
+
+    def test_large_capacity_falls_back(self):
+        """Select the scan when the lists exceed the static limit; the forced-fallback test above solves with it."""
+        _, solver, *_ = fixture(0.0075, articulation_constraint_max=8192, free_body_constraint_max=512, step=False)
+        self.assertFalse(solver._mfgs_torsion_links)
+        self.assertNotIn("_links", solver._pgs_solve_mf_gs_kernel.key)
+
+
+def _link_layouts():
+    """Return per-world (row types, parents, torsion groups, active rows, loaded torsion rows)."""
+
+    def world(active):
+        return (
+            np.full(_LINK_ROWS, PGS_CONSTRAINT_TYPE_JOINT_LIMIT, np.int32),
+            np.full(_LINK_ROWS, -1, np.int32),
+            np.full(_LINK_ROWS, -1, np.int32),
+            active,
+        )
+
+    def contact(types, parents, groups, row, spin, tangents=True):
+        types[row] = PGS_CONSTRAINT_TYPE_CONTACT
+        groups[row] = spin
+        if tangents:
+            types[row + 1 : row + 3] = PGS_CONSTRAINT_TYPE_FRICTION
+            parents[row + 1 : row + 3] = row
+
+    def torsion(types, groups, row, retired=False):
+        types[row] = PGS_CONSTRAINT_TYPE_TORSION
+        if retired:
+            groups[row] = _TORSION_SPIN_RETIRED
+
+    layouts = []
+    # No torsion rows.
+    types, parents, groups, active = world(_LINK_ROWS)
+    for row in range(0, 36, 3):
+        contact(types, parents, groups, row, -1)
+    layouts.append((types, parents, groups, active, []))
+    # Torsion row first, every member after it.
+    types, parents, groups, active = world(_LINK_ROWS)
+    torsion(types, groups, 0)
+    for row in range(1, 37, 3):
+        contact(types, parents, groups, row, 0)
+    layouts.append((types, parents, groups, active, [0]))
+    # Torsion row last at full capacity, after a normal-only member.
+    types, parents, groups, active = world(_LINK_ROWS)
+    for row in range(0, 36, 3):
+        contact(types, parents, groups, row, _LINK_ROWS - 1)
+    contact(types, parents, groups, 37, _LINK_ROWS - 1, tangents=False)
+    torsion(types, groups, _LINK_ROWS - 1)
+    layouts.append((types, parents, groups, active, [_LINK_ROWS - 1]))
+    # Interleaved groups, empty and retired groups, invalid targets, and normal-only members on the
+    # last active rows; inactive rows hold a torsion group that both sweeps must ignore.
+    types, parents, groups, active = world(31)
+    torsion(types, groups, 0)
+    torsion(types, groups, 1)
+    torsion(types, groups, 2)
+    torsion(types, groups, 3, retired=True)
+    targets = [0, 1, 0, 1, -1, 3, 4, 35]
+    for row, spin in zip(range(4, 28, 3), targets, strict=True):
+        contact(types, parents, groups, row, spin)
+    contact(types, parents, groups, 28, 1, tangents=False)
+    contact(types, parents, groups, 29, 0, tangents=False)
+    contact(types, parents, groups, 30, 1, tangents=False)
+    torsion(types, groups, 34)
+    contact(types, parents, groups, 35, 34)
+    layouts.append((types, parents, groups, active, [0, 1]))
+    return layouts
+
+
+def _link_kernel_inputs(layouts):
+    rng = np.random.default_rng(7)
+    worlds = len(layouts)
+    types = np.stack([layout[0] for layout in layouts])
+    J = rng.normal(size=(worlds, _LINK_ROWS, _LINK_DOFS)).astype(np.float32)
+    Y = (0.5 * J).astype(np.float32)
+    rhs = rng.normal(scale=0.5, size=(worlds, _LINK_ROWS)).astype(np.float32)
+    # Approaching normals load the groups; strong tangential slip saturates their tangent rows.
+    rhs[types == PGS_CONSTRAINT_TYPE_CONTACT] = -np.abs(rhs[types == PGS_CONSTRAINT_TYPE_CONTACT]) - 0.5
+    rhs[types == PGS_CONSTRAINT_TYPE_FRICTION] *= 8.0
+    mu = np.zeros((worlds, _LINK_ROWS), np.float32)
+    mu[types == PGS_CONSTRAINT_TYPE_FRICTION] = _LINK_TANGENT_MU
+    mu[types == PGS_CONSTRAINT_TYPE_TORSION] = _LINK_GROUP_MU
+    return {
+        "worlds": worlds,
+        "counts": np.array([layout[3] for layout in layouts], np.int32),
+        "types": types,
+        "parents": np.stack([layout[1] for layout in layouts]),
+        "groups": np.stack([layout[2] for layout in layouts]),
+        "J": J,
+        "Y": Y,
+        "diag": np.einsum("wrd,wrd->wr", J, Y).astype(np.float32) + np.float32(1.0e-3),
+        "rhs": rhs,
+        "mu": mu,
+        "v": rng.normal(size=worlds * _LINK_DOFS).astype(np.float32),
+    }
+
+
+def _link_launch(kernel, inputs, friction_start, row_phase):
+    worlds = inputs["worlds"]
+
+    def arr(value, dtype=float):
+        return wp.array(value, dtype=dtype, device="cuda:0")
+
+    def zeros(shape, dtype=float):
+        return wp.zeros(shape, dtype=dtype, device="cuda:0")
+
+    dense = (worlds, _LINK_ROWS)
+    impulses = zeros(dense)
+    v_out = arr(inputs["v"])
+    wp.launch_tiled(
+        kernel,
+        dim=[worlds],
+        inputs=[
+            arr(inputs["counts"], int),
+            arr(np.arange(worlds * _LINK_DOFS, dtype=np.int32).reshape(worlds, _LINK_DOFS), int),
+            arr(inputs["rhs"]),
+            arr(inputs["diag"]),
+            impulses,
+            arr(inputs["J"]),
+            arr(inputs["Y"]),
+            arr(inputs["types"], int),
+            arr(inputs["parents"], int),
+            arr(inputs["mu"]),
+            *(zeros(dense) for _ in range(5)),
+            zeros(worlds, int),
+            zeros(worlds, int),
+            zeros((worlds, 4), int),
+            zeros((worlds, 1)),
+            *(zeros((worlds, 1, 6)) for _ in range(4)),
+            zeros((worlds, 1)),
+            arr(np.ones(dense, np.float32)),
+            zeros((worlds, 1)),
+            arr(inputs["groups"], int),
+            arr(np.full(dense, _LINK_RADIUS, np.float32)),
+            zeros(dense),
+            zeros((worlds, 1)),
+            6,
+            1.0,
+            0,
+            0,
+            row_phase,
+            friction_start,
+            0,
+        ],
+        outputs=[v_out],
+        block_dim=32,
+        device="cuda:0",
+    )
+    return {"impulses": impulses.numpy(), "v_out": v_out.numpy()}
+
+
+def _assert_link_layouts_exercised(test, layouts, impulses):
+    """Require loaded groups within budget, a rescaled group, a spin impulse and idle retired rows."""
+    rescaled = spun = False
+    for world, (types, parents, groups, active, spins) in enumerate(layouts):
+        lam = impulses[world]
+        torsion_rows = [row for row in range(active) if types[row] == PGS_CONSTRAINT_TYPE_TORSION]
+        if not spins:
+            test.assertFalse(np.any(lam[torsion_rows]))
+        for spin in spins:
+            members = [n for n in range(active) if types[n] == PGS_CONSTRAINT_TYPE_CONTACT and groups[n] == spin]
+            load = sum(max(float(lam[n]), 0.0) for n in members)
+            sliding = sum(
+                float(np.hypot(lam[n + 1], lam[n + 2]))
+                for n in members
+                if n + 2 < active and parents[n + 1] == n and parents[n + 2] == n
+            )
+            budget = _LINK_GROUP_MU * load
+            test.assertGreater(load, 0.0)
+            test.assertLessEqual(sliding + abs(float(lam[spin])) / _LINK_RADIUS, budget * (1.0 + 1.0e-5) + 1.0e-6)
+            rescaled |= sliding > 0.99 * budget
+            spun |= abs(float(lam[spin])) / _LINK_RADIUS > 0.5 * budget
+        retired = [row for row in torsion_rows if groups[row] == _TORSION_SPIN_RETIRED]
+        test.assertFalse(np.any(lam[retired]))
+    test.assertTrue(rescaled, "No group exceeded its friction budget")
+    test.assertTrue(spun, "No group carried a spin impulse")
 
 
 if __name__ == "__main__":
