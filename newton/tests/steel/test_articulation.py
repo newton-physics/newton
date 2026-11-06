@@ -2001,7 +2001,7 @@ for _name in (
 SPRING_KEYS = ("mujoco:dof_passive_stiffness", "mujoco:dof_springref", "mujoco:dof_ref")
 
 
-def _hinge_model(device, *, damping: float, spring_k: float | None = None, spring_ref: float = 0.5):
+def _hinge_model(device, *, damping: float, spring_k: float | None = None, spring_ref: float = 0.5, **joint_kwargs):
     """A fixed-base link on a revolute Z joint, so gravity exerts no torque about the axis.
 
     ``spring_k`` sets the core passive spring stiffness.
@@ -2019,6 +2019,7 @@ def _hinge_model(device, *, damping: float, spring_k: float | None = None, sprin
         damping=damping,
         stiffness=spring_k,
         rest_q=spring_ref,
+        **joint_kwargs,
     )
     builder.add_articulation([joint])
     return builder.finalize(device=device)
@@ -2037,11 +2038,11 @@ def _run_springs(model, solver, steps: int, qd0: float = 0.0):
     return state_0
 
 
-def _construct(test, model, *, solve_mode):
-    """Construct silently, including when the model has unsupported spring properties."""
+def _construct(test, model, *, solve_mode="serial", **solver_kwargs):
+    """Construct silently, including when the model has passive spring properties."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        solver = SolverSteel(model, solve_mode=solve_mode, iterations=8)
+        solver = SolverSteel(model, solve_mode=solve_mode, iterations=8, **solver_kwargs)
     test.assertEqual(caught, [], [str(w.message) for w in caught])
     return solver
 
@@ -2058,33 +2059,248 @@ def test_passive_damping_decays_velocity(test, device, solve_mode="serial"):
     test.assertLess(qd_damped, 0.2 * qd_undamped)
 
 
-def test_nonzero_spring_stiffness_is_ignored(test, device, solve_mode="serial"):
-    """Accept unsupported core spring properties silently and apply no spring torque."""
-    model = _hinge_model(device, damping=0.0, spring_k=4.0, spring_ref=0.5)
-    solver = _construct(test, model, solve_mode=solve_mode)
-    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), [0.0])
-    state = _run_springs(model, solver, 240)
-    np.testing.assert_allclose(state.joint_q.numpy(), [0.0], atol=1.0e-6)
-    test.assertEqual(float(solver._joint_tau.numpy()[0]), 0.0)
+SPRING_MASS = 1.0
 
 
-def test_zero_or_absent_spring_stiffness_does_not_warn(test, device, solve_mode="serial"):
-    """Construct silently with default or explicitly zero spring stiffness."""
-    _construct(test, _hinge_model(device, damping=0.1), solve_mode=solve_mode)
-    _construct(test, _hinge_model(device, damping=0.1, spring_k=0.0), solve_mode=solve_mode)
+SPRING_ARMATURE = 0.1
 
 
-def test_spring_attribute_edits_leave_damping_refresh_intact(test, device, solve_mode="serial"):
-    """Refresh damping on a JOINT_DOF_PROPERTIES notify while still applying no spring torque."""
+# (stiffness, rest_q, initial q) of the prismatic, revolute, D6 linear and D6 angular spring DOFs.
+SPRING_DOFS = ((40.0, 0.2, -0.1), (25.0, -0.4, 0.3), (60.0, 0.05, 0.25), (30.0, 0.6, 0.0))
+
+
+# The free body ahead of the spring joints holds coordinates 0-6 and DOFs 0-5.
+SPRING_COORDS = slice(7, 11)
+
+
+def _spring_scene(device, *, stiffness: tuple[float, ...] | None = None, rest_q: tuple[float, ...] | None = None):
+    """A free body, a prismatic joint, and a welded root branching into a revolute and a two-axis D6 joint.
+
+    Gravity is off and every center of mass lies on its joint axes, so each spring DOF is an independent
+    oscillator of mass ``SPRING_MASS + SPRING_ARMATURE``. The free body's quaternion offsets the spring
+    joints' coordinate indices from their DOF indices, and the branch gives ``parallel_tree`` a tree plan.
+    """
+    stiffness = tuple(k for k, _, _ in SPRING_DOFS) if stiffness is None else stiffness
+    rest_q = tuple(r for _, r, _ in SPRING_DOFS) if rest_q is None else rest_q
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3) * SPRING_MASS)
+    builder.add_body(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=SPRING_MASS, inertia=inertia)
+
+    def link(x):
+        return builder.add_link(
+            xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()), mass=SPRING_MASS, inertia=inertia
+        )
+
+    def parent_xform(x):
+        return wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity())
+
+    def axis(index, direction):
+        return newton.ModelBuilder.JointDofConfig(
+            axis=direction, stiffness=stiffness[index], rest_q=rest_q[index], armature=SPRING_ARMATURE
+        )
+
+    slider = builder.add_joint_prismatic(
+        -1,
+        link(0.0),
+        axis=newton.Axis.X,
+        stiffness=stiffness[0],
+        rest_q=rest_q[0],
+        armature=SPRING_ARMATURE,
+        parent_xform=parent_xform(0.0),
+    )
+    builder.add_articulation([slider])
+    root = link(1.0)
+    branch = [
+        builder.add_joint_fixed(-1, root, parent_xform=parent_xform(1.0)),
+        builder.add_joint_revolute(
+            root,
+            link(1.0),
+            axis=newton.Axis.Z,
+            stiffness=stiffness[1],
+            rest_q=rest_q[1],
+            armature=SPRING_ARMATURE,
+        ),
+        builder.add_joint_d6(
+            root,
+            link(2.0),
+            linear_axes=[axis(2, newton.Axis.X)],
+            angular_axes=[axis(3, newton.Axis.Z)],
+            parent_xform=parent_xform(1.0),
+        ),
+    ]
+    builder.add_articulation(branch)
+    model = builder.finalize(device=device)
+    q = model.joint_q.numpy()
+    q[SPRING_COORDS] = [q0 for _, _, q0 in SPRING_DOFS]
+    model.joint_q.assign(q)
+    return model
+
+
+def _spring_reference(steps: int, *, damping: float = 0.0):
+    """Explicit spring force with Steel's symplectic Euler update, one independent oscillator per DOF."""
+    k = np.array([entry[0] for entry in SPRING_DOFS])
+    rest = np.array([entry[1] for entry in SPRING_DOFS])
+    q = np.array([entry[2] for entry in SPRING_DOFS])
+    qd = np.zeros_like(q)
+    history = []
+    for _ in range(steps):
+        qd = qd + DT * (k * (rest - q) - damping * qd) / (SPRING_MASS + SPRING_ARMATURE)
+        q = q + DT * qd
+        history.append(q.copy())
+    return np.asarray(history)
+
+
+def _spring_trajectory(model, solver, steps: int, *, qd0: float = 0.0):
+    state_0, state_1 = model.state(), model.state()
+    if qd0 != 0.0:
+        qd = state_0.joint_qd.numpy()
+        qd[6:10] = qd0
+        state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    control = model.control()
+    history = []
+    for _ in range(steps):
+        solver.step(state_0, state_1, control, None, DT)
+        state_0, state_1 = state_1, state_0
+        history.append(state_0.joint_q.numpy().copy())
+    return np.asarray(history)
+
+
+SPRING_STEPS = 240
+
+
+def test_springs_match_explicit_reference(test, device, solve_mode="serial", **solver_kwargs):
+    """Oscillate PRISMATIC, REVOLUTE and D6 springs about their rest coordinates as the explicit reference does."""
+    model = _spring_scene(device)
+    solver = _construct(test, model, solve_mode=solve_mode, **solver_kwargs)
+    test.assertEqual(solver._tree_plan is not None, solver_kwargs.get("parallel_tree", False))
+    history = _spring_trajectory(model, solver, SPRING_STEPS)
+    reference = _spring_reference(SPRING_STEPS)
+    np.testing.assert_allclose(history[:, SPRING_COORDS], reference, rtol=0.0, atol=1.0e-5)
+    # The discrete oscillator stays within the time-discretization error of the analytic one.
+    stiffness, rest, q0 = (np.array(column) for column in zip(*SPRING_DOFS, strict=True))
+    omega = np.sqrt(stiffness / (SPRING_MASS + SPRING_ARMATURE))
+    time = DT * np.arange(1, SPRING_STEPS + 1)
+    analytic = rest + (q0 - rest) * np.cos(np.outer(time, omega))
+    np.testing.assert_allclose(history[:, SPRING_COORDS], analytic, rtol=0.0, atol=1.0e-2)
+    # The run spans more than half of every period, so each DOF swings through its rest coordinate.
+    test.assertTrue(np.all(np.min(history[:, SPRING_COORDS] - rest, axis=0) < -0.05))
+    test.assertTrue(np.all(np.max(history[:, SPRING_COORDS] - rest, axis=0) > 0.05))
+    # The free body carries no spring and stays put.
+    np.testing.assert_array_equal(history[:, :7], np.broadcast_to(model.joint_q.numpy()[:7], (SPRING_STEPS, 7)))
+
+
+def test_zero_stiffness_ignores_rest_coordinates(test, device, solve_mode="serial", **solver_kwargs):
+    """Step bitwise like a scene with default rest coordinates when every spring stiffness is zero."""
+    zeros = (0.0,) * len(SPRING_DOFS)
+    trajectories = []
+    for rest_q in (None, zeros):
+        model = _spring_scene(device, stiffness=zeros, rest_q=rest_q)
+        solver = _construct(test, model, solve_mode=solve_mode, **solver_kwargs)
+        trajectories.append(_spring_trajectory(model, solver, 60, qd0=0.5))
+    np.testing.assert_array_equal(trajectories[0], trajectories[1])
+    # Without a spring each DOF coasts at its initial velocity.
+    q0 = np.array([q for _, _, q in SPRING_DOFS])
+    np.testing.assert_allclose(trajectories[0][-1, SPRING_COORDS], q0 + 60 * DT * 0.5, atol=1.0e-5)
+
+
+def test_damped_spring_settles_at_rest_coordinate(test, device, solve_mode="serial", **solver_kwargs):
+    """Settle an undriven, damped hinge at its passive spring's rest coordinate."""
+    model = _hinge_model(device, damping=0.05, spring_k=0.5, spring_ref=0.5)
+    state = _run_springs(model, _construct(test, model, solve_mode=solve_mode, **solver_kwargs), 1200)
+    np.testing.assert_allclose(state.joint_q.numpy(), [0.5], atol=0.02)
+
+
+def test_rest_coordinate_beyond_the_limit_preloads_the_joint(test, device, solve_mode="serial"):
+    """Press a joint against its upper limit with a rest coordinate it cannot reach."""
+    model = _hinge_model(device, damping=0.05, spring_k=0.5, spring_ref=2.62, limit_lower=-10.0, limit_upper=0.3)
+    solver = _construct(test, model, solve_mode=solve_mode, enable_joint_limits=True)
+    state = _run_springs(model, solver, 1200)
+    np.testing.assert_allclose(state.joint_q.numpy(), [0.3], atol=0.03)
+
+
+def _first_step_tau(model, solver):
+    state_0, state_1 = model.state(), model.state()
+    state_0.joint_qd.fill_(1.0)
+    solver.step(state_0, state_1, model.control(), None, DT)
+    return solver._joint_tau.numpy().copy()
+
+
+def test_spring_edits_follow_their_notifications(test, device, solve_mode="serial"):
+    """Re-read stiffness on DOF force notifications and rest coordinates on reference-pose notifications."""
     model = _hinge_model(device, damping=0.0, spring_k=0.0, spring_ref=0.5)
     solver = _construct(test, model, solve_mode=solve_mode)
     model.joint_stiffness.assign([4.0])
     model.joint_damping.assign([3.0])
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    # 4 * (0.5 - 0) spring torque against 3 * 1 damping torque.
+    np.testing.assert_allclose(_first_step_tau(model, solver), [-1.0], atol=1.0e-6)
+    model.joint_rest_q.assign([0.25])
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_allclose(_first_step_tau(model, solver), [-1.0], atol=1.0e-6)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+    np.testing.assert_allclose(_first_step_tau(model, solver), [-2.0], atol=1.0e-6)
+    # A replaced array is re-read too.
+    model.joint_stiffness = wp.array([12.0], dtype=wp.float32, device=device)
+    model.joint_rest_q = wp.array([0.5], dtype=wp.float32, device=device)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    np.testing.assert_allclose(_first_step_tau(model, solver), [3.0], atol=1.0e-6)
+
+
+def test_captured_spring_notifications_apply_in_place_edits(test, device):
+    """Replay captured DOF force and reference-pose notifications after in-place spring edits."""
+    model = _hinge_model(device, damping=3.0, spring_k=4.0, spring_ref=0.5)
+    solver = _construct(test, model)
     state_0, state_1 = model.state(), model.state()
-    state_0.joint_qd.fill_(1.0)
-    solver.step(state_0, state_1, model.control(), None, DT)
-    np.testing.assert_allclose(solver._joint_tau.numpy(), [-3.0], atol=1.0e-6)
+    control = model.control()
+    flags = newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES | newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+    solver.notify_model_changed(flags)
+    solver.step(state_0, state_1, control, None, DT)
+    with wp.ScopedCapture(device) as capture:
+        solver.notify_model_changed(flags)
+        solver.step(state_0, state_1, control, None, DT)
+    taus = []
+    for stiffness, rest_q in ((4.0, 0.5), (2.0, -0.5)):
+        model.joint_stiffness.assign([stiffness])
+        model.joint_rest_q.assign([rest_q])
+        state_0.joint_q.zero_()
+        state_0.joint_qd.fill_(1.0)
+        wp.capture_launch(capture.graph)
+        taus.append(float(solver._joint_tau.numpy()[0]))
+    np.testing.assert_allclose(taus, [4.0 * 0.5 - 3.0, 2.0 * -0.5 - 3.0], atol=1.0e-6)
+
+
+def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial"):
+    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs, across construction and notifications."""
+    builder, loop_joint = _build_square_loop("revolute")
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    links = [
+        builder.add_link(
+            xform=wp.transform(wp.vec3(3.0 + 0.3 * i, 0.0, 1.0), wp.quat_identity()), mass=0.5, inertia=inertia
+        )
+        for i in range(3)
+    ]
+    hinge = wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity())
+    joints = [
+        builder.add_joint_free(child=links[0]),
+        builder.add_joint_ball(parent=links[0], child=links[1], parent_xform=hinge),
+        builder.add_joint_revolute(parent=links[1], child=links[2], parent_xform=hinge, axis=newton.Axis.Z),
+    ]
+    builder.add_articulation(joints)
+    builder.joint_stiffness = [5.0] * builder.joint_dof_count
+    model = builder.finalize(device=device)
+    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE and BALL joints do not.
+    qd_start = model.joint_qd_start.numpy()
+    sprung = np.zeros(model.joint_dof_count, dtype=bool)
+    sprung[qd_start[joints[2]]] = True
+    sprung[: qd_start[loop_joint]] = True
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+        solver = SolverSteel(model, solve_mode=solve_mode)
+        np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
+        model.joint_stiffness.fill_(7.0)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
 
 
 def test_registration_adds_no_spring_attributes(test, device):
@@ -2104,17 +2320,51 @@ add_function_test(
     test_passive_damping_decays_velocity,
     devices=get_test_devices(),
 )
+
+
+# Each route launches a different kernel for the inverse-dynamics pass that applies the springs.
+SPRING_ROUTES = {
+    "_drive_rows": {"drive_mode": "rows"},
+    "_parallel_tree": {"parallel_tree": True},
+}
+
+
+add_function_test(
+    TestSteelSprings,
+    "test_springs_match_explicit_reference",
+    test_springs_match_explicit_reference,
+    devices=get_test_devices(),
+)
+for _suffix, _kwargs in SPRING_ROUTES.items():
+    add_function_test(
+        TestSteelSprings,
+        f"test_springs_match_explicit_reference{_suffix}",
+        test_springs_match_explicit_reference,
+        devices=get_cuda_test_devices(),
+        **_kwargs,
+    )
 for _name, _func in (
-    ("test_nonzero_spring_stiffness_is_ignored", test_nonzero_spring_stiffness_is_ignored),
-    ("test_zero_or_absent_spring_stiffness_does_not_warn", test_zero_or_absent_spring_stiffness_does_not_warn),
+    ("test_zero_stiffness_ignores_rest_coordinates", test_zero_stiffness_ignores_rest_coordinates),
+    ("test_damped_spring_settles_at_rest_coordinate", test_damped_spring_settles_at_rest_coordinate),
     (
-        "test_spring_attribute_edits_leave_damping_refresh_intact",
-        test_spring_attribute_edits_leave_damping_refresh_intact,
+        "test_rest_coordinate_beyond_the_limit_preloads_the_joint",
+        test_rest_coordinate_beyond_the_limit_preloads_the_joint,
     ),
+    ("test_spring_edits_follow_their_notifications", test_spring_edits_follow_their_notifications),
 ):
     add_function_test(TestSteelSprings, _name, _func, devices=get_test_devices())
-
-
+add_function_test(
+    TestSteelSprings,
+    "test_captured_spring_notifications_apply_in_place_edits",
+    test_captured_spring_notifications_apply_in_place_edits,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSteelSprings,
+    "test_springs_skip_unsupported_joint_types",
+    test_springs_skip_unsupported_joint_types,
+    devices=get_test_devices(),
+)
 add_function_test(
     TestSteelSprings,
     "test_registration_adds_no_spring_attributes",
@@ -3764,7 +4014,11 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
     builder.joint_target_ke[builder.joint_qd_start[joint]] = 10.0
     with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
         SolverSteel(builder.finalize(device=device))
-    for name, attribute, value in (("damping", "joint_damping", 100.0), ("armature", "joint_armature", 0.1)):
+    for name, attribute, value in (
+        ("damping", "joint_damping", 100.0),
+        ("spring stiffness", "joint_stiffness", 5.0),
+        ("armature", "joint_armature", 0.1),
+    ):
         builder, joint = _build_world_hinged_swing(test, "revolute")
         getattr(builder, attribute)[builder.joint_qd_start[joint]] = value
         with test.assertWarnsRegex(newton.exceptions.NewtonWarning, f"loop-closing REVOLUTE joint .* {name}"):
