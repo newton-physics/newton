@@ -1273,6 +1273,7 @@ def _eval_edge_edge_contact_rigid_motion_kernel(
     edge_indices: wp.array2d[wp.int32],
     damping_delta_norms: wp.array[float],
 ):
+    """Largest two-sided damping force on the two vertices of edge 1 under one rigid motion of an edge pair."""
     # Two-sided damping: a rigid motion of the pair must leave the gap rate itself at zero.
     sample = wp.tid()
     dt = 0.1

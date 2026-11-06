@@ -867,8 +867,8 @@ Work through these steps in order and stop at the first one that fixes it.
    and keep ``soft_contact_damping_bidirectional`` at its default ``True``.
    This damper acts on the rate at which the distance of a contact pair
    changes. With ``True`` it acts while the pair closes and while it opens, so the rebound
-   is damped too. With ``False`` it acts only while the pair closes, the
-   behaviour of earlier releases, and leaves the rebound undamped. With that
+   is damped too. With ``False`` it acts only while the pair closes and
+   leaves the rebound undamped. With that
    closing-only damper a stack of thin layers, such as the cards in
    ``example_cloth_poker_cards``, kept bouncing, and raising
    :attr:`~newton.Model.soft_contact_kd` made it worse instead of better.

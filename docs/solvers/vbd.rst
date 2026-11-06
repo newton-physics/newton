@@ -713,7 +713,7 @@ closest point, so a rigid motion of the pair gives :math:`\dot d = 0`. The force
 :math:`\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}` with the
 Hessian :math:`(\mathtt{soft\_contact\_kd}/h)\,\mathbf{n}\mathbf{n}^T`. By default
 (``soft_contact_damping_bidirectional=True``) it acts while the gap closes and
-while it opens. ``soft_contact_damping_bidirectional=False`` restores the
+while it opens. ``soft_contact_damping_bidirectional=False`` keeps
 closing-only damping, which leaves a separating pair undamped.
 
 *Rigid-soft contact* acts between a soft contact point and one shape of a
