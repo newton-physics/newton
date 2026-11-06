@@ -43,8 +43,10 @@ jobs:
           private-key: ${{ secrets.MAINTAINER_APPROVAL_APP_PRIVATE_KEY }}
           owner: newton-physics
           repositories: newton
-          # Inherit only the App's configured PR write, Contents read, and
-          # organization Members read. No contents write, admin, or rule bypass.
+          # Request only these permissions, even if the installation grants more.
+          permission-contents: read
+          permission-pull-requests: write
+          permission-members: read
 
       - name: Validate command and submit delegated approval
         # Use only runner-owned Python and imports: repository virtualenvs,

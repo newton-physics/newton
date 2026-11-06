@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
@@ -477,7 +478,9 @@ def parse_mjcf(
         convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-            and finalize under ``model.mujoco.equality_constraint_*``.
+            and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
+            target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
+            with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
             Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
             an identity rest orientation. Default is False.
@@ -1909,12 +1912,10 @@ def parse_mjcf(
             # Sites are typically hidden by default
             visible = False
 
-            # Expand to 3-element vector if needed
-            if len(site_size) == 2:
-                # Two values (e.g., capsule/cylinder: radius, half-height)
-                radius = site_size[0]
-                half_height = site_size[1]
-                site_size = wp.vec3(radius, half_height, 0.0)
+            # MuJoCo ignores the third size component of a cylinder site, whereas
+            # Newton interprets a cylinder's scale[2] as its barrel radius.
+            if geo_type == GeoType.CYLINDER:
+                site_size[2] = 0.0
 
             # Add site using builder.add_site()
             site_label = f"{label_prefix}/{site_name}" if label_prefix else site_name
@@ -1925,7 +1926,6 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
-                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
@@ -2987,6 +2987,7 @@ def parse_mjcf(
                             common["name"],
                         )
 
+        mujoco_only_joint_equalities = []
         for joint in equality.findall("joint"):
             attribs = resolve_element_attrib(joint, "equality")
             common = parse_common_attributes(attribs)
@@ -3001,11 +3002,34 @@ def parse_mjcf(
                         "Joint constraint: %s coupled to %s with polycoef %s", joint1_name, joint2_name, polycoef
                     )
 
-                joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
-                joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
+                endpoints = []
+                for name in (joint1_name, joint2_name):
+                    if not name:
+                        # MuJoCo fixes joint1 to the polynomial's constant term when joint2 is omitted.
+                        endpoints.append((-1, -1))
+                        continue
+                    key = sanitize_name(name)
+                    if key not in joint_name_to_idx:
+                        raise ValueError(f"Joint equality '{common['name']}' references unknown joint '{name}'.")
+                    endpoints.append((joint_name_to_idx[key], mjcf_joint_name_to_dof.get(key, -1)))
+                if joint2_name and endpoints[0] == endpoints[1]:
+                    raise ValueError(f"Joint equality '{common['name']}' uses joint '{joint1_name}' as both endpoints.")
+                (joint1_idx, joint1_dof), (joint2_idx, joint2_dof) = endpoints
+                custom_attrs["mujoco:equality_constraint_joint1_dof"] = joint1_dof
+                custom_attrs["mujoco:equality_constraint_joint2_dof"] = joint2_dof
                 polycoef_values = mjc_parse_polycoef(polycoef)
+                # Slide coordinates are imported in scaled lengths: q1 = sum(c_k q2^k)
+                # becomes s1 q1 = sum(c_k s1 / s2^k (s2 q2)^k).
+                s1 = scale if sanitize_name(joint1_name) in mjcf_slide_joint_names else 1.0
+                s2 = scale if joint2_name and sanitize_name(joint2_name) in mjcf_slide_joint_names else 1.0
+                polycoef_values = [c * s1 / s2**k for k, c in enumerate(polycoef_values)]
+                # Newton mimic constraints couple two whole scalar joints; other
+                # endpoints stay MuJoCo equality rows resolved per DoF.
+                scalar_pair = joint2_idx >= 0 and all(
+                    sum(builder.joint_dof_dim[index]) == 1 for index in (joint1_idx, joint2_idx)
+                )
 
-                if convert_mjc_equality_constraints:
+                if convert_mjc_equality_constraints and scalar_pair:
                     if mjc_polycoef_has_higher_order(polycoef_values):
                         warnings.warn(
                             f"Joint equality '{common['name']}' uses higher-order polycoef terms. "
@@ -3024,6 +3048,8 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
+                    if convert_mjc_equality_constraints:
+                        mujoco_only_joint_equalities.append(common["name"] or f"joint1={joint1_name}")
                     _add_equality_constraint(
                         builder,
                         constraint_type=EqType.JOINT,
@@ -3034,6 +3060,18 @@ def parse_mjcf(
                         enabled=common["active"],
                         custom_attributes=custom_attrs,
                     )
+
+        if mujoco_only_joint_equalities:
+            shown = ", ".join(mujoco_only_joint_equalities[:5])
+            if len(mujoco_only_joint_equalities) > 5:
+                shown += ", ..."
+            warnings.warn(
+                f"{len(mujoco_only_joint_equalities)} joint equalities omit joint2 or target a multi-DoF joint, "
+                f"such as joints sharing a body ({shown}), so they stay MuJoCo equality constraints instead of "
+                "mimic constraints. SolverMuJoCo enforces them; other solvers ignore them.",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
         # TODO: add support for equality constraint type "flex" once Newton supports it

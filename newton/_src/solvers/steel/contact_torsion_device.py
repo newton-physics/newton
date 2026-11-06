@@ -864,9 +864,9 @@ class DeviceTorsionPreparation:
         shape = (solver._world_count, solver._articulation_constraint_max)
         w.row_contact = wp.full(shape, -1, dtype=int, device=device)
         w.spin_source = wp.full(shape, -1, dtype=int, device=device)
-        # The propagation responses host groups of the contacts that reserved a torsion spare.
+        # The propagation response hosts groups of the contacts that reserved a torsion spare.
         self.propagation = bool(solver._propagation_torsion_rows)
-        self.host_last_row = int(self.propagation and solver._articulated_contact_response == "propagation_colored")
+        self.host_last_row = int(self.propagation and solver._propagation_colored)
         self.families = 2 if self.propagation else 1
         propagation_shape = (solver._world_count, solver._propagation_max_constraints) if self.propagation else (1, 1)
         w.propagation_row_contact = wp.full(propagation_shape, -1, dtype=int, device=device)

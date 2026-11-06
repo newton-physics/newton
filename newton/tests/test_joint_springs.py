@@ -15,12 +15,12 @@ from newton.solvers.experimental.coupled import ModelView, SolverCoupled
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
-# Construction arguments of each solver on the CPU; Steel's default matrix-free solve requires CUDA.
+# Construction arguments of each solver on the CPU.
 CPU_SOLVER_KWARGS = {
     SolverFeatherstone: {},
     SolverSemiImplicit: {},
     SolverMuJoCo: {"use_mujoco_cpu": True},
-    SolverSteel: {"solve_mode": "split"},
+    SolverSteel: {},
 }
 
 
