@@ -37,7 +37,7 @@ def test_box_contact_nearby_face(test, device, *, split=False):
             wp.vec3(0.735, -0.35, height), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), tilt)
         )
         body = builder.add_body(xform=object_pose)
-        table_shape = -1
+        table_shape = object_shape = -1
         for is_table in (False, True) if swap else (True, False):
             if is_table:
                 table_shape = builder.add_shape_box(
@@ -49,11 +49,15 @@ def test_box_contact_nearby_face(test, device, *, split=False):
                     cfg=builder.ShapeConfig(gap=0.01),
                 )
             elif use_mesh:
-                builder.add_shape_convex_hull(body=body, mesh=mesh, cfg=builder.ShapeConfig(gap=0.001))
+                object_shape = builder.add_shape_convex_hull(body=body, mesh=mesh, cfg=builder.ShapeConfig(gap=0.001))
             else:
-                builder.add_shape_box(body=body, hx=half[0], hy=half[1], hz=half[2], cfg=builder.ShapeConfig(gap=0.001))
+                object_shape = builder.add_shape_box(
+                    body=body, hx=half[0], hy=half[1], hz=half[2], cfg=builder.ShapeConfig(gap=0.001)
+                )
         builder.end_world()
-        cases.append((table_shape, table_pose, object_pose, thickness, use_mesh, swap, rotation, tilt, height))
+        cases.append(
+            (table_shape, object_shape, table_pose, object_pose, thickness, use_mesh, swap, rotation, tilt, height)
+        )
     model = builder.finalize(device)
     pipeline = newton.CollisionPipeline(model)
     test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
@@ -64,9 +68,13 @@ def test_box_contact_nearby_face(test, device, *, split=False):
     shape1 = contacts.rigid_contact_shape1.numpy()[:count]
     normals = contacts.rigid_contact_normal.numpy()[:count]
     points = [contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]]
-    for table_shape, table_pose, object_pose, thickness, use_mesh, swap, rotation, tilt, height in cases:
+    matched = 0
+    for table_shape, object_shape, table_pose, object_pose, thickness, use_mesh, swap, rotation, tilt, height in cases:
         with test.subTest(thickness=thickness, mesh=use_mesh, swap=swap, rotation=rotation, tilt=tilt, height=height):
-            indices = np.flatnonzero((shape0 == table_shape) | (shape1 == table_shape))
+            pair = np.minimum(shape0, shape1) == min(table_shape, object_shape)
+            pair &= np.maximum(shape0, shape1) == max(table_shape, object_shape)
+            indices = np.flatnonzero(pair)
+            matched += len(indices)
             test.assertGreater(len(indices), 0)
             upward = np.asarray(wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, 1.0)))
             signs = np.where(shape0[indices] == table_shape, 1.0, -1.0)
@@ -83,6 +91,8 @@ def test_box_contact_nearby_face(test, device, *, split=False):
                 depths.append(float(np.dot(table_point - object_point, upward)))
             expected_depth = 0.23 - height + half[2] * np.cos(tilt) + half[0] * np.sin(tilt)
             test.assertAlmostEqual(max(depths), expected_depth, delta=1.0e-5)
+    # Contacts between worlds would belong to no case.
+    test.assertEqual(matched, count)
 
 
 class TestBoxContactNormal(unittest.TestCase):
