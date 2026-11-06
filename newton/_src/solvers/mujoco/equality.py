@@ -13,6 +13,7 @@ for custom schemas.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,8 @@ from .enums import EqType
 
 if TYPE_CHECKING:
     from ...sim.builder import ModelBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class MjcEqualityTargetKind(IntEnum):
@@ -59,7 +62,13 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     model_assignment = Model.AttributeAssignment.MODEL
 
     # Register the custom frequency before any custom attributes that use it.
-    builder.add_custom_frequency(type(builder).CustomFrequency(name="equality_constraint", namespace="mujoco"))
+    builder.add_custom_frequency(
+        type(builder).CustomFrequency(
+            name="equality_constraint",
+            namespace="mujoco",
+            collapse_fixed_joints_handler=_collapse_equality_constraints,
+        )
+    )
 
     builder.add_custom_attribute(
         ca(
@@ -236,6 +245,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             dtype=wp.int32,
             default=-1,
             namespace="mujoco",
+            reference_value_transformer=_remap_equality_targets,
         )
     )
     # MuJoCo solver reference parameters, parsed from USD/MJCF and read back by SolverMuJoCo.
@@ -263,6 +273,148 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             mjcf_attribute_name="solimp",
         )
     )
+
+
+def _equality_values(builder: ModelBuilder, name: str, *, writable: bool = False) -> tuple[Any, list[Any]]:
+    """Return the ``mujoco:<name>`` attribute and its sparse backing values list.
+
+    With ``writable``, an unset list is created on the attribute so writes persist.
+    """
+    attr = builder.custom_attributes[f"mujoco:{name}"]
+    if attr.values is None and writable:
+        attr.values = []
+    return attr, attr.values if attr.values is not None else []
+
+
+def _value_at(values: list[Any], index: int, default: Any) -> Any:
+    """Read a sparse custom-frequency value, falling back to ``default`` for missing or ``None`` rows."""
+    if index >= len(values) or values[index] is None:
+        return default
+    return values[index]
+
+
+def _set_value(values: list[Any], index: int, value: Any) -> None:
+    """Write a sparse custom-frequency value, padding omitted rows with ``None``."""
+    if len(values) <= index:
+        values.extend([None] * (index + 1 - len(values)))
+    values[index] = value
+
+
+def _target_kind(value: Any) -> int:
+    try:
+        return int(value) if value is not None else int(MjcEqualityTargetKind.NONE)
+    except (TypeError, ValueError):
+        return int(MjcEqualityTargetKind.NONE)
+
+
+def _remap_equality_targets(values: list[Any], context: dict[str, Any]) -> list[Any]:
+    """Offset ``equality_constraint_target`` values copied by :meth:`ModelBuilder.add_builder`.
+
+    The target indexes a joint or a mimic constraint depending on the row's
+    ``equality_constraint_target_kind``, so a single ``references`` offset cannot remap it.
+    """
+    kind_attr = context["builder"].custom_attributes.get("mujoco:equality_constraint_target_kind")
+    kind_values = (kind_attr.values or []) if kind_attr is not None else []
+    entity_offsets = context["entity_offsets"]
+    offsets = {
+        int(MjcEqualityTargetKind.JOINT): entity_offsets["joint"],
+        int(MjcEqualityTargetKind.MIMIC): entity_offsets["constraint_mimic"],
+    }
+    remapped = []
+    for row, value in zip(context["row_indices"], values, strict=True):
+        try:
+            target = int(value) if value is not None else -1
+        except (TypeError, ValueError):
+            target = -1
+        offset = offsets.get(_target_kind(_value_at(kind_values, row, None)))
+        remapped.append(target + offset if target >= 0 and offset is not None else value)
+    return remapped
+
+
+def _collapse_equality_constraints(builder: ModelBuilder, context: dict[str, Any]) -> None:
+    """Update equality rows for :meth:`ModelBuilder.collapse_fixed_joints`.
+
+    Re-expresses CONNECT anchors and WELD anchors/relative poses in the frame of the body a
+    referenced body was merged into, disables rows whose joints were removed, and remaps or
+    clears projected targets. Body and joint references are remapped generically afterwards.
+    """
+    count = builder._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+    joint_remap = context["joint_remap"]
+    body_merged_parent = context["body_merged_parent"]
+    body_merged_transform = context["body_merged_transform"]
+    verbose = context["verbose"]
+
+    if count > 0:
+        body1_attr, body1_values = _equality_values(builder, "equality_constraint_body1")
+        body2_attr, body2_values = _equality_values(builder, "equality_constraint_body2")
+        type_attr, type_values = _equality_values(builder, "equality_constraint_type")
+        anchor_attr, anchor_values = _equality_values(builder, "equality_constraint_anchor", writable=True)
+        relpose_attr, relpose_values = _equality_values(builder, "equality_constraint_relpose", writable=True)
+        joint1_attr, joint1_values = _equality_values(builder, "equality_constraint_joint1")
+        joint2_attr, joint2_values = _equality_values(builder, "equality_constraint_joint2")
+        _enabled_attr, enabled_values = _equality_values(builder, "equality_constraint_enabled", writable=True)
+
+        for i in range(count):
+            old_body1 = _value_at(body1_values, i, body1_attr.default)
+            old_body2 = _value_at(body2_values, i, body2_attr.default)
+            constraint_type = _value_at(type_values, i, type_attr.default)
+
+            # Express anchor/relpose in the frame of the body a referenced body was merged into.
+            if old_body1 in body_merged_parent:
+                merge_xform = body_merged_transform[old_body1]
+                if constraint_type == EqType.CONNECT:
+                    anchor = axis_to_vec3(_value_at(anchor_values, i, anchor_attr.default))
+                    _set_value(anchor_values, i, wp.transform_point(merge_xform, anchor))
+                if constraint_type == EqType.WELD:
+                    relpose = _value_at(relpose_values, i, relpose_attr.default)
+                    _set_value(relpose_values, i, merge_xform * relpose)
+
+            if old_body2 in body_merged_parent and constraint_type == EqType.WELD:
+                merge_xform = body_merged_transform[old_body2]
+                anchor = axis_to_vec3(_value_at(anchor_values, i, anchor_attr.default))
+                relpose = _value_at(relpose_values, i, relpose_attr.default)
+                _set_value(anchor_values, i, wp.transform_point(merge_xform, anchor))
+                _set_value(relpose_values, i, relpose * wp.transform_inverse(merge_xform))
+
+            for old_joint in (
+                _value_at(joint1_values, i, joint1_attr.default),
+                _value_at(joint2_values, i, joint2_attr.default),
+            ):
+                if old_joint != -1 and old_joint not in joint_remap:
+                    if verbose:
+                        logger.warning(
+                            "Equality constraint references removed joint %s, disabling constraint", old_joint
+                        )
+                    _set_value(enabled_values, i, False)
+
+    target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
+    target_attr = builder.custom_attributes.get("mujoco:equality_constraint_target")
+    if target_kind_attr is None or target_attr is None or not target_attr.values:
+        return
+    if target_kind_attr.values is None:
+        target_kind_attr.values = []
+    target_values = target_attr.values
+    kind_values = target_kind_attr.values
+    mimic_count = len(builder.constraint_mimic_joint0)
+    for row, value in enumerate(target_values):
+        if value is None:
+            continue
+        try:
+            old_target = int(value)
+        except (TypeError, ValueError):
+            continue
+        if old_target < 0:
+            continue
+        kind = _target_kind(_value_at(kind_values, row, None))
+        if kind == MjcEqualityTargetKind.JOINT:
+            if old_target in joint_remap:
+                target_values[row] = joint_remap[old_target]
+            else:
+                target_values[row] = -1
+                _set_value(kind_values, row, int(MjcEqualityTargetKind.NONE))
+        elif kind == MjcEqualityTargetKind.MIMIC and old_target >= mimic_count:
+            target_values[row] = -1
+            _set_value(kind_values, row, int(MjcEqualityTargetKind.NONE))
 
 
 def _register_equality_tendon_attributes(builder: ModelBuilder) -> None:
