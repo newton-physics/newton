@@ -680,10 +680,17 @@ class ModelView:
 
         Args:
             particle_indices: 1-D int array of particle indices to mark.
+
+        Raises:
+            ValueError: If any selected particle sets :attr:`~newton.ParticleFlags.KINEMATIC`.
         """
         parent = object.__getattribute__(self, "_parent")
         if particle_indices.shape[0] == 0:
             return
+
+        flags = self.particle_flags.numpy()[particle_indices.numpy()]
+        if (flags & int(ParticleFlags.KINEMATIC)).any():
+            raise ValueError("ParticleFlags.KINEMATIC particles cannot be marked as coupling proxies.")
 
         particle_flags = self._cow_array("particle_flags")
         wp.launch(

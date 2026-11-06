@@ -22,6 +22,24 @@ class ParticleFlags(IntEnum):
         change without prior notice.
     """
 
+    KINEMATIC = 1 << 2
+    """User-prescribed particle that does not respond to applied forces.
+
+    Each solver step moves the particle from :attr:`State.particle_q <newton.State.particle_q>`
+    to :attr:`Control.particle_target_q <newton.Control.particle_target_q>` and sets
+    :attr:`State.particle_qd <newton.State.particle_qd>` to the displacement divided by
+    ``dt``. Takes effect only together with :attr:`ACTIVE`; the particle keeps its mass,
+    so clearing this bit releases it as a regular dynamic particle.
+
+    .. experimental::
+
+        ``ParticleFlags.KINEMATIC`` is supported by :class:`~newton.solvers.SolverVBD`,
+        :class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverFeatherstone`
+        and :class:`~newton.solvers.SolverXPBD`. :class:`~newton.solvers.SolverStyle3D` and
+        :class:`~newton.solvers.SolverImplicitMPM` raise ``NotImplementedError`` at
+        construction if any particle sets it.
+    """
+
 
 # Shape flags
 class ShapeFlags(IntEnum):

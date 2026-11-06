@@ -51,6 +51,20 @@ class Control:
         Matches :attr:`~newton.State.joint_qd`.
         """
 
+        self.particle_target_q: wp.array[wp.vec3] | None = None
+        """Kinematic particle position targets [m], world frame, shape ``(particle_count,)``.
+
+        Matches :attr:`~newton.State.particle_q`. Read only for particles flagged
+        ``ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC``; other entries are ignored.
+        The target is the end-of-step position of the current ``solver.step()`` call.
+        If this array is ``None`` or no Control is passed, kinematic particles hold their ``state_in`` position with zero velocity.
+
+        .. experimental::
+
+            ``Control.particle_target_q`` is experimental; see
+            :attr:`ParticleFlags.KINEMATIC <newton.ParticleFlags.KINEMATIC>`.
+        """
+
         self.joint_act: wp.array | None = None
         """Per-DOF feedforward actuation input, shape ``(joint_dof_count,)``, type ``float`` (optional).
 
@@ -73,17 +87,21 @@ class Control:
         """
 
     def clear(self, model: Model | None = None) -> None:
-        """Reset all control inputs to zero.
+        """Reset all control inputs to zero, except the position targets below.
 
         ``joint_target_q`` is special: zeroing it corrupts
         FREE/BALL/DISTANCE quaternion slots (``(0,0,0,0)`` is not a valid
         rotation). Pass ``model`` to restore it from ``model.joint_target_q``
         instead. Without ``model`` it falls back to the legacy zero-fill.
 
+        ``particle_target_q`` is never zeroed, since that would drive kinematic
+        particles to the origin. Pass ``model`` to restore it from
+        ``model.particle_q``; without ``model`` it is left unchanged.
+
         Args:
-            model: Optional source :class:`Model` whose ``joint_target_q``
-                seeds this Control. Required for models with FREE/BALL/DISTANCE
-                joints.
+            model: Optional source :class:`Model` whose ``joint_target_q`` and
+                ``particle_q`` seed this Control. Required for models with
+                FREE/BALL/DISTANCE joints.
         """
 
         if self.joint_f is not None:
@@ -103,6 +121,8 @@ class Control:
             self.joint_target_qd.zero_()
         if self.joint_act is not None:
             self.joint_act.zero_()
+        if self.particle_target_q is not None and model is not None and model.particle_q is not None:
+            wp.copy(self.particle_target_q, model.particle_q)
         self._clear_namespaced_arrays()
 
     def _clear_namespaced_arrays(self) -> None:

@@ -279,6 +279,7 @@ class SolverStyle3D(SolverBase):
             )
 
         super().__init__(model)
+        self._raise_if_kinematic_particles()
         if not hasattr(model, "style3d"):
             raise AttributeError(
                 "Style3D custom attributes are missing from the model. "

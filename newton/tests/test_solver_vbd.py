@@ -9137,5 +9137,269 @@ add_function_test(
 )
 
 
+# ---------------------------------------------------------------------------
+# Kinematic particle targets (ParticleFlags.KINEMATIC + Control.particle_target_q)
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _kinematic_target_offset_kernel(
+    indices: wp.array[wp.int32],
+    q0: wp.array[wp.vec3],
+    offset: wp.vec3,
+    target_q: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    i = indices[tid]
+    target_q[i] = q0[i] + offset
+
+
+@wp.kernel
+def _kinematic_target_device_time_kernel(
+    indices: wp.array[wp.int32],
+    q0: wp.array[wp.vec3],
+    t: wp.array[float],
+    velocity: wp.vec3,
+    target_q: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    i = indices[tid]
+    target_q[i] = q0[i] + velocity * t[0]
+
+
+@wp.kernel
+def _kinematic_advance_time_kernel(t: wp.array[float], dt: float):
+    t[0] = t[0] + dt
+
+
+@wp.kernel
+def _kinematic_clear_flag_kernel(indices: wp.array[wp.int32], flags: wp.array[wp.int32]):
+    i = indices[wp.tid()]
+    flags[i] = flags[i] & ~wp.int32(newton.ParticleFlags.KINEMATIC)
+
+
+def _kinematic_cloth_model(device, kinematic, dim=2, gravity=(0.0, 0.0, -10.0), z=1.0):
+    cloth = newton.ModelBuilder(gravity=gravity)
+    cloth.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, z),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=dim,
+        dim_y=dim,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-3,
+        particle_radius=0.01,
+    )
+    for i in kinematic:
+        cloth.particle_flags[i] |= int(newton.ParticleFlags.KINEMATIC)
+    cloth.color()
+    return cloth.finalize(device=device)
+
+
+def _run_kinematic_steps(model, solver, steps, dt, indices, offset_per_step, control=None):
+    """Step with a kernel-written target; return (q_in, target, state_out) of the last step."""
+    state_0, state_1 = model.state(), model.state()
+    control = model.control() if control is None else control
+    q_rest = wp.clone(model.particle_q)
+    idx = wp.array(indices, dtype=wp.int32, device=model.device)
+    q_in = None
+    for k in range(steps):
+        offset = wp.vec3(offset_per_step) * float(k + 1)
+        wp.launch(
+            _kinematic_target_offset_kernel,
+            dim=len(indices),
+            inputs=[idx, q_rest, offset],
+            outputs=[control.particle_target_q],
+            device=model.device,
+        )
+        if k == steps - 1:
+            q_in = state_0.particle_q.numpy().copy()
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+    return q_in, control.particle_target_q.numpy().copy(), state_0
+
+
+def test_kinematic_particle_friction_drag(test, device):
+    """A sheet resting on a sideways-moving KINEMATIC sheet is dragged by self-contact friction."""
+    settle_steps, move_steps, dt, step_dx = 100, 100, 2.0e-3, 2.0e-4
+    plate_count = 16
+
+    def run(mu):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+        for z in (0.0, 0.02):
+            builder.add_cloth_grid(
+                pos=wp.vec3(0.0, 0.0, z),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=3,
+                dim_y=3,
+                cell_x=0.1,
+                cell_y=0.1,
+                mass=0.05,
+                tri_ke=1.0e3,
+                tri_ka=1.0e3,
+                tri_kd=1.0e-3,
+                particle_radius=0.005,
+            )
+        for i in range(plate_count):
+            builder.particle_flags[i] |= int(newton.ParticleFlags.KINEMATIC)
+        builder.color()
+        model = builder.finalize(device=device)
+        model.soft_contact_ke = 1.0e4
+        model.soft_contact_kd = 0.0
+        model.soft_contact_mu = mu
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=10,
+            particle_enable_self_contact=True,
+            particle_self_contact_margin=0.02,
+            particle_self_contact_gap=0.01,
+        )
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        q_rest = wp.clone(model.particle_q)
+        idx = wp.array(list(range(plate_count)), dtype=wp.int32, device=device)
+        q_settled = None
+        for k in range(settle_steps + move_steps):
+            offset = wp.vec3(step_dx * max(0, k + 1 - settle_steps), 0.0, 0.0)
+            wp.launch(
+                _kinematic_target_offset_kernel,
+                dim=plate_count,
+                inputs=[idx, q_rest, offset],
+                outputs=[control.particle_target_q],
+                device=device,
+            )
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+            if k == settle_steps - 1:
+                q_settled = state_0.particle_q.numpy().copy()
+        q = state_0.particle_q.numpy()
+        plate_dx = q[:plate_count, 0].mean() - q_settled[:plate_count, 0].mean()
+        sheet_dx = q[plate_count:, 0].mean() - q_settled[plate_count:, 0].mean()
+        return plate_dx, sheet_dx, q[plate_count:, 2].min()
+
+    plate_dx, sheet_dx_friction, sheet_z = run(mu=1.0)
+    _, sheet_dx_frictionless, _ = run(mu=0.0)
+    test.assertAlmostEqual(plate_dx, step_dx * move_steps, delta=1.0e-6)
+    test.assertGreater(sheet_z, 0.0)
+    test.assertGreater(sheet_dx_friction, 0.9 * plate_dx)
+    test.assertLess(abs(sheet_dx_frictionless), 0.01 * plate_dx)
+
+
+def test_kinematic_particle_release(test, device):
+    """Clearing KINEMATIC on the device (no notify) releases the particle with its driven velocity."""
+    dt = 1.0e-3
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    builder.add_particle(
+        pos=(0.0, 0.0, 1.0),
+        vel=(0.0, 0.0, 0.0),
+        mass=1.0,
+        flags=int(newton.ParticleFlags.ACTIVE | newton.ParticleFlags.KINEMATIC),
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, iterations=2)
+    control = model.control()
+    _, _, state_0 = _run_kinematic_steps(model, solver, 5, dt, [0], (0.002, 0.0, 0.0), control=control)
+    v_kin = state_0.particle_qd.numpy()[0].copy()
+    np.testing.assert_allclose(v_kin, (2.0, 0.0, 0.0), rtol=1.0e-4)
+
+    wp.launch(
+        _kinematic_clear_flag_kernel,
+        dim=1,
+        inputs=[wp.array([0], dtype=wp.int32, device=device), model.particle_flags],
+        device=device,
+    )
+    state_1 = model.state()
+    solver.step(state_0, state_1, control, None, dt)
+    np.testing.assert_allclose(
+        state_1.particle_qd.numpy()[0], v_kin + np.array((0.0, 0.0, -10.0 * dt)), rtol=1.0e-4, atol=1.0e-4
+    )
+
+
+def test_kinematic_particle_dat_large_jump(test, device):
+    """DAT truncation does not shorten a large kinematic jump."""
+    dt = 1.0e-3
+    model = _kinematic_cloth_model(device, kinematic=[0], dim=3)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=5,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.01,
+        particle_self_contact_gap=0.005,
+    )
+    _, target, state = _run_kinematic_steps(model, solver, 1, dt, [0], (0.3, 0.2, -0.4))
+    np.testing.assert_array_equal(state.particle_q.numpy()[0], target[0])
+
+
+def test_kinematic_particle_zero_iterations(test, device):
+    """With iterations=0 the output state still receives the kinematic target."""
+    dt = 1.0e-3
+    model = _kinematic_cloth_model(device, kinematic=[0])
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    q_in, target, state = _run_kinematic_steps(model, solver, 1, dt, [0], (0.01, 0.0, 0.0))
+    np.testing.assert_array_equal(state.particle_q.numpy()[0], target[0])
+    np.testing.assert_allclose(state.particle_qd.numpy()[0], (target[0] - q_in[0]) / dt, rtol=1.0e-5)
+
+
+def test_kinematic_particle_graph_capture(test, device):
+    """A captured substep loop with a device-time target matches the per-step contract."""
+    dt = 1.0e-3
+    substeps = 4
+    model = _kinematic_cloth_model(device, kinematic=[0])
+    solver = newton.solvers.SolverVBD(model, iterations=3)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    q_rest = wp.clone(model.particle_q)
+    idx = wp.array([0], dtype=wp.int32, device=device)
+    t = wp.zeros(1, dtype=float, device=device)
+    velocity = wp.vec3(0.5, 0.0, 0.0)
+
+    def simulate():
+        nonlocal state_0, state_1
+        for _ in range(substeps):
+            wp.launch(_kinematic_advance_time_kernel, dim=1, inputs=[t, dt], device=device)
+            wp.launch(
+                _kinematic_target_device_time_kernel,
+                dim=1,
+                inputs=[idx, q_rest, t, velocity],
+                outputs=[control.particle_target_q],
+                device=device,
+            )
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+
+    with wp.ScopedCapture(device) as capture:
+        simulate()
+    for _ in range(3):
+        wp.capture_launch(capture.graph)
+    target = control.particle_target_q.numpy()[0]
+    np.testing.assert_allclose(target - q_rest.numpy()[0], (0.5 * dt * substeps * 3, 0.0, 0.0), rtol=1.0e-4)
+    np.testing.assert_array_equal(state_0.particle_q.numpy()[0], target)
+    np.testing.assert_allclose(state_0.particle_qd.numpy()[0], (0.5, 0.0, 0.0), rtol=1.0e-3)
+
+
+class TestVBDKinematicParticles(unittest.TestCase):
+    pass
+
+
+_kinematic_devices = cuda_devices if cuda_devices else devices[:1]
+for _name, _func, _devices in (
+    ("test_kinematic_particle_friction_drag", test_kinematic_particle_friction_drag, _kinematic_devices),
+    ("test_kinematic_particle_release", test_kinematic_particle_release, _kinematic_devices),
+    ("test_kinematic_particle_dat_large_jump", test_kinematic_particle_dat_large_jump, _kinematic_devices),
+    ("test_kinematic_particle_zero_iterations", test_kinematic_particle_zero_iterations, _kinematic_devices),
+    ("test_kinematic_particle_graph_capture", test_kinematic_particle_graph_capture, cuda_devices),
+):
+    add_function_test(TestVBDKinematicParticles, _name, _func, devices=_devices)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

@@ -987,7 +987,7 @@ class Model:
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array[wp.int32] | None = None
-        """Particle enabled state, shape [particle_count], int."""
+        """Particle flags (:class:`~newton.ParticleFlags`), shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array[wp.int32] | None = None
@@ -2637,6 +2637,7 @@ class Model:
             requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
             clone_variables: If True, clone the control input arrays; if False, use references.
+                With ``False``, :attr:`Control.particle_target_q` is ``None``.
 
         Returns:
             The initialized control object.
@@ -2658,6 +2659,8 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
+            if self.particle_count:
+                c.particle_target_q = wp.clone(self.particle_q, requires_grad=requires_grad)
         else:
             c.joint_target_q = self.joint_target_q
             c.joint_target_qd = self.joint_target_qd
