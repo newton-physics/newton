@@ -241,6 +241,7 @@ class Example:
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
 
+            wp.launch(kernel=advance_time, dim=1, inputs=[self.t, self.sim_dt])
             wp.launch(
                 kernel=apply_rotation,
                 dim=self.rot_point_indices.shape[0],
@@ -255,7 +256,6 @@ class Example:
                 ],
                 outputs=[self.control.particle_target_q],
             )
-            wp.launch(kernel=advance_time, dim=1, inputs=[self.t, self.sim_dt])
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

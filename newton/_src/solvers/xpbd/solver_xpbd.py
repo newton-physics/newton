@@ -343,17 +343,18 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             device=model.device,
         )
 
-    def _particle_inv_mass_effective(self) -> wp.array[float]:
+    def _particle_inv_mass_effective(self, requires_grad: bool) -> wp.array[float]:
         """Return per-step inverse particle masses with kinematic particles zeroed."""
         model = self.model
+        inv_mass_eff = wp.empty_like(model.particle_inv_mass) if requires_grad else self._particle_inv_mass_eff
         wp.launch(
             kernel=update_particle_inv_mass_effective,
             dim=model.particle_count,
             inputs=[model.particle_flags, model.particle_inv_mass],
-            outputs=[self._particle_inv_mass_eff],
+            outputs=[inv_mass_eff],
             device=model.device,
         )
-        return self._particle_inv_mass_eff
+        return inv_mass_eff
 
     def _apply_particle_deltas(
         self,
@@ -583,7 +584,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 particle_deltas = wp.empty_like(state_out.particle_qd)
 
                 self.integrate_particles(model, state_in, state_out, dt, control)
-                particle_inv_mass = self._particle_inv_mass_effective()
+                particle_inv_mass = self._particle_inv_mass_effective(requires_grad)
                 if self.enable_restitution:
                     self.particle_qd_init = wp.clone(state_out.particle_qd)
 

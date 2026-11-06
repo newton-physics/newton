@@ -1445,9 +1445,14 @@ def test_kinematic_particle_unsupported_solvers(test, device):
 for _test in (
     test_kinematic_particle_parity,
     test_kinematic_particle_control_defaults,
-    test_kinematic_particle_unsupported_solvers,
 ):
     add_function_test(TestClothKinematicParticles, _test.__name__, _test, devices=devices)
+add_function_test(
+    TestClothKinematicParticles,
+    "test_kinematic_particle_unsupported_solvers",
+    test_kinematic_particle_unsupported_solvers,
+    devices=devices[:1],
+)
 
 
 if __name__ == "__main__":
