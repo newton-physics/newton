@@ -67,7 +67,10 @@ class TriMeshCollisionInfo:
 
     global_pair_counts: wp.array[wp.int32]
     """Pair cursors and overflow flags: [vt cursor, vt overflow, ee cursor, ee overflow].
-    The cursors count total detection demand; stored records are ``min(cursor, capacity)``."""
+    The cursors count total detection demand; stored records are ``min(cursor, capacity)``.
+    The slot order is internal: read the values through
+    ``SolverVBD.check_self_contact_overflow()`` or
+    ``CollisionPipeline.check_soft_self_contact_overflow()``."""
 
     vertex_colliding_triangles: wp.array[wp.int32]
     """Interleaved (vertex, triangle) index pairs in exact CSR rows."""

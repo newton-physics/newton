@@ -1429,6 +1429,36 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._self_contact_storage_generation = generation
         return info
 
+    def check_self_contact_overflow(self, *, warn: bool = False) -> tuple[int, int, bool, bool]:
+        """Read back the self-contact pair demand and overflow flags of the last detection.
+
+        The read-only counterpart of :meth:`check_and_grow_self_contact_buffers`:
+        nothing grows. Returns ``(vt_demand, ee_demand, vt_overflowed,
+        ee_overflowed)``: the number of vertex-triangle and edge-edge pairs the
+        last detection tried to store and whether
+        each family dropped pairs because its capacity was exceeded. Reads the
+        counters back, which synchronizes the device: call it between steps,
+        never inside CUDA graph capture.
+
+        Args:
+            warn: Emit a ``NewtonWarning`` describing the overflow (per-family
+                demand versus capacity) when a family overflowed.
+
+        Returns:
+            ``(vt_demand, ee_demand, vt_overflowed, ee_overflowed)``; all zero
+            and ``False`` when self-contact is disabled or no detection has
+            run yet.
+        """
+        if not self.particle_enable_self_contact or self.model.particle_count == 0:
+            return 0, 0, False, False
+        if self.collision_pipeline is not None:
+            detector = self.collision_pipeline._get_soft_self_contact_detector(self._pipeline_contacts)
+        else:
+            detector = self.trimesh_collision_detector
+        if detector.collision_info is None:
+            return 0, 0, False, False
+        return detector.check_self_contact_overflow(warn=warn)
+
     def check_and_grow_self_contact_buffers(self, *, warn: bool = True) -> bool:
         """Check self-contact overflow, grow the storage, refresh solver state.
 

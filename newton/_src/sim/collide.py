@@ -2938,6 +2938,34 @@ class CollisionPipeline:
             return False
         return detector.check_and_grow_collision_buffers(warn=warn)
 
+    def check_soft_self_contact_overflow(self, *, warn: bool = False) -> tuple[int, int, bool, bool]:
+        """Read back the self-contact pair demand and overflow flags of the last detection.
+
+        The read-only counterpart of :meth:`check_and_grow_soft_self_contact_buffers`:
+        nothing grows. Returns ``(vt_demand, ee_demand, vt_overflowed,
+        ee_overflowed)``: the number of vertex-triangle and edge-edge pairs the
+        last detection tried to store and whether
+        each family dropped pairs because its capacity was exceeded. Reads the
+        counters back, which synchronizes the device: call it between steps,
+        never inside CUDA graph capture. Covers the buffer most recently
+        detected into.
+
+        Args:
+            warn: Emit a ``NewtonWarning`` describing the overflow (per-family
+                demand versus capacity) when a family overflowed.
+
+        Returns:
+            ``(vt_demand, ee_demand, vt_overflowed, ee_overflowed)``; all zero
+            and ``False`` when no detection has run yet.
+
+        Raises:
+            ValueError: If ``init_soft_self_contact()`` was not called.
+        """
+        detector = self._ensure_soft_self_contact_detector()
+        if detector.collision_info is None:
+            return 0, 0, False, False
+        return detector.check_self_contact_overflow(warn=warn)
+
     def _detect_soft_self_contact(self, particle_q: wp.array[wp.vec3], contacts: Contacts) -> None:
         """Detect tri-mesh self-contact into ``contacts`` at ``particle_q``."""
         detector = self._get_soft_self_contact_detector(contacts)

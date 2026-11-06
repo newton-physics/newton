@@ -12,7 +12,9 @@ primitives); the defaults keep their previous values. On overflow
 excess contacts are dropped and flagged; call
 `SolverVBD.check_and_grow_self_contact_buffers()` or
 `CollisionPipeline.check_and_grow_soft_self_contact_buffers()` between steps
-to report and grow the storage in place. Contacts buffers
+to report and grow the storage in place, or `SolverVBD.check_self_contact_overflow()` /
+`CollisionPipeline.check_soft_self_contact_overflow()` to read the per-family
+pair demand and overflow flags without growing. Contacts buffers
 allocated before a grow are resized automatically at their next use, and
 `SolverVBD.particle_self_contact_info()` returns the live self-contact
 results for either construction path while keeping the solver's launch

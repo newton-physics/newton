@@ -1247,10 +1247,11 @@ rest-shape exclusion radius also remove pairs, by design.
 it reads the overflow flags of the last detection, warns, and grows an
 overflowed pool in place to 1.5x the measured demand. Or raise the two buffer
 sizes up front, and lower the gap if it is far above the margin. The live
-result struct is reachable as ``solver.particle_self_contact_info()``; its
-``global_pair_counts`` array holds each family's demand cursor and overflow
-flag, and its ``*_count`` fields hold the stored pairs per vertex and per
-edge. It is an experimental type and can change. If a filter is the cause,
+``solver.check_self_contact_overflow()`` reports each family's pair demand
+and overflow flag without growing anything. The live result struct is
+reachable as ``solver.particle_self_contact_info()``; its ``*_count`` fields
+hold the stored pairs per vertex and per edge. It is an experimental type and
+can change. If a filter is the cause,
 lower ``particle_rest_shape_contact_exclusion_radius`` or check the external
 filter maps you passed.
 
