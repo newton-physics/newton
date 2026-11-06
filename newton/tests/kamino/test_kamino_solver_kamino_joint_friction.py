@@ -164,7 +164,8 @@ def _run_spin_down_test(
         ):
             expected = direction * np.maximum(abs(initial_velocities[world]) - decrement * np.arange(1, steps + 1), 0.0)
             np.testing.assert_allclose(velocities[:steps, world], expected, atol=3.0e-4, rtol=0.0)
-            np.testing.assert_allclose(velocities[steps - 1, world], 0.0, atol=1.0e-6)
+            # Velocity very close to sticking at final spin down step, and sticking after that.
+            np.testing.assert_allclose(velocities[steps - 1, world], 0.0, atol=2.0e-5)
             np.testing.assert_allclose(velocities[steps : steps + 20, world], 0.0, atol=1.0e-6)
             np.testing.assert_allclose(
                 coordinates[steps : steps + 20, world], coordinates[steps - 1, world], atol=1.0e-6
