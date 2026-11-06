@@ -1342,17 +1342,37 @@ class Model:
         self._deformable_visual_meshes: tuple[DeformableVisualMesh, ...] = ()
         self._deformable_visual_skin_batches: _DeformableVisualSkinBatches | None = None
         self.muscle_start: wp.array[wp.int32] | None = None
-        """Start index of the first muscle point per muscle, shape [muscle_count], int."""
+        """Start index of the first muscle point per muscle, shape [muscle_count], int.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_params: wp.array2d[wp.float32] | None = None
         """Muscle parameters, shape [muscle_count, 5], float.
         Components: [0] f0 [N] (force scaling), [1] lm [m] (muscle fiber length), [2] lt [m] (tendon slack length),
-        [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor)."""
+        [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor).
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_bodies: wp.array[wp.int32] | None = None
-        """Body indices of the muscle waypoints, int."""
+        """Body indices of the muscle waypoints, int.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_points: wp.array[wp.vec3] | None = None
-        """Local body offset of the muscle waypoints, float."""
+        """Local body offset of the muscle waypoints, float.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.muscle_activations: wp.array[wp.float32] | None = None
-        """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float."""
+        """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
 
         self.body_q: wp.array[wp.transform] | None = None
         """Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float."""
@@ -1814,7 +1834,11 @@ class Model:
         self.attachment_particle_body_count: int = 0
         """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
-        """Total number of muscles in the system."""
+        """Total number of muscles in the system.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.curve_count: int = 0
