@@ -966,6 +966,7 @@ solvers = {
 
 @wp.kernel
 def _write_translated_contacts(writer: ContactWriterData, admission: wp.array[int], reserve: bool, speculative: bool):
+    """Write contacts on either side of the fixed gap at each translation."""
     i = wp.tid()
     contact = ContactData()
     contact.shape_a = 2 * i
@@ -1033,6 +1034,23 @@ class TestRigidContact(unittest.TestCase):
                 count = int(writer.contact_count.numpy()[0])
                 self.assertEqual(sorted(writer.out_shape0.numpy()[:count].tolist()), [0, 4, 8])
                 np.testing.assert_array_equal(admission.numpy(), [1, 0, 1, 0, 1, 0])
+
+        with self.subTest(speculative=True, closing_motion=True):
+            # Let closing motion reach the candidates just outside the fixed gap.
+            writer.shape_linear_velocity = wp.array(
+                [wp.vec3(0.4, 0.0, 0.0), wp.vec3(0.0)] * (len(poses) // 2), dtype=wp.vec3, device=device
+            )
+            writer.collision_update_dt = 0.01
+            writer.max_speculative_extension = 0.002001
+            writer.contact_count.zero_()
+            wp.launch(_write_translated_contacts, 6, [writer, admission, False, True], device=device)
+            count = int(writer.contact_count.numpy()[0])
+            shape0 = writer.out_shape0.numpy()[:count]
+            order = np.argsort(shape0)
+            np.testing.assert_array_equal(shape0[order], np.arange(0, len(poses), 2))
+            for points in (contacts.rigid_contact_point0, contacts.rigid_contact_point1):
+                local = points.numpy()[order].reshape(3, 2, 3)
+                np.testing.assert_allclose(local, np.broadcast_to(local[:1], local.shape), rtol=0, atol=1e-7)
 
 
 add_function_test(

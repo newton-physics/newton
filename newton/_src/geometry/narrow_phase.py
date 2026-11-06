@@ -500,6 +500,7 @@ def create_narrow_phase_primitive_kernel(
         collision_update_dt: float,
         max_speculative_extension: float,
     ) -> bool:
+        """Check a primitive candidate against the active contact gap policy."""
         contact_data.contact_point_center = position
         contact_data.contact_distance = distance
         if wp.static(speculative):
