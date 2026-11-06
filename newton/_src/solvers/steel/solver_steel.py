@@ -160,6 +160,7 @@ from .kernels import (
     invert_lower_factor_grouped,
     local_solve_launch_gate,
     mark_propagation_bodies,
+    mask_passive_spring_stiffness,
     populate_connect_J_for_size,
     populate_joint_velocity_limit_J_for_size,
     populate_mimic_J_for_size,
@@ -1304,6 +1305,11 @@ class SolverSteel(SolverBase, CouplingInterface):
       update and clamps its impulse, which bounds the complete reaction.
       :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
       applied.
+    - Passive joint springs: :attr:`~newton.Model.joint_stiffness` and
+      :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
+      explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
+      independently of drives and joint limits. Unlike the implicit drives, explicit springs
+      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -2189,9 +2195,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 support or row capacity, a :meth:`reset` of its world, or
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
                 shapes (other notifications and changes to static or kinematic owners wake
-                every island). Driven articulations (nonzero drive gains)
-                stay awake. Sleeping is configured at construction; rebuild captured graphs
-                to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
+                every island). Driven articulations (nonzero drive gains) and articulations with
+                passive springs (nonzero :attr:`~newton.Model.joint_stiffness` on a PRISMATIC,
+                REVOLUTE or D6 tree joint) stay awake.
+                Sleeping is configured at construction; rebuild captured graphs to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
                 or ``velocity_iterations``, or for a model without articulations, and
                 :class:`NotImplementedError` with ``articulated_contact_response="propagation"`` and
                 ``solve_mode="serial"``, and with ``solve_mode="colored"`` on CPU, where the colored
@@ -3044,10 +3051,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
         (kinematic flags) and inertial changes request a mass-matrix refresh of every
         articulation on the next step, independent of ``update_mass_matrix_interval``. Body
-        flags (kinematic membership), armature, joint damping (joint DOF or DOF force changes)
-        and shape friction and restitution coefficients are re-read. Shape type and source
-        changes, as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes
-        device contact torsion supports. Other model data, such as gravity, limits and shape
+        flags (kinematic membership), armature, joint damping and spring stiffness (joint DOF or
+        DOF force changes), spring rest coordinates (joint DOF or reference-pose changes) and
+        shape friction and restitution coefficients are re-read. Shape type and source changes,
+        as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes device
+        contact torsion supports. Other model data, such as gravity, limits and shape
         transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
@@ -3059,9 +3067,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         impulses of the worlds selected by ``world_mask``. With friction patches, shape changes
         also discard the anchors of the bodies whose collision geometry changed, in every world.
 
-        Joint, joint DOF (including the DOF inertial and force flags), body inertial and shape
-        notifications run on the device without host synchronization, so they can be captured
-        in a CUDA graph and replayed after the model arrays are edited in place. A captured
+        Joint, joint DOF (including the DOF inertial, force and reference-pose flags), body
+        inertial and shape notifications run on the device without host synchronization, so
+        they can be captured in a CUDA graph and replayed after the model arrays are edited in
+        place. A captured
         notification reads the arrays it was captured with; after replacing a model array,
         notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
         Sleeping, and the positive-restitution check of sparse mass factors (with restitution
@@ -3098,8 +3107,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         if flags & dof_force:
             self._refresh_passive_joint_damping()
+            self._refresh_passive_spring_stiffness()
             # Augmented drive gains enter the factored mass-matrix diagonal.
             self._mass_update_requested.fill_(1)
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
+            self._refresh_passive_spring_rest_q()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_shape_materials()
         if flags & ModelFlags.JOINT_PROPERTIES:
@@ -4025,6 +4037,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             "limits": (np.isfinite(lower) & (lower != -unlimited)) | (np.isfinite(upper) & (upper != unlimited)),
             "drive gains": (model.joint_target_ke.numpy()[dofs] != 0.0) | (model.joint_target_kd.numpy()[dofs] != 0.0),
             "damping": model.joint_damping.numpy()[dofs] != 0.0,
+            "spring stiffness": model.joint_stiffness.numpy()[dofs] != 0.0,
             "armature": model.joint_armature.numpy()[dofs] != 0.0,
         }
         axis = model.joint_axis.numpy()[dofs]
@@ -4355,16 +4368,45 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     def _setup_passive_joint_forces(self, model) -> None:
-        """Select the passive damping of the inverse-dynamics pass; its passive springs are zero.
-
-        Passive joint springs are not applied yet (newton-physics/newton#4516);
-        their buffers stay zero.
-        """
+        """Allocate the passive damping and spring buffers of the inverse-dynamics pass and fill them from the model."""
         n_dofs = max(int(model.joint_dof_count), 1)
         self._passive_joint_damping = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._refresh_passive_joint_damping()
+        # Tree PRISMATIC, REVOLUTE and D6 DOFs carry springs; the sleep veto reads the same buffer.
+        spring_dof_mask = np.zeros(n_dofs, dtype=np.int32)
+        if model.joint_count:
+            joint_type = model.joint_type.numpy()
+            qd_start = model.joint_qd_start.numpy()
+            sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
+            sprung &= self._model_plan.loop_joint_articulation < 0
+            for joint in np.flatnonzero(sprung):
+                spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
+        self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
-        self._passive_spring_ref = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
+        self._passive_spring_rest_q = wp.zeros(
+            max(int(model.joint_coord_count), 1), dtype=wp.float32, device=model.device
+        )
+        self._refresh_passive_spring_stiffness()
+        self._refresh_passive_spring_rest_q()
+
+    def _refresh_passive_spring_stiffness(self) -> None:
+        """Copy the model's passive spring stiffness of sprung DOFs into the solver's fixed buffer."""
+        # Users may replace model.joint_stiffness; captured graphs keep this buffer's address.
+        stiffness = self.model.joint_stiffness
+        if stiffness is not None and self.model.joint_dof_count:
+            wp.launch(
+                mask_passive_spring_stiffness,
+                self.model.joint_dof_count,
+                inputs=[stiffness, self._passive_spring_dof_mask],
+                outputs=[self._passive_spring_stiffness],
+                device=self.model.device,
+            )
+
+    def _refresh_passive_spring_rest_q(self) -> None:
+        """Copy the model's passive spring rest coordinates into the solver's fixed buffer."""
+        rest_q = self.model.joint_rest_q
+        if rest_q is not None and self.model.joint_coord_count:
+            wp.copy(self._passive_spring_rest_q, rest_q, count=self.model.joint_coord_count)
 
     def _refresh_passive_joint_damping(self) -> None:
         """Copy the model's current joint damping into the solver's fixed damping buffer."""
@@ -8163,7 +8205,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Accumulate ``joint_tau`` and the implicit-drive mass terms.
 
         After this call ``state_aug._joint_tau`` holds the rigid-body bias (Coriolis, gravity,
-        external body forces), :attr:`~newton.Control.joint_f`, passive joint damping and the
+        external body forces), :attr:`~newton.Control.joint_f`, passive joint springs and damping and the
         explicit part ``u0`` of each drive, clamped to :attr:`~newton.Model.joint_effort_limit`
         (an actuator-only clamp, as MuJoCo's ``actuatorfrcrange`` and PhysX's drive
         ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
@@ -8190,7 +8232,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             state_in.joint_q,
             state_in.joint_qd,
             self._passive_spring_stiffness,
-            self._passive_spring_ref,
+            self._passive_spring_rest_q,
             self._passive_joint_damping,
             state_aug._joint_S_s,
             state_aug._body_f_s,
