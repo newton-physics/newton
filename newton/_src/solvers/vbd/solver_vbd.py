@@ -803,8 +803,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
 
-            Collision pipeline ownership:
-
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
                 contacts buffer (:attr:`contacts`), seeds the pipeline's

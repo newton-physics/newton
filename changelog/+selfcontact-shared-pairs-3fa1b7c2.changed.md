@@ -22,4 +22,7 @@ capacity and the launch size and recomputes it when the storage grows.
 Most self-contact demos run faster end to end;
 detection alone costs about 4-14% more than before on the recorded example
 scenes and 1.2-1.8x on uniformly dense synthetic two-layer meshes, where the
-row build adds up to 43% of the pass.
+row build adds up to 43% of the pass. The append log behind the rows is
+internal scratch of 12 bytes per pair slot (16 with the triangle-side reverse
+rows), sized by the larger of the two family capacities and kept across
+detections.
