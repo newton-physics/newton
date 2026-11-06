@@ -742,6 +742,59 @@ already be enabled in the imported model.
     solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
 
 
+Particles and flexes
+--------------------
+
+With ``use_flex=True``, :class:`~newton.solvers.SolverMuJoCo` simulates Newton
+particles as MuJoCo
+`flexes <https://mujoco.readthedocs.io/en/stable/XMLreference.html#deformable-flex>`__.
+By default particles are ignored so that another solver can simulate them.
+Each particle becomes a MuJoCo body with three slide joints placed at its
+initial position, and ``State.particle_q`` / ``particle_qd`` are synchronized
+with those joints every step. Particles with zero mass or without
+:attr:`~newton.ParticleFlags.ACTIVE` get no joints and stay pinned.
+
+Elements are grouped into one flex per dimension:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 20 55
+
+   * - Newton elements
+     - Flex
+     - Parameters
+   * - Tetrahedra
+     - 3D
+     - ``young`` and ``poisson`` from the Lamé parameters in ``tet_materials``.
+   * - Triangles
+     - 2D
+     - ``young`` and ``poisson`` from the Lamé parameters in ``tri_materials``,
+       with unit ``thickness`` and membrane (stretch) elasticity only.
+   * - Springs
+     - 1D
+     - ``edgestiffness`` and ``edgedamping`` from ``spring_stiffness`` and
+       ``spring_damping``.
+
+An element whose particles all belong to a higher-dimensional flex is skipped,
+so the surface triangles of a tetrahedral mesh do not form a second flex.
+MuJoCo stores one material per flex, so non-uniform values are averaged with a
+warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
+friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
+shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, but not with
+themselves. Flex contacts require ``use_mujoco_contacts=True``.
+
+When the model has particles, the default integrator is ``"discrete"``
+because MuJoCo integrates flex elasticity only with that integrator. Newton's
+triangle damping, drag, and lift, tetrahedron damping, and dihedral bending
+edges are not converted.
+
+.. note::
+
+   MuJoCo Warp treats geom ``gap`` as a contact-inclusion offset for
+   flex-plane contacts, so a flex rests about ``gap`` below a plane. Set the
+   plane's ``gap`` to zero when it supports flexes.
+
+
 .. _mujoco-collision-pipeline:
 
 Collision pipeline
@@ -1201,8 +1254,8 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **Keyframes** (``<keyframe>``) — MuJoCo's saved-state / reset mechanism
   is not imported.
 - **Composite and flex** (``<composite>``, ``<flex>``) — MuJoCo's built-in
-  deformables and soft bodies. Newton has dedicated solvers for cloth,
-  MPM, and FEM; they are not part of the MuJoCo integration.
+  deformables are not imported. Newton particles, springs, triangles, and
+  tetrahedra can be converted to flexes instead (see `Particles and flexes`_).
 - **Skinned meshes** (``<skin>``) — visualization-only, not imported.
 - **User plugins** (``<plugin>``) — MuJoCo's plugin mechanism for custom
   passive forces or dynamics is not supported.

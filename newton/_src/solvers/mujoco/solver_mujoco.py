@@ -45,7 +45,7 @@ from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
-from . import dcmotor, kernels, speculative
+from . import dcmotor, flex, kernels, speculative
 from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
@@ -4437,6 +4437,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
         use_speculative_contacts: bool = False,
+        use_flex: bool = False,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -4515,6 +4516,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 .. experimental::
 
                     The ``use_speculative_contacts=True`` mode may change without prior notice.
+            use_flex: If ``True``, simulate the model's particles, springs, triangles, and tetrahedra
+                as MuJoCo flexes and synchronize ``State.particle_q`` and ``particle_qd``. If ``False``
+                (default), particles are left to other solvers. See ``docs/solvers/mujoco.rst``.
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
@@ -4769,6 +4773,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "SolverMuJoCo supports body variants only with Newton contacts; "
                 "set use_mujoco_contacts=False and use_mujoco_cpu=False."
             )
+        self._use_flex = use_flex
         self._use_mujoco_contacts = use_mujoco_contacts
         """Whether MuJoCo handles collision detection.
 
@@ -6261,12 +6266,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             qpos = wp.empty((1, len(mj_data.qpos)), dtype=wp.float32, device=model.device)
             qvel = wp.empty((1, len(mj_data.qvel)), dtype=wp.float32, device=model.device)
             nworld = 1
-        if state is None:
-            joint_q = model.joint_q
-            joint_qd = model.joint_qd
-        else:
-            joint_q = state.joint_q
-            joint_qd = state.joint_qd
+        source = model if state is None else state
+        joint_q = source.joint_q
+        joint_qd = source.joint_qd
         joints_per_world = (
             model.joint_count // model.world_count if single_world_template else model.joint_count // nworld
         )
@@ -6312,6 +6314,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         if mocap_root_moved is not None and not self._initial_model_sync:
             self._wake_sleeping_worlds(mocap_root_moved)
+        if write_state and self._particle_qpos_adr.shape[0]:
+            wp.launch(
+                flex.particles_to_mj_kernel,
+                dim=(nworld, self._particle_qpos_adr.shape[0]),
+                inputs=[
+                    source.particle_q,
+                    source.particle_qd,
+                    world_mask,
+                    self._particle_q0,
+                    self._particle_qpos_adr,
+                    self._particle_qvel_adr,
+                ],
+                outputs=[self._sleep_qpos if sleep_redirect else qpos, qvel],
+                device=model.device,
+            )
 
         if not is_mjwarp and jnt_mocap is not None:
             mj_data.mocap_pos[:] = mjw_data.mocap_pos.numpy()[0]
@@ -6501,6 +6518,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
         )
+        if self._particle_qpos_adr.shape[0]:
+            wp.launch(
+                flex.mj_to_particles_kernel,
+                dim=(nworld, self._particle_qpos_adr.shape[0]),
+                inputs=[
+                    qpos,
+                    qvel,
+                    self._particle_q0,
+                    self._particle_qpos_adr,
+                    self._particle_qvel_adr,
+                    state_prev.particle_q,
+                    state_prev.particle_qd,
+                ],
+                outputs=[state.particle_q, state.particle_qd],
+                device=model.device,
+            )
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
@@ -7003,8 +7036,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
                 ``mujoco_warp`` and MuJoCo.
         """
-        if not model.joint_count:
-            raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
+        particle_world = model.particle_world.numpy() if self._use_flex else np.empty(0, dtype=np.int32)
+        if not model.joint_count and not len(particle_world):
+            raise ValueError("The model must have at least one joint or particle to be able to convert it to MuJoCo.")
 
         # Set default for separate_worlds if None
         if separate_worlds is None:
@@ -7019,7 +7053,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Validate model compatibility with separate_worlds mode
         if separate_worlds:
-            self._validate_model_for_separate_worlds(model)
+            self._validate_model_for_separate_worlds(model, particle_world)
             if self.enable_sleeping and model.world_count > 1:
                 dofs_per_world = model.joint_dof_count // model.world_count
                 joint_qd = model.joint_qd.numpy().reshape(model.world_count, dofs_per_world)
@@ -7169,7 +7203,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if solver is None:
             solver = mujoco.mjtSolver.mjSOL_NEWTON  # Newton default (not CG)
         if integrator is None:
-            integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST  # Newton default (not Euler)
+            # Newton default (not Euler); MuJoCo integrates flex elasticity only with the discrete integrator.
+            integrator = (
+                mujoco.mjtIntegrator.mjINT_DISCRETE if len(particle_world) else mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+            )
         if cone is None:
             cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
         if jacobian is None:
@@ -7230,7 +7267,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_limit_upper = model.joint_limit_upper.numpy()
         joint_type = model.joint_type.numpy()
         joint_axis = model.joint_axis.numpy()
-        joint_dof_dim = model.joint_dof_dim.numpy()
+        joint_dof_dim = model.joint_dof_dim.numpy().reshape(-1, 2)
         joint_qd_start = model.joint_qd_start.numpy()
         joint_target_q_start = model.joint_target_q_start.numpy()
         joint_q_start = model.joint_q_start.numpy()
@@ -7404,7 +7441,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if separate_worlds:
             # determine which shapes, bodies and joints belong to the first world
             # based on the body world indices: we pick objects from the first world and global shapes
-            non_negatives = body_world[body_world >= 0]
+            non_negatives = np.concatenate((body_world[body_world >= 0], particle_world[particle_world >= 0]))
             if len(non_negatives) > 0:
                 first_world = np.min(non_negatives)
             else:
@@ -7419,6 +7456,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     0
                 ].astype(np.int32)
             selected_mimic_constraints = np.where((mimic_world == first_world) | (mimic_world < 0))[0].astype(np.int32)
+            selected_particles = np.flatnonzero(particle_world == first_world)
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
             first_world = 0
@@ -7429,6 +7467,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
             selected_constraints = np.arange(model.mujoco.equality_constraint_count, dtype=np.int32)
             selected_mimic_constraints = np.arange(model.constraint_mimic_count, dtype=np.int32)
+            selected_particles = np.arange(len(particle_world))
 
         legacy_mimic_followers = {int(mimic_joint0[i]) for i in selected_mimic_constraints}
         selected_joint_mimics = np.asarray(
@@ -9001,6 +9040,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "Make sure each body belongs to an articulation or has a standalone joint to world."
             )
 
+        particle_geoms = {
+            name for shape, name in shape_mapping.items() if shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES
+        }
+        particle_bodies = flex.add_particle_flexes(mujoco, spec, model, selected_particles, particle_geoms)
+
         # add contact exclusions between bodies to ensure parent <> child collisions are ignored
         # even when one of the bodies is static
         for b1, b2 in body_filters:
@@ -9162,6 +9206,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+        particle_qpos_adr, particle_qvel_adr = flex.particle_coord_adr(self.mj_model, particle_bodies)
+        self._particle_qpos_adr = wp.array(particle_qpos_adr, dtype=wp.int32, device=model.device)
+        self._particle_qvel_adr = wp.array(particle_qvel_adr, dtype=wp.int32, device=model.device)
+        self._particle_q0 = wp.array(model.particle_q.numpy()[selected_particles], dtype=wp.vec3, device=model.device)
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):
@@ -11502,7 +11550,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def _validate_model_for_separate_worlds(self, model: Model) -> None:
+    def _validate_model_for_separate_worlds(self, model: Model, particle_world: np.ndarray | None = None) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
 
         MuJoCo's separate_worlds mode creates identical copies of a single MuJoCo model
@@ -11515,6 +11563,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Args:
             model: The Newton model to validate.
+            particle_world: World index of each particle simulated as a flex, if any.
 
         Raises:
             ValueError: If the model is not compatible with separate_worlds mode.
@@ -11570,6 +11619,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             msg = f"Global world (-1) cannot contain mimic constraints. Found {len(global_mimic)} constraint(s) with world == -1"
             raise ValueError(msg)
 
+        if particle_world is None:
+            particle_world = np.empty(0, dtype=np.int32)
+        if np.any(particle_world == -1):
+            raise ValueError("Global world (-1) cannot contain particles.")
+
         # Skip homogeneity checks for single-world models
         if world_count <= 1:
             return
@@ -11602,6 +11656,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ("joints", joint_world),
             ("equality constraints", eq_constraint_world),
             ("mimic constraints", mimic_world),
+            ("particles", particle_world),
         ]:
             # Use bincount for O(n) counting instead of O(n * world_count) loop
             if len(world_arr) == 0:
