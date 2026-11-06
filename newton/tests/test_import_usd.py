@@ -14863,6 +14863,84 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
                     np.testing.assert_allclose(material_props[key], expected, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_uniform_display_primvars_resolve_per_face(self):
+        """Resolve uniform display primvars per face, clamping or dropping invalid values."""
+        from pxr import Sdf, Usd, UsdGeom, UsdShade, Vt
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        srgb = color_linear_to_srgb
+        uniform, vertex = UsdGeom.Tokens.uniform, UsdGeom.Tokens.vertex
+        color_path = "/World/Mesh.primvars:displayColor"
+        opacity_path = "/World/Mesh.primvars:displayOpacity"
+        nan = float("nan")
+        two_colors = [(0.2, 0.4, 0.6), (0.6, 0.4, 0.2)]
+        # (name, interpolation, displayColor, displayOpacity, bind, color, opacity, expected logs)
+        cases = (
+            ("per_face", uniform, two_colors, [0.25, 0.75], False,
+             [srgb((0.2, 0.4, 0.6)), srgb((0.6, 0.4, 0.2))], [0.25, 0.75], ()),
+            ("out_of_range", uniform, [(1.5, 0.4, 0.6), (0.6, 0.4, 0.2)], [0.25, 1.5], False,
+             [srgb((1.0, 0.4, 0.6)), srgb((0.6, 0.4, 0.2))], [0.25, 1.0],
+             (f"{color_path}: clamping 1 of 2 imported face colors to [0, 1].",
+              f"{opacity_path}: clamping 1 of 2 imported face opacities to [0, 1].")),
+            ("non_finite", uniform, [(nan, 0.4, 0.6), (0.6, 0.4, 0.2)], [0.25, 0.75], False,
+             [(nan, nan, nan), srgb((0.6, 0.4, 0.2))], [0.25, 0.75],
+             (f"{color_path}: ignoring imported face colors: 1 of 2 are non-finite; those faces use the default.",)),
+            ("all_non_finite", uniform, [(nan, 0.4, 0.6), (nan, 0.4, 0.2)], [0.25, 0.75], False,
+             None, [0.25, 0.75], (f"{color_path}: ignoring imported face colors: all 2 are non-finite.",)),
+            # Both indexed to one value: the fallbacks are the flattened first values, not the first authored ones.
+            ("single_value", uniform, two_colors, [0.25, 0.75], False, srgb((0.6, 0.4, 0.2)), 0.75,
+             (f"{color_path}: uniform primvar length 1 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 1 does not match 2 faces")),
+            ("wrong_count", uniform, [*two_colors, (0.1, 0.1, 0.1)], [0.25, 0.75, 0.5], False,
+             srgb((0.2, 0.4, 0.6)), 0.25,
+             (f"{color_path}: uniform primvar length 3 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 3 does not match 2 faces")),
+            ("vertex_stays_scalar", vertex, [*two_colors, *two_colors], [0.25, 0.75, 0.25, 0.75], False,
+             srgb((0.2, 0.4, 0.6)), 0.25, (f"{opacity_path}: opacity data contains 4 values",)),
+            ("material_color_wins", uniform, two_colors, [0.25, 0.75], True,
+             srgb((0.8, 0.2, 0.1)), [0.25, 0.75], ()),
+        )  # fmt: skip
+        for name, interpolation, colors, opacities, bind, expected_color, expected_opacity, messages in cases:
+            with self.subTest(name=name):
+                stage = Usd.Stage.CreateInMemory()
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+                mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+                mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+                mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+                primvars = UsdGeom.PrimvarsAPI(mesh)
+                color = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, interpolation)
+                color.Set(colors)
+                opacity = primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, interpolation)
+                opacity.Set(opacities)
+                if name == "single_value":
+                    color.SetIndices(Vt.IntArray([1]))
+                    opacity.SetIndices(Vt.IntArray([1]))
+                if bind:
+                    material = UsdShade.Material.Define(stage, "/World/Looks/Material")
+                    shader = UsdShade.Shader.Define(stage, "/World/Looks/Material/PreviewSurface")
+                    shader.CreateIdAttr("UsdPreviewSurface")
+                    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.2, 0.1))
+                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+                if not messages:
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        props = resolve_material_properties_for_prim(mesh.GetPrim(), face_count=2)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as caught:
+                        props = resolve_material_properties_for_prim(mesh.GetPrim(), face_count=2)
+                    self.assertEqual(len(caught.output), len(messages), caught.output)
+                    for message in messages:
+                        self.assertIn(message, "\n".join(caught.output))
+
+                if expected_color is None:
+                    self.assertIsNone(props["color"])
+                else:
+                    np.testing.assert_allclose(props["color"], expected_color, atol=1e-6, rtol=1e-6)
+                np.testing.assert_allclose(props["opacity"], expected_opacity, atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_ancestor_binding_overrides_unapplied_mesh_binding(self):
         """An ancestor bind with strongerThanDescendants wins over a mesh's own binding.
 
