@@ -496,7 +496,8 @@ class TestExampleOutputRegexes(unittest.TestCase):
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
-test_devices = get_test_devices(mode="basic")
+# CPU CI runs every example on CPU, so hosts with a GPU run them on CUDA only.
+test_devices = cuda_test_devices or get_test_devices(mode="basic")
 
 
 class TestBasicExamples(NewtonTestCase):
