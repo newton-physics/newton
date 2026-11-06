@@ -1485,8 +1485,13 @@ def eval_rigid_tau(
         force = wp.spatial_top(f_ext_public)
         torque_com = wp.spatial_bottom(f_ext_public)
         x_com_s = wp.transform_get_translation(body_q_com[child]) - body_solve_origin[child]
+        # Shift the public-frame wrench into the internal solve frame. This
+        # must stay a pure local computation: writing the shifted wrench back
+        # into body_f_ext would mutate a kernel input, and the recompute-based
+        # adjoint would then re-derive force/f_s from the overwritten values
+        # (wrong frame and sign), corrupting every gradient that flows through
+        # this kernel.
         f_ext = -wp.spatial_vector(force, torque_com + wp.cross(x_com_s, force))
-        body_f_ext[child] = f_ext
         f_s = f_b_s + f_t_s + f_ext
 
         # compute joint-space forces, writes out tau
@@ -1928,8 +1933,14 @@ def adj_dense_cholesky(
     # outputs
     L: wp.array[float],
 ):
-    # nop, use dense_solve to differentiate through (A^-1)b = x
-    pass
+    # The gradient w.r.t. the factorized matrix is deposited into adjoint[A]
+    # by adj_dense_solve (the factorization itself is differentiated through
+    # (A^-1)b = x). R regularizes the diagonal (A_jj + R_j), so the gradient
+    # w.r.t. R is the diagonal of that deposit.
+    if not wp.adjoint[A] or not wp.adjoint[R]:
+        return
+    for j in range(n):
+        wp.adjoint[R][R_start + j] += wp.adjoint[A][A_start + dense_index(n, j, j)]
 
 
 @wp.kernel
@@ -2018,14 +2029,20 @@ def adj_dense_solve(
     for i in range(n):
         wp.adjoint[b][b_start + i] += tmp[b_start + i]
 
-    # A* = -adj_b*x^T
+    # dense_cholesky reads only the lower triangle of A, so the factorized
+    # matrix is the lower-symmetrization of A: perturbing A[i, j] with i > j
+    # moves both the (i, j) and the (j, i) entry of L L^T. Deposit the
+    # symmetrized product gradient -(tmp x^T + x tmp^T) on the lower triangle
+    # and diagonal; the upper triangle is never read, so its gradient is 0.
+    # The Cholesky factor is internal (adj_dense_cholesky relies on this
+    # deposit instead of differentiating the factorization), so adjoint[L]
+    # must stay untouched.
     for i in range(n):
-        for j in range(n):
-            wp.adjoint[L][L_start + dense_index(n, i, j)] += -tmp[b_start + i] * x[b_start + j]
-
-    for i in range(n):
-        for j in range(n):
-            wp.adjoint[A][L_start + dense_index(n, i, j)] += -tmp[b_start + i] * x[b_start + j]
+        for j in range(i + 1):
+            g = -tmp[b_start + i] * x[b_start + j]
+            if i != j:
+                g -= tmp[b_start + j] * x[b_start + i]
+            wp.adjoint[A][L_start + dense_index(n, i, j)] += g
 
 
 @wp.kernel

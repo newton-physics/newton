@@ -522,8 +522,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             target.body_f_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
-            # External/contact body-force buffer. Before eval_rigid_tau it stores public
-            # COM/world wrenches; eval_rigid_tau shifts articulated entries to the solve frame.
+            # External/contact body-force buffer, storing public COM/world
+            # wrenches. eval_rigid_tau reads it to build the solve-frame
+            # joint forces; the buffer itself is left unmodified so the
+            # recompute-based adjoint always sees the values its forward
+            # pass read.
             target.body_f_ext = wp.empty(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
