@@ -5032,7 +5032,7 @@ class TestSolverCoupledKinematicParticles(unittest.TestCase):
         return builder.finalize(device="cpu")
 
     def test_particle_targets_are_gathered_per_entry(self):
-        """Forward global particle targets only to entries owning KINEMATIC particles."""
+        """Forward global particle targets to every particle-owning entry."""
         model = self._model()
         coupled = SolverCoupled(
             model,
@@ -5045,7 +5045,7 @@ class TestSolverCoupledKinematicParticles(unittest.TestCase):
         targets = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]], dtype=np.float32)
         control.particle_target_q.assign(targets)
         coupled.step(model.state(), model.state(), control, None, 0.01)
-        self.assertIsNone(coupled._entries["a"].solver.particle_target_q)
+        np.testing.assert_array_equal(coupled._entries["a"].solver.particle_target_q, targets)
         np.testing.assert_array_equal(coupled._entries["b"].solver.particle_target_q, targets)
 
     def test_substepped_entry_rejects_kinematic_particles(self):

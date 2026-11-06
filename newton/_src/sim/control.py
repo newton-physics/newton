@@ -57,9 +57,7 @@ class Control:
         Matches :attr:`~newton.State.particle_q`. Read only for particles flagged
         ``ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC``; other entries are ignored.
         The target is the end-of-step position of the current ``solver.step()`` call.
-        :meth:`Model.control() <newton.Model.control>` allocates it only if a particle was
-        kinematic at :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>`. If this array is ``None`` or no Control is passed,
-        kinematic particles hold their ``state_in`` position with zero velocity.
+        If this array is ``None`` or no Control is passed, kinematic particles hold their ``state_in`` position with zero velocity.
 
         .. experimental::
 

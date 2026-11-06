@@ -13919,9 +13919,6 @@ class ModelBuilder:
                 else [flag_to_int(f) for f in self.particle_flags]
             )
             m.particle_flags = wp.array(particle_flags, dtype=wp.int32)
-            m._has_kinematic_particles = bool(  # pyright: ignore[reportPrivateUsage]
-                np.any(np.asarray(particle_flags, dtype=np.int32) & int(ParticleFlags.KINEMATIC))
-            )
             m.particle_world = wp.array(self.particle_world, dtype=wp.int32)
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity

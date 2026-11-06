@@ -303,10 +303,8 @@ kernel covers every world.
 
 - **Missing targets.** Without a Control or with ``particle_target_q`` set to ``None``,
   kinematic particles hold their ``state_in`` position with zero velocity.
-  :meth:`Model.control() <newton.Model.control>` allocates the target only if a particle
-  was kinematic at :meth:`~newton.ModelBuilder.finalize`, and ``clone_variables=False`` leaves it ``None``. To set
-  the flag later, allocate it yourself:
-  ``control.particle_target_q = wp.clone(state.particle_q)``.
+  :meth:`Model.control(clone_variables=False) <newton.Model.control>` leaves the target
+  ``None``.
 - **Substeps.** The target is the end pose of one ``step()`` call; nothing is
   interpolated. Write the target every substep for smooth motion.
 - **Grasp and release.** Flags are read every step, so toggling the bit on the device

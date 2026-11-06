@@ -948,12 +948,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
             entry.control = _entry_control(entry.view)
-            if _entry_has_kinematic_particles(entry):
-                if entry.substeps > 1:
-                    raise NotImplementedError(
-                        f"Entry '{entry.name}' uses substeps={entry.substeps} with ParticleFlags.KINEMATIC particles; "
-                        "kinematic particle targets are not interpolated across coupled substeps."
-                    )
+            if entry.substeps > 1 and _entry_has_kinematic_particles(entry):
+                raise NotImplementedError(
+                    f"Entry '{entry.name}' uses substeps={entry.substeps} with ParticleFlags.KINEMATIC particles; "
+                    "kinematic particle targets are not interpolated across coupled substeps."
+                )
+            if int(entry.view.particle_count):
                 entry.particle_target_q = wp.clone(entry.view.particle_q)
             entry.has_body_force_input = entry.state_0.body_f is not None
             entry.has_particle_force_input = entry.state_0.particle_f is not None

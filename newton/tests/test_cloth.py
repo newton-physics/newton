@@ -1423,9 +1423,9 @@ def test_kinematic_particle_control_defaults(test, device):
     control.clear(model)
     np.testing.assert_array_equal(control.particle_target_q.numpy(), model.particle_q.numpy())
 
-    plain = newton.ModelBuilder()
-    plain.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
-    test.assertIsNone(plain.finalize(device=device).control().particle_target_q)
+    rigid = newton.ModelBuilder()
+    rigid.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    test.assertIsNone(rigid.finalize(device=device).control().particle_target_q)
 
     solver = newton.solvers.SolverVBD(model, iterations=2)
     state_0, state_1 = model.state(), model.state()
