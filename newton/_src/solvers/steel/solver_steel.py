@@ -5308,12 +5308,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             local_residual_pair_articulation, dtype=wp.int32, device=device
         )
         self._local_solve_owner = wp.zeros(max(self._world_count, 1), dtype=wp.int32, device=device)
-        self._local_general_world_count = wp.zeros(1, dtype=wp.int32, device=device)
-        self._local_general_worlds = wp.empty(max(self._world_count, 1), dtype=wp.int32, device=device)
-        # One warp per world for the general sweep beside the local owners: the warps beyond the compacted
-        # general queue return at once, and a queue that holds most of the worlds (a policy grasping in every
-        # world) runs at the device's full occupancy instead of eight resident blocks per SM walking it.
-        self._local_general_solver_blocks = self._world_count
 
         def device_arrays(table):
             return {size: wp.array(arts, dtype=wp.int32, device=device) for size, arts in table.items() if arts}
@@ -10359,9 +10353,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     def _classify_local_solve_worlds(self) -> None:
-        """Assign this step's world owners and compact the general and paired local queues."""
+        """Assign this step's world owners and compact the paired local queues."""
         model = self.model
-        self._local_general_world_count.zero_()
         wp.launch(
             classify_local_solve_worlds,
             dim=self._world_count,
@@ -10381,7 +10374,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._local_residual_max_rows,
                 self._local_residual_mf_max_rows,
             ],
-            outputs=[self._local_solve_owner, self._local_general_world_count, self._local_general_worlds],
+            outputs=[self._local_solve_owner],
             device=model.device,
         )
         pair_tiers = (
@@ -11913,12 +11906,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 iteration_offset=iteration_offset,
             )
             return
-        queue = []
-        blocks = self._world_count
+        owner = []
         if self._local_internal_fast_path:
-            # The general sweep walks the compacted queue of worlds the local solves leave to it.
-            blocks = self._local_general_solver_blocks
-            queue = [self._local_general_world_count, self._local_general_worlds, blocks, 1, self._local_solve_owner]
+            # One warp per world beside the local owners; the kernel returns at once for a world a local solve owns.
+            owner = [self._local_solve_owner]
         if 0 in self._pgs_solve_mf_gs_kernels:
             # Without row phases the kernel ignores the phase argument.
             kernel = self._pgs_solve_mf_gs_kernels[0]
@@ -11929,9 +11920,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._pgs_solve_mf_gs_kernels[row_phase] = kernel
         wp.launch_tiled(
             kernel,
-            dim=[blocks],
+            dim=[self._world_count],
             inputs=[
-                *queue,
+                *owner,
                 *self._mf_gs_inputs(self._rhs if rhs is None else rhs),
                 int(iterations),
                 self._relaxation,
@@ -15244,8 +15235,7 @@ def _get_pgs_solve_mf_gs_kernel(
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
-            leave to the general sweep: the kernel then walks a compacted world queue with a
-            grid stride (``general_worlds``) and returns for worlds that ``local_solve_owner``
+            leave to the general sweep: the kernel returns for worlds that ``local_solve_owner``
             assigns to a local solve.
         friction_mode: Contact update of the friction rows (see ``SolverSteel``):
             ``"fixed_normal"`` solves the two tangents on the friction disk of the current
@@ -16225,11 +16215,10 @@ def _prefetch_streamed_dense_metadata(snippet: str) -> str:
 
 
 def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
-    """Wrap a matrix-free Gauss-Seidel snippet that skips locally owned worlds in a world-queue kernel.
+    """Wrap a matrix-free Gauss-Seidel snippet that skips locally owned worlds.
 
-    The launch grid has ``general_world_grid_stride`` warps; with ``use_general_world_queue``
-    each warp walks the compacted ``general_worlds`` queue with that stride, otherwise warp
-    ``w`` solves world ``w``.
+    Warp ``w`` solves world ``w``; the snippet returns at once for a world that ``local_solve_owner``
+    assigns to a local solve.
     """
 
     @wp.func_native(snippet)
@@ -16277,10 +16266,6 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
     ): ...
 
     def pgs_solve_mf_gs_local(  # pragma: no cover - compiled by wp.kernel
-        general_world_count: wp.array[int],
-        general_worlds: wp.array[int],
-        general_world_grid_stride: int,
-        use_general_world_queue: int,
         local_solve_owner: wp.array[int],
         world_constraint_count: wp.array[int],
         world_dof_indices: wp.array2d[int],
@@ -16321,58 +16306,49 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
         iteration_offset: int,
         v_out: wp.array[float],
     ):
-        candidate, _lane = wp.tid()
-        general_index = candidate
-        general_count = general_world_count[0]
-        if use_general_world_queue == 0:
-            general_count = candidate + 1
-        while general_index < general_count:
-            world = candidate
-            if use_general_world_queue != 0:
-                world = general_worlds[general_index]
-            pgs_solve_mf_gs_local_native(
-                world,
-                local_solve_owner,
-                world_constraint_count,
-                world_dof_indices,
-                rhs_bias,
-                world_diag,
-                world_impulses,
-                J_world,
-                Y_world,
-                world_row_type,
-                world_row_parent,
-                world_row_mu,
-                world_drive_target_vel_bias,
-                world_drive_vel_multiplier,
-                world_drive_impulse_multiplier,
-                world_drive_max_impulse,
-                world_drive_vel_limit,
-                mf_constraint_count,
-                mf_contact_rows_end,
-                mf_meta,
-                mf_impulses,
-                mf_J_a,
-                mf_J_b,
-                mf_MiJt_a,
-                mf_MiJt_b,
-                mf_row_mu,
-                world_row_w,
-                mf_row_w,
-                world_torsion_group,
-                torsion_row_radius,
-                compliance_dense_gamma,
-                compliance_mf_gamma,
-                iterations,
-                omega,
-                regularize,
-                freeze_drive_rows,
-                row_phase,
-                friction_start_iteration,
-                iteration_offset,
-                v_out,
-            )
-            general_index += general_world_grid_stride
+        world, _lane = wp.tid()
+        pgs_solve_mf_gs_local_native(
+            world,
+            local_solve_owner,
+            world_constraint_count,
+            world_dof_indices,
+            rhs_bias,
+            world_diag,
+            world_impulses,
+            J_world,
+            Y_world,
+            world_row_type,
+            world_row_parent,
+            world_row_mu,
+            world_drive_target_vel_bias,
+            world_drive_vel_multiplier,
+            world_drive_impulse_multiplier,
+            world_drive_max_impulse,
+            world_drive_vel_limit,
+            mf_constraint_count,
+            mf_contact_rows_end,
+            mf_meta,
+            mf_impulses,
+            mf_J_a,
+            mf_J_b,
+            mf_MiJt_a,
+            mf_MiJt_b,
+            mf_row_mu,
+            world_row_w,
+            mf_row_w,
+            world_torsion_group,
+            torsion_row_radius,
+            compliance_dense_gamma,
+            compliance_mf_gamma,
+            iterations,
+            omega,
+            regularize,
+            freeze_drive_rows,
+            row_phase,
+            friction_start_iteration,
+            iteration_offset,
+            v_out,
+        )
 
     pgs_solve_mf_gs_local.__name__ = name
     pgs_solve_mf_gs_local.__qualname__ = name

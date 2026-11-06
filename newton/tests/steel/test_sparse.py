@@ -2797,8 +2797,6 @@ class TestSteelLocalInternalSolve(unittest.TestCase):
         pair = wp.array([-1, 10, 11, 12, 13, -1, 14, 15], dtype=wp.int32, device=device)
         residual_pair = wp.array([-1, 10, 11, 12, 13, -1, 14, 15], dtype=wp.int32, device=device)
         owner = wp.empty(8, dtype=wp.int32, device=device)
-        general_count = wp.zeros(1, dtype=wp.int32, device=device)
-        general_worlds = wp.empty(8, dtype=wp.int32, device=device)
 
         wp.launch(
             classify_local_solve_worlds,
@@ -2819,7 +2817,7 @@ class TestSteelLocalInternalSolve(unittest.TestCase):
                 40,
                 12,
             ],
-            outputs=[owner, general_count, general_worlds],
+            outputs=[owner],
             device=device,
         )
 
@@ -2836,8 +2834,6 @@ class TestSteelLocalInternalSolve(unittest.TestCase):
                 PGS_LOCAL_SOLVE_OWNER_GENERAL,
             ],
         )
-        self.assertEqual(int(general_count.numpy()[0]), 3)
-        np.testing.assert_array_equal(general_worlds.numpy()[:3], [4, 5, 7])
 
         active_count = wp.zeros(1, dtype=wp.int32, device=device)
         active_primary = wp.empty(6, dtype=wp.int32, device=device)
@@ -3499,46 +3495,6 @@ class TestSteelLocalOwners(unittest.TestCase):
                     step(case, False)
                 np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_SINGLE)
                 assert_state_parity(selected, general)
-
-    @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
-    def test_general_sweep_beside_the_owners_launches_one_block_per_world(self):
-        """Launch one block per world for the sweep beside the owners and match the general owner on a large batch."""
-        device = wp.get_cuda_device()
-        world_count = 8 * device.sm_count + 1
-        model = _build_mixed_response_model(device, world_count=world_count, friction=0.7)
-        cases = []
-        for kernel in ("tiled", "par_row"):
-            with kernel_overrides({"hinv_jt_kernel": kernel}):
-                solver = SolverSteel(
-                    model,
-                    enable_joint_limits=True,
-                    joint_limit_activation_gap=0.0,
-                    friction_anchor_beta=0.0,
-                    iterations=8,
-                    articulation_constraint_max=64,
-                    free_body_constraint_max=32,
-                )
-            state_in, state_out = model.state(), model.state()
-            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-            pipeline = newton.CollisionPipeline(model, reduce_contacts=False, contact_matching="latest")
-            cases.append([solver, state_in, state_out, pipeline, pipeline.contacts(), model.control()])
-        general, selected = cases
-        self.assertFalse(general[0]._local_internal_fast_path)
-        self.assertTrue(selected[0]._local_internal_fast_path)
-        self.assertEqual(selected[0]._local_general_solver_blocks, world_count)
-        for _ in range(2):
-            for case in cases:
-                solver, state_in, state_out, pipeline, contacts, control = case
-                state_in.clear_forces()
-                pipeline.collide(state_in, contacts)
-                solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
-                case[1], case[2] = state_out, state_in
-            for field in ("joint_q", "joint_qd"):
-                np.testing.assert_allclose(
-                    getattr(selected[1], field).numpy(), getattr(general[1], field).numpy(), rtol=5.0e-4, atol=2.0e-6
-                )
-        self.assertTrue((selected[0]._constraint_count.numpy() > 0).all())
-        np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_GENERAL)
 
     @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
     def test_contact_owners_remain_available_at_sm_count(self):

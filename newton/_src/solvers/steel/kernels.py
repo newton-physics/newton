@@ -10359,10 +10359,8 @@ def classify_local_solve_worlds(
     local_residual_mf_max_constraints: int,
     # outputs
     local_solve_owner: wp.array[int],
-    general_world_count: wp.array[int],
-    general_worlds: wp.array[int],
 ):
-    """Assign each world's solver owner and compact the worlds left to the general sweep.
+    """Assign each world's solver owner.
 
     A world whose dense rows are all internal (no contact rows) and fit the articulation's
     DOF count goes to the single-articulation solve; a world whose articulation also touches
@@ -10414,9 +10412,6 @@ def classify_local_solve_worlds(
     ):
         owner = PGS_LOCAL_SOLVE_OWNER_PAIR_RESIDUAL
     local_solve_owner[world] = owner
-    if owner == PGS_LOCAL_SOLVE_OWNER_GENERAL and (row_count > 0 or mf_count > 0):
-        general_index = wp.atomic_add(general_world_count, 0, 1)
-        general_worlds[general_index] = world
 
 
 @wp.kernel
