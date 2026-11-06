@@ -258,6 +258,8 @@ _LOCAL_GENERAL_BLOCKS_PER_SM = 8
 _LOCAL_PAIR_BLOCKS_PER_SM = 8
 # The articulation-local solve runs a serial O(dofs^2) triangular solve per row.
 _LOCAL_INTERNAL_MAX_DOF = 16
+# Conservative batch limit for the serial contact-bearing owners; contact-free owners stay eligible.
+_LOCAL_CONTACT_WORLDS_PER_SM = 1
 _LOCAL_SOLVE_MAX_ROWS = 20
 _LOCAL_RESIDUAL_MAX_ROWS = 40
 _LOCAL_RESIDUAL_MF_MAX_ROWS = 12
@@ -5183,11 +5185,17 @@ class SolverSteel(SolverBase, CouplingInterface):
         next to it, for the pair solve, and the residual pair solve when the articulation's
         DOFs come first. Each step :func:`classify_local_solve_worlds` assigns every world to
         one owner from its row counts; the general sweep solves the rest.
+
+        Pair and residual owners are limited to small batches by the device SM count.
+        Larger batches retain the single-articulation owner for contact-free worlds;
+        contact-bearing worlds use the general sweep.
         """
         self._local_solve_max_rows = min(_LOCAL_SOLVE_MAX_ROWS, self._articulation_constraint_max)
         self._local_residual_max_rows = min(_LOCAL_RESIDUAL_MAX_ROWS, self._articulation_constraint_max)
         self._local_residual_mf_max_rows = min(_LOCAL_RESIDUAL_MF_MAX_ROWS, self._free_body_constraint_max)
         local_shared_limit = int(getattr(model.device, "max_shared_memory_per_block", 0))
+        sm_count = int(getattr(model.device, "sm_count", 0) or 1)
+        local_contact_batch = self._world_count <= _LOCAL_CONTACT_WORLDS_PER_SM * sm_count
         local_base_supported = bool(
             model.device.is_cuda
             and not model.requires_grad
@@ -5262,7 +5270,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 local_candidates[primary_dofs].append(primary_art)
 
                 free_arts = [art for art in response_arts if plan.is_free_rigid[art] != 0]
-                if len(response_arts) != 2 or len(free_arts) != 1:
+                if not local_contact_batch or len(response_arts) != 2 or len(free_arts) != 1:
                     continue
                 secondary_art = free_arts[0]
                 secondary_dofs = int(plan.response_dof_count[secondary_art])
@@ -5304,7 +5312,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._local_solve_owner = wp.zeros(max(self._world_count, 1), dtype=wp.int32, device=device)
         self._local_general_world_count = wp.zeros(1, dtype=wp.int32, device=device)
         self._local_general_worlds = wp.empty(max(self._world_count, 1), dtype=wp.int32, device=device)
-        sm_count = int(getattr(device, "sm_count", 0) or 1)
         self._local_general_solver_blocks = min(self._world_count, max(1, sm_count * _LOCAL_GENERAL_BLOCKS_PER_SM))
 
         def device_arrays(table):

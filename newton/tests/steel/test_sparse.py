@@ -3420,6 +3420,96 @@ def _assert_owner_parity(test, general, local):
 
 
 class TestSteelLocalOwners(unittest.TestCase):
+    @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
+    def test_large_contact_batches_keep_single_owner_and_match_general(self):
+        """Keep contact-free worlds local and replay contact-bearing worlds through the general owner.
+
+        Exercise both paired and residual contacts above the local contact batch limit, with
+        and without persistent friction patches. Compare the trajectory against a solver that
+        always uses the general owner, including transitions into and out of contact in a graph.
+        """
+        device = wp.get_cuda_device()
+        world_count = device.sm_count + 1
+        for static_support, anchor_beta in product((False, True), (0.0, 0.1)):
+            with self.subTest(static_support=static_support, anchor_beta=anchor_beta):
+                model = _build_mixed_response_model(
+                    device, world_count=world_count, friction=0.7, static_support=static_support
+                )
+                cases = []
+                for kernel in ("tiled", "par_row"):
+                    with kernel_overrides({"hinv_jt_kernel": kernel}):
+                        solver = SolverSteel(
+                            model,
+                            enable_joint_limits=True,
+                            joint_limit_activation_gap=0.0,
+                            friction_anchor_beta=anchor_beta,
+                            iterations=8,
+                            articulation_constraint_max=64,
+                            free_body_constraint_max=32,
+                        )
+                    state_in, state_out = model.state(), model.state()
+                    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                    pipeline = newton.CollisionPipeline(
+                        model, broad_phase="nxn", reduce_contacts=False, contact_matching="latest"
+                    )
+                    cases.append([solver, state_in, state_out, pipeline, pipeline.contacts(), model.control()])
+                general, selected = cases
+                self.assertFalse(general[0]._local_internal_fast_path)
+                self.assertTrue(selected[0]._local_internal_fast_path)
+
+                def step(case, with_contacts):
+                    solver, state_in, state_out, pipeline, contacts, control = case
+                    state_in.clear_forces()
+                    pipeline.collide(state_in, contacts)
+                    if not with_contacts:
+                        contacts.rigid_contact_count.zero_()
+                    solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+                    case[1], case[2] = state_out, state_in
+
+                def assert_state_parity(selected, general):
+                    for field in ("joint_q", "joint_qd"):
+                        np.testing.assert_allclose(
+                            getattr(selected[1], field).numpy(),
+                            getattr(general[1], field).numpy(),
+                            rtol=5.0e-4,
+                            atol=2.0e-6,
+                        )
+
+                for case in cases:
+                    step(case, False)
+                np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_SINGLE)
+                assert_state_parity(selected, general)
+                for case in cases:
+                    step(case, True)
+                self.assertTrue((selected[0]._constraint_count.numpy() > 0).all())
+                if static_support:
+                    self.assertTrue((selected[0]._mf_constraint_count.numpy() > 0).all())
+                np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_GENERAL)
+                assert_state_parity(selected, general)
+
+                with wp.ScopedCapture(device) as capture:
+                    step(selected, False)
+                    step(selected, True)
+                for _ in range(3):
+                    wp.capture_launch(capture.graph)
+                    step(general, False)
+                    step(general, True)
+                    assert_state_parity(selected, general)
+                for case in cases:
+                    step(case, False)
+                np.testing.assert_array_equal(selected[0]._local_solve_owner.numpy(), PGS_LOCAL_SOLVE_OWNER_SINGLE)
+                assert_state_parity(selected, general)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "articulation-local batch selection requires CUDA")
+    def test_contact_owners_remain_available_at_sm_count(self):
+        """Preserve paired and residual owners at the small-batch boundary."""
+        device = wp.get_cuda_device()
+        model = _build_mixed_response_model(device, world_count=device.sm_count)
+        with kernel_overrides({"hinv_jt_kernel": "par_row"}):
+            solver = SolverSteel(model, friction_anchor_beta=0.0)
+        self.assertTrue((solver._local_pair_articulation.numpy() >= 0).all())
+        self.assertTrue((solver._local_residual_pair_articulation.numpy() >= 0).all())
+
     @unittest.skipUnless(wp.is_cuda_available(), "articulation-local mixed-world parity requires CUDA")
     def test_local_internal_mixed_world_matches_general_response(self):
         """Match the general response when an articulation contacts a free body."""
