@@ -526,11 +526,11 @@ class Example:
         assert np.all(np.isfinite(body_q)), "Body positions contain NaN or inf values"
         assert np.all(np.isfinite(body_qd)), "Body velocities contain NaN or inf values"
 
-        assert self._release_checked, "Test ran too few frames to reach the release phase"
         end_time = float(self.key_times[-1]) + SETTLE_TIME
         assert self.sim_time >= end_time - 1e-3, (
             f"Test ran {self.sim_time:.2f} s; the sequence plus settling takes {end_time:.2f} s"
         )
+        assert self._release_checked, "The placement check before release did not run"
 
         # After release the cable drops onto the ground plane and comes to rest there. Its
         # centerline rests one radius above the surface, and its xy extent (padded by the
