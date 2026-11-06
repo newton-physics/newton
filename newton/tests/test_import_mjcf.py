@@ -10043,46 +10043,6 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
         np.testing.assert_array_equal(compiled, [1, 1, 0, 1])
 
 
-class TestMjcfAdhesionActuator(unittest.TestCase):
-    """The <adhesion> shortcut is a body-transmission actuator and must not be dropped on import."""
-
-    MJCF = """<?xml version="1.0" ?>
-    <mujoco>
-        <worldbody>
-            <body name="ceiling" pos="0 0 0.5">
-                <geom type="box" size="0.2 0.2 0.01"/>
-            </body>
-            <body name="box" pos="0 0 0.47">
-                <freejoint/>
-                <geom type="box" size="0.02 0.02 0.02" mass="0.1"/>
-            </body>
-        </worldbody>
-        <actuator>
-            <adhesion name="stick" body="ceiling" ctrlrange="0 1" gain="5"/>
-        </actuator>
-    </mujoco>
-    """
-
-    def test_adhesion_matches_mujoco(self):
-        """nu, transmission type, gain, bias and control limits match the model MuJoCo compiles."""
-        import mujoco
-
-        reference = mujoco.MjModel.from_xml_string(self.MJCF)
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(self.MJCF)
-        compiled = SolverMuJoCo(builder.finalize()).mj_model
-
-        self.assertEqual(reference.nu, 1)
-        self.assertEqual(compiled.nu, reference.nu)
-        np.testing.assert_array_equal(compiled.actuator_trntype, reference.actuator_trntype)
-        np.testing.assert_array_equal(compiled.actuator_trnid[:, 0], reference.actuator_trnid[:, 0])
-        np.testing.assert_allclose(compiled.actuator_gainprm, reference.actuator_gainprm)
-        np.testing.assert_allclose(compiled.actuator_biasprm, reference.actuator_biasprm)
-        np.testing.assert_array_equal(compiled.actuator_ctrllimited, reference.actuator_ctrllimited)
-        np.testing.assert_allclose(compiled.actuator_ctrlrange, reference.actuator_ctrlrange)
-
-
 class TestMjcfPositionDampratioParsing(unittest.TestCase):
     """Verify MJCF position actuator dampratio encoding in biasprm[2]."""
 

@@ -3832,7 +3832,14 @@ def parse_mjcf(
 
             elif actuator_type == "adhesion":
                 # Body transmission with a fixed gain and no bias; ctrlrange is always enforced.
+                # MuJoCo rejects a non-body target, a negative gain and a negative ctrlrange.
+                if trntype != int(SolverMuJoCo.TrnType.BODY):
+                    raise ValueError("MJCF adhesion actuator must target a body.")
                 gain = parse_float(merged_attrib, "gain", 1.0)
+                if gain < 0.0:
+                    raise ValueError("MJCF adhesion actuator gain must be nonnegative.")
+                if min(parse_vec(merged_attrib, "ctrlrange", [0.0, 0.0])) < 0.0:
+                    raise ValueError("MJCF adhesion actuator ctrlrange must be nonnegative.")
                 gainprm = vec10(gain, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
