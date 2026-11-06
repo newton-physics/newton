@@ -139,7 +139,7 @@ def test_sdf_gradient_normals_particle_contacts(test, device):
         np.testing.assert_allclose(normals[0], np.tile((-1.0, 0.0, 0.0), (3, 1)), atol=1.0e-3)
 
 
-def _make_volume_solver(device, fraction, *, scheme="pic"):
+def _make_volume_solver(device, fraction, *, scheme="pic", target=1.0):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     # A block of four voxels per axis, packed at 1.2 times its volume, wider than the 3-voxel density kernel
@@ -163,6 +163,7 @@ def _make_volume_solver(device, fraction, *, scheme="pic"):
         max_iterations=3,
         tolerance=0.0,
         volume_recovery_fraction=fraction,
+        volume_recovery_target=target,
     )
     return model, SolverImplicitMPM(model, config=config)
 
@@ -205,6 +206,27 @@ def test_density_measures_elastic_volume(test, device):
                 offsets.append(captured[0])
         test.assertLess(offsets[0], 0.0)
         test.assertGreater(offsets[1], 0.1 * offsets[0])
+
+
+def test_volume_recovery_target(test, device):
+    """Leave material packed below the target fraction alone and push it apart above."""
+    with wp.ScopedDevice(device):
+        offsets = []
+        for target in (1.0, 1.3):
+            with test.subTest(target=target):
+                model, solver = _make_volume_solver(device, 0.1, target=target)
+                build_offset = solver._build_density_strain_offset
+                captured = []
+
+                def capture_offset(*args, build_offset=build_offset, captured=captured):
+                    build_offset(*args)
+                    captured.append(float(args[1].unilateral_strain_offset.numpy().min()))
+
+                solver._build_density_strain_offset = capture_offset
+                solver.step(model.state(), model.state(), None, None, 0.02)
+                offsets.append(captured[0])
+        test.assertLess(offsets[0], 0.0)
+        test.assertEqual(offsets[1], 0.0)
 
 
 def test_density_offset_bounded_in_p1d_modes(test, device):
@@ -383,6 +405,8 @@ def test_recovery_config_validation(test, device):
             {"volume_recovery_fraction": float("nan")},
             {"volume_recovery_fraction": -0.1},
             {"volume_recovery_fraction": 1.1},
+            {"volume_recovery_target": 0.0},
+            {"volume_recovery_target": float("inf")},
             {"critical_fraction_measurement": "box"},
             {"collider_recovery_fraction": float("inf")},
             {"collider_contact_gap": -0.01},
@@ -404,6 +428,7 @@ for function in (
     test_sdf_gradient_normals_particle_contacts,
     test_volume_recovery_truncated,
     test_density_measures_elastic_volume,
+    test_volume_recovery_target,
     test_density_offset_bounded_in_p1d_modes,
     test_critical_fraction_gimp_p1d,
     test_critical_fraction_flags_loose_material,

@@ -466,18 +466,19 @@ def feedback_offset_values(
     available: wp.array[float],
     flags: wp.array[int],
     fraction: float,
+    target: float,
     values: wp.array[float],
 ):
-    """Push-only feedback, the volumetric strain bringing overfilled particles back to the available fraction.
+    """Push-only feedback, the volumetric strain bringing overfilled particles back to the target fraction.
 
     The particle quadrature weighs offsets and volumetric strain alike by the measured fraction, so
-    ``dt div(u) = available / measured - 1`` brings the fraction to ``available``.
+    ``dt div(u) = target * available / measured - 1`` brings the fraction to ``target * available``.
     """
     p = wp.tid()
     values[p] = 0.0
     if (flags[p] & newton.ParticleFlags.ACTIVE) == 0 or measured[p] <= 0.0:
         return
-    values[p] = fraction * wp.min(available[p] / measured[p] - 1.0, 0.0)
+    values[p] = fraction * wp.min(target * available[p] / measured[p] - 1.0, 0.0)
 
 
 @wp.kernel
