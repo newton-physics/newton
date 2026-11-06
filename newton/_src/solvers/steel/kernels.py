@@ -712,7 +712,8 @@ def jcalc_tau(
     if type == JointType.BALL:
         for i in range(3):
             j = dof_start + i
-            # Passive damping per angular DOF, as in SolverFeatherstone; a ball joint has no passive spring.
+            # Passive damping enters the RHS and the positive damping adds to the
+            # implicit mass diagonal; a ball joint has no passive spring.
             value = -wp.dot(joint_S_s[j], body_f_s) + joint_f[j] - joint_damping[j] * joint_qd[j]
             if add_existing_tau != 0:
                 value += tau[j]
@@ -736,9 +737,8 @@ def jcalc_tau(
         for i in range(axis_count):
             j = dof_start + i
             S_s = joint_S_s[j]
-            # Passive spring/damping applied explicitly; the drive gains stay on the
-            # implicit augmented path. These joint types have one coordinate per DOF,
-            # so coord_start + i addresses the axis position and its rest coordinate.
+            # Passive forces enter the RHS; positive damping also adds its velocity
+            # derivative to the mass diagonal. Spring rest positions use coordinate indices.
             passive_f = joint_stiffness[j] * (joint_rest_q[coord_start + i] - joint_q[coord_start + i])
             passive_f -= joint_damping[j] * joint_qd[j]
             # total torque / force on the joint (drive forces handled via augmented mass)
@@ -2913,6 +2913,8 @@ def prepare_articulation_augmented_drives(
     joint_dof_dim: wp.array2d[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
+    joint_damping: wp.array[float],
+    augment_drives: bool,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
@@ -2928,7 +2930,7 @@ def prepare_articulation_augmented_drives(
     row_K: wp.array[float],
     tau: wp.array[float],
 ):
-    """Prepare one articulation's implicit drive rows and explicit force."""
+    """Prepare implicit drive/damping rows and the explicit drive force."""
     joint_start = articulation_start[articulation]
     joint_end = articulation_joint_end[articulation]
     if reset_tau != 0:
@@ -2944,7 +2946,12 @@ def prepare_articulation_augmented_drives(
     slot = int(0)
     for joint_index in range(joint_start, joint_end):
         type = joint_type[joint_index]
-        if type != JointType.PRISMATIC and type != JointType.REVOLUTE and type != JointType.D6:
+        if (
+            type != JointType.PRISMATIC
+            and type != JointType.REVOLUTE
+            and type != JointType.D6
+            and type != JointType.BALL
+        ):
             continue
 
         axis_count = joint_dof_dim[joint_index, 0] + joint_dof_dim[joint_index, 1]
@@ -2954,22 +2961,32 @@ def prepare_articulation_augmented_drives(
             if slot >= max_dofs:
                 break
             dof_index = qd_start + axis
-            ke = joint_target_ke[dof_index]
-            kd = joint_target_kd[dof_index]
-            if ke <= 0.0 and kd <= 0.0:
-                continue
-
-            K = ke * dt * dt + kd * dt
+            ke = float(0.0)
+            kd = float(0.0)
+            if augment_drives and type != JointType.BALL:
+                ke = joint_target_ke[dof_index]
+                kd = joint_target_kd[dof_index]
+            # Preserve the existing rule that a nonpositive drive diagonal is skipped.
+            drive = augment_drives and type != JointType.BALL and (ke > 0.0 or kd > 0.0)
+            drive_K = ke * dt * dt + kd * dt
+            drive = drive and drive_K > 0.0
+            if not drive:
+                drive_K = 0.0
+            # The explicit -damping * qd remains in tau. This diagonal makes
+            # its velocity dependence implicit without applying drive limits.
+            K = drive_K + wp.max(joint_damping[dof_index], 0.0) * dt
             if K <= 0.0:
                 continue
 
-            q = joint_q[coord_start + axis]
-            qd = joint_qd[dof_index]
-            target_pos = joint_target_pos[joint_target_q_start[joint_index] + axis]
-            u0 = -(ke * (q - target_pos + dt * qd) + kd * (qd - joint_target_vel[dof_index]))
-            effort_limit = joint_effort_limit[dof_index]
-            if effort_limit > 0.0:
-                u0 = wp.clamp(u0, -effort_limit, effort_limit)
+            u0 = float(0.0)
+            if drive:
+                q = joint_q[coord_start + axis]
+                qd = joint_qd[dof_index]
+                target_pos = joint_target_pos[joint_target_q_start[joint_index] + axis]
+                u0 = -(ke * (q - target_pos + dt * qd) + kd * (qd - joint_target_vel[dof_index]))
+                effort_limit = joint_effort_limit[dof_index]
+                if effort_limit > 0.0:
+                    u0 = wp.clamp(u0, -effort_limit, effort_limit)
 
             row_index = articulation * max_dofs + slot
             row_dof_index[row_index] = dof_index
@@ -2996,6 +3013,8 @@ def eval_augmented_drives(
     joint_dof_dim: wp.array2d[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
+    joint_damping: wp.array[float],
+    augment_drives: bool,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
@@ -3024,6 +3043,8 @@ def eval_augmented_drives(
         joint_dof_dim,
         joint_q,
         joint_qd,
+        joint_damping,
+        augment_drives,
         joint_target_ke,
         joint_target_kd,
         joint_target_pos,
@@ -3065,6 +3086,8 @@ def eval_rigid_tau_and_augmented_drives(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     articulation_origin: wp.array[wp.vec3],
+    drive_joint_qd: wp.array[float],
+    augment_drives: bool,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
@@ -3123,7 +3146,9 @@ def eval_rigid_tau_and_augmented_drives(
         joint_q_start,
         joint_dof_dim,
         joint_q,
-        joint_qd,
+        drive_joint_qd,
+        joint_damping,
+        augment_drives,
         joint_target_ke,
         joint_target_kd,
         joint_target_pos,
@@ -3143,17 +3168,25 @@ def eval_rigid_tau_and_augmented_drives(
 @wp.kernel
 def build_mass_update_mask(
     global_flag: int,
+    dt: float,
     mass_update_requested: wp.array[int],
     articulation_active: wp.array[int],
     mass_update_mask: wp.array[int],
+    mass_factor_dt: wp.array[float],
 ):
+    """Refresh active factors whose timestep differs, including during graph replay."""
     tid = wp.tid()
     flag = 1 if global_flag != 0 else 0
-    if mass_update_requested[tid] != 0:
+    # Ignore float-rounding jitter, but retain relative sensitivity for tiny timesteps.
+    factor_dt = mass_factor_dt[tid]
+    dt_changed = wp.abs(factor_dt - dt) > 1.0e-6 * wp.max(wp.abs(factor_dt), wp.abs(dt))
+    if mass_update_requested[tid] != 0 or dt_changed:
         flag = 1
     if articulation_active[tid] == 0:
         flag = 0
     mass_update_mask[tid] = flag
+    if flag != 0:
+        mass_factor_dt[tid] = dt
 
 
 # =============================================================================
@@ -5592,7 +5625,7 @@ def scatter_augmented_drive_dof_K(
     # outputs
     dof_K: wp.array[float],
 ):
-    """Write each DOF's implicit drive term ``dt * kd + dt^2 * ke`` for a mass refresh.
+    """Write each DOF's combined implicit drive and passive damping diagonal for a mass refresh.
 
     The DOF-indexed form of :func:`apply_augmented_mass_diagonal_grouped`, consumed by the
     sparse mass factors, which assemble the mass matrix without dense storage.
