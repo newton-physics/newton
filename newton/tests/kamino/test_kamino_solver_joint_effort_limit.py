@@ -5,13 +5,19 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
-from newton.tests.kamino.utils.solver_configs import KAMINO_CONFIGS, PADMM_CONFIG_NAMES, make_single_iteration_config
+from newton.tests.kamino.utils.solver_configs import (
+    KAMINO_CONFIGS,
+    PADMM_CONFIG_NAMES,
+    make_padmm_sparse_fused_config,
+    make_single_iteration_config,
+)
 
 _BODY_MASS = 1.0
 _BODY_INERTIA = 1.0
@@ -348,6 +354,70 @@ class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
                         warm_residual = float(warm_solver._solver_kamino.metrics.data.r_vi_natmap.numpy()[0])
                         if not (cold_residual < 1.0e-6 and warm_residual < 1.0e-6):
                             self.assertLess(warm_residual, cold_residual)
+
+
+class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
+    """
+    The effort and armature rows act on the same joint DoF. With ``armature / I = 1e5`` their
+    body-space impulses nearly cancel, so a small relative error in either produces a large
+    velocity error.
+    """
+
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
+    def test_bounded_pd_with_dominant_armature(self):
+        """Solve effort-limited PD accurately when the armature dwarfs the body inertia."""
+        self._check_bounded_pd(KAMINO_CONFIGS[:2])
+
+    def test_bounded_pd_with_armature_much_larger_than_body_inertia_fused_cr(self):
+        """Solve effort-limited PD with the fused conjugate residual solver, see the test above."""
+        if not wp.get_device(test_context.device).is_cuda:
+            self.skipTest("The fused conjugate residual solver requires CUDA.")
+        self._check_bounded_pd((("sparse_fused", make_padmm_sparse_fused_config),))
+
+    def _check_bounded_pd(self, configs):
+        inertia, armature, kp, kd, target, dt = 1.0e-6, 0.1, 100.0, 10.0, 0.1, 0.005
+        cases = ((1.0e3, 0.0), (1.0, 0.0), (1.0, 0.01))
+        joint_inertia = inertia + armature
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverKamino.register_custom_attributes(builder)
+        for limit, friction in cases:
+            builder.begin_world()
+            body = builder.add_link(mass=0.01, inertia=wp.mat33(np.eye(3) * inertia), lock_inertia=True)
+            joint = builder.add_joint_revolute(
+                -1,
+                body,
+                axis=newton.Axis.Z,
+                armature=armature,
+                friction=friction,
+                target_ke=kp,
+                target_kd=kd,
+                effort_limit=limit,
+                actuator_mode=newton.JointTargetMode.POSITION,
+            )
+            builder.add_articulation([joint])
+            builder.end_world()
+        model = builder.finalize(device=test_context.device)
+        for config_name, config_factory in configs:
+            solver = SolverKamino(model, config_factory())
+            control = model.control()
+            control.joint_target_q.assign([target] * len(cases))
+            state_out = model.state()
+            solver.step(_initial_state(model), state_out, control=control, contacts=None, dt=dt)
+            efforts = state_out.joint_lambdas_tau.numpy()
+            velocities = state_out.joint_qd.numpy()
+            for world, (limit, friction) in enumerate(cases):
+                with self.subTest(config=config_name, limit=limit, friction=friction):
+                    # Backward PD and momentum balance solved together, then saturated.
+                    effort = kp * target * joint_inertia / (joint_inertia + dt * kd + dt * dt * kp)
+                    effort = min(limit, effort)
+                    velocity = dt * (effort - friction) / joint_inertia
+                    self.assertGreater(velocity, 0.0)
+                    np.testing.assert_allclose(efforts[world], effort, rtol=1.0e-3)
+                    np.testing.assert_allclose(velocities[world], velocity, rtol=1.0e-3)
 
 
 if __name__ == "__main__":
