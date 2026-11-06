@@ -253,6 +253,7 @@ class Example:
             # Capture after binding the model so viewer-force kernels use
             # this layer's picking state, including picks made after capture.
             layer.graph = layer._capture()
+        self.viewer.set_camera(wp.vec3(14.0, -4.0, 2.0), pitch=0.0, yaw=-180.0)
 
     def step(self):
         for layer in self.layers:
