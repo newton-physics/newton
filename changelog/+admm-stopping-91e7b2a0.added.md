@@ -1,0 +1,1 @@
+Add optional velocity and force convergence checks to `SolverCoupledADMM`, including participant velocity and proximal contribution checks for positive `gamma`, using Warp kernels on CPU and CUDA with device-side stopping in compatible CUDA graphs.
