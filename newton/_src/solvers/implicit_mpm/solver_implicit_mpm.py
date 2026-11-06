@@ -1229,12 +1229,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         form with integer ``N`` is accepted. Particle bases require an explicit
         per-cell limit for graph capture (``"picN"``).
 
-        Particle contacts activate within 0.25 voxels of the surface, measured
-        from the particle radius. Activated contacts allow a normal approach
-        speed up to the gap beyond that band divided by the timestep, so
-        material stops in the band where grid contacts activate, and particles
-        near walls keep sampling the volume around them instead of bunching
-        against the surface.
+        Particle contacts stop with their centers at the larger of their radius
+        and 0.25 voxels from the surface, in the band where grid contacts
+        activate, so particles near walls keep sampling the volume around them
+        instead of bunching against the surface. They activate once the gap
+        from the particle surface is below the larger of
+        :attr:`collider_contact_gap` and that stopping band, and allow a normal
+        approach speed up to the remaining gap divided by the timestep.
         """
         strain_basis: _MPMStrainBasisName = "P0"
         """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
