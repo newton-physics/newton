@@ -17,11 +17,92 @@ from newton._src.solvers.mujoco.constants import (
 )
 from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, count_initial_contacts
 from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
 
 
 class TestImportUsdJoints(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_filterparent_flag_sets_joint_parent_filter(self):
+        """Honor the PhysicsScene's mjc:flag:filterparent on joints that do not author collisionEnabled (#4693).
+
+        Five parent-child sphere pairs: a fully locked generic joint (a weld, so it keeps its filter
+        under the flag), a generic joint with one free axis, a plain revolute joint, a revolute joint
+        that authors ``physics:collisionEnabled=false`` (an explicit choice wins over the flag), and two
+        revolute joints between one body pair that merge into a D6, one authoring ``collisionEnabled=true``
+        and one unauthored (the flag decides for the unauthored sibling, and the merged joint filters if
+        either does). Newton's pipeline and MuJoCo then agree on which pairs touch.
+        """
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        assets = ("Locked", "Hinged", "Plain", "Authored", "Merged")
+
+        def add_joint(stage, asset, name, joint_type, *, axis=None, free_axes=None, collision_enabled=None):
+            joint = joint_type.Define(stage, f"/{asset}/{name}")
+            joint.CreateBody0Rel().SetTargets([f"/{asset}/Parent"])
+            joint.CreateBody1Rel().SetTargets([f"/{asset}/Child"])
+            joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.1))
+            if free_axes is not None:
+                # a generic joint: every axis not listed is locked
+                for limit_axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
+                    limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), limit_axis)
+                    free = limit_axis in free_axes
+                    limit.CreateLowAttr().Set(-1.0 if free else 1.0)
+                    limit.CreateHighAttr().Set(1.0 if free else -1.0)
+            else:
+                joint.CreateAxisAttr().Set(axis or UsdGeom.Tokens.z)
+            if collision_enabled is not None:
+                joint.CreateCollisionEnabledAttr(collision_enabled)
+
+        def make_stage(scene_flag):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+            if scene_flag is not None:
+                scene.GetPrim().CreateAttribute("mjc:flag:filterparent", Sdf.ValueTypeNames.Bool).Set(scene_flag)
+            for i, asset in enumerate(assets):
+                root = UsdGeom.Xform.Define(stage, f"/{asset}")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                for body, z in (("Parent", 1.0), ("Child", 1.1)):
+                    sphere = UsdGeom.Sphere.Define(stage, f"/{asset}/{body}")
+                    sphere.CreateRadiusAttr(0.2)
+                    UsdGeom.Xformable(sphere).AddTranslateOp().Set(Gf.Vec3d(5.0 * i, 0.0, z))
+                    UsdPhysics.RigidBodyAPI.Apply(sphere.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+            add_joint(stage, "Locked", "Joint", UsdPhysics.Joint, free_axes=())
+            add_joint(stage, "Hinged", "Joint", UsdPhysics.Joint, free_axes=("rotZ",))
+            add_joint(stage, "Plain", "Joint", UsdPhysics.RevoluteJoint)
+            add_joint(stage, "Authored", "Joint", UsdPhysics.RevoluteJoint, collision_enabled=False)
+            add_joint(stage, "Merged", "JointZ", UsdPhysics.RevoluteJoint, collision_enabled=True)
+            add_joint(stage, "Merged", "JointX", UsdPhysics.RevoluteJoint, axis=UsdGeom.Tokens.x)
+            return stage
+
+        def filters(builder):
+            result = {}
+            for i, label in enumerate(builder.joint_label):
+                asset = label.strip("/").split("/")[0]
+                if asset in assets and builder.joint_type[i] != newton.JointType.FREE:
+                    result[asset] = bool(builder.joint_collision_filter_parent[i])
+            return result
+
+        for scene_flag in (False, True, None):
+            with self.subTest(scene_flag=scene_flag):
+                builder = newton.ModelBuilder()
+                builder.add_usd(make_stage(scene_flag))
+                locked = builder.joint_label.index("/Locked/Joint")
+                self.assertEqual(tuple(builder.joint_dof_dim[locked]), (0, 0))
+                opted_out = {"Hinged", "Plain", "Merged"} if scene_flag is False else set()
+                self.assertEqual(filters(builder), {asset: asset not in opted_out for asset in assets})
+                model = builder.finalize(device="cpu")
+                self.assertEqual(len(model.shape_collision_filter_pairs), len(assets) - len(opted_out))
+                # exactly the opted-out pairs touch, in Newton's pipeline and in MuJoCo alike
+                self.assertEqual(count_initial_contacts(model)[:2], (len(opted_out), len(opted_out)))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(make_stage(False), parse_mujoco_options=False)
+        self.assertEqual(filters(builder), dict.fromkeys(assets, True))
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_drive_scale_and_per_import_joint_defaults(self):
         """Use scene drive scaling and keep joint defaults scoped to each import."""

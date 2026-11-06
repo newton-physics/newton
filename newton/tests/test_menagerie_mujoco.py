@@ -1344,6 +1344,12 @@ def compare_mjw_models(
                 opt_native = getattr(native_val, opt_attr, None)
                 if opt_newton is None or opt_native is None or callable(opt_native):
                     continue
+                if opt_attr == "disableflags":
+                    # SolverMuJoCo always disables MuJoCo's parent-child filter: Newton's filter
+                    # pairs decide those contacts and reach MuJoCo as excludes.
+                    filter_parent = int(_mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
+                    opt_newton = int(opt_newton) & ~filter_parent
+                    opt_native = int(opt_native) & ~filter_parent
                 if hasattr(opt_native, "numpy"):
                     np.testing.assert_allclose(
                         opt_newton.numpy(),
