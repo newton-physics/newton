@@ -341,9 +341,12 @@ repository examples spend tuning effort, not a shared solver API.
        branched articulations of one shared
        topology select sparse mass factors automatically from the model's
        structure when contacts use hard point friction or persistent friction
-       patches, not from a performance estimate
-       (depending on the topology and the world count they can be faster or
-       markedly slower);
+       patches and the configuration meets the conditions in the
+       :class:`~newton.solvers.SolverSteel` docstring, not from a performance
+       estimate (depending on the topology and the world count they can be
+       faster or markedly slower); warm-started contacts
+       (``contact_warmstart=True``), a finite ``contact_friction_gap_max`` and
+       shapes with a positive restitution coefficient keep the dense factors;
        ``parallel_tree`` traverses independent tree branches in parallel and is
        worth measuring on broad trees such as hands. The opt-in
        ``reuse_kinematics`` (off by default) carries the kinematics a step
