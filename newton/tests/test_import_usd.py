@@ -14408,7 +14408,7 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uniform_display_primvars_resolve_per_face(self):
         """Resolve uniform display primvars per face, clamping or dropping invalid values."""
-        from pxr import Sdf, Usd, UsdGeom, UsdShade
+        from pxr import Sdf, Usd, UsdGeom, UsdShade, Vt
 
         from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
 
@@ -14431,8 +14431,10 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
              (f"{color_path}: ignoring imported face colors: 1 of 2 are non-finite; those faces use the default.",)),
             ("all_non_finite", uniform, [(nan, 0.4, 0.6), (nan, 0.4, 0.2)], [0.25, 0.75], False,
              None, [0.25, 0.75], (f"{color_path}: ignoring imported face colors: all 2 are non-finite.",)),
-            ("single_value", uniform, [(0.2, 0.4, 0.6)], [0.25, 0.75], False,
-             srgb((0.2, 0.4, 0.6)), [0.25, 0.75], (f"{color_path}: uniform primvar length 1 does not match 2 faces",)),
+            # Both indexed to one value: the fallbacks are the flattened first values, not the first authored ones.
+            ("single_value", uniform, two_colors, [0.25, 0.75], False, srgb((0.6, 0.4, 0.2)), 0.75,
+             (f"{color_path}: uniform primvar length 1 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 1 does not match 2 faces")),
             ("wrong_count", uniform, [*two_colors, (0.1, 0.1, 0.1)], [0.25, 0.75, 0.5], False,
              srgb((0.2, 0.4, 0.6)), 0.25,
              (f"{color_path}: uniform primvar length 3 does not match 2 faces",
@@ -14450,8 +14452,13 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
                 mesh.CreateFaceVertexCountsAttr().Set([3, 3])
                 mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
                 primvars = UsdGeom.PrimvarsAPI(mesh)
-                primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, interpolation).Set(colors)
-                primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, interpolation).Set(opacities)
+                color = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, interpolation)
+                color.Set(colors)
+                opacity = primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, interpolation)
+                opacity.Set(opacities)
+                if name == "single_value":
+                    color.SetIndices(Vt.IntArray([1]))
+                    opacity.SetIndices(Vt.IntArray([1]))
                 if bind:
                     material = UsdShade.Material.Define(stage, "/World/Looks/Material")
                     shader = UsdShade.Shader.Define(stage, "/World/Looks/Material/PreviewSurface")

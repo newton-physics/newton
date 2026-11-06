@@ -2120,18 +2120,18 @@ def _coerce_color_opacity(value: Any, attr: Usd.Attribute | None) -> float | Non
     return _coerce_opacity(value_np[3], attr)
 
 
-def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | None) -> tuple[np.ndarray | None, bool]:
-    """Return a ``uniform`` primvar's per-face values and whether a value-count mismatch was logged.
+def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | None) -> tuple[np.ndarray | None, Any]:
+    """Return a ``uniform`` primvar's per-face values, or its first flattened value after a logged length mismatch.
 
-    The values are None unless the primvar holds exactly one value per face.
+    The values are None unless the primvar holds exactly one value per face; the fallback is a one-element list.
     """
     if face_count is None or primvar.GetInterpolation() != UsdGeom.Tokens.uniform:
-        return None, False
+        return None, None
     if not primvar.GetTypeName().isArray:
-        return None, False
+        return None, None
     values = primvar.ComputeFlattened()
     if values is None or len(values) == 0:
-        return None, False
+        return None, None
     if len(values) != face_count:
         _warn_imported_value(
             primvar.GetAttr(),
@@ -2139,11 +2139,11 @@ def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | Non
             len(values),
             face_count,
         )
-        return None, True
+        return None, [values[0]]
     try:
-        return np.asarray(values, dtype=np.float64).reshape(face_count, -1), False
+        return np.asarray(values, dtype=np.float64).reshape(face_count, -1), None
     except (TypeError, ValueError):
-        return None, False
+        return None, None
 
 
 def _coerce_face_values(values: np.ndarray, attr: Usd.Attribute, what: str) -> np.ndarray | None:
@@ -2186,28 +2186,28 @@ def _extract_display_primvar_properties(
     if read_color:
         display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
         if display_color:
-            face_colors, _ = _uniform_primvar_face_values(display_color, face_count)
+            face_colors, mismatch_value = _uniform_primvar_face_values(display_color, face_count)
             if face_colors is not None and face_colors.shape[1] >= 3:
                 colors = _coerce_face_values(face_colors[:, :3], display_color.GetAttr(), "colors")
                 if colors is not None:
                     properties["color"] = _color_to_display_space(colors, display_color.GetAttr())
             else:
-                color = _coerce_color(display_color.Get(), display_color.GetAttr())
+                value = display_color.Get() if mismatch_value is None else mismatch_value
+                color = _coerce_color(value, display_color.GetAttr())
                 if color is not None:
                     properties["color"] = _color_to_display_space(color, display_color.GetAttr())
 
     if read_opacity:
         display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
         if display_opacity:
-            face_opacities, count_mismatch_reported = _uniform_primvar_face_values(display_opacity, face_count)
+            face_opacities, mismatch_value = _uniform_primvar_face_values(display_opacity, face_count)
             if face_opacities is not None:
                 opacities = _coerce_face_values(face_opacities[:, :1], display_opacity.GetAttr(), "opacities")
                 if opacities is not None:
                     properties["opacity"] = opacities[:, 0]
             else:
-                opacity = _coerce_opacity(
-                    display_opacity.Get(), display_opacity.GetAttr(), warn_on_multiple=not count_mismatch_reported
-                )
+                value = display_opacity.Get() if mismatch_value is None else mismatch_value
+                opacity = _coerce_opacity(value, display_opacity.GetAttr(), warn_on_multiple=mismatch_value is None)
                 if opacity is not None:
                     properties["opacity"] = opacity
 
