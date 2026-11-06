@@ -208,7 +208,7 @@ def test_steel_ball_joint_damping_matches_featherstone(test: TestJointDamping, d
     """Decay Steel ball-joint speed with joint damping, as SolverFeatherstone does."""
 
     def solver_fn(model):
-        return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+        return newton.solvers.SolverSteel(model)
 
     def featherstone_fn(model):
         return newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
@@ -252,11 +252,7 @@ solvers = {
     "featherstone": (lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0), False),
     "semi_implicit": (lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0), True),
     "kamino": (newton.solvers.SolverKamino, False),
-    # The matrix-free solve is CUDA-only; split is the CPU route.
-    "steel": (
-        lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split"),
-        False,
-    ),
+    "steel": (newton.solvers.SolverSteel, False),
 }
 
 for device in devices:

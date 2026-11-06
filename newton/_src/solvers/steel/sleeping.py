@@ -407,6 +407,7 @@ class _SleepState:
         )
         solver = self.solver
         skip = int(self.skip_constraints and self.skip_dynamics)
+        solver._propagation_dynamics_active.zero_()
         wp.launch(
             _articulation_activity,
             self.parent.size,
@@ -419,6 +420,7 @@ class _SleepState:
                 solver._dynamics_art_active,
                 solver._dynamics_art_mask,
                 solver._constraint_art_active,
+                solver._propagation_dynamics_active,
             ],
             device=device,
         )
@@ -703,10 +705,10 @@ def _unselected_reader_scopes(
         return
     w = shape_world[i]
     if w < 0:
-        scopes[world_count] = 1
+        wp.atomic_max(scopes, world_count, 1)
     else:
-        scopes[w] = 1
-    scopes[world_count + 1] = 1
+        wp.atomic_max(scopes, w, 1)
+    wp.atomic_max(scopes, world_count + 1, 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -726,7 +728,7 @@ def _mark_shared_boundaries(
         return
     w = shape_world[i]
     if scopes[world_count] != 0 or (w < 0 and scopes[world_count + 1] != 0) or (w >= 0 and scopes[w] != 0):
-        shared[body] = 1
+        wp.atomic_max(shared, body, 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -1022,6 +1024,7 @@ def _articulation_activity(
     active: wp.array[int],
     active_mask: wp.array[wp.bool],
     rows_active: wp.array[int],
+    any_sleepable_active: wp.array[int],
 ):
     i = wp.tid()
     step_asleep[i] = 1 - awake[i]
@@ -1034,6 +1037,9 @@ def _articulation_activity(
         if awake[i] == 0 and skippable[i] != 0:
             active[i] = 0
             active_mask[i] = False
+    # Prescribed articulations never sleep and own no propagation rows, so they leave the flag unset.
+    if active[i] != 0 and skippable[i] != 0:
+        wp.atomic_max(any_sleepable_active, 0, 1)
 
 
 @wp.kernel(enable_backward=False)

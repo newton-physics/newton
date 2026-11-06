@@ -963,10 +963,7 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
     "kamino": newton.solvers.SolverKamino,
-    # The matrix-free solve is CUDA-only; split is the CPU route.
-    "steel": lambda model: newton.solvers.SolverSteel(
-        model, solve_mode="matrix_free" if model.device.is_cuda else "split"
-    ),
+    "steel": newton.solvers.SolverSteel,
 }
 
 

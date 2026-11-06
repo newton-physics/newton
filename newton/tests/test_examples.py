@@ -494,7 +494,12 @@ class TestExampleOutputRegexes(unittest.TestCase):
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
-test_devices = get_test_devices(mode="basic")
+# CPU CI runs the CPU example variants, so hosts with a GPU run examples on CUDA only. Set
+# NEWTON_TEST_CPU_EXAMPLES=1 (or CUDA_VISIBLE_DEVICES=) to run the CPU variants on a GPU host.
+if cuda_test_devices and os.environ.get("NEWTON_TEST_CPU_EXAMPLES") != "1":
+    test_devices = cuda_test_devices
+else:
+    test_devices = get_test_devices(mode="basic")
 
 
 class TestBasicExamples(NewtonTestCase):
