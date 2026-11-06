@@ -2470,7 +2470,10 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
         )
 
     def test_file_mesh_skips_exact_inertia(self):
-        """File meshes compute exact mass properties only for ``inertia="exact"``."""
+        """File meshes compute exact mass properties only for ``inertia="exact"``.
+
+        The geom's color override must not make the mass properties load the file a second time.
+        """
         import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
 
         obj = "".join(f"v {x} {y} {z}\n" for x, y, z in self.VERTICES)
@@ -2489,8 +2492,8 @@ class TestImportMjcfMeshInertia(unittest.TestCase):
                 for mode in ("legacy", "exact"):
                     with self.subTest(mode=mode):
                         mjcf = f"""<mujoco><asset><mesh name="mesh" file="mesh.obj" inertia="{mode}"/></asset>
-                          <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh"/></body></worldbody>
-                        </mujoco>"""
+                          <worldbody><body name="body"><freejoint/>
+                            <geom type="mesh" mesh="mesh" rgba="1 0 0 1"/></body></worldbody></mujoco>"""
                         self.assert_matches_native(mjcf, directory)
             finally:
                 import_mjcf.load_meshes_from_file = original

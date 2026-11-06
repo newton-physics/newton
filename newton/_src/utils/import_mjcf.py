@@ -1138,7 +1138,7 @@ def parse_mjcf(
         return mesh_assets[mesh_name]["inertia"] != "exact" or mesh_hull_source(mesh_name) is not None
 
     def mesh_inertia(
-        mesh_name: str, scaling: np.ndarray, maxhullvert: int
+        mesh_name: str, scaling: np.ndarray, maxhullvert: int, meshes: list[Mesh] | None = None
     ) -> tuple[float, np.ndarray, np.ndarray] | None:
         """Return a mesh asset's unit-density mass properties in its ``inertia`` mode, as MuJoCo computes them.
 
@@ -1146,6 +1146,7 @@ def parse_mjcf(
             mesh_name: Name of the ``<mesh>`` asset.
             scaling: Per-axis scale of the asset times the import scale.
             maxhullvert: Collision hull vertex limit.
+            meshes: The asset's submeshes as a geom loaded them, so the file need not be loaded again.
 
         Returns:
             Mass [kg], center of mass [m] and inertia tensor about it [kg*m^2], or ``None`` when the mesh
@@ -1158,9 +1159,12 @@ def parse_mjcf(
             refpos, refquat = mesh_asset["refpos"], mesh_asset["refquat"]
             source = mesh_hull_source(mesh_name)
             if source is None:
-                # MuJoCo reads a mesh file as one mesh, so combine its submeshes, loaded without
-                # material overrides so that every geom gets the same properties.
-                vertices, faces = _combine_meshes(load_mesh_asset_geometry(mesh_name, scaling, maxhullvert))
+                # MuJoCo reads a mesh file as one mesh, so combine its submeshes. A material override changes
+                # only how a file splits into submeshes, so reuse a geom's load, except for a limited hull:
+                # qhull's choice can depend on the vertex order, so it uses the asset loaded without overrides.
+                if meshes is None or (mode == "convex" and hullvert > 0):
+                    meshes = load_mesh_asset_geometry(mesh_name, scaling, maxhullvert)
+                vertices, faces = _combine_meshes(meshes)
                 hull_vertices = _undo_mesh_ref_pose(vertices, refpos, refquat, scaling)
             else:
                 # MuJoCo gives a mesh without faces the faces of its convex hull, limited only by an
@@ -1216,7 +1220,7 @@ def parse_mjcf(
                     )
             # Newton's mesh mass properties already use the exact signed volume.
             return meshes
-        properties = mesh_inertia(mesh_name, scaling, maxhullvert)
+        properties = mesh_inertia(mesh_name, scaling, maxhullvert, meshes)
         if properties is None:
             # MuJoCo rejects such a mesh; give it no mass rather than another mode's mass.
             shares = [(0.0, np.zeros(3), np.zeros((3, 3)))] * len(meshes)
@@ -1788,7 +1792,7 @@ def parse_mjcf(
                     else:
                         # Equivalent inertia box mode (default): compute the box whose inertia tensor
                         # matches the mesh's in its inertia mode, as mjCMesh::FitGeom does.
-                        properties = mesh_inertia(mesh_name, scaling, maxhullvert)
+                        properties = mesh_inertia(mesh_name, scaling, maxhullvert, m_meshes)
                         if properties is None:
                             # MuJoCo rejects the mesh (mesh_inertia() warns); keep the exact volume's box.
                             com, half_extents, principal_rot = compute_inertia_box_mesh(
