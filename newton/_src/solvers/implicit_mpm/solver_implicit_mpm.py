@@ -1586,6 +1586,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         enable_timers: bool = False,
     ):
         super().__init__(model)
+        if model._has_body_variants:
+            # The collider merges every particle-colliding shape of a body at setup.
+            raise NotImplementedError("SolverImplicitMPM does not support body variants.")
 
         self._initial_particle_count = int(model.particle_count)
         self._initial_world_count = int(model.world_count)
@@ -2220,6 +2223,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 container is accepted.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):

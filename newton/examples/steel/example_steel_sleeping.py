@@ -141,7 +141,7 @@ class Example:
 
         self.solver = SolverSteel(
             self.model,
-            solve_mode="matrix_free",
+            solve_mode="serial",
             articulated_contact_response="immediate",
             enable_sleeping=True,
         )

@@ -1281,7 +1281,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model = builder.finalize(device=device)
                 self.assertEqual(model.world_count, world_count)
                 model.joint_armature.fill_(0.25)
-                # Distinct per-world tendon armature makes the mean inertia differ
+                # Distinct per-world tendon armature makes the inertia trace differ
                 # between worlds and must be included like in ``set_const_0``.
                 tendon_armature = np.array([0.5, 1.5], dtype=np.float32)
                 model.mujoco.tendon_armature.assign(
@@ -1308,20 +1308,18 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 self.assertGreater(solver.mj_model.neq, 0)
                 self.assertGreater(solver.mj_model.ntendon, 0)
                 self.assertGreater(solver.mj_model.nu, 0)
-                physical_meaninertia = solver.mjw_model.stat.meaninertia.numpy().copy()
-                # World 0 matches MuJoCo's compiled statistic. The fixed tendon has
-                # unit coefficients on both DOFs, so its armature adds to each diagonal.
-                self.assertAlmostEqual(physical_meaninertia[0], solver.mj_model.stat.meaninertia, places=5)
-                self.assertAlmostEqual(
-                    physical_meaninertia[1] - physical_meaninertia[0],
-                    tendon_armature[1] - tendon_armature[0],
-                    places=5,
+                physical_dof_M0 = solver._physical_dof_M0.numpy().copy()
+                # The fixed tendon has unit coefficients on both DOFs, so its armature adds to each diagonal.
+                np.testing.assert_allclose(
+                    physical_dof_M0[1] - physical_dof_M0[0], tendon_armature[1] - tendon_armature[0], atol=1.0e-5
                 )
 
-                # Compare every world against the upstream implementation to catch
-                # drift in its mass-matrix assembly or mean-inertia reduction.
-                solver._mujoco_warp.set_const_0(solver.mjw_model, solver.mjw_data)
-                np.testing.assert_allclose(physical_meaninertia, solver.mjw_model.stat.meaninertia.numpy(), rtol=1.0e-5)
+                # Compare every world against the upstream mass matrix at qpos0 to
+                # catch drift in its assembly.
+                solver._mujoco_warp.set_const_0(solver.mjw_model, solver.mjw_data, restore=False)
+                M = solver.mjw_data.M.numpy()
+                diag = solver.mjw_model.M_rowadr.numpy() + solver.mjw_model.M_rownnz.numpy() - 1
+                np.testing.assert_allclose(physical_dof_M0, M[:, diag], rtol=1.0e-5)
 
                 with wp.ScopedCapture(device=device) as capture:
                     solver.notify_model_changed(ModelFlags.ALL)
@@ -1353,7 +1351,6 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 np.testing.assert_array_equal(
                     solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[True, True], [False, False]]
                 )
-                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-3)
                 dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
                 np.testing.assert_allclose(dof_frictionloss, np.broadcast_to(friction[:, None], dof_frictionloss.shape))
                 dof_damping = solver.mjw_model.dof_damping.numpy()
@@ -1375,7 +1372,6 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 np.testing.assert_array_equal(
                     solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[False, False], [True, True]]
                 )
-                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-3)
 
 
 class TestMuJoCoSolverJointProperties(unittest.TestCase):
@@ -2034,9 +2030,9 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
                 actual_val = updated_jnt_margin[world_idx, mjc_jnt]
                 self.assertAlmostEqual(actual_val, expected_val, places=6)
 
-    def test_dof_passive_stiffness_damping_multiworld(self):
+    def test_joint_stiffness_damping_multiworld(self):
         """
-        Verify that dof_passive_stiffness and joint_damping propagate correctly:
+        Verify that joint_stiffness and joint_damping propagate correctly:
         1. Different per-world values survive conversion to MuJoCo.
         2. notify_model_changed updates all worlds consistently.
         """
@@ -2082,7 +2078,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
                 initial_stiffness[global_idx] = 0.05 + 0.01 * dof_idx + 0.25 * world_idx
                 initial_damping[global_idx] = 0.4 + 0.02 * dof_idx + 0.3 * world_idx
 
-        model.mujoco.dof_passive_stiffness.assign(initial_stiffness)
+        model.joint_stiffness.assign(initial_stiffness)
         model.joint_damping.assign(initial_damping)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -2129,7 +2125,7 @@ class TestMuJoCoSolverJointProperties(unittest.TestCase):
         updated_stiffness = initial_stiffness + 0.5 + 0.05 * np.arange(model.joint_dof_count, dtype=np.float32)
         updated_damping = initial_damping + 0.3 + 0.03 * np.arange(model.joint_dof_count, dtype=np.float32)
 
-        model.mujoco.dof_passive_stiffness.assign(updated_stiffness)
+        model.joint_stiffness.assign(updated_stiffness)
         model.joint_damping.assign(updated_damping)
         solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
@@ -2362,24 +2358,17 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                         SolverMuJoCo(model, iterations=1, use_mujoco_cpu=use_mujoco_cpu)
 
     def test_kinematic_root_does_not_change_mass_matrix_trace(self):
-        """Keep the solver's inertia scale physical: a kinematic root leaves trace(M) and the mean inertia unchanged."""
+        """Keep the solver's inertia scale physical: a kinematic root leaves trace(M) unchanged."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                traces, meaninertia = [], []
+                traces = []
                 for root_kinematic in (False, True):
                     model, _ = self._build_model(root_kinematic=root_kinematic)
                     model.joint_armature.fill_(0.1)
                     solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
                     solver.step(model.state(), model.state(), model.control(), None, 0.002)
                     traces.append(self._mass_matrix_trace(solver))
-                    stat = solver.mj_model.stat if use_mujoco_cpu else solver.mjw_model.stat
-                    if hasattr(stat, "meaninertia"):
-                        meaninertia.append(
-                            float(np.ravel(stat.meaninertia.numpy() if not use_mujoco_cpu else stat.meaninertia)[0])
-                        )
                 self.assertAlmostEqual(traces[1], traces[0], places=4)
-                if meaninertia:
-                    self.assertAlmostEqual(meaninertia[1], meaninertia[0], delta=2.0e-3 * meaninertia[0])
 
     def test_body_properties_runtime_toggle(self):
         """Switch a root that starts kinematic to dynamic and back; reject kinematic non-roots."""
@@ -2413,6 +2402,44 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 model.body_flags.assign(body_flags)
                 with self.assertRaisesRegex(ValueError, "only root bodies"):
                     solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+
+    def test_direct_dampratio_uses_physical_inertia(self):
+        """Resolve direct-actuator damping without kinematic locking armature and keep it across flag changes."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="base">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position joint="j1" kp="100" dampratio="0.5"/>
+            </actuator>
+        </mujoco>
+        """
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        expected = mujoco.MjModel.from_xml_string(mjcf).actuator_biasprm[0, 2]
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, ctrl_direct=True)
+                model = builder.finalize()
+                model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+                solver = SolverMuJoCo(model, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+
+                def damping(solver=solver):
+                    if solver.use_mujoco_cpu:
+                        return float(solver.mj_model.actuator_biasprm[0, 2])
+                    return float(solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2])
+
+                self.assertAlmostEqual(damping(), expected, delta=1.0e-5 * abs(expected))
+                self.assertAlmostEqual(float(model.mujoco.actuator_biasprm.numpy()[0, 2]), 0.5, places=6)
+                for flags in (BodyFlags.DYNAMIC, BodyFlags.KINEMATIC):
+                    model.body_flags.fill_(int(flags))
+                    solver.notify_model_changed(ModelFlags.BODY_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+                    self.assertAlmostEqual(damping(), expected, delta=1.0e-5 * abs(expected))
 
     @staticmethod
     def _build_kinematic_root(kind: str):
@@ -4682,6 +4709,30 @@ class TestMuJoCoSolverFixedTendonProperties(unittest.TestCase):
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
+    def test_zero_capacity_contacts_clear_collision_counts(self):
+        """Clear collision counts when converting empty contact storage."""
+        model = self._build_grounded_spheres(1)
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        self.assertGreater(int(solver.mjw_data.nacon.numpy()[0]), 0)
+
+        empty = newton.Contacts(0, 0, device=model.device)
+        for _ in range(2):
+            solver.mjw_data.ncollision.fill_(7)
+            solver._convert_contacts_to_mjwarp(model, state, empty)
+            self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 0)
+            self.assertEqual(int(solver.mjw_data.ncollision.numpy()[0]), 0)
+
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), int(contacts.rigid_contact_count.numpy()[0]))
+
     @staticmethod
     def _build_grounded_spheres(sphere_count):
         """Build a single-world model with separated spheres touching the ground."""
@@ -8470,12 +8521,22 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertGreater(np.abs(state_out.joint_qd.numpy()).max(), 0.0)
         np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
 
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
-        self.assertNotIn(solver.ObservableKind.CONTACT_F, solver.supported_observables)
-        with self.assertRaisesRegex(ValueError, "does not support"):
-            solver.observables({solver.ObservableKind.CONTACT_F}, contacts=contacts)
-        with self.assertRaisesRegex(NotImplementedError, "requires use_mujoco_contacts=True"):
-            solver.update_contacts(contacts)
+        with self.assertRaisesRegex(ValueError, "use_mujoco_cpu=True requires use_mujoco_contacts=True"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+
+        for flag_contact, disable_contacts in ((True, True), (False, None)):
+            with self.subTest(flag_contact=flag_contact, disable_contacts=disable_contacts):
+                model.mujoco.flag_contact.fill_(flag_contact)
+                solver = SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=True,
+                    use_mujoco_contacts=False,
+                    disable_contacts=disable_contacts,
+                )
+                self.assertTrue(solver.mj_model.opt.disableflags & solver._mujoco.mjtDisableBit.mjDSBL_CONTACT)
+
+        with self.assertRaisesRegex(ValueError, "use_mujoco_cpu=True requires use_mujoco_contacts=True"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=False)
 
         model = self._create_multiworld_model(world_count=2)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, nconmax=64)
@@ -11442,9 +11503,9 @@ class TestMuJoCoRefCoordinates(unittest.TestCase):
 class TestActuatorDampratio(unittest.TestCase):
     """Verify dampratio on position actuator shortcuts produces correct biasprm[2].
 
-    MuJoCo's <position kp="K" dampratio="D"/> computes kd = D * 2 * sqrt(K * acc0)
-    during mj_setConst. Newton must keep the dampratio in biasprm[2] so the compiler
-    resolves it.
+    MuJoCo's <position kp="K" dampratio="D"/> computes kd = D * 2 * sqrt(K * m), with m
+    the reflected inertia, when compiling. Newton keeps the dampratio in biasprm[2] and
+    resolves it whenever constants are refreshed.
     """
 
     MJCF = """<?xml version="1.0" ?>
@@ -11556,14 +11617,98 @@ class TestActuatorDampratio(unittest.TestCase):
         self.assertAlmostEqual(float(biasprm[2, 2]), 0.0, places=5, msg="motor has zero biasprm[2]")
 
     def test_runtime_dampratio_update(self):
-        """Updating biasprm[2] with unresolved dampratio should re-resolve via set_const_0."""
-        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        """Re-resolve a dampratio written at runtime and keep the placeholder in the model."""
+        damping = float(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2])
+        original = self.model.mujoco.actuator_biasprm.numpy()
+        biasprm = original.copy()
         biasprm[0, 2] = 0.5
         self.model.mujoco.actuator_biasprm.assign(biasprm)
-        self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        try:
+            self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+            resolved = float(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2])
+            self.assertAlmostEqual(resolved, 0.5 * damping, delta=1.0e-5 * abs(damping))
+            self.assertEqual(float(self.model.mujoco.actuator_biasprm.numpy()[0, 2]), 0.5)
+        finally:
+            self.model.mujoco.actuator_biasprm.assign(original)
+            self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
-        resolved = self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
-        self.assertLess(resolved, 0.0, "resolved biasprm[2] should be negative damping")
+    def test_dampratio_added_at_runtime(self):
+        """Resolve a dampratio written at runtime on an actuator constructed with kv."""
+        xml = self.MJCF.replace(' dampratio="1"', ' kv="2"')
+        expected = self.solver._mujoco.MjModel.from_xml_string(
+            self.MJCF.replace('dampratio="1"', 'dampratio="0.5"')
+        ).actuator_biasprm[0, 2]
+        for cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=cpu):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml, ctrl_direct=True)
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu)
+                biasprm = model.mujoco.actuator_biasprm.numpy()
+                biasprm[0, 2] = 0.5
+                model.mujoco.actuator_biasprm.assign(biasprm)
+                solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                if cpu:
+                    actual = solver.mj_model.actuator_biasprm[0, 2]
+                else:
+                    actual = solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
+                self.assertAlmostEqual(float(actual), expected, delta=1.0e-5 * abs(expected))
+
+    def test_dampratio_transmissions_match_native_compile(self):
+        """Resolve dampratio like MuJoCo's compiler for joint, tendon, and site transmissions."""
+        xml = """<?xml version="1.0" ?>
+        <mujoco>
+            <worldbody>
+                <body name="base" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+                    <body name="upper" pos="0 0 0.3">
+                        <joint name="hinge" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.03" mass="0.7"/>
+                        <body name="lower" pos="0 0 0.3">
+                            <joint name="slide" type="slide" axis="1 0 0"/>
+                            <geom type="box" size="0.05 0.05 0.05" mass="0.4"/>
+                            <body name="tip" pos="0 0 0.1">
+                                <joint name="ball" type="ball"/>
+                                <geom type="box" size="0.08 0.03 0.02" pos="0.05 0 0" mass="0.3"/>
+                                <site name="tip_site" pos="0.1 0 0"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="coupled">
+                    <joint joint="hinge" coef="1"/>
+                    <joint joint="slide" coef="-0.5"/>
+                </fixed>
+            </tendon>
+            <actuator>
+                <position name="hinge_act" joint="hinge" kp="100" dampratio="1" gear="2"/>
+                <position name="slide_act" joint="slide" kp="50" dampratio="0.5"/>
+                <position name="tendon_act" tendon="coupled" kp="80" dampratio="0.7"/>
+                <position name="ball_act" joint="ball" kp="30" dampratio="1" gear="0 1 0"/>
+                <position name="site_act" site="tip_site" kp="40" dampratio="0.8" gear="0 0 1 0 0 0"/>
+            </actuator>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, ctrl_direct=True)
+        model = builder.finalize()
+        for cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu)
+                expected = solver._mujoco.MjModel.from_xml_string(xml).actuator_biasprm[:, 2]
+                self.assertTrue(np.all(expected < 0.0))
+                if not cpu:
+                    self.assertEqual(solver._dampratio_invweight_actuators, {0, 1, 2})
+                # Construction and later refreshes resolve the same damping.
+                for _ in range(2):
+                    if cpu:
+                        actual = solver.mj_model.actuator_biasprm[:, 2]
+                    else:
+                        actual = solver.mjw_model.actuator_biasprm.numpy()[0, :, 2]
+                    np.testing.assert_allclose(actual, expected, rtol=1.0e-4)
+                    solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
 
 class TestActuatorDampratioMultiWorld(unittest.TestCase):
@@ -11835,14 +11980,57 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
 
         acc0 = self.solver.mjw_model.actuator_acc0.numpy()
         biasprm = self.solver.mjw_model.actuator_biasprm.numpy()
-        meaninertia = self.solver.mjw_model.stat.meaninertia.numpy()
 
         self.assertNotAlmostEqual(float(acc0[0, 0]), float(acc0[1, 0]), places=6)
         self.assertLess(float(biasprm[0, 0, 2]), 0.0)
         self.assertLess(float(biasprm[1, 0, 2]), 0.0)
-        self.assertNotAlmostEqual(float(biasprm[0, 0, 2]), float(biasprm[1, 0, 2]), places=6)
-        self.assertEqual(meaninertia.shape, (self.model.world_count,))
-        np.testing.assert_allclose(meaninertia[1], 2.0 * meaninertia[0], rtol=1e-5)
+        np.testing.assert_allclose(biasprm[1, 0, 2], np.sqrt(2.0) * biasprm[0, 0, 2], rtol=1e-5)
+
+    def test_dampratio_tracks_inertia_and_gain(self):
+        """Re-resolve direct-actuator damping from each world's inertia and gain on every constants refresh."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                robot_builder = newton.ModelBuilder()
+                robot_builder.add_mjcf(self.MJCF, ctrl_direct=True)
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.replicate(robot_builder, 2)
+                model = builder.finalize()
+                bodies_per_world = model.body_count // model.world_count
+                masses = model.body_mass.numpy()
+                inertias = model.body_inertia.numpy()
+                masses[bodies_per_world:] *= 2.0
+                inertias[bodies_per_world:] *= 2.0
+                model.body_mass.assign(masses)
+                model.body_inertia.assign(inertias)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, separate_worlds=True)
+
+                def damping(solver=solver, use_mujoco_cpu=use_mujoco_cpu):
+                    # Native CPU MuJoCo only simulates the template world.
+                    if use_mujoco_cpu:
+                        return -solver.mj_model.actuator_biasprm[None, 0, 2]
+                    return -solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2]
+
+                initial = damping()
+                self.assertGreater(initial[0], 0.0)
+                if not use_mujoco_cpu:
+                    np.testing.assert_allclose(initial[1], np.sqrt(2.0) * initial[0], rtol=1e-5)
+                np.testing.assert_allclose(model.mujoco.actuator_biasprm.numpy()[:, 2], 1.0)
+
+                # Inertia edits refresh constants without an actuator notification.
+                model.body_mass.assign(masses * 2.0)
+                model.body_inertia.assign(inertias * 2.0)
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                np.testing.assert_allclose(damping(), np.sqrt(2.0) * initial, rtol=1e-5)
+
+                gainprm = model.mujoco.actuator_gainprm.numpy()
+                biasprm = model.mujoco.actuator_biasprm.numpy()
+                gainprm[:, 0] *= 4.0
+                biasprm[:, 1] *= 4.0
+                model.mujoco.actuator_gainprm.assign(gainprm)
+                model.mujoco.actuator_biasprm.assign(biasprm)
+                solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                np.testing.assert_allclose(damping(), 2.0 * np.sqrt(2.0) * initial, rtol=1e-5)
 
     def test_joint_target_initial_damping(self):
         """Resolve each world's gains, armature, and ratio despite skipped metadata."""
@@ -14956,6 +15144,33 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
                     worlds, dist = self._step_once(model, solver, native)
                     np.testing.assert_array_equal(worlds[dist < 0.0], 1)
                     np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
+
+    def test_cone_size_drives_contacts(self):
+        """Collide each world with a cone mesh tessellated from its own radius and half-height."""
+        for native in (False, True):
+            with self.subTest(native=native):
+                builder = newton.ModelBuilder()
+                builder.add_ground_plane()
+                # Only world 1's longer cone reaches 0.05 below the ground at this height.
+                for half_height in (0.1, 0.2):
+                    world = newton.ModelBuilder()
+                    body = world.add_link(
+                        xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
+                        mass=1.0,
+                        inertia=wp.mat33(np.eye(3) * 0.01),
+                    )
+                    joint = world.add_joint_free(child=body)
+                    world.add_articulation([joint])
+                    world.add_shape_cone(
+                        body, radius=0.1, half_height=half_height, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
+                    )
+                    builder.add_world(world)
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_contacts=native, nconmax=32, njmax=64)
+                self.assertEqual(solver.mjw_model.nmesh, 2)
+                worlds, dist = self._step_once(model, solver, native)
+                np.testing.assert_array_equal(worlds[dist < 0.0], 1)
+                np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
 
     def test_mesh_scale_change_with_newton_contacts(self):
         """Allow mesh resizing when Newton generates contacts."""

@@ -10,7 +10,10 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.steel.kernels import accumulate_connect_wrenches_from_impulses, populate_connect_J_for_size
+from newton._src.solvers.steel.kernels import (
+    accumulate_connect_wrenches_from_impulses,
+    populate_connect_J_for_size,
+)
 from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import (
@@ -19,7 +22,7 @@ from newton.tests.steel._fixtures import (
     _parent_wrench_scene,
     set_torsion_radius,
 )
-from newton.tests.steel.test_articulation import _prescribe_carrier
+from newton.tests.steel.test_articulation import _build_world_hinged_swing, _prescribe_carrier
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 FLAGS = {SolverBase.ObservableKind.BODY_PARENT_F}
@@ -31,15 +34,22 @@ def test_parent_wrench_eager_step_before_first_replay(test, device):
 
     Each run first steps once without the observable, so the collision pipeline's lazily allocated buffers exist.
     """
-    colored = {"enable_joint_velocity_limits": True, "articulated_contact_response": "propagation_colored"}
+    colored = {
+        "enable_joint_velocity_limits": True,
+        "solve_mode": "colored",
+        "articulated_contact_response": "propagation",
+        "enable_sleeping": True,
+        "contact_torsion_device": True,
+    }
     for options in ({"enable_joint_velocity_limits": False}, {"enable_joint_velocity_limits": True}, colored):
         with test.subTest(**options):
             runs = []
             for _ in range(2):
                 model, pipeline = _parent_wrench_scene(device)
+                if options.get("contact_torsion_device"):
+                    set_torsion_radius(model, 0.02)
                 solver = SolverSteel(
                     model,
-                    solve_mode="matrix_free",
                     friction_anchor_beta=0.0,
                     articulation_constraint_max=128,
                     **options,
@@ -165,13 +175,12 @@ def test_parent_wrench_matches_inverse_dynamics_on_every_path(test, device):
     transmits nothing.
     """
     model, state, control = _branched_chains(device)
-    configurations = [{"solve_mode": "split"}]
+    configurations = [{}]
     if wp.get_device(device).is_cuda:
         configurations += [
-            {"solve_mode": "matrix_free"},
-            {"solve_mode": "matrix_free", "parallel_tree": True},
-            {"solve_mode": "matrix_free", "use_parallel_streams": True},
-            {"solve_mode": "matrix_free", "double_buffer": True},
+            {"parallel_tree": True},
+            {"use_parallel_streams": True},
+            {"double_buffer": True},
         ]
     joint_f = control.joint_f.numpy()
     qd_start = model.joint_qd_start.numpy()
@@ -252,7 +261,7 @@ def _gripper_scene(device, *, lift_z=0.5, lift_drive=True, flange_drive=True, lo
                     finger,
                     axis=(side, 0.0, 0.0),
                     parent_xform=wp.transform((side * 0.06, 0.0, -0.03), wp.quat_identity()),
-                    target_pos=-0.03,
+                    target_q=-0.03,
                     target_ke=2000.0,
                     target_kd=20.0,
                     limit_lower=-0.05,
@@ -281,7 +290,6 @@ def _gripper_scene(device, *, lift_z=0.5, lift_drive=True, flange_drive=True, lo
 _CONTACT_CONFIGURATIONS = {
     # Patch friction, shared anchors, spin rows and sleeping together.
     "patch_spin_sleep": {
-        "solve_mode": "matrix_free",
         "iterations": 32,
         "contact_regularization": 0.01,
         "contact_shared_anchor": True,
@@ -295,16 +303,13 @@ _CONTACT_CONFIGURATIONS = {
         "articulation_constraint_max": 256,
         "free_body_constraint_max": 256,
     },
-    "point_friction": {"solve_mode": "matrix_free", "friction_anchor_beta": 0.0, "articulation_constraint_max": 256},
-    "split": {"solve_mode": "split", "articulation_constraint_max": 64},
+    "point_friction": {"friction_anchor_beta": 0.0, "articulation_constraint_max": 256},
     "propagation": {
-        "solve_mode": "matrix_free",
         "articulated_contact_response": "propagation",
         "articulation_constraint_max": 256,
     },
-    "velocity_pass": {"solve_mode": "matrix_free", "velocity_iterations": 4, "articulation_constraint_max": 256},
+    "velocity_pass": {"velocity_iterations": 4, "articulation_constraint_max": 256},
     "propagation_spin": {
-        "solve_mode": "matrix_free",
         "articulated_contact_response": "propagation",
         "torsion_radius": 0.01,
         "contact_torsion_device": True,
@@ -373,7 +378,7 @@ def test_parent_wrench_reports_a_commanded_push(test, device):
     """A lift force pressing the tray into the ground reaches the flange as that force plus the carriage weight."""
     push = 20.0
     model, ids = _gripper_scene(device, lift_z=0.1305, lift_drive=False)
-    for configuration in ("patch_spin_sleep", "split"):
+    for configuration in ("patch_spin_sleep", "point_friction"):
         with test.subTest(configuration=configuration):
             wrench = _settled_wrench(
                 test,
@@ -424,7 +429,7 @@ def test_parent_wrench_excludes_velocity_limit_prescaling(test, device):
     )
     builder.add_articulation([hub_joint, disk_joint])
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", enable_joint_velocity_limits=True)
+    solver = SolverSteel(model, enable_joint_velocity_limits=True)
     solver._rigid_body_angular_damping.zero_()
     observables = solver.observables(FLAGS)
     state_in, state_out = model.state(), model.state()
@@ -439,7 +444,7 @@ def test_parent_wrench_includes_loop_closure_reactions(test, device):
     """Loop-closure forces reach both closure links: an undriven joint in a four-bar transmits no axis torque."""
     builder = _build_four_bar()
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.1)
+    solver = SolverSteel(model, iterations=16, baumgarte=0.1)
     solver._rigid_body_angular_damping.zero_()
     observables = solver.observables(FLAGS)
     state_0, state_1 = model.state(), model.state()
@@ -466,7 +471,7 @@ def test_parent_wrench_of_a_load_held_by_closures(test, device):
         with test.subTest(world_parent=world_parent):
             builder, carrier, load, _joints = _build_carried_load(world_parent=world_parent)
             model = builder.finalize(device=device)
-            solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+            solver = SolverSteel(model, iterations=16, baumgarte=0.2)
             observables = solver.observables(FLAGS)
             state_0, state_1 = model.state(), model.state()
             control = model.control()
@@ -490,6 +495,31 @@ def test_parent_wrench_of_a_load_held_by_closures(test, device):
                 solver.step(state_0, state_1, control, None, dt, observables=observables)
                 state_0, state_1 = state_1, state_0
             np.testing.assert_allclose(observables.body_parent_f.numpy()[load], 0.0, atol=2.0e-3)
+
+
+def test_parent_wrench_of_a_body_hung_by_a_revolute_closure(test, device):
+    """A FREE body swinging on a REVOLUTE closure to the world transmits nothing through its free joint.
+
+    A non-finite hinge axis leaves the hinge rows inert, and the closure acts like a BALL joint.
+    """
+    for axis in ((1.0, 0.0, 0.0), (np.nan, 0.0, 0.0), (np.inf, 0.0, 0.0)):
+        with test.subTest(axis=axis):
+            builder, joint = _build_world_hinged_swing(test, "revolute")
+            builder.joint_axis[builder.joint_qd_start[joint]] = axis
+            model = builder.finalize(device=device)
+            if np.isfinite(axis).all():
+                solver = SolverSteel(model, iterations=16)
+            else:
+                with test.assertWarnsRegex(NewtonWarning, "zero or non-finite axis"):
+                    solver = SolverSteel(model, iterations=16)
+            observables = solver.observables(FLAGS)
+            state_0, state_1 = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+            for _ in range(120):
+                solver.step(state_0, state_1, None, None, 1.0 / 500.0, observables=observables)
+                state_0, state_1 = state_1, state_0
+            # Gravity twists the body about the hinge's perpendicular, which only the hinge rows hold.
+            np.testing.assert_allclose(observables.body_parent_f.numpy()[0], 0.0, atol=2.0e-3)
 
 
 NEAR_REDUNDANT_LEVERS = (0.02, 0.001, 0.0002, 0.00015)
@@ -521,6 +551,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
             row_parent = wp.zeros((1, 3), dtype=wp.int32, device=device)
             row_fields = [wp.zeros((1, 3), dtype=float, device=device) for _ in range(3)]
             inv_norm = wp.zeros((1, 3), dtype=float, device=device)
+            at_midpoint = wp.zeros(1, dtype=wp.int32, device=device)
             wp.launch(
                 populate_connect_J_for_size,
                 dim=1,
@@ -534,9 +565,12 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     zero,  # connect_joint
                     zero,  # connect_body_p
                     ints([1]),  # connect_body_c
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
                     anchor_xform,
                     anchor_xform,
                     zero,  # connect_parent_prescribed
+                    ints([0, 0]),  # kinematic_dof_mask
                     body_q,
                     wp.zeros(2, dtype=wp.spatial_vector, device=device),
                     wp.zeros(2, dtype=wp.vec3, device=device),
@@ -546,7 +580,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     motion,
                     origin,
                 ],
-                outputs=[J, row_type, row_parent, *row_fields, inv_norm],
+                outputs=[J, row_type, row_parent, *row_fields, inv_norm, at_midpoint],
                 device=device,
             )
             wrench = wp.zeros(2, dtype=wp.spatial_vector, device=device)
@@ -560,8 +594,12 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     zero,  # connect_body_p
                     ints([1]),  # connect_body_c
                     zero,  # connect_joint
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
+                    zero,  # joint_qd_start
                     anchor_xform,
                     anchor_xform,
+                    at_midpoint,
                     inv_norm,
                     zero,  # art_to_world
                     body_q,
@@ -579,6 +617,108 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
             float32_lever = 1.0 + float(motion.numpy()[1, 1])
             force = wrench.numpy()[:, 1]
             np.testing.assert_allclose(force, [1.0 / float32_lever, -1.0 / float32_lever], rtol=1.0e-5)
+
+
+def test_open_closure_force_acts_where_the_rows_do(test, device):
+    """Apply an open closure's force at the anchors' midpoint, or at each anchor when only one body can move."""
+
+    def ints(values):
+        return wp.array(values, dtype=wp.int32, device=device)
+
+    p_a, p_b = np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.2, 0.0])
+    force = np.array([1.0, 0.0, 0.0])
+    midpoint = 0.5 * (p_a + p_b)
+    zero = ints([0])
+    parent_xform = wp.array([wp.transform(p_a, wp.quat_identity())], dtype=wp.transform, device=device)
+    child_xform = wp.array([wp.transform(p_b, wp.quat_identity())], dtype=wp.transform, device=device)
+    body_q = wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device)
+    # A root hinge carrying a child hinge; the closure joins the root to the child.
+    for case, prescribed, qd_start, kinematic, parent_point, child_point in (
+        ("dynamic root", 0, [0, 1, 2], [0, 0], midpoint, midpoint),
+        ("fixed root", 0, [0, 0, 1], [0], p_a, p_b),
+        ("kinematic root", 0, [0, 1, 2], [1, 0], p_a, p_b),
+        ("prescribed parent", 1, [0, 1, 2], [0, 0], p_a, p_b),
+    ):
+        with test.subTest(case=case):
+            n_dofs = qd_start[-1]
+            J = wp.zeros((1, 3, n_dofs), dtype=float, device=device)
+            row_type = wp.zeros((1, 3), dtype=wp.int32, device=device)
+            at_midpoint = wp.zeros(1, dtype=wp.int32, device=device)
+            wp.launch(
+                populate_connect_J_for_size,
+                dim=1,
+                inputs=[
+                    zero,  # articulation_dof_start
+                    zero,  # art_to_world
+                    zero,  # group_to_art
+                    n_dofs,
+                    zero,  # connect_slot
+                    zero,  # connect_art
+                    zero,  # connect_joint
+                    zero,  # connect_body_p
+                    ints([1]),  # connect_body_c
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
+                    parent_xform,
+                    child_xform,
+                    ints([prescribed]),
+                    ints(kinematic),  # kinematic_dof_mask
+                    body_q,
+                    wp.zeros(2, dtype=wp.spatial_vector, device=device),
+                    wp.zeros(2, dtype=wp.vec3, device=device),
+                    ints([0, 1]),  # body_to_joint
+                    ints([-1, 0]),  # joint_ancestor
+                    ints(qd_start),
+                    wp.array([[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]] * n_dofs, dtype=wp.spatial_vector, device=device),
+                    wp.zeros(1, dtype=wp.vec3, device=device),
+                ],
+                outputs=[
+                    J,
+                    row_type,
+                    wp.zeros((1, 3), dtype=wp.int32, device=device),  # world_row_parent
+                    *[wp.zeros((1, 3), dtype=float, device=device) for _ in range(4)],
+                    at_midpoint,
+                ],
+                device=device,
+            )
+            wrench = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+            wp.launch(
+                accumulate_connect_wrenches_from_impulses,
+                dim=1,
+                inputs=[
+                    zero,  # connect_slot
+                    zero,  # connect_art
+                    zero,  # connect_body_p
+                    ints([1]),  # connect_body_c
+                    zero,  # connect_joint
+                    ints([3]),  # connect_rows
+                    wp.zeros(1, dtype=wp.vec3, device=device),  # joint_axis
+                    zero,  # joint_qd_start
+                    parent_xform,
+                    child_xform,
+                    at_midpoint,
+                    wp.array([[1.0, 0.0, 0.0]], dtype=float, device=device),  # connect_row_inv_norm
+                    zero,  # art_to_world
+                    body_q,
+                    ints([0, 0]),  # body_to_articulation
+                    wp.zeros(1, dtype=wp.vec3, device=device),
+                    ints([3]),  # world_constraint_count
+                    row_type,
+                    wp.array([[1.0, 0.0, 0.0]], dtype=wp.float32, device=device),
+                    1.0,
+                ],
+                outputs=[wrench],
+                device=device,
+            )
+            # The parent walks the root hinge unless prescribed, the child walks both hinges; rows are normalized.
+            rows = np.zeros((3, n_dofs))
+            for body_joints, point, sign in (([0], parent_point, 1.0 - prescribed), ([1, 0], child_point, -1.0)):
+                for joint in body_joints:
+                    rows[:, qd_start[joint] : qd_start[joint + 1]] += sign * np.cross([0.0, 0.0, 1.0], point)[:, None]
+            norms = np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1.0e-4)
+            np.testing.assert_allclose(J.numpy()[0], rows / norms, atol=1.0e-6)
+            expected = [[*force, *np.cross(parent_point, force)], [*-force, *np.cross(child_point, -force)]]
+            np.testing.assert_allclose(wrench.numpy(), expected, atol=1.0e-6)
 
 
 def test_parent_wrench_of_a_near_redundant_closure(test, device):
@@ -607,7 +747,7 @@ def test_parent_wrench_of_a_near_redundant_closure(test, device):
                 child_xform=wp.transform((lever, 0.0, 0.0), wp.quat_identity()),
             )
             model = builder.finalize(device=device)
-            solver = SolverSteel(model, solve_mode="matrix_free", iterations=64, cfm=0.0)
+            solver = SolverSteel(model, iterations=64, cfm=0.0)
             solver._rigid_body_angular_damping.zero_()
             state = model.state()
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -623,13 +763,13 @@ def test_parent_wrench_of_a_near_redundant_closure(test, device):
 def test_parent_wrench_warns_without_preeliminated_closures(test, device):
     """Pre-eliminated loop closures have no stored impulses, so requesting the wrench warns once."""
     model = _build_four_bar().finalize(device=device)
-    solver = SolverSteel(model, solve_mode="matrix_free", enable_bilateral_preelimination=True)
+    solver = SolverSteel(model, enable_bilateral_preelimination=True)
     observables = solver.observables(FLAGS)
     state_0, state_1 = model.state(), model.state()
     with test.assertWarnsRegex(NewtonWarning, "pre-eliminated loop-closure"):
         solver.step(state_0, state_1, None, None, 1.0 / 240.0, observables=observables)
     # Sleeping keeps a wrench history, which is no request.
-    sleeping = SolverSteel(model, solve_mode="matrix_free", enable_bilateral_preelimination=True, enable_sleeping=True)
+    sleeping = SolverSteel(model, enable_bilateral_preelimination=True, enable_sleeping=True)
     with warnings.catch_warnings():
         warnings.simplefilter("error", NewtonWarning)
         sleeping.step(state_0, state_1, None, None, 1.0 / 240.0)
@@ -642,7 +782,7 @@ def test_unattached_body_reports_zero(test, device):
     builder.add_articulation([builder.add_joint_revolute(-1, root, axis=(0.0, 1.0, 0.0))])
     builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="split")
+    solver = SolverSteel(model)
     solver._rigid_body_angular_damping.zero_()
     observables = solver.observables(FLAGS)
     observables.body_parent_f.fill_(wp.spatial_vector(123.0, 123.0, 123.0, 123.0, 123.0, 123.0))
@@ -671,7 +811,7 @@ def test_jointless_model_reports_zero(test, device):
     body = builder.add_link(is_kinematic=True)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, solve_mode="split")
+    solver = SolverSteel(model)
     observables = solver.observables(FLAGS)
     observables.body_parent_f.fill_(wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
     solver.step(model.state(), model.state(), None, None, DT_parent_wrench, observables=observables)
@@ -743,9 +883,6 @@ def test_parent_wrench_excludes_joint_armature(test, device):
     Projected onto its motion subspace, every wrench is the applied joint force less ``armature * qdd``. The FREE
     body has no ``joint_f``, so it reports ``-armature * qdd``, and the weld reports its child's rigid-body wrench.
     """
-    configurations = [{"solve_mode": "split"}]
-    if wp.get_device(device).is_cuda:
-        configurations.append({"solve_mode": "matrix_free"})
     for armature in (0.0, 9.0):
         model, state, control = _armature_scene(device, armature)
         joint_f = control.joint_f.numpy()
@@ -753,37 +890,32 @@ def test_parent_wrench_excludes_joint_armature(test, device):
             np.array(wp.transform_point(wp.transform(*X), wp.vec3(*com)))
             for X, com in zip(state.body_q.numpy(), model.body_com.numpy(), strict=True)
         ]
-        for options in configurations:
-            with test.subTest(armature=armature, **options):
-                solver = SolverSteel(model, **options)
-                solver._rigid_body_angular_damping.zero_()
-                wrench, qdd = _step_armature_scene(model, state, control, solver)
-                expected = joint_f - armature * qdd
-                np.testing.assert_allclose(wrench[0], expected[:6], rtol=1.0e-4, atol=1.0e-4)
-                if armature:
-                    test.assertGreater(np.abs(wrench[0]).max(), 1.0)
-                hinge = np.array([1.0, 0.0, 1.0])
-                hinge_torque = wrench[1, 3:] + np.cross(com_world[1] - hinge, wrench[1, :3])
-                test.assertAlmostEqual(
-                    float(hinge_torque[1]), float(expected[6]), delta=1.0e-4 * abs(expected[6]) + 1.0e-4
-                )
-                test.assertAlmostEqual(
-                    float(wrench[3, 2]), float(expected[7]), delta=1.0e-4 * abs(expected[7]) + 1.0e-4
-                )
-                socket = np.array([3.0, 0.0, 1.0])
-                ball_torque = wrench[4, 3:] + np.cross(com_world[4] - socket, wrench[4, :3])
-                np.testing.assert_allclose(ball_torque, expected[8:11], rtol=1.0e-4, atol=1.0e-4)
-                # The weld carries its child's mass times its acceleration from the hinge's start velocity and qdd.
-                omega = np.array([0.0, state.joint_qd.numpy()[6], 0.0])
-                alpha = np.array([0.0, qdd[6], 0.0])
-                lever = com_world[2] - hinge
-                accel = np.cross(alpha, lever) + np.cross(omega, np.cross(omega, lever))
-                weld_force = model.body_mass.numpy()[2] * (accel - np.array([0.0, 0.0, -9.81]))
-                np.testing.assert_allclose(wrench[2, :3], weld_force, rtol=1.0e-4, atol=1.0e-4)
-                np.testing.assert_allclose(wrench[2, 3:], 0.01 * alpha, rtol=1.0e-4, atol=1.0e-4)
+        with test.subTest(armature=armature):
+            solver = SolverSteel(model)
+            solver._rigid_body_angular_damping.zero_()
+            wrench, qdd = _step_armature_scene(model, state, control, solver)
+            expected = joint_f - armature * qdd
+            np.testing.assert_allclose(wrench[0], expected[:6], rtol=1.0e-4, atol=1.0e-4)
+            if armature:
+                test.assertGreater(np.abs(wrench[0]).max(), 1.0)
+            hinge = np.array([1.0, 0.0, 1.0])
+            hinge_torque = wrench[1, 3:] + np.cross(com_world[1] - hinge, wrench[1, :3])
+            test.assertAlmostEqual(float(hinge_torque[1]), float(expected[6]), delta=1.0e-4 * abs(expected[6]) + 1.0e-4)
+            test.assertAlmostEqual(float(wrench[3, 2]), float(expected[7]), delta=1.0e-4 * abs(expected[7]) + 1.0e-4)
+            socket = np.array([3.0, 0.0, 1.0])
+            ball_torque = wrench[4, 3:] + np.cross(com_world[4] - socket, wrench[4, :3])
+            np.testing.assert_allclose(ball_torque, expected[8:11], rtol=1.0e-4, atol=1.0e-4)
+            # The weld carries its child's mass times its acceleration from the hinge's start velocity and qdd.
+            omega = np.array([0.0, state.joint_qd.numpy()[6], 0.0])
+            alpha = np.array([0.0, qdd[6], 0.0])
+            lever = com_world[2] - hinge
+            accel = np.cross(alpha, lever) + np.cross(omega, np.cross(omega, lever))
+            weld_force = model.body_mass.numpy()[2] * (accel - np.array([0.0, 0.0, -9.81]))
+            np.testing.assert_allclose(wrench[2, :3], weld_force, rtol=1.0e-4, atol=1.0e-4)
+            np.testing.assert_allclose(wrench[2, 3:], 0.01 * alpha, rtol=1.0e-4, atol=1.0e-4)
 
 
-def test_parent_wrench_of_a_contact_stop_with_armature(test, device, solve_mode="split"):
+def test_parent_wrench_of_a_contact_stop_with_armature(test, device):
     """Report a contact-stopped FREE body's armature share of the impact as its joint wrench.
 
     The contact impulse stops the armature-augmented inertia; the body's own mass takes ``m * dv / dt`` of it and
@@ -792,7 +924,7 @@ def test_parent_wrench_of_a_contact_stop_with_armature(test, device, solve_mode=
     for armature in (0.0, 9.0):
         with test.subTest(armature=armature):
             model = _sphere_on_ground(device, armature)
-            solver = SolverSteel(model, solve_mode=solve_mode, cfm=0.0)
+            solver = SolverSteel(model, cfm=0.0)
             pipeline = newton.CollisionPipeline(model)
             contacts = pipeline.contacts()
             observables = solver.observables(FLAGS | {SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
@@ -830,7 +962,7 @@ def test_parent_wrench_of_a_commanded_free_joint(test, device):
             state = model.state()
             control = model.control()
             control.joint_f.assign(np.array([10.0, 0.0, 0.0, 0.0, 0.0, 10.0], dtype=np.float32))
-            solver = SolverSteel(model, solve_mode="split")
+            solver = SolverSteel(model)
             solver._rigid_body_angular_damping.zero_()
             wrench, qdd = _step_armature_scene(model, state, control, solver)
             np.testing.assert_allclose(qdd[[0, 5]], 10.0 / (1.0 + armature), rtol=1.0e-5)
@@ -858,7 +990,7 @@ def test_parent_wrench_of_a_held_kinematic_joint(test, device):
             )
             model = builder.finalize(device=device)
             model.joint_armature.fill_(armature)
-            solver = SolverSteel(model, solve_mode="split")
+            solver = SolverSteel(model)
             solver._rigid_body_angular_damping.zero_()
             wrench, qdd = _step_armature_scene(model, model.state(), model.control(), solver)
             test.assertEqual(float(qdd[0]), 0.0)
@@ -870,7 +1002,7 @@ def test_parent_wrench_matches_mujoco_with_armature(test, device):
     for armature in (0.0, 9.0):
         with test.subTest(armature=armature):
             model, state, control = _armature_scene(device, armature)
-            solver = SolverSteel(model, solve_mode="matrix_free")
+            solver = SolverSteel(model)
             solver._rigid_body_angular_damping.zero_()
             steel, _ = _step_armature_scene(model, state, control, solver)
             mujoco, _ = _step_armature_scene(
@@ -888,8 +1020,7 @@ def test_parent_wrench_of_an_arm_resting_on_a_joint_limit(test, device):
         [builder.add_joint_revolute(-1, arm, axis=(0.0, 1.0, 0.0), limit_lower=-1.0, limit_upper=0.0, armature=0.0)]
     )
     model = builder.finalize(device=device)
-    solve_mode = "matrix_free" if wp.get_device(device).is_cuda else "split"
-    solver = SolverSteel(model, solve_mode=solve_mode, enable_joint_limits=True, iterations=32)
+    solver = SolverSteel(model, enable_joint_limits=True, iterations=32)
     solver._rigid_body_angular_damping.zero_()
     observables = solver.observables(FLAGS)
     states, control = [model.state(), model.state()], model.control()
@@ -914,6 +1045,7 @@ for _name in (
     "test_unattached_body_reports_zero",
     "test_jointless_model_reports_zero",
     "test_closure_force_uses_the_row_builder_norm",
+    "test_open_closure_force_acts_where_the_rows_do",
     "test_parent_wrench_matches_inverse_dynamics_on_every_path",
     "test_parent_wrench_excludes_joint_armature",
     "test_parent_wrench_of_a_contact_stop_with_armature",
@@ -922,19 +1054,13 @@ for _name in (
     "test_parent_wrench_of_an_arm_resting_on_a_joint_limit",
 ):
     add_function_test(TestSteelParentWrench, _name, globals()[_name], devices=get_test_devices())
-add_function_test(
-    TestSteelParentWrench,
-    "test_parent_wrench_of_a_contact_stop_with_armature_matrix_free",
-    test_parent_wrench_of_a_contact_stop_with_armature,
-    devices=get_cuda_test_devices(),
-    solve_mode="matrix_free",
-)
 for _name in (
     "test_parent_wrench_of_a_near_redundant_closure",
     "test_parent_wrench_matches_mujoco_with_armature",
     "test_parent_wrench_excludes_velocity_limit_prescaling",
     "test_parent_wrench_includes_loop_closure_reactions",
     "test_parent_wrench_of_a_load_held_by_closures",
+    "test_parent_wrench_of_a_body_hung_by_a_revolute_closure",
     "test_parent_wrench_warns_without_preeliminated_closures",
 ):
     add_function_test(TestSteelParentWrench, _name, globals()[_name], devices=get_cuda_test_devices())

@@ -1,0 +1,1 @@
+Support hard particle-body attachments with `stiffness=math.inf` in `ModelBuilder.add_attachment_particle_body()` and `SolverVBD`. `SolverCoupledADMM` rejects hard attachments whose endpoints are not in one `SolverVBD` entry.

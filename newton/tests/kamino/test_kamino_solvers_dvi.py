@@ -4180,7 +4180,9 @@ class TestDVISolver(NewtonTestCase):
             sparse_jacobian=True,
             use_collision_detector=True,
             integrator="moreau",
-            constraints=kamino_config.ConstraintStabilizationConfig(gamma=0.01, delta=0.0),
+            constraints=kamino_config.ConstraintStabilizationConfig(
+                contact_recovery_time=time_step * (1.0 / 0.01 - 1.0), delta=0.0
+            ),
             dvi=kamino_config.DVISolverConfig(
                 max_alternating_iterations=8,
                 bilateral_solve_interval=1,
