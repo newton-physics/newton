@@ -7276,6 +7276,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
             )
         self.assertGreater(np.abs(native_data.qpos).max(), 1e-3, "the comparison should move the joints")
 
+    @requires(*MUJOCO_MODULES)
     def test_omitted_joint2_fixes_joint1(self):
         """Hold joint1 at the constant term, with its solver parameters, when joint2 is omitted."""
         joint = '<joint name="hip-lock" type="hinge" axis="1 0 0"/>'
@@ -7287,6 +7288,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         self.assertEqual(list(converted.eq_obj2id), [-1])
         self._assert_matches_native(native, converted)
 
+    @requires(*MUJOCO_MODULES)
     def test_equality_on_joints_sharing_a_body(self):
         """Resolve each endpoint to its own scalar MuJoCo joint when the joints share a body."""
         for first, second in (("h1", "h2"), ("h1", "s1"), ("s1", "h2")):
@@ -7305,6 +7307,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                         slide_after_hinge = joints.index("s1") > 0 if "s1" in joints else False
                         self._assert_matches_native(native, converted, dynamics=not slide_after_hinge)
 
+    @requires(*MUJOCO_MODULES)
     def test_partial_polycoef_keeps_mujoco_defaults(self):
         """Fill omitted joint polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
         native, converted, model = self._convert(
@@ -7314,6 +7317,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_count, 1)
         self._assert_matches_native(native, converted)
 
+    @requires(*MUJOCO_MODULES)
     def test_partial_tendon_polycoef_keeps_mujoco_defaults(self):
         """Fill omitted tendon polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
         native, converted, _ = self._convert(self._two_body_mjcf('<tendon tendon1="t1" tendon2="t2" polycoef="0.05"/>'))
@@ -7321,6 +7325,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         np.testing.assert_array_equal(converted.eq_type, native.eq_type)
         np.testing.assert_allclose(converted.eq_data[:, :5], native.eq_data[:, :5], atol=1e-7)
 
+    @requires(*MUJOCO_MODULES)
     def test_scale_applies_to_slide_polycoef(self):
         """Scale polycoef terms of slide endpoints with the import scale."""
         scale = 2.0
@@ -7351,6 +7356,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                 else:
                     self.assertEqual(model.constraint_mimic_count, 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_dof_selector_without_joint_raises(self):
         """Reject a DoF selector for an omitted equality endpoint instead of ignoring it."""
         builder = newton.ModelBuilder()
@@ -7364,6 +7370,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "endpoint 2 selects DoF 0 but has no joint"):
             SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
+    @requires(*MUJOCO_MODULES)
     def test_equality_on_nonscalar_joint_raises(self):
         """Reject ball and free endpoints, including hinges converted to a ball joint."""
         joints = (
@@ -7407,6 +7414,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "uses joint 'h1' as both endpoints"):
             builder.add_mjcf(self._mjcf(joints, '<joint joint1="h1" joint2="h1"/>'))
 
+    @requires(*MUJOCO_MODULES)
     def test_dof_selector_outside_its_joint_raises(self):
         """Reject a DoF selector that belongs to another joint than its endpoint."""
         builder = newton.ModelBuilder()
@@ -7420,6 +7428,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not belong to joint"):
             SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
+    @requires(*MUJOCO_MODULES)
     def test_reject_cross_world_joint_reference(self):
         """Reject a joint equality in one world that targets a joint of another world."""
         builder = newton.ModelBuilder()
@@ -7436,6 +7445,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "of another world"):
             SolverMuJoCo(model, disable_contacts=True)
 
+    @requires(*MUJOCO_MODULES)
     def test_reject_cross_world_dof_reference(self):
         """Reject a DoF selector in one world that targets a DoF of another world."""
         builder = newton.ModelBuilder()
@@ -7453,6 +7463,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "of another world"):
             SolverMuJoCo(model, disable_contacts=True)
 
+    @requires(*MUJOCO_MODULES)
     def test_reject_heterogeneous_dof_selectors(self):
         """Reject separate worlds whose joint equalities select different DoFs of the same joint."""
         joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"] + _EQUALITY_TEST_JOINTS["s1"]
@@ -9941,6 +9952,7 @@ class TestMjcfPartialVectorDefaults(unittest.TestCase):
     </actuator>
 </mujoco>"""
 
+    @requires(*MUJOCO_MODULES)
     def test_partial_vectors_match_native(self):
         """Match native MuJoCo for every attribute given with fewer components than its length."""
         import mujoco
