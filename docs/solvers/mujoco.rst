@@ -792,7 +792,8 @@ MuJoCo applies 1D edge stiffness as an explicit passive force, while the
 chain with stiffness ``k`` and particle mass ``m`` is stable only for time
 steps below about ``sqrt(m / k)``; stiffer cables than solvers such as
 :class:`~newton.solvers.SolverVBD` handle at the same step size need smaller
-steps in MuJoCo.
+steps in MuJoCo, or ``edgeequality=True`` in ``add_flex``, which replaces edge
+stiffness with a constraint on edge lengths.
 
 A triangle whose particles all belong to a tetrahedral flex is skipped, so the
 surface triangles of a tetrahedral mesh do not form a second flex. Springs are
@@ -800,8 +801,9 @@ always converted, as in Newton's other solvers.
 MuJoCo stores one material per flex, so non-uniform values are averaged with a
 warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
 friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
-shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, including
-shapes that do not collide with other shapes, but not with themselves. Flex
+each other and with shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`,
+including shapes that do not collide with other shapes. A flex collides with
+itself only when ``selfcollide`` is set through ``add_flex``. Flex
 contacts require ``use_mujoco_contacts=True``; the solver rejects models with
 flexes otherwise. In exported contacts, the flex side has shape
 ``-1``. With separate worlds, every world must have the same elements and
@@ -812,7 +814,8 @@ To control a flex directly, use ``add_flex`` from
 tetrahedra, triangles, or springs. Each call creates a separate flex, so
 elements with different materials no longer need to be averaged. It also
 exposes MuJoCo-only settings such as 2D bending (``elastic2d``),
-self-collision, and per-flex contact parameters. Settings left as ``None`` are
+self-collision, edge equality constraints (``edgeequality``), and per-flex
+contact parameters. Settings left as ``None`` are
 derived as in the table above.
 
 .. code-block:: python

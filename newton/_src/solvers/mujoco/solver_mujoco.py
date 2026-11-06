@@ -3512,8 +3512,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         remaining elements of each dimension form one flex with the default settings, skipping
         triangles whose particles all belong to a tetrahedral flex. Negative ``young``,
         ``edgestiffness``, ``edgedamping``, ``radius``, and sliding ``friction`` values are derived
-        from the Newton model. Flexes collide with shapes flagged
-        :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`.
+        from the Newton model. Flexes collide with each other and with shapes flagged
+        :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves when ``selfcollide`` is
+        set. Flexes with ``edgeequality`` get a MuJoCo flex equality constraint on their edge lengths.
 
         Args:
             model: The Newton model.
@@ -3529,8 +3530,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mujoco, _ = self.import_mujoco()
         converted = flex._converted_elements(model)
 
-        # Reserve a mask bit that no geom uses as contype. Flexes collide only with geoms
-        # that carry it in their conaffinity, which leaves rigid filtering unchanged.
+        # Reserve a mask bit that no geom uses as contype. Flexes use it as both masks, so they
+        # collide with each other and with geoms that carry it in their conaffinity, which
+        # leaves rigid filtering unchanged.
         used = 0
         for geom in spec.geoms:
             used |= geom.contype & 0xFFFFFFFF
@@ -3602,7 +3604,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mj_flex.vertbody = [bodies[i].name for i in local[verts]]
                 mj_flex.elem = np.searchsorted(verts, elems[keep]).ravel().tolist()
                 mj_flex.contype = bit
-                mj_flex.conaffinity = 0
+                mj_flex.conaffinity = bit
                 mj_flex.selfcollide = int(params["selfcollide"])
                 mj_flex.radius = params["radius"] if params["radius"] >= 0.0 else radius[local[verts]].max()
                 mj_flex.friction = params["friction"]
@@ -3620,6 +3622,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ):
                         value = params[name]
                         setattr(mj_flex, name, value if value >= 0.0 else flex._uniform(values.numpy()[keep], name))
+                if params["edgeequality"]:
+                    # MuJoCo rejects edge stiffness together with edge constraints.
+                    mj_flex.edgestiffness = 0.0
+                    equality = spec.add_equality(type=mujoco.mjtEq.mjEQ_FLEX)
+                    equality.name1 = mj_flex.name
                 if params["young"] >= 0.0:
                     mj_flex.young, mj_flex.poisson = params["young"], params["poisson"]
                 elif materials is not None:

@@ -3,6 +3,7 @@
 
 """Tests for mapping Newton particles to MuJoCo flexes in SolverMuJoCo."""
 
+import itertools
 import unittest
 
 import numpy as np
@@ -167,6 +168,8 @@ class TestMuJoCoFlex(unittest.TestCase):
             mujoco.add_flex(builder, triangles=triangles, elastic2d="wrinkle")
         with self.assertRaises(ValueError):
             mujoco.add_flex(builder, triangles=triangles, poisson=0.3)
+        with self.assertRaises(ValueError):
+            mujoco.add_flex(builder, springs=springs, edgeequality=True, edgestiffness=1.0)
         with self.assertRaises(IndexError):
             mujoco.add_flex(builder, springs=[builder.spring_count])
         mujoco.add_flex(builder, springs=springs)
@@ -176,6 +179,37 @@ class TestMuJoCoFlex(unittest.TestCase):
         with self.assertRaises(ValueError):
             mujoco.add_flex(builder, triangles=triangles)
         builder.end_world()
+
+    def test_stiff_cable_rests_on_another_flex(self):
+        """Flexes collide with each other, and edge equality keeps a stiff cable stable and inextensible."""
+        builder = _builder()
+        below = [builder.add_particle((0.1 * i - 0.2, 0.0, 0.1), (0.0, 0.0, 0.0), 0.0, radius=0.01) for i in range(5)]
+        for a, b in itertools.pairwise(below):
+            builder.add_spring(a, b, 1.0e3, 0.0, 0.0)
+        above = [builder.add_particle((0.0, 0.1 * i - 0.2, 0.2), (0.0, 0.0, 0.0), 0.01, radius=0.01) for i in range(5)]
+        start = builder.spring_count
+        for a, b in itertools.pairwise(above):
+            builder.add_spring(a, b, 5.0e5, 0.0, 0.0)
+        mujoco.add_flex(builder, springs=range(start, builder.spring_count), edgeequality=True)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.neq, 1)
+        self.assertEqual(solver.mj_model.eq_type[0], int(solver._mujoco.mjtEq.mjEQ_FLEX))
+        self.assertEqual(solver.mj_model.flex_edgestiffness[0], 0.0)
+
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        for _ in range(250):
+            solver.step(state_0, state_1, control, None, 2.0e-3)
+            state_0, state_1 = state_1, state_0
+
+        q = state_0.particle_q.numpy()[above]
+        self.assertTrue(np.isfinite(q).all())
+        # The middle of the falling cable rests on the pinned cable instead of passing through it.
+        self.assertGreater(q[2, 2], 0.1 + 0.015)
+        # Explicit edge springs this stiff diverge at this step; the soft edge constraint stays near rest length.
+        np.testing.assert_allclose(np.linalg.norm(np.diff(q, axis=0), axis=1), 0.1, rtol=5.0e-2)
 
     def test_flexes_require_mujoco_contacts(self):
         """Flex particles cannot use Newton contacts, so the combination is rejected."""

@@ -32,6 +32,7 @@ FLEX_ATTRIBUTES = {
     "damping": (wp.float32, 0.0),
     "edgestiffness": (wp.float32, -1.0),
     "edgedamping": (wp.float32, -1.0),
+    "edgeequality": (wp.bool, False),
     "thickness": (wp.float32, 1.0),
     "elastic2d": (wp.int32, ELASTIC2D["stretch"]),
     "radius": (wp.float32, -1.0),
@@ -95,6 +96,7 @@ def add_flex(
     damping: float = 0.0,
     edgestiffness: float | None = None,
     edgedamping: float | None = None,
+    edgeequality: bool = False,
     thickness: float | None = None,
     elastic2d: str | int | None = None,
     radius: float | None = None,
@@ -125,6 +127,10 @@ def add_flex(
         damping: Rayleigh damping coefficient [s].
         edgestiffness: 1D edge stiffness [N/m]. ``None`` uses the spring stiffness.
         edgedamping: 1D edge damping [N·s/m]. ``None`` uses the spring damping.
+        edgeequality: Keep edge lengths at their rest values with a MuJoCo flex
+            equality constraint, which the constraint solver enforces and stays
+            stable for stiff cables and cloth where explicit edge stiffness would
+            not. 1D flexes then ignore edge stiffness.
         thickness: 2D shell thickness [m], defaults to 1 so that Newton's
             per-area triangle stiffness carries over.
         elastic2d: 2D elasticity: ``"none"``, ``"bend"``, ``"stretch"`` (default), or ``"both"``.
@@ -158,6 +164,8 @@ def add_flex(
         raise ValueError("poisson requires young.")
     if dim != 1 and (edgestiffness is not None or edgedamping is not None):
         raise ValueError("edgestiffness and edgedamping only apply to springs.")
+    if edgeequality and edgestiffness is not None:
+        raise ValueError("edgeequality replaces edgestiffness; pass only one.")
 
     elements = np.asarray(getattr(builder, field), dtype=np.int64).reshape(-1, dim + 1)
     if indices.min() < 0 or indices.max() >= len(elements):
@@ -182,6 +190,7 @@ def add_flex(
         "mujoco:flex_damping": float(damping),
         "mujoco:flex_edgestiffness": derived(edgestiffness),
         "mujoco:flex_edgedamping": derived(edgedamping),
+        "mujoco:flex_edgeequality": bool(edgeequality),
         "mujoco:flex_thickness": 1.0 if thickness is None else float(thickness),
         "mujoco:flex_elastic2d": _choice("stretch" if elastic2d is None else elastic2d, ELASTIC2D, "elastic2d"),
         "mujoco:flex_radius": derived(radius),
