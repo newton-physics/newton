@@ -1537,6 +1537,146 @@ add_function_test(
 )
 
 
+def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
+    """Reproduce the fused FK/ID kernel bitwise with the serial kinematics pass plus the per-body finaliser."""
+    model = _build_contact_scene(device)
+    solver = SolverSteel(model, solve_mode="matrix_free")
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    rng = np.random.default_rng(3)
+    state.joint_qd.assign(rng.normal(scale=0.7, size=model.joint_dof_count).astype(np.float32))
+    aug = solver._prepare_augmented_state(state)
+
+    def fresh():
+        return {
+            "body_q": wp.clone(state.body_q),
+            "body_q_com": wp.zeros_like(aug._body_q_com),
+            "origin": wp.zeros_like(solver._articulation_origin),
+            "joint_S_s": wp.zeros_like(aug._joint_S_s),
+            "body_I_s": wp.zeros_like(aug._body_I_s),
+            "terms": wp.zeros_like(solver._body_inertia_terms),
+            "body_v_s": wp.zeros_like(aug._body_v_s),
+            "body_f_s": wp.zeros_like(aug._body_f_s),
+            "body_a_s": wp.zeros_like(aug._body_a_s),
+            "body_qd": wp.zeros_like(state.body_qd),
+        }
+
+    for materialize_inertia, materialize_terms in ((1, 1), (0, 0), (1, 0)):
+        with test.subTest(inertia=materialize_inertia, terms=materialize_terms):
+            fused, split = fresh(), fresh()
+            common = [
+                model.articulation_start,
+                solver._articulation_joint_end,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_q_start,
+                model.joint_qd_start,
+                state.joint_q,
+                state.joint_qd,
+                model.joint_X_p,
+                model.joint_X_c,
+                solver._body_X_com,
+                model.joint_axis,
+                model.joint_dof_dim,
+                model.body_com,
+            ]
+            wp.launch(
+                steel_kernels.eval_rigid_fk_id,
+                dim=model.articulation_count,
+                inputs=[
+                    *common,
+                    model.body_mass,
+                    model.body_inertia,
+                    solver._is_free_rigid,
+                    materialize_inertia,
+                    materialize_terms,
+                    model.body_world,
+                    model.gravity,
+                    solver._dynamics_art_active,
+                ],
+                outputs=[
+                    fused["body_q"],
+                    fused["body_q_com"],
+                    fused["origin"],
+                    fused["joint_S_s"],
+                    fused["body_I_s"],
+                    fused["terms"],
+                    fused["body_v_s"],
+                    fused["body_f_s"],
+                    fused["body_a_s"],
+                ],
+                block_dim=16,
+                device=device,
+            )
+            wp.launch(
+                steel_kernels.update_body_qd_from_featherstone,
+                dim=model.body_count,
+                inputs=[
+                    fused["body_v_s"],
+                    fused["body_q"],
+                    model.body_com,
+                    solver._body_to_articulation,
+                    fused["origin"],
+                    solver._dynamics_body_active,
+                ],
+                outputs=[fused["body_qd"]],
+                device=device,
+            )
+            wp.launch(
+                steel_kernels.eval_rigid_fk_kinematics,
+                dim=model.articulation_count,
+                inputs=[*common, solver._dynamics_art_active],
+                outputs=[
+                    split["body_q"],
+                    split["body_q_com"],
+                    split["origin"],
+                    split["joint_S_s"],
+                    split["body_v_s"],
+                    split["body_a_s"],
+                ],
+                block_dim=16,
+                device=device,
+            )
+            wp.launch(
+                steel_kernels.finalize_body_dynamics,
+                dim=model.body_count,
+                inputs=[
+                    solver._body_to_articulation,
+                    split["body_q"],
+                    split["body_q_com"],
+                    model.body_com,
+                    model.body_mass,
+                    model.body_inertia,
+                    solver._is_free_rigid,
+                    split["origin"],
+                    materialize_inertia,
+                    materialize_terms,
+                    model.body_world,
+                    model.gravity,
+                    split["body_v_s"],
+                    split["body_a_s"],
+                    solver._dynamics_body_active,
+                ],
+                outputs=[split["body_I_s"], split["terms"], split["body_f_s"], split["body_qd"]],
+                device=device,
+            )
+            for name in fused:
+                np.testing.assert_array_equal(split[name].numpy(), fused[name].numpy(), err_msg=name)
+
+
+class TestSteelSplitKinematics(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelSplitKinematics,
+    "test_split_kinematics_match_the_fused_fk_id_kernel",
+    test_split_kinematics_match_the_fused_fk_id_kernel,
+    devices=get_test_devices(),
+)
+
+
 def _build_chains_on_boxes(device):
     """Two driven, limited chains, one resting on a free box, and a lone box, in two worlds."""
     world = newton.ModelBuilder()

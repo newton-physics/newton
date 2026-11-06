@@ -134,6 +134,7 @@ from .kernels import (
     eval_joint_friction_load,
     eval_post_solve_parent_wrenches,
     eval_rigid_fk_id,
+    eval_rigid_fk_kinematics,
     eval_rigid_tau,
     eval_rigid_tau_and_augmented_drives,
     factor_diagonal_mass,
@@ -199,6 +200,7 @@ from .kernels import (
     solve_diagonal_mass,
     subtract_arrays,
     trisolve_loop,
+    finalize_body_dynamics,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
     zero_unattached_parent_wrenches,
@@ -8260,28 +8262,78 @@ class SolverSteel(SolverBase, CouplingInterface):
         ]
         if self._tree_plan is not None:
             self._launch_tree_fk("id", [*fk_inputs, self._dynamics_art_active], fk_outputs)
-        else:
-            wp.launch(
-                eval_rigid_fk_id,
-                dim=model.articulation_count,
-                inputs=[*fk_inputs, self._dynamics_art_active],
-                outputs=fk_outputs,
-                block_dim=16,
-                device=model.device,
-            )
+            if model.body_count:
+                wp.launch(
+                    update_body_qd_from_featherstone,
+                    dim=model.body_count,
+                    inputs=[
+                        state_aug._body_v_s,
+                        state_in.body_q,
+                        model.body_com,
+                        self._body_to_articulation,
+                        self._articulation_origin,
+                        self._dynamics_body_active,
+                    ],
+                    outputs=[state_out.body_qd],
+                    device=model.device,
+                )
+            return stage3_qd
+        # The serial per-articulation pass stops at the kinematics; the inertias, bias wrenches and the
+        # published COM velocities are formed one body per thread.
+        wp.launch(
+            eval_rigid_fk_kinematics,
+            dim=model.articulation_count,
+            inputs=[
+                model.articulation_start,
+                self._articulation_joint_end,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_q_start,
+                model.joint_qd_start,
+                state_in.joint_q,
+                stage3_qd,
+                model.joint_X_p,
+                model.joint_X_c,
+                self._body_X_com,
+                model.joint_axis,
+                model.joint_dof_dim,
+                model.body_com,
+                self._dynamics_art_active,
+            ],
+            outputs=[
+                state_in.body_q,
+                state_aug._body_q_com,
+                self._articulation_origin,
+                state_aug._joint_S_s,
+                state_aug._body_v_s,
+                state_aug._body_a_s,
+            ],
+            block_dim=16,
+            device=model.device,
+        )
         if model.body_count:
             wp.launch(
-                update_body_qd_from_featherstone,
+                finalize_body_dynamics,
                 dim=model.body_count,
                 inputs=[
-                    state_aug._body_v_s,
-                    state_in.body_q,
-                    model.body_com,
                     self._body_to_articulation,
+                    state_in.body_q,
+                    state_aug._body_q_com,
+                    model.body_com,
+                    model.body_mass,
+                    model.body_inertia,
+                    self._is_free_rigid,
                     self._articulation_origin,
+                    int(refresh_composite),
+                    0,
+                    model.body_world,
+                    model.gravity,
+                    state_aug._body_v_s,
+                    state_aug._body_a_s,
                     self._dynamics_body_active,
                 ],
-                outputs=[state_out.body_qd],
+                outputs=[state_aug._body_I_s, self._body_inertia_terms, state_aug._body_f_s, state_out.body_qd],
                 device=model.device,
             )
         return stage3_qd
