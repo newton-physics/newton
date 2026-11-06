@@ -100,9 +100,12 @@ def _find_label_index(labels: list[str], suffix: str) -> int:
 
 
 class Example:
+    RELEASE_KEYFRAME = 7  # index of the keyframe that opens the gripper
+
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.sim_time = 0.0
+        self._release_checked = False
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, int(args.substeps))
@@ -520,13 +523,39 @@ class Example:
         assert np.all(np.isfinite(body_q)), "Body positions contain NaN or inf values"
         assert np.all(np.isfinite(body_qd)), "Body velocities contain NaN or inf values"
 
-        # The cable is grasped at its midpoint and carried to the place target; verify that
-        # the grasped segment was placed within 1 cm of the target (x, y) in every world.
+        assert self._release_checked, "Test ran too few frames to reach the release phase"
+        assert self.sim_time >= float(self.key_times[-1]) - 1e-6, "Test ran too few frames to finish the retract phase"
+
+        # After release the cable drops onto the ground plane and lies flat there, with its
+        # extent still spanning the place target.
+        target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
+        max_height = self.surface_z + 4.0 * self.payload_radius
+        for world_idx in range(self.world_count):
+            first = world_idx * self.payload_body_count_per_world
+            positions = body_q[self.payload_bodies[first : first + self.payload_body_count_per_world], :3]
+            top = float(positions[:, 2].max())
+            assert top < max_height, (
+                f"World {world_idx} cable not on the ground: max z {top:.3f} m (expected < {max_height:.3f} m)"
+            )
+            lo, hi = positions[:, :2].min(axis=0), positions[:, :2].max(axis=0)
+            assert np.all(lo <= target_xy) and np.all(target_xy <= hi), (
+                f"World {world_idx} cable AABB xy [{lo}, {hi}] does not contain the place target {target_xy}"
+            )
+
+    def test_post_step(self):
+        # Just before the gripper opens, the carried cable midpoint sits at the place target.
+        release_time = float(self.key_times[self.RELEASE_KEYFRAME - 1])
+        if self._release_checked or self.sim_time < release_time:
+            return
+        self._release_checked = True
+        body_q = self.state_0.body_q.numpy()
         target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
         for world_idx in range(self.world_count):
             mid_body = self.payload_bodies[world_idx * self.payload_body_count_per_world + self.payload_mid_body_offset]
             dist = float(np.linalg.norm(body_q[mid_body, :2] - target_xy))
-            assert dist < 0.01, f"World {world_idx} cable placed {dist * 100:.1f} cm from target (expected < 1 cm)"
+            assert dist < 0.01, (
+                f"World {world_idx} cable midpoint {dist * 100:.2f} cm from target before release (expected < 1 cm)"
+            )
 
     @staticmethod
     def create_parser():
