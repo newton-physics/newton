@@ -5318,6 +5318,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             Output buffers persist and grow on demand; they do not shrink, so
             iterate up to the returned ``rigid_contact_count`` rather than the
             array length.
+            The outputs omit torsional and rolling friction couples, so they do not
+            reconstruct the full contact wrench when angular friction is active.
 
         Returns:
             tuple[

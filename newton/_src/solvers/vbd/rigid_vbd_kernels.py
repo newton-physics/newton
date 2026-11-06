@@ -1754,45 +1754,33 @@ def evaluate_angular_contact_friction(
     rolling_rho: wp.mat22,
     contact_lam_angular: wp.vec3,
 ):
-    """Evaluate ALM torsional/rolling torque on body1 and its conservative PSD rotational metric."""
-    zero_vec = wp.vec3(0.0)
-    zero_mat = wp.mat33(0.0)
+    """Evaluate the ALM torsional/rolling torque on body1 and its PSD rotational solve metric.
+
+    With ``d`` the rotation of body0 relative to body1 since ``body_q_prev``, torsion clamps
+    ``n . lambda + rho_t (n . d)`` to ``mu_t N`` and rolling projects the tangent part of
+    ``lambda + R_r d`` onto ``||tau|| <= mu_r N`` in the ``R_r^-1`` metric.
+    """
     if normal_load <= 0.0 or (mu_torsional <= 0.0 and mu_rolling <= 0.0):
-        return zero_vec, zero_mat
+        return wp.vec3(0.0), wp.mat33(0.0)
 
-    n_outer = wp.outer(n, n)
-    I3 = wp.identity(3, float)
-    rolling_projector = I3 - n_outer
-    theta_rel = _relative_angular_displacement(body_id_0, body_id_1, body_q, body_q_prev)
+    angular_disp = -_relative_angular_displacement(body_id_0, body_id_1, body_q, body_q_prev)
+
     torsional_limit = mu_torsional * normal_load
-    rolling_limit = mu_rolling * normal_load
-
-    torque_angular = zero_vec
-    K_angular = zero_mat
-    angular_disp = -theta_rel
-
-    torsional_disp = wp.dot(angular_disp, n)
-    lam_torsional_old = wp.dot(contact_lam_angular, n)
-    lam_torsional_trial = lam_torsional_old + torsional_rho * torsional_disp
-    lam_torsional_trial_abs = wp.abs(lam_torsional_trial)
-    lam_torsional = wp.clamp(lam_torsional_trial, -torsional_limit, torsional_limit)
-    torque_angular += n * lam_torsional
+    torsional_trial = wp.dot(contact_lam_angular, n) + torsional_rho * wp.dot(angular_disp, n)
+    torsional_metric = float(0.0)
     if mu_torsional > 0.0 and torsional_rho > 0.0:
-        if lam_torsional_trial_abs > torsional_limit:
+        torsional_metric = torsional_rho
+        if wp.abs(torsional_trial) > torsional_limit:
             # Use the full trial state so the metric stays finite as the increment vanishes.
-            torsional_solve_metric = torsional_rho * torsional_limit / lam_torsional_trial_abs
-            K_angular += torsional_solve_metric * n_outer
-        else:
-            K_angular += torsional_rho * n_outer
+            torsional_metric *= torsional_limit / wp.abs(torsional_trial)
 
-    rolling_disp = rolling_projector * angular_disp
-    lam_rolling_old = rolling_projector * contact_lam_angular
-    lam_rolling_trial = lam_rolling_old + _apply_tangent_metric(rolling_rho, n, rolling_disp)
-    rolling_torque, rolling_metric = _project_friction_disk_metric(lam_rolling_trial, n, rolling_rho, rolling_limit)
-    torque_angular += rolling_torque
-    K_angular += rolling_metric
+    rolling_trial = contact_lam_angular + _apply_tangent_metric(rolling_rho, n, angular_disp)
+    rolling_torque, rolling_metric = _project_friction_disk_metric(
+        rolling_trial, n, rolling_rho, mu_rolling * normal_load
+    )
 
-    return torque_angular, K_angular
+    torque = n * wp.clamp(torsional_trial, -torsional_limit, torsional_limit) + rolling_torque
+    return torque, torsional_metric * wp.outer(n, n) + rolling_metric
 
 
 @wp.func
@@ -7950,21 +7938,21 @@ def create_update_duals_body_body_contacts():
                     ):
                         contact_rolling_rho[idx] = rolling_rho
 
-                # As for sliding, bound angular multipliers by the updated normal multiplier.
+                # Use the body solve's angular law with the updated normal multiplier.
                 normal_load = wp.max(wp.dot(contact_lambda[idx], n), 0.0)
-
-                theta_rel = _relative_angular_displacement(body_id_0, body_id_1, body_q, body_q_prev)
-                n_outer = wp.outer(n, n)
-                angular_residual = -theta_rel
-                lam_angular_trial = contact_lambda_angular[idx]
-                lam_angular_trial += contact_torsional_rho[idx] * (n_outer * angular_residual)
-                lam_angular_trial += _apply_tangent_metric(contact_rolling_rho[idx], n, angular_residual)
-                normal_trial = wp.dot(lam_angular_trial, n)
-                torsional_bound = contact_material_mu_torsional[idx] * normal_load
-                rolling_torque, _metric = _project_friction_disk_metric(
-                    lam_angular_trial, n, contact_rolling_rho[idx], contact_material_mu_rolling[idx] * normal_load
+                lam_angular_new, _metric = evaluate_angular_contact_friction(
+                    body_id_0,
+                    body_id_1,
+                    body_q,
+                    body_q_prev,
+                    n,
+                    normal_load,
+                    contact_material_mu_torsional[idx],
+                    contact_material_mu_rolling[idx],
+                    contact_torsional_rho[idx],
+                    contact_rolling_rho[idx],
+                    contact_lambda_angular[idx],
                 )
-                lam_angular_new = n * wp.clamp(normal_trial, -torsional_bound, torsional_bound) + rolling_torque
                 contact_lambda_angular[idx] = lam_angular_new
             else:
                 contact_lambda_angular[idx] = wp.vec3(0.0)

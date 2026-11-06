@@ -1625,10 +1625,11 @@ def _assert_rigid_compliant_alm_coefficients(device):
 
 def _angular_contact_friction_isolates_channels(test, device):
     """Verify angular-channel isolation, bounds, and ALM solve metrics."""
+    # The saturated cases excite both channels; only the enabled channel may respond.
     cases = (
         (
-            wp.vec3(0.0, 0.0, 1.0),
-            0.1,
+            wp.normalize(wp.vec3(1.0, 0.0, 1.0)),
+            0.1 * math.sqrt(2.0),
             0.02,
             0.0,
             wp.vec3(0.0),
@@ -1636,8 +1637,8 @@ def _angular_contact_friction_isolates_channels(test, device):
             np.diag([0.0, 0.0, 20.0]),
         ),
         (
-            wp.vec3(1.0, 0.0, 0.0),
-            0.1,
+            wp.normalize(wp.vec3(1.0, 0.0, 1.0)),
+            0.1 * math.sqrt(2.0),
             0.0,
             0.03,
             wp.vec3(0.0),
