@@ -9,7 +9,7 @@ Performance
 ===========
 
 This guide describes how to measure and improve simulation performance, from
-CUDA graph capture and host synchronization to collision detection and solver
+Warp graph capture and host synchronization to collision detection and solver
 settings. For custom Warp kernels, see Warp's `performance guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance.html>`__.
 
@@ -90,8 +90,10 @@ graph.
 
 When the step runs eagerly, :class:`warp.ScopedTimer` with ``synchronize=True``
 measures a region, and its ``cuda_filter`` option records the duration of each
-kernel and memory operation. :class:`~utils.EventTracer` uses CUDA events to
-time instrumented solver functions.
+kernel and memory operation (see Warp's `CUDA activity profiling
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#cuda-activity-profiling>`__).
+:class:`~utils.EventTracer` uses CUDA events to time instrumented solver
+functions.
 
 For captured steps, Warp's activity timing reports the graph launch as a
 single operation. Time the graph as a whole, profile the eager version, or
@@ -131,8 +133,11 @@ Open ``h1.nsys-rep`` in the Nsight Systems GUI, or print summaries with
   replay, kept separate from the steady state.
 
 Pass ``use_nvtx=True`` to :class:`warp.ScopedTimer` to label regions on the
-timeline. By default, Nsight Systems shows each graph launch as one range. To
-see the kernels inside the graph, add ``--cuda-graph-trace=node``. Node-level
+timeline. To record only steady-state stepping, see Warp's guide to `limiting
+the profiler capture range
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#limiting-the-profiler-capture-range>`__.
+By default, Nsight Systems shows each graph launch as one range. To see the
+kernels inside the graph, add ``--cuda-graph-trace=node``. Node-level
 tracing adds overhead to every kernel in the graph and can hide the benefit of
 capture, so use it to see what runs inside the graph, not to measure how long
 the step takes.
@@ -153,7 +158,9 @@ In the report, compare the kernel's achieved memory throughput and compute
 throughput with the device's peak, and check occupancy and warp stall reasons.
 A kernel far below both peaks is often limited by latency or launch
 configuration rather than by the hardware. Reading GPU performance counters
-can require administrator privileges.
+can require administrator privileges. Warp's `Nsight Compute guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#nsight-compute-profiling>`__
+describes how to correlate the report with kernel source code.
 
 Memory
 ^^^^^^
@@ -176,10 +183,12 @@ waiting for the CPU to launch the next one.
 
 A CUDA graph records a sequence of launches once and replays it with a single
 call. With Warp, you record the frame inside :class:`warp.ScopedCapture` and
-replay it with :func:`warp.capture_launch`. This removes the per-launch CPU
-cost but does not make the kernels themselves faster. The benefit is greatest
-when host launch overhead dominates; workloads that already keep the GPU busy
-may gain little.
+replay it with :func:`warp.capture_launch` (see Warp's `graph documentation
+<https://nvidia.github.io/warp/stable/user_guide/runtime.html#graphs>`__).
+This removes the per-launch CPU cost but does not make the kernels themselves
+faster. The benefit is greatest when host
+launch overhead dominates; workloads that already keep the GPU busy may gain
+little.
 
 Simulation Loop
 ^^^^^^^^^^^^^^^
@@ -286,7 +295,9 @@ Kernels outside the graph still incur individual host launch costs.
 
 The example uses CUDA graphs on CUDA devices and runs the frame directly on the
 CPU. If the captured code allocates memory, capture also requires the device's
-memory pool, which you can check with ``device.is_mempool_enabled``.
+memory pool, which you can check with ``device.is_mempool_enabled`` (see Warp's
+documentation on `graph allocations
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/memory_management.html#graph-allocations>`__).
 
 .. _performance-odd-substeps:
 
@@ -413,7 +424,10 @@ Host Synchronization
 GPU operations are usually asynchronous: the CPU queues work and continues.
 Reading device data on the host waits for the relevant GPU work to finish,
 which can interrupt that overlap and leave gaps between launches. Host reads
-also prevent CUDA graph capture.
+also prevent CUDA graph capture. Warp's `concurrency guide
+<https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/concurrency.html>`__
+describes which operations run asynchronously and how to synchronize with as
+little blocking as possible.
 
 Common sources of synchronization are ``array.numpy()``, printing an array,
 converting a PyTorch tensor to a Python number, and reading a contact count to
