@@ -751,6 +751,110 @@ already be enabled in the imported model.
     solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
 
 
+Particles and flexes
+--------------------
+
+:class:`~newton.solvers.SolverMuJoCo` simulates the springs, triangles, and
+tetrahedra of its model as MuJoCo
+`flexes <https://mujoco.readthedocs.io/en/stable/XMLreference.html#deformable-flex>`__.
+Like rigid bodies, deformables are simulated whenever they are in the model the
+solver receives; to split them between solvers, use
+:class:`~newton.solvers.experimental.coupled.SolverCoupled`, whose entries see
+only the particles they own. Elements whose particles all lack
+:attr:`~newton.ParticleFlags.ACTIVE` belong to another solver and are skipped.
+Particles that belong to no element, such as MPM grains, have no MuJoCo
+representation and are left untouched.
+
+Each particle of a converted element becomes a MuJoCo body with three slide
+joints placed at its initial position, and ``State.particle_q`` /
+``particle_qd`` are synchronized with those joints every step. Particles with
+zero mass or without :attr:`~newton.ParticleFlags.ACTIVE` get no joints. They
+are pinned at their ``particle_q`` in each world and follow it when it changes.
+:meth:`~newton.solvers.SolverMuJoCo.reset` restores flex particles with
+:attr:`~newton.StateFlags.PARTICLE_Q` and :attr:`~newton.StateFlags.PARTICLE_QD`.
+
+Elements that no authored flex covers are grouped into one flex per
+dimension:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 20 55
+
+   * - Newton elements
+     - Flex
+     - Parameters
+   * - Tetrahedra
+     - 3D
+     - ``young`` and ``poisson`` from the Lamé parameters in ``tet_materials``.
+   * - Triangles
+     - 2D
+     - ``young`` and ``poisson`` from the Lamé parameters in ``tri_materials``,
+       with unit ``thickness`` and membrane (stretch) elasticity only.
+   * - Springs
+     - 1D
+     - ``edgestiffness`` and ``edgedamping`` from ``spring_stiffness`` and
+       ``spring_damping``. Stretch only: 1D flexes resist bending only when
+       ``young`` is set through ``add_flex``.
+
+MuJoCo applies 1D edge stiffness as an explicit passive force, while the
+``"discrete"`` integrator solves 2D and 3D elasticity implicitly. A spring
+chain with stiffness ``k`` and particle mass ``m`` is stable only for time
+steps below about ``sqrt(m / k)``; stiffer cables than solvers such as
+:class:`~newton.solvers.SolverVBD` handle at the same step size need smaller
+steps in MuJoCo, or ``edgeequality=True`` in ``add_flex``, which replaces edge
+stiffness with a constraint on edge lengths.
+
+A triangle whose particles all belong to a tetrahedral flex is skipped, so the
+surface triangles of a tetrahedral mesh do not form a second flex. Springs are
+always converted, as in Newton's other solvers.
+MuJoCo stores one material per flex, so non-uniform values are averaged with a
+warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
+friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
+each other and with shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`,
+including shapes that do not collide with other shapes. A flex collides with
+itself only when ``selfcollide`` is set through ``add_flex``. Flex
+contacts require ``use_mujoco_contacts=True``; the solver rejects models with
+flexes otherwise. In exported contacts, the flex side has shape
+``-1``. With separate worlds, every world must have the same elements and
+authored flexes.
+
+To control a flex directly, use ``add_flex`` from
+:doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` on existing Newton
+tetrahedra, triangles, or springs. Each call creates a separate flex, so
+elements with different materials no longer need to be averaged. It also
+exposes MuJoCo-only settings such as 2D bending (``elastic2d``),
+self-collision, edge equality constraints (``edgeequality``), and per-flex
+contact parameters. Settings left as ``None`` are
+derived as in the table above.
+
+.. code-block:: python
+
+   from newton.solvers import mujoco
+
+   start = builder.tri_count
+   builder.add_cloth_grid(...)
+   mujoco.add_flex(
+       builder,
+       triangles=range(start, builder.tri_count),
+       elastic2d="both",
+       thickness=1.0e-3,
+       selfcollide="auto",
+   )
+
+When flexes are created, an ``"implicit"`` or ``"implicitfast"``
+integrator taken from the model's custom attributes or Newton's default is
+replaced by ``"discrete"``, because MuJoCo integrates flex elasticity only with
+that integrator. Newton's
+triangle damping, drag, and lift, tetrahedron damping, and dihedral bending
+edges are not converted.
+
+.. note::
+
+   MuJoCo Warp treats geom ``gap`` as a contact-inclusion offset for
+   flex-plane contacts, so a flex rests about ``gap`` below a plane. Set the
+   plane's ``gap`` to zero when it supports flexes.
+
+
 .. _mujoco-collision-pipeline:
 
 Collision pipeline
@@ -1210,8 +1314,8 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **Keyframes** (``<keyframe>``) — MuJoCo's saved-state / reset mechanism
   is not imported.
 - **Composite and flex** (``<composite>``, ``<flex>``) — MuJoCo's built-in
-  deformables and soft bodies. Newton has dedicated solvers for cloth,
-  MPM, and FEM; they are not part of the MuJoCo integration.
+  deformables are not imported. Newton particles, springs, triangles, and
+  tetrahedra can be converted to flexes instead (see `Particles and flexes`_).
 - **Skinned meshes** (``<skin>``) — visualization-only, not imported.
 - **User plugins** (``<plugin>``) — MuJoCo's plugin mechanism for custom
   passive forces or dynamics is not supported.
