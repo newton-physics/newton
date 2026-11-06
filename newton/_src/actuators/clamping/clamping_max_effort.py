@@ -1,85 +1,41 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
-import math
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
-from .base import ClampingBase
+from ...utils.deprecation import warn_deprecation
+from ..space import DriveOutputSpace
+from .clamping_symmetric import ClampingSymmetric
 
 
-@wp.func
-def _evaluate_max_effort_clamp(
-    value: wp.float64,
-    q: wp.float64,
-    qd: wp.float64,
-    params: wp.array2d[float],
-    i: int,
-    base: int,
-) -> wp.float64:
-    """Implicit-solve entry point; params row is ``[max_effort]``."""
-    limit = wp.float64(params[i, base])
-    return wp.clamp(value, -limit, limit)
+class ClampingMaxEffort(ClampingSymmetric):
+    """Deprecated effort-only wrapper for ClampingSymmetric.
 
-
-@wp.kernel
-def _box_clamp_kernel(
-    max_effort: wp.array[float],
-    src: wp.array[float],
-    dst: wp.array[float],
-):
-    """Clamp src efforts to ±max_effort, write to dst."""
-    i = wp.tid()
-    dst[i] = wp.clamp(src[i], -max_effort[i], max_effort[i])
-
-
-class ClampingMaxEffort(ClampingBase):
-    """Symmetric clamp on actuator output effort.
-
-    Clamps the actuator output to ``[-max_effort, +max_effort]``.
+    .. deprecated:: 1.9
+        Use ``ClampingSymmetric(limit=..., input_space=DriveOutputSpace.EFFORT)``.
     """
+
+    SHARED_PARAMS: ClassVar[set[str]] = set()
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        max_effort = args.get("max_effort", math.inf)
-        if max_effort < 0:
-            raise ValueError(f"max_effort must be non-negative, got {max_effort}")
-        return {"max_effort": max_effort}
+        if DriveOutputSpace(args.get("input_space", DriveOutputSpace.EFFORT)) is not DriveOutputSpace.EFFORT:
+            raise ValueError("ClampingMaxEffort accepts only EFFORT inputs; use ClampingSymmetric for duty")
+        resolved = ClampingSymmetric.resolve_arguments({"limit": args.get("max_effort", float("inf"))})
+        return {"max_effort": resolved["limit"]}
 
     def __init__(self, max_effort: wp.array[float]):
-        """Initialize max-effort clamp.
+        """Initialize the legacy effort-only clamp with limits [N or N·m]."""
+        warn_deprecation("ClampingMaxEffort is deprecated in Newton 1.9; use ClampingSymmetric instead.")
+        super().__init__(limit=max_effort)
 
-        Args:
-            max_effort: Per-actuator effort limits [N or N·m]. Shape ``(N,)``.
-        """
-        self.max_effort = max_effort
+    @property
+    def max_effort(self) -> wp.array[float]:
+        """Legacy name for the effort limit array [N or N·m]."""
+        return self.limit
 
-    evaluate_clamp = _evaluate_max_effort_clamp
-
-    def param_width(self) -> int:
-        return 1
-
-    def bind_params(self, block: wp.array2d[float]) -> None:
-        block[:, 0].assign(self.max_effort)
-        self.max_effort = block[:, 0]
-
-    def modify_forces(
-        self,
-        src_forces: wp.array[float],
-        dst_forces: wp.array[float],
-        positions: wp.array[float],
-        velocities: wp.array[float],
-        pos_indices: wp.array[wp.uint32],
-        vel_indices: wp.array[wp.uint32],
-        device: wp.Device | None = None,
-    ) -> None:
-        wp.launch(
-            kernel=_box_clamp_kernel,
-            dim=len(src_forces),
-            inputs=[self.max_effort, src_forces],
-            outputs=[dst_forces],
-            device=device,
-        )
+    @max_effort.setter
+    def max_effort(self, value: wp.array[float]) -> None:
+        self.limit = value

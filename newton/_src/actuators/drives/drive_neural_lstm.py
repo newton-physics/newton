@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import warp as wp
 
 from ...utils.deprecation import warn_deprecation
+from ..space import DriveOutputSpace
 from ..utils import (
     _TORCH_CHECKPOINT_DEPRECATION_MSG,
     _looks_like_torch_checkpoint,
@@ -133,7 +134,7 @@ class DriveNeuralLSTM(DriveBase):
     explicit mode.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "output_space"}
 
     @dataclass
     class State(DriveBase.State):
@@ -179,16 +180,22 @@ class DriveNeuralLSTM(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralLSTM requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, output_space: DriveOutputSpace = DriveOutputSpace.EFFORT):
         """Initialize the LSTM drive from a checkpoint file.
 
         Args:
             model_path: Path to the ``.onnx`` checkpoint or the pt2 archive
                 (``.pt2``, ``.pt``, or ``.pth``). Torch checkpoints are
                 deprecated since 1.8; use ONNX.
+            output_space: Interpretation of checkpoint outputs, EFFORT or DUTY.
+                The checkpoint must be trained for these units.
         """
+        self.output_space = DriveOutputSpace(output_space)
         self.model_path = model_path
 
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
@@ -470,12 +477,13 @@ class DriveNeuralLSTM(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveNeuralLSTM.State,
         dt: float,
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         device = device or self._device
         n = self._num_actuators
@@ -488,7 +496,7 @@ class DriveNeuralLSTM(DriveBase):
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
-                forces,
+                output,
                 state,
             )
             return
@@ -526,8 +534,8 @@ class DriveNeuralLSTM(DriveBase):
 
         wp.launch(
             _scale_effort_to_forces_kernel,
-            dim=len(forces),
-            inputs=[effort, forces, self.effort_scale, 1],
+            dim=len(output),
+            inputs=[effort, output, self.effort_scale, 1],
             device=device,
         )
 

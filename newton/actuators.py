@@ -4,7 +4,7 @@
 """GPU-accelerated actuator models for physics simulations.
 
 This module provides a modular library of actuator components — drives,
-clamping, and delay — that compute joint effort from simulation state and
+clamping, motors, and input processors such as delay — that compute joint effort from simulation state and
 control targets. Components are composed into an :class:`Actuator` instance
 and registered with :meth:`~newton.ModelBuilder.add_actuator` during model
 construction.
@@ -15,44 +15,99 @@ construction.
     please file issues or discussion threads.
 """
 
+import warnings
+from typing import TYPE_CHECKING
+
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
+    BatteryBase,
+    BatteryConstantResistance,
+    BatteryParsed,
     ClampingBase,
+    ClampingCurrentDuty,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
+    ClampingSymmetric,
     ComponentKind,
-    Delay,
     DriveBase,
     DriveNeuralGRU,
     DriveNeuralLSTM,
     DriveNeuralMLP,
+    DriveOutputSpace,
     DrivePD,
     DrivePID,
+    InputProcessorBase,
+    InputProcessorDelay,
+    InputProcessorEncoder,
     JointSpaceResponse,
+    MotorDC,
     SchemaNames,
     parse_actuator_prim,
+    parse_battery_prim,
     register_actuator_component,
 )
+from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",
     "ActuatorParsed",
+    "BatteryBase",
+    "BatteryConstantResistance",
+    "BatteryParsed",
     "ClampingBase",
+    "ClampingCurrentDuty",
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
+    "ClampingSymmetric",
     "ComponentKind",
-    "Delay",
     "DriveBase",
     "DriveNeuralGRU",
     "DriveNeuralLSTM",
     "DriveNeuralMLP",
+    "DriveOutputSpace",
     "DrivePD",
     "DrivePID",
+    "InputProcessorBase",
+    "InputProcessorDelay",
+    "InputProcessorEncoder",
     "JointSpaceResponse",
+    "MotorDC",
     "SchemaNames",
     "parse_actuator_prim",
+    "parse_battery_prim",
     "register_actuator_component",
 ]
+
+if TYPE_CHECKING:
+    Delay = InputProcessorDelay
+
+_DEPRECATED_SYMBOLS = {
+    "Delay": InputProcessorDelay,
+}
+
+__deprecated_symbols__ = {
+    "Delay": "Deprecated in 1.9; use InputProcessorDelay instead.",
+}
+
+
+def __getattr__(name: str):
+    try:
+        value = _DEPRECATED_SYMBOLS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+    replacement = value.__name__
+    version = __deprecated_symbols__[name].split()[2].rstrip(";")
+    warnings.warn(
+        f"newton.actuators.{name} is deprecated in Newton {version}; use newton.actuators.{replacement} instead.",
+        NewtonDeprecationWarning,
+        stacklevel=2,
+    )
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_DEPRECATED_SYMBOLS))

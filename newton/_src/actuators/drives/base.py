@@ -3,10 +3,36 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any, ClassVar
 
 import warp as wp
+
+from ...utils.deprecation import warn_deprecation
+from ..space import DriveOutputSpace
+
+_COMPUTE_FORCES_DEPRECATION_MSG = (
+    "The forces argument of DriveBase.compute() is deprecated in Newton 1.9; use output instead."
+)
+
+
+def _rename_compute_output(compute: Any, legacy: bool) -> Any:
+    """Wrap a drive's ``compute`` so ``forces=`` and ``output=`` reach the name it declares."""
+
+    @wraps(compute)
+    def wrapper(self: DriveBase, *args: Any, **kwargs: Any) -> None:
+        if "forces" in kwargs:
+            if "output" in kwargs:
+                raise TypeError("compute() got values for both 'output' and its deprecated name 'forces'")
+            warn_deprecation(_COMPUTE_FORCES_DEPRECATION_MSG)
+            kwargs["output"] = kwargs.pop("forces")
+        if legacy and "output" in kwargs:
+            kwargs["forces"] = kwargs.pop("output")
+        return compute(self, *args, **kwargs)
+
+    return wrapper
 
 
 @wp.kernel
@@ -22,7 +48,8 @@ class DriveBase:
     Drives compute actuator output effort from authored drive
     parameters, commanded inputs (targets, feedforward), and simulation
     state. The output may still be constrained by one or more
-    :class:`~newton.actuators.ClampingBase` objects.
+    :class:`~newton.actuators.ClampingBase` objects. DUTY drives require a
+    motor; EFFORT drives use effort clamps without an explicit motor model.
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 
@@ -51,6 +78,13 @@ class DriveBase:
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
+    output_space: DriveOutputSpace = DriveOutputSpace.EFFORT
+    """Output units; configurable drives may select DUTY when paired with a motor.
+
+    Gains, bias and feedforward must use the selected output units. Selecting
+    a space does not convert values or gains.
+    """
+
     custom_inputs: tuple[str, ...] = ()
     """Names of extra caller-provided Control arrays this drive reads.
 
@@ -60,6 +94,19 @@ class DriveBase:
     The actuator routes values without validating them; the drive owns
     requiredness, fallback behavior, and validation.
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        compute = cls.__dict__.get("compute")
+        if compute is None:
+            return
+        legacy = "forces" in inspect.signature(compute).parameters
+        if legacy:
+            warn_deprecation(
+                f"{cls.__name__}.compute() names its output argument 'forces', which is deprecated "
+                "in Newton 1.9; rename it to 'output'."
+            )
+        cls.compute = _rename_compute_output(compute, legacy)
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -96,14 +143,15 @@ class DriveBase:
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
-        """Compute actuator output effort and write to ``forces[i]``.
+        """Compute the drive output and write it to ``output[i]``.
 
         Args:
             positions: Joint positions [m or rad].
@@ -115,7 +163,9 @@ class DriveBase:
             vel_indices: Indices into *velocities* for each DOF.
             target_pos_indices: Indices into *target_pos*.
             target_vel_indices: Indices into *target_vel* and *feedforward*.
-            forces: Scratch buffer to write effort [N or N·m] to. Shape ``(N,)``.
+            output: Buffer to write the drive output to: the effort
+                [N or N·m], or dimensionless duty according to output_space. Shape
+                ``(N,)``.
             state: Drive state (``None`` if stateless).
             dt: Timestep [s].
             device: Warp device for kernel launches.
@@ -123,6 +173,14 @@ class DriveBase:
                 :attr:`custom_inputs`, keyed by attribute name. Values are
                 passed without validation and may be ``None`` when absent.
                 Empty when the drive names none.
+            supply_voltage: Supply voltage of each slot [V], from the
+                actuator's motor (see :meth:`MotorDC.compute_supply_voltage
+                <newton.actuators.MotorDC.compute_supply_voltage>`). Shape
+                ``(N,)``. Only passed when the actuator has a motor.
+
+        .. deprecated:: 1.9
+            The argument name ``forces``; use ``output``. Subclasses that
+            still name it ``forces`` keep working.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
