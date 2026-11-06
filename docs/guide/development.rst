@@ -381,6 +381,26 @@ To build the documentation locally, ensure you have the documentation dependenci
 
 The built documentation will be available in ``docs/_build/html``.
 
+Use Python 3.11 or later for documentation rendering.
+
+To generate searchable Markdown with resolved API content and an alphabetical
+API index, run:
+
+.. code-block:: console
+
+    uv run --extra docs docs/build_markdown.py docs/_build/markdown
+
+This command stages a temporary source tree, leaves tracked sources untouched,
+and does not execute notebooks or fetch external documentation inventories.
+The Markdown builder is ``sphinx-markdown-builder`` (MIT licensed), with a
+small Newton extension for unsupported node types.
+
+The Markdown build also generates ``llms.txt`` from Sphinx's navigation.
+Documentation deployments publish this index and the Markdown pages beside
+the HTML pages for the same version. The website root links to published
+stable and development entrypoints, including HTML for older versions that
+do not have a generated index.
+
 .. note::
 
     The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.

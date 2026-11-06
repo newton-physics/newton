@@ -49,6 +49,11 @@ jobs:
         env:
           NEWTON_REQUIRE_PANDOC: "1"
 
+      - name: Build agent documentation
+        run: |
+          uv run --extra docs docs/build_markdown.py docs/_build/markdown
+          cp -a docs/_build/markdown/. docs/_build/html/
+
       - name: Deploy to gh-pages /latest/
         run: |
           set -e  # Exit on any error
@@ -59,6 +64,7 @@ jobs:
           # Save built docs and 404 template outside the repo before switching branches
           mv docs/_build/html /tmp/docs-latest
           cp docs/_static/gh-pages-404.html /tmp/gh-pages-404.html
+          cp scripts/ci/update_docs_llms.py /tmp/update_docs_llms.py
 
           # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
           # Distinguish "branch not found" (exit 2) from fatal errors (exit 128)
@@ -82,6 +88,7 @@ jobs:
           # Remove old /latest/ and replace with new build
           rm -rf latest
           mv /tmp/docs-latest latest
+          uv run --no-project /tmp/update_docs_llms.py
 
           # Deploy custom 404 page for redirecting old non-versioned URLs
           cp /tmp/gh-pages-404.html 404.html
@@ -100,7 +107,7 @@ jobs:
           # Stage new/modified files. git checkout --orphan below preserves the
           # full index from gh-pages, so all previously tracked files (e.g.
           # versioned release docs) are also included in the deploy commit.
-          git add latest 404.html .nojekyll
+          git add latest 404.html .nojekyll llms.txt
 
           # Reset to an orphan commit to prevent unbounded history growth.
           # gh-pages is a deployment target, not a historical record.
