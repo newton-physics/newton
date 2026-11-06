@@ -61,6 +61,162 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_camera_intrinsics_match_native_mujoco(self):
+        """Preserve default FOV and anisotropic physical and pixel camera intrinsics."""
+        mjcf = """
+<mujoco>
+    <compiler angle="radian"/>
+    <default><camera fovy="60" resolution="640 480"/></default>
+    <worldbody>
+        <camera name="fov"/>
+        <camera name="physical" sensorsize="0.036 0.024"
+                focal="0.030 0.020" principal="0.003 -0.002"/>
+        <camera name="pixels" sensorsize="0.036 0.024"
+                focalpixel="500 400" principalpixel="40 -20"/>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.camera_count, native.ncam)
+        cameras = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.camera_label)}
+        for name in ("fov", "physical", "pixels"):
+            with self.subTest(camera=name):
+                index = cameras[name]
+                camera_id = native.camera(name).id
+                self.assertEqual(builder.camera_resolution[index], tuple(native.cam_resolution[camera_id]))
+                self.assertEqual(builder.camera_body[index], -1)
+                focal = builder.camera_focal_length[index]
+                aperture = np.asarray(builder.camera_aperture[index])
+                offset = np.asarray(builder.camera_aperture_offset[index])
+                if name == "fov":
+                    # MJCF fovy stays in degrees even with compiler angle="radian".
+                    self.assertAlmostEqual(aperture[1] / (2.0 * focal), np.tan(np.pi / 6), places=6)
+                else:
+                    # Projection ratios are invariant to Newton's single-focal-length encoding.
+                    np.testing.assert_allclose(
+                        focal / aperture,
+                        native.cam_intrinsic[camera_id, :2] / native.cam_sensorsize[camera_id],
+                        rtol=1e-6,
+                    )
+                    np.testing.assert_allclose(
+                        offset / aperture,
+                        native.cam_intrinsic[camera_id, 2:] / native.cam_sensorsize[camera_id],
+                        atol=1e-7,
+                    )
+
+        disabled = newton.ModelBuilder()
+        disabled.add_mjcf(mjcf, parse_cameras=False)
+        self.assertEqual(disabled.camera_count, 0)
+
+    def test_camera_mounts_match_native_mujoco(self):
+        """Compose fixed camera mounts through world frames and moving parent bodies."""
+        mjcf = """
+<mujoco>
+    <compiler angle="degree"/>
+    <worldbody>
+        <frame pos="1 2 3" euler="0 0 90">
+            <camera name="fixed" pos="0.2 0.3 0.4" euler="30 0 0"/>
+            <body name="arm" pos="0.4 0.5 0.6" euler="0 45 0">
+                <joint name="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <frame pos="0.1 0.2 0.3" euler="0 0 30">
+                    <camera name="mounted" pos="0.2 0 0.1" euler="20 0 0"/>
+                </frame>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        data = mujoco.MjData(native)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.camera_count, 2)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        for angle in (0.0, 0.7):
+            with self.subTest(angle=angle):
+                data.qpos[:] = angle
+                mujoco.mj_forward(native, data)
+                model.joint_q.assign([angle])
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                bodies = state.body_q.numpy()
+                for index, label in enumerate(builder.camera_label):
+                    name = label.rsplit("/", 1)[-1]
+                    camera_id = native.camera(name).id
+                    body = builder.camera_body[index]
+                    pose = builder.camera_transform[index]
+                    if name == "fixed":
+                        self.assertEqual(body, -1)
+                    else:
+                        self.assertGreaterEqual(body, 0)
+                        pose = wp.transform(*bodies[body]) * pose
+                    np.testing.assert_allclose(np.asarray(pose)[:3], data.cam_xpos[camera_id], atol=1e-6)
+                    np.testing.assert_allclose(
+                        np.asarray(wp.quat_to_matrix(wp.transform_get_rotation(pose))).reshape(3, 3),
+                        data.cam_xmat[camera_id].reshape(3, 3),
+                        atol=1e-6,
+                    )
+
+    def test_camera_tracking_modes_are_recorded(self):
+        """Import tracking cameras as fixed mounts and keep their MuJoCo mode and target."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="torso">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+            <camera name="chase" mode="track" pos="0 -2 1" xyaxes="1 0 0 0 0.5 1"/>
+            <camera name="look" mode="targetbody" target="hand" pos="0 0 1"/>
+            <camera name="still" pos="0 0 0.5"/>
+            <body name="hand" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="DEBUG") as logs:
+            builder.add_mjcf(mjcf)
+        self.assertEqual(sum("imported as a fixed mount" in line for line in logs.output), 2)
+        cameras = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.camera_label)}
+        torso = builder.body_label.index(next(label for label in builder.body_label if label.endswith("torso")))
+        hand = builder.body_label.index(next(label for label in builder.body_label if label.endswith("hand")))
+        self.assertTrue(all(builder.camera_body[index] == torso for index in cameras.values()))
+
+        model = builder.finalize(device="cpu")
+        mode = model.mujoco.camera_mode.numpy()
+        target = model.mujoco.camera_target.numpy()
+        self.assertEqual(int(mode[cameras["chase"]]), int(SolverMuJoCo.CameraMode.TRACK))
+        self.assertEqual(int(mode[cameras["look"]]), int(SolverMuJoCo.CameraMode.TARGETBODY))
+        self.assertEqual(int(mode[cameras["still"]]), int(SolverMuJoCo.CameraMode.FIXED))
+        self.assertEqual(int(target[cameras["look"]]), hand)
+        self.assertEqual(int(target[cameras["chase"]]), -1)
+
+    def test_worldbody_frame_camera_mounts_relative_to_parent_body(self):
+        """Mount cameras in worldbody frames relative to parent_body without applying its pose twice."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <frame pos="0 0 1">
+            <camera name="cam" pos="0.5 0 0"/>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        parent = builder.add_body(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.0, 0.0, 0.7)))
+        builder.add_mjcf(mjcf, parent_body=parent, xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()))
+        self.assertEqual(builder.camera_count, 1)
+        self.assertEqual(builder.camera_body[0], parent)
+        np.testing.assert_allclose(np.asarray(builder.camera_transform[0])[:3], [0.5, 0.0, 1.2], atol=1e-5)
+
     def test_compiler_balanceinertia_matches_native_mujoco(self):
         """Balance invalid inertia only when the MJCF compiler requests it."""
         body = """
