@@ -30,6 +30,8 @@ from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
     prepare_torsion_velocity_pass,
+    torque_links_shared_bytes,
+    torque_links_source,
     torque_sweep_source,
     validate_torsion_step,
 )
@@ -160,6 +162,7 @@ from .kernels import (
     invert_lower_factor_grouped,
     local_solve_launch_gate,
     mark_propagation_bodies,
+    mask_passive_spring_stiffness,
     populate_connect_J_for_size,
     populate_joint_velocity_limit_J_for_size,
     populate_mimic_J_for_size,
@@ -1005,12 +1008,16 @@ def _use_resident_mfgs_metadata(
     Resident row metadata removes repeated global loads across PGS iterations,
     but larger shapes lose more throughput from the resulting occupancy drop.
     Keep at most one 4-KiB metadata working set resident and stream larger sets.
-    Drive rows add four per-row arrays and the fused velocity-limit clamp one more.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    total_shared_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes
+    metadata_bytes = _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    total_shared_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=True,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+    )
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
 
 
@@ -1025,19 +1032,23 @@ def _use_mfgs_pair_cache(
     fuse_vel_limits: bool,
     world_count: int,
     sm_count: int,
+    torsion_links: bool = False,
 ) -> bool:
     """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
 
     The caches shorten each world's serial chain but lower blocks per SM; once worlds queue for SMs, the extra waves
     cost more than they save. The estimate ignores register, block-count and carveout limits.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
-    cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
-    if not shared_metadata:
-        cache_bytes += 3 * max_constraints
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    block_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes + cache_bytes
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=True,
+        torsion_links=torsion_links,
+    )
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
     # Row parents are cached as short, and the kernel's arrays are static shared memory.
     return (
@@ -1045,6 +1056,66 @@ def _use_mfgs_pair_cache(
         and block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
         and world_count <= resident_worlds
     )
+
+
+def _use_mfgs_torsion_links(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    max_shared_memory: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool,
+) -> bool:
+    """Select the linked contact-torsion sweep when its row lists fit the static shared-memory bound.
+
+    Otherwise the sweep scans every dense row for torsion groups, with identical results.
+    """
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=pair_cache,
+        torsion_links=True,
+    )
+    return block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
+
+
+def _mfgs_block_shared_bytes(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool = False,
+    torsion_links: bool = False,
+) -> int:
+    """Return the static shared memory [B] of one matrix-free Gauss-Seidel kernel block, up to 4-byte alignment.
+
+    Every ``__shared__`` array of :func:`_get_pgs_solve_mf_gs_kernel` is counted here.
+    """
+    total = _MFGS_TILE_SHARED_STORAGE_BYTES + 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    if shared_metadata:
+        total += _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    if pair_cache:
+        total += 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
+        if not shared_metadata:
+            total += 3 * max_constraints
+    if torsion_links:
+        total += torque_links_shared_bytes(max_constraints)
+    return total
+
+
+def _mfgs_metadata_bytes(max_constraints: int, has_drive_rows: bool, fuse_vel_limits: bool) -> int:
+    """Return the resident dense-row metadata [B]; drive rows add four per-row arrays and the fused clamp one more."""
+    return 4 * max_constraints * (4 + 4 * int(has_drive_rows) + int(fuse_vel_limits))
 
 
 def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
@@ -1304,6 +1375,11 @@ class SolverSteel(SolverBase, CouplingInterface):
       update and clamps its impulse, which bounds the complete reaction.
       :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
       applied.
+    - Passive joint springs: :attr:`~newton.Model.joint_stiffness` and
+      :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
+      explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
+      independently of drives and joint limits. Unlike the implicit drives, explicit springs
+      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -2189,9 +2265,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 support or row capacity, a :meth:`reset` of its world, or
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
                 shapes (other notifications and changes to static or kinematic owners wake
-                every island). Driven articulations (nonzero drive gains)
-                stay awake. Sleeping is configured at construction; rebuild captured graphs
-                to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
+                every island). Driven articulations (nonzero drive gains) and articulations with
+                passive springs (nonzero :attr:`~newton.Model.joint_stiffness` on a PRISMATIC,
+                REVOLUTE or D6 tree joint) stay awake.
+                Sleeping is configured at construction; rebuild captured graphs to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
                 or ``velocity_iterations``, or for a model without articulations, and
                 :class:`NotImplementedError` with ``articulated_contact_response="propagation"`` and
                 ``solve_mode="serial"``, and with ``solve_mode="colored"`` on CPU, where the colored
@@ -3044,10 +3121,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
         (kinematic flags) and inertial changes request a mass-matrix refresh of every
         articulation on the next step, independent of ``update_mass_matrix_interval``. Body
-        flags (kinematic membership), armature, joint damping (joint DOF or DOF force changes)
-        and shape friction and restitution coefficients are re-read. Shape type and source
-        changes, as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes
-        device contact torsion supports. Other model data, such as gravity, limits and shape
+        flags (kinematic membership), armature, joint damping and spring stiffness (joint DOF or
+        DOF force changes), spring rest coordinates (joint DOF or reference-pose changes) and
+        shape friction and restitution coefficients are re-read. Shape type and source changes,
+        as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes device
+        contact torsion supports. Other model data, such as gravity, limits and shape
         transforms, is read every step. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
@@ -3059,9 +3137,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         impulses of the worlds selected by ``world_mask``. With friction patches, shape changes
         also discard the anchors of the bodies whose collision geometry changed, in every world.
 
-        Joint, joint DOF (including the DOF inertial and force flags), body inertial and shape
-        notifications run on the device without host synchronization, so they can be captured
-        in a CUDA graph and replayed after the model arrays are edited in place. A captured
+        Joint, joint DOF (including the DOF inertial, force and reference-pose flags), body
+        inertial and shape notifications run on the device without host synchronization, so
+        they can be captured in a CUDA graph and replayed after the model arrays are edited in
+        place. A captured
         notification reads the arrays it was captured with; after replacing a model array,
         notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
         Sleeping, and the positive-restitution check of sparse mass factors (with restitution
@@ -3098,8 +3177,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         if flags & dof_force:
             self._refresh_passive_joint_damping()
+            self._refresh_passive_spring_stiffness()
             # Augmented drive gains enter the factored mass-matrix diagonal.
             self._mass_update_requested.fill_(1)
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
+            self._refresh_passive_spring_rest_q()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_shape_materials()
         if flags & ModelFlags.JOINT_PROPERTIES:
@@ -4025,6 +4107,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             "limits": (np.isfinite(lower) & (lower != -unlimited)) | (np.isfinite(upper) & (upper != unlimited)),
             "drive gains": (model.joint_target_ke.numpy()[dofs] != 0.0) | (model.joint_target_kd.numpy()[dofs] != 0.0),
             "damping": model.joint_damping.numpy()[dofs] != 0.0,
+            "spring stiffness": model.joint_stiffness.numpy()[dofs] != 0.0,
             "armature": model.joint_armature.numpy()[dofs] != 0.0,
         }
         axis = model.joint_axis.numpy()[dofs]
@@ -4355,16 +4438,45 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     def _setup_passive_joint_forces(self, model) -> None:
-        """Select the passive damping of the inverse-dynamics pass; its passive springs are zero.
-
-        Passive joint springs are not applied yet (newton-physics/newton#4516);
-        their buffers stay zero.
-        """
+        """Allocate the passive damping and spring buffers of the inverse-dynamics pass and fill them from the model."""
         n_dofs = max(int(model.joint_dof_count), 1)
         self._passive_joint_damping = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._refresh_passive_joint_damping()
+        # Tree PRISMATIC, REVOLUTE and D6 DOFs carry springs; the sleep veto reads the same buffer.
+        spring_dof_mask = np.zeros(n_dofs, dtype=np.int32)
+        if model.joint_count:
+            joint_type = model.joint_type.numpy()
+            qd_start = model.joint_qd_start.numpy()
+            sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
+            sprung &= self._model_plan.loop_joint_articulation < 0
+            for joint in np.flatnonzero(sprung):
+                spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
+        self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
-        self._passive_spring_ref = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
+        self._passive_spring_rest_q = wp.zeros(
+            max(int(model.joint_coord_count), 1), dtype=wp.float32, device=model.device
+        )
+        self._refresh_passive_spring_stiffness()
+        self._refresh_passive_spring_rest_q()
+
+    def _refresh_passive_spring_stiffness(self) -> None:
+        """Copy the model's passive spring stiffness of sprung DOFs into the solver's fixed buffer."""
+        # Users may replace model.joint_stiffness; captured graphs keep this buffer's address.
+        stiffness = self.model.joint_stiffness
+        if stiffness is not None and self.model.joint_dof_count:
+            wp.launch(
+                mask_passive_spring_stiffness,
+                self.model.joint_dof_count,
+                inputs=[stiffness, self._passive_spring_dof_mask],
+                outputs=[self._passive_spring_stiffness],
+                device=self.model.device,
+            )
+
+    def _refresh_passive_spring_rest_q(self) -> None:
+        """Copy the model's passive spring rest coordinates into the solver's fixed buffer."""
+        rest_q = self.model.joint_rest_q
+        if rest_q is not None and self.model.joint_coord_count:
+            wp.copy(self._passive_spring_rest_q, rest_q, count=self.model.joint_coord_count)
 
     def _refresh_passive_joint_damping(self) -> None:
         """Copy the model's current joint damping into the solver's fixed damping buffer."""
@@ -5967,6 +6079,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mf_gs_row_phases = False
         self._pgs_solve_mf_gs_kernel = None
         self._mfgs_pair_cache = False
+        self._mfgs_torsion_links = False
         self._init_propagation_kernels(model)
         triples = self._sparse_diagonal_contact_triples
         self._mark_independent_sparse_contact_candidates_kernel = (
@@ -6013,22 +6126,33 @@ class SolverSteel(SolverBase, CouplingInterface):
                 fuse_vel_limits=self._velocity_limits_fused,
             )
             row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            mfgs_shape = (
+                self._articulation_constraint_max,
+                mf_rows,
+                self._max_world_dofs,
+                int(getattr(model.device, "max_shared_memory_per_block", 0)),
+            )
+            mfgs_metadata = {
+                "shared_metadata": shared_metadata,
+                "has_drive_rows": self._has_drive_rows,
+                "fuse_vel_limits": self._velocity_limits_fused,
+            }
+            mfgs_residency = {"world_count": self._world_count, "sm_count": int(getattr(model.device, "sm_count", 0))}
             # The cache's prologue runs once per launch, so it pays off only when a launch runs several sweeps.
             self._mfgs_pair_cache = (
                 self._friction_mode == "fixed_normal"
                 and not self._paired_factor_coordinates
                 and not self._propagation_active
                 and self._row_schedule != "phased"
-                and _use_mfgs_pair_cache(
-                    self._articulation_constraint_max,
-                    mf_rows,
-                    self._max_world_dofs,
-                    int(getattr(model.device, "max_shared_memory_per_block", 0)),
-                    shared_metadata=shared_metadata,
-                    has_drive_rows=self._has_drive_rows,
-                    fuse_vel_limits=self._velocity_limits_fused,
-                    world_count=self._world_count,
-                    sm_count=int(getattr(model.device, "sm_count", 0)),
+                and _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency)
+            )
+            # With the pair cache, the lists must also keep every world resident.
+            self._mfgs_torsion_links = (
+                self._contact_torsion_enabled
+                and _use_mfgs_torsion_links(*mfgs_shape, **mfgs_metadata, pair_cache=self._mfgs_pair_cache)
+                and (
+                    not self._mfgs_pair_cache
+                    or _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency, torsion_links=True)
                 )
             )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
@@ -6049,6 +6173,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
                 pair_cache=self._mfgs_pair_cache,
+                torsion_links=self._mfgs_torsion_links,
             )
             self._mf_gs_row_phases = row_phases
             if not model.device.is_cuda:
@@ -8163,7 +8288,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Accumulate ``joint_tau`` and the implicit-drive mass terms.
 
         After this call ``state_aug._joint_tau`` holds the rigid-body bias (Coriolis, gravity,
-        external body forces), :attr:`~newton.Control.joint_f`, passive joint damping and the
+        external body forces), :attr:`~newton.Control.joint_f`, passive joint springs and damping and the
         explicit part ``u0`` of each drive, clamped to :attr:`~newton.Model.joint_effort_limit`
         (an actuator-only clamp, as MuJoCo's ``actuatorfrcrange`` and PhysX's drive
         ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
@@ -8190,7 +8315,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             state_in.joint_q,
             state_in.joint_qd,
             self._passive_spring_stiffness,
-            self._passive_spring_ref,
+            self._passive_spring_rest_q,
             self._passive_joint_damping,
             state_aug._joint_S_s,
             state_aug._body_f_s,
@@ -14727,6 +14852,7 @@ def _get_pgs_solve_mf_gs_kernel(
     contact_compliance: bool = False,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -14781,6 +14907,8 @@ def _get_pgs_solve_mf_gs_kernel(
         row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
         pair_cache: Set up each dense friction pair's 2x2 operator once per launch, and with streamed metadata keep a
             compact shared copy of the row types and parents.
+        torsion_links: Find the contact torsion rows and their members through shared row lists built once
+            per launch (``contact_torsion.torque_links_source``); the results are the same.
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
@@ -14801,6 +14929,8 @@ def _get_pgs_solve_mf_gs_kernel(
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if row_phase is not None and not row_phases:
         raise ValueError("row_phase requires row_phases")
+    if torsion_links and not contact_torsion:
+        raise ValueError("torsion_links requires contact_torsion")
     if pair_cache and (friction_mode != "fixed_normal" or factor_coordinates):
         raise ValueError("the friction-pair cache requires the fixed-normal pair solve")
     if factor_coordinates and (
@@ -14945,7 +15075,8 @@ def _get_pgs_solve_mf_gs_kernel(
         else ""
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
-    torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    torsion_sweep = torque_sweep_source(D, linked=torsion_links) if contact_torsion else ""
+    torsion_link_build = torque_links_source(M_D) if torsion_links else ""
     # The velocity-limit pass of every sweep visits only the span of this world's velocity-limit rows.
     # Row phases without that pass skip the scan; velocity_limit_pass is uniform across the warp.
     velocity_limit_range = (
@@ -15258,6 +15389,7 @@ def _get_pgs_solve_mf_gs_kernel(
     __syncwarp();
 {pair_cache_build}
 {velocity_limit_range}
+{torsion_link_build}
 {dense_pipe_decl}
 
     for (int iter = 0; iter < iterations; iter++) {{
@@ -15543,6 +15675,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 contact_compliance,
                 row_phase,
                 pair_cache,
+                torsion_links,
             )
             + "_local",
         )
@@ -15689,6 +15822,7 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_compliance,
         row_phase,
         pair_cache,
+        torsion_links,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -15711,6 +15845,7 @@ def _mf_gs_kernel_name(
     contact_compliance: bool,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -15719,6 +15854,7 @@ def _mf_gs_kernel_name(
         f"{'' if shared_metadata else '_gmeta'}"
         f"{'_paircache' if pair_cache else ''}"
         f"{'_torsion' if contact_torsion else ''}"
+        f"{'_links' if torsion_links else ''}"
         f"{('_phased' if row_phase is None else f'_phase{row_phase}') if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"

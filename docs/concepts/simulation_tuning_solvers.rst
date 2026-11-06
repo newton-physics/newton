@@ -130,7 +130,8 @@ repository examples spend tuning effort, not a shared solver API.
      - ``iterations``, ``ls_iterations``, ``solver``, ``integrator``, ``cone``,
        ``jacobian``, ``impratio``, ``tolerance``, ``ls_tolerance``,
        ``ccd_iterations``, ``ccd_tolerance``, ``sdf_iterations``,
-       ``sdf_initpoints``, ``nconmax``, ``njmax``, ``use_mujoco_contacts``,
+       ``sdf_initpoints``, ``noslip_iterations``, ``noslip_tolerance``,
+       ``nconmax``, ``njmax``, ``use_mujoco_contacts``,
        ``enable_multiccd``, ``disable_contacts``, ``use_mujoco_cpu``.
      - Uses MuJoCo or MuJoCo Warp semantics. Newton's constructor supports the
        listed options, not every option from external MuJoCo documentation.
@@ -325,8 +326,10 @@ repository examples spend tuning effort, not a shared solver API.
        with another world's bodies cannot be solved and are flagged the same
        way; the constructor warns when a model allows them. Per-body angular
        damping and free-body velocity bounds are model attributes registered by
-       ``register_custom_attributes()``. Passive joint springs are not applied
-       yet; a model with nonzero MuJoCo spring stiffness warns at construction.
+       ``register_custom_attributes()``. Passive joint springs
+       (:ref:`passive-joint-springs`) act explicitly on REVOLUTE, PRISMATIC and
+       D6 DOFs, so a stiff spring needs roughly
+       ``dt * sqrt(stiffness / m_eff) < 2``, unlike the implicit drives.
        Mimic joints and loop-closing BALL and REVOLUTE
        joints are bilateral rows that converge with ``iterations`` like the
        other rows; ``enable_bilateral_preelimination`` eliminates them before

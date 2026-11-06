@@ -202,6 +202,14 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
     "limits of ModelBuilder.JointDofConfig instead."
 )
+_ADD_MUSCLE_DEPRECATION_MSG = (
+    "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
+    "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit. "
+    "Use SolverMuJoCo muscle actuators instead: import MJCF <muscle> actuators, or build "
+    "them with newton.solvers.mujoco.add_tendon_spatial() and "
+    'add_actuator_general(..., dyntype="muscle", gaintype="muscle", biastype="muscle") '
+    "with explicit muscle dynprm, gainprm, and biasprm values."
+)
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
 )
@@ -2166,15 +2174,35 @@ class ModelBuilder:
 
         # muscles
         self.muscle_start: list[int] = []
-        """Muscle waypoint start indices accumulated for :attr:`Model.muscle_start`."""
+        """Muscle waypoint start indices accumulated for :attr:`Model.muscle_start`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_params: list[tuple[float, float, float, float, float]] = []
-        """Muscle parameter rows accumulated for :attr:`Model.muscle_params`."""
+        """Muscle parameter rows accumulated for :attr:`Model.muscle_params`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_activations: list[float] = []
-        """Muscle activations accumulated for :attr:`Model.muscle_activations`."""
+        """Muscle activations accumulated for :attr:`Model.muscle_activations`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_bodies: list[int] = []
-        """Muscle waypoint body indices accumulated for :attr:`Model.muscle_bodies`."""
+        """Muscle waypoint body indices accumulated for :attr:`Model.muscle_bodies`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
         self.muscle_points: list[Vec3] = []
-        """Muscle waypoint local offsets accumulated for :attr:`Model.muscle_points`."""
+        """Muscle waypoint local offsets accumulated for :attr:`Model.muscle_points`.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
+        """
 
         # rigid bodies
         self.body_mass: list[float] = []
@@ -3597,8 +3625,10 @@ class ModelBuilder:
 
     @property
     def muscle_count(self):
-        """
-        The number of muscles in the model.
+        """The number of muscles in the model.
+
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`add_muscle`.
         """
         return len(self.muscle_start)
 
@@ -8772,7 +8802,27 @@ class ModelBuilder:
     def add_muscle(
         self, bodies: list[int], positions: list[Vec3], f0: float, lm: float, lt: float, lmax: float, pen: float
     ) -> int:
-        """Adds a muscle-tendon activation unit.
+        """Adds a legacy muscle-tendon activation unit.
+
+        .. deprecated:: 1.9
+            Legacy muscles will be removed in a future release. Only
+            :class:`~newton.solvers.SolverSemiImplicit` evaluates them, and it
+            ignores the muscle parameters, applying a force of magnitude
+            ``Control.muscle_activations`` along each waypoint segment. Use
+            :class:`~newton.solvers.SolverMuJoCo` muscle actuators instead,
+            either imported from MJCF ``<muscle>`` actuators or built in code:
+            route a spatial tendon through sites on the waypoint bodies with
+            :func:`newton.solvers.mujoco.add_tendon_spatial`, then actuate it
+            with :func:`newton.solvers.mujoco.add_actuator_general` using
+            :meth:`ActuatorTarget.tendon() <newton.solvers.mujoco.ActuatorTarget.tendon>`
+            and ``dyntype``, ``gaintype`` and ``biastype`` set to ``"muscle"``.
+            Pass explicit muscle parameters, since MuJoCo rejects the generic
+            defaults of :func:`~newton.solvers.mujoco.add_actuator_general` for
+            muscles. MuJoCo's ``<muscle>`` defaults are
+            ``dynprm=(0.01, 0.04)`` and
+            ``gainprm = biasprm = (0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2)``,
+            which hold range, force, scale, lmin, lmax, vmax, fpmax and fvmax.
+            A negative force derives the peak force from ``scale``.
 
         Args:
             bodies: A list of body indices for each waypoint
@@ -8786,9 +8836,8 @@ class ModelBuilder:
         Returns:
             The index of the muscle in the model
 
-        .. note:: The simulation support for muscles is in progress and not yet fully functional.
-
         """
+        warnings.warn(_ADD_MUSCLE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
 
         n = len(bodies)
 
