@@ -39,7 +39,6 @@ def _make_solver(
     air_drag=0.0,
     rheology_solver="gs",
     collider_mass=None,
-    collider_contact_gap=0.0,
 ):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
@@ -71,7 +70,6 @@ def _make_solver(
             solver=rheology_solver,
             gs_colored_contacts=gs_colored_contacts,
             air_drag=air_drag,
-            collider_contact_gap=collider_contact_gap,
         ),
     )
     return solver, model.state()
@@ -374,53 +372,6 @@ def test_colored_contact_default(test, device):
             test.assertGreater(state.particle_qd.numpy()[0, 2], -0.05)
 
 
-def test_pic_speculative_contact(test, device, capture=False):
-    """Stop approach at the contact band edge, hold particles inside the band with friction, and allow separation."""
-    # Particle contacts measure gaps from the particle surface, 0.2 below the center, to the ground at 0.45.
-    # Centers stop 0.25 voxel out, the larger of the radius and the band, so the band ends 0.05 beyond the
-    # particle surface; a contact gap of 0.5 activates contacts beyond it.
-    band = 0.25 - 0.2
-    cases = (
-        (0.03, 0.1, (0.3, 0.0, -0.4), (0.0, 0.0, 0.0), 0.0),
-        (0.03, 0.05, (0.0, 0.0, -3.0), (0.0, 0.0, 0.0), 0.0),
-        (0.2, 0.1, (0.0, 0.0, -3.0), (0.0, 0.0, -1.5), 0.5),
-        (0.2, 0.1, (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), 0.5),
-        (-0.05, 0.1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0),
-        (-0.05, 0.1, (0.0, 0.0, 0.4), (0.0, 0.0, 0.4), 0.0),
-        (0.3, 0.1, (0.0, 0.0, -0.4), (0.0, 0.0, -0.4), 0.0),
-    )
-    for mode, (gap, dt, velocity, expected, contact_gap) in product(("gs", "gs-soa", "jacobi"), cases):
-        with test.subTest(solver=mode, gap=gap, dt=dt, velocity=velocity), wp.ScopedDevice(device):
-            solver, state = _make_solver(
-                device,
-                positions=((0.4, 0.4, 0.65 + gap),),
-                contact=True,
-                collider_basis="pic27",
-                integration_scheme="pic",
-                rheology_solver=mode,
-                gs_colored_contacts=None,
-                solver_class=SolverImplicitMPM,
-                young_modulus=12000.0,
-                air_drag=1.0e-4,
-                max_iterations=50,
-                collider_contact_gap=contact_gap,
-            )
-            state.particle_qd.assign((velocity,))
-            if capture:
-                solver.step(state, state, None, None, dt)
-                state.particle_q.assign(((0.4, 0.4, 0.65 + gap),))
-                state.particle_qd.assign((velocity,))
-                solver.reset(state)
-                with wp.ScopedCapture(device=device) as graph:
-                    solver.step(state, state, None, None, dt)
-                wp.capture_launch(graph.graph)
-            else:
-                solver.step(state, state, None, None, dt)
-            active = np.linalg.norm(solver._scratchpad.collider_normal_field.dof_values.numpy(), axis=1) > 0.0
-            test.assertEqual(bool(active.any()), gap < max(band, contact_gap))
-            np.testing.assert_allclose(state.particle_qd.numpy()[0], expected, atol=2.0e-4)
-
-
 def test_pic_speculative_contact_adhesion(test, device):
     """Hold particles within the contact band with adhesion and let particles beyond it separate freely."""
     # Gaps are measured from the particle surface, 0.2 below the center, to the ground at 0.45; the band
@@ -531,7 +482,6 @@ for name, func in (
     ("test_gimp_masked_reset", test_gimp_masked_reset),
     ("test_colored_contact_velocity_bases", test_colored_contact_velocity_bases),
     ("test_colored_contact_default", test_colored_contact_default),
-    ("test_pic_speculative_contact", test_pic_speculative_contact),
     ("test_pic_speculative_contact_adhesion", test_pic_speculative_contact_adhesion),
     ("test_grid_contact_full_condition", test_grid_contact_full_condition),
     ("test_colored_contact_dynamic_collider", test_colored_contact_dynamic_collider),
@@ -543,14 +493,6 @@ for name, func in (
     ("test_gimp_uncapped_capture", test_gimp_uncapped_capture),
 ):
     add_function_test(TestImplicitMPMGimp, name, func, devices=get_cuda_test_devices(mode="basic"))
-
-add_function_test(
-    TestImplicitMPMGimp,
-    "test_pic_speculative_contact_capture",
-    test_pic_speculative_contact,
-    devices=get_cuda_test_devices(mode="basic"),
-    capture=True,
-)
 
 add_function_test(
     TestImplicitMPMGimp,

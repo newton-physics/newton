@@ -31,7 +31,7 @@ def test_contact_target(test, device):
         )
 
 
-def _make_contact_solver(device, height, velocity, recovery_time, gap):
+def _make_contact_solver(device, height, velocity, recovery_time):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_particle(pos=(0.5, 0.5, height), vel=velocity, mass=1.0, radius=_PARTICLE_RADIUS)
@@ -47,7 +47,6 @@ def _make_contact_solver(device, height, velocity, recovery_time, gap):
         warmstart_mode="none",
         air_drag=1.0e-6,
         collider_recovery_time=recovery_time,
-        collider_contact_gap=gap,
     )
     return model, SolverImplicitMPM(model, config=config)
 
@@ -55,7 +54,7 @@ def _make_contact_solver(device, height, velocity, recovery_time, gap):
 def test_contact_recovery_truncated(test, device):
     """Push a penetrating particle back to its radius from the surface over one-iteration P0 steps."""
     with wp.ScopedDevice(device):
-        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS - 0.02, (0.0, 0.0, 0.0), 0.35, 0.1)
+        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS - 0.02, (0.0, 0.0, 0.0), 0.35)
         state = model.state()
         for _ in range(8):
             solver.step(state, state, None, None, 0.1)
@@ -67,7 +66,7 @@ def test_contact_recovery_truncated(test, device):
 def test_predictive_contact_truncated(test, device):
     """Stop an approaching particle with its center the larger of one radius and 0.25 voxel out, in one P0 iteration."""
     with wp.ScopedDevice(device):
-        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS + 0.6, (0.2, 0.0, -10.0), 0.35, 1.0)
+        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS + 0.6, (0.2, 0.0, -10.0), 0.35)
         state = model.state()
         solver.step(state, state, None, None, 0.1)
         test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), max(_PARTICLE_RADIUS, 0.25), delta=2.0e-5)
@@ -77,7 +76,7 @@ def test_predictive_contact_truncated(test, device):
 def test_project_outside_keeps_particle_radius(test, device):
     """Project penetrating particles to one radius from collider surfaces with particle contacts only."""
     with wp.ScopedDevice(device):
-        model = _make_contact_solver(device, -0.05, (0.0, 0.0, 0.0), None, 0.0)[0]
+        model = _make_contact_solver(device, -0.05, (0.0, 0.0, 0.0), None)[0]
         # Projection lets particles sink up to the default threshold of 0.01 voxel
         threshold = 0.01
         for collider_basis, height in (("pic8", _PARTICLE_RADIUS - threshold), ("S2", -threshold)):
@@ -93,7 +92,7 @@ def test_project_outside_keeps_particle_radius(test, device):
 def test_sdf_gradient_normals_particle_contacts(test, device):
     """Keep particle contacts active with normals from the collider distance gradient, pointing out of colliders."""
     with wp.ScopedDevice(device):
-        model, _ = _make_contact_solver(device, 0.3, (0.0, 0.0, 0.0), None, 0.0)
+        model, _ = _make_contact_solver(device, 0.3, (0.0, 0.0, 0.0), None)
         model.set_gravity((0.0, 0.0, -10.0))
         config = SolverImplicitMPM.Config(
             voxel_size=1.0, collider_basis="pic8", collider_normal_from_sdf_gradient=True, air_drag=1.0e-6
@@ -411,7 +410,6 @@ def test_recovery_config_validation(test, device):
             {"critical_fraction_measurement": "box"},
             {"collider_recovery_time": float("inf")},
             {"collider_recovery_time": 0.0},
-            {"collider_contact_gap": -0.01},
         ):
             with test.subTest(options=options), test.assertRaises(ValueError):
                 SolverImplicitMPM(model, config=SolverImplicitMPM.Config(**options))
