@@ -1672,9 +1672,12 @@ def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
                 np.testing.assert_array_equal(split[name].numpy(), fused[name].numpy(), err_msg=name)
 
 
-def _carry_trajectory(model, steps, reuse, edit=None):
-    """Step with alternating state objects, applying ``edit(solver, state_in, step)`` between steps; record the states."""
-    solver = SolverSteel(model, solve_mode="matrix_free", reuse_kinematics=reuse)
+def _carry_trajectory(model, steps, reuse, edit=None, dts=None, **options):
+    """Step with alternating state objects, applying ``edit(solver, state_in, step)`` between steps; record the states.
+
+    ``edit`` may return a replacement input state; ``dts`` gives each step's timestep.
+    """
+    solver = SolverSteel(model, reuse_kinematics=reuse, **options)
     states = [model.state(), model.state()]
     newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
     control = model.control()
@@ -1683,11 +1686,15 @@ def _carry_trajectory(model, steps, reuse, edit=None):
     history = []
     for step in range(steps):
         if edit is not None:
-            edit(solver, states[0], step)
+            replacement = edit(solver, states[0], step)
+            if replacement is not None:
+                states[0] = replacement
         states[0].clear_forces()
         pipeline.collide(states[0], contacts)
-        solver.step(states[0], states[1], control, contacts, 1.0 / 240.0)
-        history.append(tuple(getattr(states[1], name).numpy().copy() for name in ("joint_q", "joint_qd", "body_q", "body_qd")))
+        solver.step(states[0], states[1], control, contacts, 1.0 / 240.0 if dts is None else dts[step])
+        history.append(
+            tuple(getattr(states[1], name).numpy().copy() for name in ("joint_q", "joint_qd", "body_q", "body_qd"))
+        )
         states.reverse()
     return solver, history
 
@@ -1744,8 +1751,33 @@ def test_reused_kinematics_follow_resets_and_notices(test, device):
         if step == 8:
             teleport(state)
 
+    articulations = np.flatnonzero(model.articulation_world.numpy() == 1).astype(np.int32)
+    others = np.setdiff1d(np.arange(model.articulation_count), articulations)
+
+    def selected_notice_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            solver.notify_state_changed(wp.array(articulations, dtype=wp.int32, device=device))
+            valid = solver._fk_id_valid.numpy()
+            np.testing.assert_array_equal(valid[articulations], 0)
+            np.testing.assert_array_equal(valid[others], 1)
+
+    def new_state_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            fresh = model.state()
+            for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+                wp.copy(getattr(fresh, name), getattr(state, name))
+            return fresh
+        return None
+
     _, reference = _carry_trajectory(model, 12, reuse=False, edit=stale_edit)
-    for label, edit in (("reset", reset_edit), ("notice", notice_edit)):
+    for label, edit in (
+        ("reset", reset_edit),
+        ("notice", notice_edit),
+        ("selected notice", selected_notice_edit),
+        ("new state", new_state_edit),
+    ):
         with test.subTest(label):
             _, carried = _carry_trajectory(model, 12, reuse=True, edit=edit)
             _assert_histories_close(test, reference, carried)
@@ -1757,11 +1789,81 @@ def test_reused_kinematics_follow_resets_and_notices(test, device):
             np.testing.assert_allclose(stale[step][2], reference[step][2], rtol=2.0e-5, atol=2.0e-5)
 
 
+def test_reused_kinematics_follow_a_timestep_change(test, device):
+    """Re-derive the carried terms when a timestep change forces a mass rebuild between cadence refreshes."""
+    model = _build_contact_scene(device)
+    dts = [1.0 / 120.0] * 6 + [1.0 / 240.0] * 6
+    _, reference = _carry_trajectory(model, 12, reuse=False, dts=dts, update_mass_matrix_interval=4)
+    carried_solver, carried = _carry_trajectory(model, 12, reuse=True, dts=dts, update_mass_matrix_interval=4)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    _assert_histories_close(test, reference, carried)
+
+
+def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, device):
+    """A step captured on a fresh solver and replayed from the same input gives the same result every replay."""
+    model = _build_contact_scene(device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    control = model.control()
+    names = ("joint_q", "joint_qd", "body_q", "body_qd")
+
+    def replays(reuse):
+        solver = SolverSteel(model, reuse_kinematics=reuse)
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        state_in.clear_forces()
+        pipeline.collide(state_in, contacts)
+        with wp.ScopedCapture(device) as capture:
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+        outputs = []
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+            outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
+        return solver, outputs
+
+    _, reference = replays(False)
+    carried_solver, carried = replays(True)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    for replay in (1, 2):
+        for name, first, later in zip(names, carried[0], carried[replay], strict=True):
+            np.testing.assert_array_equal(later, first, err_msg=f"{name} changed on replay {replay}")
+    _assert_histories_close(test, reference, carried)
+
+
+def test_descendant_free_joints_keep_the_generic_publication(test, device):
+    """A FREE joint below another body is published through eval_fk, whose velocity convention differs."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3) * 0.1)
+    root = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+    child = builder.add_link(xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+    builder.add_articulation([builder.add_joint_free(root), builder.add_joint_free(child, parent=root)])
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, reuse_kinematics=True)
+    test.assertTrue(solver.reuse_kinematics)
+    test.assertFalse(solver._reuse_kinematics_enabled)
+    state_in, state_out = model.state(), model.state()
+    joint_qd = np.zeros(model.joint_dof_count, dtype=np.float32)
+    joint_qd[5] = 3.0
+    joint_qd[9] = 3.0
+    state_in.joint_qd.assign(joint_qd)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+    expected = model.state()
+    newton.eval_fk(model, state_out.joint_q, state_out.joint_qd, expected)
+    np.testing.assert_array_equal(state_out.body_qd.numpy(), expected.body_qd.numpy())
+
+
 class TestSteelReusedKinematics(unittest.TestCase):
     pass
 
 
-for _fn in (test_reused_kinematics_match_the_recomputed_trajectory, test_reused_kinematics_follow_resets_and_notices):
+for _fn in (
+    test_reused_kinematics_match_the_recomputed_trajectory,
+    test_reused_kinematics_follow_resets_and_notices,
+    test_reused_kinematics_follow_a_timestep_change,
+    test_captured_step_replays_the_same_result_from_an_unchanged_input,
+    test_descendant_free_joints_keep_the_generic_publication,
+):
     add_function_test(TestSteelReusedKinematics, _fn.__name__, _fn, devices=cuda_devices)
 
 

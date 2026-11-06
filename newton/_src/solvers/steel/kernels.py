@@ -1518,6 +1518,28 @@ def invalidate_fk_id_articulations(
     valid[articulations[wp.tid()]] = 0
 
 
+@wp.kernel(enable_backward=False)
+def check_fk_id_source(
+    source_token: int,
+    published_token: wp.array[int],
+    # outputs
+    valid: wp.array[int],
+):
+    """Drop every carried articulation unless the input state is the one the terms were published into."""
+    if published_token[0] != source_token:
+        valid[wp.tid()] = 0
+
+
+@wp.kernel(enable_backward=False)
+def publish_fk_id_source(
+    source_token: int,
+    # outputs
+    published_token: wp.array[int],
+):
+    """Record the state the carried kinematics were published into."""
+    published_token[0] = source_token
+
+
 @wp.func_native("""
 #if defined(__CUDA_ARCH__)
     __syncwarp();
