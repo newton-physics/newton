@@ -14,7 +14,13 @@ class ModelFlags(IntEnum):
     Categories overlap semantically, but each flag has its own bit. The broad
     :attr:`JOINT_DOF_PROPERTIES` includes force, inertial, and reference-pose
     updates. Testing the broad bit alone does not detect a narrower notification.
+
+    :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns the
+    flags to pass after editing a given attribute.
     """
+
+    NONE = 0
+    """Indicates no model updates."""
 
     JOINT_PROPERTIES = 1 << 0
     """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
@@ -29,7 +35,7 @@ class ModelFlags(IntEnum):
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
     SHAPE_PROPERTIES = 1 << 4
-    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_restitution, shape_material_ke, shape_material_kd, rigid_contact_mu_torsional, rigid_contact_mu_rolling."""
+    """Indicates shape property updates: shape_transform, shape_scale, shape_margin, shape_gap, shape_collision_radius, shape_is_solid, and the shape_material_* coefficients such as shape_material_mu, shape_material_restitution, shape_material_ke, shape_material_kd, shape_material_mu_torsional, and shape_material_mu_rolling."""
 
     MODEL_PROPERTIES = 1 << 5
     """Indicates model property updates: gravity and other global parameters."""
@@ -85,6 +91,8 @@ class StateFlags(IntEnum):
     control which parts of the simulation state are reset, and with
     :meth:`~newton.solvers.experimental.coupled.CouplingInterface.coupling_notify_input_state_update`
     to describe which public state inputs a coupler updated.
+    :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns the
+    flags that cover an edited state attribute.
 
     .. experimental::
 

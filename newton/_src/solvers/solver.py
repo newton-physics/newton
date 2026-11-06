@@ -1237,12 +1237,63 @@ class SolverBase:
         * ``ModelFlags.ACTUATOR_PROPERTIES``: Actuator gains, biases, limits,
           or force properties have changed.
 
+        :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>`
+        returns the flags that cover an edited attribute, and
+        :meth:`is_notify_model_changed_graphable` tells whether a notification
+        can be captured in a CUDA graph.
+
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int``
                 bits indicating which model properties changed.
 
         """
         pass
+
+    def is_notify_model_changed_graphable(self, flags: ModelFlags | int) -> bool:
+        """Check whether :meth:`notify_model_changed` can be captured in a CUDA graph for ``flags``.
+
+        Returns ``True`` when, for this solver as configured and for any model data, handling
+        ``flags`` neither synchronizes with the host nor allocates memory outside Warp's
+        stream-ordered memory pool, which capturing :meth:`step` requires as well. The call can then
+        be captured with :class:`warp.ScopedCapture` and replayed with :func:`warp.capture_launch`,
+        for example in a reset graph after a captured domain randomization. Flags the solver ignores
+        are graphable.
+
+        The answer is conservative: it is ``False`` when handling a flag can break capture under some
+        configurations or model contents, such as models with rod joints or tendons. A replay
+        repeats the captured notification: it reads the model arrays that were current at capture,
+        so edit them in place instead of replacing them. It also skips host-side validation that eager
+        calls perform, so an edit that an eager call would reject, such as resizing a mesh compiled into
+        :class:`~newton.solvers.SolverMuJoCo`, has no effect on replay.
+
+        Example:
+
+            .. code-block:: python
+
+                flags = newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                if solver.is_notify_model_changed_graphable(flags):
+                    with wp.ScopedCapture() as capture:
+                        randomize_masses(model)  # a kernel writing model.body_mass in place
+                        solver.notify_model_changed(flags)
+                    randomize_graph = capture.graph
+
+        Args:
+            flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int`` bits to notify.
+
+        Returns:
+            Whether ``notify_model_changed(flags)`` can be captured in a CUDA graph.
+        """
+        return not int(flags) & self._non_graphable_model_flags()
+
+    def _non_graphable_model_flags(self) -> int:
+        """Bit-mask of the flags whose :meth:`notify_model_changed` handling cannot be captured.
+
+        Solvers that override :meth:`notify_model_changed` override this as well; otherwise every
+        flag is reported as not graphable.
+        """
+        if type(self).notify_model_changed is SolverBase.notify_model_changed:
+            return 0
+        return ~0
 
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Update a legacy Contacts object with forces from the solver state.

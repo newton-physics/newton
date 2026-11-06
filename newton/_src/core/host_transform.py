@@ -145,9 +145,15 @@ def join_warp_values(values: Sequence[Any] | np.ndarray, warp_type: type) -> np.
     ``np.asarray`` and ``wp.array`` read a list of Warp value objects one buffer at a
     time, which dominates model building at scale; joining the buffers is several
     times faster. Returns a read-only array of shape ``(N, *warp_type._shape_)``, or
-    ``None`` unless ``values`` is a non-empty list holding only ``warp_type`` objects.
+    ``None`` unless ``warp_type`` is such a type and ``values`` is a non-empty list
+    holding only ``warp_type`` objects.
     """
-    if isinstance(values, np.ndarray) or not len(values) or not all(type(value) is warp_type for value in values):
+    if (
+        not hasattr(warp_type, "_shape_")
+        or isinstance(values, np.ndarray)
+        or not len(values)
+        or not all(type(value) is warp_type for value in values)
+    ):
         return None
     scalar_type = wp.dtype_to_numpy(warp_type._wp_scalar_type_)
     return np.frombuffer(b"".join(values), dtype=scalar_type).reshape((len(values), *warp_type._shape_))

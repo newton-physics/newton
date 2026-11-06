@@ -809,10 +809,10 @@ class ModelBuilder:
         "shape_sdf_texture_format": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_padding": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "muscle_start": Model.AttributeSpec("muscle", references="muscle_point", compaction_policy="start"),
-        "muscle_params": Model.AttributeSpec("muscle"),
-        "muscle_activations": Model.AttributeSpec("muscle"),
-        "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
-        "muscle_points": Model.AttributeSpec("muscle_point"),
+        "muscle_params": Model.AttributeSpec("muscle", dtype=wp.float32),
+        "muscle_activations": Model.AttributeSpec("muscle", dtype=wp.float32),
+        "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY, dtype=wp.int32),
+        "muscle_points": Model.AttributeSpec("muscle_point", dtype=wp.vec3),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
         "_equality_constraint_world_start": Model.AttributeSpec(
             Model.AttributeFrequency.WORLD,
@@ -1505,6 +1505,18 @@ class ModelBuilder:
 
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
+
+        update_flags: int | None = None
+        """Flags announcing an edit of the attribute in a finalized :class:`~newton.Model`, or ``None``
+        when no flag covers it, for example because solvers read the attribute only at construction.
+
+        For model-assigned attributes these are :class:`~newton.ModelFlags` to pass to
+        :meth:`~newton.solvers.SolverBase.notify_model_changed`. For state-assigned attributes they are
+        :class:`~newton.StateFlags` to pass to :meth:`~newton.solvers.SolverBase.reset`.
+        :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` or :attr:`StateFlags.NONE <newton.StateFlags.NONE>`
+        declares that solvers read the attribute at every step. Solvers set it for the custom attributes
+        they register. :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>`
+        returns it."""
 
         values: dict[int, Any] | list[Any] | None = None
         """Storage for specific values (overrides).
@@ -2659,6 +2671,7 @@ class ModelBuilder:
             and Model._normalize_attribute_reference(existing.references)
             == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
+            and existing.update_flags == incoming.update_flags
         )
 
     @staticmethod
@@ -14957,22 +14970,29 @@ class ModelBuilder:
 
             m.world_count = self.world_count
 
+            def _set_spec_arrays(frequency, *, exclude=(), empty_as_none=False):
+                # Convert the builder attributes of a frequency to the dtypes their specs declare.
+                for name, spec in _ARRAY_BACKED_ATTRIBUTE_SPECS.items():
+                    if spec.frequency != frequency or name in exclude:
+                        continue
+                    values = getattr(self, name)
+                    if empty_as_none and len(values) == 0:
+                        setattr(m, name, None)
+                        continue
+                    grad = requires_grad and spec.differentiable
+                    setattr(m, name, warp_array_from_values(values, dtype=spec.dtype, requires_grad=grad))
+
             # ---------------------
             # particles
 
-            # state (initial)
-            m.particle_q = warp_array_from_values(self.particle_q, dtype=wp.vec3, requires_grad=requires_grad)
-            m.particle_qd = warp_array_from_values(self.particle_qd, dtype=wp.vec3, requires_grad=requires_grad)
-            m.particle_mass = wp.array(self.particle_mass, dtype=wp.float32, requires_grad=requires_grad)
+            _set_spec_arrays(Model.AttributeFrequency.PARTICLE, exclude=("particle_flags",))
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
             particle_flags = (
                 self.particle_flags
                 if isinstance(self.particle_flags, np.ndarray)
                 else [flag_to_int(f) for f in self.particle_flags]
             )
             m.particle_flags = wp.array(particle_flags, dtype=wp.int32)
-            m.particle_world = wp.array(self.particle_world, dtype=wp.int32)
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
 
@@ -14992,10 +15012,6 @@ class ModelBuilder:
             # collision geometry
 
             m.shape_label = self.shape_label
-            m.shape_transform = warp_array_from_values(
-                self.shape_transform, dtype=wp.transform, requires_grad=requires_grad
-            )
-            m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
@@ -15262,36 +15278,8 @@ class ModelBuilder:
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
-            m.shape_scale = warp_array_from_values(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
-            m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
-            m.shape_margin = wp.array(self.shape_margin, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_collision_radius = wp.array(
-                self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
-            )
-            m.shape_world = wp.array(self.shape_world, dtype=wp.int32)
-
+            _set_spec_arrays(Model.AttributeFrequency.SHAPE)
             m.shape_source = self.shape_source  # used for rendering
-            m.shape_color = warp_array_from_values(self.shape_color, dtype=wp.vec3)
-            m.shape_opacity = wp.array(self.shape_opacity, dtype=wp.float32)
-
-            m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_material_kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_material_ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_material_mu = wp.array(self.shape_material_mu, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_material_restitution = wp.array(
-                self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
-            )
-            m.shape_material_mu_torsional = wp.array(
-                self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad
-            )
-            m.shape_material_mu_rolling = wp.array(
-                self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
-            )
-            m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
-
-            m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction
@@ -15912,11 +15900,7 @@ class ModelBuilder:
                     return None
                 return wp.array(data, dtype=dtype, requires_grad=requires_grad)
 
-            m.spring_indices = _to_wp_array(self.spring_indices, wp.int32, requires_grad=False)
-            m.spring_rest_length = _to_wp_array(self.spring_rest_length, wp.float32, requires_grad=requires_grad)
-            m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
-            m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
-            m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
+            _set_spec_arrays(Model.AttributeFrequency.SPRING, empty_as_none=True)
 
             # ---------------------
             # tendons
@@ -15989,23 +15973,12 @@ class ModelBuilder:
             # ---------------------
             # triangles
 
-            m.tri_indices = _to_wp_array(self.tri_indices, wp.int32, requires_grad=False)
-            m.tri_poses = _to_wp_array(self.tri_poses, wp.mat22, requires_grad=requires_grad)
-            m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
-            m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
-            m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
-            m.tri_color = _to_wp_array(self.tri_color, wp.vec3, requires_grad=False)
-            m.tri_opacity = _to_wp_array(self.tri_opacity, wp.float32, requires_grad=False)
+            _set_spec_arrays(Model.AttributeFrequency.TRIANGLE, empty_as_none=True)
 
             # ---------------------
             # edges
 
-            m.edge_indices = _to_wp_array(self.edge_indices, wp.int32, requires_grad=False)
-            m.edge_rest_angle = _to_wp_array(self.edge_rest_angle, wp.float32, requires_grad=requires_grad)
-            m.edge_rest_length = _to_wp_array(self.edge_rest_length, wp.float32, requires_grad=requires_grad)
-            m.edge_bending_properties = _to_wp_array(
-                self.edge_bending_properties, wp.float32, requires_grad=requires_grad
-            )
+            _set_spec_arrays(Model.AttributeFrequency.EDGE, empty_as_none=True)
             # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
             # keep the builder's edge numbering (it stays aligned with the bending materials) and
             # derive the edge/triangle maps against the final triangles.
@@ -16029,10 +16002,7 @@ class ModelBuilder:
             # ---------------------
             # tetrahedra
 
-            m.tet_indices = _to_wp_array(self.tet_indices, wp.int32, requires_grad=False)
-            m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
-            m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
-            m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
+            _set_spec_arrays(Model.AttributeFrequency.TETRAHEDRON, empty_as_none=True)
 
             # -----------------------
             # muscles
@@ -16042,10 +16012,8 @@ class ModelBuilder:
             muscle_start.append(len(self.muscle_bodies))
 
             m.muscle_start = wp.array(muscle_start, dtype=wp.int32)
-            m.muscle_params = wp.array(self.muscle_params, dtype=wp.float32, requires_grad=requires_grad)
-            m.muscle_bodies = wp.array(self.muscle_bodies, dtype=wp.int32)
-            m.muscle_points = wp.array(self.muscle_points, dtype=wp.vec3, requires_grad=requires_grad)
-            m.muscle_activations = wp.array(self.muscle_activations, dtype=wp.float32, requires_grad=requires_grad)
+            _set_spec_arrays("muscle")
+            _set_spec_arrays("muscle_point")
 
             # --------------------------------------
             # rigid bodies
@@ -16121,12 +16089,11 @@ class ModelBuilder:
                     outputs=[m.body_inv_mass, m.body_inv_inertia],
                 )
 
-            m.body_q = warp_array_from_values(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
-            m.body_qd = warp_array_from_values(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
-            m.body_com = warp_array_from_values(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
+            _set_spec_arrays(
+                Model.AttributeFrequency.BODY,
+                exclude=("body_mass", "body_inv_mass", "body_inertia", "body_inv_inertia"),
+            )
             m.body_label = self.body_label
-            m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
-            m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors
             if self.body_color_groups:
@@ -16143,44 +16110,16 @@ class ModelBuilder:
             joint_articulation_np = np.asarray(self.joint_articulation, dtype=np.int32)
 
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
-            m.joint_parent = wp.array(joint_parent_np, dtype=wp.int32)
-            m.joint_child = wp.array(joint_child_np, dtype=wp.int32)
-            m.joint_X_p = warp_array_from_values(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_X_c = warp_array_from_values(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
-            m.joint_axis = warp_array_from_values(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
-            m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_label = self.joint_label
-            m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
+            _set_spec_arrays(Model.AttributeFrequency.JOINT)
+            _set_spec_arrays(Model.AttributeFrequency.JOINT_COORD)
+            _set_spec_arrays(Model.AttributeFrequency.JOINT_DOF)
             # compute joint ancestors
             parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np, joint_articulation_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
-            m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
             m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)
             m.joint_mimic_coeffs = wp.array(self.joint_mimic_coeffs, dtype=wp.vec2)
-
-            # dynamics properties
-            m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
-            m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_stiffness = wp.array(self.joint_stiffness, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_rest_q = wp.array(self.joint_rest_q, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_q = wp.array(self.joint_target_q, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
-
-            m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.bool)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)
@@ -16248,7 +16187,7 @@ class ModelBuilder:
                     m._fk_level_parent_pos = wp.array(fk_level_parent_pos, dtype=wp.int32)
                     m._fk_level_capacity = fk_level_capacity
             m.articulation_label = self.articulation_label
-            m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
+            _set_spec_arrays(Model.AttributeFrequency.ARTICULATION)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
@@ -16270,13 +16209,8 @@ class ModelBuilder:
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
             # deprecated sparse mimic constraints
-            m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
-            m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
-            m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
-            m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
-            m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
+            _set_spec_arrays(Model.AttributeFrequency.CONSTRAINT_MIMIC)
             m.constraint_mimic_label = self.constraint_mimic_label
-            m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
 
             # ---------------------
             # per-world start indices
@@ -16457,6 +16391,11 @@ class ModelBuilder:
                 m._set_attribute_spec(
                     custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
+            # Also covers attributes finalized by their own callback.
+            for key, custom_attr in self.custom_attributes.items():
+                spec = m.attribute_specs.get(key)
+                if spec is not None and custom_attr.update_flags is not None:
+                    m._set_attribute_spec(key, replace(spec, update_flags=custom_attr.update_flags))
 
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
@@ -16551,104 +16490,17 @@ _ArrayBackedListDescriptor = tuple[Literal["ctypes", "tuple", "list", "ndarray",
 _ArrayBackedAttribute = tuple[np.ndarray, _ArrayBackedListDescriptor]
 
 
-_ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
-    "particle_q": wp.vec3,
-    "particle_qd": wp.vec3,
-    "particle_mass": wp.float32,
-    "particle_radius": wp.float32,
-    "particle_flags": wp.int32,
-    "particle_world": wp.int32,
-    "shape_transform": wp.transform,
-    "shape_body": wp.int32,
-    "shape_material_ke": wp.float32,
-    "shape_material_kd": wp.float32,
-    "shape_material_kf": wp.float32,
-    "shape_material_ka": wp.float32,
-    "shape_material_mu": wp.float32,
-    "shape_material_restitution": wp.float32,
-    "shape_material_mu_torsional": wp.float32,
-    "shape_material_mu_rolling": wp.float32,
-    "shape_material_kh": wp.float32,
-    "shape_gap": wp.float32,
-    "shape_is_solid": wp.bool,
-    "shape_margin": wp.float32,
-    "shape_scale": wp.vec3,
-    "shape_color": wp.vec3,
-    "shape_opacity": wp.float32,
-    "shape_collision_group": wp.int32,
-    "shape_collision_radius": wp.float32,
-    "shape_world": wp.int32,
-    "spring_indices": wp.int32,
-    "spring_rest_length": wp.float32,
-    "spring_stiffness": wp.float32,
-    "spring_damping": wp.float32,
-    "spring_control": wp.float32,
-    "tri_indices": wp.int32,
-    "tri_poses": wp.mat22,
-    "tri_activations": wp.float32,
-    "tri_materials": wp.float32,
-    "tri_areas": wp.float32,
-    "tri_color": wp.vec3,
-    "tri_opacity": wp.float32,
-    "edge_indices": wp.int32,
-    "edge_rest_angle": wp.float32,
-    "edge_rest_length": wp.float32,
-    "edge_bending_properties": wp.float32,
-    "tet_indices": wp.int32,
-    "tet_poses": wp.mat33,
-    "tet_activations": wp.float32,
-    "tet_materials": wp.float32,
-    "muscle_params": wp.float32,
-    "muscle_bodies": wp.int32,
-    "muscle_points": wp.vec3,
-    "muscle_activations": wp.float32,
-    "body_q": wp.transform,
-    "body_qd": wp.spatial_vector,
-    "body_com": wp.vec3,
-    "body_inertia": wp.mat33,
-    "body_inv_inertia": wp.mat33,
-    "body_mass": wp.float32,
-    "body_inv_mass": wp.float32,
-    "body_flags": wp.int32,
-    "body_world": wp.int32,
-    "joint_q": wp.float32,
-    "joint_qd": wp.float32,
-    "joint_f": wp.float32,
-    "joint_target_q": wp.float32,
-    "joint_target_qd": wp.float32,
-    "joint_act": wp.float32,
-    "joint_articulation": wp.int32,
-    "joint_parent": wp.int32,
-    "joint_child": wp.int32,
-    "joint_X_p": wp.transform,
-    "joint_X_c": wp.transform,
-    "joint_axis": wp.vec3,
-    "joint_armature": wp.float32,
-    "joint_target_mode": wp.int32,
-    "joint_target_ke": wp.float32,
-    "joint_target_kd": wp.float32,
-    "joint_stiffness": wp.float32,
-    "joint_rest_q": wp.float32,
-    "joint_damping": wp.float32,
-    "joint_effort_limit": wp.float32,
-    "joint_velocity_limit": wp.float32,
-    "joint_friction": wp.float32,
-    "joint_enabled": wp.bool,
-    "joint_limit_lower": wp.float32,
-    "joint_limit_upper": wp.float32,
-    "joint_limit_ke": wp.float32,
-    "joint_limit_kd": wp.float32,
-    "joint_world": wp.int32,
-    "articulation_world": wp.int32,
-    "constraint_mimic_joint0": wp.int32,
-    "constraint_mimic_joint1": wp.int32,
-    "constraint_mimic_coef0": wp.float32,
-    "constraint_mimic_coef1": wp.float32,
-    "constraint_mimic_enabled": wp.bool,
-    "constraint_mimic_world": wp.int32,
+_ARRAY_BACKED_ATTRIBUTE_SPECS: dict[str, Model.AttributeSpec] = {
+    name: spec
+    for specs in (Model._CORE_ATTRIBUTE_SPECS, ModelBuilder._BUILDER_ATTRIBUTE_SPECS)
+    for name, spec in specs.items()
+    if spec.dtype is not None
 }
-"""Builder attributes retained as NumPy arrays between replication and finalization."""
-# could be replaced by introspection if Model instance attribute annotations were moved to class level
+"""Builder attributes retained as NumPy arrays between replication and finalization: the list
+attributes whose :class:`Model.AttributeSpec` declares a dtype."""
+_ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
+    name: spec.dtype for name, spec in _ARRAY_BACKED_ATTRIBUTE_SPECS.items()
+}
 
 
 def _list_for_iteration(values: list[Any] | np.ndarray) -> list[Any]:

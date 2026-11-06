@@ -1683,7 +1683,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
           torsion). PhysX also scales a radius with the penetration depth through
-          ``physxCollision:torsionalPatchRadius``; this solver does not.
+          ``physxCollision:torsionalPatchRadius``; this solver does not. Set it before
+          constructing the solver, which enables torsion only when a radius is positive.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -1721,6 +1722,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_angular_damping",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1732,6 +1734,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_linear_damping",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1743,6 +1746,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_linear_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1754,6 +1758,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_angular_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1777,6 +1782,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_depenetration_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1788,6 +1794,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="joint_friction_load_coefficient",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.JOINT_DOF,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -3231,6 +3238,29 @@ class SolverSteel(SolverBase, CouplingInterface):
         joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
         if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The kinematic-state refresh reads body flags on the host.
+        flags = ModelFlags.BODY_PROPERTIES
+        if self._sleeping is not None:
+            # Sleeping compares the tracked model arrays on the host to find the islands to wake.
+            flags |= (
+                ModelFlags.JOINT_PROPERTIES
+                | ModelFlags.JOINT_DOF_PROPERTIES
+                | ModelFlags.BODY_INERTIAL_PROPERTIES
+                | ModelFlags.SHAPE_PROPERTIES
+            )
+        mujoco = getattr(self.model, "mujoco", None)
+        if int(getattr(mujoco, "equality_constraint_count", 0) or 0):
+            # MuJoCo equality rows are validated on the host.
+            flags |= ModelFlags.CONSTRAINT_PROPERTIES
+        if self._enable_restitution and (
+            self._solve_mode != "matrix_free" or self._sparse_mass_matrix_size is not None
+        ):
+            # Restitution support is checked on the host.
+            flags |= ModelFlags.SHAPE_PROPERTIES
+        return int(flags)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""

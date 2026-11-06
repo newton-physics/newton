@@ -363,6 +363,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             self._update_body_inertial_buffers()
             self._mass_matrix_dirty = True
 
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The kinematic-state refresh reads joint and body data on the host and reallocates buffers.
+        return int(
+            ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
+
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
         if model.joint_count:
