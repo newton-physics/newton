@@ -180,11 +180,28 @@ def compute_inertia_box_mesh(
         indices=np.asarray(indices).flatten().tolist(),
         is_solid=is_solid,
     )
+    return compute_inertia_box(volume, com, inertia_tensor)
 
+
+def compute_inertia_box(
+    volume: float, com: np.ndarray | wp.vec3, inertia: np.ndarray | wp.mat33
+) -> tuple[wp.vec3, wp.vec3, wp.quat]:
+    """Compute the equivalent inertia box of a body from its unit-density mass properties.
+
+    See :func:`compute_inertia_box_mesh` for the half-size formula.
+
+    Args:
+        volume: Volume [m^3], or the surface area [m^2] of a shell: the mass at unit density.
+        com: Center of mass [m].
+        inertia: Inertia tensor about the center of mass at unit density, shape ``(3, 3)``.
+
+    Returns:
+        Tuple of ``(center, half_extents, rotation)`` as returned by :func:`compute_inertia_box_mesh`.
+    """
     if volume < 1e-12:
         return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()
 
-    inertia = np.array(inertia_tensor).reshape(3, 3)
+    inertia = np.array(inertia).reshape(3, 3)
     eigvals, eigvecs = np.linalg.eigh(inertia)
 
     # Sort eigenvalues (and eigenvectors) in ascending order.
@@ -203,9 +220,9 @@ def compute_inertia_box_mesh(
         arg = 6.0 * (eigvals[j] + eigvals[k] - eigvals[i]) / volume
         half_extents[i] = 0.5 * np.sqrt(max(arg, 0.0))
 
-    # Convert the eigenvector matrix (columns = principal axes in mesh frame)
-    # to a quaternion.
-    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.T.flatten().tolist()))
+    # The eigenvector matrix (columns = principal axes in mesh frame) rotates the
+    # principal-axis frame to the mesh frame; wp.mat33 takes its values row by row.
+    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.flatten().tolist()))
 
     return wp.vec3(*np.array(com)), wp.vec3(*half_extents), rotation
 
