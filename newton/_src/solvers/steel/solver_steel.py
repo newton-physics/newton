@@ -252,9 +252,7 @@ _FUSED_CRBA_MAX_DOF = 64
 _PAIRED_RESPONSE_MIN_DOF = 17
 # Warps (rows) per block of the paired response kernel.
 _PAIRED_RESPONSE_WARPS_PER_BLOCK = 4
-# A persistent queue of general-sweep worlds avoids launching one block per mostly local world;
-# eight blocks per SM keep the latency of scenes without local worlds.
-_LOCAL_GENERAL_BLOCKS_PER_SM = 8
+# Eight resident blocks per SM for the pair owners' persistent queue.
 _LOCAL_PAIR_BLOCKS_PER_SM = 8
 # The articulation-local solve runs a serial O(dofs^2) triangular solve per row.
 _LOCAL_INTERNAL_MAX_DOF = 16
@@ -5312,7 +5310,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._local_solve_owner = wp.zeros(max(self._world_count, 1), dtype=wp.int32, device=device)
         self._local_general_world_count = wp.zeros(1, dtype=wp.int32, device=device)
         self._local_general_worlds = wp.empty(max(self._world_count, 1), dtype=wp.int32, device=device)
-        self._local_general_solver_blocks = min(self._world_count, max(1, sm_count * _LOCAL_GENERAL_BLOCKS_PER_SM))
+        # One warp per world for the general sweep beside the local owners: the warps beyond the compacted
+        # general queue return at once, and a queue that holds most of the worlds (a policy grasping in every
+        # world) runs at the device's full occupancy instead of eight resident blocks per SM walking it.
+        self._local_general_solver_blocks = self._world_count
 
         def device_arrays(table):
             return {size: wp.array(arts, dtype=wp.int32, device=device) for size, arts in table.items() if arts}
