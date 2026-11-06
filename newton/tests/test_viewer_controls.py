@@ -53,6 +53,8 @@ class TestViewerUI(unittest.TestCase):
             self.skipTest(f"Viewer UI dependencies not available: {exc}")
 
         context = imgui.create_context()
+        # A previous native viewer test may have left another context current.
+        imgui.set_current_context(context)
         self.addCleanup(imgui.destroy_context, context)
         # Exercise ImGui state without an OpenGL renderer or window.
         self.ui = ImGuiBackend.__new__(ImGuiBackend)

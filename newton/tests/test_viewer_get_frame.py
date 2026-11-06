@@ -16,6 +16,7 @@ import newton.viewer
 from newton._src.viewer import viewer_gl
 from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
+from newton._src.viewer.gui.viewport import ViewportControls
 from newton._src.viewer.kernels import compact
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_joint_selection import _JointDrawList
@@ -236,14 +237,15 @@ class TestViewerGLGetFrame(unittest.TestCase):
         variants = []
         for capsules in (False, True):
             variant = newton.ModelBuilder()
+            visual = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False)
             body = variant.add_body()
             if capsules:
                 for x in (-0.3, 0.3):
                     variant.add_shape_capsule(
-                        body, xform=wp.transform((x, 0, 0), wp.quat_identity()), radius=0.1, half_height=0.6
+                        body, xform=wp.transform((x, 0, 0), wp.quat_identity()), radius=0.1, half_height=0.6, cfg=visual
                     )
             else:
-                variant.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+                variant.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5, cfg=visual)
             variants.append(variant)
         world = newton.ModelBuilder()
         world.add_body_variants(world.add_body(), variants)
@@ -251,6 +253,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         builder.replicate(world, 3)
         viewer = _make_headless_viewer_gl_or_skip(self)
         self.addCleanup(viewer.close)
+        controls = ViewportControls(SimpleNamespace(viewer=viewer))
         for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
@@ -260,6 +263,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     viewer.notify_model_changed(flags)
                     viewer.begin_frame(0.0)
                     viewer.log_state(model.state())
+                    # Run the workspace's actual batch classification even in
+                    # this hidden context, including empty and multi-shape batches.
+                    controls.sync()
                     viewer.end_frame()
                     actual = 0
                     for batch in viewer._shape_instances.values():
@@ -267,6 +273,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         instancer = viewer.objects.get(batch.name)
                         if count:
                             self.assertFalse(instancer.hidden)
+                            self.assertEqual(instancer._physics_role, "visual")
                             self.assertGreaterEqual(instancer.num_instances, count)
                             actual += count
                             if batch.geo_type == newton.GeoType.CAPSULE:

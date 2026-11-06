@@ -130,7 +130,7 @@ class ViewportControls:
                     not batch.flags & int(ShapeFlags.COLLIDE_SHAPES)
                     and batch.flags & int(ShapeFlags.VISIBLE)
                     and sdf_indices is not None
-                    and batch.model_shapes
+                    and len(batch.model_shapes) > 0
                     and sdf_indices[batch.model_shapes[0]] >= 0
                     and viewer.model._texture_sdf_data is not None
                 ):
