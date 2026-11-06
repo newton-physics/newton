@@ -148,8 +148,8 @@ post-constraint RNE stage independently of sensors.
 With ``use_mujoco_cpu=True``, body and contact observables are exported
 from the step's input dynamics, including with RK4; use the input state for
 contact positions. Body observables require Euler, RK4, implicit, or implicitfast
-integration. ``CONTACT_F`` requires ``use_mujoco_contacts=True`` and, like
-the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds, supports any integrator; overflow observable requests are rejected.
+integration. ``CONTACT_F``, like the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds,
+supports any integrator; overflow observable requests are rejected.
 
 :class:`~newton.solvers.SolverSteel` accounts ``BODY_PARENT_F`` from the step's solved
 motion, including its contact, friction, spin and loop-closure impulses, so loads carried by a

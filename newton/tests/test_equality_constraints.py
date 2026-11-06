@@ -439,7 +439,7 @@ class TestEqualityConstraints(unittest.TestCase):
         builder.add_shape_box(link3, hx=0.3, hy=0.3, hz=0.3)
 
         # Fixed joint between link1 and link2 - defines the merge transform
-        fixed_parent_xform = wp.transform((0.5, 0.1, 0.0), wp.quat_identity())
+        fixed_parent_xform = wp.transform((0.5, 0.1, 0.0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.4))
         fixed_child_xform = wp.transform((-0.3, 0.0, 0.0), wp.quat_identity())
 
         joint_fixed_base = builder.add_joint_fixed(
@@ -503,6 +503,23 @@ class TestEqualityConstraints(unittest.TestCase):
             relpose=original_relpose,
             label="weld_link2_link3",
         )
+        eq_connect_merged = _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
+            body1=link2,
+            body2=link3,
+            anchor=original_anchor,
+            label="connect_link2_link3",
+        )
+        eq_weld_merged_body2 = _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
+            body1=link3,
+            body2=link2,
+            anchor=original_anchor,
+            relpose=original_relpose,
+            label="weld_link3_link2",
+        )
 
         # Compute expected merge transform: parent_xform * inverse(child_xform)
         merge_xform = fixed_parent_xform * wp.transform_inverse(fixed_child_xform)
@@ -512,7 +529,7 @@ class TestEqualityConstraints(unittest.TestCase):
         # Verify initial state
         self.assertEqual(builder.body_count, 4)
         self.assertEqual(builder.joint_count, 4)
-        self.assertEqual(builder._equality_constraint_count, 3)
+        self.assertEqual(builder._equality_constraint_count, 5)
 
         # Collapse fixed joints
         result = builder.collapse_fixed_joints(verbose=False)
@@ -541,6 +558,29 @@ class TestEqualityConstraints(unittest.TestCase):
         self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_connect), new_link3)
         self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_weld), new_link1)
         self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_weld), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_connect_merged), new_link1)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_connect_merged), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_weld_merged_body2), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_weld_merged_body2), new_link1)
+
+        # CONNECT anchors use body1's frame; WELD anchors use body2's frame.
+        expected_merged_anchor = wp.transform_point(merge_xform, original_anchor)
+        for eq_idx in (eq_connect_merged, eq_weld_merged_body2):
+            np.testing.assert_allclose(
+                _eq_value(builder, "equality_constraint_anchor", eq_idx),
+                expected_merged_anchor,
+                rtol=1e-5,
+            )
+        # relpose.p is held in body1's frame, so merging body2 only changes relpose's rotation.
+        np.testing.assert_allclose(
+            _eq_value(builder, "equality_constraint_relpose", eq_weld_merged_body2),
+            wp.transform(
+                wp.transform_get_translation(original_relpose),
+                wp.transform_get_rotation(original_relpose) * wp.quat_inverse(wp.transform_get_rotation(merge_xform)),
+            ),
+            rtol=1e-5,
+            atol=1e-7,
+        )
 
         # Verify anchor was transformed correctly
         actual_anchor = _eq_value(builder, "equality_constraint_anchor", eq_weld)
@@ -575,7 +615,7 @@ class TestEqualityConstraints(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.body_count, 3)
         self.assertEqual(model.joint_count, 3)
-        self.assertEqual(model.mujoco.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 5)
 
     def test_collapse_fixed_joints_keeps_a_satisfied_weld_satisfied(self):
         """Verify a satisfied weld stays satisfied when collapse_fixed_joints merges either of its bodies."""

@@ -5220,7 +5220,9 @@ class ModelBuilder:
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
                 equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-                and finalize under ``model.mujoco.equality_constraint_*``.
+                and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
+                target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
+                with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
                 Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
                 an identity rest orientation. Default is False.
@@ -8237,6 +8239,16 @@ class ModelBuilder:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
 
+        def remap_body_frame(body: int) -> tuple[int, wp.transform | None]:
+            """Return the final body index and the old-to-surviving frame transform.
+
+            The DFS records the full transform across each fixed-joint chain.
+            Retained bodies and world (-1) need no geometry transformation.
+            """
+            if body in body_merged_parent:
+                return body_remap[body_merged_parent[body]], body_merged_transform[body]
+            return body_remap[body], None
+
         for spec in self._deformable_visual_meshes:
             if spec["kind"] != DeformableVisualMesh.Kind.BODY:
                 continue
@@ -8521,13 +8533,10 @@ class ModelBuilder:
 
         # Keep tendon contact geometry in the same world frame when its body is merged.
         for guide_idx, old_body in enumerate(self.tendon_guide_body):
-            if old_body in body_remap:
-                self.tendon_guide_body[guide_idx] = body_remap[old_body]
+            self.tendon_guide_body[guide_idx], merge_xform = remap_body_frame(old_body)
+            if merge_xform is None:
                 continue
 
-            merged_parent = body_merged_parent[old_body]
-            merge_xform = body_merged_transform[old_body]
-            self.tendon_guide_body[guide_idx] = body_remap[merged_parent]
             self.tendon_guide_offset[guide_idx] = wp.transform_point(
                 merge_xform, axis_to_vec3(self.tendon_guide_offset[guide_idx])
             )
@@ -8579,14 +8588,11 @@ class ModelBuilder:
         for i in range(self._equality_constraint_count):
             old_body1 = _at(body1_values, i, body1_attr.default)
             old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = old_body1 in body_merged_parent
-            body2_was_merged = old_body2 in body_merged_parent
-
             constraint_type = _at(type_values, i, type_attr.default)
 
             # Transform anchor/relpose from merged body's frame to parent body's frame
-            if body1_was_merged:
-                merge_xform = body_merged_transform[old_body1]
+            if old_body1 in body_merged_parent:
+                _, merge_xform = remap_body_frame(old_body1)
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                     while len(anchor_values) <= i:
@@ -8598,8 +8604,8 @@ class ModelBuilder:
                         relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
-            if body2_was_merged and constraint_type == EqType.WELD:
-                merge_xform = body_merged_transform[old_body2]
+            if old_body2 in body_merged_parent and constraint_type == EqType.WELD:
+                _, merge_xform = remap_body_frame(old_body2)
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
                 while len(anchor_values) <= i:
@@ -8684,14 +8690,11 @@ class ModelBuilder:
         # frame so the attachment keeps its world-space position.
         for i in range(len(self.attachment_particle_body_body)):
             old_body = self.attachment_particle_body_body[i]
-            if old_body in body_merged_parent:
-                merge_xform = body_merged_transform[old_body]
+            self.attachment_particle_body_body[i], merge_xform = remap_body_frame(old_body)
+            if merge_xform is not None:
                 self.attachment_particle_body_body_point[i] = wp.transform_point(
                     merge_xform, self.attachment_particle_body_body_point[i]
                 )
-                self.attachment_particle_body_body[i] = body_remap[body_merged_parent[old_body]]
-            else:
-                self.attachment_particle_body_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -8705,10 +8708,9 @@ class ModelBuilder:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            if idx in body_remap:
-                return body_remap[idx]
-            if idx in body_merged_parent:
-                return body_remap[body_merged_parent[idx]]
+            if idx in body_remap or idx in body_merged_parent:
+                new_body, _ = remap_body_frame(idx)
+                return new_body
             return value
 
         def _remap_joint_reference(value: Any) -> Any:
@@ -8879,6 +8881,17 @@ class ModelBuilder:
         if scale is None:
             scale = (1.0, 1.0, 1.0)
 
+        # TODO: Remove this compatibility path with the deprecated attribute.
+        site_size_is_display = False
+        if cfg.is_site and custom_attributes and "mujoco:site_size_is_display" in custom_attributes:
+            warnings.warn(
+                "The 'mujoco:site_size_is_display' attribute is deprecated; remove it, "
+                "and set scale[2] of a cylinder site to 0.0 directly where it was True.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            site_size_is_display = bool(custom_attributes["mujoco:site_size_is_display"])
+
         # Normalize / validate negative scale components by shape type. Symmetric
         # primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian)
         # are point-symmetric and produce identical geometry under sign flip of any
@@ -8899,10 +8912,9 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
-            site_size_is_display = cfg.is_site and bool(
-                custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False)
-            )
-            if type == GeoType.CYLINDER and not site_size_is_display and scale[2] != 0.0 and scale[2] < scale[1]:
+            if type == GeoType.CYLINDER and site_size_is_display:
+                scale = (scale[0], scale[1], 0.0)
+            if type == GeoType.CYLINDER and scale[2] != 0.0 and scale[2] < scale[1]:
                 raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
             if float(scale[1]) < 0.0:
@@ -15279,21 +15291,12 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
-            site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
-            for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, shape_scale_list, strict=True)
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, shape_scale_list, strict=True
             ):
-                site_size_is_display = bool(
-                    site_display_size_attr
-                    and site_display_size_attr.values.get(_shape_idx, site_display_size_attr.default)
-                )
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale))
-                elif shape_type == GeoType.CYLINDER and site_size_is_display:
-                    # MuJoCo cylinder sites may carry an unused third display-size component.
-                    # It is not Newton's barrel radius and does not affect their bounds.
-                    cache_key = (shape_type, (shape_scale[0], shape_scale[1], 0.0))
                 else:
                     cache_key = (shape_type, tuple(shape_scale))
 
@@ -15358,8 +15361,6 @@ class ModelBuilder:
                     elif shape_type == GeoType.CYLINDER:
                         # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
                         r, half_height, barrel_radius = shape_scale
-                        if site_size_is_display:
-                            barrel_radius = 0.0
                         radial_extent = r
                         if barrel_radius > 0.0:
                             radial_extent += (half_height * half_height) / (

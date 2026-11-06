@@ -3005,7 +3005,7 @@ class CollisionPipeline:
         # A reused buffer can retain mesh tags from a full-surface pipeline. The mesh pass
         # resets them itself; without that pass, replacement particle rows need invalid tags.
         if self._soft_mesh_contact_data is None and contacts._soft_contact_mesh_features is not None:
-            contacts._soft_contact_mesh_features.fill_(-1)
+            contacts._soft_contact_mesh_features.view(wp.int32).fill_(-1)
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
         # Only call contacts.clear() if clear_buffers mode is enabled (debug path).
@@ -3016,7 +3016,8 @@ class CollisionPipeline:
         elif self._soft_mesh_contact_data is not None or contacts._soft_contact_mesh_features is not None:
             # Non-mesh emitters must not inherit rigid primitive IDs from mesh rows.
             # Fresh particle-only buffers already contain -1, and clear() resets them.
-            contacts.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
+            # Scalar fills preserve every -1 component and avoid slower vector tiling.
+            contacts.soft_contact_rigid_indices.view(wp.int32).fill_(-1)
 
         model = self.model
         # update any additional parameters
