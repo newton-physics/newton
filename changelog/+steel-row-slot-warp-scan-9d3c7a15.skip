@@ -1,0 +1,1 @@
+Reserves SolverSteel deterministic=RUN_TO_RUN row slots with one launch per row family and world-size class instead of six per family; no release has shipped the mode and the reserved slots are unchanged.

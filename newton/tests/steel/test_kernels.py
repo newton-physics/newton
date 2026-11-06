@@ -3,6 +3,7 @@
 
 """Kernel selection, launch configuration, streams and double buffering of SolverSteel."""
 
+import itertools
 import types
 import unittest
 from unittest import mock
@@ -465,7 +466,7 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
     with test.assertRaisesRegex(NotImplementedError, r"equality_constraint rows \[0\]"):
         SolverSteel(_build_box_with_equality(device, enabled=True, target_kind=1, target=0))
 
-    def build_pendulum_with_connect(eq_type: int, joint_kind: str, row_names_world: bool):
+    def build_pendulum_with_connect(eq_type: int, joint_kind: str, row_names_world: bool, torquescale: float = 1.0):
         builder = newton.ModelBuilder()
         link = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
         builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
@@ -484,16 +485,22 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
                 "mujoco:equality_constraint_enabled": True,
                 "mujoco:equality_constraint_target_kind": 1,
                 "mujoco:equality_constraint_target": loop,
+                "mujoco:equality_constraint_torquescale": torquescale,
             }
         )
         return builder.finalize(device=device)
 
-    # Mismatched projections: a WELD row linking a ball joint, and a row whose bodies are not
-    # the linked joint's endpoints. Each is an unenforced equality, not a loop joint.
-    for eq_type, joint_kind, row_names_world in ((1, "ball", False), (0, "ball", True)):
+    # Mismatched projections: a WELD row linking a ball joint, a rotation-free WELD row linking a
+    # fixed joint, and a row whose bodies are not the linked joint's endpoints. Each is an
+    # unenforced equality, not a loop joint.
+    for eq_type, joint_kind, row_names_world, torquescale in (
+        (1, "ball", False, 1.0),
+        (1, "fixed", False, 0.0),
+        (0, "ball", True, 1.0),
+    ):
         with test.subTest(eq_type=eq_type, joint_kind=joint_kind, row_names_world=row_names_world):
             with test.assertRaisesRegex(NotImplementedError, "equality"):
-                SolverSteel(build_pendulum_with_connect(eq_type, joint_kind, row_names_world))
+                SolverSteel(build_pendulum_with_connect(eq_type, joint_kind, row_names_world, torquescale))
     # A tree joint between the row's bodies is not a projection either: the row's anchor is
     # not enforced by it.
     builder = newton.ModelBuilder()
@@ -518,11 +525,12 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
     with test.subTest(target="tree ball joint"):
         with test.assertRaisesRegex(NotImplementedError, "equality"):
             SolverSteel(builder.finalize(device=device))
-    # The matching projection is judged through its loop joint instead.
-    for eq_type, joint_kind in ((0, "ball"), (1, "fixed")):
-        with test.subTest(eq_type=eq_type, joint_kind=joint_kind, matching=True):
+    # The matching projection is judged through its loop joint instead. A WELD with torquescale 0
+    # is rotation free, so its projection is a ball joint.
+    for eq_type, joint_kind, torquescale in ((0, "ball", 1.0), (1, "fixed", 1.0), (1, "ball", 0.0)):
+        with test.subTest(eq_type=eq_type, joint_kind=joint_kind, torquescale=torquescale, matching=True):
             with test.assertRaisesRegex(NotImplementedError, "loop-closing"):
-                SolverSteel(build_pendulum_with_connect(eq_type, joint_kind, False))
+                SolverSteel(build_pendulum_with_connect(eq_type, joint_kind, False, torquescale))
 
     # A JOINT row linking a mimic between other joints is likewise unenforced; the importer's
     # own projection is enforced through its mimic constraint.
@@ -1817,6 +1825,65 @@ add_function_test(
     test_velocity_limit_pass_visits_every_active_row,
     devices=get_cuda_test_devices(),
 )
+
+
+def test_world_row_slot_reservation_matches_prefix_sums(test, device):
+    """Give each element its world's counter plus the earlier row counts of that world, in world-element order.
+
+    Worlds hold no elements, a few, exactly one warp's worth, and more than the largest block.
+    """
+    rng = np.random.default_rng(11)
+    sizes = [0, 3, 32, 33, 0, 1500, 7]
+    starts = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int32)
+    element_count = int(starts[-1])
+    # Elements are listed per world in a shuffled element-id order, as the solver's world indices are.
+    elements = rng.permutation(element_count).astype(np.int32)
+    counts = rng.integers(0, 7, element_count).astype(np.int32)
+    counters = rng.integers(0, 50, len(sizes)).astype(np.int32)
+    expected_cursor = np.empty(element_count, np.int32)
+    expected_counters = counters.copy()
+    for world, (lo, hi) in enumerate(itertools.pairwise(starts)):
+        for i in range(lo, hi):
+            expected_cursor[elements[i]] = expected_counters[world]
+            expected_counters[world] += counts[elements[i]]
+    inputs = [wp.array(starts, dtype=int, device=device), wp.array(elements, dtype=int, device=device)]
+    # The solver launches only the worlds that have elements.
+    listed_worlds = wp.array(np.flatnonzero(sizes), dtype=int, device=device)
+    for block_dim in (32, 256, 1024) if wp.get_device(device).is_cuda else (None,):
+        cursor = wp.array(counts, dtype=int, device=device)
+        world_counters = wp.array(counters, dtype=int, device=device)
+        if block_dim is None:
+            wp.launch(
+                steel_kernels.reserve_world_row_slots_serial,
+                dim=len(sizes),
+                inputs=inputs,
+                outputs=[world_counters, cursor],
+                device=device,
+            )
+        else:
+            wp.launch_tiled(
+                steel_kernels.reserve_world_row_slots,
+                dim=[listed_worlds.shape[0]],
+                inputs=[listed_worlds, *inputs],
+                outputs=[world_counters, cursor],
+                block_dim=block_dim,
+                device=device,
+            )
+        np.testing.assert_array_equal(cursor.numpy(), expected_cursor, err_msg=f"block_dim={block_dim}")
+        np.testing.assert_array_equal(world_counters.numpy(), expected_counters, err_msg=f"block_dim={block_dim}")
+
+
+class TestSteelWorldRowSlotReservation(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelWorldRowSlotReservation,
+    "test_world_row_slot_reservation_matches_prefix_sums",
+    test_world_row_slot_reservation_matches_prefix_sums,
+    devices=get_test_devices(),
+)
+
 
 if __name__ == "__main__":
     unittest.main()

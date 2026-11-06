@@ -330,7 +330,7 @@ repository examples spend tuning effort, not a shared solver API.
        (:ref:`passive-joint-springs`) act explicitly on REVOLUTE, PRISMATIC and
        D6 DOFs, so a stiff spring needs roughly
        ``dt * sqrt(stiffness / m_eff) < 2``, unlike the implicit drives.
-       Mimic joints and loop-closing BALL and REVOLUTE
+       Mimic joints and loop-closing BALL, REVOLUTE, and FIXED
        joints are bilateral rows that converge with ``iterations`` like the
        other rows; ``enable_bilateral_preelimination`` eliminates them before
        the sweep with a regularized Schur complement, which keeps closed chains
