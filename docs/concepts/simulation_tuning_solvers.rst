@@ -339,8 +339,8 @@ repository examples spend tuning effort, not a shared solver API.
        disables elimination for the whole solver with a warning. On CUDA,
        branched articulations of one shared
        topology select sparse mass factors automatically from the model's
-       structure when contacts use hard point friction
-       (``friction_anchor_beta=0``), not from a performance estimate
+       structure when contacts use hard point friction or persistent friction
+       patches, not from a performance estimate
        (depending on the topology and the world count they can be faster or
        markedly slower);
        ``parallel_tree`` traverses independent tree branches in parallel and is
