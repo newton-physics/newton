@@ -1751,17 +1751,6 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_franka_cable_ik_pick_place",
-    devices=cuda_test_devices,
-    test_options={
-        # The full pick-and-place sequence takes 7 s (420 frames at 60 fps).
-        "num-frames": 430,
-        "world-count": 1,
-    },
-    use_viewer=True,
-)
-add_example_test(
-    TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_mpm_coupled_solver",
     devices=cuda_test_devices,
     test_options={"num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},

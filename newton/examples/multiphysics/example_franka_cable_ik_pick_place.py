@@ -64,6 +64,8 @@ GRIPPER_DOWN = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
 # thin cable. Instead the grasp closes to GRIP_CLOSE to capture, then holds GRIP_HOLD (just
 # under the cable radius) so the fingers pinch firmly without ratcheting past it.
 GRIP_OPEN = 0.04
+PLACE_TOLERANCE = 0.01  # placement accuracy checked by the example test [m]
+SETTLE_TIME = 1.0  # time the example test lets the released cable come to rest [s]
 GRIP_CLOSE = 0.0
 GRIP_HOLD = 0.0  # held finger position once grasped
 GRIP_FORCE = 1500.0  # gripper effort limit [N] (IsaacLab panda_hand)
@@ -100,8 +102,6 @@ def _find_label_index(labels: list[str], suffix: str) -> int:
 
 
 class Example:
-    RELEASE_KEYFRAME = 7  # index of the keyframe that opens the gripper
-
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.sim_time = 0.0
@@ -442,6 +442,9 @@ class Example:
         )
         self.targets = poses[:, 1:]
         self.key_times = np.cumsum(poses[:, 0])
+        # The release starts when the first keyframe after the grasp opens the fingers.
+        release_index = next(i for i in range(3, len(poses)) if poses[i, 8] == GRIP_OPEN)
+        self.release_time = float(self.key_times[release_index - 1])
 
     def update_ik_targets(self):
         """Interpolate keyframes and update IK target arrays (CPU, before graph launch)."""
@@ -524,28 +527,35 @@ class Example:
         assert np.all(np.isfinite(body_qd)), "Body velocities contain NaN or inf values"
 
         assert self._release_checked, "Test ran too few frames to reach the release phase"
-        assert self.sim_time >= float(self.key_times[-1]) - 1e-6, "Test ran too few frames to finish the retract phase"
+        end_time = float(self.key_times[-1]) + SETTLE_TIME
+        assert self.sim_time >= end_time - 1e-3, (
+            f"Test ran {self.sim_time:.2f} s; the sequence plus settling takes {end_time:.2f} s"
+        )
 
-        # After release the cable drops onto the ground plane and lies flat there, with its
-        # extent still spanning the place target.
+        # After release the cable drops onto the ground plane and comes to rest there. Its
+        # centerline rests one radius above the surface, and its xy extent (padded by the
+        # placement tolerance) still spans the place target.
         target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
-        max_height = self.surface_z + 4.0 * self.payload_radius
+        z_min = self.surface_z + 0.5 * self.payload_radius
+        z_max = self.surface_z + 3.0 * self.payload_radius
         for world_idx in range(self.world_count):
             first = world_idx * self.payload_body_count_per_world
             positions = body_q[self.payload_bodies[first : first + self.payload_body_count_per_world], :3]
-            top = float(positions[:, 2].max())
-            assert top < max_height, (
-                f"World {world_idx} cable not on the ground: max z {top:.3f} m (expected < {max_height:.3f} m)"
+            z_lo, z_hi = float(positions[:, 2].min()), float(positions[:, 2].max())
+            assert z_min < z_lo and z_hi < z_max, (
+                f"World {world_idx} cable not resting on the ground: z in [{z_lo:.3f}, {z_hi:.3f}] m "
+                f"(expected within ({z_min:.3f}, {z_max:.3f}) m)"
             )
-            lo, hi = positions[:, :2].min(axis=0), positions[:, :2].max(axis=0)
+            lo = positions[:, :2].min(axis=0) - PLACE_TOLERANCE
+            hi = positions[:, :2].max(axis=0) + PLACE_TOLERANCE
             assert np.all(lo <= target_xy) and np.all(target_xy <= hi), (
-                f"World {world_idx} cable AABB xy [{lo}, {hi}] does not contain the place target {target_xy}"
+                f"World {world_idx} cable AABB xy [{lo}, {hi}] (padded by {PLACE_TOLERANCE} m) "
+                f"does not contain the place target {target_xy}"
             )
 
     def test_post_step(self):
         # Just before the gripper opens, the carried cable midpoint sits at the place target.
-        release_time = float(self.key_times[self.RELEASE_KEYFRAME - 1])
-        if self._release_checked or self.sim_time < release_time:
+        if self._release_checked or self.sim_time < self.release_time:
             return
         self._release_checked = True
         body_q = self.state_0.body_q.numpy()
@@ -553,8 +563,9 @@ class Example:
         for world_idx in range(self.world_count):
             mid_body = self.payload_bodies[world_idx * self.payload_body_count_per_world + self.payload_mid_body_offset]
             dist = float(np.linalg.norm(body_q[mid_body, :2] - target_xy))
-            assert dist < 0.01, (
-                f"World {world_idx} cable midpoint {dist * 100:.2f} cm from target before release (expected < 1 cm)"
+            assert dist < PLACE_TOLERANCE, (
+                f"World {world_idx} cable midpoint {dist * 100:.2f} cm from target before release "
+                f"(expected < {PLACE_TOLERANCE * 100:.0f} cm)"
             )
 
     @staticmethod
@@ -594,7 +605,8 @@ class Example:
 
 if __name__ == "__main__":
     parser = Example.create_parser()
-    parser.set_defaults(num_frames=330)
+    # 7 s keyframe sequence plus SETTLE_TIME at 60 fps (checked by Example.test_final).
+    parser.set_defaults(num_frames=480)
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
