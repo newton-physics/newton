@@ -8268,15 +8268,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         model = self.model
         reuse = self._fk_id_none
         if self._reuse_kinematics_enabled:
-            # Carried terms belong to the state object they were published into. The check is host-side: a
-            # captured graph feeds its own publications to its own first stages and replays the same buffers, so
-            # it is skipped under capture (a drop recorded there would replay as a memset every launch); before
-            # the first publication the validity array is still zero and needs no drop.
-            if (
-                self._fk_id_source_state is not None
-                and state_in is not self._fk_id_source_state
-                and not model.device.is_capturing
-            ):
+            # Carried terms belong to the state object they were published into. The check is host-side, so a
+            # captured graph fixes the answer at capture: a step captured from the state it last published into
+            # keeps the carry on every replay, and one captured from another state records the drop and replays it
+            # (the step then recomputes its kinematics every launch, which is right for a caller that steps from
+            # the same input state again). Before the first publication the validity array is zero and needs no drop.
+            if self._fk_id_source_state is not None and state_in is not self._fk_id_source_state:
                 self._fk_id_valid.zero_()
             reuse = self._fk_id_valid
         else:
