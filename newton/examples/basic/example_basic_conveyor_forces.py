@@ -742,10 +742,12 @@ def track_transported_bodies(
 ):
     """Track each box's furthest displacement from its spawn and when it first leaves the circuit."""
     i = wp.tid()
-    p = wp.transform_get_translation(body_q[tracked_body_ids[i]])
+    tf = body_q[tracked_body_ids[i]]
+    p = wp.transform_get_translation(tf)
     max_travel[i] = wp.max(max_travel[i], wp.length(p - start_pos[i]))
-    # Written as a negated comparison so a non-finite height also counts as leaving the circuit.
-    if not (p[2] > min_supported_height) and fall_time[i] < 0.0:
+    # A non-finite pose also counts as leaving the circuit.
+    finite = wp.isfinite(p) and wp.isfinite(wp.transform_get_rotation(tf))
+    if (not finite or p[2] <= min_supported_height) and fall_time[i] < 0.0:
         fall_time[i] = sim_time
         fall_pos[i] = p
 
@@ -760,6 +762,9 @@ BELT_COLLISION_MARGIN = 0.015  # [m]
 BODY_COLLISION_MARGIN = 0.005  # [m]
 XPBD_ITERATIONS = 4
 VBD_ITERATIONS = 4
+# Per-body contact capacity for VBD. A box crossing the turns touches several convex turn pieces
+# at once, so it can need more than 64 contacts.
+VBD_RIGID_BODY_CONTACT_BUFFER_SIZE = 128
 # A frictional-to-normal impedance ratio below 1 softens the friction
 # constraints so boxes slip through the tight 180 degree turn instead of
 # wedging against the guide walls.
@@ -965,7 +970,7 @@ class Example:
                 iterations=VBD_ITERATIONS,
                 rigid_joint_linear_ke=1.0e2,
                 rigid_joint_angular_ke=1.0e2,
-                rigid_body_contact_buffer_size=64,
+                rigid_body_contact_buffer_size=VBD_RIGID_BODY_CONTACT_BUFFER_SIZE,
             )
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
