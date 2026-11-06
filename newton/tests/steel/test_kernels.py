@@ -1538,6 +1538,445 @@ add_function_test(
 )
 
 
+def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
+    """Reproduce the fused FK/ID kernel bitwise with the serial kinematics pass plus the per-body finaliser."""
+    model = _build_contact_scene(device)
+    # Only the solver's index maps and augmented buffers are used.
+    solver = SolverSteel(model)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    rng = np.random.default_rng(3)
+    state.joint_qd.assign(rng.normal(scale=0.7, size=model.joint_dof_count).astype(np.float32))
+    aug = solver._prepare_augmented_state(state)
+
+    def fresh():
+        return {
+            "body_q": wp.clone(state.body_q),
+            "body_q_com": wp.zeros_like(aug._body_q_com),
+            "origin": wp.zeros_like(solver._articulation_origin),
+            "joint_S_s": wp.zeros_like(aug._joint_S_s),
+            "body_I_s": wp.zeros_like(aug._body_I_s),
+            # The solver keeps a one-row stand-in for the inertia terms (it never asks for them); size them per body here.
+            "terms": wp.zeros((model.body_count, 12), dtype=wp.float32, device=device),
+            "body_v_s": wp.zeros_like(aug._body_v_s),
+            "body_f_s": wp.zeros_like(aug._body_f_s),
+            "body_a_s": wp.zeros_like(aug._body_a_s),
+            "body_qd": wp.zeros_like(state.body_qd),
+        }
+
+    for materialize_inertia, materialize_terms in ((1, 1), (0, 0), (1, 0)):
+        with test.subTest(inertia=materialize_inertia, terms=materialize_terms):
+            fused, split = fresh(), fresh()
+            common = [
+                model.articulation_start,
+                solver._articulation_joint_end,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_q_start,
+                model.joint_qd_start,
+                state.joint_q,
+                state.joint_qd,
+                model.joint_X_p,
+                model.joint_X_c,
+                solver._body_X_com,
+                model.joint_axis,
+                model.joint_dof_dim,
+                model.body_com,
+            ]
+            wp.launch(
+                steel_kernels.eval_rigid_fk_id,
+                dim=model.articulation_count,
+                inputs=[
+                    *common,
+                    model.body_mass,
+                    model.body_inertia,
+                    solver._is_free_rigid,
+                    materialize_inertia,
+                    materialize_terms,
+                    model.body_world,
+                    model.gravity,
+                    solver._dynamics_art_active,
+                ],
+                outputs=[
+                    fused["body_q"],
+                    fused["body_q_com"],
+                    fused["origin"],
+                    fused["joint_S_s"],
+                    fused["body_I_s"],
+                    fused["terms"],
+                    fused["body_v_s"],
+                    fused["body_f_s"],
+                    fused["body_a_s"],
+                ],
+                block_dim=16,
+                device=device,
+            )
+            wp.launch(
+                steel_kernels.update_body_qd_from_featherstone,
+                dim=model.body_count,
+                inputs=[
+                    fused["body_v_s"],
+                    fused["body_q"],
+                    model.body_com,
+                    solver._body_to_articulation,
+                    fused["origin"],
+                    solver._dynamics_body_active,
+                ],
+                outputs=[fused["body_qd"]],
+                device=device,
+            )
+            none = wp.zeros(model.articulation_count, dtype=wp.int32, device=device)
+            valid = wp.zeros(model.articulation_count, dtype=wp.int32, device=device)
+            wp.launch(
+                steel_kernels.eval_rigid_fk_kinematics,
+                dim=model.articulation_count,
+                inputs=[*common, solver._dynamics_art_active, none],
+                outputs=[
+                    split["body_q"],
+                    split["body_q_com"],
+                    split["origin"],
+                    split["joint_S_s"],
+                    split["body_v_s"],
+                    split["body_a_s"],
+                    valid,
+                ],
+                block_dim=16,
+                device=device,
+            )
+            np.testing.assert_array_equal(valid.numpy(), 1)
+            wp.launch(
+                steel_kernels.finalize_body_dynamics,
+                dim=model.body_count,
+                inputs=[
+                    solver._body_to_articulation,
+                    split["body_q"],
+                    split["body_q_com"],
+                    model.body_com,
+                    model.body_mass,
+                    model.body_inertia,
+                    solver._is_free_rigid,
+                    split["origin"],
+                    materialize_inertia,
+                    materialize_terms,
+                    model.body_world,
+                    model.gravity,
+                    split["body_v_s"],
+                    split["body_a_s"],
+                    solver._dynamics_body_active,
+                    none,
+                ],
+                outputs=[split["body_I_s"], split["terms"], split["body_f_s"], split["body_qd"]],
+                device=device,
+            )
+            for name in fused:
+                np.testing.assert_array_equal(split[name].numpy(), fused[name].numpy(), err_msg=name)
+
+
+def _carry_trajectory(model, steps, reuse, edit=None, dts=None, **options):
+    """Step with alternating state objects, applying ``edit(solver, state_in, step)`` between steps; record the states.
+
+    ``edit`` may return a replacement input state; ``dts`` gives each step's timestep.
+    """
+    solver = SolverSteel(model, reuse_kinematics=reuse, **options)
+    states = [model.state(), model.state()]
+    newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
+    control = model.control()
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    history = []
+    for step in range(steps):
+        if edit is not None:
+            replacement = edit(solver, states[0], step)
+            if replacement is not None:
+                states[0] = replacement
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, 1.0 / 240.0 if dts is None else dts[step])
+        history.append(
+            tuple(getattr(states[1], name).numpy().copy() for name in ("joint_q", "joint_qd", "body_q", "body_qd"))
+        )
+        states.reverse()
+    return solver, history
+
+
+def _assert_histories_close(test, expected, actual):
+    """Allow the roundoff of publishing body velocities through the solver's own kernel instead of eval_fk."""
+    for step, (want, got) in enumerate(zip(expected, actual, strict=True)):
+        for name, a, b in zip(("joint_q", "joint_qd", "body_q", "body_qd"), want, got, strict=True):
+            tolerance = 2.0e-4 if name.endswith("qd") else 2.0e-5
+            np.testing.assert_allclose(b, a, rtol=2.0e-5, atol=tolerance, err_msg=f"{name} at step {step}")
+
+
+def test_reused_kinematics_match_the_recomputed_trajectory(test, device):
+    """Carry the published kinematics into the next step and reproduce the recomputing solver.
+
+    The joint coordinates agree bitwise on the first step; the published body poses and velocities can
+    differ in their last bit from eval_fk's, which seeds roundoff-level differences afterwards.
+    """
+    model = _build_contact_scene(device)
+    reference_solver, reference = _carry_trajectory(model, 24, reuse=False)
+    carried_solver, carried = _carry_trajectory(model, 24, reuse=True)
+    test.assertFalse(reference_solver._reuse_kinematics_enabled)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    test.assertTrue(np.all(carried_solver._fk_id_valid.numpy() == 1))
+    for name, a, b in zip(("joint_q", "joint_qd"), reference[0][:2], carried[0][:2], strict=True):
+        np.testing.assert_array_equal(b, a, err_msg=f"{name} at the first step")
+    _assert_histories_close(test, reference, carried)
+
+
+def test_reused_kinematics_follow_resets_and_notices(test, device):
+    """Re-derive the carried terms after a masked reset, a state notice or a new input state; stay stale without them."""
+    model = _build_contact_scene(device)
+    world_mask = np.zeros(model.world_count + 1, dtype=bool)
+    world_mask[1] = True
+
+    def teleport(state):
+        joint_q = state.joint_q.numpy()
+        start = int(model.articulation_start.numpy()[int(np.flatnonzero(model.articulation_world.numpy() == 1)[0])])
+        q_start = int(model.joint_q_start.numpy()[start])
+        joint_q[q_start : q_start + 3] += 0.3
+        state.joint_q.assign(joint_q)
+
+    def reset_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            solver.reset(state, world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
+
+    def notice_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            solver.notify_state_changed(state)
+
+    def stale_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+
+    articulations = np.flatnonzero(model.articulation_world.numpy() == 1)
+    others = np.setdiff1d(np.arange(model.articulation_count), articulations)
+
+    def selected_notice_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            solver.notify_state_changed(state, world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
+            valid = solver._fk_id_valid.numpy()
+            np.testing.assert_array_equal(valid[articulations], 0)
+            np.testing.assert_array_equal(valid[others], 1)
+
+    def new_state_edit(solver, state, step):
+        if step == 8:
+            teleport(state)
+            fresh = model.state()
+            for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+                wp.copy(getattr(fresh, name), getattr(state, name))
+            return fresh
+        return None
+
+    _, reference = _carry_trajectory(model, 12, reuse=False, edit=stale_edit)
+    for label, edit in (
+        ("reset", reset_edit),
+        ("notice", notice_edit),
+        ("selected notice", selected_notice_edit),
+        ("new state", new_state_edit),
+    ):
+        with test.subTest(label):
+            _, carried = _carry_trajectory(model, 12, reuse=True, edit=edit)
+            _assert_histories_close(test, reference, carried)
+    with test.subTest("stale"):
+        _, stale = _carry_trajectory(model, 12, reuse=True, edit=stale_edit)
+        # Without a notice the step after the in-place write keeps the carried poses of the edited world.
+        test.assertGreater(np.abs(stale[8][2] - reference[8][2]).max(), 1.0e-2)
+        for step in range(8):
+            np.testing.assert_allclose(stale[step][2], reference[step][2], rtol=2.0e-5, atol=2.0e-5)
+
+
+def test_reused_kinematics_follow_a_timestep_change(test, device):
+    """Re-derive the carried terms when a timestep change forces a mass rebuild between cadence refreshes."""
+    model = _build_contact_scene(device)
+    dts = [1.0 / 120.0] * 6 + [1.0 / 240.0] * 6
+    _, reference = _carry_trajectory(model, 12, reuse=False, dts=dts, update_mass_matrix_interval=4)
+    carried_solver, carried = _carry_trajectory(model, 12, reuse=True, dts=dts, update_mass_matrix_interval=4)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    _assert_histories_close(test, reference, carried)
+
+
+def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, device):
+    """A step captured on a fresh solver and replayed from the same input gives the same result every replay."""
+    model = _build_contact_scene(device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    control = model.control()
+    names = ("joint_q", "joint_qd", "body_q", "body_qd")
+
+    def replays(reuse):
+        solver = SolverSteel(model, reuse_kinematics=reuse)
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        state_in.clear_forces()
+        pipeline.collide(state_in, contacts)
+        with wp.ScopedCapture(device) as capture:
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+        outputs = []
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+            outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
+        return solver, outputs
+
+    _, reference = replays(False)
+    carried_solver, carried = replays(True)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    for replay in (1, 2):
+        for name, first, later in zip(names, carried[0], carried[replay], strict=True):
+            np.testing.assert_array_equal(later, first, err_msg=f"{name} changed on replay {replay}")
+    _assert_histories_close(test, reference, carried)
+
+
+def test_extra_free_joints_keep_the_generic_publication(test, device):
+    """A FREE joint below another body, or a second free root, is published through eval_fk.
+
+    Their twists are referenced at the articulation origin, a convention eval_fk does not share.
+    """
+    for label, second_parent in (("free child", "root"), ("second free root", "world")):
+        with test.subTest(label):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            inertia = wp.mat33(np.eye(3) * 0.1)
+            root = builder.add_link(
+                xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+            other = builder.add_link(
+                xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+            first = builder.add_joint_free(root)
+            second = builder.add_joint_free(other, parent=root if second_parent == "root" else -1)
+            builder.add_articulation([first, second])
+            model = builder.finalize(device=device)
+            solver = SolverSteel(model, reuse_kinematics=True)
+            test.assertFalse(solver.reuse_kinematics)
+            state_in, state_out = model.state(), model.state()
+            joint_qd = np.zeros(model.joint_dof_count, dtype=np.float32)
+            joint_qd[5] = 3.0
+            joint_qd[6] = 0.2
+            joint_qd[11] = 3.0
+            state_in.joint_qd.assign(joint_qd)
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+            expected = model.state()
+            newton.eval_fk(model, state_out.joint_q, state_out.joint_qd, expected)
+            np.testing.assert_array_equal(state_out.body_qd.numpy(), expected.body_qd.numpy())
+
+
+def test_state_notice_validates_its_world_mask(test, device):
+    """Reject a short, host or non-boolean world mask as reset does, whether or not the carry runs."""
+    model = _build_contact_scene(device)
+    state = model.state()
+    bad_masks = (
+        (wp.ones(model.world_count, dtype=wp.bool, device=device), ValueError),
+        (wp.ones(model.world_count + 1, dtype=wp.bool, device="cpu"), ValueError),
+        (wp.ones(model.world_count + 1, dtype=wp.int32, device=device), TypeError),
+    )
+    for reuse in (True, False):
+        solver = SolverSteel(model, reuse_kinematics=reuse)
+        test.assertEqual(solver.reuse_kinematics, reuse)
+        for mask, error in bad_masks:
+            with test.subTest(reuse=reuse, shape=mask.shape, dtype=str(mask.dtype), device=str(mask.device)):
+                with test.assertRaisesRegex(error, "world_mask"):
+                    solver.notify_state_changed(state, world_mask=mask)
+        solver.notify_state_changed(state, world_mask=wp.ones(model.world_count + 1, dtype=wp.bool, device=device))
+
+
+def test_torsion_rollback_drops_the_carried_kinematics(test, device):
+    """A captured step whose torsion status latches rolls its outputs back; the carry must not outlive the rollback."""
+    model = _build_contact_scene(device)
+    set_torsion_radius(model, 0.01)
+    names = ("joint_q", "joint_qd", "body_q", "body_qd")
+
+    def replays(reuse):
+        solver = SolverSteel(model, reuse_kinematics=reuse, contact_torsion_device=True)
+        test.assertEqual(solver.reuse_kinematics, reuse)
+        states = [model.state(), model.state()]
+        newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+        contacts = pipeline.contacts()
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        with wp.ScopedCapture(device) as capture:
+            solver.step(states[0], states[1], control, contacts, 1.0 / 240.0)
+            solver.step(states[1], states[0], control, contacts, 1.0 / 240.0)
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+        # A latched error makes both captured steps roll their outputs back to their inputs.
+        solver._device_torsion.work.status.assign(np.array([16], dtype=np.int32))
+        wp.capture_launch(capture.graph)
+        # A masked reset clears the solver-wide status but drops no world's carried terms.
+        solver.reset(states[0], world_mask=wp.zeros(model.world_count + 1, dtype=wp.bool, device=device))
+        outputs = []
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+            outputs.append(tuple(getattr(states[0], name).numpy().copy() for name in names))
+        return outputs
+
+    _assert_histories_close(test, replays(False), replays(True))
+
+
+def test_captured_chain_with_a_refresh_interval_matches_the_recomputing_solver(test, device):
+    """Replay a captured two-step chain whose mass-refresh cadence is baked at capture, carrying against recomputing."""
+    model = _build_contact_scene(device)
+    names = ("joint_q", "joint_qd", "body_q", "body_qd")
+
+    def replays(reuse):
+        solver = SolverSteel(model, reuse_kinematics=reuse, update_mass_matrix_interval=4)
+        states = [model.state(), model.state()]
+        newton.eval_fk(model, model.joint_q, model.joint_qd, states[0])
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+        contacts = pipeline.contacts()
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        with wp.ScopedCapture(device) as capture:
+            solver.step(states[0], states[1], control, contacts, 1.0 / 240.0)
+            solver.step(states[1], states[0], control, contacts, 1.0 / 240.0)
+        outputs = []
+        for _ in range(6):
+            wp.capture_launch(capture.graph)
+            outputs.append(tuple(getattr(states[0], name).numpy().copy() for name in names))
+        return solver, outputs
+
+    _, reference = replays(False)
+    carried_solver, carried = replays(True)
+    test.assertTrue(carried_solver._reuse_kinematics_enabled)
+    _assert_histories_close(test, reference, carried)
+
+
+class TestSteelReusedKinematics(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_reused_kinematics_match_the_recomputed_trajectory,
+    test_reused_kinematics_follow_resets_and_notices,
+    test_reused_kinematics_follow_a_timestep_change,
+    test_captured_step_replays_the_same_result_from_an_unchanged_input,
+    test_extra_free_joints_keep_the_generic_publication,
+    test_state_notice_validates_its_world_mask,
+    test_torsion_rollback_drops_the_carried_kinematics,
+    test_captured_chain_with_a_refresh_interval_matches_the_recomputing_solver,
+):
+    add_function_test(TestSteelReusedKinematics, _fn.__name__, _fn, devices=cuda_devices)
+
+
+class TestSteelSplitKinematics(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelSplitKinematics,
+    "test_split_kinematics_match_the_fused_fk_id_kernel",
+    test_split_kinematics_match_the_fused_fk_id_kernel,
+    devices=get_test_devices(),
+)
+
+
 def _build_chains_on_boxes(device):
     """Two driven, limited chains, one resting on a free box, and a lone box, in two worlds."""
     world = newton.ModelBuilder()
