@@ -58,7 +58,7 @@ class G1DVI:
     explicitly with ``uvx --with virtualenv asv run --bench G1DVI``.
     """
 
-    version = "2"  # Measure consecutive samples from one warmed simulation.
+    version = "3"  # Retain speculative contacts and validate settled body velocities.
     params = [[4, 512]]
     param_names = ["world_count"]
     number = 1
@@ -68,6 +68,7 @@ class G1DVI:
     timeout = 600
 
     def setup(self, world_count):
+        """Prepare and settle a G1 DVI simulation with a pinned LLTBRCM backend."""
         if wp.get_cuda_device_count() == 0:
             raise SkipNotImplemented
 
@@ -78,7 +79,9 @@ class G1DVI:
         from newton.examples.robot.example_robot_g1 import Example  # noqa: PLC0415
         from newton.viewer import ViewerNull  # noqa: PLC0415
 
-        args = Example.create_parser().parse_args(["--solver", "kamino", "--world-count", str(world_count)])
+        args = Example.create_parser().parse_args(
+            ["--solver", "kamino", "--bilateral-solver-type", "LLTBRCM", "--world-count", str(world_count)]
+        )
         with wp.ScopedDevice("cuda:0"):
             self.example = Example(ViewerNull(), args)
             for _ in range(100):
@@ -87,11 +90,13 @@ class G1DVI:
         self._world_count = world_count
 
     def time_simulate(self, world_count):
+        """Measure 200 consecutive frames from the warmed simulation."""
         for _ in range(200):
             self.example.step()
         wp.synchronize_device(self.example.model.device)
 
     def teardown(self, world_count):
+        """Validate the settled robot poses and velocities after each timing sample."""
         self.example.test_final()
 
 

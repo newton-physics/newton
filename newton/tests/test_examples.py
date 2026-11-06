@@ -893,7 +893,21 @@ add_example_test(
 
 
 class TestRobotExamples(unittest.TestCase):
-    pass
+    def test_g1_kamino_velocity_validation(self):
+        """Reject moving bodies even when Warp extracts a lambda from source."""
+        from newton.examples.robot.example_robot_g1 import Example  # noqa: PLC0415
+
+        example = Example.__new__(Example)
+        example.solver_type = "kamino"
+        example.model = SimpleNamespace(body_count=1, body_label=["moving_body"])
+        example.state_0 = SimpleNamespace(
+            body_q=wp.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]], dtype=wp.transform, device="cpu"),
+            body_qd=wp.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.2]], dtype=wp.spatial_vector, device="cpu"),
+        )
+        with self.assertRaisesRegex(ValueError, "all body velocities are small"):
+            example.test_final()
+        example.state_0.body_qd.zero_()
+        example.test_final()
 
 
 def _test_robot_cartpole_capture_matches_eager(test, device):
@@ -980,9 +994,22 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
+    variants=[
+        {
+            "test_suffix": f"kamino_{backend}_{ordering or 'default'}",
+            "test_options": {
+                "usd_required": True,
+                "num-frames": 500,
+                "world-count": 4,
+                "solver": "kamino",
+                "bilateral-solver-type": backend,
+                **({"ldl-ordering": ordering} if ordering else {}),
+            },
+        }
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"))
+    ],
 )
 add_example_test(
     TestRobotExamples,
@@ -995,9 +1022,22 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
+    variants=[
+        {
+            "test_suffix": f"kamino_{backend}_{ordering or 'default'}",
+            "test_options": {
+                "usd_required": True,
+                "num-frames": 500,
+                "world-count": 4,
+                "solver": "kamino",
+                "bilateral-solver-type": backend,
+                **({"ldl-ordering": ordering} if ordering else {}),
+            },
+        }
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "rcm"))
+    ],
 )
 add_example_test(
     TestRobotExamples,
@@ -1851,7 +1891,17 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    # Cover both orderings for dense PADMM on one representative closed loop.
+    variants=[
+        {"test_options": {"num-frames": 120}},
+        *[
+            {
+                "test_suffix": f"ldl_{ordering}",
+                "test_options": {"num-frames": 120, "ldl": True, "ldl-ordering": ordering},
+            }
+            for ordering in ("meca", "rcm")
+        ],
+    ],
     use_viewer=True,
 )
 add_example_test(
@@ -1872,7 +1922,13 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_dr_legs",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    variants=[
+        {"test_options": {"num-frames": 120}},
+        {
+            "test_suffix": "dvi_ldl_meca",
+            "test_options": {"num-frames": 120, "dynamics-solver": "dvi", "use-kamino-contacts": True, "ldl": True},
+        },
+    ],
     use_viewer=True,
 )
 add_example_test(

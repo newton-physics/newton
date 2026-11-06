@@ -30,6 +30,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton import JointTargetMode, ModelFlags
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 @wp.kernel
@@ -67,6 +68,7 @@ def move_hand(
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the Allegro hand grasp simulation with the requested solver options."""
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -75,6 +77,8 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.solver_type = args.solver
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
         self.world_count = args.world_count
         if self.world_count is None:
             self.world_count = 100
@@ -150,6 +154,7 @@ class Example:
             solver_config.dvi.max_alternating_iterations = 8
             solver_config.dvi.bilateral_solve_interval = 8
             solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            configure_ldl(solver_config, args)
             solver_config.dvi.omega = 1.2
             solver_config.dvi.contact_warmstart_method = (
                 "key_and_position_with_net_force_backup_and_tangential_net_force"
@@ -278,7 +283,9 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=None)

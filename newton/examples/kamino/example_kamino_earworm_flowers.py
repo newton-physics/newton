@@ -40,6 +40,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.examples.kamino.utils.hoberman import generate_sphere
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 from newton.solvers import SolverKamino
 
 # Saturated colors distinguish the interlocking flower rings.
@@ -597,6 +598,7 @@ def advance_time(time: wp.array[float], dt: float):
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the animated earworm flower garden with the requested solver options."""
         self.viewer = viewer
         self.stage_count = args.stage_count if args else 20
         self.world_count = getattr(args, "world_count", 7) if args else 7
@@ -795,13 +797,14 @@ class Example:
         config.dynamics.preconditioning = False
         config.dynamics.linear_solver_type = "CR"
         config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-        config.dvi.bilateral_solver_type = "LLTBRCM"
-        config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
         config.dvi.tolerance = 1e-5
         config.dvi.regularization = 1e-8
         config.dvi.max_alternating_iterations = 4
         config.dvi.inequality_sweeps_per_iteration = 3
         config.dvi.bilateral_solve_interval = 1
+        config.dvi.bilateral_solver_type = "LLTBRCM"
+        config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+        configure_ldl(config, args)
         self.solver = SolverKamino(self.model, config=config)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -964,6 +967,8 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
+
         def positive_int(value: str) -> int:
             try:
                 result = int(value)
@@ -974,6 +979,7 @@ class Example:
             return result
 
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=7)
         parser.add_argument(
