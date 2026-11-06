@@ -965,8 +965,8 @@ def parse_urdf(
                 continue
 
             # The composed relation uses URDF units. Convert it to the imported joint coordinates.
-            follower_scale = scale if joint["type"] == "prismatic" else 1.0
-            reference_scale = scale if joints_by_name[mimic_target_name]["type"] == "prismatic" else 1.0
+            follower_scale = scale if joint["type"] in ("prismatic", "planar") else 1.0
+            reference_scale = scale if joints_by_name[mimic_target_name]["type"] in ("prismatic", "planar") else 1.0
             if reference_scale == 0.0:
                 raise ValueError("URDF scale must be nonzero for a prismatic mimic reference.")
             builder.set_joint_mimic(
