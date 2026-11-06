@@ -1,0 +1,1 @@
+Keep `SolverSteel`'s contact-torsion member lists when they and the matrix-free friction-pair cache do not fit in the solve kernel's static shared memory together, dropping the cache instead, so contact-rich worlds do not rescan every dense row for every torsion row. Results are bitwise identical. No migration is required.

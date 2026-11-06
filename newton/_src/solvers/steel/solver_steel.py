@@ -6144,21 +6144,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 "fuse_vel_limits": self._velocity_limits_fused,
             }
             mfgs_residency = {"world_count": self._world_count, "sm_count": int(getattr(model.device, "sm_count", 0))}
+            # The lists come first: without them each torsion row rescans every dense row, a cost that grows with
+            # contacts. The pair cache is added only if every world stays resident beside them.
+            self._mfgs_torsion_links = self._contact_torsion_enabled and _use_mfgs_torsion_links(
+                *mfgs_shape, **mfgs_metadata, pair_cache=False
+            )
             # The cache's prologue runs once per launch, so it pays off only when a launch runs several sweeps.
             self._mfgs_pair_cache = (
                 self._friction_mode == "fixed_normal"
                 and not self._paired_factor_coordinates
                 and not self._propagation_active
                 and self._row_schedule != "phased"
-                and _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency)
-            )
-            # With the pair cache, the lists must also keep every world resident.
-            self._mfgs_torsion_links = (
-                self._contact_torsion_enabled
-                and _use_mfgs_torsion_links(*mfgs_shape, **mfgs_metadata, pair_cache=self._mfgs_pair_cache)
-                and (
-                    not self._mfgs_pair_cache
-                    or _use_mfgs_pair_cache(*mfgs_shape, **mfgs_metadata, **mfgs_residency, torsion_links=True)
+                and _use_mfgs_pair_cache(
+                    *mfgs_shape, **mfgs_metadata, **mfgs_residency, torsion_links=self._mfgs_torsion_links
                 )
             )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
