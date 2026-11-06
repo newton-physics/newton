@@ -1,1 +1,1 @@
-Keep the Panda hydro pen horizontal until release, and prevent finger startup oscillations across replicated worlds.
+Keep the Panda hydro pen near horizontal until the grip loosens above the cup, and start and command the fingers within their joint limits.

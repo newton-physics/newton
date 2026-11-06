@@ -434,9 +434,9 @@ class Example:
         """Check pen orientation before release and track lift height."""
         # Track maximum object height for testing (only in test mode)
         body_q = self.state_0.body_q.numpy()
-        first_lift_start = sum(waypoint[1] for waypoint in self.waypoints[:2])
-        first_release_start = sum(waypoint[1] for waypoint in self.waypoints[:4])
-        check_pen_grip = self.scene == SceneType.PEN and first_lift_start <= self.sim_time < first_release_start
+        check_pen_grip = (
+            self.scene == SceneType.PEN and self.first_lift_start <= self.sim_time < self.first_release_start
+        )
         max_axis_z = np.sin(np.deg2rad(20.0))
 
         for world_idx in range(self.world_count):
@@ -564,9 +564,15 @@ class Example:
         self.waypoints = [
             [resting_pos, 1.0, no_grasp_pos, rot_hand],
             [grasping_pos, 1.0, no_grasp_pos, rot_hand],
-            [grasping_pos, 1.0, grasp_pos, rot_hand],
-            [resting_pos, 1.0, grasp_pos, rot_hand],
         ]
+        self.first_lift_start = sum(waypoint[1] for waypoint in self.waypoints)
+        self.waypoints.extend(
+            [
+                [grasping_pos, 1.0, grasp_pos, rot_hand],
+                [resting_pos, 1.0, grasp_pos, rot_hand],
+            ]
+        )
+        self.first_release_start = sum(waypoint[1] for waypoint in self.waypoints)
 
         if self.put_in_cup:
             loose_pos = 0.69
