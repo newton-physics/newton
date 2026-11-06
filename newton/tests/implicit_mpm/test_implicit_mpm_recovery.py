@@ -31,7 +31,7 @@ def test_contact_target(test, device):
         )
 
 
-def _make_contact_solver(device, height, velocity, fraction, gap):
+def _make_contact_solver(device, height, velocity, recovery_time, gap):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_particle(pos=(0.5, 0.5, height), vel=velocity, mass=1.0, radius=_PARTICLE_RADIUS)
@@ -46,7 +46,7 @@ def _make_contact_solver(device, height, velocity, fraction, gap):
         tolerance=0.0,
         warmstart_mode="none",
         air_drag=1.0e-6,
-        collider_recovery_fraction=fraction,
+        collider_recovery_time=recovery_time,
         collider_contact_gap=gap,
     )
     return model, SolverImplicitMPM(model, config=config)
@@ -55,7 +55,7 @@ def _make_contact_solver(device, height, velocity, fraction, gap):
 def test_contact_recovery_truncated(test, device):
     """Push a penetrating particle back to its radius from the surface over one-iteration P0 steps."""
     with wp.ScopedDevice(device):
-        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS - 0.02, (0.0, 0.0, 0.0), 0.25, 0.1)
+        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS - 0.02, (0.0, 0.0, 0.0), 0.35, 0.1)
         state = model.state()
         for _ in range(8):
             solver.step(state, state, None, None, 0.1)
@@ -67,7 +67,7 @@ def test_contact_recovery_truncated(test, device):
 def test_predictive_contact_truncated(test, device):
     """Stop an approaching particle with its center the larger of one radius and 0.25 voxel out, in one P0 iteration."""
     with wp.ScopedDevice(device):
-        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS + 0.6, (0.2, 0.0, -10.0), 0.25, 1.0)
+        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS + 0.6, (0.2, 0.0, -10.0), 0.35, 1.0)
         state = model.state()
         solver.step(state, state, None, None, 0.1)
         test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), max(_PARTICLE_RADIUS, 0.25), delta=2.0e-5)
@@ -77,7 +77,7 @@ def test_predictive_contact_truncated(test, device):
 def test_project_outside_keeps_particle_radius(test, device):
     """Project penetrating particles to one radius from collider surfaces with particle contacts only."""
     with wp.ScopedDevice(device):
-        model = _make_contact_solver(device, -0.05, (0.0, 0.0, 0.0), 0.0, 0.0)[0]
+        model = _make_contact_solver(device, -0.05, (0.0, 0.0, 0.0), None, 0.0)[0]
         # Projection lets particles sink up to the default threshold of 0.01 voxel
         threshold = 0.01
         for collider_basis, height in (("pic8", _PARTICLE_RADIUS - threshold), ("S2", -threshold)):
@@ -93,7 +93,7 @@ def test_project_outside_keeps_particle_radius(test, device):
 def test_sdf_gradient_normals_particle_contacts(test, device):
     """Keep particle contacts active with normals from the collider distance gradient, pointing out of colliders."""
     with wp.ScopedDevice(device):
-        model, _ = _make_contact_solver(device, 0.3, (0.0, 0.0, 0.0), 0.0, 0.0)
+        model, _ = _make_contact_solver(device, 0.3, (0.0, 0.0, 0.0), None, 0.0)
         model.set_gravity((0.0, 0.0, -10.0))
         config = SolverImplicitMPM.Config(
             voxel_size=1.0, collider_basis="pic8", collider_normal_from_sdf_gradient=True, air_drag=1.0e-6
@@ -139,7 +139,7 @@ def test_sdf_gradient_normals_particle_contacts(test, device):
         np.testing.assert_allclose(normals[0], np.tile((-1.0, 0.0, 0.0), (3, 1)), atol=1.0e-3)
 
 
-def _make_volume_solver(device, fraction, *, scheme="pic", target=1.0):
+def _make_volume_solver(device, recovery_time, *, scheme="pic", target=1.0):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     # A block of four voxels per axis, packed at 1.2 times its volume, wider than the 3-voxel density kernel
@@ -162,7 +162,7 @@ def _make_volume_solver(device, fraction, *, scheme="pic", target=1.0):
         solver="gs",
         max_iterations=3,
         tolerance=0.0,
-        volume_recovery_fraction=fraction,
+        volume_recovery_time=recovery_time,
         volume_recovery_target=target,
     )
     return model, SolverImplicitMPM(model, config=config)
@@ -173,9 +173,10 @@ def test_volume_recovery_truncated(test, device):
     with wp.ScopedDevice(device):
         for scheme in ("pic", "gimp"):
             extents = []
-            for fraction in (0.0, 0.1):
-                with test.subTest(scheme=scheme, fraction=fraction):
-                    model, solver = _make_volume_solver(device, fraction, scheme=scheme)
+            # 0.19 s at dt = 0.02 s corrects about a tenth of the overpacking per step
+            for recovery_time in (None, 0.19):
+                with test.subTest(scheme=scheme, recovery_time=recovery_time):
+                    model, solver = _make_volume_solver(device, recovery_time, scheme=scheme)
                     state = model.state()
                     for _ in range(10):
                         solver.step(state, state, None, None, 0.02)
@@ -191,7 +192,7 @@ def test_density_measures_elastic_volume(test, device):
         offsets = []
         for elastic_ratio in (1.0, 1.0 / 1.2):
             with test.subTest(elastic_ratio=elastic_ratio):
-                model, solver = _make_volume_solver(device, 0.1)
+                model, solver = _make_volume_solver(device, 0.19)
                 state = model.state()
                 state.mpm.particle_elastic_strain.fill_(wp.mat33(np.eye(3) * elastic_ratio ** (1.0 / 3.0)))
                 build_offset = solver._build_density_strain_offset
@@ -214,7 +215,7 @@ def test_volume_recovery_target(test, device):
         offsets = []
         for target in (1.0, 1.3):
             with test.subTest(target=target):
-                model, solver = _make_volume_solver(device, 0.1, target=target)
+                model, solver = _make_volume_solver(device, 0.19, target=target)
                 build_offset = solver._build_density_strain_offset
                 captured = []
 
@@ -259,7 +260,7 @@ def test_density_offset_bounded_in_p1d_modes(test, device):
             solver="gs",
             max_iterations=3,
             tolerance=0.0,
-            volume_recovery_fraction=0.25,
+            volume_recovery_time=0.07,
         )
         solver = SolverImplicitMPM(model, config=config)
         apply_transform = solver._apply_strain_basis_transform
@@ -402,15 +403,15 @@ def test_recovery_config_validation(test, device):
         builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.1)
         model = builder.finalize(device=device)
         for options in (
-            {"volume_recovery_fraction": float("nan")},
-            {"volume_recovery_fraction": -0.1},
-            {"volume_recovery_fraction": 1.1},
+            {"volume_recovery_time": float("nan")},
+            {"volume_recovery_time": 0.0},
+            {"volume_recovery_time": -0.1},
             {"volume_recovery_target": 0.0},
             {"volume_recovery_target": float("inf")},
             {"critical_fraction_measurement": "box"},
-            {"collider_recovery_fraction": float("inf")},
+            {"collider_recovery_time": float("inf")},
+            {"collider_recovery_time": 0.0},
             {"collider_contact_gap": -0.01},
-            {"collider_recovery_fraction": 0.1, "collider_basis": "S2"},
         ):
             with test.subTest(options=options), test.assertRaises(ValueError):
                 SolverImplicitMPM(model, config=SolverImplicitMPM.Config(**options))

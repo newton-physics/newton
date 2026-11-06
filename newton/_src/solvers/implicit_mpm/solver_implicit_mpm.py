@@ -257,6 +257,21 @@ class _DomainNamedPicQuadrature(fem.PicQuadrature):
 _PicQuadrature = fem.PicQuadrature if _WARP_AT_LEAST_1_19 else _DomainNamedPicQuadrature
 
 
+def _recovery_time(time: float | None, name: str) -> float | None:
+    """Validate a recovery time constant, ``None`` to disable."""
+    if time is None:
+        return None
+    time = float(time)
+    if not math.isfinite(time) or time <= 0.0:
+        raise ValueError(f"{name} must be None or finite and positive")
+    return time
+
+
+def _recovery_fraction(time: float, dt: float) -> float:
+    """Fraction of an error corrected over one step of ``dt`` with exponential decay over ``time``."""
+    return -math.expm1(-dt / time)
+
+
 def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
     try:
         max_points_per_cell = int(basis_str[3:])
@@ -1109,12 +1124,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Cell-local contact solver ordering may change.
         """
-        collider_recovery_fraction: float = 0.0
-        """Fraction of particle contact penetration corrected per step.
+        collider_recovery_time: float | None = None
+        """Time constant of particle contact penetration recovery [s].
 
-        Values in ``[0, 1]`` add an outward normal target velocity of
-        ``fraction * penetration / dt``. Zero disables penetration recovery.
-        Requires a particle collider basis (``"pic"`` or ``"picN"``).
+        Each step adds an outward normal target velocity of
+        ``(1 - exp(-dt / time)) * penetration / dt``, so penetration decays
+        over about this time whatever the step size. ``None`` disables
+        penetration recovery; 0.1 s is a reasonable starting value. Applies
+        to particle collider bases (``"pic"`` and ``"picN"``); grid collider
+        bases ignore it.
 
         .. experimental::
 
@@ -1133,26 +1151,26 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Predictive contact gaps may change without prior notice.
         """
-        volume_recovery_fraction: float = 0.0
-        """Fraction of particle overpacking corrected per step.
+        volume_recovery_time: float | None = None
+        """Time constant of particle overpacking recovery [s].
 
-        Values in ``[0, 1]`` add the nonpositive offset
-        ``fraction * min(target * available / measured - 1, 0)`` to the
-        divergence constraint, the volumetric strain that would bring the
+        Each step adds the nonpositive offset
+        ``(1 - exp(-dt / time)) * min(target * available / measured - 1, 0)``
+        to the divergence constraint, the volumetric strain that would bring the
         measured particle volume fraction back to :attr:`volume_recovery_target`
         times the space left free by colliders, with fractions from
         :attr:`volume_recovery_measurement`. The strain quadrature samples the
         offsets like the elastic strain, so they vary continuously as particles
         move. Overfilled regions produce negative offsets, requesting expansion.
         Underfilled regions, such as free surfaces, receive no correction.
-        Zero disables this feedback.
+        ``None`` disables this feedback; 0.1 s is a reasonable starting value.
 
         .. experimental::
 
             Density-based divergence feedback may change without prior notice.
         """
         volume_recovery_target: float = 1.0
-        """Packing fraction restored by :attr:`volume_recovery_fraction`.
+        """Packing fraction restored by :attr:`volume_recovery_time`.
 
         Particle volumes are ``(2 * radius)**3``, so particles spaced closer
         than their diameter fill more than the available space at rest; set
@@ -1165,7 +1183,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             Density-based divergence feedback may change without prior notice.
         """
         volume_recovery_measurement: Literal["grid", "particle"] = "grid"
-        """Measurement of the packing fractions for :attr:`volume_recovery_fraction`.
+        """Measurement of the packing fractions for :attr:`volume_recovery_time`.
 
         Each particle contributes its deformed volume, the reference volume
         times ``det(F_e)`` of its elastic deformation gradient. The measured
@@ -1795,9 +1813,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
 
-        self._volume_recovery_fraction = float(config.volume_recovery_fraction)
-        if not math.isfinite(self._volume_recovery_fraction) or not 0.0 <= self._volume_recovery_fraction <= 1.0:
-            raise ValueError("volume_recovery_fraction must be finite and in [0, 1]")
+        self._volume_recovery_time = _recovery_time(config.volume_recovery_time, "volume_recovery_time")
         self._volume_recovery_target = float(config.volume_recovery_target)
         if not math.isfinite(self._volume_recovery_target) or self._volume_recovery_target <= 0.0:
             raise ValueError("volume_recovery_target must be finite and positive")
@@ -1854,9 +1870,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         if self.gs_colored_contacts and not supports_colored_contacts:
             raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
-        self._collider_recovery_fraction = float(config.collider_recovery_fraction)
-        if not math.isfinite(self._collider_recovery_fraction) or not 0.0 <= self._collider_recovery_fraction <= 1.0:
-            raise ValueError("collider_recovery_fraction must be finite and in [0, 1]")
+        self._collider_recovery_time = _recovery_time(config.collider_recovery_time, "collider_recovery_time")
         if not math.isfinite(config.collider_contact_gap) or config.collider_contact_gap < 0.0:
             raise ValueError("collider_contact_gap must be finite and nonnegative")
         self._collider_contact_gap = (
@@ -1864,8 +1878,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             if self.collider_basis.startswith("pic")
             else 0.0
         )
-        if self._collider_recovery_fraction > 0.0 and not self.collider_basis.startswith("pic"):
-            raise ValueError("Collider recovery requires a particle collider basis")
+        if not self.collider_basis.startswith("pic"):
+            self._collider_recovery_time = None
         if self.collider_normal_from_sdf_gradient and self.collider_basis.startswith("pic") and not _WARP_AT_LEAST_1_19:
             raise ValueError("SDF-gradient normals for a particle collider basis require Warp 1.19 or newer")
 
@@ -3787,13 +3801,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
 
-            if self._collider_recovery_fraction > 0.0:
+            if self._collider_recovery_time is not None:
                 wp.launch(
                     stabilize_collider_velocity,
                     dim=collider_node_count,
                     inputs=[
                         dt,
-                        self._collider_recovery_fraction,
+                        _recovery_fraction(self._collider_recovery_time, dt),
                         scratch.collider_distance_field.dof_values,
                         scratch.collider_normal_field.dof_values,
                         scratch.collider_velocity,
@@ -3967,7 +3981,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         scratch.unilateral_strain_offset.zero_()
         if self._measures_density():
-            self._build_density_strain_offset(state_in, scratch, pic)
+            self._build_density_strain_offset(state_in, scratch, pic, dt)
 
         # Strain jacobian
         with self._timer("Strain matrix"):
@@ -4046,14 +4060,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _measures_density(self) -> bool:
         """Whether critical packing or density feedback needs a density measurement."""
-        return self._mpm_model.critical_fraction > 0.0 or self._volume_recovery_fraction > 0.0
+        return self._mpm_model.critical_fraction > 0.0 or self._volume_recovery_time is not None
 
     def _density_measurements(self) -> set[str]:
         """Measurements needed this step, among ``"grid"`` and ``"particle"``."""
         measurements = set()
         if self._mpm_model.critical_fraction > 0.0:
             measurements.add(self._critical_fraction_measurement)
-        if self._volume_recovery_fraction > 0.0:
+        if self._volume_recovery_time is not None:
             measurements.add(self._volume_recovery_measurement)
         return measurements
 
@@ -4062,6 +4076,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         state_in: newton.State,
         scratch: ImplicitMPMScratchpad,
         pic: fem.PicQuadrature,
+        dt: float,
     ):
         """Measure packing independently of the mass and strain quadrature.
 
@@ -4196,12 +4211,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     scratch.critical_strain_offset,
                 )
             )
-        if self._volume_recovery_fraction > 0.0:
+        if self._volume_recovery_time is not None:
             laws.append(
                 (
                     feedback_offset_values,
                     self._volume_recovery_measurement,
-                    (self._volume_recovery_fraction, self._volume_recovery_target),
+                    (_recovery_fraction(self._volume_recovery_time, dt), self._volume_recovery_target),
                     scratch.unilateral_strain_offset,
                 )
             )
