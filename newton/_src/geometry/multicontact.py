@@ -835,7 +835,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         position_b: wp.vec3,
         quaternion_a: wp.quat,
         quaternion_b: wp.quat,
-        minimum_distance: float,
     ) -> tuple[int, float]:
         """
         Extract up to 4 contact points from two convex contact polygons and write them immediately.
@@ -865,7 +864,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             position_b: World position of shape B (for post_process_contact).
             quaternion_a: Orientation of shape A (for post_process_contact).
             quaternion_b: Orientation of shape B (for post_process_contact).
-            minimum_distance: Support-plane lower bound on signed contact distance, including rounding tolerance [m].
 
         Returns:
             Tuple of (loop_count, normal_dot) where:
@@ -899,7 +897,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             else:
                 result = wp.vec4i(0, 1, 2, 3)
 
-            written_count = int(0)
             for i in range(loop_count):
                 ia = int(result[i])
 
@@ -911,23 +908,19 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 contact_point_local = 0.5 * (a + b)
                 signed_distance = wp.dot(b - a, normal_local)
 
-                # A manifold point cannot penetrate beyond the support-plane bound.
-                if signed_distance >= minimum_distance:
-                    # Transform from A-local to world space
-                    contact_point_world = wp.quat_rotate(orientation_a, contact_point_local) + position_a_world
+                # Transform from A-local to world space
+                contact_point_world = wp.quat_rotate(orientation_a, contact_point_local) + position_a_world
 
-                    contact_data = contact_template
-                    contact_data.contact_point_center = contact_point_world
-                    contact_data.contact_normal_a_to_b = normal_world
-                    contact_data.contact_distance = signed_distance
-                    contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | written_count
+                contact_data = contact_template
+                contact_data.contact_point_center = contact_point_world
+                contact_data.contact_normal_a_to_b = normal_world
+                contact_data.contact_distance = signed_distance
+                contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | i
 
-                    contact_data = post_process_contact(
-                        contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
-                    )
-                    writer_func(contact_data, writer_data, -1)
-                    written_count += 1
-            loop_count = written_count
+                contact_data = post_process_contact(
+                    contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
+                )
+                writer_func(contact_data, writer_data, -1)
         else:
             normal_dot = 0.0
             loop_count = 0
@@ -1308,14 +1301,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 count_out = 0
                 normal_dot = 0.0
             else:
-                support_a = support_func(geom_a, normal, data_provider)
-                support_b = (
-                    wp.quat_rotate(relative_orientation_b, support_func(geom_b, local_normal_b, data_provider))
-                    + relative_position_b
-                )
-                minimum_distance = wp.dot(support_b - support_a, normal)
-                # Account for float32 rounding when subtracting large support coordinates.
-                tolerance = EPS + 9.5367431640625e-7 * (wp.length(support_a) + wp.length(support_b))
                 num_manifold_points, normal_dot = extract_4_point_contact_manifolds(
                     a_buffer,
                     a_count,
@@ -1338,7 +1323,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                     position_b_ws,
                     quaternion_a_ws,
                     quaternion_b_ws,
-                    minimum_distance - tolerance,
                 )
                 count_out = wp.min(num_manifold_points, 4)
 
