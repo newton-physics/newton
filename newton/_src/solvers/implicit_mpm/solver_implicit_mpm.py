@@ -1137,15 +1137,28 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Fraction of particle overpacking corrected per step.
 
         Values in ``[0, 1]`` add the nonpositive offset
-        ``fraction * min(available / measured - 1, 0)`` to the divergence
-        constraint, the volumetric strain that would bring the measured
-        particle volume fraction back to the space left free by colliders,
-        with fractions from :attr:`volume_recovery_measurement`. The strain
-        quadrature samples the offsets like the elastic strain, so they vary
-        continuously as particles move. The target filling fraction is one.
-        Overfilled regions produce negative offsets, requesting expansion.
+        ``fraction * min(target * available / measured - 1, 0)`` to the
+        divergence constraint, the volumetric strain that would bring the
+        measured particle volume fraction back to :attr:`volume_recovery_target`
+        times the space left free by colliders, with fractions from
+        :attr:`volume_recovery_measurement`. The strain quadrature samples the
+        offsets like the elastic strain, so they vary continuously as particles
+        move. Overfilled regions produce negative offsets, requesting expansion.
         Underfilled regions, such as free surfaces, receive no correction.
         Zero disables this feedback.
+
+        .. experimental::
+
+            Density-based divergence feedback may change without prior notice.
+        """
+        volume_recovery_target: float = 1.0
+        """Packing fraction restored by :attr:`volume_recovery_fraction`.
+
+        Particle volumes are ``(2 * radius)**3``, so particles spaced closer
+        than their diameter fill more than the available space at rest; set
+        the target to their rest packing fraction to keep such material from
+        expanding. Values slightly above one leave room for measurement noise
+        in disordered packings. Must be positive.
 
         .. experimental::
 
@@ -1785,6 +1798,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._volume_recovery_fraction = float(config.volume_recovery_fraction)
         if not math.isfinite(self._volume_recovery_fraction) or not 0.0 <= self._volume_recovery_fraction <= 1.0:
             raise ValueError("volume_recovery_fraction must be finite and in [0, 1]")
+        self._volume_recovery_target = float(config.volume_recovery_target)
+        if not math.isfinite(self._volume_recovery_target) or self._volume_recovery_target <= 0.0:
+            raise ValueError("volume_recovery_target must be finite and positive")
         for name in ("volume_recovery_measurement", "critical_fraction_measurement"):
             if getattr(config, name) not in ("grid", "particle"):
                 raise ValueError(f"{name} must be 'grid' or 'particle', got {getattr(config, name)!r}")
@@ -4176,7 +4192,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 (
                     critical_offset_values,
                     self._critical_fraction_measurement,
-                    model.critical_fraction,
+                    (model.critical_fraction,),
                     scratch.critical_strain_offset,
                 )
             )
@@ -4185,16 +4201,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 (
                     feedback_offset_values,
                     self._volume_recovery_measurement,
-                    self._volume_recovery_fraction,
+                    (self._volume_recovery_fraction, self._volume_recovery_target),
                     scratch.unilateral_strain_offset,
                 )
             )
-        for law, measurement, parameter, output in laws:
+        for law, measurement, parameters, output in laws:
             measured, available = fractions[measurement]
             wp.launch(
                 law,
                 dim=particle_count,
-                inputs=[measured, available, model.material_particle_flags, parameter, values],
+                inputs=[measured, available, model.material_particle_flags, *parameters, values],
                 device=device,
             )
             fem.integrate(
