@@ -5113,6 +5113,7 @@ class ModelBuilder:
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
         parse_sites: bool = True,
+        parse_sensors: bool = False,
         parse_visuals: bool = True,
         parse_mujoco_options: bool = True,
         up_axis: AxisType = Axis.Z,
@@ -5234,6 +5235,9 @@ class ModelBuilder:
             parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+            parse_sensors: Whether the MJCF ``<sensor>`` section should be imported into the ``mujoco:sensor``
+                custom frequency, so :class:`~newton.solvers.SolverMuJoCo` exports native MuJoCo sensors.
+                Sensors add per-step cost to the solver. Default is False.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -5294,6 +5298,7 @@ class ModelBuilder:
             parse_visuals_as_colliders=parse_visuals_as_colliders,
             parse_meshes=parse_meshes,
             parse_sites=parse_sites,
+            parse_sensors=parse_sensors,
             parse_visuals=parse_visuals,
             parse_mujoco_options=parse_mujoco_options,
             up_axis=up_axis,
@@ -7837,6 +7842,17 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
+    def _check_fixed_joint_collapse_supported(self) -> None:
+        """Raise if :meth:`collapse_fixed_joints` cannot handle this builder's MuJoCo sensors.
+
+        Importers call this before adding entities, so a rejected collapse does
+        not leave a partial import in the builder.
+        """
+        if self._custom_frequency_counts.get("mujoco:sensor", 0):
+            # Merging bodies changes the frames and contacts MuJoCo sensors measure, and
+            # their object ids depend on the object type, so they cannot be remapped.
+            raise NotImplementedError("collapse_fixed_joints() does not support builders with MuJoCo sensors.")
+
     def collapse_fixed_joints(
         self,
         verbose: bool = False,
@@ -7858,6 +7874,7 @@ class ModelBuilder:
         """
         if self._body_variants:
             raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
+        self._check_fixed_joint_collapse_supported()
         joints_to_keep = set(joints_to_keep or ())
 
         # A FIXED joint outside every articulation whose child also has an articulated joint closes a loop (for

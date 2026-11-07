@@ -33,6 +33,7 @@ from ..solvers.mujoco.constants import (
 )
 from ..solvers.mujoco.enums import EqType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint
+from ..solvers.mujoco.sensors import _DEFAULT_INTPRM, _MANAGED_SENSOR_ATTRIBUTES, SensorType, _SensorObjType
 from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
@@ -502,6 +503,109 @@ def _load_and_expand_mjcf(
 AttributeFrequency = Model.AttributeFrequency
 
 
+# MJCF sensor tags and the SensorType they produce.
+_MJCF_SENSOR_TYPES: dict[str, SensorType] = {
+    "touch": SensorType.TOUCH,
+    "accelerometer": SensorType.ACCELEROMETER,
+    "velocimeter": SensorType.VELOCIMETER,
+    "gyro": SensorType.GYRO,
+    "force": SensorType.FORCE,
+    "torque": SensorType.TORQUE,
+    "magnetometer": SensorType.MAGNETOMETER,
+    "rangefinder": SensorType.RANGEFINDER,
+    "jointpos": SensorType.JOINTPOS,
+    "jointvel": SensorType.JOINTVEL,
+    "tendonpos": SensorType.TENDONPOS,
+    "tendonvel": SensorType.TENDONVEL,
+    "actuatorpos": SensorType.ACTUATORPOS,
+    "actuatorvel": SensorType.ACTUATORVEL,
+    "actuatorfrc": SensorType.ACTUATORFRC,
+    "jointactuatorfrc": SensorType.JOINTACTFRC,
+    "tendonactuatorfrc": SensorType.TENDONACTFRC,
+    "ballquat": SensorType.BALLQUAT,
+    "ballangvel": SensorType.BALLANGVEL,
+    "jointlimitpos": SensorType.JOINTLIMITPOS,
+    "jointlimitvel": SensorType.JOINTLIMITVEL,
+    "jointlimitfrc": SensorType.JOINTLIMITFRC,
+    "tendonlimitpos": SensorType.TENDONLIMITPOS,
+    "tendonlimitvel": SensorType.TENDONLIMITVEL,
+    "tendonlimitfrc": SensorType.TENDONLIMITFRC,
+    "framepos": SensorType.FRAMEPOS,
+    "framequat": SensorType.FRAMEQUAT,
+    "framexaxis": SensorType.FRAMEXAXIS,
+    "frameyaxis": SensorType.FRAMEYAXIS,
+    "framezaxis": SensorType.FRAMEZAXIS,
+    "framelinvel": SensorType.FRAMELINVEL,
+    "frameangvel": SensorType.FRAMEANGVEL,
+    "framelinacc": SensorType.FRAMELINACC,
+    "frameangacc": SensorType.FRAMEANGACC,
+    "subtreecom": SensorType.SUBTREECOM,
+    "subtreelinvel": SensorType.SUBTREELINVEL,
+    "subtreeangmom": SensorType.SUBTREEANGMOM,
+    "insidesite": SensorType.INSIDESITE,
+    "distance": SensorType.GEOMDIST,
+    "normal": SensorType.GEOMNORMAL,
+    "fromto": SensorType.GEOMFROMTO,
+    "contact": SensorType.CONTACT,
+    "e_potential": SensorType.E_POTENTIAL,
+    "e_kinetic": SensorType.E_KINETIC,
+    "clock": SensorType.CLOCK,
+}
+_MJCF_SITE_SENSORS = frozenset(
+    (
+        SensorType.TOUCH,
+        SensorType.ACCELEROMETER,
+        SensorType.VELOCIMETER,
+        SensorType.GYRO,
+        SensorType.FORCE,
+        SensorType.TORQUE,
+        SensorType.MAGNETOMETER,
+        SensorType.RANGEFINDER,
+    )
+)
+_MJCF_JOINT_SENSORS = frozenset(
+    (
+        SensorType.JOINTPOS,
+        SensorType.JOINTVEL,
+        SensorType.JOINTACTFRC,
+        SensorType.BALLQUAT,
+        SensorType.BALLANGVEL,
+        SensorType.JOINTLIMITPOS,
+        SensorType.JOINTLIMITVEL,
+        SensorType.JOINTLIMITFRC,
+    )
+)
+_MJCF_TENDON_SENSORS = frozenset(
+    (
+        SensorType.TENDONPOS,
+        SensorType.TENDONVEL,
+        SensorType.TENDONACTFRC,
+        SensorType.TENDONLIMITPOS,
+        SensorType.TENDONLIMITVEL,
+        SensorType.TENDONLIMITFRC,
+    )
+)
+_MJCF_ACTUATOR_SENSORS = frozenset((SensorType.ACTUATORPOS, SensorType.ACTUATORVEL, SensorType.ACTUATORFRC))
+_MJCF_SUBTREE_SENSORS = frozenset((SensorType.SUBTREECOM, SensorType.SUBTREELINVEL, SensorType.SUBTREEANGMOM))
+_MJCF_FRAME_SENSORS = frozenset(
+    (
+        SensorType.FRAMEPOS,
+        SensorType.FRAMEQUAT,
+        SensorType.FRAMEXAXIS,
+        SensorType.FRAMEYAXIS,
+        SensorType.FRAMEZAXIS,
+        SensorType.FRAMELINVEL,
+        SensorType.FRAMEANGVEL,
+        SensorType.FRAMELINACC,
+        SensorType.FRAMEANGACC,
+    )
+)
+# Bit order of the MJCF contact and rangefinder ``data`` attributes, and contact ``reduce`` modes.
+_MJCF_CONTACT_DATA = ("found", "force", "torque", "dist", "pos", "normal", "tangent")
+_MJCF_CONTACT_REDUCE = ("none", "mindist", "maxforce", "netforce")
+_MJCF_RANGEFINDER_DATA = ("dist", "dir", "origin", "point", "normal", "depth")
+
+
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
@@ -516,6 +620,7 @@ def parse_mjcf(
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
     parse_sites: bool = True,
+    parse_sensors: bool = False,
     parse_visuals: bool = True,
     parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
@@ -638,6 +743,9 @@ def parse_mjcf(
         parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_sensors: Whether the MJCF ``<sensor>`` section should be imported into the ``mujoco:sensor``
+            custom frequency, so :class:`~newton.solvers.SolverMuJoCo` exports native MuJoCo sensors.
+            Sensors add per-step cost to the solver. Default is False.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -682,6 +790,8 @@ def parse_mjcf(
             to False (identity translation matching MuJoCo 3.9 semantics).
     """
     # Early validation of base joint parameters
+    if collapse_fixed_joints:
+        builder._check_fixed_joint_collapse_supported()
     builder._validate_base_joint_params(floating, base_joint, parent_body)
 
     if override_root_xform and xform is None:
@@ -697,6 +807,12 @@ def parse_mjcf(
 
     if path_resolver is None:
         path_resolver = _default_path_resolver
+
+    if parse_sensors and (collapse_fixed_joints or collapse_massless_fixed_root):
+        raise ValueError(
+            "parse_sensors=True cannot be combined with collapse_fixed_joints or collapse_massless_fixed_root, "
+            "because merging bodies changes the frames that sensors measure."
+        )
 
     # Convert Path objects to string
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
@@ -3467,6 +3583,8 @@ def parse_mjcf(
     raw_site_name_to_idx: dict[str, int] = {}
     raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
+    # Maps authored MJCF actuator names to their mujoco:actuator row.
+    actuator_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
     articulation_label = root.attrib.get("model")
@@ -3917,6 +4035,164 @@ def parse_mjcf(
             return True
         return False
 
+    # Sensors skipped during import, grouped as "<tag> reason" -> count. Skipped asset
+    # content is reported once per file with ``logger.warning`` (see CODING_GUIDELINES.rst).
+    skipped_sensors: dict[str, int] = {}
+    skipped_site_sensors = 0
+
+    def skip_sensor(tag: str, reason: str) -> None:
+        key = f"<{tag}> {reason}"
+        skipped_sensors[key] = skipped_sensors.get(key, 0) + 1
+
+    def parse_sensor_section(sensor_section):
+        """Parse native MuJoCo sensors in XML order."""
+        nonlocal skipped_site_sensors
+        obj = _SensorObjType
+        builder_custom_attr_sensor = [
+            attr
+            for attr in builder.custom_attributes.values()
+            if attr.frequency == "mujoco:sensor" and attr.name not in _MANAGED_SENSOR_ATTRIBUTES
+        ]
+
+        def resolve(kind: int, name: str | None) -> int | None:
+            """Return the Newton index for an MJCF object reference, or ``None`` if unknown."""
+            if name is None:
+                return None
+            if kind in (obj.BODY, obj.XBODY):
+                return -1 if name == "world" else body_name_to_idx.get(sanitize_name(name))
+            if kind == obj.JOINT:
+                joint_key = sanitize_name(name)
+                if joint_key in mjcf_joint_name_to_dof:
+                    return mjcf_joint_name_to_dof[joint_key]
+                joint = joint_name_to_idx.get(joint_key)
+                return None if joint is None else int(builder.joint_qd_start[joint])
+            if kind == obj.GEOM:
+                return raw_geom_name_to_idx.get(name)
+            if kind == obj.SITE:
+                return raw_site_name_to_idx.get(name)
+            if kind == obj.TENDON:
+                return tendon_name_to_idx.get(sanitize_name(name))
+            if kind == obj.ACTUATOR:
+                return actuator_name_to_idx.get(name)
+            return None
+
+        frame_objtypes = {"body": obj.BODY, "xbody": obj.XBODY, "geom": obj.GEOM, "site": obj.SITE}
+
+        def first_of(attrib: dict[str, str], candidates: tuple[tuple[str, int], ...]) -> tuple[int, str | None]:
+            for key, kind in candidates:
+                if key in attrib:
+                    return int(kind), attrib[key]
+            return int(obj.UNKNOWN), None
+
+        def bit_flags(value: str | None, names: tuple[str, ...], default: int) -> int:
+            if value is None:
+                return default
+            flags = 0
+            for token in value.split():
+                flags |= 1 << names.index(token)
+            return flags
+
+        for sensor in sensor_section:
+            if not isinstance(sensor.tag, str):
+                continue
+            tag = sensor.tag
+            attrib = resolve_element_attrib(sensor, tag)
+            label = attrib.get("name", "")
+            description = f"<{tag}{f' name={label!r}' if label else ''}>"
+            stype = _MJCF_SENSOR_TYPES.get(tag)
+            if stype is None:
+                skip_sensor(tag, "is not supported")
+                continue
+            if tag == "rangefinder" and "camera" in attrib:
+                skip_sensor(tag, "on a camera is not supported")
+                continue
+
+            objtype, objname = int(obj.UNKNOWN), None
+            reftype, refname = int(obj.UNKNOWN), None
+            intprm = list(_DEFAULT_INTPRM.get(stype, (0, 0, 0)))
+            if stype in _MJCF_SITE_SENSORS:
+                objtype, objname = int(obj.SITE), attrib.get("site")
+            elif stype in _MJCF_JOINT_SENSORS:
+                objtype, objname = int(obj.JOINT), attrib.get("joint")
+            elif stype in _MJCF_TENDON_SENSORS:
+                objtype, objname = int(obj.TENDON), attrib.get("tendon")
+            elif stype in _MJCF_ACTUATOR_SENSORS:
+                objtype, objname = int(obj.ACTUATOR), attrib.get("actuator")
+            elif stype in _MJCF_SUBTREE_SENSORS:
+                objtype, objname = int(obj.BODY), attrib.get("body")
+            elif stype in _MJCF_FRAME_SENSORS or stype == SensorType.INSIDESITE:
+                frame_objtype = attrib.get("objtype", "")
+                if frame_objtype not in frame_objtypes:
+                    skip_sensor(tag, f"with objtype '{frame_objtype}' is not supported")
+                    continue
+                objtype, objname = int(frame_objtypes[frame_objtype]), attrib.get("objname")
+                if stype == SensorType.INSIDESITE:
+                    # MuJoCo Warp checks only the object origin, so full enclosure cannot be honored.
+                    if attrib.get("enclosed", "false").strip().lower() == "true":
+                        skip_sensor(tag, 'with enclosed="true" is not supported')
+                        continue
+                    reftype, refname = int(obj.SITE), attrib.get("site")
+                elif "reftype" in attrib or "refname" in attrib:
+                    frame_reftype = attrib.get("reftype", "")
+                    if frame_reftype not in frame_objtypes:
+                        skip_sensor(tag, f"with reftype '{frame_reftype}' is not supported")
+                        continue
+                    reftype, refname = int(frame_objtypes[frame_reftype]), attrib.get("refname")
+            elif stype in (SensorType.GEOMDIST, SensorType.GEOMNORMAL, SensorType.GEOMFROMTO):
+                objtype, objname = first_of(attrib, (("geom1", obj.GEOM), ("body1", obj.BODY)))
+                reftype, refname = first_of(attrib, (("geom2", obj.GEOM), ("body2", obj.BODY)))
+            elif stype == SensorType.CONTACT:
+                objtype, objname = first_of(
+                    attrib,
+                    (("geom1", obj.GEOM), ("body1", obj.BODY), ("subtree1", obj.XBODY), ("site", obj.SITE)),
+                )
+                reftype, refname = first_of(attrib, (("geom2", obj.GEOM), ("body2", obj.BODY), ("subtree2", obj.XBODY)))
+                try:
+                    intprm[0] = bit_flags(attrib.get("data"), _MJCF_CONTACT_DATA, intprm[0])
+                    intprm[1] = _MJCF_CONTACT_REDUCE.index(attrib.get("reduce", "none"))
+                except ValueError:
+                    skip_sensor(tag, "has invalid data or reduce attributes")
+                    continue
+                intprm[2] = int(attrib.get("num", intprm[2]))
+            if stype == SensorType.RANGEFINDER:
+                try:
+                    intprm[0] = bit_flags(attrib.get("data"), _MJCF_RANGEFINDER_DATA, intprm[0])
+                except ValueError:
+                    skip_sensor(tag, "has an invalid data attribute")
+                    continue
+
+            objid = resolve(objtype, objname) if objtype != int(obj.UNKNOWN) else -1
+            refid = resolve(reftype, refname) if reftype != int(obj.UNKNOWN) else -1
+            if objid is None or refid is None:
+                missing_type = objtype if objid is None else reftype
+                missing = objname if objid is None else refname
+                if missing_type == int(obj.SITE) and not parse_sites:
+                    skipped_site_sensors += 1
+                elif missing_type == int(obj.UNKNOWN) or missing is None:
+                    skip_sensor(tag, "has a missing or unsupported object type")
+                else:
+                    skip_sensor(tag, f"references '{missing}', which was not imported")
+                continue
+
+            sensor_attrs = parse_custom_attributes(attrib, builder_custom_attr_sensor, parsing_mode="mjcf")
+            sensor_values: dict[str, Any] = {
+                attr.key: sensor_attrs.get(attr.key, attr.default) for attr in builder_custom_attr_sensor
+            }
+            sensor_values.update(
+                {
+                    "mujoco:sensor_world": builder.current_world,
+                    "mujoco:sensor_type": int(stype),
+                    "mujoco:sensor_objtype": objtype,
+                    "mujoco:sensor_objid": int(objid),
+                    "mujoco:sensor_reftype": reftype,
+                    "mujoco:sensor_refid": int(refid),
+                    "mujoco:sensor_intprm": wp.vec3i(*intprm),
+                }
+            )
+            builder.add_custom_values(**sensor_values)
+            if verbose:
+                logger.info("Parsed MuJoCo sensor %s", description)
+
     def parse_actuators(actuator_section):
         """Preserve XML actuator order so direct-control indices remain stable."""
         for actuator_elem in actuator_section:
@@ -4235,7 +4511,10 @@ def parse_mjcf(
             actuator_values["mujoco:actuator_trntype"] = trntype
             actuator_values["mujoco:actuator_world"] = builder.current_world
 
-            builder.add_custom_values(**actuator_values)
+            actuator_row = builder.add_custom_values(**actuator_values)["mujoco:actuator_trnid"]
+            if "name" in merged_attrib:
+                # Keyed by authored name: sanitize_name can map distinct MJCF names to one key.
+                actuator_name_to_idx[merged_attrib["name"]] = actuator_row
 
             if verbose:
                 source_name = (
@@ -4272,6 +4551,22 @@ def parse_mjcf(
 
     for actuator_section in root.findall("actuator"):
         parse_actuators(actuator_section)
+
+    if parse_sensors:
+        if "mujoco:sensor_type" not in builder.custom_attributes:
+            SolverMuJoCo.register_custom_attributes(builder)
+        for sensor_section in root.findall("sensor"):
+            parse_sensor_section(sensor_section)
+        if skipped_site_sensors:
+            logger.debug("Skipped %d MJCF sensors on sites because parse_sites=False", skipped_site_sensors)
+        if skipped_sensors:
+            source_name = source if os.path.isfile(source) else root.attrib.get("model", "<MJCF string>")
+            logger.warning(
+                "Skipped %d MJCF sensors in %s: %s",
+                sum(skipped_sensors.values()),
+                source_name,
+                ", ".join(f"{count} x {reason}" for reason, count in skipped_sensors.items()),
+            )
 
     # -----------------
 

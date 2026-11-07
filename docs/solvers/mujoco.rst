@@ -238,9 +238,9 @@ Geometry types
 
 **Sites** (shapes with the ``SITE`` flag) are converted to MuJoCo sites —
 non-colliding reference frames used for sensor attachment and spatial
-tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``CYLINDER``, and
-``BOX`` are MuJoCo-native site geom types; other types silently fall
-back to ``SPHERE``. MuJoCo ignores the third size component of a cylinder
+tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``ELLIPSOID``,
+``CYLINDER``, and ``BOX`` are MuJoCo-native site geom types; other types
+silently fall back to ``SPHERE``. MuJoCo ignores the third size component of a cylinder
 site, so the MJCF importer sets ``scale[2]`` (Newton's barrel radius) of
 cylinder sites to ``0.0``.
 
@@ -898,6 +898,84 @@ parsed into MuJoCo's geom-pair contact structures by
 ``add_contact_pair`` from :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>`.
 
 
+Sensors
+-------
+
+Native MuJoCo sensors are stored as rows of the ``mujoco:sensor`` custom
+frequency and exported by ``SolverMuJoCo._init_sensors``. MJCF import is
+opt-in: ``builder.add_mjcf(path, parse_sensors=True)`` parses the
+``<sensor>`` section into these rows. ``add_sensor`` from
+:doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` authors them
+programmatically:
+
+.. code-block:: python
+
+    from newton.solvers import mujoco
+
+    mujoco.add_sensor(builder, "touch", mujoco.SensorObject.site(site), label="foot_touch")
+    mujoco.add_sensor(builder, mujoco.SensorType.JOINTPOS, mujoco.SensorObject.joint(joint))
+
+MuJoCo evaluates every exported sensor on each step, which adds solver cost;
+pass ``disable_sensors=True`` to :class:`~newton.solvers.SolverMuJoCo` to turn
+evaluation off without removing the sensors.
+
+Each row stores the MuJoCo sensor type with its object and reference
+entities. Joint objects are stored as Newton DOF indices, so a sensor can
+target one axis of a joint that Newton merged from several MJCF joints.
+Sensors of the template world and global sensors are exported in row order.
+MuJoCo computes their outputs during :meth:`~newton.solvers.SolverMuJoCo.step`
+and writes them to ``sensordata``; use
+:attr:`~newton.solvers.SolverMuJoCo.mjc_sensor_to_newton_sensor` together with
+``mj_model.sensor_adr`` and ``mj_model.sensor_dim`` to locate a row's values.
+For example, with ``use_mujoco_cpu=False``:
+
+.. code-block:: python
+
+    sensor = solver.mj_model.sensor("foot_touch")
+    adr, dim = sensor.adr[0], sensor.dim[0]
+    values = solver.mjw_data.sensordata[:, adr : adr + dim]  # [world_count, dim]
+
+With ``separate_worlds=True``, every world must define the template world's
+sensors in the same order, and sites whose volume a touch, contact, or
+in-site sensor measures must have the same scale in every world; otherwise
+the solver raises ``ValueError``. ``parse_sensors=True`` cannot be combined
+with ``collapse_fixed_joints`` or ``collapse_massless_fixed_root``, and
+:meth:`~newton.ModelBuilder.collapse_fixed_joints` rejects builders with
+sensors, because merging bodies changes the frames that sensors measure.
+
+Sensors with ``objtype="body"`` or ``reftype="body"`` use the body's inertial
+frame. The converted model can orient a body's principal axes of inertia
+differently from native MuJoCo, so orientations and reference-frame
+components of such sensors can differ, while positions and world-frame
+velocities match. Use ``xbody`` frames for orientations. An actuator sensor
+whose actuator expands into several MuJoCo actuators, for example a
+ball-joint position actuator, is skipped.
+
+As in native MuJoCo, :meth:`~newton.solvers.SolverMuJoCo.step` evaluates
+sensors before it integrates, so after ``step(state_in, state_out, ...)`` the
+values describe ``state_in``, not ``state_out``.
+
+Contact sensors match every contact MuJoCo detects, including inactive
+contacts inside the geom gap. The MJCF importer currently applies
+:attr:`~newton.ModelBuilder.rigid_gap` (``0.1`` m by default) to geoms that do
+not author ``gap``, whereas MuJoCo defaults to ``0``. Such models therefore
+report more ``found`` contacts than native MuJoCo, and a contact sensor with
+``reduce="none"`` may read an inactive contact with zero force. Set
+``builder.rigid_gap = 0.0`` before :meth:`~newton.ModelBuilder.add_mjcf` to
+reproduce MuJoCo's behavior; see
+`#1794 <https://github.com/newton-physics/newton/issues/1794>`__.
+
+Camera-projection, tactile, plugin, and user sensors are not supported. The
+MJCF importer skips them, as well as sensors that reference objects Newton
+does not import, and logs one grouped message per file. Sensors on sites
+dropped by ``parse_sites=False`` are skipped silently. Sensors whose objects
+are missing from the MuJoCo export, for example tendons that cannot be
+converted, are skipped and logged during solver construction. MJCF sensors
+have no USD equivalent: neither the MjcPhysics schema nor the Newton USD
+schemas define sensor prims. For solver-independent sensing, see
+:mod:`newton.sensors`.
+
+
 Multi-world support
 -------------------
 
@@ -1200,8 +1278,10 @@ other direction, MuJoCo has several modeling concepts that are not
 imported when loading an MJCF or USD asset into Newton, and that
 :class:`~newton.solvers.SolverMuJoCo` does not reconstruct during conversion:
 
-- **Sensors** (``<sensor>`` — force/torque, IMU, gyro, accelerometer,
-  rangefinder, touch, camera-based, …). Newton has its own sensor
+- **Some sensors.** ``<sensor>`` elements are imported only with
+  ``add_mjcf(..., parse_sensors=True)`` (see `Sensors`_). Camera-projection,
+  tactile, plugin, and user sensors, rangefinders on cameras, and frame
+  sensors on cameras are not supported. Newton also has its own sensor
   pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo
   solver.
 - **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
