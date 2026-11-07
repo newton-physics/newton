@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
 from typing import TYPE_CHECKING, Any
@@ -346,6 +347,7 @@ class Actuator:
             delay.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
+        self._last_applied_effort: wp.array[float] | None = None
 
         self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
 
@@ -479,7 +481,7 @@ class Actuator:
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self._effort_mode.is_graphable()
+        return self._effort_mode.is_graphable() and all(clamp.is_graphable() for clamp in self.clamping)
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -516,6 +518,8 @@ class Actuator:
         contribution. The buffer is reused by every step, so its address is
         stable under CUDA graph capture.
         """
+        if self._last_applied_effort is not None:
+            return self._last_applied_effort
         if isinstance(self._effort_mode, _EffortModeExplicit) and not self.clamping:
             return self._computed_forces
         return self._applied_forces
@@ -599,12 +603,15 @@ class Actuator:
                 "Stateful actuator requires both current_act_state and next_act_state; create them via actuator.state()"
             )
         stateful_clamping = self._stateful_clamping
-        if stateful_clamping and dt is None:
-            raise ValueError("Actuators with stateful clamping require dt.")
-        if stateful_clamping and len(current_act_state.clamping_states) != len(self.clamping):
-            raise ValueError(
-                "Actuator state was created for a different clamping list; create it again with actuator.state()."
-            )
+        if stateful_clamping:
+            if dt is None or not math.isfinite(dt) or dt <= 0.0:
+                raise ValueError(f"Actuators with stateful clamping require a positive, finite dt, got {dt}.")
+            for act_state in (current_act_state, next_act_state):
+                if len(act_state.clamping_states) != len(self.clamping):
+                    raise ValueError(
+                        "Actuator state was created for a different clamping list; "
+                        "create it again with actuator.state()."
+                    )
 
         positions = _require_array(sim_state, self.state_pos_attr)
         velocities = _require_array(sim_state, self.state_vel_attr)
@@ -668,6 +675,8 @@ class Actuator:
             custom_inputs,
             bias_force,
         )
+
+        self._last_applied_effort = output_forces
 
         # --- 5. Scatter-add to output ---
         applied_output = _require_array(sim_control, self.control_output_attr)

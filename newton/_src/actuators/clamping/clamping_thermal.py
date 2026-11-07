@@ -50,19 +50,27 @@ def _thermal_effort_limit_kernel(
     max_effort: wp.array[float],
     temperature_derating_start: wp.array[float],
     temperature_derating_end: wp.array[float],
+    temperature_cutoff: wp.array[float],
     temperature_winding: wp.array[float],
     cutoff_active: wp.array[wp.bool],
     effort_limit: wp.array[float],
 ):
-    """Effort bound from the winding temperature: linear derating, zero while cut off."""
+    """Effort bound from the winding temperature: linear derating, zero while cut off.
+
+    A winding at or above the cut-off temperature counts as cut off even before
+    the latch updates, e.g. right after a reset or a direct temperature write.
+    """
     i = wp.tid()
+    t_w = temperature_winding[i]
     limit = max_effort[i]
-    t_start = temperature_derating_start[i]
     t_end = temperature_derating_end[i]
     if t_end < wp.inf:
-        scale = wp.clamp((t_end - temperature_winding[i]) / (t_end - t_start), 0.0, 1.0)
-        limit = limit * scale
-    if cutoff_active[i]:
+        scale = wp.clamp((t_end - t_w) / (t_end - temperature_derating_start[i]), 0.0, 1.0)
+        if scale > 0.0:
+            limit = limit * scale
+        else:
+            limit = 0.0
+    if cutoff_active[i] or t_w >= temperature_cutoff[i]:
         limit = 0.0
     effort_limit[i] = limit
 
@@ -186,7 +194,12 @@ class ClampingThermal(ClampingBase):
 
     Place it after :class:`ClampingDCMotor` to combine the effort-speed
     envelope with the thermal limit. The heat comes from the effort the
-    actuator finally applied, after every clamp.
+    actuator finally applied, after every clamp, so a clamp placed after this
+    one, e.g. :class:`ClampingDCMotor` braking above its velocity limit, can
+    apply effort while the cut-off is active.
+
+    Temperatures are not differentiated: with ``requires_grad=True``,
+    gradients pass through the effort limit as a constant of the step.
 
     Every parameter is a per-actuator array that may be rewritten between
     steps, e.g. ``temperature_ambient`` for per-world randomization or
@@ -277,11 +290,20 @@ class ClampingThermal(ClampingBase):
         ):
             if not resolved[name] > 0:
                 raise ValueError(f"{name} must be positive, got {resolved[name]}")
+        for name, value in resolved.items():
+            if math.isnan(value):
+                raise ValueError(f"{name} must not be NaN")
+        for name in ("temperature_ambient", "temperature_reference", "heat_flow_housing"):
+            if not math.isfinite(resolved[name]):
+                raise ValueError(f"{name} must be finite, got {resolved[name]}")
         start, end = resolved["temperature_derating_start"], resolved["temperature_derating_end"]
         if math.isinf(start) != math.isinf(end):
             raise ValueError("temperature_derating_start and temperature_derating_end must both be set")
-        if not math.isinf(end) and not start < end:
-            raise ValueError(f"temperature_derating_start ({start}) must be below temperature_derating_end ({end})")
+        if not math.isinf(end):
+            if not start < end:
+                raise ValueError(f"temperature_derating_start ({start}) must be below temperature_derating_end ({end})")
+            if not math.isfinite(resolved["max_effort"]):
+                raise ValueError("max_effort must be finite when derating is enabled")
         if resolved["temperature_release"] > resolved["temperature_cutoff"]:
             raise ValueError(
                 f"temperature_release ({resolved['temperature_release']}) must not exceed "
@@ -343,6 +365,8 @@ class ClampingThermal(ClampingBase):
         """
         values = locals()
         shape = max_effort.shape
+        if max_effort.ndim != 1:
+            raise ValueError(f"max_effort must be one-dimensional, got shape {shape}")
         for name in _ARRAY_PARAMS:
             array = values[name]
             if array.shape != shape:
@@ -352,6 +376,10 @@ class ClampingThermal(ClampingBase):
         """Effort bound applied in the last step [N or N·m]: ``max_effort``
         after derating and cut-off. Refreshed from the state at the start of
         every step. Shape ``(N,)``."""
+
+    def finalize(self, device: wp.Device, num_actuators: int) -> None:
+        if len(self.max_effort) != num_actuators:
+            raise ValueError(f"ClampingThermal has {len(self.max_effort)} entries but the actuator has {num_actuators}")
 
     def is_stateful(self) -> bool:
         return True
@@ -392,6 +420,7 @@ class ClampingThermal(ClampingBase):
                 self.max_effort,
                 self.temperature_derating_start,
                 self.temperature_derating_end,
+                self.temperature_cutoff,
                 state.temperature_winding,
                 state.cutoff_active,
             ],

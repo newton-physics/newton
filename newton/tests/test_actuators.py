@@ -3235,18 +3235,58 @@ class TestClampingThermal(unittest.TestCase):
             joint_act=wp.full(n, 90.0, dtype=wp.float32),
             joint_f=wp.zeros_like(zeros),
         )
-        with self.assertRaisesRegex(ValueError, "different clamping list"):
-            actuator.step(sim_state, sim_control, stale, actuator.state(), dt=1.0e-3)
+        for current, nxt in ((stale, actuator.state()), (actuator.state(), stale)):
+            with self.assertRaisesRegex(ValueError, "different clamping list"):
+                actuator.step(sim_state, sim_control, current, nxt, dt=1.0e-3)
+        np.testing.assert_array_equal(sim_control.joint_f.numpy(), 0.0)
         state, nxt = actuator.state(), actuator.state()
         state.clamping_states[1].temperature_winding.assign(np.array([25.0, 80.0], dtype=np.float32))
         actuator.step(sim_state, sim_control, state, nxt, dt=1.0e-3)
         np.testing.assert_allclose(sim_control.joint_f.numpy(), [80.0, 40.0], atol=1e-4)
 
     def test_step_requires_dt(self):
-        """Reject a step without dt when a clamp is stateful."""
+        """Reject a missing, zero, negative, or non-finite dt before applying effort."""
         actuator, _, sim_state, sim_control = self._setup()
-        with self.assertRaisesRegex(ValueError, "require dt"):
-            actuator.step(sim_state, sim_control, actuator.state(), actuator.state())
+        sim_control.joint_act.fill_(10.0)
+        for dt in (None, 0.0, -1.0e-3, math.inf, math.nan):
+            with self.assertRaisesRegex(ValueError, "positive, finite dt"):
+                actuator.step(sim_state, sim_control, actuator.state(), actuator.state(), dt=dt)
+        np.testing.assert_array_equal(sim_control.joint_f.numpy(), 0.0)
+
+    def test_hot_winding_is_cut_off_before_the_latch_updates(self):
+        """Apply no effort from a winding written above the cut-off, before the latch has engaged."""
+        actuator, _, sim_state, sim_control = self._setup(n=2, temperature_cutoff=100.0, temperature_release=80.0)
+        state, nxt = actuator.state(), actuator.state()
+        state.clamping_states[0].temperature_winding.assign(np.array([95.0, 110.0], dtype=np.float32))
+        sim_control.joint_act.fill_(50.0)
+        actuator.step(sim_state, sim_control, state, nxt, dt=1.0e-3)
+        np.testing.assert_allclose(sim_control.joint_f.numpy(), [50.0, 0.0])
+        np.testing.assert_array_equal(nxt.clamping_states[0].cutoff_active.numpy(), [False, True])
+
+    def test_custom_clamp_graphability(self):
+        """Report an actuator as not graphable when one of its clamps is not."""
+
+        class _HostClamp(ClampingMaxEffort):
+            def is_graphable(self) -> bool:
+                return False
+
+        n = 2
+        zeros = wp.zeros(n, dtype=wp.float32)
+        kwargs = {"indices": wp.array(np.arange(n), dtype=wp.uint32), "drive": DrivePD(kp=zeros, kd=zeros)}
+        self.assertTrue(Actuator(**kwargs, clamping=[_thermal_clamp(n)]).is_graphable())
+        self.assertFalse(
+            Actuator(**kwargs, clamping=[_HostClamp(max_effort=wp.ones(n, dtype=wp.float32))]).is_graphable()
+        )
+
+    def test_rejects_mismatched_array_lengths(self):
+        """Reject thermal arrays that do not match the actuator count."""
+        zeros = wp.zeros(2, dtype=wp.float32)
+        with self.assertRaisesRegex(ValueError, "1 entries but the actuator has 2"):
+            Actuator(
+                indices=wp.array([0, 1], dtype=wp.uint32),
+                drive=DrivePD(kp=zeros, kd=zeros),
+                clamping=[_thermal_clamp(1)],
+            )
 
     def test_resolve_arguments_validation(self):
         """Reject inconsistent thermal parameters."""
@@ -3258,6 +3298,10 @@ class TestClampingThermal(unittest.TestCase):
             ClampingThermal.resolve_arguments({"temperature_cutoff": 90.0, "temperature_release": 95.0})
         with self.assertRaisesRegex(ValueError, "heat_capacity_winding"):
             ClampingThermal.resolve_arguments({"heat_capacity_winding": 0.0})
+        with self.assertRaisesRegex(ValueError, "max_effort must be finite"):
+            ClampingThermal.resolve_arguments({"temperature_derating_start": 60.0, "temperature_derating_end": 80.0})
+        with self.assertRaisesRegex(ValueError, "temperature_cutoff must not be NaN"):
+            ClampingThermal.resolve_arguments({"temperature_cutoff": math.nan})
         self.assertEqual(ClampingThermal.resolve_arguments({"temperature_cutoff": 90.0})["temperature_release"], 90.0)
 
     def test_implicit_mode_respects_thermal_limit(self):

@@ -75,6 +75,14 @@ class ClampingBase:
         """Return True if this clamp maintains internal state."""
         return False
 
+    def is_graphable(self) -> bool:
+        """Return True if this clamp can be captured in a CUDA graph.
+
+        Override to return False when :meth:`modify_forces`, :meth:`prepare`, or
+        :meth:`update_state` synchronize with the host.
+        """
+        return True
+
     def state(self, num_actuators: int, device: wp.Device) -> ClampingBase.State | None:
         """Create and return a new state object, or None if stateless."""
         return None
