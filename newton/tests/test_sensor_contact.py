@@ -1016,7 +1016,7 @@ class TestSensorContactSteel(unittest.TestCase):
         mass_a, mass_b = 45.0, 4.0  # kg (from density * volume)
 
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
-        solver = SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split", iterations=32)
+        solver = SolverSteel(model, iterations=32)
         sensor = SensorContact(
             model, request_contact_attributes=False, sensing_bodies=["a", "b"], counterpart_shapes="*"
         )
