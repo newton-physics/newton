@@ -779,13 +779,15 @@ def compare_geom_fields_unordered(
     assert np.all(newton_to_native >= 0), "Failed to match all geoms"
 
     def _as_batched(arr: Any) -> np.ndarray:
-        # Per-geom fields are (ngeom, ...) or batched (nworld, ngeom, ...). Use the
-        # warp array's ndim: the numpy view adds a trailing axis for vector types.
+        """Return a per-geom field as (nworld, ngeom, ...), adding a world axis if needed.
+
+        Uses the warp array's ndim: the numpy view adds a trailing axis for vector types.
+        """
         arr_np = arr.numpy()
         return arr_np if arr.ndim == 2 else arr_np[np.newaxis]
 
     def _assert_matched(field_name: str, newton_np: np.ndarray, native_np: np.ndarray, geom_mask: np.ndarray):
-        # native_np is already reordered to Newton's geom order.
+        """Assert masked geoms match per world; native_np is already in Newton's geom order."""
         assert newton_np.shape == native_np.shape, f"{field_name}: shape {newton_np.shape} != {native_np.shape}"
         for w in range(newton_np.shape[0]):
             mismatch = ~np.isclose(newton_np[w], native_np[w], rtol=0.0, atol=tol, equal_nan=True)
@@ -812,7 +814,6 @@ def compare_geom_fields_unordered(
         "geom_margin",
         "geom_gap",
         "geom_solmix",
-        "geom_solref",
         "geom_solimp",
         "geom_group",
     ]
@@ -2598,15 +2599,18 @@ class TestCompareGeomFieldsUnordered(unittest.TestCase):
 
     @staticmethod
     def _put_model(geoms: list[str]) -> Any:
+        """Build a mujoco_warp model of one hinged body carrying the given geoms."""
         xml = f'<mujoco><worldbody><body pos="0 0 1"><joint axis="0 0 1"/>{"".join(geoms)}</body></worldbody></mujoco>'
         return _mujoco_warp.put_model(_mujoco.MjModel.from_xml_string(xml))
 
     def test_reordered_geoms_compare_equal(self):
+        """Models that differ only in geom declaration order compare equal."""
         ref = self._put_model([self.BOX, self.SPHERE])
         reordered = self._put_model([self.SPHERE, self.BOX])
         compare_models(ref, reordered, skip_fields=DEFAULT_MODEL_SKIP_FIELDS)
 
     def test_reordered_geom_mismatch_detected(self):
+        """A geom field that differs on a reordered geom is reported unless skipped."""
         ref = self._put_model([self.BOX, self.SPHERE])
         for field, old, new in (
             ("geom_group", 'group="3"', 'group="2"'),
@@ -2619,6 +2623,13 @@ class TestCompareGeomFieldsUnordered(unittest.TestCase):
                 # The explicit skips still take effect.
                 compare_models(ref, changed, skip_fields=DEFAULT_MODEL_SKIP_FIELDS | {field})
                 compare_models(ref, changed, skip_fields=DEFAULT_MODEL_SKIP_FIELDS | {"geom_"})
+        # A size change also changes mass and inertia, so check the type-aware size
+        # comparison through the helper alone.
+        with self.subTest(field="geom_size"):
+            changed = self._put_model([self.SPHERE.replace('size="0.05"', 'size="0.07"'), self.BOX])
+            with self.assertRaisesRegex(AssertionError, "geom_size"):
+                compare_geom_fields_unordered(ref, changed)
+            compare_geom_fields_unordered(ref, changed, skip_fields={"geom_size"})
 
 
 # =============================================================================
