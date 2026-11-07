@@ -33,6 +33,13 @@ jobs:
         run: uv python install
       - name: Build a binary wheel
         run: uv build --wheel
+      - name: Check installed-wheel documentation
+        run: |
+          uv venv /tmp/newton-wheel-check
+          uv pip install --python /tmp/newton-wheel-check/bin/python dist/*.whl
+          cp scripts/ci/check_wheel_docs.py /tmp/check_wheel_docs.py
+          cd /tmp
+          uv run --no-project --python /tmp/newton-wheel-check/bin/python python -I /tmp/check_wheel_docs.py
       - name: Store the distribution packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:

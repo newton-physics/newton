@@ -381,6 +381,31 @@ To build the documentation locally, ensure you have the documentation dependenci
 
 The built documentation will be available in ``docs/_build/html``.
 
+Use Python 3.11 or later for documentation rendering.
+
+To generate searchable Markdown with resolved API content and an alphabetical
+API index, run:
+
+.. code-block:: console
+
+    uv run --extra docs docs/build_markdown.py docs/_build/markdown
+
+This command stages a temporary source tree, leaves tracked sources untouched,
+and does not execute notebooks or fetch external documentation inventories.
+The Markdown builder is ``sphinx-markdown-builder`` (MIT licensed), with a
+small Newton extension for unsupported node types.
+
+Distributable wheels automatically include a documentation snapshot generated
+from their own sources. ``uv build`` includes the canonical docs and build
+support in the sdist, then builds the wheel from that sdist. A small build
+wrapper runs rendering and delegates packaging, metadata, and editable installs
+to ``uv_build``. Build wheels with Python 3.11 or later. Rendering requires
+the declared build dependencies and Pandoc, supplied by ``pypandoc_binary``
+where available; Windows ARM64 source builds need Pandoc installed separately.
+Optional USD type annotations use Sphinx's normal mock-import support when
+USD is unavailable. Notebook cells are never executed for packaging. Editable
+installs skip snapshot generation; their canonical sources remain in ``docs/``.
+
 .. note::
 
     The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.
