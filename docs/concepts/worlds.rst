@@ -269,8 +269,9 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    Call :meth:`~newton.ModelBuilder.approximate_meshes` on the sub-builder
    **before** passing it to :meth:`~newton.ModelBuilder.replicate`.
    Replication copies mesh references across worlds, so approximating first
-   produces a single simplified copy shared by all worlds; approximating
-   afterwards allocates one copy per replicated shape.
+   simplifies each mesh once and shares the result across all worlds;
+   approximating afterwards produces the same shared result but processes
+   every replicated shape.
 
 .. testcode::
 

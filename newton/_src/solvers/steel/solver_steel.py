@@ -17,7 +17,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...core.types import MAXVAL, override
-from ...exceptions import NewtonWarning
+from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry.flags import MeshProperties, ShapeFlags
 from ...geometry.utils import _scan_scratch_size, scan_with_total
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
@@ -30,9 +30,12 @@ from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
     prepare_torsion_velocity_pass,
+    torque_links_shared_bytes,
+    torque_links_source,
     torque_sweep_source,
     validate_torsion_step,
 )
+from .cpu_fallback import pgs_solve_mf_gs_cpu, pgs_solve_propagation_contact_cpu, reject_cpu_unsupported_features
 from .friction import FRICTION_PAIR_CUDA, coupled_contact_cuda
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
@@ -71,7 +74,6 @@ from .kernels import (
     accumulate_sparse_diagonal_response_diag,
     accumulate_torsion_wrenches_from_impulses,
     advance_world_contact_counters,
-    advance_world_row_counters,
     allocate_connect_slots,
     allocate_joint_velocity_limit_slots,
     allocate_mimic_slots,
@@ -82,13 +84,11 @@ from .kernels import (
     apply_free_root_damping,
     apply_free_root_transport_to_predictor,
     apply_free_root_velocity_corrections,
-    apply_impulses_world_par_dof,
     apply_mf_warmstart_impulses,
     apply_sparse_diagonal_contact_restitution,
     apply_world_contact_restitution,
     apply_world_impulses_to_velocity,
     assign_world_contact_slots,
-    assign_world_row_slots,
     build_joint_limit_rows,
     build_mass_update_mask,
     build_mf_body_map,
@@ -97,6 +97,7 @@ from .kernels import (
     build_propagation_body_map_ordered,
     build_propagation_body_map_partitioned,
     build_propagation_contact_rows,
+    check_fk_id_source,
     cholesky_loop,
     classify_local_solve_worlds,
     clear_local_solve_diag,
@@ -107,7 +108,6 @@ from .kernels import (
     compute_compact_diagonal_inverse_mass,
     compute_composite_inertia,
     compute_contact_spatial_force_from_impulses,
-    compute_delta_and_accumulate,
     compute_dense_contact_bounds,
     compute_effective_joint_armature,
     compute_free_root_rotation,
@@ -129,18 +129,18 @@ from .kernels import (
     copy_unarticulated_body_state,
     count_propagation_joint_split,
     crba_fill_par_dof,
-    delassus_par_row_col,
     diag_from_JY_par_art,
     diag_from_JY_world,
     eval_augmented_drives,
     eval_joint_friction_load,
     eval_post_solve_parent_wrenches,
-    eval_rigid_fk_id,
+    eval_rigid_fk_kinematics,
     eval_rigid_tau,
     eval_rigid_tau_and_augmented_drives,
     factor_diagonal_mass,
     factor_propagation_tree_for_size,
     fill_contact_family_sort_keys,
+    finalize_body_dynamics,
     finalize_mf_constraint_counts,
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
@@ -154,7 +154,6 @@ from .kernels import (
     gather_JY_to_world,
     gather_propagation_unit_meta,
     gather_tau_to_groups,
-    gather_world_row_requests,
     hinv_jt_diagonal,
     hinv_jt_par_row,
     hinv_jt_par_row_contact_fallback,
@@ -162,8 +161,7 @@ from .kernels import (
     invert_lower_factor_grouped,
     local_solve_launch_gate,
     mark_propagation_bodies,
-    pgs_solve_loop,
-    pgs_solve_mf_loop,
+    mask_passive_spring_stiffness,
     populate_connect_J_for_size,
     populate_joint_velocity_limit_J_for_size,
     populate_mimic_J_for_size,
@@ -180,14 +178,15 @@ from .kernels import (
     prepare_world_impulses,
     prescale_joint_velocity_limits,
     propagate_tree_impulses_for_size,
+    publish_fk_id_source,
     refine_same_articulation_propagation_rows,
     refresh_masked_body_inertia,
     refresh_propagation_free_body_qd_from_vout,
     refresh_propagation_tree_body_qd_for_size,
     remove_free_root_transport_from_qdd,
+    reserve_world_row_slots,
+    reserve_world_row_slots_serial,
     reset_row_warmstart,
-    rhs_accum_world_par_art,
-    rhs_accum_world_par_row,
     rotate_mf_body_Hinv_to_free_root_anchor,
     rotate_mf_rows_to_free_root_anchor,
     rotate_propagation_rows_to_free_root_anchor,
@@ -205,7 +204,6 @@ from .kernels import (
     trisolve_loop,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
-    vector_add_inplace,
     zero_unattached_parent_wrenches,
 )
 from .sleeping import _publish_body_awake, _SleepState
@@ -254,12 +252,15 @@ _FUSED_CRBA_MAX_DOF = 64
 _PAIRED_RESPONSE_MIN_DOF = 17
 # Warps (rows) per block of the paired response kernel.
 _PAIRED_RESPONSE_WARPS_PER_BLOCK = 4
-# A persistent queue of general-sweep worlds avoids launching one block per mostly local world;
-# eight blocks per SM keep the latency of scenes without local worlds.
-_LOCAL_GENERAL_BLOCKS_PER_SM = 8
+# Eight resident blocks per SM for the pair owners' persistent queue.
 _LOCAL_PAIR_BLOCKS_PER_SM = 8
 # The articulation-local solve runs a serial O(dofs^2) triangular solve per row.
 _LOCAL_INTERNAL_MAX_DOF = 16
+# Batch limit for the serial contact-bearing owners (the pair and residual-pair solves), in worlds per SM: the
+# residual owner caps its grid at min(world_count, sm_count) warps, so above one world per SM its worlds
+# serialize per warp, and the pair owner measured neutral against the general sweep from there up; the
+# contact-free single owner stays eligible at every count.
+_LOCAL_CONTACT_WORLDS_PER_SM = 1
 _LOCAL_SOLVE_MAX_ROWS = 20
 _LOCAL_RESIDUAL_MAX_ROWS = 40
 _LOCAL_RESIDUAL_MF_MAX_ROWS = 12
@@ -267,7 +268,16 @@ _LOCAL_RESIDUAL_MF_MAX_ROWS = 12
 _MAX_CONTACT_REGULARIZATION = 1.0e6
 # One-warp worlds packed per block of the propagation row sweep, which uses no shared memory.
 _PROPAGATION_WORLDS_PER_BLOCK = 2
-_ARTICULATED_CONTACT_RESPONSES = ("immediate", "propagation", "propagation_colored")
+_SOLVE_MODES = ("serial", "colored")
+_ARTICULATED_CONTACT_RESPONSES = ("immediate", "propagation")
+# solve_mode spellings from the 1.8 prereleases, accepted with a deprecation warning until their removal.
+_DEPRECATED_SOLVE_MODE_SPELLINGS = {
+    "matrix_free": "solve_mode='matrix_free' is deprecated; use solve_mode='serial' (the default)",
+    "split": (
+        "solve_mode='split' is deprecated and now runs solve_mode='serial': the dense split solve was removed, "
+        "so results differ from earlier releases; omit solve_mode"
+    ),
+}
 # Threads per block of the per-world unit coloring.
 _COLOR_PREBUILD_BLOCK_DIM = 256
 # Threads per block of the block-per-world colored sweep, used when the warp sweep's staging does not fit.
@@ -310,6 +320,39 @@ def _velocity_drive_mode(name: str, value) -> str:
     if value not in ("freeze", "active"):
         raise ValueError(f"{name} must be 'freeze' or 'active', got {value!r}")
     return value
+
+
+def _normalize_solve_mode(solve_mode, articulated_contact_response) -> tuple[str, str]:
+    """Map the 1.8-prerelease spellings onto ``(solve_mode, articulated_contact_response)``, warning for each one used."""
+    message = _DEPRECATED_SOLVE_MODE_SPELLINGS.get(solve_mode) if isinstance(solve_mode, str) else None
+    if message is not None:
+        warnings.warn(f"SolverSteel: {message}.", NewtonDeprecationWarning, stacklevel=3)
+        solve_mode = "serial"
+    if articulated_contact_response == "propagation_colored":
+        warnings.warn(
+            "SolverSteel: articulated_contact_response='propagation_colored' is deprecated; use "
+            "solve_mode='colored' with articulated_contact_response='propagation'.",
+            NewtonDeprecationWarning,
+            stacklevel=3,
+        )
+        solve_mode, articulated_contact_response = "colored", "propagation"
+    return solve_mode, articulated_contact_response
+
+
+def _validate_solve_mode(solve_mode, articulated_contact_response) -> None:
+    """Raise :class:`ValueError` unless the solve mode and contact response form a supported pair."""
+    if solve_mode not in _SOLVE_MODES:
+        raise ValueError(f"solve_mode must be 'serial' or 'colored', got {solve_mode!r}")
+    if articulated_contact_response not in _ARTICULATED_CONTACT_RESPONSES:
+        raise ValueError(
+            f"articulated_contact_response must be 'immediate' or 'propagation', got {articulated_contact_response!r}"
+        )
+    if solve_mode == "colored" and articulated_contact_response != "propagation":
+        raise ValueError(
+            "solve_mode='colored' colors the propagation contact rows and requires "
+            "articulated_contact_response='propagation'; use solve_mode='serial' with "
+            f"articulated_contact_response={articulated_contact_response!r}"
+        )
 
 
 def _validate_supported_model(model: Model) -> None:
@@ -372,9 +415,10 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
     (or rejected) through that entity. A row without a valid link is MuJoCo-only physics.
 
     A link is valid only when the target is structurally the row's projection, as the importers
-    build it: a CONNECT or WELD row links a ball or fixed joint outside any articulation that
-    joins the row's two bodies (or its body and the world), and a JOINT row links a mimic
-    constraint between the row's two joints. Anchors and coefficients are not compared.
+    build it: a CONNECT row links a ball joint and a WELD row a fixed joint (a ball joint when its
+    torquescale is 0) outside any articulation that joins the row's two bodies (or its body and the
+    world), and a JOINT row links a mimic constraint between the row's two joints. Anchors and
+    coefficients are not compared.
     """
     from ..mujoco.enums import EqType  # noqa: PLC0415
     from ..mujoco.equality import MjcEqualityTargetKind  # noqa: PLC0415
@@ -398,6 +442,7 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
 
         eq_type = field("type")
         body1, body2 = field("body1"), field("body2")
+        torquescale = field("torquescale")
         joint1, joint2 = field("joint1"), field("joint2")
         joint_count = int(model.joint_count)
         joint_type = model.joint_type.numpy() if joint_count else None
@@ -409,19 +454,20 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
         mimic_count = int(getattr(model, "constraint_mimic_count", 0) or 0)
         mimic_joint0 = model.constraint_mimic_joint0.numpy() if mimic_count else None
         mimic_joint1 = model.constraint_mimic_joint1.numpy() if mimic_count else None
-        loop_joint_type = {int(EqType.CONNECT): int(JointType.BALL), int(EqType.WELD): int(JointType.FIXED)}
+        loop_joint_types = {int(EqType.CONNECT): {int(JointType.BALL)}, int(EqType.WELD): {int(JointType.FIXED)}}
         for row in range(count):
             kind, index = int(target_kind[row]), int(target[row])
             if kind == int(MjcEqualityTargetKind.JOINT) and 0 <= index < joint_count:
-                expected_type = loop_joint_type.get(int(eq_type[row]))
+                expected_types = loop_joint_types.get(int(eq_type[row]), set())
+                if int(eq_type[row]) == int(EqType.WELD) and float(torquescale[row]) == 0.0:
+                    expected_types = {int(JointType.BALL)}  # rotation-free weld, as the importers convert it
                 in_tree = joint_articulation is not None and int(joint_articulation[index]) >= 0
                 # The importers make body1 the parent and body2 the child, or the world the
                 # parent of body1; compare the endpoints as a set so either order is accepted.
                 rows_bodies = {int(body1[row]), int(body2[row])}
                 joint_bodies = {int(joint_parent[index]), int(joint_child[index])}
                 projected[row] = (
-                    expected_type is not None
-                    and int(joint_type[index]) == expected_type
+                    int(joint_type[index]) in expected_types
                     and not in_tree
                     and int(joint_child[index]) >= 0
                     and joint_bodies == rows_bodies
@@ -536,8 +582,9 @@ def _reset_solver_status(
     overflow: wp.array[wp.bool],
     disabled_tree_joint: wp.array[wp.bool],
     joint_friction_invalid: wp.array[wp.bool],
+    fk_id_valid: wp.array[int],
 ):
-    """Clear the status of selected worlds and request a mass refresh of their articulations.
+    """Clear the status of selected worlds, request a mass refresh of their articulations and drop their carried kinematics.
 
     ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid`` and ``world_mask`` share the
     ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
@@ -552,6 +599,32 @@ def _reset_solver_status(
     if tid < mass_update_requested.shape[0]:
         if not world_mask or reset_world_selected(articulation_world[tid], world_mask, world_count):
             mass_update_requested[tid] = 1
+            fk_id_valid[tid] = 0
+
+
+@wp.kernel
+def _invalidate_fk_id_worlds(
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    articulation_world: wp.array[int],
+    # outputs
+    fk_id_valid: wp.array[int],
+):
+    """Drop the carried kinematics of the articulations whose world ``world_mask`` selects."""
+    tid = wp.tid()
+    if reset_world_selected(articulation_world[tid], world_mask, world_count):
+        fk_id_valid[tid] = 0
+
+
+@wp.kernel
+def _drop_carried_kinematics_on_status(
+    status: wp.array[int],
+    # outputs
+    fk_id_valid: wp.array[int],
+):
+    """Drop every articulation's carried kinematics while the device torsion status holds a latched error."""
+    if status[0] != 0:
+        fk_id_valid[wp.tid()] = 0
 
 
 @wp.kernel
@@ -970,12 +1043,16 @@ def _use_resident_mfgs_metadata(
     Resident row metadata removes repeated global loads across PGS iterations,
     but larger shapes lose more throughput from the resulting occupancy drop.
     Keep at most one 4-KiB metadata working set resident and stream larger sets.
-    Drive rows add four per-row arrays and the fused velocity-limit clamp one more.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    total_shared_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes
+    metadata_bytes = _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    total_shared_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=True,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+    )
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
 
 
@@ -990,19 +1067,23 @@ def _use_mfgs_pair_cache(
     fuse_vel_limits: bool,
     world_count: int,
     sm_count: int,
+    torsion_links: bool = False,
 ) -> bool:
     """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
 
     The caches shorten each world's serial chain but lower blocks per SM; once worlds queue for SMs, the extra waves
     cost more than they save. The estimate ignores register, block-count and carveout limits.
     """
-    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
-    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
-    cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
-    if not shared_metadata:
-        cache_bytes += 3 * max_constraints
-    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
-    block_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes + cache_bytes
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=True,
+        torsion_links=torsion_links,
+    )
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
     # Row parents are cached as short, and the kernel's arrays are static shared memory.
     return (
@@ -1010,6 +1091,66 @@ def _use_mfgs_pair_cache(
         and block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
         and world_count <= resident_worlds
     )
+
+
+def _use_mfgs_torsion_links(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    max_shared_memory: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool,
+) -> bool:
+    """Select the linked contact-torsion sweep when its row lists fit the static shared-memory bound.
+
+    Otherwise the sweep scans every dense row for torsion groups, with identical results.
+    """
+    block_bytes = _mfgs_block_shared_bytes(
+        max_constraints,
+        free_body_constraint_max,
+        max_world_dofs,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=pair_cache,
+        torsion_links=True,
+    )
+    return block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
+
+
+def _mfgs_block_shared_bytes(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    pair_cache: bool = False,
+    torsion_links: bool = False,
+) -> int:
+    """Return the static shared memory [B] of one matrix-free Gauss-Seidel kernel block, up to 4-byte alignment.
+
+    Every ``__shared__`` array of :func:`_get_pgs_solve_mf_gs_kernel` is counted here.
+    """
+    total = _MFGS_TILE_SHARED_STORAGE_BYTES + 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    if shared_metadata:
+        total += _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
+    if pair_cache:
+        total += 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
+        if not shared_metadata:
+            total += 3 * max_constraints
+    if torsion_links:
+        total += torque_links_shared_bytes(max_constraints)
+    return total
+
+
+def _mfgs_metadata_bytes(max_constraints: int, has_drive_rows: bool, fuse_vel_limits: bool) -> int:
+    """Return the resident dense-row metadata [B]; drive rows add four per-row arrays and the fused clamp one more."""
+    return 4 * max_constraints * (4 + 4 * int(has_drive_rows) + int(fuse_vel_limits))
 
 
 def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
@@ -1032,18 +1173,10 @@ def _estimate_cholesky_shared_memory(n_dofs: int) -> int:
     return 3 * matrix_bytes + vector_bytes
 
 
-def _estimate_hinv_jt_shared_memory(
-    n_dofs: int, constraint_count: int, *, tile_threads: int, fused: bool = False
-) -> int:
-    """Estimate the complete tiled H-inverse shared-memory footprint [B].
-
-    ``fused`` adds the ``constraint_count x constraint_count`` Delassus tile of the fused
-    split-mode kernel.
-    """
+def _estimate_hinv_jt_shared_memory(n_dofs: int, constraint_count: int, *, tile_threads: int) -> int:
+    """Estimate the complete tiled H-inverse shared-memory footprint [B]."""
     footprint = _align_shared_memory(4 * n_dofs * n_dofs)
     footprint += 3 * _align_shared_memory(4 * n_dofs * constraint_count)
-    if fused:
-        footprint += _align_shared_memory(4 * constraint_count * constraint_count)
     return footprint + 4 * tile_threads
 
 
@@ -1077,7 +1210,6 @@ class _SteelExecutionPlan:
     cholesky_tiled_sizes: frozenset[int]
     hinv_jt_tiled_sizes: frozenset[int]
     hinv_jt_chunk_sizes: tuple[tuple[int, int], ...]
-    hinv_jt_fused_sizes: frozenset[int]
     diagonal_mass_sizes: frozenset[int] = frozenset()
 
     @classmethod
@@ -1101,7 +1233,6 @@ class _SteelExecutionPlan:
         cholesky_tiled_sizes: set[int] = set()
         tiled_sizes: set[int] = set()
         chunk_sizes: list[tuple[int, int]] = []
-        fused_sizes: set[int] = set()
         diagonal_sizes = frozenset(size for size in size_groups if size in diagonal_mass_sizes)
         for size in size_groups:
             if size in diagonal_sizes:
@@ -1136,18 +1267,11 @@ class _SteelExecutionPlan:
                 continue
             tiled_sizes.add(size)
             chunk_sizes.append((size, chunk_size))
-            # The fused split-mode kernel holds the whole row set and its Delassus tile.
-            if (
-                _estimate_hinv_jt_shared_memory(size, max_constraints, tile_threads=tile_threads, fused=True)
-                <= max_shared_memory
-            ):
-                fused_sizes.add(size)
 
         return cls(
             frozenset(cholesky_tiled_sizes),
             frozenset(tiled_sizes),
             tuple(chunk_sizes),
-            frozenset(fused_sizes),
             diagonal_sizes,
         )
 
@@ -1165,10 +1289,6 @@ class _SteelExecutionPlan:
     def use_tiled_hinv_jt(self, size: int) -> bool:
         """Return whether a response group uses tiled H-inverse application."""
         return size in self.hinv_jt_tiled_sizes
-
-    def use_fused_hinv_jt(self, size: int) -> bool:
-        """Return whether a response group may fuse H-inverse application and Delassus assembly."""
-        return size in self.hinv_jt_fused_sizes
 
     def use_diagonal_mass(self, size: int) -> bool:
         """Return whether an articulation group uses the diagonal mass-matrix kernels."""
@@ -1246,31 +1366,28 @@ class SolverSteel(SolverBase, CouplingInterface):
     world-rooted free joint) and the ground or other free bodies use per-body inverse
     inertia. Positions are integrated from the solved velocities with symplectic Euler.
 
-    ``solve_mode`` selects the solve:
+    The solve is matrix-free: for each row the solver keeps ``Y`` and the diagonal ``J Y``
+    and recomputes ``J v`` every iteration instead of assembling a Delassus matrix. Every
+    row applies its impulse to one world-local velocity vector immediately. ``solve_mode``
+    selects the Gauss-Seidel sweep order:
 
-    - ``"matrix_free"`` (default, CUDA only): for each row the solver keeps ``Y`` and the
-      diagonal ``J Y`` and recomputes ``J v`` every iteration instead of assembling a
-      Delassus matrix. Every row applies its impulse to one world-local velocity vector
-      immediately, and one fused kernel sweeps all rows of a world. Each feature below is
-      available in it; some combinations are rejected, as the options document.
-    - ``"split"`` (CPU and CUDA; required on CPU): the rows of articulated bodies of each
-      world are assembled into a dense Delassus matrix ``C = J H^-1 J^T``
-      (``articulation_constraint_max`` squared per world) and solved in impulse space; the
-      free-body rows are then solved against the resulting velocity. Worlds with both kinds
-      of rows alternate one sweep of each per iteration. It implements the base feature set
-      and raises :class:`NotImplementedError` when any of these is active: joint velocity
-      limits, PGS drive rows, mimic and loop-closing joints, friction patches, contact
-      regularization, restitution, warm start, velocity-only iterations, contact torsion,
-      contact compliance, sleeping and the propagation contact responses. Contact torsion is CUDA-only, so on a CPU device a
-      positive torsion radius raises :class:`ValueError` first.
+    - ``"serial"`` (default): one fused kernel sweeps all rows of a world in order.
+    - ``"colored"``: the contact rows of each world are colored so that no two rows of a
+      color share a responding body, and each color is solved in parallel. It requires
+      ``articulated_contact_response="propagation"``.
 
     ``articulated_contact_response`` selects how contacts of articulated bodies are
-    solved. The default ``"immediate"`` response uses the generalized rows above. The
-    ``"propagation"`` responses instead solve them as fixed-size rows of the touched
-    bodies with each body's response from the articulated-body factorization of its
-    tree, and propagate the impulses of each iteration through the tree to the joint
-    velocities; ``"propagation_colored"`` solves the contacts of each world in parallel
-    batches.
+    solved. The default ``"immediate"`` response uses the generalized rows above.
+    ``"propagation"`` instead solves them as fixed-size rows of the touched bodies with
+    each body's response from the articulated-body factorization of its tree, and
+    propagates the impulses of each iteration through the tree to the joint velocities.
+
+    .. deprecated:: 1.8
+        ``solve_mode="matrix_free"`` maps to ``"serial"``; ``solve_mode="split"``, whose
+        dense Delassus solve was removed, runs ``"serial"``; and
+        ``articulated_contact_response="propagation_colored"`` maps to
+        ``solve_mode="colored"`` with ``"propagation"``. Each emits a
+        :class:`~newton.exceptions.NewtonDeprecationWarning`.
 
     Like :class:`~newton.solvers.SolverFeatherstone`, the solver uses
     :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` as its state and
@@ -1289,11 +1406,15 @@ class SolverSteel(SolverBase, CouplingInterface):
       ``dt * kd + dt^2 * ke`` into the mass matrix; only the explicit drive force is
       clamped to :attr:`~newton.Model.joint_effort_limit`, and the implicit stiffness and
       damping response is unbounded, so under a large external load the drive reaction
-      can exceed the limit. ``drive_mode="rows"`` (``solve_mode="matrix_free"`` only)
-      instead solves one PGS row per driven DOF with the PhysX articulation force-drive
+      can exceed the limit. ``drive_mode="rows"`` instead solves one PGS row per driven DOF with the PhysX articulation force-drive
       update and clamps its impulse, which bounds the complete reaction.
       :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
       applied.
+    - Passive joint springs: :attr:`~newton.Model.joint_stiffness` and
+      :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
+      explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
+      independently of drives and joint limits. Unlike the implicit drives, explicit springs
+      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -1306,10 +1427,11 @@ class SolverSteel(SolverBase, CouplingInterface):
       mimic constraints) within one articulation: one bilateral row per follower
       coordinate enforces ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The
       coefficients are read every step.
-    - Loop-closing BALL and REVOLUTE joints (joints outside the articulation tree whose
+    - Loop-closing BALL, REVOLUTE and FIXED joints (joints outside the articulation tree whose
       child belongs to an articulation): three bilateral rows pin the joint's parent and
-      child anchors together, and a REVOLUTE closure adds two rows that keep the child's
-      hinge axis on the parent's hinge line. A closure has no joint coordinate, so the
+      child anchors together, a REVOLUTE closure adds two rows that keep the child's
+      hinge axis on the parent's hinge line, and a FIXED (weld) closure adds three rows that
+      hold the two anchor frames' relative rotation at zero. A closure has no joint coordinate, so the
       limits, drive gains, damping, armature, velocity limit and
       :attr:`~newton.Control.joint_f` of a loop-closing REVOLUTE joint's DOF are ignored.
       The solver warns at construction, and on an eager joint or joint DOF notification,
@@ -1339,29 +1461,27 @@ class SolverSteel(SolverBase, CouplingInterface):
       iterations and gap gates for speculative contacts are configured on the
       constructor. Experimental contact torsion (per-shape ``steel:min_torsional_patch_radius``)
       adds a load-bounded spin-friction row per contact group, and experimental implicit
-      compliance of hydroelastic contacts is opt-in (``contact_compliance``). Friction
-      patches, restitution, regularization, warm start, velocity-only iterations, contact
-      torsion and contact compliance need ``solve_mode="matrix_free"``; the split solve uses
-      point friction.
+      compliance of hydroelastic contacts is opt-in (``contact_compliance``).
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds. A body
       outside every articulation, such as a link without a joint, enters contacts, including
       the friction-patch slide check, with its pose and zero velocity; :meth:`step` passes its
       input ``body_q`` and ``body_qd`` through to the output.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
-    - Experimental passive-island sleeping (``enable_sleeping``, ``solve_mode="matrix_free"``
-      only): settled, supported islands of articulations freeze their published state and
-      skip their rows and dynamics until a wake event.
+    - Experimental passive-island sleeping (``enable_sleeping``): settled, supported islands
+      of articulations freeze their published state and skip their rows and dynamics until a
+      wake event.
 
     Limitations:
 
-    - ``solve_mode="matrix_free"``, the default, requires a CUDA device; constructing it on a
-      CPU device raises :class:`NotImplementedError` that names ``solve_mode="split"``.
+    - On a CPU device both solve modes run world-serial portable kernels (``"colored"``
+      sweeps in serial order). Features with only CUDA rows (contact compliance, a
+      ``friction_mode`` other than ``"fixed_normal"`` and joint friction) raise
+      :class:`NotImplementedError` there, as does sleeping with ``solve_mode="colored"``;
+      contact torsion raises :class:`ValueError`.
     - Mimic relationships across articulations or on joints whose position and velocity
       coordinates differ (BALL, FREE, DISTANCE), loop-closing joints of other types, and
       loop closures between two dynamic articulations raise
-      :class:`NotImplementedError`. With ``solve_mode="split"``, every mimic relationship and
-      loop-closing joint raises :class:`NotImplementedError`; they need
-      ``solve_mode="matrix_free"``. :attr:`~newton.Model.joint_enabled` is supported only
+      :class:`NotImplementedError`. :attr:`~newton.Model.joint_enabled` is supported only
       for loop-closing joints: construction raises for a disabled tree joint, and a tree
       joint disabled later is reported by :meth:`check_constraint_capacity`. Enabled MuJoCo equality constraints
       (``model.mujoco.equality_constraint_*``) are enforced through the loop joint or mimic
@@ -1373,12 +1493,12 @@ class SolverSteel(SolverBase, CouplingInterface):
       between the row's own bodies or joints. Particles are not simulated.
     - Gradients are not supported.
 
-    With ``solve_mode="matrix_free"``, branched articulations use sparse mass factors when
+    On CUDA, branched articulations use sparse mass factors when
     every articulated (non-free-body) response group shares one joint topology with at most
     64 DOFs, joint velocity-limit and joint friction rows are disabled, the model has no mimic or loop-closing
-    joints, drives are augmented and contacts use hard point friction
-    (``friction_anchor_beta=0``, no warm start, regularization, velocity-only iterations,
-    friction gap threshold, restitution, contact torsion or compliance): the mass matrix is assembled and factored in
+    joints, drives are augmented and contacts use hard point friction or persistent friction patches
+    (no warm start, regularization, velocity-only iterations, friction gap threshold, restitution,
+    contact torsion or compliance): the mass matrix is assembled and factored in
     the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
     that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
@@ -1545,6 +1665,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     use_parallel_streams = _ConstructionOption()
     double_buffer = _ConstructionOption()
     friction_anchor_beta = _ConstructionOption()
+    reuse_kinematics = _ConstructionOption()
     contact_regularization = _ConstructionOption()
     velocity_iterations = _ConstructionOption()
     velocity_drive_mode = _StepOption(_velocity_drive_mode)
@@ -1717,7 +1838,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self,
         model: Model,
         *,
-        solve_mode: Literal["matrix_free", "split"] = "matrix_free",
+        solve_mode: Literal["serial", "colored"] = "serial",
         iterations: int = 12,
         baumgarte: float = 0.2,
         cfm: float = 1.0e-6,
@@ -1738,6 +1859,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         enable_bilateral_preelimination: bool = False,
         bilateral_preelimination_include_mimics: bool = True,
         parallel_tree: bool = False,
+        reuse_kinematics: bool = False,
         use_parallel_streams: bool = False,
         double_buffer: bool = False,
         friction_anchor_beta: float | None = None,
@@ -1764,7 +1886,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         sleep_angular_threshold: float = 0.15,
         sleep_quiet_time: float = 0.5,
         sleep_skip_constraints: bool = True,
-        articulated_contact_response: Literal["immediate", "propagation", "propagation_colored"] = "immediate",
+        articulated_contact_response: Literal["immediate", "propagation"] = "immediate",
         propagation_same_articulation_rows: bool = False,
         propagation_cached_response: bool = True,
         propagation_cached_response_body_max: int = 8,
@@ -1779,14 +1901,23 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         Args:
             model: Model to simulate.
-            solve_mode: Constraint solve. ``"matrix_free"`` (default, CUDA only) sweeps every
-                row in one fused kernel and recomputes ``J v`` from the current velocity.
-                ``"split"`` (CPU and CUDA; pass it explicitly on CPU) assembles the rows of
-                articulated bodies into a dense Delassus matrix ``J H^-1 J^T`` per world,
-                solves it in impulse space and then solves the free-body rows against the
-                resulting velocity; worlds that contain both kinds of rows alternate one sweep
-                of each per iteration. The split solve raises for the matrix-free-only
-                options listed in the class description.
+            solve_mode: Gauss-Seidel sweep order of the matrix-free solve, which never assembles
+                the Delassus matrix: it recomputes ``J v`` every iteration and uses only the
+                diagonal for preconditioning. ``"serial"`` (default) sweeps each world's rows in
+                order in one fused kernel. ``"colored"`` colors the propagation contact rows every
+                step so that no two rows of a color share a responding body (a kinematic free body
+                has no response and may be shared) and solves each color as one parallel launch
+                across all worlds; contacts left without a color run last, in the order set by
+                ``propagation_color_order``. ``"colored"`` covers free bodies as well as
+                articulations and requires ``articulated_contact_response="propagation"``; any
+                other response raises :class:`ValueError`. On CPU both modes run world-serial
+                portable kernels (``"colored"`` sweeps in serial order), and the CUDA-only features
+                listed in the class description raise :class:`NotImplementedError`.
+
+                .. deprecated:: 1.8
+                    ``"matrix_free"`` maps to ``"serial"``, and ``"split"``, whose dense Delassus
+                    solve was removed, runs ``"serial"``; each emits a
+                    :class:`~newton.exceptions.NewtonDeprecationWarning`.
             iterations: Number of projected Gauss-Seidel iterations per step.
             baumgarte: Baumgarte position-correction factor of contact and joint-limit rows,
                 as a fraction of the position error removed per step.
@@ -1819,10 +1950,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 is validated even when joint limits are disabled.
             enable_joint_velocity_limits: Enforce :attr:`~newton.Model.joint_velocity_limit`
                 of PRISMATIC, REVOLUTE and D6 DOFs with one row pair per limited DOF, after
-                scaling articulation velocities that already exceed a limit. Requires
-                ``solve_mode="matrix_free"``. The free-body limits of
+                scaling articulation velocities that already exceed a limit. The free-body limits of
                 :meth:`register_custom_attributes` are enforced whenever those attributes are
-                registered, independently of this option and of ``solve_mode``.
+                registered, independently of this option.
             velocity_limit_activation_fraction: Create the velocity-limit rows of a DOF only
                 when ``|qd| >= velocity_limit_activation_fraction * limit``. ``0`` creates
                 them for every limited DOF each step; ``inf`` never creates them. The gate
@@ -1845,7 +1975,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 friction changed. Non-finite or negative values, and nonzero friction on other joint
                 types or loop-closing joints, are invalid: such a DOF builds no row, construction and
                 eager notifications raise :class:`ValueError`, and steps flag the owning world for
-                :meth:`check_constraint_capacity`. Requires ``solve_mode="matrix_free"`` and is not
+                :meth:`check_constraint_capacity`. Requires CUDA and is not
                 supported with ``contact_compliance`` or ``enable_bilateral_preelimination``;
                 those combinations raise :class:`NotImplementedError`. Enabling it disables the
                 articulation-local, paired factor-coordinate and sparse-diagonal solves and sparse mass
@@ -1871,16 +2001,14 @@ class SolverSteel(SolverBase, CouplingInterface):
             articulation_constraint_max: Capacity of rows involving articulated bodies (mimic and
                 connect rows, contacts, enabled joint limits, joint velocity limits, joint friction
                 and, with ``drive_mode="rows"``, joint drives) per world. Rows beyond it are
-                dropped and reported, see :attr:`constraint_overflow`. The split solve also
-                stores a ``articulation_constraint_max x articulation_constraint_max`` Delassus matrix per
-                world.
+                dropped and reported, see :attr:`constraint_overflow`.
             free_body_constraint_max: Capacity of free-body rows per world: free-body contact rows
-                and free-body velocity-limit rows. Under the ``"propagation"`` and
-                ``"propagation_colored"`` responses free-body contacts use the propagation rows, so
+                and free-body velocity-limit rows. Under the ``"propagation"`` response free-body
+                contacts use the propagation rows, so
                 it sizes only the velocity-limit rows. Rows beyond it are dropped and reported, see
                 :attr:`constraint_overflow`.
             propagation_constraint_max: Capacity of the propagation row family per world in the
-                ``"propagation"`` and ``"propagation_colored"`` responses, which hold every contact
+                ``"propagation"`` response, which holds every contact
                 row except those between two links of one articulation; these stay dense unless
                 ``propagation_same_articulation_rows`` is set. ``None`` (default) uses
                 ``free_body_constraint_max + articulation_constraint_max``. Setting it lets
@@ -1895,8 +2023,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 every row family and of the contact count on the device in every step,
                 including captured ones; read them with :meth:`constraint_row_watermarks`.
             drive_mode: Joint drive formulation. ``"augmented"`` integrates drives
-                implicitly in the mass matrix. ``"rows"`` (``solve_mode="matrix_free"``
-                only) adds one dense PGS row per driven DOF (positive ``joint_target_ke`` or
+                implicitly in the mass matrix. ``"rows"`` adds one dense PGS row per driven DOF (positive ``joint_target_ke`` or
                 ``joint_target_kd``) whose impulse
                 follows the PhysX articulation force-drive update in every iteration, so
                 drives are solved together with contacts and limits instead of before them.
@@ -1928,7 +2055,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 projection, and the corrected responses of other rows still couple into the
                 bilateral rows by the same factor. The rows stay allocated and in the sweep,
                 which reduces this residual further. If any articulation owns more than
-                eight bilateral rows, any loop closure has a kinematic or world parent, or
+                eight bilateral rows (a FIXED loop closure, such as a link-break weld, takes
+                six), any loop closure has a kinematic or world parent, or
                 ``velocity_iterations`` is positive, elimination is disabled for the
                 whole solver (every articulation keeps iterative rows) with a warning at
                 construction.
@@ -1943,6 +2071,22 @@ class SolverSteel(SolverBase, CouplingInterface):
                 Unbranched articulations, models whose joints are not ordered parent before
                 child, and CPU devices keep the serial traversal. Broad trees can benefit; narrow trees can be
                 slower, so measure the full step before enabling it.
+            reuse_kinematics: Opt in to carrying the kinematics and inverse-dynamics terms the solver
+                forms when it publishes a step's body state into the next step, instead of re-deriving
+                them from the joint coordinates. The carry runs on CUDA only and stays off with
+                gradients, joint velocity limits, sleeping, the parallel tree, or a FREE or DISTANCE
+                joint that is not the first joint of its articulation; the attribute of the same name
+                reports whether it runs. Off by default: every step then re-derives the kinematics
+                from its input state and publishes through :func:`newton.eval_fk`, as before. With the
+                carry on,
+                the terms belong to the state object they were published into: :meth:`reset` drops
+                them for the selected worlds, :meth:`notify_model_changed` drops them for joint, body
+                and model property changes, a coupler's input-state notice drops them, and a step whose
+                input state is another object recomputes them; a caller that overwrites or replaces
+                ``joint_q``, ``joint_qd`` or ``body_q`` of that state outside :meth:`step` must call
+                :meth:`notify_state_changed` (or :meth:`reset` with a world mask) first. The published
+                body poses and velocities then come from the solver's own kinematics and can differ from
+                :func:`newton.eval_fk`'s in their last bit.
             use_parallel_streams: Run the factorization, unconstrained solve and response
                 kernels of each articulation-size group on a CUDA stream of its own, so groups
                 of different sizes overlap. Results are unchanged; CPU devices and models with
@@ -1953,10 +2097,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 factors ignore it. Steps and graph launches of one solver must be ordered
                 on one stream (or through explicit stream dependencies).
             friction_anchor_beta: Position-correction gain of persistent friction patches;
-                ``0`` selects point friction. ``None`` selects ``0.2`` with
-                ``solve_mode="matrix_free"``, and point friction with ``solve_mode="split"``,
-                which has no friction patches, or when ``contact_compliance`` is enabled or
-                ``friction_mode`` is not ``"fixed_normal"``. With a positive gain, the contacts of a body
+                ``0`` selects point friction. ``None`` selects ``0.2``, and point friction when
+                ``contact_compliance`` is enabled or ``friction_mode`` is not ``"fixed_normal"``. With a positive gain, the contacts of a body
                 pair whose normals, contact planes and friction coefficients agree and whose
                 shapes touch form a region. Each region's friction acts at up to two anchors
                 along its principal extent, which share the region's total normal impulse;
@@ -1969,7 +2111,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 one-anchor region has no torsional friction of its own. Call :meth:`reset`
                 after teleporting a body to discard its history.
             contact_regularization: Dimensionless regularization ``g`` of penetrating
-                contact rows (``solve_mode="matrix_free"`` and ``friction_mode="fixed_normal"`` only).
+                contact rows (``friction_mode="fixed_normal"`` only).
                 Each iteration moves a row's impulse toward the rigid solution
                 with weight ``1 / (1 + g)`` and toward zero with weight ``g / (1 + g)``, the
                 update of an implicitly integrated contact spring. It makes statically
@@ -1983,7 +2125,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 Speculative (positive-gap) rows, rows whose rebound fires and the
                 velocity-only iterations stay rigid. ``0`` is the rigid law; at most ``1e6``.
             velocity_iterations: Number of velocity-only iterations after the position
-                solve (``solve_mode="matrix_free"`` only). Positions are integrated from the position solve; these iterations
+                solve. Positions are integrated from the position solve; these iterations
                 then refine the velocity without the position bias, so stabilization does
                 not add velocity to the bodies. A positive-gap contact whose linearized gap
                 at the end of the step stays open keeps its speculative allowance, and an
@@ -1992,8 +2134,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 velocity-only iterations: ``"freeze"`` keeps the drive impulses of the
                 position solve, ``"active"`` keeps solving the drive rows. Implicit
                 (mass-matrix) drives have no rows, so the option has no effect for them.
-            friction_mode: Experimental Coulomb friction update of the matrix-free solve
-                (``solve_mode="matrix_free"`` only). ``"fixed_normal"`` updates both tangent impulses
+            friction_mode: Experimental Coulomb friction update of the matrix-free solve.
+                ``"fixed_normal"`` updates both tangent impulses
                 together on the friction disk of the current normal impulse: sticking uses the
                 inverse of their 2x2 block, sliding a bounded scalar solve that keeps isotropic
                 maximum dissipation. ``"bisection"`` bisects the normal impulse of each contact
@@ -2008,14 +2150,14 @@ class SolverSteel(SolverBase, CouplingInterface):
                 scale, and use point friction: an omitted
                 ``friction_anchor_beta`` selects it with a warning, and friction patches,
                 contact torsion, contact compliance, ``contact_regularization`` and
-                ``articulated_contact_response="propagation"`` require ``"fixed_normal"``. The
-                free-body and articulated rules above apply to
-                ``articulated_contact_response="immediate"``. ``"propagation_colored"`` solves every
+                ``articulated_contact_response="propagation"`` with ``solve_mode="serial"`` require
+                ``"fixed_normal"``. The free-body and articulated rules above apply to
+                ``articulated_contact_response="immediate"``. ``solve_mode="colored"`` solves every
                 contact on a propagation row, articulated ones included, with the free-body update of
                 the selected mode; contacts between two links of one articulation stay on dense rows
                 and keep the articulated update. This option may change without the
                 normal deprecation period.
-            row_schedule: Row order of the matrix-free sweeps (``solve_mode="matrix_free"`` only).
+            row_schedule: Row order of the matrix-free sweeps.
                 ``"interleaved"`` sweeps every row family in each iteration: the dense rows,
                 the free-body contact rows, then the velocity limits. ``"contact_then_internal"``
                 runs every iteration of the contact rows first, then every iteration of the
@@ -2025,8 +2167,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 limits, each in a launch of its own; the propagation responses use this order
                 with ``"interleaved"`` as well. Contact torsion and contact compliance require
                 ``"interleaved"``, and the sparse mass factors are selected only with ``"interleaved"``.
-            contact_warmstart: Start each step (``solve_mode="matrix_free"`` only) from the previous
-                step's contact impulses, matched
+            contact_warmstart: Start each step from the previous step's contact impulses, matched
                 by contact identity through :attr:`~newton.Contacts.rigid_contact_match_index`,
                 so the :class:`~newton.CollisionPipeline` must be created with contact matching
                 enabled. Substeps that reuse a contact set without a collision pass seed each
@@ -2044,8 +2185,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 default ``True`` leaves the shapes' coefficients in charge; they default to
                 zero, so a model that authors no restitution does not bounce.
                 ``False`` turns restitution off for every contact regardless of the
-                coefficients, and lets the split solve and ``contact_compliance`` accept shapes
-                with positive restitution.
+                coefficients, and lets ``contact_compliance`` accept shapes with positive
+                restitution.
             restitution_velocity_threshold: Minimum closing speed [m/s] of a contact at the
                 start of the step for a rebound. Contacts bounce with the arithmetic mean of the
                 two shapes' restitution coefficients
@@ -2056,9 +2197,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 The contact must also touch, or be predicted to reach the surface during the
                 step. Slower contacts keep the ordinary contact law, so a resting contact pressed
                 by gravity, a drive or an applied force does not bounce, and this step's forces
-                do not enlarge a rebound. Finite and non-negative. Restitution needs
-                ``solve_mode="matrix_free"``; the split solve rejects shapes with a positive
-                restitution unless ``enable_restitution=False``.
+                do not enlarge a rebound. Finite and non-negative.
             contact_speculative_scale: Fraction of a positive contact gap that the contact
                 may close during the step (``rhs = scale * phi / dt``). ``0`` removes the
                 speculative allowance; penetration correction is unchanged.
@@ -2127,18 +2266,17 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`reset`. The input error is solver-wide: any reset clears it, and a cause
                 that persists latches it again on the next step. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without
-                contact torsion. With ``articulated_contact_response`` ``"propagation"`` or
-                ``"propagation_colored"``, every
+                contact torsion. With ``articulated_contact_response="propagation"``, every
                 positive-radius contact on an articulated body that is routed to propagation
                 reserves one more propagation row for torsion (same-articulation contacts stay
                 dense unless ``propagation_same_articulation_rows`` is set), so size
                 ``propagation_constraint_max``, or ``articulation_constraint_max`` and
                 ``free_body_constraint_max`` when it is unset, for it. A group's torsion row takes
-                that row of its last member. The plain sweep solves the torsion rows after the
+                that row of its last member. The serial sweep solves the torsion rows after the
                 other rows; the colored sweep solves each in its last member's contact unit, after
-                the rows of the group's other members. Both use the same budget, and both responses
-                require ``contact_torsion_device=True`` and ``velocity_iterations=0``.
-                ``"propagation_colored"`` rejects contact torsion with ``contact_compliance``, whose
+                the rows of the group's other members. Both use the same budget, and both solve
+                modes require ``contact_torsion_device=True`` and ``velocity_iterations=0``.
+                ``solve_mode="colored"`` rejects contact torsion with ``contact_compliance``, whose
                 contacts are hydroelastic.
                 When propagation rows overflow, a group keeps the contacts that received rows
                 and the step does not raise: it sets :attr:`constraint_overflow`, warns when
@@ -2156,8 +2294,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 (``None`` or ``0`` for ``friction_anchor_beta``; ``None`` warns), positive
                 ``iterations``, no warm start, no velocity-only iterations, no contact
                 regularization, no shared anchors and zero shape restitution. With
-                ``articulated_contact_response="propagation_colored"`` the colored sweep solves the
-                compliant rows, without contact torsion; ``"propagation"`` rejects it. The contacts must carry the
+                ``solve_mode="colored"`` the colored sweep solves the compliant rows, without
+                contact torsion; ``"propagation"`` with ``solve_mode="serial"`` rejects it. The contacts must carry the
                 hydroelastic material arrays. The rows are prepared on the device, so
                 :meth:`step` can be captured in a CUDA graph. Invalid input (for example a
                 compliant contact lost to a row capacity, even with ``warn_constraint_overflow``
@@ -2182,18 +2320,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                 support or row capacity, a :meth:`reset` of its world, or
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
                 shapes (other notifications and changes to static or kinematic owners wake
-                every island). Driven articulations (nonzero drive gains)
-                stay awake. Sleeping is configured at construction; rebuild captured graphs
-                to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
+                every island). Driven articulations (nonzero drive gains) and articulations with
+                passive springs (nonzero :attr:`~newton.Model.joint_stiffness` on a PRISMATIC,
+                REVOLUTE or D6 tree joint) stay awake.
+                Sleeping is configured at construction; rebuild captured graphs to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
                 or ``velocity_iterations``, or for a model without articulations, and
-                :class:`NotImplementedError` with ``articulated_contact_response="propagation"``;
-                with ``"propagation_colored"`` skipped islands are left out of the coloring, the
-                colored sweep and the propagation trees, and, where CUDA conditional graph nodes
-                are supported, a captured step in which every articulation that can sleep sleeps
-                skips the propagation solve. :meth:`step` raises
-                :class:`ValueError` for a nonpositive or nonfinite ``dt`` and when ``state_in``
-                and ``state_out`` share arrays. The sleeping options are runtime solver settings
-                with no USD schema.
+                :class:`NotImplementedError` with ``articulated_contact_response="propagation"`` and
+                ``solve_mode="serial"``, and with ``solve_mode="colored"`` on CPU, where the colored
+                mode runs the serial propagation sweep; with ``solve_mode="colored"`` on CUDA
+                skipped islands are left out of the coloring, the colored sweep and the
+                propagation trees, and, where CUDA conditional graph nodes are supported, a
+                captured step in which every articulation that can sleep sleeps skips the
+                propagation solve. :meth:`step` raises :class:`ValueError` for a nonpositive or
+                nonfinite ``dt`` and when ``state_in`` and ``state_out`` share arrays. The
+                sleeping options are runtime solver settings with no USD schema.
             sleep_linear_threshold: Body center-of-mass speed below which a body is quiet
                 [m/s], finite and positive.
             sleep_angular_threshold: Body angular speed below which a body is quiet [rad/s],
@@ -2218,26 +2358,27 @@ class SolverSteel(SolverBase, CouplingInterface):
                   accumulated body impulses through the trees to the joint velocities. All
                   contacts, including those of free bodies, use these rows, whose capacity per
                   world is ``propagation_constraint_max``, or ``free_body_constraint_max +
-                  articulation_constraint_max`` when that is ``None``.
-                - ``"propagation_colored"``: the ``"propagation"`` rows and capacity, with each
-                  sweep solving the contacts of a world in batches of contacts that share no
-                  responding body, one batch after the other. The batches are recolored every
-                  step; contacts left without a batch run last, in the order set by
-                  ``propagation_color_order``.
+                  articulation_constraint_max`` when that is ``None``. With
+                  ``solve_mode="colored"`` each sweep solves the contacts of a world in batches
+                  of contacts that share no responding body, one batch after the other.
 
-                The propagation responses avoid the per-row ``H^-1 J^T`` of contact rows at
+                The propagation response avoids the per-row ``H^-1 J^T`` of contact rows at
                 the cost of tree passes over every articulation in each iteration; which
                 response is faster depends on the model. They keep joint-limit and
                 velocity-limit rows dense, and contacts between two links of the same
                 articulation dense unless ``propagation_same_articulation_rows`` is set. The
                 tree factorization is rebuilt every step, independently of
                 ``update_mass_matrix_interval``.
+
+                .. deprecated:: 1.8
+                    ``"propagation_colored"`` maps to ``solve_mode="colored"`` with
+                    ``"propagation"`` and emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
             propagation_same_articulation_rows: Solve contacts between two links of the same
                 articulation as propagation rows, with the exact cross response of the two
-                links, instead of dense rows. Requires ``articulated_contact_response``
-                ``"propagation"`` or ``"propagation_colored"``.
-            propagation_cached_response: With ``articulated_contact_response="propagation"`` or
-                ``"propagation_colored"``, replace the per-iteration tree walk by cached
+                links, instead of dense rows. Requires
+                ``articulated_contact_response="propagation"`` (either ``solve_mode``).
+            propagation_cached_response: With ``articulated_contact_response="propagation"``
+                (either ``solve_mode``), replace the per-iteration tree walk by cached
                 responses: the setup extracts, for each contact-active body, its joint-space
                 response ``R`` (DOFs x 6) and the 6x6 response blocks between active bodies,
                 from the tree factorization that is fixed for the step, and each iteration
@@ -2249,19 +2390,19 @@ class SolverSteel(SolverBase, CouplingInterface):
             propagation_cached_response_body_max: Capacity of the cached responses in
                 contact-active bodies of cache-eligible articulations per world; free bodies
                 do not count. At least 1.
-            propagation_color_order: Order in which ``"propagation_colored"`` colors a world's
+            propagation_color_order: Order in which ``solve_mode="colored"`` colors a world's
                 contacts and runs those left without a batch: ``"contact"`` (default) by contact
                 index, or ``"longest_first"`` by row count, longest first, then contact index. A batch takes as long as its longest
                 contact, so ``"longest_first"`` puts long contacts together, which shortens the
                 sweep where one body carries many contacts with different row counts; on some
-                stacked scenes it converges more slowly at a fixed iteration count. Other
-                responses ignore it.
+                stacked scenes it converges more slowly at a fixed iteration count.
+                ``solve_mode="serial"`` ignores it.
             deterministic: Run-to-run determinism of the solve. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit ``wp.config.deterministic``, which defaults to
                 ``NOT_GUARANTEED``. With ``RUN_TO_RUN`` the solver reserves its constraint rows in a fixed
                 order instead of the order in which GPU threads reach the per-world row counters: joint
-                rows in articulation order, contact rows in contact-buffer order within each world. The
-                split solve also sums its right-hand sides in a fixed order. Given identical inputs,
+                rows in articulation order, contact rows in contact-buffer order within each world. Given
+                identical inputs,
                 including identically ordered contacts, repeated runs are then bitwise identical on the
                 same GPU model, driver and Warp build, eagerly and under CUDA graph replay; combine it with
                 ``CollisionPipeline(deterministic=True)`` for a reproducible contact order (see
@@ -2269,10 +2410,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 earliest contacts and drops the rest, so unchanged inputs drop the same contacts every step;
                 overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step
                 sort of the contacts by world and row family and 24 bytes of storage per contact slot. With
-                the ``"propagation"`` and ``"propagation_colored"`` responses it also lists each world's
+                the ``"propagation"`` response it also lists each world's
                 contact-active bodies by body index and sums each body's warm-start seed in row order. The
                 seed walks a world's rows serially, so its cost grows with the contact rows in one world;
-                ``"propagation_colored"`` regroups a world's contact rows by color, an order fixed by the
+                ``solve_mode="colored"`` regroups a world's contact rows by color, an order fixed by the
                 contact set. ``GPU_TO_GPU`` is not supported: passing it raises :class:`ValueError`, and an
                 inherited one emits a :class:`~newton.exceptions.NewtonWarning` and runs ``RUN_TO_RUN``.
                 :attr:`deterministic` reports the mode that runs, after any fallback.
@@ -2280,6 +2421,15 @@ class SolverSteel(SolverBase, CouplingInterface):
                 Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
                 process-wide ``wp.config.deterministic`` only selects this mode.
         """
+        solve_mode, articulated_contact_response = _normalize_solve_mode(solve_mode, articulated_contact_response)
+        _validate_solve_mode(solve_mode, articulated_contact_response)
+        if solve_mode == "colored" and not model.device.is_cuda:
+            warnings.warn(
+                "SolverSteel: solve_mode='colored' runs the serial propagation sweep on CPU (the colored row "
+                "solve is CUDA-only), so its row order and results differ from CUDA.",
+                NewtonWarning,
+                stacklevel=2,
+            )
         self._kernel_overrides = current_kernel_overrides()
         if contact_compliance:
             # Reject unsupported combinations before any allocation.
@@ -2311,10 +2461,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                     NewtonWarning,
                     stacklevel=2,
                 )
-            elif (
-                friction_mode != "fixed_normal"
-                and solve_mode == "matrix_free"
-                and articulated_contact_response in ("immediate", "propagation_colored")
+            elif friction_mode != "fixed_normal" and (
+                articulated_contact_response == "immediate" or solve_mode == "colored"
             ):
                 friction_anchor_beta = 0.0
                 warnings.warn(
@@ -2324,8 +2472,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     stacklevel=2,
                 )
             else:
-                # The split solve has no friction patches.
-                friction_anchor_beta = 0.2 if solve_mode == "matrix_free" else 0.0
+                friction_anchor_beta = 0.2
         elif contact_compliance and float(friction_anchor_beta) > 0.0:
             raise ValueError("contact_compliance is not validated with friction_anchor_beta > 0")
         elif friction_mode != "fixed_normal" and float(friction_anchor_beta) > 0.0:
@@ -2336,17 +2483,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._contact_compliance = bool(contact_compliance)
         self._compliance = None
         super().__init__(model)
-        if solve_mode not in ("matrix_free", "split"):
-            raise ValueError(f"solve_mode must be 'matrix_free' or 'split', got {solve_mode!r}")
         self._solve_mode = solve_mode
-        if solve_mode == "matrix_free" and not model.device.is_cuda:
-            raise NotImplementedError(
-                "SolverSteel solve_mode='matrix_free' requires a CUDA device; use solve_mode='split' on CPU."
-            )
-        if solve_mode == "split" and enable_joint_velocity_limits:
-            raise NotImplementedError("enable_joint_velocity_limits=True requires solve_mode='matrix_free'")
-        if solve_mode == "split" and drive_mode == "rows":
-            raise NotImplementedError("drive_mode='rows' requires solve_mode='matrix_free'")
         if model.requires_grad:
             raise NotImplementedError("SolverSteel does not support gradients (model.requires_grad=True).")
         _validate_supported_model(model)
@@ -2455,25 +2592,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
-        if solve_mode == "split":
-            unsupported = [
-                name
-                for name, requested in (
-                    ("friction_anchor_beta > 0", self._friction_anchors_enabled),
-                    ("contact_regularization > 0", self._regularization_enabled),
-                    ("velocity_iterations > 0", self._velocity_iterations > 0),
-                    ("contact_warmstart=True", self._contact_warmstart),
-                    ("contact torsion", self._contact_torsion_enabled),
-                    ("contact_compliance=True", self._contact_compliance),
-                    ("enable_sleeping=True", bool(enable_sleeping)),
-                    ("enable_joint_friction=True", self._enable_joint_friction),
-                    (f"row_schedule={self._row_schedule!r}", self._row_schedule != "interleaved"),
-                    (f"friction_mode={self._friction_mode!r}", self._friction_mode != "fixed_normal"),
-                )
-                if requested
-            ]
-            if unsupported:
-                raise NotImplementedError(f"{', '.join(unsupported)} requires solve_mode='matrix_free'")
+        if not model.device.is_cuda:
+            # CPU fallback: portable twins of the native row kernels cover the core matrix-free solve;
+            # features with only native CUDA rows are rejected.
+            reject_cpu_unsupported_features(self, enable_sleeping=bool(enable_sleeping))
         if self._enable_joint_friction:
             incompatible = [
                 name
@@ -2498,11 +2620,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 raise NotImplementedError(
                     f"{', '.join(incompatible)} requires row_schedule='interleaved', got {self._row_schedule!r}"
                 )
-        if articulated_contact_response not in _ARTICULATED_CONTACT_RESPONSES:
-            raise ValueError(
-                f"articulated_contact_response must be one of {_ARTICULATED_CONTACT_RESPONSES}, "
-                f"got {articulated_contact_response!r}"
-            )
         self._articulated_contact_response = articulated_contact_response
         inherited = deterministic is None
         if inherited:
@@ -2531,10 +2648,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                 f"propagation_color_order must be 'contact' or 'longest_first', got {propagation_color_order!r}"
             )
         self._propagation_color_order = propagation_color_order
-        if self._propagation_same_articulation_rows and articulated_contact_response == "immediate":
+        if self._propagation_same_articulation_rows and articulated_contact_response != "propagation":
             raise ValueError(
-                "propagation_same_articulation_rows requires articulated_contact_response 'propagation' or "
-                f"'propagation_colored', got {articulated_contact_response!r}"
+                "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
+                f"got {articulated_contact_response!r}"
             )
         # The propagation responses route contact rows, free bodies included, to the propagation
         # family, so by default its capacity absorbs both contact budgets.
@@ -2543,10 +2660,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         if self._propagation_constraint_max is not None:
             if articulated_contact_response == "immediate":
-                raise ValueError(
-                    "propagation_constraint_max requires articulated_contact_response 'propagation' or "
-                    "'propagation_colored'"
-                )
+                raise ValueError("propagation_constraint_max requires articulated_contact_response='propagation'")
             if self._propagation_constraint_max < 1:
                 raise ValueError("propagation_constraint_max must be >= 1")
             self._propagation_max_constraints = self._propagation_constraint_max
@@ -2555,43 +2669,29 @@ class SolverSteel(SolverBase, CouplingInterface):
         else:
             self._propagation_max_constraints = self._requested_dense_max_constraints
         if articulated_contact_response != "immediate":
-            if solve_mode == "split":
-                raise NotImplementedError(
-                    f"articulated_contact_response={articulated_contact_response!r} requires solve_mode='matrix_free'"
-                )
+            colored = solve_mode == "colored"
             unsupported = [
                 name
                 for name, requested in (
-                    (
-                        "contact_compliance=True",
-                        self._contact_compliance and articulated_contact_response != "propagation_colored",
-                    ),
+                    ("contact_compliance=True", self._contact_compliance and not colored),
                     # Contact torsion rejects hydroelastic contacts, and every compliant contact is one.
                     (
                         "contact torsion with contact_compliance=True",
-                        self._contact_torsion_enabled
-                        and self._contact_compliance
-                        and articulated_contact_response == "propagation_colored",
+                        self._contact_torsion_enabled and self._contact_compliance and colored,
                     ),
-                    # Sleeping is tested only with the colored sweep, not with the plain sweep's
+                    # Sleeping is tested only with the colored sweep, not with the serial sweep's
                     # torsion and same-articulation rows.
-                    (
-                        "enable_sleeping=True",
-                        bool(enable_sleeping) and articulated_contact_response != "propagation_colored",
-                    ),
-                    (
-                        f"friction_mode={self._friction_mode!r}",
-                        self._friction_mode != "fixed_normal" and articulated_contact_response != "propagation_colored",
-                    ),
+                    ("enable_sleeping=True", bool(enable_sleeping) and not colored),
+                    (f"friction_mode={self._friction_mode!r}", self._friction_mode != "fixed_normal" and not colored),
                 )
                 if requested
             ]
             if unsupported:
                 raise NotImplementedError(
-                    f"{', '.join(unsupported)} is not supported with "
-                    f"articulated_contact_response={articulated_contact_response!r}"
+                    f"{', '.join(unsupported)} is not supported with articulated_contact_response="
+                    f"{articulated_contact_response!r} and solve_mode={solve_mode!r}"
                 )
-        # The plain sweep solves the torsion rows of its contacts after its other rows; the colored
+        # The serial sweep solves the torsion rows of its contacts after its other rows; the colored
         # sweep solves each in the contact unit of its group's last member.
         self._propagation_torsion_rows = self._contact_torsion_enabled and articulated_contact_response != "immediate"
         if self._propagation_torsion_rows:
@@ -2623,21 +2723,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._cholesky_kernel = self._kernel_overrides.get("cholesky_kernel", "auto")
         self._trisolve_kernel = self._kernel_overrides.get("trisolve_kernel", "auto")
         self._hinv_jt_kernel = self._kernel_overrides.get("hinv_jt_kernel", "auto")
-        self._delassus_kernel = self._kernel_overrides.get("delassus_kernel", "auto")
-        self._pgs_kernel = self._kernel_overrides.get("pgs_kernel", "auto")
         if self._cholesky_kernel not in ("tiled", "loop", "auto"):
             raise ValueError("cholesky_kernel must be one of ['auto', 'loop', 'tiled']")
         if self._trisolve_kernel not in ("tiled", "loop", "auto"):
             raise ValueError("trisolve_kernel must be one of ['auto', 'loop', 'tiled']")
         if self._hinv_jt_kernel not in ("tiled", "par_row", "auto"):
             raise ValueError("hinv_jt_kernel must be one of ['auto', 'par_row', 'tiled']")
-        if self._delassus_kernel not in ("tiled", "par_row_col", "auto"):
-            raise ValueError("delassus_kernel must be one of ['auto', 'par_row_col', 'tiled']")
-        if self._pgs_kernel not in ("tiled", "loop", "auto", "tiled_contact", "streaming"):
-            raise ValueError("pgs_kernel must be one of ['auto', 'loop', 'streaming', 'tiled', 'tiled_contact']")
-        self._pgs_chunk_size = int(self._kernel_overrides.get("pgs_chunk_size", 1))
-        if self._pgs_chunk_size < 1:
-            raise ValueError("pgs_chunk_size must be positive")
         self._tile_threads = int(self._kernel_overrides.get("tile_threads", _TILE_THREADS))
         if self._tile_threads not in (32, 64, 128, 256):
             raise ValueError("tile_threads must be one of (32, 64, 128, 256)")
@@ -2646,26 +2737,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         if self._serial_kernel_block_dim <= 0 or self._serial_kernel_block_dim % 32:
             raise ValueError("serial_kernel_block_dim must be a positive multiple of 32")
-        if solve_mode == "matrix_free" or not model.device.is_cuda:
-            # The dense Gauss-Seidel kernels belong to the split solve on CUDA.
-            self._pgs_kernel = "loop"
-        elif self._pgs_kernel in ("tiled_contact", "streaming") and (
-            self._enable_joint_limits
-            or not self._friction_every_contact
-            or self._contact_friction_position_iterations >= 0
-        ):
-            # These kernels solve whole contacts (one normal and two friction rows) only.
-            raise ValueError(
-                f"pgs_kernel={self._pgs_kernel!r} solves contact rows only; it rejects joint-limit and normal-only "
-                "rows and contact_friction_position_iterations"
-            )
         if not model.device.is_cuda:
             # The tiled and native kernels are CUDA-only; CPU runs the scalar Warp kernels.
             self._cholesky_kernel = "loop"
             self._trisolve_kernel = "loop"
             self._hinv_jt_kernel = "par_row"
-            self._delassus_kernel = "par_row_col"
-            self._pgs_kernel = "loop"
         self._small_dof_threshold = _SMALL_DOF_THRESHOLD_DEFAULT
 
         self._step = 0
@@ -2706,9 +2782,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._warn_persistent_row_capacity(model)
         self._build_mimic_plan(model)
         self._build_connect_plan(model)
-        if self._solve_mode == "split" and (self._mimic_count or self._connect_count):
-            # The split solve has no bilateral rows; it would project them as contacts.
-            raise NotImplementedError("Mimic relationships and loop-closing joints require solve_mode='matrix_free'")
         if self._articulated_contact_response != "immediate" and self._connect_count:
             # The propagation tree passes walk whole articulation joint ranges.
             raise NotImplementedError(
@@ -2751,22 +2824,15 @@ class SolverSteel(SolverBase, CouplingInterface):
             tile_threads=self._tile_threads,
             diagonal_mass_sizes=self._diagonal_mass_sizes,
         )
-        split = self._solve_mode == "split"
-        # Split mode assembles the Delassus matrix from the grouped responses and never
-        # reads world-gathered J/Y; sparse rows store factor-coordinate responses.
-        self._jy_world_aliased = (
-            not split and self._sparse_mass_matrix_size is None and self._detect_jy_world_identity()
-        )
+        # Sparse rows store factor-coordinate responses and never read world-gathered J/Y.
+        self._jy_world_aliased = self._sparse_mass_matrix_size is None and self._detect_jy_world_identity()
         # Matrix-free tiled H^-1 J^T writes the world-gathered response directly unless the
         # group and world layouts already alias, and also computes the row diagonal.
         # Bilateral pre-elimination corrects the grouped response afterwards, so it keeps
         # the group response, the separate world gather and the separate diagonal pass.
         # The sparse-diagonal solve reads the dense articulation's grouped response directly.
         self._hinv_jt_writes_world = (
-            not split
-            and not self._jy_world_aliased
-            and not self._preelim_active
-            and not self._sparse_diagonal_contact_solve
+            not self._jy_world_aliased and not self._preelim_active and not self._sparse_diagonal_contact_solve
         )
         self._hinv_jt_tiled_writes_group = not self._hinv_jt_writes_world
         self._hinv_jt_diag_sizes = frozenset(
@@ -2874,7 +2940,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._shape_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._shape_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
-        self._check_restitution_support()
 
         self._contact_torsion_device = bool(contact_torsion_device)
         self._device_torsion = None
@@ -2909,6 +2974,40 @@ class SolverSteel(SolverBase, CouplingInterface):
             if enable_sleeping
             else None
         )
+        # Carry the end-of-step kinematics and inverse-dynamics terms into the next step's first stage.
+        reuse_requested = bool(reuse_kinematics)
+        # A FREE or DISTANCE joint that is not the first joint of its articulation (a free joint below another
+        # body, or a second free root) references its twist at the articulation origin, which the generic
+        # eval_fk publication does not, so such models keep publishing through eval_fk.
+        extra_free_joint = False
+        if model.joint_count and model.joint_articulation is not None:
+            joint_type = model.joint_type.numpy()
+            joint_articulation = model.joint_articulation.numpy()
+            first_joint = model.articulation_start.numpy()[np.maximum(joint_articulation, 0)]
+            free_like = (joint_type == int(JointType.FREE)) | (joint_type == int(JointType.DISTANCE))
+            not_first = (np.arange(model.joint_count) != first_joint) | (model.joint_parent.numpy() >= 0)
+            extra_free_joint = bool(np.any(free_like & (joint_articulation >= 0) & not_first))
+        self._reuse_kinematics_enabled = bool(
+            reuse_requested
+            and model.device.is_cuda
+            and model.articulation_count
+            and model.joint_count
+            and not model.requires_grad
+            and not self._enable_joint_velocity_limits
+            and self._tree_plan is None
+            and self._sleeping is None
+            and not extra_free_joint
+        )
+        # The public attribute reports whether the carry runs, as ``deterministic`` reports the mode in effect.
+        self._reuse_kinematics = self._reuse_kinematics_enabled
+        count = max(model.articulation_count, 1)
+        self._fk_id_valid = wp.zeros(count, dtype=wp.int32, device=model.device)
+        self._fk_id_none = wp.zeros(count, dtype=wp.int32, device=model.device)
+        self._fk_id_scratch = wp.zeros(count, dtype=wp.int32, device=model.device)
+        # The state the carried terms were published into, as a token the step compares on the device (0: none).
+        self._fk_id_published_token = wp.zeros(1, dtype=wp.int32, device=model.device)
+        self._fk_id_state_tokens = weakref.WeakKeyDictionary()
+        self._fk_id_next_state_token = 1
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         # Allocated by the first snapshot_constraint_status(): device copies, host copies and the snapshot's event.
@@ -3111,11 +3210,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
         (kinematic flags) and inertial changes request a mass-matrix refresh of every
         articulation on the next step, independent of ``update_mass_matrix_interval``. Body
-        flags (kinematic membership), armature, joint damping (joint DOF or DOF force changes)
-        and shape friction and restitution coefficients are re-read. Shape type and source
-        changes, as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes
-        device contact torsion supports. Other model data, such as gravity, limits and shape
-        transforms, is read every step. A kinematic free
+        flags (kinematic membership), armature, joint damping and spring stiffness (joint DOF or
+        DOF force changes), spring rest coordinates (joint DOF or reference-pose changes) and
+        shape friction and restitution coefficients are re-read. Shape type and source changes,
+        as made by :meth:`~newton.Model.select_body_variants`, refresh which shapes device
+        contact torsion supports. Other model data, such as gravity, limits and shape
+        transforms, is read every step; with ``reuse_kinematics`` on, a gravity change reaches the
+        carried bias wrench one step later unless ``MODEL_PROPERTIES`` is notified. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
         equality rows: enabling one that is not converted to a Newton loop joint or mimic
@@ -3126,13 +3227,14 @@ class SolverSteel(SolverBase, CouplingInterface):
         impulses of the worlds selected by ``world_mask``. With friction patches, shape changes
         also discard the anchors of the bodies whose collision geometry changed, in every world.
 
-        Joint, joint DOF (including the DOF inertial and force flags), body inertial and shape
-        notifications run on the device without host synchronization, so they can be captured
-        in a CUDA graph and replayed after the model arrays are edited in place. A captured
+        Joint, joint DOF (including the DOF inertial, force and reference-pose flags), body
+        inertial and shape notifications run on the device without host synchronization, so
+        they can be captured in a CUDA graph and replayed after the model arrays are edited in
+        place. A captured
         notification reads the arrays it was captured with; after replacing a model array,
         notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
-        Sleeping, and the positive-restitution checks of the split solve and of sparse mass
-        factors (with restitution enabled), also read model data on the host, so issue those
+        Sleeping, and the positive-restitution check of sparse mass factors (with restitution
+        enabled), also read model data on the host, so issue those
         notifications outside CUDA graph capture.
 
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
@@ -3157,6 +3259,15 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._sleeping is not None:
             self._sleeping.notify(flags)
         dof_inertial = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        if flags & (
+            ModelFlags.JOINT_PROPERTIES
+            | dof_inertial
+            | ModelFlags.BODY_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.MODEL_PROPERTIES
+        ):
+            # The carried kinematics and inverse-dynamics terms read these properties.
+            self._fk_id_valid.zero_()
         if flags & ModelFlags.BODY_PROPERTIES:
             self._update_kinematic_state()
         if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
@@ -3165,11 +3276,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         if flags & dof_force:
             self._refresh_passive_joint_damping()
+            self._refresh_passive_spring_stiffness()
             # Augmented drive gains enter the factored mass-matrix diagonal.
             self._mass_update_requested.fill_(1)
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
+            self._refresh_passive_spring_rest_q()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_shape_materials()
-            self._check_restitution_support()
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._refresh_free_root_anchors()
             # Joint frames move the bodies the mass matrix is built from.
@@ -3326,6 +3439,37 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
+    def notify_state_changed(self, state: State, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
+        """Drop the carried kinematics of the selected worlds after writing ``state`` outside :meth:`step`.
+
+        With ``reuse_kinematics`` on, the solver keeps the kinematics and inverse-dynamics terms it
+        formed when publishing a step, for the next step's input state. Overwriting or replacing
+        that state's ``joint_q``, ``joint_qd`` or ``body_q`` makes them stale; call this so the next
+        step re-derives them for the selected worlds. :meth:`reset` does the same for its worlds
+        beside its other clears. Without the carry this is a no-op.
+
+        Args:
+            state: The state the next step reads, whose joint or body arrays were written.
+            world_mask: Boolean device array of shape ``(world_count + 1,)`` selecting the worlds
+                whose state changed, in the layout :meth:`reset` and :meth:`notify_model_changed`
+                use and validated as they validate it (dtype, device and length) before anything
+                else; ``None`` selects every world.
+        """
+        del state
+        world_mask = self._normalize_reset_world_mask(world_mask)
+        if not self._reuse_kinematics_enabled:
+            return
+        if world_mask is None:
+            self._fk_id_valid.zero_()
+            return
+        wp.launch(
+            _invalidate_fk_id_worlds,
+            dim=self.model.articulation_count,
+            inputs=[world_mask, int(self.model.world_count), self._articulation_model_world],
+            outputs=[self._fk_id_valid],
+            device=self.model.device,
+        )
+
     @override
     def reset(
         self,
@@ -3337,8 +3481,9 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         The simulation state is not modified. For the selected worlds this clears the
         capacity status in :attr:`constraint_overflow`, discards the warm-start impulses
-        and the friction-patch anchors, and requests a mass-matrix refresh on the next
-        step, so a teleported articulation does not reuse a stale factorization or anchor;
+        and the friction-patch anchors, requests a mass-matrix refresh on the next step and,
+        with ``reuse_kinematics`` on, drops their carried kinematics, so a teleported
+        articulation does not reuse a stale factorization, anchor or pose;
         other worlds keep their refresh cadence and history. An anchor between bodies of
         two entries (for example a global body and a world body) is discarded when either
         is selected. Global articulations share world 0's rows, so selecting the global
@@ -3406,6 +3551,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self.constraint_overflow,
                 self._disabled_tree_joint,
                 self._joint_friction_invalid,
+                self._fk_id_valid,
             ],
             device=self.model.device,
         )
@@ -3435,9 +3581,10 @@ class SolverSteel(SolverBase, CouplingInterface):
     ) -> None:
         """Schedule a save or rewind of the carried friction-patch history for the next step.
 
-        When the coupler may restart a step, the next step after a kinematic write saves the history and
-        the next step after an iteration restart restores the saved copy, so repeated solves of one
-        coupled step start from the same history.
+        A kinematic write (joint or body state flags) also drops the carried kinematics of every
+        articulation with ``reuse_kinematics`` on. When the coupler may restart a step, the next step
+        after a kinematic write saves the history and the next step after an iteration restart restores
+        the saved copy, so repeated solves of one coupled step start from the same history.
 
         Args:
             state: Entry input state written by the coupler.
@@ -3447,9 +3594,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         del state, dt
         self._require_coupling_support()
+        kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
+        if kinematic:
+            # The coupler wrote the input state; the carried kinematics are stale.
+            self._fk_id_valid.zero_()
         if not self._friction_anchors_enabled or not self._coupling_iteration_restarts:
             return
-        kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
         # step() runs both, so a graph captured from the coupled step records them; a reset cancels both.
         if iteration_restart:
             self._coupling_patch_history_restore_pending = True
@@ -3987,10 +4137,10 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _build_connect_plan(self, model) -> None:
         """Build the static lookup tables of the connect (loop-closure) rows.
 
-        Loop-closing BALL and REVOLUTE joints are kept out of the articulation tree by
+        Loop-closing BALL, REVOLUTE and FIXED joints are kept out of the articulation tree by
         :meth:`_SteelModelPlan.build` and enforced as three rows pinning the joint's
         parent and child anchors together, plus two hinge-axis rows for a REVOLUTE
-        closure. A closure belongs to its child body's articulation. Its parent is either in that articulation or prescribed: a kinematic
+        closure or three rotation rows for a FIXED closure. A closure belongs to its child body's articulation. Its parent is either in that articulation or prescribed: a kinematic
         body (:attr:`~newton.BodyFlags.KINEMATIC`) or the world. A prescribed parent
         contributes no DOFs; its anchor velocity enters the row target. Other loop-closing
         joints raise :class:`NotImplementedError`. The rows read the joint's enabled flag and
@@ -4024,10 +4174,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                 rows = 3
             elif int(joint_type[j]) == int(JointType.REVOLUTE):
                 rows = 5
+            elif int(joint_type[j]) == int(JointType.FIXED):
+                rows = 6
             else:
                 raise NotImplementedError(
                     f"SolverSteel: loop-closing joint {j} is a {JointType(joint_type[j]).name} joint; "
-                    "only BALL and REVOLUTE loop-closing joints are supported."
+                    "only BALL, REVOLUTE and FIXED loop-closing joints are supported."
                 )
             parent = int(joint_parent[j])
             prescribed = 0
@@ -4075,8 +4227,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._connect_slot = wp.full((n,), -1, dtype=wp.int32, device=device)
         self._connect_rows_np = np.asarray(rows_l, dtype=np.int32)
         self._connect_rows = wp.array(self._connect_rows_np, dtype=wp.int32, device=device)
-        # Three point rows, then the two hinge rows of a REVOLUTE closure.
-        self._connect_row_inv_norm = wp.zeros((n, 5), dtype=float, device=device)
+        # Three point rows, then the two hinge rows of a REVOLUTE closure or the three rotation rows of a FIXED one.
+        self._connect_row_inv_norm = wp.zeros((n, 6), dtype=float, device=device)
         self._connect_at_midpoint = wp.zeros(n, dtype=wp.int32, device=device)
         self._connect_count = n
 
@@ -4093,6 +4245,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             "limits": (np.isfinite(lower) & (lower != -unlimited)) | (np.isfinite(upper) & (upper != unlimited)),
             "drive gains": (model.joint_target_ke.numpy()[dofs] != 0.0) | (model.joint_target_kd.numpy()[dofs] != 0.0),
             "damping": model.joint_damping.numpy()[dofs] != 0.0,
+            "spring stiffness": model.joint_stiffness.numpy()[dofs] != 0.0,
             "armature": model.joint_armature.numpy()[dofs] != 0.0,
         }
         axis = model.joint_axis.numpy()[dofs]
@@ -4423,16 +4576,45 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     def _setup_passive_joint_forces(self, model) -> None:
-        """Select the passive damping of the inverse-dynamics pass; its passive springs are zero.
-
-        Passive joint springs are not applied yet (newton-physics/newton#4516);
-        their buffers stay zero.
-        """
+        """Allocate the passive damping and spring buffers of the inverse-dynamics pass and fill them from the model."""
         n_dofs = max(int(model.joint_dof_count), 1)
         self._passive_joint_damping = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._refresh_passive_joint_damping()
+        # Tree PRISMATIC, REVOLUTE and D6 DOFs carry springs; the sleep veto reads the same buffer.
+        spring_dof_mask = np.zeros(n_dofs, dtype=np.int32)
+        if model.joint_count:
+            joint_type = model.joint_type.numpy()
+            qd_start = model.joint_qd_start.numpy()
+            sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
+            sprung &= self._model_plan.loop_joint_articulation < 0
+            for joint in np.flatnonzero(sprung):
+                spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
+        self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
-        self._passive_spring_ref = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
+        self._passive_spring_rest_q = wp.zeros(
+            max(int(model.joint_coord_count), 1), dtype=wp.float32, device=model.device
+        )
+        self._refresh_passive_spring_stiffness()
+        self._refresh_passive_spring_rest_q()
+
+    def _refresh_passive_spring_stiffness(self) -> None:
+        """Copy the model's passive spring stiffness of sprung DOFs into the solver's fixed buffer."""
+        # Users may replace model.joint_stiffness; captured graphs keep this buffer's address.
+        stiffness = self.model.joint_stiffness
+        if stiffness is not None and self.model.joint_dof_count:
+            wp.launch(
+                mask_passive_spring_stiffness,
+                self.model.joint_dof_count,
+                inputs=[stiffness, self._passive_spring_dof_mask],
+                outputs=[self._passive_spring_stiffness],
+                device=self.model.device,
+            )
+
+    def _refresh_passive_spring_rest_q(self) -> None:
+        """Copy the model's passive spring rest coordinates into the solver's fixed buffer."""
+        rest_q = self.model.joint_rest_q
+        if rest_q is not None and self.model.joint_coord_count:
+            wp.copy(self._passive_spring_rest_q, rest_q, count=self.model.joint_coord_count)
 
     def _refresh_passive_joint_damping(self) -> None:
         """Copy the model's current joint damping into the solver's fixed damping buffer."""
@@ -4628,8 +4810,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._diagonal_mass_sizes = frozenset()
         if not self._kernel_overrides.get("diagonal_mass", True):
             return
-        # The split solve and the propagation responses build their responses from dense factors.
-        if self._solve_mode != "matrix_free" or self._articulated_contact_response != "immediate":
+        # The propagation response builds its responses from dense factors.
+        if self._articulated_contact_response != "immediate":
             return
         if (self._cholesky_kernel, self._trisolve_kernel, self._hinv_jt_kernel) != ("auto", "auto", "auto"):
             return
@@ -4685,18 +4867,20 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _sparse_supports_contact_options(self, model: Model) -> bool:
         """Whether the sparse factor kernels implement the configured contact law.
 
-        They solve hard point-friction contacts (one normal and two tangent rows per
-        contact) without restitution, so friction patches, warm start, regularization,
-        velocity-only iterations, normal-only contacts, restitution, contact torsion,
-        contact compliance, the propagation responses and the other friction modes keep
-        the dense path.
+        They solve hard contacts with point friction or persistent friction patches (one
+        normal row per contact and two tangent rows per point contact or surviving patch
+        anchor, the patch load pooled over the region's linked normal rows), so the
+        propagation responses, the other friction modes, contact torsion, contact compliance,
+        warm start, regularization, velocity-only iterations, a friction gap threshold and late
+        friction (``contact_friction_position_iterations``) keep the dense path, and so does enabled
+        restitution when a shape has a positive restitution coefficient (with all coefficients zero
+        it does not).
         """
         if (
             self._articulated_contact_response != "immediate"
             or self._friction_mode != "fixed_normal"
             or self._contact_torsion_enabled
             or self._contact_compliance
-            or self._friction_anchors_enabled
             or self._contact_warmstart
             or self._regularization_enabled
             or self._velocity_iterations > 0
@@ -4708,15 +4892,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             return True
         restitution = model.shape_material_restitution
         return restitution is None or model.shape_count == 0 or not np.any(restitution.numpy() > 0.0)
-
-    def _check_restitution_support(self) -> None:
-        """Reject positive restitution in the split solve, which has no rebound targets."""
-        supports_rebound = self._solve_mode == "matrix_free"
-        if supports_rebound or not self._enable_restitution:
-            return
-        restitution = self.model.shape_material_restitution
-        if restitution is not None and self.model.shape_count and np.any(restitution.numpy() > 0.0):
-            raise NotImplementedError("Contact restitution requires solve_mode='matrix_free'")
 
     def _setup_paired_response(self, model: Model) -> None:
         """Select the paired articulation/free-body response of worlds with exactly one of each.
@@ -4740,7 +4915,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             for size in self._size_groups
             if model.device.is_cuda
             and not model.requires_grad
-            and self._solve_mode == "matrix_free"
             and not self._preelim_active
             and self._sparse_mass_matrix_size is None
             and not self._sparse_diagonal_contact_solve
@@ -4902,7 +5076,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         supported = bool(
             model.joint_dof_count > 0
             and self._enable_joint_limits
-            and self._solve_mode == "matrix_free"
             and self._articulated_contact_response == "immediate"
             and self._row_schedule == "interleaved"
             and self._velocity_iterations == 0
@@ -5015,16 +5188,21 @@ class SolverSteel(SolverBase, CouplingInterface):
         next to it, for the pair solve, and the residual pair solve when the articulation's
         DOFs come first. Each step :func:`classify_local_solve_worlds` assigns every world to
         one owner from its row counts; the general sweep solves the rest.
+
+        Pair and residual owners are limited to small batches by the device SM count.
+        Larger batches retain the single-articulation owner for contact-free worlds;
+        contact-bearing worlds use the general sweep.
         """
         self._local_solve_max_rows = min(_LOCAL_SOLVE_MAX_ROWS, self._articulation_constraint_max)
         self._local_residual_max_rows = min(_LOCAL_RESIDUAL_MAX_ROWS, self._articulation_constraint_max)
         self._local_residual_mf_max_rows = min(_LOCAL_RESIDUAL_MF_MAX_ROWS, self._free_body_constraint_max)
         local_shared_limit = int(getattr(model.device, "max_shared_memory_per_block", 0))
+        sm_count = int(getattr(model.device, "sm_count", 0) or 1)
+        local_contact_batch = self._world_count <= _LOCAL_CONTACT_WORLDS_PER_SM * sm_count
         local_base_supported = bool(
             model.device.is_cuda
             and not model.requires_grad
             and self._has_free_rigid_bodies
-            and self._solve_mode == "matrix_free"
             and self._articulated_contact_response == "immediate"
             and self._row_schedule == "interleaved"
             and self._drive_mode == "augmented"
@@ -5095,7 +5273,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 local_candidates[primary_dofs].append(primary_art)
 
                 free_arts = [art for art in response_arts if plan.is_free_rigid[art] != 0]
-                if len(response_arts) != 2 or len(free_arts) != 1:
+                if not local_contact_batch or len(response_arts) != 2 or len(free_arts) != 1:
                     continue
                 secondary_art = free_arts[0]
                 secondary_dofs = int(plan.response_dof_count[secondary_art])
@@ -5135,10 +5313,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             local_residual_pair_articulation, dtype=wp.int32, device=device
         )
         self._local_solve_owner = wp.zeros(max(self._world_count, 1), dtype=wp.int32, device=device)
-        self._local_general_world_count = wp.zeros(1, dtype=wp.int32, device=device)
-        self._local_general_worlds = wp.empty(max(self._world_count, 1), dtype=wp.int32, device=device)
-        sm_count = int(getattr(device, "sm_count", 0) or 1)
-        self._local_general_solver_blocks = min(self._world_count, max(1, sm_count * _LOCAL_GENERAL_BLOCKS_PER_SM))
 
         def device_arrays(table):
             return {size: wp.array(arts, dtype=wp.int32, device=device) for size, arts in table.items() if arts}
@@ -5296,8 +5470,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             return
         if _model_has_bilateral_constraints(model):
             return
-        # The sparse rows and sweep exist only in the interleaved matrix-free solve, without drive rows.
-        if self._solve_mode != "matrix_free" or self._has_drive_rows or self._row_schedule != "interleaved":
+        # The sparse rows and sweep exist only in the interleaved CUDA solve, without drive rows.
+        if not model.device.is_cuda or self._has_drive_rows or self._row_schedule != "interleaved":
             return
         if self._enable_joint_velocity_limits or self._enable_joint_friction:
             return
@@ -5569,9 +5743,6 @@ class SolverSteel(SolverBase, CouplingInterface):
 
     def _classify_free_rigid_bodies(self, model):
         """Materialize free-rigid execution metadata from the model plan."""
-        self._has_mixed_contacts = False
-        self._is_one_solve_art_per_world = False
-        self._max_free_bodies_per_world = 0
         if not model.articulation_count or not model.joint_count:
             self._has_free_rigid_bodies = False
             self._is_free_rigid = None
@@ -5586,19 +5757,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         is_free_rigid = self._model_plan.is_free_rigid
         self._free_rigid_body_count = len(self._model_plan.response_free_rigid_body_indices)
         self._has_free_rigid_bodies = self._free_rigid_body_count > 0
-
-        # Per-world census of solved articulations for split mode: worlds holding both
-        # free bodies and articulated bodies interleave the dense and free-body solves,
-        # and the free-body solve keeps every free body of a world in its body table.
-        world_count = self._model_plan.world_count
-        articulation_world = self._model_plan.articulation_world
-        solved = self._model_plan.response_dof_count > 0
-        free = is_free_rigid != 0
-        free_counts = np.bincount(articulation_world[solved & free], minlength=world_count)
-        articulated_counts = np.bincount(articulation_world[solved & ~free], minlength=world_count)
-        self._has_mixed_contacts = bool(np.any((free_counts > 0) & (articulated_counts > 0)))
-        self._is_one_solve_art_per_world = bool(np.all(free_counts + articulated_counts == 1))
-        self._max_free_bodies_per_world = int(np.max(free_counts)) if free_counts.size else 0
 
         self._is_free_rigid = wp.array(is_free_rigid, dtype=wp.int32, device=model.device)
         self._free_rigid_body_indices = wp.array(
@@ -5847,13 +6005,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Allocate the per-world dense row system (response, metadata and impulses)."""
         device = model.device
         shape = (self._world_count, self._articulation_constraint_max)
-        if self._solve_mode == "split":
-            # Split mode solves the assembled Delassus system and never reads world J/Y; the
-            # one-element stand-ins satisfy the shared H^-1 J^T launches.
-            self._C = wp.zeros((*shape, self._articulation_constraint_max), dtype=wp.float32, device=device)
-            self._J_world = wp.zeros((1, 1, 1), dtype=wp.float32, device=device)
-            self._Y_world = wp.zeros((1, 1, 1), dtype=wp.float32, device=device)
-        elif self._sparse_mass_matrix_size is not None:
+        if self._sparse_mass_matrix_size is not None:
             # Sparse rows store factor-coordinate responses instead of world J and Y.
             self._J_world = self._Y_world = wp.zeros((1, 1, 1), dtype=wp.float32, device=device)
         elif self._jy_world_aliased:
@@ -5962,20 +6114,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._mf_body_count = wp.zeros((worlds,), dtype=wp.int32, device=device)
             self._mf_local_body_a = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
             self._mf_local_body_b = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
-        if self._solve_mode == "split":
-            # Local body table of the native free-body solve, which keeps the velocities of a
-            # world's free bodies in shared memory.
-            bodies = max(self._max_free_bodies_per_world, 1)
-            self._mf_body_list = wp.zeros((worlds, bodies), dtype=wp.int32, device=device)
-            self._mf_body_dof_start = wp.zeros((worlds, bodies), dtype=wp.int32, device=device)
-            self._mf_body_count = wp.zeros((worlds,), dtype=wp.int32, device=device)
-            self._mf_local_body_a = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
-            self._mf_local_body_b = wp.zeros((worlds, rows), dtype=wp.int32, device=device)
-        if self._solve_mode == "split" and self._has_mixed_contacts:
-            # Free-body velocity change accumulated across the interleaved iterations, and
-            # the per-iteration snapshot it is computed from.
-            self._v_mf_accum = wp.zeros_like(model.joint_qd)
-            self._v_out_snap = wp.zeros_like(model.joint_qd)
         if not self._has_free_rigid_bodies:
             self._rigid_velocity_limit_slot = None
             self._rigid_velocity_limit_sign = None
@@ -6001,6 +6139,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._crba_cholesky_kernels_by_size = {}
         self._crba_cholesky_warp_kernels_by_size = {}
         self._inverse_cholesky_kernels_by_size = {}
+        self._inverse_lower_kernels_by_size = {}
         self._init_paired_response_kernels(model)
         self._fused_drive_dof_K = (
             wp.zeros(max(model.joint_dof_count, 1), dtype=wp.float32, device=model.device)
@@ -6041,6 +6180,14 @@ class SolverSteel(SolverBase, CouplingInterface):
                 if size == self._paired_response_secondary_size and not self._paired_factor_coordinates
                 else None
             )
+            # The factor-coordinate paired response reads L^-1 of both sizes; one lane per column replaces the
+            # serial per-articulation inversion.
+            self._inverse_lower_kernels_by_size[size] = (
+                _get_inverse_cholesky_register_kernel(size, device_arch, lower_only=True)
+                if self._paired_factor_coordinates
+                and size in (self._paired_response_primary_size, self._paired_response_secondary_size)
+                else None
+            )
             self._triangular_solve_kernels_by_size[size] = (
                 _get_triangular_solve_kernel(size, device_arch, self._tile_threads) if dense else None
             )
@@ -6074,16 +6221,16 @@ class SolverSteel(SolverBase, CouplingInterface):
                     write_group=self._hinv_jt_tiled_writes_group,
                 )
 
-        if self._solve_mode == "split":
-            self._pack_mf_meta_kernel = None
-            self._pgs_solve_mf_gs_kernel = None
-            self._mfgs_pair_cache = False
-            self._init_split_kernels(model)
-            return
-
-        self._pack_mf_meta_kernel = _get_pack_mf_meta_kernel(self._mf_meta_packed.shape[1] // 4, device_arch)
+        # CPU fallback: the portable sweep reads the unpacked free-body rows, so nothing is packed.
+        self._pack_mf_meta_kernel = (
+            _get_pack_mf_meta_kernel(self._mf_meta_packed.shape[1] // 4, device_arch) if model.device.is_cuda else None
+        )
+        self._cpu_mf_meta_rhs = None
+        self._cpu_mf_gs_v = None
+        self._mf_gs_row_phases = False
         self._pgs_solve_mf_gs_kernel = None
         self._mfgs_pair_cache = False
+        self._mfgs_torsion_links = False
         self._init_propagation_kernels(model)
         triples = self._sparse_diagonal_contact_triples
         self._mark_independent_sparse_contact_candidates_kernel = (
@@ -6130,6 +6277,23 @@ class SolverSteel(SolverBase, CouplingInterface):
                 fuse_vel_limits=self._velocity_limits_fused,
             )
             row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            mfgs_shape = (
+                self._articulation_constraint_max,
+                mf_rows,
+                self._max_world_dofs,
+                int(getattr(model.device, "max_shared_memory_per_block", 0)),
+            )
+            mfgs_metadata = {
+                "shared_metadata": shared_metadata,
+                "has_drive_rows": self._has_drive_rows,
+                "fuse_vel_limits": self._velocity_limits_fused,
+            }
+            mfgs_residency = {"world_count": self._world_count, "sm_count": int(getattr(model.device, "sm_count", 0))}
+            # The lists come first: without them each torsion row rescans every dense row, a cost that grows with
+            # contacts. The pair cache is added only if every world stays resident beside them.
+            self._mfgs_torsion_links = self._contact_torsion_enabled and _use_mfgs_torsion_links(
+                *mfgs_shape, **mfgs_metadata, pair_cache=False
+            )
             # The cache's prologue runs once per launch, so it pays off only when a launch runs several sweeps.
             self._mfgs_pair_cache = (
                 self._friction_mode == "fixed_normal"
@@ -6137,15 +6301,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 and not self._propagation_active
                 and self._row_schedule != "phased"
                 and _use_mfgs_pair_cache(
-                    self._articulation_constraint_max,
-                    mf_rows,
-                    self._max_world_dofs,
-                    int(getattr(model.device, "max_shared_memory_per_block", 0)),
-                    shared_metadata=shared_metadata,
-                    has_drive_rows=self._has_drive_rows,
-                    fuse_vel_limits=self._velocity_limits_fused,
-                    world_count=self._world_count,
-                    sm_count=int(getattr(model.device, "sm_count", 0)),
+                    *mfgs_shape, **mfgs_metadata, **mfgs_residency, torsion_links=self._mfgs_torsion_links
                 )
             )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
@@ -6166,8 +6322,17 @@ class SolverSteel(SolverBase, CouplingInterface):
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
                 pair_cache=self._mfgs_pair_cache,
+                torsion_links=self._mfgs_torsion_links,
             )
-            if row_phases:
+            self._mf_gs_row_phases = row_phases
+            if not model.device.is_cuda:
+                # CPU fallback: _launch_mf_gs_phase runs the world-serial twin of the native kernel.
+                self._pgs_solve_mf_gs_kernels = {}
+                self._pgs_solve_mf_gs_kernel = pgs_solve_mf_gs_cpu
+                self._cpu_mf_gs_v = wp.zeros(
+                    (self._world_count, self._max_world_dofs), dtype=float, device=model.device
+                )
+            elif row_phases:
                 # One kernel per row phase the schedule launches, each with its phase compiled in.
                 has_internal_rows, has_velocity_limits = self._internal_row_phases()
                 if self._row_schedule == "contact_then_internal" and not self._propagation_active:
@@ -6181,7 +6346,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 }
             else:
                 self._pgs_solve_mf_gs_kernels = {0: self._pgs_solve_mf_gs_kernel_for_phase()}
-            self._pgs_solve_mf_gs_kernel = next(iter(self._pgs_solve_mf_gs_kernels.values()))
+            if model.device.is_cuda:
+                self._pgs_solve_mf_gs_kernel = next(iter(self._pgs_solve_mf_gs_kernels.values()))
             self._init_local_solve_kernels(device_arch, mf_rows)
 
     def _init_local_solve_kernels(self, device_arch: str, mf_rows: int) -> None:
@@ -6249,71 +6415,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 dense_response_matrix=True,
             )
 
-    def _init_split_kernels(self, model):
-        """Resolve the split-mode Delassus and Gauss-Seidel kernels for this solver shape.
-
-        Every native kernel has a scalar Warp fallback; a kernel whose shared-memory
-        working set does not fit the device falls back instead of failing to launch.
-        """
-        device_arch = model.device.arch
-        is_cuda = model.device.is_cuda
-        max_constraints = self._articulation_constraint_max
-        # One fused tile kernel per world computes H^-1 J^T and stores the whole Delassus
-        # block; it requires every world to solve exactly one articulation.
-        self._split_fused_response = bool(
-            is_cuda
-            and self._size_groups
-            and self._is_one_solve_art_per_world
-            and self._hinv_jt_kernel != "par_row"
-            and self._delassus_kernel != "par_row_col"
-            and all(self._execution_plan.use_fused_hinv_jt(size) for size in self._size_groups)
-        )
-        self._hinv_jt_fused_kernels_by_size = {
-            size: _get_hinv_jt_fused_kernel(size, max_constraints, device_arch, self._tile_threads)
-            for size in (self._size_groups if self._split_fused_response else ())
-        }
-        self._delassus_kernels_by_size = {}
-        for size in self._size_groups:
-            chunk = _select_delassus_chunk_size(size, max_constraints)
-            self._delassus_kernels_by_size[size] = (
-                _get_delassus_kernel(size, max_constraints, chunk, device_arch)
-                if is_cuda and self._delassus_kernel != "par_row_col" and chunk is not None
-                else None
-            )
-        self._pgs_solve_tiled_row_kernel = (
-            _get_pgs_solve_tiled_row_kernel(max_constraints, device_arch)
-            if is_cuda
-            and self._pgs_kernel in ("auto", "tiled")
-            and _estimate_tiled_row_shared_memory(max_constraints) <= _STATIC_SHARED_MEMORY_BYTES
-            else None
-        )
-        # Contact-only kernels: whole contacts as 3x3 blocks, selected only through _kernel_overrides.
-        self._pgs_solve_contact_kernel = None
-        if is_cuda and self._pgs_kernel in ("tiled_contact", "streaming"):
-            required = _estimate_contact_pgs_shared_memory(max_constraints, self._pgs_kernel, self._pgs_chunk_size)
-            if required > _STATIC_SHARED_MEMORY_BYTES:
-                raise ValueError(
-                    f"pgs_kernel={self._pgs_kernel!r} needs {required} bytes of shared memory at "
-                    f"articulation_constraint_max={max_constraints}"
-                )
-        if is_cuda and self._pgs_kernel == "tiled_contact":
-            self._pgs_solve_contact_kernel = _get_pgs_solve_tiled_contact_kernel(max_constraints, device_arch)
-        elif is_cuda and self._pgs_kernel == "streaming":
-            self._pgs_solve_contact_kernel = _get_pgs_solve_streaming_kernel(
-                max_constraints, device_arch, pgs_chunk_size=self._pgs_chunk_size
-            )
-        mf_rows = self._mf_body_a.shape[1]
-        mf_bodies = self._mf_body_dof_start.shape[1]
-        self._pgs_solve_mf_kernel = (
-            _get_pgs_solve_mf_kernel(mf_rows, mf_bodies, device_arch)
-            if is_cuda
-            and self._has_free_rigid_bodies
-            and self._pgs_kernel != "loop"
-            and _estimate_mf_solve_shared_memory(mf_rows, mf_bodies) <= _STATIC_SHARED_MEMORY_BYTES
-            else None
-        )
-
     def _pack_mf_meta(self, mf_rhs: wp.array) -> None:
+        if self._pack_mf_meta_kernel is None:
+            # CPU fallback: the portable sweep reads the unpacked rows; remember the right-hand side.
+            self._cpu_mf_meta_rhs = mf_rhs
+            return
         wp.launch_tiled(
             self._pack_mf_meta_kernel,
             dim=[self._world_count],
@@ -6480,7 +6586,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         friction_start_iteration: int = 0,
         iteration_offset: int = 0,
     ) -> None:
-        """Run the general sweep over its world queue and the articulation-local solves.
+        """Run the general sweep, one warp per world, and the articulation-local solves.
 
         With ``use_parallel_streams`` the residual-pair, pair and single-articulation solves run
         on streams of their own, admitted before the general sweep so the scarce paired worlds
@@ -6821,7 +6927,10 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         Args:
             state_in: Input state. Its maximal coordinates (``body_q``) are refreshed from
-                ``joint_q`` by forward kinematics during the step. Bodies outside every
+                ``joint_q`` by forward kinematics during the step; with ``reuse_kinematics`` on, a
+                state the previous step published into keeps its carried kinematics, so a caller
+                that overwrote or replaced its ``joint_q``, ``joint_qd`` or ``body_q`` calls
+                :meth:`notify_state_changed` first. Bodies outside every
                 articulation keep their ``body_q`` and ``body_qd``, which pass through to
                 ``state_out``; contacts treat their velocity as zero.
             state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``,
@@ -7022,13 +7131,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._stage2_cholesky_loop(size)
             if size in self._Linv_by_size:
-                wp.launch(
-                    invert_lower_factor_grouped,
-                    dim=self._n_arts_by_size[size],
-                    inputs=[self._group_to_art[size], self._mass_update_mask, size, self._L_by_size[size]],
-                    outputs=[self._Linv_by_size[size]],
-                    device=model.device,
-                )
+                self._stage2_invert_lower_factor(size)
             if self._inverse_cholesky_kernels_by_size[size] is not None:
                 wp.launch(
                     self._inverse_cholesky_kernels_by_size[size],
@@ -7097,10 +7200,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             prepare_torsion_rows(self, state_in, state_aug, contacts)
         has_contacts = contacts is not None and contacts.rigid_contact_max > 0
         self._profile_stage("solve")
-        if self._solve_mode == "split":
-            self._solve_split(state_aug, dt)
-        else:
-            self._solve_matrix_free(state_in, state_aug, contacts, dt)
+        self._solve_matrix_free(state_in, state_aug, contacts, dt)
 
         # Stage 7: convert the solved velocity to accelerations, integrate and publish.
         self._profile_stage("integrate")
@@ -7219,6 +7319,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._accumulate_row_watermarks(contacts)
         if self._device_torsion is not None:
             self._device_torsion.end_step(state_out)
+            if self._reuse_kinematics_enabled and self._device_torsion.deferred_errors:
+                # A latched torsion error rolled state_out back to its input, which the carry published for the
+                # integrated coordinates no longer describes; the drop runs on the device, so it holds on replay.
+                wp.launch(
+                    _drop_carried_kinematics_on_status,
+                    dim=self.model.articulation_count,
+                    inputs=[self._device_torsion.work.status],
+                    outputs=[self._fk_id_valid],
+                    device=self.model.device,
+                )
         self._step += 1
         return state_out
 
@@ -7242,7 +7352,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             else {}
         )
         self._memset_stream = wp.Stream(model.device) if self._double_buffered else None
-        local_kernels = self._solve_mode == "matrix_free" and (
+        local_kernels = bool(
             self._pgs_solve_local_internal_kernels
             or self._pgs_solve_local_pair_kernels
             or self._pgs_solve_local_residual_kernels
@@ -7994,356 +8104,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 friction_start_iteration=friction_start,
             )
 
-    def _solve_split(self, state_aug: State, dt: float) -> None:
-        """Assemble and solve the dense Delassus systems, then the free-body rows, into ``v_out``.
-
-        Worlds with both articulated and free-body rows alternate one dense sweep and one
-        free-body sweep per iteration: the dense right-hand side absorbs ``J dv`` of each
-        free-body sweep, and ``v_out`` carries the accumulated free-body velocity change.
-        """
-        model = self.model
-        if self._split_fused_response:
-            for size in self._size_groups:
-                wp.launch_tiled(
-                    self._hinv_jt_fused_kernels_by_size[size],
-                    dim=[self._n_arts_by_size[size]],
-                    inputs=[
-                        self._L_by_size[size],
-                        self._J_by_size[size],
-                        self._group_to_art[size],
-                        self._art_to_world,
-                        self._constraint_count,
-                        self._cfm,
-                    ],
-                    outputs=[self._C, self._diag, self._Y_by_size[size]],
-                    block_dim=self._tile_threads,
-                    device=model.device,
-                )
-        else:
-            self._C.zero_()
-            self._diag.zero_()
-            for size in self._for_sizes():
-                if self._execution_plan.use_tiled_hinv_jt(size):
-                    self._stage4_hinv_jt_tiled(size)
-                else:
-                    self._stage4_hinv_jt_par_row(size)
-            for size in self._size_groups:
-                self._stage4_delassus(size)
-            wp.launch(
-                finalize_world_diag_cfm,
-                dim=self._world_count,
-                inputs=[self._constraint_count, self._row_type, self._cfm],
-                outputs=[self._diag],
-                device=model.device,
-            )
-        # rhs = bias + J v_hat; the dense solve sees velocity only through C lambda.
-        wp.launch(
-            compute_world_contact_bias,
-            dim=self._world_count,
-            inputs=[
-                self._constraint_count,
-                self._phi,
-                self._row_type,
-                self._target_velocity,
-                self._baumgarte,
-                self._friction_anchor_beta,
-                self._contact_speculative_scale,
-                self._contact_w,
-                dt,
-            ],
-            outputs=[self._rhs, self._row_w],
-            device=model.device,
-        )
-        for size in self._size_groups:
-            self._accumulate_dense_rhs(size, self._v_hat)
-        wp.launch(
-            prepare_world_impulses,
-            dim=self._world_count,
-            inputs=[self._constraint_count, self._articulation_constraint_max, 0],
-            outputs=[self._impulses],
-            device=model.device,
-        )
-
-        friction_start = self._friction_start_iteration(self._iterations)
-        if not self._has_free_rigid_bodies:
-            self._dense_pgs_solve(self._iterations, friction_start_iteration=friction_start)
-            self._apply_dense_impulses()
-            return
-
-        self._mf_pgs_setup(state_aug, dt)
-        if self._pgs_solve_mf_kernel is not None:
-            wp.launch(
-                build_mf_body_map,
-                dim=self._world_count,
-                inputs=[
-                    self._mf_constraint_count,
-                    self._mf_body_a,
-                    self._mf_body_b,
-                    self._body_to_articulation,
-                    self._articulation_dof_start,
-                    self._mf_body_dof_start.shape[1],
-                ],
-                outputs=[
-                    self._mf_body_list,
-                    self._mf_body_dof_start,
-                    self._mf_body_count,
-                    self._mf_local_body_a,
-                    self._mf_local_body_b,
-                ],
-                device=model.device,
-            )
-        if not self._has_mixed_contacts:
-            self._dense_pgs_solve(self._iterations, friction_start_iteration=friction_start)
-            self._apply_dense_impulses()
-            self._mf_pgs_solve(self._iterations, friction_start_iteration=friction_start)
-            return
-
-        self._v_mf_accum.zero_()
-        wp.copy(self._v_out, self._v_hat)
-        for iteration in range(self._iterations):
-            self._dense_pgs_solve(1, friction_start_iteration=friction_start, iteration_offset=iteration)
-            # v_out = v_hat + Y lambda + accumulated free-body change.
-            self._apply_dense_impulses()
-            wp.launch(
-                vector_add_inplace,
-                dim=self._v_out.shape[0],
-                inputs=[self._v_out, self._v_mf_accum],
-                device=model.device,
-            )
-            wp.copy(self._v_out_snap, self._v_out)
-            self._mf_pgs_solve(1, friction_start_iteration=friction_start, iteration_offset=iteration)
-            # v_mf_accum += dv; v_out_snap = dv, so the dense rhs absorbs J dv.
-            wp.launch(
-                compute_delta_and_accumulate,
-                dim=self._v_out.shape[0],
-                inputs=[self._v_out, self._v_out_snap, self._v_mf_accum],
-                device=model.device,
-            )
-            for size in self._size_groups:
-                self._accumulate_dense_rhs(size, self._v_out_snap)
-
     def _friction_start_iteration(self, iterations: int) -> int:
         """Return the first of ``iterations`` position iterations that solves friction rows."""
         if self._contact_friction_position_iterations < 0:
             return 0
         return iterations - min(self._contact_friction_position_iterations, iterations)
-
-    def _stage4_delassus(self, size: int) -> None:
-        """Accumulate one size group's ``C += J Y^T`` and its diagonal.
-
-        A row couples at most two articulations, so each zeroed entry takes at most two atomic terms, whose sum
-        is the same in either order; ``deterministic=RUN_TO_RUN`` relies on this.
-        """
-        n_arts = self._n_arts_by_size[size]
-        kernel = self._delassus_kernels_by_size[size]
-        if kernel is not None:
-            wp.launch_tiled(
-                kernel,
-                dim=[n_arts],
-                inputs=[
-                    self._J_by_size[size],
-                    self._Y_by_size[size],
-                    self._group_to_art[size],
-                    self._art_to_world,
-                    self._constraint_count,
-                    n_arts,
-                ],
-                outputs=[self._C, self._diag],
-                block_dim=128,
-                device=self.model.device,
-            )
-            return
-        wp.launch(
-            delassus_par_row_col,
-            dim=n_arts * self._articulation_constraint_max * self._articulation_constraint_max,
-            inputs=[
-                self._J_by_size[size],
-                self._Y_by_size[size],
-                self._group_to_art[size],
-                self._art_to_world,
-                self._constraint_count,
-                size,
-                self._articulation_constraint_max,
-                n_arts,
-            ],
-            outputs=[self._C, self._diag],
-            device=self.model.device,
-        )
-
-    def _accumulate_dense_rhs(self, size: int, velocity: wp.array) -> None:
-        """Add one size group's ``J velocity`` to the dense right-hand side."""
-        if self._ordered_rows:
-            world_group_start, world_groups = self._world_groups_by_size[size]
-            wp.launch(
-                rhs_accum_world_par_row,
-                dim=self._rhs.shape[0] * self._rhs.shape[1],
-                inputs=[
-                    self._constraint_count,
-                    world_group_start,
-                    world_groups,
-                    self._group_to_art[size],
-                    self._articulation_dof_start,
-                    velocity,
-                    self._J_by_size[size],
-                    size,
-                    self._rhs.shape[1],
-                ],
-                outputs=[self._rhs],
-                device=self.model.device,
-            )
-            return
-        wp.launch(
-            rhs_accum_world_par_art,
-            dim=self._n_arts_by_size[size],
-            inputs=[
-                self._constraint_count,
-                self._art_to_world,
-                self._articulation_dof_start,
-                velocity,
-                self._group_to_art[size],
-                self._J_by_size[size],
-                size,
-            ],
-            outputs=[self._rhs],
-            device=self.model.device,
-        )
-
-    def _dense_pgs_solve(
-        self, iterations: int, *, friction_start_iteration: int = 0, iteration_offset: int = 0
-    ) -> None:
-        """Run ``iterations`` Gauss-Seidel sweeps over each world's dense Delassus system."""
-        if iterations <= 0:
-            return
-        inputs = [
-            self._constraint_count,
-            self._diag,
-            self._C,
-            self._rhs,
-            iterations,
-            self._relaxation,
-            self._row_type,
-            self._row_parent,
-            self._row_mu,
-            int(friction_start_iteration),
-            int(iteration_offset),
-        ]
-        if self._pgs_solve_contact_kernel is not None:
-            wp.launch_tiled(
-                self._pgs_solve_contact_kernel,
-                dim=[self._world_count],
-                inputs=[
-                    self._constraint_count,
-                    self._C,
-                    self._rhs,
-                    self._impulses,
-                    iterations,
-                    self._relaxation,
-                    self._row_mu,
-                ],
-                block_dim=32,
-                device=self.model.device,
-            )
-            return
-        if self._pgs_solve_tiled_row_kernel is not None:
-            wp.launch_tiled(
-                self._pgs_solve_tiled_row_kernel,
-                dim=[self._world_count],
-                inputs=inputs,
-                outputs=[self._impulses],
-                block_dim=32,
-                device=self.model.device,
-            )
-            return
-        wp.launch(
-            pgs_solve_loop,
-            dim=self._world_count,
-            inputs=inputs,
-            outputs=[self._impulses],
-            device=self.model.device,
-        )
-
-    def _apply_dense_impulses(self) -> None:
-        """Write ``v_out = v_hat + Y lambda`` from the dense impulses."""
-        wp.copy(self._v_out, self._v_hat)
-        for size in self._size_groups:
-            n_arts = self._n_arts_by_size[size]
-            wp.launch(
-                apply_impulses_world_par_dof,
-                dim=n_arts * size,
-                inputs=[
-                    self._group_to_art[size],
-                    self._art_to_world,
-                    self._articulation_dof_start,
-                    size,
-                    n_arts,
-                    self._constraint_count,
-                    self._Y_by_size[size],
-                    self._impulses,
-                    self._v_hat,
-                ],
-                outputs=[self._v_out],
-                device=self.model.device,
-            )
-
-    def _mf_pgs_solve(self, iterations: int, *, friction_start_iteration: int = 0, iteration_offset: int = 0) -> None:
-        """Run ``iterations`` Gauss-Seidel sweeps over the free-body rows, updating ``v_out``."""
-        if iterations <= 0:
-            return
-        if self._pgs_solve_mf_kernel is not None:
-            wp.launch_tiled(
-                self._pgs_solve_mf_kernel,
-                dim=[self._world_count],
-                inputs=[
-                    self._mf_constraint_count,
-                    self._mf_body_count,
-                    self._mf_body_dof_start,
-                    self._mf_local_body_a,
-                    self._mf_local_body_b,
-                    self._mf_J_a,
-                    self._mf_J_b,
-                    self._mf_MiJt_a,
-                    self._mf_MiJt_b,
-                    self._mf_eff_mass_inv,
-                    self._mf_rhs,
-                    self._mf_row_type,
-                    self._mf_row_parent,
-                    self._mf_row_mu,
-                    iterations,
-                    self._relaxation,
-                    int(friction_start_iteration),
-                    int(iteration_offset),
-                ],
-                outputs=[self._mf_impulses, self._v_out],
-                block_dim=32,
-                device=self.model.device,
-            )
-            return
-        wp.launch(
-            pgs_solve_mf_loop,
-            dim=self._world_count,
-            inputs=[
-                self._mf_constraint_count,
-                self._mf_body_a,
-                self._mf_body_b,
-                self._mf_MiJt_a,
-                self._mf_MiJt_b,
-                self._mf_J_a,
-                self._mf_J_b,
-                self._mf_eff_mass_inv,
-                self._mf_rhs,
-                self._mf_row_type,
-                self._mf_row_parent,
-                self._mf_row_mu,
-                self._body_to_articulation,
-                self._articulation_dof_start,
-                iterations,
-                self._relaxation,
-                int(friction_start_iteration),
-                int(iteration_offset),
-            ],
-            outputs=[self._mf_impulses, self._v_out],
-            device=self.model.device,
-        )
 
     def constraint_row_watermarks(self) -> dict[str, int]:
         """Return the row high-water marks accumulated since construction (``row_watermark`` only).
@@ -8574,10 +8339,34 @@ class SolverSteel(SolverBase, CouplingInterface):
         target._body_ft_s = wp.zeros((model.body_count,), dtype=wp.spatial_vector, device=model.device)
         target._featherstone_augmented = True
 
+    def _fk_id_state_token(self, state: State) -> int:
+        """Return the token (1 and up) that names ``state`` to the carried-kinematics source check."""
+        token = self._fk_id_state_tokens.get(state)
+        if token is None:
+            token = self._fk_id_next_state_token
+            self._fk_id_next_state_token += 1
+            self._fk_id_state_tokens[state] = token
+        return token
+
     def _stage1_fk_id(self, state_in: State, state_aug: State, state_out: State) -> wp.array:
         """Evaluate forward kinematics and the inverse-dynamics bias; return the predictor's input velocity."""
         model = self.model
-        state_aug._body_f_s.zero_()
+        reuse = self._fk_id_none
+        if self._reuse_kinematics_enabled:
+            # The carried terms belong to the state they were published into. The check runs on the device, so a
+            # captured step compares its input against the latest publication on every replay: a chain that feeds
+            # each step the previous one's output keeps the carry, and a step replayed from an unchanged input
+            # recomputes its kinematics.
+            wp.launch(
+                check_fk_id_source,
+                dim=model.articulation_count,
+                inputs=[self._fk_id_state_token(state_in), self._fk_id_published_token],
+                outputs=[self._fk_id_valid],
+                device=model.device,
+            )
+            reuse = self._fk_id_valid
+        else:
+            state_aug._body_f_s.zero_()
         if self._enable_joint_velocity_limits:
             # Scale velocities that already exceed their limit before predicting.
             wp.copy(self._qd_work, state_in.joint_qd)
@@ -8642,28 +8431,81 @@ class SolverSteel(SolverBase, CouplingInterface):
         ]
         if self._tree_plan is not None:
             self._launch_tree_fk("id", [*fk_inputs, self._dynamics_art_active], fk_outputs)
-        else:
-            wp.launch(
-                eval_rigid_fk_id,
-                dim=model.articulation_count,
-                inputs=[*fk_inputs, self._dynamics_art_active],
-                outputs=fk_outputs,
-                block_dim=16,
-                device=model.device,
-            )
+            if model.body_count:
+                wp.launch(
+                    update_body_qd_from_featherstone,
+                    dim=model.body_count,
+                    inputs=[
+                        state_aug._body_v_s,
+                        state_in.body_q,
+                        model.body_com,
+                        self._body_to_articulation,
+                        self._articulation_origin,
+                        self._dynamics_body_active,
+                    ],
+                    outputs=[state_out.body_qd],
+                    device=model.device,
+                )
+            return stage3_qd
+        # The serial per-articulation pass stops at the kinematics; the inertias, bias wrenches and the
+        # published COM velocities are formed one body per thread.
+        wp.launch(
+            eval_rigid_fk_kinematics,
+            dim=model.articulation_count,
+            inputs=[
+                model.articulation_start,
+                self._articulation_joint_end,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_q_start,
+                model.joint_qd_start,
+                state_in.joint_q,
+                stage3_qd,
+                model.joint_X_p,
+                model.joint_X_c,
+                self._body_X_com,
+                model.joint_axis,
+                model.joint_dof_dim,
+                model.body_com,
+                self._dynamics_art_active,
+                reuse,
+            ],
+            outputs=[
+                state_in.body_q,
+                state_aug._body_q_com,
+                self._articulation_origin,
+                state_aug._joint_S_s,
+                state_aug._body_v_s,
+                state_aug._body_a_s,
+                self._fk_id_scratch,
+            ],
+            block_dim=16,
+            device=model.device,
+        )
         if model.body_count:
             wp.launch(
-                update_body_qd_from_featherstone,
+                finalize_body_dynamics,
                 dim=model.body_count,
                 inputs=[
-                    state_aug._body_v_s,
-                    state_in.body_q,
-                    model.body_com,
                     self._body_to_articulation,
+                    state_in.body_q,
+                    state_aug._body_q_com,
+                    model.body_com,
+                    model.body_mass,
+                    model.body_inertia,
+                    self._is_free_rigid,
                     self._articulation_origin,
+                    int(refresh_composite),
+                    0,
+                    model.body_world,
+                    model.gravity,
+                    state_aug._body_v_s,
+                    state_aug._body_a_s,
                     self._dynamics_body_active,
+                    reuse,
                 ],
-                outputs=[state_out.body_qd],
+                outputs=[state_aug._body_I_s, self._body_inertia_terms, state_aug._body_f_s, state_out.body_qd],
                 device=model.device,
             )
         return stage3_qd
@@ -8679,7 +8521,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Accumulate ``joint_tau`` and the implicit-drive mass terms.
 
         After this call ``state_aug._joint_tau`` holds the rigid-body bias (Coriolis, gravity,
-        external body forces), :attr:`~newton.Control.joint_f`, passive joint damping and the
+        external body forces), :attr:`~newton.Control.joint_f`, passive joint springs and damping and the
         explicit part ``u0`` of each drive, clamped to :attr:`~newton.Model.joint_effort_limit`
         (an actuator-only clamp, as MuJoCo's ``actuatorfrcrange`` and PhysX's drive
         ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
@@ -8706,7 +8548,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             state_in.joint_q,
             state_in.joint_qd,
             self._passive_spring_stiffness,
-            self._passive_spring_ref,
+            self._passive_spring_rest_q,
             self._passive_joint_damping,
             state_aug._joint_S_s,
             state_aug._body_f_s,
@@ -9177,6 +9019,29 @@ class SolverSteel(SolverBase, CouplingInterface):
             device=model.device,
         )
 
+    def _stage2_invert_lower_factor(self, size: int) -> None:
+        """Form L^-1 of the group's refreshed factors, one warp lane per column where the paired response reads it."""
+        model = self.model
+        n_arts = self._n_arts_by_size[size]
+        lower_kernel = self._inverse_lower_kernels_by_size[size]
+        if lower_kernel is not None:
+            wp.launch(
+                lower_kernel,
+                dim=n_arts * 32,
+                inputs=[self._L_by_size[size], self._group_to_art[size], self._mass_update_mask],
+                outputs=[self._Linv_by_size[size]],
+                block_dim=256,
+                device=model.device,
+            )
+            return
+        wp.launch(
+            invert_lower_factor_grouped,
+            dim=n_arts,
+            inputs=[self._group_to_art[size], self._mass_update_mask, size, self._L_by_size[size]],
+            outputs=[self._Linv_by_size[size]],
+            device=model.device,
+        )
+
     def _stage2_cholesky_tiled(self, size: int):
         if size == self._paired_response_primary_size and not self._paired_factor_coordinates:
             wp.launch_tiled(
@@ -9505,7 +9370,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mimic_world_index = None
         self._connect_world_index = None
         self._rigid_velocity_limit_world_index = None
-        self._world_groups_by_size = {}
         if not self._ordered_rows or self._art_to_world is None:
             return
 
@@ -9515,10 +9379,18 @@ class SolverSteel(SolverBase, CouplingInterface):
             elements = listed[np.argsort(element_world[listed], kind="stable")]
             counts = np.bincount(element_world[listed], minlength=self._world_count)
             start = np.concatenate(([0], np.cumsum(counts))).astype(np.int32)
+            # CUDA reservation launches: the worlds with elements, grouped by the power of two of 32 to 1024
+            # threads that covers each world's element count.
+            listed_worlds = np.flatnonzero(counts).astype(np.int32)
+            block_dims = np.clip(1 << np.ceil(np.log2(counts[listed_worlds])).astype(np.int64), 32, 1024)
+            launches = [
+                (int(block_dim), wp.array(listed_worlds[block_dims == block_dim], dtype=wp.int32, device=device))
+                for block_dim in np.unique(block_dims)
+            ]
             return (
                 wp.array(start, dtype=wp.int32, device=device),
                 wp.array(elements.astype(np.int32), dtype=wp.int32, device=device),
-                wp.array(element_world[elements].astype(np.int32), dtype=wp.int32, device=device),
+                launches,
             )
 
         art_world = self._art_to_world.numpy()
@@ -9535,11 +9407,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
             cursor_size = max(cursor_size, self._free_rigid_body_count)
         self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
-        # One family's row counts in world-element order, then a zero, and their exclusive scan.
-        self._row_requests = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
-        self._row_offsets = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
-        for size in self._size_groups:
-            self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])[:2]
 
         sort_capacity = 2 * self._max_contacts_alloc
         self._contact_sort_keys = wp.zeros(sort_capacity, dtype=wp.int32, device=device)
@@ -9551,11 +9418,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._sorted_contact_slots_needed = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
         self._sorted_contact_slot_offsets = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
         # Scans run on preallocated scratch, so a capture Warp does not track can record them.
-        scan_length = max(cursor_size, self._max_contacts_alloc) + 1
-        self._ordered_scan_scratch = wp.zeros(_scan_scratch_size(scan_length, device), dtype=wp.int32, device=device)
-        # scan_with_total clips this length to each scanned view, so every scan covers its whole view.
-        self._ordered_scan_length = wp.full(1, scan_length, dtype=wp.int32, device=device)
+        scan_length = self._max_contacts_alloc + 1
+        self._ordered_scan_scratch = wp.zeros(_scan_scratch_size(scan_length, device), dtype=wp.int64, device=device)
         self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
+        self._contact_slot_scan_length = wp.ones(1, dtype=wp.int32, device=device)
 
     def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
@@ -9563,36 +9429,27 @@ class SolverSteel(SolverBase, CouplingInterface):
             launch(ROW_SLOTS_ATOMIC)
             return
         device = self.model.device
-        world_element_start, world_elements, element_world = world_index
-        element_count = world_elements.shape[0]
-        requests = self._row_requests[: element_count + 1]
-        offsets = self._row_offsets[: element_count + 1]
+        world_element_start, world_elements, launches = world_index
         self._row_cursor.zero_()
         launch(ROW_SLOTS_COUNT)
-        wp.launch(
-            gather_world_row_requests,
-            dim=element_count + 1,
-            inputs=[world_elements, self._row_cursor],
-            outputs=[requests],
-            device=device,
-        )
-        scan_with_total(
-            requests, offsets, self._ordered_scan_length, self._ordered_scan_total, self._ordered_scan_scratch
-        )
-        wp.launch(
-            assign_world_row_slots,
-            dim=element_count,
-            inputs=[world_element_start, world_elements, element_world, offsets, world_slot_counter],
-            outputs=[self._row_cursor],
-            device=device,
-        )
-        wp.launch(
-            advance_world_row_counters,
-            dim=self._world_count,
-            inputs=[world_element_start, offsets],
-            outputs=[world_slot_counter],
-            device=device,
-        )
+        if device.is_cuda:
+            for block_dim, worlds in launches:
+                wp.launch_tiled(
+                    reserve_world_row_slots,
+                    dim=[worlds.shape[0]],
+                    inputs=[worlds, world_element_start, world_elements],
+                    outputs=[world_slot_counter, self._row_cursor],
+                    block_dim=block_dim,
+                    device=device,
+                )
+        else:
+            wp.launch(
+                reserve_world_row_slots_serial,
+                dim=self._world_count,
+                inputs=[world_element_start, world_elements],
+                outputs=[world_slot_counter, self._row_cursor],
+                device=device,
+            )
         launch(ROW_SLOTS_WRITE)
 
     def _assign_contact_slots_by_world(
@@ -9608,8 +9465,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         wp.launch(
             fill_contact_family_sort_keys,
             dim=count,
-            inputs=[contacts.rigid_contact_count, self._contact_path, self._contact_world, segment_count],
-            outputs=[self._contact_sort_keys, self._contact_sort_values],
+            inputs=[contacts.rigid_contact_count, self._contact_path, self._contact_world, segment_count, count],
+            outputs=[self._contact_sort_keys, self._contact_sort_values, self._contact_slot_scan_length],
             device=device,
         )
         wp.utils.radix_sort_pairs(
@@ -9632,7 +9489,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         scan_with_total(
             slots_needed,
             slot_offsets,
-            self._ordered_scan_length,
+            self._contact_slot_scan_length,
             self._ordered_scan_total,
             self._ordered_scan_scratch,
         )
@@ -10188,6 +10045,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._contact_art_a,
                         self._contact_art_b,
                         self._contact_path,
+                        self._contact_slots_needed,
                         self._art_group_idx,
                         self._articulation_response_dof_count,
                         self._is_free_rigid,
@@ -10199,6 +10057,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.shape_body,
                         state_in.body_q,
                         *self._contact_anchor_args,
+                        self._friction_patches.view,
                         self._sparse_mass_matrix_indices.permutation,
                         self._sparse_mass_matrix_indices.row_offsets,
                         self._sparse_Linv,
@@ -10496,9 +10355,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     def _classify_local_solve_worlds(self) -> None:
-        """Assign this step's world owners and compact the general and paired local queues."""
+        """Assign this step's world owners and compact the paired local queues."""
         model = self.model
-        self._local_general_world_count.zero_()
         wp.launch(
             classify_local_solve_worlds,
             dim=self._world_count,
@@ -10518,7 +10376,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._local_residual_max_rows,
                 self._local_residual_mf_max_rows,
             ],
-            outputs=[self._local_solve_owner, self._local_general_world_count, self._local_general_worlds],
+            outputs=[self._local_solve_owner],
             device=model.device,
         )
         pair_tiers = (
@@ -10845,8 +10703,83 @@ class SolverSteel(SolverBase, CouplingInterface):
         return sleeping is not None and sleeping.skip_constraints and sleeping.skip_dynamics
 
     def _stage7_update_kinematics(self, state_out: State) -> None:
-        """Publish the maximal-coordinate body state of the integrated joint state."""
+        """Publish the maximal-coordinate body state of the integrated joint state.
+
+        With ``reuse_kinematics`` the publication runs the first stage's kernels on the integrated
+        coordinates and keeps their results for the next step, which then skips its own.
+        """
         model = self.model
+        if self._reuse_kinematics_enabled:
+            wp.launch(
+                eval_rigid_fk_kinematics,
+                dim=model.articulation_count,
+                inputs=[
+                    model.articulation_start,
+                    self._articulation_joint_end,
+                    model.joint_type,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    state_out.joint_q,
+                    state_out.joint_qd,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    self._body_X_com,
+                    model.joint_axis,
+                    model.joint_dof_dim,
+                    model.body_com,
+                    self._dynamics_art_active,
+                    self._fk_id_none,
+                ],
+                outputs=[
+                    state_out.body_q,
+                    self._body_q_com,
+                    self._articulation_origin,
+                    self._joint_S_s,
+                    self._body_v_s,
+                    self._body_a_s,
+                    self._fk_id_valid,
+                ],
+                block_dim=16,
+                device=model.device,
+            )
+            if model.body_count:
+                # Materialize the body inertias at every publication: whatever makes the next step rebuild the
+                # mass matrix (its cadence, a reset request, a timestep change or a captured step's baked
+                # refresh flag) then reads inertias of its input configuration.
+                wp.launch(
+                    finalize_body_dynamics,
+                    dim=model.body_count,
+                    inputs=[
+                        self._body_to_articulation,
+                        state_out.body_q,
+                        self._body_q_com,
+                        model.body_com,
+                        model.body_mass,
+                        model.body_inertia,
+                        self._is_free_rigid,
+                        self._articulation_origin,
+                        1,
+                        0,
+                        model.body_world,
+                        model.gravity,
+                        self._body_v_s,
+                        self._body_a_s,
+                        self._dynamics_body_active,
+                        self._fk_id_none,
+                    ],
+                    outputs=[self._body_I_s, self._body_inertia_terms, self._body_f_s, state_out.body_qd],
+                    device=model.device,
+                )
+            wp.launch(
+                publish_fk_id_source,
+                dim=1,
+                inputs=[self._fk_id_state_token(state_out)],
+                outputs=[self._fk_id_published_token],
+                device=model.device,
+            )
+            return
         if self._tree_plan is None:
             # Sleeping islands that skipped their dynamics keep their frozen bodies.
             mask = self._dynamics_art_mask if self._sleep_skips_dynamics else None
@@ -10945,14 +10878,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                             free_root = False
                             break
             self._propagation_max_joints[int(size)] = max_joints
-            native = tree_kernel == "auto" and (single_dof or free_root) and _propagation_tree_kernel_fits(max_joints)
+            native = (
+                model.device.is_cuda
+                and tree_kernel == "auto"
+                and (single_dof or free_root)
+                and _propagation_tree_kernel_fits(max_joints)
+            )
             self._propagation_native_tree[int(size)] = native
             self._propagation_free_root_tree[int(size)] = native and not single_dof
             if not native:
                 self._propagation_needs_body_map = True
 
-        if self._articulated_contact_response == "propagation_colored":
-            # The colored sweep stages each world's twists by the bodies' local slots.
+        if self._solve_mode == "colored" and model.device.is_cuda:
+            # The colored sweep stages each world's twists by the bodies' local slots. The colored
+            # row solve is CUDA-only; on CPU the colored mode runs the serial propagation sweep.
             self._propagation_colored = True
             self._propagation_needs_body_map = True
 
@@ -11958,12 +11897,21 @@ class SolverSteel(SolverBase, CouplingInterface):
         iteration_offset: int = 0,
     ) -> None:
         """Run matrix-free sweeps restricted to the row families of ``row_phase`` (0 for all)."""
-        queue = []
-        blocks = self._world_count
+        if not self.model.device.is_cuda:
+            self._launch_cpu_mf_gs_phase(
+                row_phase if self._mf_gs_row_phases else 0,
+                iterations,
+                rhs=self._rhs if rhs is None else rhs,
+                regularize=regularize,
+                freeze_drive_rows=freeze_drive_rows,
+                friction_start_iteration=friction_start_iteration,
+                iteration_offset=iteration_offset,
+            )
+            return
+        owner = []
         if self._local_internal_fast_path:
-            # The general sweep walks the compacted queue of worlds the local solves leave to it.
-            blocks = self._local_general_solver_blocks
-            queue = [self._local_general_world_count, self._local_general_worlds, blocks, 1, self._local_solve_owner]
+            # One warp per world beside the local owners; the kernel returns at once for a world a local solve owns.
+            owner = [self._local_solve_owner]
         if 0 in self._pgs_solve_mf_gs_kernels:
             # Without row phases the kernel ignores the phase argument.
             kernel = self._pgs_solve_mf_gs_kernels[0]
@@ -11974,9 +11922,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._pgs_solve_mf_gs_kernels[row_phase] = kernel
         wp.launch_tiled(
             kernel,
-            dim=[blocks],
+            dim=[self._world_count],
             inputs=[
-                *queue,
+                *owner,
                 *self._mf_gs_inputs(self._rhs if rhs is None else rhs),
                 int(iterations),
                 self._relaxation,
@@ -11988,6 +11936,66 @@ class SolverSteel(SolverBase, CouplingInterface):
             ],
             outputs=[self._v_out],
             block_dim=32,
+            device=self.model.device,
+        )
+
+    def _launch_cpu_mf_gs_phase(
+        self,
+        row_phase: int,
+        iterations: int,
+        *,
+        rhs: wp.array,
+        regularize: bool,
+        freeze_drive_rows: bool,
+        friction_start_iteration: int,
+        iteration_offset: int,
+    ) -> None:
+        """CPU fallback: run the world-serial twin of the native fused matrix-free sweep."""
+        wp.launch(
+            pgs_solve_mf_gs_cpu,
+            dim=self._world_count,
+            inputs=[
+                self._max_world_dofs,
+                self._constraint_count,
+                self._world_dof_indices,
+                rhs,
+                self._diag,
+                self._row_w,
+                self._J_world,
+                self._Y_world,
+                self._row_type,
+                self._row_parent,
+                int(self._has_drive_rows),
+                int(self._velocity_limits_fused),
+                self._drive_target_vel_bias,
+                self._drive_vel_multiplier,
+                self._drive_impulse_multiplier,
+                self._drive_max_impulse,
+                self._drive_vel_limit,
+                self._mf_constraint_count,
+                self._mf_contact_rows_end,
+                self._mf_dof_a,
+                self._mf_dof_b,
+                self._mf_eff_mass_inv,
+                self._cpu_mf_meta_rhs,
+                self._mf_row_type,
+                self._mf_row_parent,
+                self._mf_J_a,
+                self._mf_J_b,
+                self._mf_MiJt_a,
+                self._mf_MiJt_b,
+                self._row_mu,
+                self._mf_row_mu,
+                self._mf_row_w,
+                int(iterations),
+                self._relaxation,
+                int(regularize),
+                int(freeze_drive_rows),
+                int(row_phase),
+                int(friction_start_iteration),
+                int(iteration_offset),
+            ],
+            outputs=[self._impulses, self._mf_impulses, self._cpu_mf_gs_v, self._v_out],
             device=self.model.device,
         )
 
@@ -12110,6 +12118,37 @@ class SolverSteel(SolverBase, CouplingInterface):
                     regularize=regularize,
                     friction_start_iteration=friction_start_iteration,
                     global_iter=iteration,
+                )
+            elif not model.device.is_cuda:
+                # CPU fallback: world-serial twin of the native propagation row sweep.
+                wp.launch(
+                    pgs_solve_propagation_contact_cpu,
+                    dim=self._world_count,
+                    inputs=[
+                        self._propagation_constraint_count,
+                        self._propagation_body_a,
+                        self._propagation_body_b,
+                        self._propagation_MiJt_a,
+                        self._propagation_MiJt_b,
+                        self._propagation_J_a,
+                        self._propagation_J_b,
+                        self._propagation_eff_mass_inv,
+                        propagation_rhs,
+                        self._propagation_row_w,
+                        self._propagation_row_type,
+                        self._propagation_row_parent,
+                        self._propagation_row_mu,
+                        self._relaxation,
+                        int(regularize),
+                        int(friction_start_iteration),
+                        int(iteration),
+                    ],
+                    outputs=[
+                        self._propagation_impulses,
+                        self._propagation_body_qd,
+                        self._propagation_body_impulses,
+                    ],
+                    device=model.device,
                 )
             else:
                 wp.launch_tiled(
@@ -12415,7 +12454,7 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
             if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
-                // One warp owns the articulation; see assign_world_row_slots.
+                // One warp owns the articulation; see reserve_world_row_slots.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
             }}
@@ -12552,7 +12591,7 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
             if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
-                // One warp owns the articulation; see assign_world_row_slots.
+                // One warp owns the articulation; see reserve_world_row_slots.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
             }}
@@ -15138,6 +15177,7 @@ def _get_pgs_solve_mf_gs_kernel(
     contact_compliance: bool = False,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -15192,11 +15232,12 @@ def _get_pgs_solve_mf_gs_kernel(
         row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
         pair_cache: Set up each dense friction pair's 2x2 operator once per launch, and with streamed metadata keep a
             compact shared copy of the row types and parents.
+        torsion_links: Find the contact torsion rows and their members through shared row lists built once
+            per launch (``contact_torsion.torque_links_source``); the results are the same.
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
-            leave to the general sweep: the kernel then walks a compacted world queue with a
-            grid stride (``general_worlds``) and returns for worlds that ``local_solve_owner``
+            leave to the general sweep: the kernel returns for worlds that ``local_solve_owner``
             assigns to a local solve.
         friction_mode: Contact update of the friction rows (see ``SolverSteel``):
             ``"fixed_normal"`` solves the two tangents on the friction disk of the current
@@ -15212,6 +15253,8 @@ def _get_pgs_solve_mf_gs_kernel(
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if row_phase is not None and not row_phases:
         raise ValueError("row_phase requires row_phases")
+    if torsion_links and not contact_torsion:
+        raise ValueError("torsion_links requires contact_torsion")
     if pair_cache and (friction_mode != "fixed_normal" or factor_coordinates):
         raise ValueError("the friction-pair cache requires the fixed-normal pair solve")
     if factor_coordinates and (
@@ -15270,7 +15313,7 @@ def _get_pgs_solve_mf_gs_kernel(
 
     dense_velocity_limit_pass = (
         f"""
-        for (int i = 0; i < m_dense; i++) {{
+        for (int i = vlim_lo; i < vlim_hi; i++) {{
             if ((s_meta_dense[i] & {type_mask}) != {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) continue;
             float denom = s_diag_dense[i];
             if (denom <= 0.0f) continue;
@@ -15356,7 +15399,28 @@ def _get_pgs_solve_mf_gs_kernel(
         else ""
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
-    torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    torsion_sweep = torque_sweep_source(D, linked=torsion_links) if contact_torsion else ""
+    torsion_link_build = torque_links_source(M_D) if torsion_links else ""
+    # The velocity-limit pass of every sweep visits only the span of this world's velocity-limit rows.
+    # Row phases without that pass skip the scan; velocity_limit_pass is uniform across the warp.
+    velocity_limit_range = (
+        f"""    int vlim_lo = m_dense;
+    int vlim_hi = 0;
+    if (velocity_limit_pass) {{
+        for (int i = lane; i < m_dense; i += 32) {{
+            if ((s_meta_dense[i] & {type_mask}) == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) {{
+                vlim_lo = min(vlim_lo, i);
+                vlim_hi = i + 1;
+            }}
+        }}
+        for (int offset = 16; offset > 0; offset >>= 1) {{
+            vlim_lo = min(vlim_lo, __shfl_xor_sync(0xFFFFFFFF, vlim_lo, offset));
+            vlim_hi = max(vlim_hi, __shfl_xor_sync(0xFFFFFFFF, vlim_hi, offset));
+        }}
+    }}"""
+        if has_dense_velocity_limit_rows
+        else ""
+    )
     pair_cache_capacity = _mfgs_pair_cache_capacity(M_D)
     # Streamed metadata rereads row types and parents every sweep (patch chains, torsion members).
     row_cache = pair_cache and not shared_metadata
@@ -15648,6 +15712,8 @@ def _get_pgs_solve_mf_gs_kernel(
     }}
     __syncwarp();
 {pair_cache_build}
+{velocity_limit_range}
+{torsion_link_build}
 {dense_pipe_decl}
 
     for (int iter = 0; iter < iterations; iter++) {{
@@ -15915,7 +15981,7 @@ def _get_pgs_solve_mf_gs_kernel(
     snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + helpers, 1)
 
     if skip_local_internal_worlds:
-        return _mf_gs_queue_kernel(
+        return _mf_gs_skip_local_kernel(
             snippet,
             _mf_gs_kernel_name(
                 max_constraints,
@@ -15933,6 +15999,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 contact_compliance,
                 row_phase,
                 pair_cache,
+                torsion_links,
             )
             + "_local",
         )
@@ -16079,6 +16146,7 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_compliance,
         row_phase,
         pair_cache,
+        torsion_links,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -16101,6 +16169,7 @@ def _mf_gs_kernel_name(
     contact_compliance: bool,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    torsion_links: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -16109,6 +16178,7 @@ def _mf_gs_kernel_name(
         f"{'' if shared_metadata else '_gmeta'}"
         f"{'_paircache' if pair_cache else ''}"
         f"{'_torsion' if contact_torsion else ''}"
+        f"{'_links' if torsion_links else ''}"
         f"{('_phased' if row_phase is None else f'_phase{row_phase}') if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"
@@ -16167,12 +16237,11 @@ def _prefetch_streamed_dense_metadata(snippet: str) -> str:
     return snippet[:start] + declarations + sweep + snippet[end:]
 
 
-def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
-    """Wrap a matrix-free Gauss-Seidel snippet that skips locally owned worlds in a world-queue kernel.
+def _mf_gs_skip_local_kernel(snippet: str, name: str) -> "wp.Kernel":
+    """Wrap a matrix-free Gauss-Seidel snippet that skips locally owned worlds.
 
-    The launch grid has ``general_world_grid_stride`` warps; with ``use_general_world_queue``
-    each warp walks the compacted ``general_worlds`` queue with that stride, otherwise warp
-    ``w`` solves world ``w``.
+    Warp ``w`` solves world ``w``; the snippet returns at once for a world that ``local_solve_owner``
+    assigns to a local solve.
     """
 
     @wp.func_native(snippet)
@@ -16220,10 +16289,6 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
     ): ...
 
     def pgs_solve_mf_gs_local(  # pragma: no cover - compiled by wp.kernel
-        general_world_count: wp.array[int],
-        general_worlds: wp.array[int],
-        general_world_grid_stride: int,
-        use_general_world_queue: int,
         local_solve_owner: wp.array[int],
         world_constraint_count: wp.array[int],
         world_dof_indices: wp.array2d[int],
@@ -16264,58 +16329,49 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
         iteration_offset: int,
         v_out: wp.array[float],
     ):
-        candidate, _lane = wp.tid()
-        general_index = candidate
-        general_count = general_world_count[0]
-        if use_general_world_queue == 0:
-            general_count = candidate + 1
-        while general_index < general_count:
-            world = candidate
-            if use_general_world_queue != 0:
-                world = general_worlds[general_index]
-            pgs_solve_mf_gs_local_native(
-                world,
-                local_solve_owner,
-                world_constraint_count,
-                world_dof_indices,
-                rhs_bias,
-                world_diag,
-                world_impulses,
-                J_world,
-                Y_world,
-                world_row_type,
-                world_row_parent,
-                world_row_mu,
-                world_drive_target_vel_bias,
-                world_drive_vel_multiplier,
-                world_drive_impulse_multiplier,
-                world_drive_max_impulse,
-                world_drive_vel_limit,
-                mf_constraint_count,
-                mf_contact_rows_end,
-                mf_meta,
-                mf_impulses,
-                mf_J_a,
-                mf_J_b,
-                mf_MiJt_a,
-                mf_MiJt_b,
-                mf_row_mu,
-                world_row_w,
-                mf_row_w,
-                world_torsion_group,
-                torsion_row_radius,
-                compliance_dense_gamma,
-                compliance_mf_gamma,
-                iterations,
-                omega,
-                regularize,
-                freeze_drive_rows,
-                row_phase,
-                friction_start_iteration,
-                iteration_offset,
-                v_out,
-            )
-            general_index += general_world_grid_stride
+        world, _lane = wp.tid()
+        pgs_solve_mf_gs_local_native(
+            world,
+            local_solve_owner,
+            world_constraint_count,
+            world_dof_indices,
+            rhs_bias,
+            world_diag,
+            world_impulses,
+            J_world,
+            Y_world,
+            world_row_type,
+            world_row_parent,
+            world_row_mu,
+            world_drive_target_vel_bias,
+            world_drive_vel_multiplier,
+            world_drive_impulse_multiplier,
+            world_drive_max_impulse,
+            world_drive_vel_limit,
+            mf_constraint_count,
+            mf_contact_rows_end,
+            mf_meta,
+            mf_impulses,
+            mf_J_a,
+            mf_J_b,
+            mf_MiJt_a,
+            mf_MiJt_b,
+            mf_row_mu,
+            world_row_w,
+            mf_row_w,
+            world_torsion_group,
+            torsion_row_radius,
+            compliance_dense_gamma,
+            compliance_mf_gamma,
+            iterations,
+            omega,
+            regularize,
+            freeze_drive_rows,
+            row_phase,
+            friction_start_iteration,
+            iteration_offset,
+            v_out,
+        )
 
     pgs_solve_mf_gs_local.__name__ = name
     pgs_solve_mf_gs_local.__qualname__ = name
@@ -16324,1271 +16380,6 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
 
 # Static shared memory available to a CUDA block without opt-in [B].
 _STATIC_SHARED_MEMORY_BYTES = 48 * 1024
-# Shared-memory budget of the streaming Delassus kernel's J and Y row chunks [B].
-_DELASSUS_SHARED_MEMORY_BYTES = 45000
-_DELASSUS_MAX_CHUNK_SIZE = 64
-
-
-def _select_delassus_chunk_size(n_dofs: int, max_constraints: int) -> int | None:
-    """Select the rows staged per chunk by the streaming Delassus kernel.
-
-    The whole row set is staged when its ``J`` and ``Y`` rows fit the budget; otherwise
-    chunks of at most 64 rows. Returns ``None`` when a single row does not fit. The chunk
-    size does not change the result: every Delassus entry is computed once.
-    """
-    row_bytes = 2 * 4 * n_dofs
-    if max_constraints * row_bytes <= _DELASSUS_SHARED_MEMORY_BYTES:
-        return max_constraints
-    chunk = min(_DELASSUS_MAX_CHUNK_SIZE, _DELASSUS_SHARED_MEMORY_BYTES // row_bytes)
-    return chunk if chunk >= 1 else None
-
-
-def _estimate_tiled_row_shared_memory(max_constraints: int) -> int:
-    """Estimate the shared memory of the dense split-mode Gauss-Seidel kernel [B]."""
-    return 4 * (max_constraints * (max_constraints + 1) // 2 + 6 * max_constraints)
-
-
-def _estimate_contact_pgs_shared_memory(max_constraints: int, kernel: str, chunk_size: int) -> int:
-    """Estimate the static shared memory of a contact-only Gauss-Seidel kernel [B]."""
-    contacts = max_constraints // 3
-    floats = 2 * 3 * contacts + contacts + 9 * contacts
-    if kernel == "tiled_contact":
-        floats += 9 * contacts * (contacts + 1) // 2
-    else:
-        floats += 9 * chunk_size * contacts
-    return 4 * floats
-
-
-def _estimate_mf_solve_shared_memory(free_body_constraint_max: int, max_mf_bodies: int) -> int:
-    """Estimate the shared memory of the split-mode free-body Gauss-Seidel kernel [B]."""
-    return 4 * (7 * max_mf_bodies + free_body_constraint_max)
-
-
-@cache
-def _get_hinv_jt_fused_kernel(
-    n_dofs: int, max_constraints: int, device_arch: str, tile_threads: int = 64
-) -> "wp.Kernel":
-    """Build the fused split-mode ``Y = H^-1 J^T`` and Delassus ``C = J Y^T`` kernel.
-
-    One block per articulation stores the whole ``max_constraints x max_constraints``
-    Delassus tile of its world, so it requires one solved articulation per world. The
-    diagonal receives the constraint force mixing.
-    """
-    TILE_DOF_LOCAL = wp.constant(int(n_dofs))
-    TILE_CONSTRAINTS_LOCAL = wp.constant(int(max_constraints))
-
-    def hinv_jt_tiled_fused_template(  # pragma: no cover - compiled by wp.kernel
-        L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
-        J_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
-        group_to_art: wp.array[int],
-        art_to_world: wp.array[int],
-        world_constraint_count: wp.array[int],
-        cfm: float,
-        # outputs
-        world_C: wp.array3d[float],  # [world_count, max_c, max_c]
-        world_diag: wp.array2d[float],  # [world_count, max_c]
-        Y_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
-    ):
-        idx, thread = wp.tid()
-        art = group_to_art[idx]
-        world = art_to_world[art]
-        n_constraints = world_constraint_count[world]
-
-        if n_constraints == 0:
-            return
-
-        # Load L (Cholesky factor) and J (Jacobian rows)
-        L_tile = wp.tile_load(L_group[idx], shape=(TILE_DOF_LOCAL, TILE_DOF_LOCAL), bounds_check=False)
-        J_tile = wp.tile_load(J_group[idx], shape=(TILE_CONSTRAINTS_LOCAL, TILE_DOF_LOCAL), bounds_check=False)
-
-        # Solve L * Z = J^T (forward substitution)
-        Jt_tile = wp.tile_transpose(J_tile)
-        Z_tile = wp.tile_lower_solve(L_tile, Jt_tile)
-
-        # Solve L^T * Y = Z (backward substitution)
-        Lt_tile = wp.tile_transpose(L_tile)
-        X_tile = wp.tile_upper_solve(Lt_tile, Z_tile)
-
-        # Store Y = H^-1 * J^T (transpose back to row layout)
-        Y_out_tile = wp.tile_transpose(X_tile)
-        wp.tile_store(Y_group[idx], Y_out_tile)
-
-        # Form C = J * H^-1 * J^T
-        C_tile = wp.tile_zeros(shape=(TILE_CONSTRAINTS_LOCAL, TILE_CONSTRAINTS_LOCAL), dtype=wp.float32)
-        wp.tile_matmul(J_tile, X_tile, C_tile)
-        wp.tile_store(world_C[world], C_tile)
-
-        if thread == 0:
-            for i in range(n_constraints):
-                world_diag[world, i] = C_tile[i, i] + cfm
-
-    hinv_jt_tiled_fused_template.__name__ = f"hinv_jt_tiled_fused_{n_dofs}_{max_constraints}_bd{tile_threads}"
-    hinv_jt_tiled_fused_template.__qualname__ = f"hinv_jt_tiled_fused_{n_dofs}_{max_constraints}_bd{tile_threads}"
-    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
-        hinv_jt_tiled_fused_template
-    )
-
-
-@cache
-def _get_delassus_kernel(n_dofs: int, max_constraints: int, chunk_size: int, device_arch: str) -> "wp.Kernel":
-    """Build the streaming Delassus kernel ``C += J Y^T`` of one size group.
-
-    One block per articulation stages ``chunk_size`` rows of ``J`` and ``Y`` at a time in
-    shared memory (see :func:`_select_delassus_chunk_size`) and adds each entry of its
-    world's block once.
-    """
-    _ = device_arch
-    TILE_D = n_dofs
-    TILE_M = max_constraints
-    CHUNK = chunk_size
-
-    snippet = f"""
-#if defined(__CUDA_ARCH__)
-const int TILE_D = {TILE_D};
-const int TILE_M = {TILE_M};
-const int CHUNK = {CHUNK};
-
-int lane = threadIdx.x;
-int art = group_to_art.data[idx];
-int world = art_to_world.data[art];
-int m = world_constraint_count.data[world];
-if (m == 0) return;
-
-__shared__ float s_J[CHUNK * TILE_D];
-__shared__ float s_Y[CHUNK * TILE_D];
-
-int num_chunks = (m + CHUNK - 1) / CHUNK;
-
-for (int ci = 0; ci < num_chunks; ci++) {{
-    int i0 = ci * CHUNK, i1 = min(i0 + CHUNK, m);
-
-    for (int t = lane; t < (i1 - i0) * TILE_D; t += blockDim.x)
-        s_J[t] = J_group.data[idx * TILE_M * TILE_D + i0 * TILE_D + t];
-    __syncthreads();
-
-    for (int cj = 0; cj < num_chunks; cj++) {{
-        int j0 = cj * CHUNK, j1 = min(j0 + CHUNK, m);
-
-        for (int t = lane; t < (j1 - j0) * TILE_D; t += blockDim.x)
-            s_Y[t] = Y_group.data[idx * TILE_M * TILE_D + j0 * TILE_D + t];
-        __syncthreads();
-
-        // Each thread computes multiple C elements
-        for (int e = lane; e < (i1 - i0) * (j1 - j0); e += blockDim.x) {{
-            int il = e / (j1 - j0), jl = e % (j1 - j0);
-            float sum = 0.0f;
-            for (int k = 0; k < TILE_D; k++)
-                sum += s_J[il * TILE_D + k] * s_Y[jl * TILE_D + k];
-            if (sum != 0.0f) {{
-                int ig = i0 + il, jg = j0 + jl;
-                atomicAdd(&world_C.data[world * TILE_M * TILE_M + ig * TILE_M + jg], sum);
-                if (ig == jg) atomicAdd(&world_diag.data[world * TILE_M + ig], sum);
-            }}
-        }}
-        __syncthreads();
-    }}
-}}
-#endif
-"""
-
-    @wp.func_native(snippet)
-    def delassus_native(
-        idx: int,
-        J_group: wp.array3d[float],
-        Y_group: wp.array3d[float],
-        group_to_art: wp.array[int],
-        art_to_world: wp.array[int],
-        world_constraint_count: wp.array[int],
-        world_C: wp.array3d[float],
-        world_diag: wp.array2d[float],
-    ): ...
-
-    def delassus_template(  # pragma: no cover - compiled by wp.kernel
-        J_group: wp.array3d[float],
-        Y_group: wp.array3d[float],
-        group_to_art: wp.array[int],
-        art_to_world: wp.array[int],
-        world_constraint_count: wp.array[int],
-        n_arts: int,
-        world_C: wp.array3d[float],
-        world_diag: wp.array2d[float],
-    ):
-        idx, _lane = wp.tid()
-        if idx < n_arts:
-            delassus_native(
-                idx, J_group, Y_group, group_to_art, art_to_world, world_constraint_count, world_C, world_diag
-            )
-
-    delassus_template.__name__ = f"delassus_streaming_{n_dofs}_{max_constraints}_chunk{CHUNK}"
-    delassus_template.__qualname__ = f"delassus_streaming_{n_dofs}_{max_constraints}_chunk{CHUNK}"
-    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(delassus_template)
-
-
-@cache
-def _get_pgs_solve_tiled_row_kernel(max_constraints: int, device_arch: str) -> "wp.Kernel":
-    """Build the one-warp-per-world Gauss-Seidel kernel of the dense Delassus system.
-
-    The kernel stages only the lower triangle of ``C`` (``M (M + 1) / 2`` floats, see
-    :func:`_estimate_tiled_row_shared_memory`) and reads ``C_ij`` by symmetry. Each row's
-    ``sum_j C_ij lambda_j`` is a warp reduction; the projection matches
-    :func:`~newton._src.solvers.steel.kernels.pgs_solve_loop`.
-    """
-    TILE_M = max_constraints
-    TILE_M_SQ = TILE_M * TILE_M
-    TILE_TRI = TILE_M * (TILE_M + 1) // 2
-
-    ELEMS_PER_THREAD_1D = (TILE_M + 31) // 32
-
-    def gen_load_1d(dst, src):
-        lines = []
-        for k in range(ELEMS_PER_THREAD_1D):
-            offset = k * 32
-            guard = f"if (lane + {offset} < TILE_M) " if offset + 32 > TILE_M else ""
-            lines.append(f"    {guard}{dst}[lane + {offset}] = {src}.data[off1 + lane + {offset}];")
-        return "\n".join(lines)
-
-    # Build a deterministic packed-lower-tri index order: row-major over (i, j<=i)
-    # idx = i*(i+1)/2 + j
-    tri_pairs = []
-    for i in range(TILE_M):
-        base = i * (i + 1) // 2
-        for j in range(i + 1):
-            tri_pairs.append((base + j, i, j))
-    assert len(tri_pairs) == TILE_TRI
-
-    load_code = "\n".join(
-        [
-            gen_load_1d("s_lam", "world_impulses"),
-            gen_load_1d("s_rhs", "world_rhs"),
-            gen_load_1d("s_diag", "world_diag"),
-            gen_load_1d("s_rtype", "world_row_type"),
-            gen_load_1d("s_parent", "world_row_parent"),
-            gen_load_1d("s_mu", "world_row_mu"),
-        ]
-    )
-
-    # Precompute lane's column indices (j_k) and their triangular bases (j_k*(j_k+1)/2)
-    # so inside the dot we avoid multiply.
-    precompute_j = []
-    for k in range(ELEMS_PER_THREAD_1D):
-        j = k * 32
-        if j < TILE_M:
-            precompute_j.append(f"    const int j{k} = lane + {j};\n    const int jb{k} = (j{k} * (j{k} + 1)) >> 1;")
-    precompute_j_code = "\n".join(precompute_j)
-
-    # Dot code: guarded on j_k < m
-    dot_terms = []
-    for k in range(ELEMS_PER_THREAD_1D):
-        joff = k * 32
-        if joff < TILE_M:
-            dot_terms.append(
-                f"""    if (j{k} < m) {{
-        // Use symmetry to fetch C(i, j{k}) from packed-lower shared.
-        // base_i = i*(i+1)/2
-        float cij = (j{k} <= i) ? s_Ctri[base_i + j{k}] : s_Ctri[jb{k} + i];
-        my_sum += cij * s_lam[j{k}];
-    }}"""
-            )
-    dot_code = "\n".join(["float my_sum = 0.0f;", "int base_i = (i * (i + 1)) >> 1;", *dot_terms])
-
-    store_lines = []
-    for k in range(ELEMS_PER_THREAD_1D):
-        offset = k * 32
-        guard = f"if (lane + {offset} < TILE_M) " if offset + 32 > TILE_M else ""
-        store_lines.append(f"    {guard}world_impulses.data[off1 + lane + {offset}] = s_lam[lane + {offset}];")
-    store_code = "\n".join(store_lines)
-
-    snippet = f"""
-#if defined(__CUDA_ARCH__)
-    const int TILE_M = {TILE_M};
-    const int TILE_M_SQ = {TILE_M_SQ};
-    const int TILE_TRI = {TILE_TRI};
-    const unsigned MASK = 0xFFFFFFFF;
-
-    int lane = threadIdx.x;
-
-    int m = world_constraint_count.data[world];
-    if (m == 0) return;
-
-    // Packed LOWER triangle of C in row-major (i*(i+1)/2 + j), j<=i
-    __shared__ float s_Ctri[TILE_TRI];
-
-    __shared__ float s_lam[TILE_M];
-    __shared__ float s_rhs[TILE_M];
-    __shared__ float s_diag[TILE_M];
-    __shared__ int   s_rtype[TILE_M];
-    __shared__ int   s_parent[TILE_M];
-    __shared__ float s_mu[TILE_M];
-
-    int off1 = world * TILE_M;
-    int off2 = world * TILE_M_SQ;
-
-{load_code}
-
-    // Load only lower triangle from global full matrix into packed shared.
-    // Work distribution: each lane walks rows; for each row i, lane loads j = lane, lane+32, lane+64...
-    for (int i = 0; i < TILE_M; ++i) {{
-        int base = (i * (i + 1)) >> 1; // packed base for row i
-        for (int j = lane; j <= i; j += 32) {{
-            s_Ctri[base + j] = world_C.data[off2 + i * TILE_M + j];
-        }}
-    }}
-    __syncwarp();
-
-{precompute_j_code}
-
-    for (int iter = 0; iter < iterations; iter++) {{
-        const int global_iter = iteration_offset + iter;
-        for (int i = 0; i < m; i++) {{
-            // Every lane wrote the previous row's impulses; order those writes before this row's reads.
-            __syncwarp();
-            {dot_code}
-
-            // Warp reduce my_sum
-            my_sum += __shfl_down_sync(MASK, my_sum, 16);
-            my_sum += __shfl_down_sync(MASK, my_sum, 8);
-            my_sum += __shfl_down_sync(MASK, my_sum, 4);
-            my_sum += __shfl_down_sync(MASK, my_sum, 2);
-            my_sum += __shfl_down_sync(MASK, my_sum, 1);
-            float dot_sum = __shfl_sync(MASK, my_sum, 0);
-
-            float denom = s_diag[i];
-            if (denom <= 0.0f && s_rtype[i] != 2) continue;
-
-            float w_val = s_rhs[i] + dot_sum;
-            float delta = denom > 0.0f ? -w_val / denom : 0.0f;
-            float new_impulse = s_lam[i] + omega * delta;
-            int row_type = s_rtype[i];
-            if (row_type == 2 && global_iter < friction_start_iteration) {{
-                __syncwarp();
-                s_lam[i] = 0.0f;
-                continue;
-            }}
-
-            if (row_type == 2 && i != s_parent[i] + 1) continue;
-
-            // Contact (0) and joint-limit (3) rows are unilateral.
-            if (row_type == 0 || row_type == 3) {{
-                if (new_impulse < 0.0f) new_impulse = 0.0f;
-                // Every lane has read this row's impulse before any lane overwrites it.
-                __syncwarp();
-                s_lam[i] = new_impulse;
-            }} else if (row_type == 2) {{
-                int parent_idx = s_parent[i];
-                float radius = fmaxf(s_mu[i] * s_lam[parent_idx], 0.0f);
-                int sib = parent_idx + 2;
-                float sibling_residual = 0.0f;
-                int sib_base = (sib * (sib + 1)) >> 1;
-                for (int j = lane; j < m; j += 32) {{
-                    float c = j <= sib ? s_Ctri[sib_base + j] : s_Ctri[((j * (j + 1)) >> 1) + sib];
-                    sibling_residual += c * s_lam[j];
-                }}
-                for (int offset = 16; offset > 0; offset >>= 1)
-                    sibling_residual += __shfl_down_sync(MASK, sibling_residual, offset);
-                sibling_residual = __shfl_sync(MASK, sibling_residual, 0) + s_rhs[sib];
-                float2 pair = friction_pair_candidate(denom, s_Ctri[sib_base + i], s_diag[sib],
-                    w_val, sibling_residual, s_lam[i], s_lam[sib], radius, omega);
-                float a = pair.x;
-                float b = pair.y;
-                float mag = sqrtf(a * a + b * b);
-                float scale = mag > radius ? radius / mag : 1.0f;
-                __syncwarp();
-                s_lam[i] = a * scale;
-                s_lam[sib] = b * scale;
-            }} else {{
-                __syncwarp();
-                s_lam[i] = new_impulse;
-            }}
-        }}
-    }}
-    __syncwarp();
-
-{store_code}
-#endif
-"""
-
-    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
-
-    @wp.func_native(snippet)
-    def pgs_solve_native(
-        world: int,
-        world_constraint_count: wp.array[int],
-        world_diag: wp.array2d[float],
-        world_C: wp.array3d[float],
-        world_rhs: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        world_row_type: wp.array2d[int],
-        world_row_parent: wp.array2d[int],
-        world_row_mu: wp.array2d[float],
-        friction_start_iteration: int,
-        iteration_offset: int,
-        world_impulses: wp.array2d[float],
-    ): ...
-
-    def pgs_solve_tiled_template(  # pragma: no cover - compiled by wp.kernel
-        world_constraint_count: wp.array[int],
-        world_diag: wp.array2d[float],
-        world_C: wp.array3d[float],
-        world_rhs: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        world_row_type: wp.array2d[int],
-        world_row_parent: wp.array2d[int],
-        world_row_mu: wp.array2d[float],
-        friction_start_iteration: int,
-        iteration_offset: int,
-        world_impulses: wp.array2d[float],
-    ):
-        world, _lane = wp.tid()
-        pgs_solve_native(
-            world,
-            world_constraint_count,
-            world_diag,
-            world_C,
-            world_rhs,
-            iterations,
-            omega,
-            world_row_type,
-            world_row_parent,
-            world_row_mu,
-            friction_start_iteration,
-            iteration_offset,
-            world_impulses,
-        )
-
-    pgs_solve_tiled_template.__name__ = f"pgs_solve_tiled_row_{max_constraints}"
-    pgs_solve_tiled_template.__qualname__ = f"pgs_solve_tiled_row_{max_constraints}"
-    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
-        pgs_solve_tiled_template
-    )
-
-
-@cache
-def _get_pgs_solve_tiled_contact_kernel(max_constraints: int, device_arch: str) -> "wp.Kernel":
-    """Build the contact-only Gauss-Seidel kernel of the dense Delassus system in 3x3 blocks.
-
-    Stores only the LOWER triangle of block Delassus matrix.
-    Each contact is a 3-vector (normal, tangent1, tangent2).
-    Reduces serial depth from M to M/3.
-
-    TILE_M can be any value (power of 2 recommended for other kernels).
-    Runtime m must be divisible by 3.
-    """
-    TILE_M = max_constraints
-    # Max contacts we can handle (rounded down)
-    NUM_CONTACTS_MAX = TILE_M // 3
-    # Actual max constraints we'll process (may be < TILE_M)
-    TILE_M_USABLE = NUM_CONTACTS_MAX * 3
-
-    # Lower triangle of block matrix (sized for max)
-    NUM_BLOCKS_TRI = NUM_CONTACTS_MAX * (NUM_CONTACTS_MAX + 1) // 2
-    BLOCK_TRI_FLOATS = NUM_BLOCKS_TRI * 9
-
-    snippet = f"""
-#if defined(__CUDA_ARCH__)
-    const int TILE_M = {TILE_M};
-    const int TILE_M_USABLE = {TILE_M_USABLE};
-    const int NUM_CONTACTS_MAX = {NUM_CONTACTS_MAX};
-    const int BLOCK_TRI_FLOATS = {BLOCK_TRI_FLOATS};
-    const unsigned MASK = 0xFFFFFFFF;
-
-    int lane = threadIdx.x;
-
-    int m = world_constraint_count.data[world];
-    if (m == 0) return;
-
-    // Clamp m to usable range and ensure divisible by 3
-    if (m > TILE_M_USABLE) m = TILE_M_USABLE;
-    int num_contacts = m / 3;
-
-    // Shared memory (sized for max)
-    __shared__ float s_Dtri[BLOCK_TRI_FLOATS];
-    __shared__ float s_Dinv[NUM_CONTACTS_MAX * 9];
-    __shared__ float s_lam[TILE_M_USABLE];
-    __shared__ float s_rhs[TILE_M_USABLE];
-    __shared__ float s_mu[NUM_CONTACTS_MAX];
-
-    int off1 = world * TILE_M;
-    int off2 = world * TILE_M * TILE_M;
-
-    // ============ LOAD PHASE ============
-
-    // Load lambda and rhs
-    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
-        if (i < m) {{
-            s_lam[i] = world_impulses.data[off1 + i];
-            s_rhs[i] = world_rhs.data[off1 + i];
-        }} else {{
-            s_lam[i] = 0.0f;
-            s_rhs[i] = 0.0f;
-        }}
-    }}
-
-    // Load mu (one per contact, stored on tangent1 row)
-    for (int c = lane; c < NUM_CONTACTS_MAX; c += 32) {{
-        if (c < num_contacts) {{
-            s_mu[c] = world_row_mu.data[off1 + c * 3 + 1];
-        }}
-    }}
-
-    // Load lower triangle of block Delassus
-    for (int c = 0; c < num_contacts; c++) {{
-        int base_block = (c * (c + 1)) >> 1;
-        int floats_in_row = (c + 1) * 9;
-
-        for (int f = lane; f < floats_in_row; f += 32) {{
-            int j = f / 9;
-            int k = f % 9;
-            int lr = k / 3;
-            int lc = k % 3;
-            int gr = c * 3 + lr;
-            int gc = j * 3 + lc;
-            s_Dtri[(base_block + j) * 9 + k] = world_C.data[off2 + gr * TILE_M + gc];
-        }}
-    }}
-    __syncwarp();
-
-    // Compute diagonal block inverses
-    for (int c = lane; c < num_contacts; c += 32) {{
-        int diag_block_idx = ((c * (c + 1)) >> 1) + c;
-        const float* D = &s_Dtri[diag_block_idx * 9];
-        float* Dinv = &s_Dinv[c * 9];
-
-        float det = D[0] * (D[4] * D[8] - D[5] * D[7])
-                - D[1] * (D[3] * D[8] - D[5] * D[6])
-                + D[2] * (D[3] * D[7] - D[4] * D[6]);
-
-        float inv_det = 1.0f / det;
-
-        Dinv[0] = (D[4] * D[8] - D[5] * D[7]) * inv_det;
-        Dinv[1] = (D[2] * D[7] - D[1] * D[8]) * inv_det;
-        Dinv[2] = (D[1] * D[5] - D[2] * D[4]) * inv_det;
-        Dinv[3] = (D[5] * D[6] - D[3] * D[8]) * inv_det;
-        Dinv[4] = (D[0] * D[8] - D[2] * D[6]) * inv_det;
-        Dinv[5] = (D[2] * D[3] - D[0] * D[5]) * inv_det;
-        Dinv[6] = (D[3] * D[7] - D[4] * D[6]) * inv_det;
-        Dinv[7] = (D[1] * D[6] - D[0] * D[7]) * inv_det;
-        Dinv[8] = (D[0] * D[4] - D[1] * D[3]) * inv_det;
-    }}
-    __syncwarp();
-
-    // ============ ITERATION PHASE ============
-
-    for (int iter = 0; iter < iterations; iter++) {{
-        for (int c = 0; c < num_contacts; c++) {{
-            float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f;
-
-            for (int j = lane; j < num_contacts; j += 32) {{
-                float l0 = s_lam[j * 3 + 0];
-                float l1 = s_lam[j * 3 + 1];
-                float l2 = s_lam[j * 3 + 2];
-
-                int block_off;
-                bool transpose;
-                if (j <= c) {{
-                    block_off = (((c * (c + 1)) >> 1) + j) * 9;
-                    transpose = false;
-                }} else {{
-                    block_off = (((j * (j + 1)) >> 1) + c) * 9;
-                    transpose = true;
-                }}
-
-                const float* B = &s_Dtri[block_off];
-
-                if (!transpose) {{
-                    sum0 += B[0] * l0 + B[1] * l1 + B[2] * l2;
-                    sum1 += B[3] * l0 + B[4] * l1 + B[5] * l2;
-                    sum2 += B[6] * l0 + B[7] * l1 + B[8] * l2;
-                }} else {{
-                    sum0 += B[0] * l0 + B[3] * l1 + B[6] * l2;
-                    sum1 += B[1] * l0 + B[4] * l1 + B[7] * l2;
-                    sum2 += B[2] * l0 + B[5] * l1 + B[8] * l2;
-                }}
-            }}
-
-            // Warp reduce
-            sum0 += __shfl_down_sync(MASK, sum0, 16);
-            sum1 += __shfl_down_sync(MASK, sum1, 16);
-            sum2 += __shfl_down_sync(MASK, sum2, 16);
-            sum0 += __shfl_down_sync(MASK, sum0, 8);
-            sum1 += __shfl_down_sync(MASK, sum1, 8);
-            sum2 += __shfl_down_sync(MASK, sum2, 8);
-            sum0 += __shfl_down_sync(MASK, sum0, 4);
-            sum1 += __shfl_down_sync(MASK, sum1, 4);
-            sum2 += __shfl_down_sync(MASK, sum2, 4);
-            sum0 += __shfl_down_sync(MASK, sum0, 2);
-            sum1 += __shfl_down_sync(MASK, sum1, 2);
-            sum2 += __shfl_down_sync(MASK, sum2, 2);
-            sum0 += __shfl_down_sync(MASK, sum0, 1);
-            sum1 += __shfl_down_sync(MASK, sum1, 1);
-            sum2 += __shfl_down_sync(MASK, sum2, 1);
-
-            if (lane == 0) {{
-                // Corrected sign: -(rhs + D*lambda)
-                float res0 = -(s_rhs[c * 3 + 0] + sum0);
-                float res1 = -(s_rhs[c * 3 + 1] + sum1);
-                float res2 = -(s_rhs[c * 3 + 2] + sum2);
-
-                const float* Dinv = &s_Dinv[c * 9];
-                float d0 = Dinv[0] * res0 + Dinv[1] * res1 + Dinv[2] * res2;
-                float d1 = Dinv[3] * res0 + Dinv[4] * res1 + Dinv[5] * res2;
-                float d2 = Dinv[6] * res0 + Dinv[7] * res1 + Dinv[8] * res2;
-
-                float new_n  = s_lam[c * 3 + 0] + omega * d0;
-                float new_t1 = s_lam[c * 3 + 1] + omega * d1;
-                float new_t2 = s_lam[c * 3 + 2] + omega * d2;
-
-                // Friction cone projection
-                new_n = fmaxf(new_n, 0.0f);
-
-                float mu = s_mu[c];
-                float radius = mu * new_n;
-
-                if (radius <= 0.0f) {{
-                    new_t1 = 0.0f;
-                    new_t2 = 0.0f;
-                }} else {{
-                    float t_mag_sq = new_t1 * new_t1 + new_t2 * new_t2;
-                    if (t_mag_sq > radius * radius) {{
-                        float scale = radius * rsqrtf(t_mag_sq);
-                        new_t1 *= scale;
-                        new_t2 *= scale;
-                    }}
-                }}
-
-                s_lam[c * 3 + 0] = new_n;
-                s_lam[c * 3 + 1] = new_t1;
-                s_lam[c * 3 + 2] = new_t2;
-            }}
-            __syncwarp();
-        }}
-    }}
-
-    // ============ STORE PHASE ============
-
-    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
-        if (i < m) {{
-            world_impulses.data[off1 + i] = s_lam[i];
-        }}
-    }}
-#endif
-"""
-
-    @wp.func_native(snippet)
-    def pgs_solve_contact_native(
-        world: int,
-        world_constraint_count: wp.array[int],
-        world_C: wp.array3d[float],
-        world_rhs: wp.array2d[float],
-        world_impulses: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        world_row_mu: wp.array2d[float],
-    ): ...
-
-    def pgs_solve_tiled_contact_template(  # pragma: no cover - compiled by wp.kernel
-        world_constraint_count: wp.array[int],
-        world_C: wp.array3d[float],
-        world_rhs: wp.array2d[float],
-        world_impulses: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        world_row_mu: wp.array2d[float],
-    ):
-        world, _lane = wp.tid()
-        pgs_solve_contact_native(
-            world,
-            world_constraint_count,
-            world_C,
-            world_rhs,
-            world_impulses,
-            iterations,
-            omega,
-            world_row_mu,
-        )
-
-    pgs_solve_tiled_contact_template.__name__ = f"pgs_solve_tiled_contact_{max_constraints}"
-    pgs_solve_tiled_contact_template.__qualname__ = f"pgs_solve_tiled_contact_{max_constraints}"
-    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
-        pgs_solve_tiled_contact_template
-    )
-
-
-@cache
-def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_chunk_size: int = 1) -> "wp.Kernel":
-    """Streaming contact-wise PGS kernel that streams block-rows from global memory.
-
-    Unlike tiled_contact which loads the entire Delassus matrix into shared memory,
-    this kernel keeps only lambda and auxiliaries in shared memory and streams
-    block-rows of C on demand. This enables handling much larger constraint counts
-    (hundreds of contacts) at the cost of increased global memory bandwidth.
-
-    When pgs_chunk_size > 1, multiple block-rows are preloaded into shared memory
-    at once, reducing the number of global memory round-trips per PGS iteration.
-
-    Algorithm:
-    - Load lambda, rhs, mu, and compute diagonal block inverses once
-    - For each PGS iteration:
-        - For each chunk of pgs_chunk_size contacts:
-            - Preload pgs_chunk_size block-rows of C into shared memory
-            - For each contact c in the chunk:
-                - Compute block-row dot product with lambda (warp-parallel)
-                - Update lambda[c] with friction cone projection (lane 0)
-    - Store final lambda back to global memory
-    """
-    TILE_M = max_constraints
-    NUM_CONTACTS_MAX = TILE_M // 3
-    TILE_M_USABLE = NUM_CONTACTS_MAX * 3
-    PGS_CHUNK = pgs_chunk_size
-
-    snippet = f"""
-#if defined(__CUDA_ARCH__)
-    const int TILE_M = {TILE_M};
-    const int TILE_M_USABLE = {TILE_M_USABLE};
-    const int NUM_CONTACTS_MAX = {NUM_CONTACTS_MAX};
-    const int PGS_CHUNK = {PGS_CHUNK};
-    const unsigned MASK = 0xFFFFFFFF;
-
-    int lane = threadIdx.x;
-
-    int m = world_constraint_count.data[world];
-    if (m == 0) return;
-
-    // Clamp m to usable range and ensure divisible by 3
-    if (m > TILE_M_USABLE) m = TILE_M_USABLE;
-    int num_contacts = m / 3;
-
-    // ===============================================================
-    // SHARED MEMORY: lambda, rhs, mu, diagonal inverses, and
-    // block-row buffer for PGS_CHUNK contacts at a time
-    // ===============================================================
-    __shared__ float s_lam[{TILE_M_USABLE}];
-    __shared__ float s_rhs[{TILE_M_USABLE}];
-    __shared__ float s_mu[{NUM_CONTACTS_MAX}];
-    __shared__ float s_Dinv[{NUM_CONTACTS_MAX} * 9];
-    __shared__ float s_block_rows[{PGS_CHUNK} * {NUM_CONTACTS_MAX} * 9];
-
-    int off1 = world * TILE_M;
-    int off2 = world * TILE_M * TILE_M;
-
-    // ===============================================================
-    // LOAD PHASE: Load persistent data into shared memory
-    // ===============================================================
-
-    // Load lambda and rhs (coalesced)
-    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
-        if (i < m) {{
-            s_lam[i] = world_impulses.data[off1 + i];
-            s_rhs[i] = world_rhs.data[off1 + i];
-        }} else {{
-            s_lam[i] = 0.0f;
-            s_rhs[i] = 0.0f;
-        }}
-    }}
-
-    // Load mu (one per contact, stored on tangent1 row)
-    for (int c = lane; c < NUM_CONTACTS_MAX; c += 32) {{
-        if (c < num_contacts) {{
-            s_mu[c] = world_row_mu.data[off1 + c * 3 + 1];
-        }}
-    }}
-    __syncwarp();
-
-    // Compute diagonal block inverses (each thread handles one contact)
-    for (int c = lane; c < num_contacts; c += 32) {{
-        // Load diagonal block D[c,c] from global memory
-        int diag_row = c * 3;
-        float D[9];
-        for (int k = 0; k < 9; k++) {{
-            int lr = k / 3;
-            int lc = k % 3;
-            D[k] = world_C.data[off2 + (diag_row + lr) * TILE_M + (diag_row + lc)];
-        }}
-
-        // Compute 3x3 inverse
-        float det = D[0] * (D[4] * D[8] - D[5] * D[7])
-                  - D[1] * (D[3] * D[8] - D[5] * D[6])
-                  + D[2] * (D[3] * D[7] - D[4] * D[6]);
-
-        float inv_det = 1.0f / det;
-        float* Dinv = &s_Dinv[c * 9];
-
-        Dinv[0] = (D[4] * D[8] - D[5] * D[7]) * inv_det;
-        Dinv[1] = (D[2] * D[7] - D[1] * D[8]) * inv_det;
-        Dinv[2] = (D[1] * D[5] - D[2] * D[4]) * inv_det;
-        Dinv[3] = (D[5] * D[6] - D[3] * D[8]) * inv_det;
-        Dinv[4] = (D[0] * D[8] - D[2] * D[6]) * inv_det;
-        Dinv[5] = (D[2] * D[3] - D[0] * D[5]) * inv_det;
-        Dinv[6] = (D[3] * D[7] - D[4] * D[6]) * inv_det;
-        Dinv[7] = (D[1] * D[6] - D[0] * D[7]) * inv_det;
-        Dinv[8] = (D[0] * D[4] - D[1] * D[3]) * inv_det;
-    }}
-    __syncwarp();
-
-    // ===============================================================
-    // ITERATION PHASE: Stream block-rows in chunks and solve
-    // ===============================================================
-
-    for (int iter = 0; iter < iterations; iter++) {{
-        for (int chunk_start = 0; chunk_start < num_contacts; chunk_start += PGS_CHUNK) {{
-            int chunk_end = min(chunk_start + PGS_CHUNK, num_contacts);
-            int chunk_len = chunk_end - chunk_start;
-
-            // ---------------------------------------------------------
-            // STREAM: Preload chunk_len block-rows of Delassus matrix
-            // ---------------------------------------------------------
-            for (int ci = 0; ci < chunk_len; ci++) {{
-                int c = chunk_start + ci;
-                int c_row = c * 3;
-                float* row_base = &s_block_rows[ci * NUM_CONTACTS_MAX * 9];
-                for (int j = lane; j < num_contacts; j += 32) {{
-                    int j_col = j * 3;
-                    float* dst = &row_base[j * 9];
-                    for (int k = 0; k < 9; k++) {{
-                        int lr = k / 3;
-                        int lc = k % 3;
-                        dst[k] = world_C.data[off2 + (c_row + lr) * TILE_M + (j_col + lc)];
-                    }}
-                }}
-            }}
-            __syncwarp();
-
-            // ---------------------------------------------------------
-            // SOLVE: Process each contact in the chunk sequentially
-            // ---------------------------------------------------------
-            for (int ci = 0; ci < chunk_len; ci++) {{
-                int c = chunk_start + ci;
-                const float* row_base = &s_block_rows[ci * NUM_CONTACTS_MAX * 9];
-
-                // Block-row dot product sum_j C[c,j] * lambda[j]
-                float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f;
-
-                for (int j = lane; j < num_contacts; j += 32) {{
-                    float l0 = s_lam[j * 3 + 0];
-                    float l1 = s_lam[j * 3 + 1];
-                    float l2 = s_lam[j * 3 + 2];
-
-                    const float* B = &row_base[j * 9];
-
-                    sum0 += B[0] * l0 + B[1] * l1 + B[2] * l2;
-                    sum1 += B[3] * l0 + B[4] * l1 + B[5] * l2;
-                    sum2 += B[6] * l0 + B[7] * l1 + B[8] * l2;
-                }}
-
-                // Warp reduce
-                sum0 += __shfl_down_sync(MASK, sum0, 16);
-                sum1 += __shfl_down_sync(MASK, sum1, 16);
-                sum2 += __shfl_down_sync(MASK, sum2, 16);
-                sum0 += __shfl_down_sync(MASK, sum0, 8);
-                sum1 += __shfl_down_sync(MASK, sum1, 8);
-                sum2 += __shfl_down_sync(MASK, sum2, 8);
-                sum0 += __shfl_down_sync(MASK, sum0, 4);
-                sum1 += __shfl_down_sync(MASK, sum1, 4);
-                sum2 += __shfl_down_sync(MASK, sum2, 4);
-                sum0 += __shfl_down_sync(MASK, sum0, 2);
-                sum1 += __shfl_down_sync(MASK, sum1, 2);
-                sum2 += __shfl_down_sync(MASK, sum2, 2);
-                sum0 += __shfl_down_sync(MASK, sum0, 1);
-                sum1 += __shfl_down_sync(MASK, sum1, 1);
-                sum2 += __shfl_down_sync(MASK, sum2, 1);
-
-                // Update: Solve and project (lane 0 only)
-                if (lane == 0) {{
-                    float res0 = -(s_rhs[c * 3 + 0] + sum0);
-                    float res1 = -(s_rhs[c * 3 + 1] + sum1);
-                    float res2 = -(s_rhs[c * 3 + 2] + sum2);
-
-                    const float* Dinv = &s_Dinv[c * 9];
-                    float d0 = Dinv[0] * res0 + Dinv[1] * res1 + Dinv[2] * res2;
-                    float d1 = Dinv[3] * res0 + Dinv[4] * res1 + Dinv[5] * res2;
-                    float d2 = Dinv[6] * res0 + Dinv[7] * res1 + Dinv[8] * res2;
-
-                    float new_n  = s_lam[c * 3 + 0] + omega * d0;
-                    float new_t1 = s_lam[c * 3 + 1] + omega * d1;
-                    float new_t2 = s_lam[c * 3 + 2] + omega * d2;
-
-                    // Friction cone projection
-                    new_n = fmaxf(new_n, 0.0f);
-
-                    float mu = s_mu[c];
-                    float radius = mu * new_n;
-
-                    if (radius <= 0.0f) {{
-                        new_t1 = 0.0f;
-                        new_t2 = 0.0f;
-                    }} else {{
-                        float t_mag_sq = new_t1 * new_t1 + new_t2 * new_t2;
-                        if (t_mag_sq > radius * radius) {{
-                            float scale = radius * rsqrtf(t_mag_sq);
-                            new_t1 *= scale;
-                            new_t2 *= scale;
-                        }}
-                    }}
-
-                    s_lam[c * 3 + 0] = new_n;
-                    s_lam[c * 3 + 1] = new_t1;
-                    s_lam[c * 3 + 2] = new_t2;
-                }}
-                __syncwarp();
-            }}
-        }}
-    }}
-
-    // ===============================================================
-    // STORE PHASE: Write final lambda back to global memory
-    // ===============================================================
-    for (int i = lane; i < TILE_M_USABLE; i += 32) {{
-        if (i < m) {{
-            world_impulses.data[off1 + i] = s_lam[i];
-        }}
-    }}
-#endif
-"""
-
-    @wp.func_native(snippet)
-    def pgs_solve_streaming_native(
-        world: int,
-        world_constraint_count: wp.array[int],
-        world_C: wp.array3d[float],
-        world_rhs: wp.array2d[float],
-        world_impulses: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        world_row_mu: wp.array2d[float],
-    ): ...
-
-    def pgs_solve_streaming_template(  # pragma: no cover - compiled by wp.kernel
-        world_constraint_count: wp.array[int],
-        world_C: wp.array3d[float],
-        world_rhs: wp.array2d[float],
-        world_impulses: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        world_row_mu: wp.array2d[float],
-    ):
-        world, _lane = wp.tid()
-        pgs_solve_streaming_native(
-            world,
-            world_constraint_count,
-            world_C,
-            world_rhs,
-            world_impulses,
-            iterations,
-            omega,
-            world_row_mu,
-        )
-
-    pgs_solve_streaming_template.__name__ = f"pgs_solve_streaming_{max_constraints}_chunk{pgs_chunk_size}"
-    pgs_solve_streaming_template.__qualname__ = f"pgs_solve_streaming_{max_constraints}_chunk{pgs_chunk_size}"
-    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
-        pgs_solve_streaming_template
-    )
-
-
-@cache
-def _get_pgs_solve_mf_kernel(free_body_constraint_max: int, max_mf_bodies: int, device_arch: str) -> "wp.Kernel":
-    """Build the one-warp-per-world Gauss-Seidel kernel of the split-mode free-body rows.
-
-    The velocities of the world's free bodies (through the local body table of
-    :func:`~newton._src.solvers.steel.kernels.build_mf_body_map`) and the row impulses
-    stay in shared memory for all iterations, see :func:`_estimate_mf_solve_shared_memory`;
-    lane 0 sweeps the rows. The projection matches
-    :func:`~newton._src.solvers.steel.kernels.pgs_solve_mf_loop`.
-    """
-    MF_MAX_C = free_body_constraint_max
-    MAX_BODIES = max_mf_bodies
-
-    snippet = f"""
-#if defined(__CUDA_ARCH__)
-    const int MF_MAX_C = {MF_MAX_C};
-    const int MAX_BODIES = {MAX_BODIES};
-
-    int lane = threadIdx.x;
-
-    int m = mf_constraint_count.data[world];
-    if (m == 0) return;
-    if (m > MF_MAX_C) m = MF_MAX_C;
-
-    int n_bodies = mf_body_count.data[world];
-    if (n_bodies > MAX_BODIES) n_bodies = MAX_BODIES;
-
-    // ===============================================================
-    // SHARED MEMORY
-    // ===============================================================
-    __shared__ float s_vel[{MAX_BODIES * 6}];
-    __shared__ float s_impulse[{MF_MAX_C}];
-    __shared__ int s_dof_start[{MAX_BODIES}];
-
-    int body_off = world * MAX_BODIES;
-    int c_off = world * MF_MAX_C;
-
-    // ===============================================================
-    // LOAD PHASE
-    // ===============================================================
-
-    // Load body DOF starts and velocities
-    for (int b = lane; b < n_bodies; b += 32) {{
-        int dof = mf_body_dof_start.data[body_off + b];
-        s_dof_start[b] = dof;
-        for (int k = 0; k < 6; k++) {{
-            s_vel[b * 6 + k] = v_out.data[dof + k];
-        }}
-    }}
-
-    // Load impulses
-    for (int i = lane; i < m; i += 32) {{
-        s_impulse[i] = mf_impulses.data[c_off + i];
-    }}
-    __syncwarp();
-
-    // ===============================================================
-    // SOLVE PHASE (lane 0)
-    // ===============================================================
-
-    if (lane == 0) {{
-        for (int iter = 0; iter < iterations; iter++) {{
-            const int global_iter = iteration_offset + iter;
-            for (int i = 0; i < m; i++) {{
-                int row_type = mf_row_type.data[c_off + i];
-                if (row_type == 2 && global_iter < friction_start_iteration) {{
-                    s_impulse[i] = 0.0f;
-                    continue;
-                }}
-
-                float eff_inv = mf_eff_mass_inv.data[c_off + i];
-                if (eff_inv <= 0.0f && row_type != 2) continue;
-
-                int lba = mf_local_body_a.data[c_off + i];
-                int lbb = mf_local_body_b.data[c_off + i];
-
-                // Load J from global memory
-                int j_base = (c_off + i) * 6;
-                float ja0 = mf_J_a.data[j_base + 0];
-                float ja1 = mf_J_a.data[j_base + 1];
-                float ja2 = mf_J_a.data[j_base + 2];
-                float ja3 = mf_J_a.data[j_base + 3];
-                float ja4 = mf_J_a.data[j_base + 4];
-                float ja5 = mf_J_a.data[j_base + 5];
-
-                float jb0 = mf_J_b.data[j_base + 0];
-                float jb1 = mf_J_b.data[j_base + 1];
-                float jb2 = mf_J_b.data[j_base + 2];
-                float jb3 = mf_J_b.data[j_base + 3];
-                float jb4 = mf_J_b.data[j_base + 4];
-                float jb5 = mf_J_b.data[j_base + 5];
-
-                // Compute J * v from shared memory
-                float jv = 0.0f;
-                if (lba >= 0) {{
-                    int va = lba * 6;
-                    jv += ja0 * s_vel[va] + ja1 * s_vel[va+1] + ja2 * s_vel[va+2]
-                        + ja3 * s_vel[va+3] + ja4 * s_vel[va+4] + ja5 * s_vel[va+5];
-                }}
-                if (lbb >= 0) {{
-                    int vb = lbb * 6;
-                    jv += jb0 * s_vel[vb] + jb1 * s_vel[vb+1] + jb2 * s_vel[vb+2]
-                        + jb3 * s_vel[vb+3] + jb4 * s_vel[vb+4] + jb5 * s_vel[vb+5];
-                }}
-
-                // PGS update
-                float rhs_i = mf_rhs.data[c_off + i];
-                float old_impulse = s_impulse[i];
-                float delta = -(jv + rhs_i) * eff_inv;
-                float new_impulse = old_impulse + omega * delta;
-                float delta_impulse = 0.0f;
-
-                if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) {{
-                    // Stateless velocity limit: apply only the impulse of the current overshoot.
-                    new_impulse = jv + rhs_i < 0.0f ? delta : 0.0f;
-                    delta_impulse = new_impulse;
-                }}
-                // Project: contact
-                else if (row_type == 0) {{
-                    if (new_impulse < 0.0f) new_impulse = 0.0f;
-                }}
-                // Project: friction
-                else if (row_type == 2) {{
-                    int parent_idx = mf_row_parent.data[c_off + i];
-                    float radius = fmaxf(mf_row_mu.data[c_off + i] * s_impulse[parent_idx], 0.0f);
-
-                    if (i != parent_idx + 1) {{
-                        new_impulse = old_impulse;
-                    }} else {{
-                        int sib = parent_idx + 2;
-                        int sib_base = (c_off + sib) * 6;
-                        float sibling_residual = mf_rhs.data[c_off + sib];
-                        for (int k = 0; k < 6; ++k) {{
-                            if (lba >= 0) sibling_residual += mf_J_a.data[sib_base + k] * s_vel[lba * 6 + k];
-                            if (lbb >= 0) sibling_residual += mf_J_b.data[sib_base + k] * s_vel[lbb * 6 + k];
-                        }}
-                        float inv_sib = mf_eff_mass_inv.data[c_off + sib];
-                        float cross = 0.0f;
-                        for (int k = 0; k < 6; ++k) {{
-                            if (lba >= 0) cross += mf_J_a.data[j_base + k] * mf_MiJt_a.data[sib_base + k];
-                            if (lbb >= 0) cross += mf_J_b.data[j_base + k] * mf_MiJt_b.data[sib_base + k];
-                        }}
-                        float2 pair = friction_pair_candidate(eff_inv > 0.0f ? 1.0f / eff_inv : 0.0f, cross, inv_sib > 0.0f ? 1.0f / inv_sib : 0.0f,
-                            jv + rhs_i, sibling_residual, old_impulse, s_impulse[sib], radius, omega);
-                        float a_val = pair.x;
-                        float b_val = pair.y;
-                        float mag = sqrtf(a_val * a_val + b_val * b_val);
-                        float scale = mag > radius ? radius / mag : 1.0f;
-                        new_impulse = a_val * scale;
-                        float sib_new = b_val * scale;
-                        float sib_delta = sib_new - s_impulse[sib];
-                        s_impulse[sib] = sib_new;
-
-                        // Apply sibling correction to body velocities
-                        int sib_lba = mf_local_body_a.data[c_off + sib];
-                        int sib_lbb = mf_local_body_b.data[c_off + sib];
-                        int sib_j_base = (c_off + sib) * 6;
-                        if (sib_lba >= 0) {{
-                            int sva = sib_lba * 6;
-                            s_vel[sva+0] += mf_MiJt_a.data[sib_j_base+0] * sib_delta;
-                            s_vel[sva+1] += mf_MiJt_a.data[sib_j_base+1] * sib_delta;
-                            s_vel[sva+2] += mf_MiJt_a.data[sib_j_base+2] * sib_delta;
-                            s_vel[sva+3] += mf_MiJt_a.data[sib_j_base+3] * sib_delta;
-                            s_vel[sva+4] += mf_MiJt_a.data[sib_j_base+4] * sib_delta;
-                            s_vel[sva+5] += mf_MiJt_a.data[sib_j_base+5] * sib_delta;
-                        }}
-                        if (sib_lbb >= 0) {{
-                            int svb = sib_lbb * 6;
-                            s_vel[svb+0] += mf_MiJt_b.data[sib_j_base+0] * sib_delta;
-                            s_vel[svb+1] += mf_MiJt_b.data[sib_j_base+1] * sib_delta;
-                            s_vel[svb+2] += mf_MiJt_b.data[sib_j_base+2] * sib_delta;
-                            s_vel[svb+3] += mf_MiJt_b.data[sib_j_base+3] * sib_delta;
-                            s_vel[svb+4] += mf_MiJt_b.data[sib_j_base+4] * sib_delta;
-                            s_vel[svb+5] += mf_MiJt_b.data[sib_j_base+5] * sib_delta;
-                        }}
-                    }}
-                }}
-
-                if (row_type != {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) delta_impulse = new_impulse - old_impulse;
-                s_impulse[i] = new_impulse;
-
-                // Apply velocity correction: v += MiJt * delta_impulse
-                int mijt_base = (c_off + i) * 6;
-                if (lba >= 0) {{
-                    int va = lba * 6;
-                    s_vel[va+0] += mf_MiJt_a.data[mijt_base+0] * delta_impulse;
-                    s_vel[va+1] += mf_MiJt_a.data[mijt_base+1] * delta_impulse;
-                    s_vel[va+2] += mf_MiJt_a.data[mijt_base+2] * delta_impulse;
-                    s_vel[va+3] += mf_MiJt_a.data[mijt_base+3] * delta_impulse;
-                    s_vel[va+4] += mf_MiJt_a.data[mijt_base+4] * delta_impulse;
-                    s_vel[va+5] += mf_MiJt_a.data[mijt_base+5] * delta_impulse;
-                }}
-                if (lbb >= 0) {{
-                    int vb = lbb * 6;
-                    s_vel[vb+0] += mf_MiJt_b.data[mijt_base+0] * delta_impulse;
-                    s_vel[vb+1] += mf_MiJt_b.data[mijt_base+1] * delta_impulse;
-                    s_vel[vb+2] += mf_MiJt_b.data[mijt_base+2] * delta_impulse;
-                    s_vel[vb+3] += mf_MiJt_b.data[mijt_base+3] * delta_impulse;
-                    s_vel[vb+4] += mf_MiJt_b.data[mijt_base+4] * delta_impulse;
-                    s_vel[vb+5] += mf_MiJt_b.data[mijt_base+5] * delta_impulse;
-                }}
-            }}
-        }}
-    }}
-    __syncwarp();
-
-    // ===============================================================
-    // STORE PHASE
-    // ===============================================================
-
-    // Write body velocities back to v_out
-    for (int b = lane; b < n_bodies; b += 32) {{
-        int dof = s_dof_start[b];
-        for (int k = 0; k < 6; k++) {{
-            v_out.data[dof + k] = s_vel[b * 6 + k];
-        }}
-    }}
-
-    // Write impulses back
-    for (int i = lane; i < m; i += 32) {{
-        mf_impulses.data[c_off + i] = s_impulse[i];
-    }}
-#endif
-"""
-
-    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
-
-    @wp.func_native(snippet)
-    def pgs_solve_mf_native(
-        world: int,
-        mf_constraint_count: wp.array[int],
-        mf_body_count: wp.array[int],
-        mf_body_dof_start: wp.array2d[int],
-        mf_local_body_a: wp.array2d[int],
-        mf_local_body_b: wp.array2d[int],
-        mf_J_a: wp.array3d[float],
-        mf_J_b: wp.array3d[float],
-        mf_MiJt_a: wp.array3d[float],
-        mf_MiJt_b: wp.array3d[float],
-        mf_eff_mass_inv: wp.array2d[float],
-        mf_rhs: wp.array2d[float],
-        mf_row_type: wp.array2d[int],
-        mf_row_parent: wp.array2d[int],
-        mf_row_mu: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        friction_start_iteration: int,
-        iteration_offset: int,
-        mf_impulses: wp.array2d[float],
-        v_out: wp.array[float],
-    ): ...
-
-    def pgs_solve_mf_template(  # pragma: no cover - compiled by wp.kernel
-        mf_constraint_count: wp.array[int],
-        mf_body_count: wp.array[int],
-        mf_body_dof_start: wp.array2d[int],
-        mf_local_body_a: wp.array2d[int],
-        mf_local_body_b: wp.array2d[int],
-        mf_J_a: wp.array3d[float],
-        mf_J_b: wp.array3d[float],
-        mf_MiJt_a: wp.array3d[float],
-        mf_MiJt_b: wp.array3d[float],
-        mf_eff_mass_inv: wp.array2d[float],
-        mf_rhs: wp.array2d[float],
-        mf_row_type: wp.array2d[int],
-        mf_row_parent: wp.array2d[int],
-        mf_row_mu: wp.array2d[float],
-        iterations: int,
-        omega: float,
-        friction_start_iteration: int,
-        iteration_offset: int,
-        mf_impulses: wp.array2d[float],
-        v_out: wp.array[float],
-    ):
-        world, _lane = wp.tid()
-        pgs_solve_mf_native(
-            world,
-            mf_constraint_count,
-            mf_body_count,
-            mf_body_dof_start,
-            mf_local_body_a,
-            mf_local_body_b,
-            mf_J_a,
-            mf_J_b,
-            mf_MiJt_a,
-            mf_MiJt_b,
-            mf_eff_mass_inv,
-            mf_rhs,
-            mf_row_type,
-            mf_row_parent,
-            mf_row_mu,
-            iterations,
-            omega,
-            friction_start_iteration,
-            iteration_offset,
-            mf_impulses,
-            v_out,
-        )
-
-    name = f"pgs_solve_mf_{free_body_constraint_max}_{max_mf_bodies}"
-    pgs_solve_mf_template.__name__ = name
-    pgs_solve_mf_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(pgs_solve_mf_template)
 
 
 # ---------------------------------------------------------------------------

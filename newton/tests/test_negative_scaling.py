@@ -174,6 +174,20 @@ class TestComputeShapeRadius(unittest.TestCase):
         radius = compute_shape_radius(GeoType.PLANE, (-2.0, 1.0, 0.0), None)
         np.testing.assert_allclose(radius, np.linalg.norm([2.0, 1.0, 0.0]) * 0.5)
 
+    def test_mesh_radius_tracks_scale_and_vertex_updates(self):
+        """Follow each shape's signed scale and replaced vertices with cached mesh bounds."""
+        rng = np.random.default_rng(3)
+        mesh = newton.Mesh(rng.uniform(-1.0, 2.0, size=(32, 3)), np.arange(30), compute_inertia=False)
+        for scale in ((1.0, 1.0, 1.0), (-2.0, 0.5, 3.0)):
+            verts = mesh.vertices.astype(np.float64) * np.asarray(scale)
+            expected = 0.5 * np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))
+            np.testing.assert_allclose(compute_shape_radius(GeoType.MESH, scale, mesh), expected, rtol=1e-12)
+
+        mesh.vertices = mesh.vertices * 4.0
+        verts = mesh.vertices.astype(np.float64)
+        expected = 0.5 * np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))
+        np.testing.assert_allclose(compute_shape_radius(GeoType.CONVEX_MESH, (1.0, 1.0, 1.0), mesh), expected)
+
 
 class TestMeshMirrorContacts(unittest.TestCase):
     """Mesh-mesh narrow phase produces the expected contact count under mirroring."""
