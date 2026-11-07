@@ -496,7 +496,12 @@ class TestExampleOutputRegexes(unittest.TestCase):
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
-test_devices = get_test_devices(mode="basic")
+# CPU CI runs the CPU example variants, so hosts with a GPU run examples on CUDA only. Set
+# NEWTON_TEST_CPU_EXAMPLES=1 (or CUDA_VISIBLE_DEVICES=) to run the CPU variants on a GPU host.
+if cuda_test_devices and os.environ.get("NEWTON_TEST_CPU_EXAMPLES") != "1":
+    test_devices = cuda_test_devices
+else:
+    test_devices = get_test_devices(mode="basic")
 
 
 class TestBasicExamples(NewtonTestCase):
@@ -634,25 +639,26 @@ add_example_batch(
     variants=[
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 100, "solver": "xpbd"},
+            "test_options": {"num-frames": 600, "solver": "xpbd"},
+            "test_options_cpu": {"num-frames": 100},
             "test_suffix": "xpbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "vbd"},
+            "test_options": {"num-frames": 600, "solver": "vbd"},
             "test_suffix": "vbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "mujoco"},
+            "test_options": {"num-frames": 600, "solver": "mujoco"},
             "test_suffix": "mujoco",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
         {
             "devices": cuda_test_devices,
-            "test_options": {"num-frames": 100, "solver": "kamino"},
+            "test_options": {"num-frames": 600, "solver": "kamino"},
             "test_suffix": "kamino",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
@@ -1041,14 +1047,14 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 18},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "world-count": 1, "solver": "kamino"},
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 2, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
 )
@@ -1153,6 +1159,27 @@ add_example_test(
     name="mujoco.example_mujoco_sleeping",
     devices=cuda_test_devices,
     test_options={"stack-count": 2, "num-frames": 300},
+    use_viewer=True,
+)
+
+
+class TestSteelExamples(NewtonTestCase):
+    pass
+
+
+add_example_test(
+    TestSteelExamples,
+    name="steel.example_steel_determinism_arms",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 20},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSteelExamples,
+    name="steel.example_steel_sleeping",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 340},
     use_viewer=True,
 )
 
@@ -1425,6 +1452,14 @@ add_example_test(
     name="mpm.example_mpm_viscous",
     devices=cuda_test_devices,
     test_options={"num-frames": 30, "voxel-size": 0.01},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_pinch_carry",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 300, "spacing": 0.002, "substeps": 2, "travel-scale": 0.25},
     use_viewer=True,
 )
 
@@ -1801,6 +1836,25 @@ class TestKaminoExamples(unittest.TestCase):
 
 add_example_test(
     TestKaminoExamples,
+    name="kamino.example_kamino_earworm_flowers",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    variants=[
+        {
+            "test_suffix": "original",
+            # Two full-height flowers exercise world indexing and variations.
+            "test_options": {"num-frames": 120, "world-count": 2},
+        },
+        {
+            "test_suffix": "fine",
+            # Exercise the finer rings' adapted compaction stroke on a short tower.
+            # At 220 frames the opening is about -0.15 rad, past the 0.04 rad check.
+            "test_options": {"num-frames": 220, "world-count": 1, "stage-count": 2, "flower-resolution": 3},
+        },
+    ],
+)
+add_example_test(
+    TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
@@ -1834,6 +1888,18 @@ add_example_test(
     test_options={"num-frames": 500},
     use_viewer=True,
 )
+for example_name, num_frames in (
+    ("kamino.example_kamino_robot_dr_legs", 120),
+    ("kamino.example_kamino_robot_anymal_d", 500),
+):
+    add_example_test(
+        TestKaminoExamples,
+        name=example_name,
+        devices=cuda_test_devices,
+        test_options={"num-frames": num_frames, "dynamics-solver": "lox"},
+        use_viewer=True,
+        test_suffix="lox",
+    )
 
 
 class TestControllersExamples(unittest.TestCase):

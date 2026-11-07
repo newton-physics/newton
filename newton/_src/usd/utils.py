@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import math
 import os
@@ -13,15 +14,19 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 import warp as wp
 
+from ..core.host_transform import _builtin
 from ..core.types import Axis, AxisType
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import Gaussian
 from ..sim.model import Model
-from ..utils.color import color_linear_to_srgb
+from ..utils.color import ColorSpace, color_linear_to_srgb
 from ..utils.import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
+    _is_aousd_deformable_sim_prim,
     _is_usd_float_representable,
+    _iter_deformable_pointbased_prims,
+    _prim_has_collision_api,
     _warn_geometry_authored_material_attrs,
 )
 from ..utils.texture import linear_texture_to_srgb, load_texture
@@ -162,6 +167,11 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         True if the schema is applied to the prim, False otherwise.
     """
     return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
+
+
+def _is_particle_sim_prim(prim: Usd.Prim) -> bool:
+    """Return whether a Points prim opts into Newton particle simulation."""
+    return prim.IsA(UsdGeom.Points) and has_applied_api_schema(prim, "NewtonPointsDeformableSimAPI")
 
 
 @overload
@@ -325,6 +335,25 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     Returns:
         The scale as a Warp vec3.
     """
+    return _get_scale(prim, local=local, xform_cache=xform_cache)
+
+
+def _get_scale(
+    prim: Usd.Prim,
+    *,
+    local: bool,
+    xform_cache: UsdGeom.XformCache | None,
+    authored_scale_cache: dict[Any, tuple[np.ndarray, bool]] | None = None,
+) -> wp.vec3:
+    """Implement :func:`get_scale`, optionally reusing ancestors' authored world scales.
+
+    Args:
+        prim: The USD prim to query.
+        local: Whether to return the local scale instead of the world scale.
+        xform_cache: Optional USD XformCache for world transforms.
+        authored_scale_cache: Optional per-stage mapping from prim path to the product of
+            authored world scale ops, filled in place. Reuse it only while the stage is unchanged.
+    """
     mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
     # USD stores basis vectors in rows. Only their lengths are needed here;
     # constructing a Warp matrix and extracting its quaternion is unnecessary.
@@ -332,7 +361,7 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     basis = mat[:3, :3].astype(np.float64)
     scale = np.sqrt(np.sum(basis * basis, axis=1).astype(np.float32))
 
-    authored_scale = _get_authored_scale(prim, local=local)
+    authored_scale = _get_authored_scale(prim, local=local, cache=authored_scale_cache)
     if authored_scale is not None:
         sign = np.sign(authored_scale)
         sign[sign == 0.0] = 1.0
@@ -341,43 +370,67 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     return wp.vec3(*scale)
 
 
-def _get_authored_scale(prim: Usd.Prim, local: bool = True) -> np.ndarray | None:
-    """Return the product of authored scale ops, preserving negative signs."""
+def _get_authored_scale(
+    prim: Usd.Prim, local: bool = True, cache: dict[Any, tuple[np.ndarray, bool]] | None = None
+) -> np.ndarray | None:
+    """Return the product of authored scale ops, preserving negative signs.
+
+    Args:
+        prim: The USD prim to query.
+        local: Whether to use only the prim's own ops instead of all ancestors' ops.
+        cache: Optional mapping from prim path to the product of authored world scale ops,
+            filled in place for world queries so prims sharing ancestors reuse their products.
+    """
     if UsdGeom is None:
         return None
+    if local:
+        scale, found = _accumulate_authored_scale(UsdGeom.Xformable(prim), np.ones(3, dtype=np.float32), False)
+    else:
+        scale, found = _get_world_authored_scale(prim, {} if cache is None else cache)
+    return scale.copy() if found else None
 
-    prims = [prim]
-    if not local:
-        prims = []
-        current = prim
-        while current and current.IsValid() and not current.IsPseudoRoot():
-            prims.append(current)
-            current = current.GetParent()
-        prims.reverse()
 
-    scale = np.ones(3, dtype=np.float32)
-    found = False
-    for p in prims:
-        xformable = UsdGeom.Xformable(p)
-        if not xformable:
+def _accumulate_authored_scale(xformable: UsdGeom.Xformable, scale: np.ndarray, found: bool) -> tuple[np.ndarray, bool]:
+    """Multiply ``scale`` in place by an xformable's authored scale ops, in op order."""
+    if not xformable:
+        return scale, found
+    for op in xformable.GetOrderedXformOps():
+        if op.GetOpType() != UsdGeom.XformOp.TypeScale:
             continue
-        if not local and xformable.GetResetXformStack():
-            scale = np.ones(3, dtype=np.float32)
-            found = False
-        for op in xformable.GetOrderedXformOps():
-            if op.GetOpType() != UsdGeom.XformOp.TypeScale:
-                continue
-            value = op.Get()
-            if value is None:
-                continue
-            op_scale = np.array(value, dtype=np.float32)
-            if op.IsInverseOp():
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    op_scale = np.divide(1.0, op_scale, out=np.ones_like(op_scale), where=op_scale != 0.0)
-            scale *= op_scale
-            found = True
+        value = op.Get()
+        if value is None:
+            continue
+        op_scale = np.array(value, dtype=np.float32)
+        if op.IsInverseOp():
+            with np.errstate(divide="ignore", invalid="ignore"):
+                op_scale = np.divide(1.0, op_scale, out=np.ones_like(op_scale), where=op_scale != 0.0)
+        scale *= op_scale
+        found = True
+    return scale, found
 
-    return scale if found else None
+
+def _get_world_authored_scale(prim: Usd.Prim, cache: dict[Any, tuple[np.ndarray, bool]]) -> tuple[np.ndarray, bool]:
+    """Return the product of authored scale ops from the root down to ``prim``, cached per path."""
+    # Walk up to the nearest cached ancestor, then accumulate back down in root-to-leaf order.
+    chain = []
+    current = prim
+    result = (np.ones(3, dtype=np.float32), False)
+    while current and current.IsValid() and not current.IsPseudoRoot():
+        cached = cache.get(current.GetPath())
+        if cached is not None:
+            result = cached
+            break
+        chain.append(current)
+        current = current.GetParent()
+    for current in reversed(chain):
+        xformable = UsdGeom.Xformable(current)
+        if xformable and xformable.GetResetXformStack():
+            scale, found = np.ones(3, dtype=np.float32), False
+        else:
+            scale, found = result[0].copy(), result[1]
+        result = _accumulate_authored_scale(xformable, scale, found)
+        cache[current.GetPath()] = result
+    return result
 
 
 def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:
@@ -430,6 +483,17 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
     return wp.transform(xform_pos, xform_rot)
 
 
+def _normalized_quat(x: float, y: float, z: float, w: float) -> wp.quat:
+    """Return ``wp.normalize(wp.quat(x, y, z, w))`` by calling Warp's native builtin directly.
+
+    Importing large scenes converts one rotation per prim, where resolving the
+    ``wp.normalize`` overload at Python scope dominates the cost.
+    """
+    result = wp.quat()
+    _builtin("wp_builtin_normalize_quatf")(wp.quat(x, y, z, w), ctypes.byref(result))
+    return result
+
+
 def value_to_warp(v: Any, warp_dtype: Any | None = None) -> Any:
     """
     Convert a USD value (such as Gf.Quat, Gf.Vec3, or float) to a Warp value.
@@ -444,7 +508,7 @@ def value_to_warp(v: Any, warp_dtype: Any | None = None) -> Any:
         The converted value.
     """
     if warp_dtype is wp.quat or (hasattr(v, "real") and hasattr(v, "imaginary")):
-        return wp.normalize(wp.quat(*v.imaginary, v.real))
+        return _normalized_quat(*v.imaginary, v.real)
     if warp_dtype is not None:
         # assume the type is a vector, matrix, or scalar
         if hasattr(v, "__len__"):
@@ -1581,6 +1645,47 @@ def get_physics_scenes(
     return _get_physics_scenes_from_results(stage, physics_results)
 
 
+def find_deformable_visual_prims(prim: Usd.Prim) -> list[Usd.Prim]:
+    """Find the visual geometry owned by one USD deformable body.
+
+    .. experimental::
+        This function follows the AOUSD deformable proposal and may change.
+
+    Return the body's ``UsdGeom.PointBased`` prims that apply neither a deformable
+    simulation API nor ``PhysicsCollisionAPI`` (the proposal's *graphics
+    geometries*), in traversal order and including instance proxies. Stop at
+    nested deformable bodies, rigid bodies, and articulation roots.
+    Simulation geometry is any prim applying an AOUSD
+    deformable simulation API, or a Points prim applying Newton's
+    ``NewtonPointsDeformableSimAPI``; a TetMesh without one is visual geometry,
+    as in :meth:`~newton.ModelBuilder.add_usd`. Collision geometry is excluded even
+    when collision is disabled.
+
+    This reads ownership only. It does not filter visibility or create a
+    simulation, embedding, or render mesh. Mesh prims can be read with
+    :func:`get_mesh`.
+
+    Args:
+        prim: Prim with ``PhysicsDeformableBodyAPI`` applied.
+
+    Returns:
+        Visual prims belonging to this body, not to nested bodies.
+
+    Raises:
+        ValueError: If ``prim`` is invalid or lacks the deformable body API.
+    """
+    if not prim:
+        raise ValueError("Expected a valid prim with PhysicsDeformableBodyAPI")
+    if not has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
+        raise ValueError(f"{prim.GetPath()}: expected a prim with PhysicsDeformableBodyAPI")
+    return [
+        child
+        for child in _iter_deformable_pointbased_prims(prim)
+        if not _prim_has_collision_api(child)
+        and not (_is_aousd_deformable_sim_prim(child) or _is_particle_sim_prim(child))
+    ]
+
+
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
     """Find all prims with the ``UsdGeom.TetMesh`` schema in a USD stage.
 
@@ -1602,6 +1707,84 @@ def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
         list[Usd.Prim]: All prims in the stage that have the TetMesh schema.
     """
     return [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.TetMesh)]
+
+
+def get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray:
+    """Read a deformable geometry's bind-pose points in authored local units.
+
+    .. experimental::
+        This function follows the AOUSD deformable proposal and may change.
+
+    Read the multiple-apply ``PhysicsDeformablePoseAPI:<instance>`` whose
+    ``physics:deformablePose:<instance>:purposes`` contains ``bindPose`` and return
+    its ``physics:deformablePose:<instance>:points``, as the proposal's examples
+    author them. If no such instance exists, use the geometry's default-time
+    ``points``.
+    Do not substitute a rest shape or an animated sample for that fallback. An
+    explicit bind pose is also accepted when the geometry's ``points`` exist
+    only as time samples; :func:`get_mesh` cannot load such a mesh.
+    Newton rejects multiple bind poses rather than choosing one by schema order.
+
+    Points remain in USD vertex order and the prim's local coordinates.
+    Transforms and stage-unit conversion are left to the caller. The result
+    owns its storage; changing it does not edit the stage. These are authored
+    points, not render vertices split at UV or normal seams.
+
+    Args:
+        prim: A ``UsdGeom.PointBased`` prim, such as a Mesh, BasisCurves, or TetMesh.
+
+    Returns:
+        Float64 array of shape ``(point_count, 3)`` in stage length units
+        (meters when ``metersPerUnit`` is 1).
+
+    Raises:
+        ValueError: If the prim is not PointBased, the required points are
+            missing, multiple poses have ``bindPose`` purpose, or the selected
+            pose has an invalid shape, point count, or non-finite coordinates.
+    """
+    if not prim:
+        raise ValueError("Expected a valid UsdGeom.PointBased prim")
+    if not prim.IsA(UsdGeom.PointBased):
+        raise ValueError(f"{prim.GetPath()}: expected a UsdGeom.PointBased prim")
+    pose_attributes = []
+    # PrimTypeInfo includes composed, unregistered proposal schemas even when
+    # registered APIs (such as MaterialBindingAPI) are applied on the same prim.
+    for schema in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
+        if not schema.startswith("PhysicsDeformablePoseAPI:"):
+            continue
+        instance = schema.split(":", 1)[1]
+        prefix = f"physics:deformablePose:{instance}"
+        if "bindPose" in (get_attribute(prim, f"{prefix}:purposes") or ()):
+            pose_attributes.append(f"{prefix}:points")
+    path = prim.GetPath()
+    if len(pose_attributes) > 1:
+        raise ValueError(f"{path}: Multiple deformable poses have bindPose purpose")
+
+    points_attr = UsdGeom.PointBased(prim).GetPointsAttr()
+    geometry_points = points_attr.Get(Usd.TimeCode.Default())
+    if pose_attributes:
+        pose_attr = pose_attributes[0]
+        values = get_attribute(prim, pose_attr)
+    else:
+        pose_attr = "points"
+        values = geometry_points
+    if values is None:
+        raise ValueError(f"{path}: {pose_attr} must provide default-time points for the bind pose")
+    points = np.array(values, dtype=np.float64)
+    if points.size == 0:
+        points = points.reshape((0, 3))
+    if points.ndim != 2 or points.shape[1] != 3 or not np.all(np.isfinite(points)):
+        raise ValueError(f"{path}: {pose_attr} must contain finite 3D points")
+    if pose_attributes:
+        if geometry_points is None:
+            # An explicit bind pose permits animated geometry with no default points.
+            # Read a sample only to check the point count, never as a bind-pose fallback.
+            geometry_points = points_attr.Get(Usd.TimeCode.EarliestTime())
+        if geometry_points is None:
+            raise ValueError(f"{path}: points must be authored to validate the {pose_attr} point count")
+        if len(points) != len(geometry_points):
+            raise ValueError(f"{path}: {pose_attr} point count must match the geometry's points")
+    return points
 
 
 def _resolve_asset_path(
@@ -1735,9 +1918,58 @@ def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: U
     return str(source_color_space or "")
 
 
-def _texture_source_is_linear(color_space: str) -> bool:
-    token = color_space.strip().lower()
-    return token in ("identity", "raw", "data", "linear", "lin_rec709_scene") or token.startswith("lin_")
+# USD color-space names Newton handles exactly: Rec.709 primaries with an sRGB or linear transfer function.
+_SRGB_COLOR_SPACES = frozenset({"srgb", "srgb_texture", "srgb_rec709_scene", "srgb_rec709_display"})
+_LINEAR_COLOR_SPACES = frozenset({"lin_rec709_scene", "lin_rec709", "lin_srgb", "raw", "data", "identity", "linear"})
+
+
+def _classify_color_space(name: str, default: ColorSpace) -> tuple[ColorSpace, bool]:
+    """Classify a USD color-space name as sRGB or linear.
+
+    Args:
+        name: Authored or inherited color-space name; empty or ``auto`` for untagged data.
+        default: Color space of untagged data.
+
+    Returns:
+        The color space and whether Newton handles it exactly (Rec.709 primaries with an sRGB or
+        linear transfer function). Any other name is classified as linear if it looks linear
+        (``lin_*`` or ``acescg``) and as sRGB otherwise.
+    """
+    token = name.strip().lower()
+    if not token or token == "auto":
+        return default, True
+    if token in _LINEAR_COLOR_SPACES:
+        return ColorSpace.LINEAR, True
+    if token in _SRGB_COLOR_SPACES:
+        return ColorSpace.SRGB, True
+    if token.startswith("lin_") or token == "acescg":
+        return ColorSpace.LINEAR, False
+    return ColorSpace.SRGB, False
+
+
+def _resolve_color_space(name: str, default: ColorSpace, what: str, path: Any) -> ColorSpace:
+    """Classify a USD color-space name and warn if Newton imports it without conversion.
+
+    Args:
+        name: Authored or inherited color-space name; empty for untagged data.
+        default: Color space of untagged data.
+        what: Description of the imported data for the warning, e.g. ``"Color texture"``.
+        path: USD path of the prim or attribute the data comes from, for the warning.
+
+    Returns:
+        The color space the data is imported as.
+    """
+    color_space, exact = _classify_color_space(name, default)
+    if not exact:
+        logger.warning(
+            "%s of %s uses unsupported color space '%s'; importing it as %s "
+            "without converting color primaries or transfer function",
+            what,
+            path,
+            name,
+            color_space.name,
+        )
+    return color_space
 
 
 def _color_to_display_space(
@@ -1745,8 +1977,11 @@ def _color_to_display_space(
     attr: Usd.Attribute | None,
 ) -> tuple[float, float, float]:
     """Normalize a USD scalar color to Newton's display/sRGB model color space."""
-    color_space = _get_attribute_color_space(attr)
-    if not color_space or _texture_source_is_linear(color_space):
+    if attr is None:
+        return color_linear_to_srgb(color)
+    # Untagged scalar colors follow USD Preview Surface and are linear.
+    color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
+    if color_space == ColorSpace.LINEAR:
         return color_linear_to_srgb(color)
     return color
 
@@ -1761,7 +1996,14 @@ def _resolve_color_texture_asset(
     if not texture:
         return None
 
-    if not _texture_source_is_linear(_get_texture_source_color_space(shader, asset_attr)):
+    # Untagged color textures (``sourceColorSpace="auto"``) are display-encoded.
+    color_space = _resolve_color_space(
+        _get_texture_source_color_space(shader, asset_attr),
+        ColorSpace.SRGB,
+        "Color texture",
+        asset_attr.GetPath() if asset_attr is not None else prim.GetPath(),
+    )
+    if color_space == ColorSpace.SRGB:
         return texture
 
     pixels = load_texture(texture)
@@ -1853,18 +2095,37 @@ def _empty_material_properties() -> dict[str, Any]:
     }
 
 
-def _coerce_color(value: Any) -> tuple[float, float, float] | None:
-    """Coerce a value to an RGB color tuple, or None if not possible."""
+def _warn_imported_value(attr: Usd.Attribute | None, message: str, *args: Any) -> None:
+    """Log a warning about an imported value, prefixed with the path of the attribute it came from."""
+    if attr:
+        logger.warning("%s: " + message, attr.GetPath(), *args)
+    else:
+        logger.warning(message, *args)
+
+
+def _coerce_color(value: Any, attr: Usd.Attribute | None) -> tuple[float, float, float] | None:
+    """Coerce a value read from ``attr`` to a clamped RGB color tuple, or None if not possible."""
     if value is None:
         return None
     # A per-vertex or per-face primvar holds one entry per element and only the leading one
     # is used, so take it before the numpy conversion rather than flattening the whole array.
     if hasattr(value, "__len__") and len(value) > 0 and hasattr(value[0], "__len__"):
         value = value[0]
-    color_np = np.array(value, dtype=np.float32).reshape(-1)
-    if color_np.size >= 3:
-        return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
-    return None
+    # Check and clamp in float64 so a large finite double-precision color is clamped, not overflowed to infinity.
+    color_np = np.array(value, dtype=np.float64).reshape(-1)
+    if color_np.size < 3:
+        return None
+    rgb = color_np[:3]
+    color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    if not np.all(np.isfinite(rgb)):
+        _warn_imported_value(attr, "ignoring non-finite imported color %r.", color)
+        return None
+    # Builder triangle colors reject values outside [0, 1]; clamp like opacity so display data cannot abort an import.
+    rgb = np.clip(rgb, 0.0, 1.0)
+    clamped_color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    if clamped_color != color:
+        _warn_imported_value(attr, "clamping imported color %r to %r.", color, clamped_color)
+    return clamped_color
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -1877,73 +2138,71 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
-def _coerce_opacity(value: Any, *, warn_on_multiple: bool = False) -> float | None:
-    """Coerce an opacity value to a clamped scalar, or None if not possible."""
+def _coerce_opacity(value: Any, attr: Usd.Attribute | None, *, warn_on_multiple: bool = False) -> float | None:
+    """Coerce an opacity value read from ``attr`` to a clamped scalar, or None if not possible."""
     if value is None:
         return None
     try:
-        value_np = np.array(value, dtype=np.float32).reshape(-1)
+        value_np = np.array(value, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError):
-        value_np = np.asarray([_coerce_float(value)], dtype=np.float32)
+        value_np = np.asarray([_coerce_float(value)], dtype=np.float64)
     if value_np.size == 0:
         return None
     if value_np.size > 1 and warn_on_multiple:
-        warnings.warn(
-            f"Opacity data contains {value_np.size} values; using the first value as the shape opacity.",
-            NewtonWarning,
-            stacklevel=2,
+        _warn_imported_value(
+            attr, "opacity data contains %d values; using the first value as the shape opacity.", value_np.size
         )
     opacity = float(value_np[0])
     if not np.isfinite(opacity):
-        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", NewtonWarning, stacklevel=2)
+        _warn_imported_value(attr, "ignoring non-finite imported opacity %r.", opacity)
         return None
     clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
     if clamped_opacity != opacity:
-        warnings.warn(
-            f"Clamping imported opacity {opacity!r} to {clamped_opacity!r}.",
-            NewtonWarning,
-            stacklevel=2,
-        )
+        _warn_imported_value(attr, "clamping imported opacity %r to %r.", opacity, clamped_opacity)
     return clamped_opacity
 
 
-def _coerce_color_opacity(value: Any) -> float | None:
-    """Extract alpha only from a single four-component color value."""
+def _coerce_color_opacity(value: Any, attr: Usd.Attribute | None) -> float | None:
+    """Extract alpha only from a single four-component color value read from ``attr``."""
     if value is None:
         return None
     try:
-        value_np = np.array(value, dtype=np.float32).reshape(-1)
+        value_np = np.array(value, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError):
         return None
     if value_np.size != 4:
         return None
-    return _coerce_opacity(value_np[3])
+    return _coerce_opacity(value_np[3], attr)
 
 
-def _extract_display_primvar_properties(prim: Usd.Prim) -> dict[str, Any]:
-    """Extract displayColor/displayOpacity primvars from a prim."""
+def _extract_display_primvar_properties(
+    prim: Usd.Prim, *, read_color: bool = True, read_opacity: bool = True
+) -> dict[str, Any]:
+    """Extract displayColor/displayOpacity primvars from a prim, skipping those not requested."""
     properties = _empty_material_properties()
     if UsdGeom is None or not prim or not prim.IsValid():
         return properties
     primvars_api = UsdGeom.PrimvarsAPI(prim)
 
-    display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
-    if display_color:
-        color_value = display_color.Get()
-        color = _coerce_color(color_value)
-        if color is not None:
-            properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+    if read_color:
+        display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
+        if display_color:
+            color_value = display_color.Get()
+            color = _coerce_color(color_value, display_color.GetAttr())
+            if color is not None:
+                properties["color"] = _color_to_display_space(color, display_color.GetAttr())
 
-    display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
-    if display_opacity:
-        opacity = _coerce_opacity(display_opacity.Get(), warn_on_multiple=True)
-        if opacity is not None:
-            properties["opacity"] = opacity
+    if read_opacity:
+        display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
+        if display_opacity:
+            opacity = _coerce_opacity(display_opacity.Get(), display_opacity.GetAttr(), warn_on_multiple=True)
+            if opacity is not None:
+                properties["opacity"] = opacity
 
-    if properties["opacity"] is None:
-        attr = prim.GetAttribute("displayOpacity")
-        if attr:
-            properties["opacity"] = _coerce_opacity(attr.Get(), warn_on_multiple=True)
+        if properties["opacity"] is None:
+            attr = prim.GetAttribute("displayOpacity")
+            if attr:
+                properties["opacity"] = _coerce_opacity(attr.Get(), attr, warn_on_multiple=True)
 
     return properties
 
@@ -2024,18 +2283,18 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                         "displayColor",
                     ),
                 )
-                coerced_color = _coerce_color(color_value)
+                coerced_color = _coerce_color(color_value, color_attr)
                 if coerced_color is not None:
                     properties["color"] = _color_to_display_space(coerced_color, color_attr)
                 if properties["opacity"] is None:
-                    properties["opacity"] = _coerce_color_opacity(color_value)
+                    properties["opacity"] = _coerce_color_opacity(color_value, color_attr)
         else:
             color_value = color_input.Get()
-            coerced_color = _coerce_color(color_value)
+            coerced_color = _coerce_color(color_value, color_input.GetAttr())
             if coerced_color is not None:
                 properties["color"] = _color_to_display_space(coerced_color, color_input.GetAttr())
             if properties["opacity"] is None:
-                properties["opacity"] = _coerce_color_opacity(color_value)
+                properties["opacity"] = _coerce_color_opacity(color_value, color_input.GetAttr())
 
     opacity_input = shader.GetInput("opacity") or shader.GetInput("alpha")
     if opacity_input:
@@ -2046,10 +2305,12 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         if has_opacity_source:
             source = opacity_input.GetConnectedSource()
             source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
-            opacity_value = _get_input_value(source_shader, ("opacity", "alpha", "opacity_constant", "alpha_constant"))
-            properties["opacity"] = _coerce_opacity(opacity_value)
+            opacity_value, opacity_attr = _get_input_value_and_attr(
+                source_shader, ("opacity", "alpha", "opacity_constant", "alpha_constant")
+            )
+            properties["opacity"] = _coerce_opacity(opacity_value, opacity_attr)
         else:
-            properties["opacity"] = _coerce_opacity(opacity_input.Get())
+            properties["opacity"] = _coerce_opacity(opacity_input.Get(), opacity_input.GetAttr())
 
     metallic_input = shader.GetInput("metallic")
     if metallic_input:
@@ -2198,17 +2459,17 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 "displayColor",
             ),
         )
-        color = _coerce_color(color_value)
+        color = _coerce_color(color_value, color_attr)
         if color is not None:
             properties["color"] = _color_to_display_space(color, color_attr)
         if properties["opacity"] is None:
-            properties["opacity"] = _coerce_color_opacity(color_value)
+            properties["opacity"] = _coerce_color_opacity(color_value, color_attr)
     if properties["opacity"] is None:
-        opacity_value = _get_input_value(
+        opacity_value, opacity_attr = _get_input_value_and_attr(
             shader,
             ("opacity", "alpha", "displayOpacity", "opacity_constant", "alpha_constant"),
         )
-        properties["opacity"] = _coerce_opacity(opacity_value)
+        properties["opacity"] = _coerce_opacity(opacity_value, opacity_attr)
     if properties["metallic"] is None:
         metallic_value = _get_input_value(shader, ("metallic_constant", "metallic"))
         properties["metallic"] = _coerce_float(metallic_value)
@@ -2261,11 +2522,11 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             "base_color",
             "displaycolor",
         ):
-            color = _coerce_color(value)
+            color = _coerce_color(value, inp.GetAttr())
             if color is not None:
                 properties["color"] = _color_to_display_space(color, inp.GetAttr())
                 if properties["opacity"] is None:
-                    properties["opacity"] = _coerce_color_opacity(value)
+                    properties["opacity"] = _coerce_color_opacity(value, inp.GetAttr())
                 continue
 
         if properties["opacity"] is None and name_lower in (
@@ -2275,7 +2536,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             "opacity_constant",
             "alpha_constant",
         ):
-            opacity = _coerce_opacity(value)
+            opacity = _coerce_opacity(value, inp.GetAttr())
             if opacity is not None:
                 properties["opacity"] = opacity
                 continue
@@ -2357,20 +2618,28 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     for key in ("texture", "color", "opacity", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
-    display_props = _extract_display_primvar_properties(target_prim)
-    if properties["color"] is None and properties["texture"] is None and display_props.get("color") is not None:
-        properties["color"] = display_props["color"]
-    if properties["opacity"] is None and display_props.get("opacity") is not None:
-        properties["opacity"] = display_props["opacity"]
+    # Read only the display primvars that fill a gap, so an unused value is not clamped and reported.
+    need_color = properties["color"] is None and properties["texture"] is None
+    need_opacity = properties["opacity"] is None
+    if need_color or need_opacity:
+        display_props = _extract_display_primvar_properties(
+            target_prim, read_color=need_color, read_opacity=need_opacity
+        )
+        if display_props.get("color") is not None:
+            properties["color"] = display_props["color"]
+        if display_props.get("opacity") is not None:
+            properties["opacity"] = display_props["opacity"]
 
     return properties
 
 
-def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
+def resolve_material_properties_for_prim(prim: Usd.Prim, *, include_subsets: bool = True) -> dict[str, Any]:
     """Resolve surface material properties bound to a prim.
 
     Args:
         prim: The prim whose bound material should be inspected.
+        include_subsets: If ``False``, a mesh without its own material skips the
+            ``GeomSubset`` fallback and uses its display primvars.
 
     Returns:
         Dictionary with scalar surface properties (including opacity), texture
@@ -2396,7 +2665,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         if properties is not None:
             return properties
 
-    if UsdGeom is not None:
+    if include_subsets and UsdGeom is not None:
         try:
             is_mesh = prim.IsA(UsdGeom.Mesh)
         except Exception:
@@ -2434,7 +2703,14 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
 def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     """Load Gaussian splat data from a USD prim.
 
-    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and
+    `radiance:sphericalHarmonicsCoefficients`, or its half-precision `h` variant when only that one
+    has a value. The color-space name of the coefficient attribute that is read (its own metadata or
+    its schema fallback; inherited color spaces are ignored) selects :attr:`Gaussian.sh_color_space`: untagged, `srgb`,
+    `srgb_texture`, `srgb_rec709_scene` and `srgb_rec709_display` radiance is sRGB, and
+    `lin_rec709_scene`, `lin_rec709`, `lin_srgb`, `raw`, `data`, `identity` and `linear` radiance is
+    linear. Any other name is imported as linear if it looks linear (`lin_*` or `acescg`) and as sRGB
+    otherwise, without converting primaries or transfer function, and a warning is logged.
 
     Args:
         prim: A USD prim containing Gaussian splat data.
@@ -2444,16 +2720,18 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         A new :class:`Gaussian` instance.
     """
 
-    def _get_float_array_attr(name):
-        attr = prim.GetAttribute(name)
-        if attr and attr.HasValue():
-            return np.array(attr.Get(), dtype=np.float32)
-
-        attr = prim.GetAttribute(f"{name}h")
-        if attr and attr.HasValue():
-            return np.array(attr.Get(), dtype=np.float32)
-
+    def _get_valued_attr(name):
+        for candidate in (name, f"{name}h"):
+            attr = prim.GetAttribute(candidate)
+            if attr and attr.HasValue():
+                return attr
         return None
+
+    def _get_float_array_from(attr):
+        return None if attr is None else np.array(attr.Get(), dtype=np.float32)
+
+    def _get_float_array_attr(name):
+        return _get_float_array_from(_get_valued_attr(name))
 
     positions = _get_float_array_attr("positions")
     if positions is None:
@@ -2470,13 +2748,24 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         else:
             raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
 
+    # The color space follows the coefficient attribute that supplies the radiance (single or half precision).
+    # Untagged radiance is display-referred (sRGB).
+    sh_attr = _get_valued_attr("radiance:sphericalHarmonicsCoefficients")
+    sh_color_space = _resolve_color_space(
+        (sh_attr.GetColorSpace() if sh_attr is not None else None) or "",
+        ColorSpace.SRGB,
+        "Gaussian SH radiance",
+        prim.GetPath(),
+    )
+
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
         scales=_get_float_array_attr("scales"),
         opacities=_get_float_array_attr("opacities"),
-        sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
+        sh_coeffs=_get_float_array_from(sh_attr),
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
+        sh_color_space=sh_color_space,
         min_response=min_response,
         sorting_mode=sorting_mode,
     )

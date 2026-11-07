@@ -5,6 +5,7 @@ import warp as wp
 
 from ...sim.tendon import TendonGuideType
 from ..tendon_kernels import (
+    tendon_body_pose,
     tendon_material_tension,
     tendon_segment_length_rate_from_poses,
 )
@@ -59,8 +60,8 @@ def snapshot_tendon_segment_length_reference(
     guide_r = seg_active_guide_r[seg]
     body_l = tendon_guide_body[guide_l]
     body_r = tendon_guide_body[guide_r]
-    attachment_l = wp.transform_point(body_q[body_l], seg_attachment_l_local[seg])
-    attachment_r = wp.transform_point(body_q[body_r], seg_attachment_r_local[seg])
+    attachment_l = wp.transform_point(tendon_body_pose(body_q, body_l), seg_attachment_l_local[seg])
+    attachment_r = wp.transform_point(tendon_body_pose(body_q, body_r), seg_attachment_r_local[seg])
     length_rate = tendon_segment_length_rate_from_poses(
         dt,
         body_q,
@@ -116,8 +117,8 @@ def update_tendon_segment_diagnostics(
     body_l = tendon_guide_body[guide_l]
     body_r = tendon_guide_body[guide_r]
 
-    attachment_l = wp.transform_point(body_q[body_l], seg_attachment_l_local[seg])
-    attachment_r = wp.transform_point(body_q[body_r], seg_attachment_r_local[seg])
+    attachment_l = wp.transform_point(tendon_body_pose(body_q, body_l), seg_attachment_l_local[seg])
+    attachment_r = wp.transform_point(tendon_body_pose(body_q, body_r), seg_attachment_r_local[seg])
     seg_attachment_l[seg] = attachment_l
     seg_attachment_r[seg] = attachment_r
     length = wp.length(attachment_r - attachment_l)
@@ -162,7 +163,7 @@ def _rolling_spin_axis_component(
         return wp.vec3(0.0)
 
     body = tendon_guide_body[guide]
-    pose = body_q[body]
+    pose = tendon_body_pose(body_q, body)
     center = wp.transform_point(pose, tendon_guide_offset[guide])
     normal = wp.normalize(wp.transform_vector(pose, tendon_guide_axis[guide]))
     point_left = wp.transform_point(pose, seg_attachment_r_local[seg_left])
@@ -237,8 +238,8 @@ def evaluate_tendon_force_hessians(
         if body != body_l and body != body_r:
             continue
 
-        attachment_l = wp.transform_point(body_q[body_l], seg_attachment_l_local[seg])
-        attachment_r = wp.transform_point(body_q[body_r], seg_attachment_r_local[seg])
+        attachment_l = wp.transform_point(tendon_body_pose(body_q, body_l), seg_attachment_l_local[seg])
+        attachment_r = wp.transform_point(tendon_body_pose(body_q, body_r), seg_attachment_r_local[seg])
         direction = attachment_r - attachment_l
         length = wp.length(direction)
         if length <= 1.0e-8:

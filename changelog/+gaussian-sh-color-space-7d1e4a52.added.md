@@ -1,0 +1,1 @@
+Add `Gaussian.sh_color_space` and a keyword-only `sh_color_space` argument to `Gaussian` and `Gaussian.create_from_ply` to declare whether spherical-harmonics radiance is sRGB or linear. `Gaussian.create_from_usd` and `ModelBuilder.add_usd` read it from the USD color space of the spherical-harmonics coefficient attribute, single or half precision, that they load.

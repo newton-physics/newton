@@ -69,7 +69,7 @@ class TendonGuide:
     """
 
     body: int
-    """Index of the attached rigid body; world-body index ``-1`` is not supported."""
+    """Index of the attached rigid body, or ``-1`` for the world."""
     guide_type: TendonGuideType = TendonGuideType.ANCHOR
     """Anchor, pinhole, or circular roller."""
     radius: float = 0.0

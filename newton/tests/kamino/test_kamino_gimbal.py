@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from itertools import product
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton import Contacts
-from newton._src.sim import JointType
 from newton._src.solvers.kamino._src.core.joints import JointDoFType
 from newton._src.solvers.kamino._src.kinematics.joints import (
     gimbal_reciprocal_axes,
@@ -125,8 +125,8 @@ def _build_fixture(
     configs = [
         newton.ModelBuilder.JointDofConfig(
             axis=axis,
-            target_pos=0.0,
-            target_vel=0.0,
+            target_q=0.0,
+            target_qd=0.0,
             target_ke=stiffness,
             target_kd=drive_damping,
             damping=passive_damping,
@@ -149,7 +149,7 @@ def _build_fixture(
     )
 
 
-def _make_solver(backend: str, model: newton.Model) -> SolverKamino | SolverMuJoCo:
+def _make_solver(backend: str, model: newton.Model, *, limit_compliance: bool = False) -> SolverKamino | SolverMuJoCo:
     """Create a configured collision-free conformance solver."""
     if backend == "kamino":
         config = SolverKamino.Config(
@@ -158,8 +158,11 @@ def _make_solver(backend: str, model: newton.Model) -> SolverKamino | SolverMuJo
             use_fk_solver=False,
             sparse_jacobian=True,
         )
-        config.constraints.alpha = 0.0
-        config.constraints.beta = 0.1
+        # Match alpha=0 and beta=0.1 at the rollout's 240 Hz timestep.
+        config.constraints.joint_recovery_time = 0.0
+        config.constraints.joint_recovery_speed = 0.0
+        config.constraints.limit_recovery_time = (1.0 / 240.0) * (1.0 / 0.1 - 1.0)
+        config.constraints.limit_compliance = limit_compliance
         config.padmm.max_iterations = 200
         config.padmm.primal_tolerance = 1.0e-6
         config.padmm.dual_tolerance = 1.0e-6
@@ -185,6 +188,7 @@ def _run(
     velocity_target: np.ndarray | None = None,
     steps: int = 1,
     record_trajectory: bool = True,
+    limit_compliance: bool = False,
     **fixture_kwargs,
 ) -> _Probe:
     """Run a D6 rollout and optionally retain each coordinate sample."""
@@ -212,7 +216,7 @@ def _run(
         values[fixture.qd_start : fixture.qd_start + 3] = velocity_target
         control.joint_target_qd.assign(values)
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    solver = _make_solver(backend, model)
+    solver = _make_solver(backend, model, limit_compliance=limit_compliance)
     contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=model.device) if backend == "mjwarp" else None
     q_slice = slice(fixture.q_start, fixture.q_start + 3)
     qd_slice = slice(fixture.qd_start, fixture.qd_start + 3)
@@ -296,24 +300,46 @@ class TestGimbal(unittest.TestCase):
         axes[qd_start + 1] = [1.0, 0.0, 0.0]
         model.joint_axis.assign(axes)
 
-        with self.assertRaisesRegex(ValueError, "universal and gimbal axes must be unit length and orthogonal"):
+        with self.assertRaisesRegex(
+            ValueError, "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
+        ):
             SolverKamino(model)
 
-    def test_from_newton_derives_gimbal_handedness(self):
-        """Derive the gimbal type from the orientation of its three axes."""
-        limits = np.zeros(3, dtype=np.float32)
-        right_handed = JointDoFType.from_newton(JointType.D6, 3, 3, (0, 3), limits, limits, np.eye(3, dtype=np.float32))
-        left_handed = JointDoFType.from_newton(
-            JointType.D6,
-            3,
-            3,
-            (0, 3),
-            limits,
-            limits,
-            np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-        )
-        self.assertEqual(right_handed, JointDoFType.GIMBAL)
-        self.assertEqual(left_handed, JointDoFType.GIMBAL_LEFT_HANDED)
+    def test_cartesian_rejects_invalid_axes(self):
+        """Reject three translational axes that are not orthonormal or form a left-handed set."""
+        cases = {
+            "right-handed": (1.0, None),
+            "left-handed": (-1.0, "three translational axes must form a right-handed set"),
+            "not orthogonal": (1.0, "Cartesian, and gimbal axes must be unit length and orthogonal"),
+        }
+        for name, (sign, error) in cases.items():
+            with self.subTest(name):
+                builder = newton.ModelBuilder()
+                inertia = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+                parent = builder.add_link(mass=1.0, inertia=inertia)
+                child = builder.add_link(mass=1.0, inertia=inertia)
+                root = builder.add_joint_fixed(-1, parent)
+                cartesian = builder.add_joint_d6(
+                    parent,
+                    child,
+                    linear_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=tuple(sign * c for c in axis))
+                        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+                    ],
+                )
+                builder.add_articulation([root, cartesian])
+                model = builder.finalize(device=self.default_device)
+                if name == "not orthogonal":
+                    qd_start = model.joint_qd_start.numpy()[cartesian]
+                    axes = model.joint_axis.numpy()
+                    axes[qd_start + 2] = axes[qd_start]
+                    model.joint_axis.assign(axes)
+                if error is None:
+                    solver = SolverKamino(model)
+                    self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], JointDoFType.CARTESIAN)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        SolverKamino(model)
 
     def test_chart_selects_nearest_equivalent_branch(self):
         """Select the equivalent Euler branch nearest the authored reference."""
@@ -441,28 +467,34 @@ class TestGimbal(unittest.TestCase):
         )
 
     def test_limits(self):
-        """Drive each D6 coordinate to its own position limit."""
+        """Drive each D6 coordinate to its own limit with rigid and compliant stops."""
         lower = np.array([-0.15, -0.25, -0.35], dtype=np.float32)
         upper = np.array([0.2, 0.3, 0.4], dtype=np.float32)
         target = np.array([0.6, -0.6, 0.6], dtype=np.float32)
         expected = np.where(target > 0.0, upper, lower)
-        for axes in (_RH_AXES, _LH_AXES):
-            for fixed_base in (True, False):
-                with self.subTest(axes=axes, fixed_base=fixed_base):
-                    probe = _run(
-                        "kamino",
-                        fixed_base,
-                        axes,
-                        self.default_device,
-                        position_target=target,
-                        stiffness=100.0,
-                        drive_damping=15.0,
-                        lower=lower,
-                        upper=upper,
-                        steps=50,
-                        record_trajectory=False,
-                    )
-                    np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
+        for axes, fixed_base in product((_RH_AXES, _LH_AXES), (True, False)):
+            with self.subTest(axes=axes, fixed_base=fixed_base):
+                trajectories = []
+                for limit_compliance in (False, True):
+                    with self.subTest(limit_compliance=limit_compliance):
+                        probe = _run(
+                            "kamino",
+                            fixed_base,
+                            axes,
+                            self.default_device,
+                            position_target=target,
+                            stiffness=100.0,
+                            drive_damping=15.0,
+                            lower=lower,
+                            upper=upper,
+                            limit_compliance=limit_compliance,
+                            steps=50,
+                        )
+                        trajectories.append(probe.q)
+                        np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
+                # Both laws reach the stops, but must differ above solver noise on every axis.
+                peak_difference = np.max(np.abs(trajectories[1][1:-1] - trajectories[0][1:-1]), axis=0)
+                self.assertGreater(float(np.min(peak_difference)), 5.0e-4)
 
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")

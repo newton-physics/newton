@@ -136,8 +136,9 @@ class RigidBodiesModel:
     """
     Per-body boolean (0/1) marking whether Kamino treats the body as immovable,
     either because it is physically massless (zero inverse mass and inverse
-    inertia in Newton) or because it is flagged
-    :attr:`newton.BodyFlags.KINEMATIC` / :attr:`newton.BodyFlags.PROXY`.
+    inertia in Newton) or because it is flagged :attr:`newton.BodyFlags.KINEMATIC`.
+    Dynamics solvers that simulate massless bodies only mark the
+    KINEMATIC bodies, see :func:`is_immovable_for_kamino`.
     Shape of ``(num_bodies,)``.
     """
 
@@ -289,17 +290,22 @@ def has_zero_inverse_inertia(inv_inertia: wp.mat33f) -> bool:
 
 
 @wp.func
-def is_immovable_for_kamino(inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32) -> bool:
+def is_immovable_for_kamino(
+    inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32, kinematic_only_immovable: wp.bool
+) -> bool:
     """Whether a body is treated as immovable by Kamino.
 
     A body is immovable if it is either physically massless (zero inverse mass
-    and zero inverse inertia) or flagged as externally driven via KINEMATIC or
-    PROXY. Its inverse mass and inertia are masked to zero in Kamino, so the
-    body neither responds to forces nor contributes to constraint dynamics.
+    and zero inverse inertia) or flagged as externally driven via KINEMATIC. Its
+    inverse mass and inertia are masked to zero in Kamino, so the body neither
+    responds to forces nor contributes to constraint dynamics. PROXY bodies are
+    simulated like any other body. Dynamics solvers that also simulate massless
+    bodies set ``kinematic_only_immovable``, so that only KINEMATIC bodies are
+    immovable.
     """
-    return (inv_mass <= 0.0 and has_zero_inverse_inertia(inv_inertia)) or (
-        (flags & (int(BodyFlags.KINEMATIC) | int(BodyFlags.PROXY))) != 0
-    )
+    if kinematic_only_immovable:
+        return (flags & int(BodyFlags.KINEMATIC)) != 0
+    return (inv_mass <= 0.0 and has_zero_inverse_inertia(inv_inertia)) or (flags & int(BodyFlags.KINEMATIC)) != 0
 
 
 @wp.func

@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot DR Legs
-#
-# Shows how to simulate DR Legs with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_robot_dr_legs --world-count 16
-#
-###########################################################################
+"""Example Robot DR Legs
+
+Shows how to simulate DR Legs with multiple worlds using SolverKamino.
+
+Success criteria:
+- A torso-free biped with complex leg linkages appears.
+- Right-drag its movable bodies: leg joints remain connected and the mechanism responds without
+  explosive motion.
+
+Runs:
+- `python -m newton.examples kamino_robot_dr_legs`
+- `python -m newton.examples kamino_robot_dr_legs --world-count 16`
+"""
 
 import warp as wp
 
@@ -101,7 +106,7 @@ class Example:
             self.model,
             dynamics_solver=self.dynamics_solver,
             sparse_dynamics=self.dynamics_solver == "dvi",
-            sparse_jacobian=self.dynamics_solver == "dvi",
+            sparse_jacobian=self.dynamics_solver in ("dvi", "lox"),
         )
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
@@ -234,7 +239,9 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        # TODO: Add some assertions here once we have a more meaningful test scenario
+        if self.dynamics_solver == "lox":
+            assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
 
     def _init_animation(self, model_asset: str, animation_asset: str):
         import numpy as np  # noqa: PLC0415
@@ -333,7 +340,7 @@ class Example:
         newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(
             "--dynamics-solver",
-            choices=("padmm", "dvi"),
+            choices=("padmm", "dvi", "lox"),
             default="padmm",
             help="Kamino dynamics solver to use.",
         )

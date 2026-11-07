@@ -9,7 +9,7 @@ import warp as wp
 import newton
 from newton._src.sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
 from newton._src.solvers.featherstone.kernels import reduce_mimic_forces, reduce_mimic_inertia
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_mismatch=False):
@@ -101,7 +101,7 @@ def _test_solver_mimic(test, device, solver_name):
                     )
                 generalized = False
             elif solver_name == "steel":
-                solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+                solver = newton.solvers.SolverSteel(model)
                 generalized = True
             elif solver_name == "vbd":
                 solver = newton.solvers.SolverVBD(
@@ -572,9 +572,7 @@ add_function_test(
     test_mimic_compound_d6_coordinate_gradients,
     devices=devices,
 )
-# Steel mimic rows need the CUDA-only matrix-free solve; its split solve rejects them.
-for device in get_cuda_test_devices():
-    add_function_test(TestSolverMimic, "test_steel_mimic", test_steel_mimic, devices=[device])
+add_function_test(TestSolverMimic, "test_steel_mimic", test_steel_mimic, devices=devices)
 
 
 if __name__ == "__main__":

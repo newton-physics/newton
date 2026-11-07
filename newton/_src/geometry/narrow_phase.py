@@ -12,7 +12,7 @@ import warp as wp
 from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_convex import ConvexQueryResult, create_write_convex_query_result
 from ..geometry.collision_core import (
-    ENABLE_TILE_BVH_QUERY,
+    MINKOWSKI_CORE_RADIUS,
     check_infinite_plane_bsphere_overlap,
     compute_bounding_sphere_from_aabb,
     compute_tight_aabb_from_support,
@@ -55,10 +55,15 @@ from ..geometry.contact_reduction_global import (
     EXPORT_REDUCED_CONTACTS_THREAD_BUDGET_MULTIPLIER,
     HASHTABLE_WARN_LOAD_PERCENT,
     GlobalContactReducer,
+    GroupReductionConfig,
+    create_export_group_contacts_kernel,
     create_export_reduced_contacts_kernel,
+    finish_group_frame_kernel,
     mesh_triangle_contacts_to_reducer_kernel,
     reduce_buffered_contacts_kernel,
     reduce_buffered_contacts_speculative_kernel,
+    register_group_contacts_kernel,
+    stage_contact_in_reducer,
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
@@ -318,13 +323,12 @@ def create_prepare_convex_pair(external_aabb: bool, speculative: bool = False):
 
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
-        small_radius = 0.0001
         if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
             radius_eff_a = geom_a.scale[0]
-            geom_a.scale[0] = small_radius
+            geom_a.scale[0] = MINKOWSKI_CORE_RADIUS
         if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
             radius_eff_b = geom_b.scale[0]
-            geom_b.scale[0] = small_radius
+            geom_b.scale[0] = MINKOWSKI_CORE_RADIUS
 
         margin_sum = margin_a + margin_b
         eps = 1.0e-4
@@ -1532,17 +1536,18 @@ def create_narrow_phase_kernels_gjk_mpr_split(
             # refinements the back.
             num_distance = wp.min(gjk_work_items.shape[0], gjk_work_count[0])
             num_work_items = num_distance
-            # A refinement's box-hull certificate loops over the whole hull.
-            # Few pairs need it, so each takes a thread block that splits that
-            # loop; the first thread runs the remaining serial refinement.
+            # Large accelerated hulls benefit from a cooperative certificate.
+            # Keep small exhaustive-support pairs independent across lanes so
+            # dense refinement queues retain their full pair parallelism.
             lane = int(0)
             first = tid
             stride = total_num_threads
             if wp.static(refine_overlap):
                 num_work_items = wp.min(gjk_work_items.shape[0] - num_distance, gjk_work_count[1])
-                lane = tid % wp.block_dim()
-                first = tid / wp.block_dim()
-                stride = total_num_threads / wp.block_dim()
+                if wp.static(accelerated_support):
+                    lane = tid % wp.block_dim()
+                    first = tid / wp.block_dim()
+                    stride = total_num_threads / wp.block_dim()
             for work_index in range(first, num_work_items, stride):
                 pair_index = gjk_work_items[work_index]
                 witnesses_valid = False
@@ -1601,19 +1606,20 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                         certificate_ready = False
                         certificate_normal = wp.vec3(0.0)
                         certificate_depth = float(0.0)
-                        if not separated_pair:
-                            certificate_ready, certificate_normal, certificate_depth = wp.static(
-                                solve_mpr.cooperative_certificate
-                            )(
-                                query.geom_a,
-                                query.geom_b,
-                                query.relative_orientation_b,
-                                query.relative_position_b,
-                                provider,
-                                pending.normal,
-                                lane,
-                                wp.block_dim(),
-                            )
+                        if wp.static(accelerated_support):
+                            if not separated_pair:
+                                certificate_ready, certificate_normal, certificate_depth = wp.static(
+                                    solve_mpr.cooperative_certificate
+                                )(
+                                    query.geom_a,
+                                    query.geom_b,
+                                    query.relative_orientation_b,
+                                    query.relative_position_b,
+                                    provider,
+                                    pending.normal,
+                                    lane,
+                                    wp.block_dim(),
+                                )
                         if lane == 0:
                             penetration = float(0.0)
                             if separated_pair:
@@ -2600,6 +2606,7 @@ class NarrowPhase:
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative: bool = False,
         contact_writer_supports_speculative: bool = False,
+        _group_reduction: GroupReductionConfig | None = None,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -2718,6 +2725,11 @@ class NarrowPhase:
             )
         if speculative and hydroelastic_sdf is not None:
             raise NotImplementedError("Speculative contact generation does not yet support hydroelastic SDF contacts")
+        # Body-pair reduction, set only by CollisionPipeline: primitive and convex contacts are
+        # staged in a group-mode reducer of capacity ``contact_max`` and only its winners are written.
+        if _group_reduction is not None and hydroelastic_sdf is not None:
+            raise ValueError("group reduction does not support hydroelastic contacts")
+        self._group_reduction = _group_reduction
         device_obj = wp.get_device(device)
         # Contact reduction requires either meshes or heightfields (the
         # mesh/heightfield-triangle path feeds the global reducer, so
@@ -2754,6 +2766,8 @@ class NarrowPhase:
             writer_func = _write_contact_simple_speculative if speculative else write_contact_simple
         else:
             writer_func = contact_writer_warp_func
+        # With group reduction, primitive and convex contacts are staged; its export calls the writer.
+        contact_func = writer_func if _group_reduction is None else stage_contact_in_reducer
 
         # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
         # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
@@ -2792,7 +2806,7 @@ class NarrowPhase:
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
         self.primitive_kernel = create_narrow_phase_primitive_kernel(
-            writer_func,
+            contact_func,
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
@@ -2805,7 +2819,7 @@ class NarrowPhase:
             # (skip axial shape rolling stabilization) to reduce GPU i-cache pressure
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
                 self.external_aabb,
-                writer_func,
+                contact_func,
                 support_func=support_map_lean_accelerated if convex_support_acceleration else support_map_lean,
                 post_process_contact=post_process_minkowski_only,
                 speculative=speculative,
@@ -2813,7 +2827,7 @@ class NarrowPhase:
         else:
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
                 self.external_aabb,
-                writer_func,
+                contact_func,
                 support_func=support_map_accelerated if convex_support_acceleration else support_map,
                 speculative=speculative,
             )
@@ -2831,7 +2845,7 @@ class NarrowPhase:
                 self.narrow_phase_manifold_kernel,
             ) = create_narrow_phase_kernels_gjk_mpr_split(
                 self.external_aabb,
-                writer_func,
+                contact_func,
                 support_func=split_support,
                 post_process_contact=split_post_process,
                 speculative=speculative,
@@ -2908,6 +2922,16 @@ class NarrowPhase:
         # Create global contact reduction kernels for mesh/heightfield-triangle
         # contacts (mirror the predicate used to gate ``self.reduce_contacts``
         # above so heightfield-only scenes also get the reducer allocated).
+        self.export_group_contacts_kernel = None
+        self.group_contact_reducer = None
+        if _group_reduction is not None:
+            self.export_group_contacts_kernel = create_export_group_contacts_kernel(writer_func)
+            self.group_contact_reducer = GlobalContactReducer(
+                _group_reduction.staging_capacity,
+                device=device,
+                deterministic=deterministic,
+                group_reduction=_group_reduction,
+            )
         if self.reduce_contacts and (has_meshes or has_heightfields):
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
@@ -3307,6 +3331,8 @@ class NarrowPhase:
         shape_angular_velocity: wp.array[wp.vec3] | None = None,
         collision_update_dt: float = 0.0,
         max_speculative_extension: float = 0.0,
+        body_q: wp.array[wp.transform] | None = None,
+        shape_body: wp.array[wp.int32] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -3359,18 +3385,23 @@ class NarrowPhase:
                 used to cull back-facing mesh triangles and seed triangle contacts. If
                 ``None``, convex-mesh volume centroids are computed on each launch.
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
+                Required with ``shape_edge_range`` for mesh edge contacts; omitting these
+                arrays disables mesh edge contacts rather than extracting edges from meshes.
             mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
                 unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
-                Layout matches :attr:`~newton.Model.mesh_edge_centers`.
+                Each radius is the length of the corresponding unscaled half-vector.
             mesh_edge_halves: Packed precomputed mesh edge half-vectors (xyz) in unscaled mesh
-                coordinates [m] and endpoint-ownership codes (w). Layout matches
-                :attr:`~newton.Model.mesh_edge_halves`.
+                coordinates [m] and endpoint-ownership codes (w). Set the ownership code to zero
+                to allow both endpoints.
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
+                Required with ``mesh_edge_indices`` for mesh edge contacts.
             hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
             shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
             collision_update_dt: Collision prediction horizon [s].
             max_speculative_extension: Maximum speculative clearance [m].
+            body_q: Body poses, required with group reduction (cells are measured from a body).
+            shape_body: Per-shape body index, required with group reduction.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -3416,6 +3447,17 @@ class NarrowPhase:
         ):
             self._counter_array.zero_()
 
+        group_reducer_data = None
+        contact_writer_data = writer_data
+        if self._group_reduction is not None:
+            if body_q is None or shape_body is None:
+                raise ValueError("NarrowPhase with group reduction requires body_q and shape_body")
+            # Primitive and convex contacts are staged, so clear before the primitive stage writes.
+            self.group_contact_reducer.clear_active()
+            group_reducer_data = self.group_contact_reducer.get_data_struct()
+            group_reducer_data.shape_gap = shape_base_gap
+            contact_writer_data = group_reducer_data
+
         # Stage 1: Launch primitive kernel for fast analytical collisions
         # This handles sphere-sphere, sphere-capsule, capsule-capsule, plane-sphere, plane-capsule
         # and routes remaining pairs to gjk_candidate_pairs and mesh buffers
@@ -3438,7 +3480,7 @@ class NarrowPhase:
                 shape_sdf_index,
                 shape_edge_range,
                 self._shape_unit_scale_sdf,
-                writer_data,
+                contact_writer_data,
                 self.total_num_threads,
             ],
             outputs=[
@@ -3491,7 +3533,7 @@ class NarrowPhase:
                 shape_collision_radius,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
-                writer_data,
+                contact_writer_data,
             )
 
         # Skip mesh/heightfield kernels when no meshes or heightfields are present
@@ -3553,8 +3595,7 @@ class NarrowPhase:
                 ]
             else:
                 midphase_kernel = narrow_phase_find_mesh_triangle_overlaps_kernel
-                second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
-                midphase_dim = [self.num_tile_blocks, second_dim]
+                midphase_dim = [self.num_tile_blocks, self.tile_size_mesh_convex]
                 midphase_inputs = [
                     shape_types,
                     shape_transform,
@@ -3911,6 +3952,57 @@ class NarrowPhase:
         if main_stream is not None:
             main_stream.wait_event(self._convex_stream.record_event(self._convex_events[1]))
 
+        if self._group_reduction is not None:
+            reducer_data = group_reducer_data
+            group_data = self.group_contact_reducer.get_group_data_struct(body_q, shape_body)
+            # Both passes grid-stride over the staged contacts, which never exceed the staging capacity.
+            group_threads = min(self.total_num_threads, max(self.group_contact_reducer.capacity, 1))
+            wp.launch(
+                kernel=register_group_contacts_kernel,
+                dim=group_threads,
+                inputs=[
+                    reducer_data,
+                    group_data,
+                    shape_types,
+                    shape_data,
+                    shape_base_gap,
+                    shape_transform,
+                    shape_linear_velocity,
+                    shape_angular_velocity,
+                    collision_update_dt,
+                    max_speculative_extension,
+                    int(self.speculative),
+                    writer_data.contact_count,
+                    group_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+                record_tape=False,
+            )
+            wp.launch(
+                kernel=self.export_group_contacts_kernel,
+                dim=group_threads,
+                inputs=[
+                    reducer_data,
+                    group_data,
+                    shape_types,
+                    shape_data,
+                    shape_base_gap,
+                    writer_data,
+                    group_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+                record_tape=False,
+            )
+            wp.launch(
+                kernel=finish_group_frame_kernel,
+                dim=1,
+                inputs=[group_data, reducer_data, writer_data.contact_count],
+                device=device,
+                record_tape=False,
+            )
+
         # Verify no collision pipeline buffers overflowed
         if self.verify_buffers:
             if self.global_contact_reducer is not None:
@@ -4057,6 +4149,16 @@ class NarrowPhase:
             shape_interior_point: Optional scaled local-space point inside each shape [m],
                 used to cull back-facing mesh triangles and seed triangle contacts. If
                 ``None``, convex-mesh volume centroids are computed on each launch.
+            mesh_edge_indices: Packed mesh edge vertex pairs, passed through ``kwargs``.
+                Required with ``shape_edge_range`` for mesh edge contacts; omitting either
+                disables mesh edge contacts.
+            shape_edge_range: Per-shape (start, count) into ``mesh_edge_indices``,
+                passed through ``kwargs``.
+            mesh_edge_centers: Optional packed unscaled edge centers (xyz) and half-lengths
+                (w) [m], passed through ``kwargs``. Omit with ``mesh_edge_halves`` to read
+                endpoints from meshes using the supplied indices and ranges.
+            mesh_edge_halves: Optional packed unscaled edge half-vectors (xyz) [m] and
+                endpoint-ownership codes (w), passed through ``kwargs``. Zero allows both endpoints.
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
@@ -4069,6 +4171,8 @@ class NarrowPhase:
             max_speculative_extension: Maximum speculative clearance [m].
             device: Device to launch on
         """
+        if self._group_reduction is not None:
+            raise ValueError("NarrowPhase with group reduction requires launch_custom_write()")
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
 

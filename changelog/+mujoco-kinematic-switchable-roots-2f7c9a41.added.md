@@ -1,0 +1,1 @@
+Add `kinematic_switchable_roots` to `SolverMuJoCo`. Passing `False` gives only roots that are kinematic at solver creation the weld needed to switch them at runtime, so the compiled MuJoCo model has no unused welds.

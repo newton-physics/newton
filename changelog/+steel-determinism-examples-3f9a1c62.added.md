@@ -1,0 +1,1 @@
+Add the `steel_determinism_arms` example, which steps one scene in two default and two `SolverSteel(deterministic=wp.DeterministicMode.RUN_TO_RUN)` copies and overlays the two copies of each mode, so diverging copies show as ghosts.
