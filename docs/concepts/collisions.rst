@@ -2609,7 +2609,8 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   contact — no extra state is kept for them.  Unmatched contacts pass
   through with their fresh narrow-phase geometry.  Useful for stacking
   scenarios where small frame-to-frame geometric jitter on persistent
-  contacts degrades stability.
+  contacts degrades stability.  Sticky mode also keeps rigid-soft contact
+  points; see :ref:`Sticky rigid-soft contacts <sticky-soft-contacts>`.
 
   .. experimental::
 
@@ -2669,7 +2670,8 @@ as motion on both sides of the contact, not just one.
   between the previous and current contact midpoints for a match.  Contacts
   that moved more than this between frames are considered broken.  In sticky
   mode, this also bounds each saved witness's distance from its fresh contact
-  point under the current body transforms.  Defaults to ``0.0005`` m.
+  point under the current body transforms, and the tangential slip between a
+  rigid-soft record's saved soft and body points.  Defaults to ``0.0005`` m.
 - ``contact_matching_normal_dot_threshold`` — minimum dot product between old
   and new contact normals.  Below this the contact is reported as broken even
   if the key and position match.
@@ -2690,12 +2692,49 @@ per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
 
+.. _sticky-soft-contacts:
+
+**Sticky rigid-soft contacts**
+
+In sticky mode the pipeline also matches each rigid-soft record to the previous
+pass's record with the same key: its soft feature
+(:attr:`Contacts.soft_contact_indices`), its shape, and, for full-surface mesh
+records, its mesh feature pair.  A matched record keeps its previous soft-side
+material point (:attr:`Contacts.soft_contact_barycentric`) and body-frame point
+(:attr:`Contacts.soft_contact_body_pos`) while the two still touch and have
+slipped apart tangentially by at most ``contact_matching_pos_threshold``, and
+the body point lies within that distance of the fresh contact plane.  A record
+that moves to an opposing wall of the same mesh therefore starts over.  Along
+the surface the test compares the saved points with each other rather than with
+the fresh ones, because a soft edge or face lying flat on a surface has no
+unique closest point.
+The normal stays fresh.  Records on a surface with surface velocity, and all
+records of a pipeline with ``requires_grad``, keep fresh points.  The pipeline
+saves a buffer's records as its consumers left them before the next pass, so
+each :class:`~newton.Contacts` buffer replays its own records.  It replays only
+records that it wrote itself, so a buffer last filled by another pipeline starts
+from fresh points.  A reset that selects the world of the particle or of the
+shape restarts the record in every buffer.
+
+:class:`~newton.solvers.SolverVBD` measures body-particle friction slip as the
+drift between the kept points, so soft bodies hold static tangential loads that
+the regularized friction law would otherwise let them creep under.  After each
+step it drags the kept body points to within ``friction_epsilon * dt`` of their
+soft points: drift beyond that within a step is sliding, and friction then does
+not pull a body back once it stops.  Other solvers
+read the kept points as contact geometry; their contact point may then lag the
+closest point by up to the threshold.
+
 **Memory**
 
 Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
-``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
+``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 48 bytes
+per ``soft_contact_max`` slot (60 with full-surface mesh records) and 16 bytes per
+particle for rigid-soft records.  Every :class:`~newton.Contacts` buffer carries
+4 bytes per ``soft_contact_max`` slot for the reset stamp of its records.
+``"disabled"`` allocates no matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,
 saving 48 bytes per ``rigid_contact_max`` slot. This more than offsets the
