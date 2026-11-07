@@ -5371,7 +5371,7 @@ def _torsional_friction_holds_against_stiff_drive(test, device):
 
 
 def _collect_rigid_contact_forces_reports_solved_angular_reaction(test, device):
-    """Verify post-solve angular reactions are not projected a second time."""
+    """Verify reporting preserves solved angular reactions only on active rows."""
     dt = 0.001
     inertia = 0.01
     builder = newton.ModelBuilder()
@@ -5411,6 +5411,16 @@ def _collect_rigid_contact_forces_reports_solved_angular_reaction(test, device):
     test.assertGreater(float(np.linalg.norm(expected)), 0.01)
     np.testing.assert_allclose(sign * solver.body_body_contact_lambda_angular.numpy()[0], expected, atol=1.0e-6)
     np.testing.assert_allclose(sign * solver._rigid_contact_pure_torque_on_body1.numpy()[0], expected, atol=1.0e-6)
+
+    # Retained multipliers must not produce a couple after the primal row releases.
+    test.assertGreater(float(np.linalg.norm(solver.body_body_contact_lambda.numpy()[0])), 0.0)
+    separated_q = state_out.body_q.numpy()
+    separated_q[body, 2] += 1.0
+    state_out.body_q.assign(separated_q)
+    _, _, _, _, force, _ = solver.collect_rigid_contact_forces(state_out.body_q, body_q_prev, contacts, dt)
+    np.testing.assert_array_equal(force.numpy()[0], np.zeros(3))
+    np.testing.assert_array_equal(solver._rigid_contact_pure_torque_on_body1.numpy()[0], np.zeros(3))
+    np.testing.assert_allclose(sign * solver.body_body_contact_lambda_angular.numpy()[0], expected, atol=1.0e-6)
 
 
 def _vbd_proxy_harvest_adds_pure_contact_torque(test, device):

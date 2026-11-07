@@ -6165,10 +6165,10 @@ def _evaluate_body_body_contact_slot(
         friction_c0,
     )
 
-    # Report the solved angular multiplier, which the final dual update already projected, in place of
-    # the trial couple re-evaluated at these poses (torque_0 includes the trial couple's reaction).
+    # For active contacts, report the solved angular multiplier in place of the trial couple:
+    # the final dual update already projected it, and torque_0 includes the trial reaction.
     pure_torque_1 = wp.vec3(0.0)
-    if contact_compliant_alm == 1:
+    if contact_compliant_alm == 1 and wp.dot(force_1, contact_normal) > 0.0:
         pure_torque_1 = contact_lambda_angular[contact_idx]
     torque_0 += trial_pure_torque_1 - pure_torque_1
     return b0, b1, point0_world, point1_world, force_0, torque_0, force_1, pure_torque_1
