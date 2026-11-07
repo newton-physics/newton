@@ -86,7 +86,8 @@ def _frame_shape_bounds(
     layer: wp.transform,
     bounds: wp.array2d[float],
 ) -> None:
-    shape = indices[wp.tid()]
+    item = wp.tid()
+    shape = indices[item]
     if types[shape] == int(GeoType.PLANE):
         return
     pose = local[shape]
@@ -98,9 +99,9 @@ def _frame_shape_bounds(
         offset = offsets[world]
     for corner in range(8):
         point = wp.vec3(
-            upper[shape][0] if corner & 1 else lower[shape][0],
-            upper[shape][1] if corner & 2 else lower[shape][1],
-            upper[shape][2] if corner & 4 else lower[shape][2],
+            upper[item][0] if corner & 1 else lower[item][0],
+            upper[item][1] if corner & 2 else lower[item][1],
+            upper[item][2] if corner & 4 else lower[item][2],
         )
         point = wp.transform_point(layer, wp.transform_point(pose, point) + offset)
         for axis in range(3):
@@ -318,6 +319,42 @@ class ViewerWorkspace:
             return False
         return True
 
+    def notify_model_changed(self, model: Model, flags: ModelFlags | int) -> None:
+        """Refresh shape inspection after an explicit Model change notification.
+
+        Geometry variants retain shape indices but can replace their resource
+        children. Preserve scene selection and follow mode; if a selected
+        resource disappears, select its owning shape instead. Invalidate only
+        existing caches, leaving unopened worlds and resource payloads lazy.
+        """
+        if not flags & (ModelFlags.SHAPE_TYPE_AND_SOURCE | ModelFlags.SHAPE_PROPERTIES):
+            return
+        # Display modes cover all layers, even when the inspector shows another.
+        self.viewport_controls.invalidate_shapes()
+        if model is not self.model:
+            return
+        self._cache.clear()
+        self._live_cache.clear()
+        self._frame_bounds_buffers = None
+        self._selection_binding_key = None
+        self._navigation = None
+        if inspector := getattr(self, "property_inspector", None):
+            inspector.clear()
+        if self.tree is None:
+            return
+        removed = self.tree.refresh_shapes()
+        if removed.intersection(self.selection):
+
+            def redirect(key: TreeKey) -> TreeKey:
+                """Keep the spatial owner when its resource no longer exists."""
+                return ("shape", self.tree.resources.shape_owner(key)) if key in removed else key
+
+            selected = redirect(self.selected)
+            selection = {redirect(key) for key in self.selection}
+            # Reuse normal selection bookkeeping while retaining other selections.
+            self.selection = selection - {selected}
+            self.select(selected, toggle=True)
+
     def render_example(self) -> None:
         """Capture a live frame or render the selected snapshot through the example."""
         if self.history is None:
@@ -499,13 +536,48 @@ class ViewerWorkspace:
         shapes = self._selection_shapes
         offsets = self.viewer.world_offsets
         if shapes:
-            if self._frame_bounds_buffers is None:
+            batches = getattr(self.viewer, "_shape_to_batch", None)
+            frame_key = (id(batches), shapes)
+            if self._frame_bounds_buffers is None or getattr(self, "_frame_bounds_key", None) != frame_key:
+                lower = np.empty((len(shapes), 3), dtype=np.float32)
+                upper = np.empty_like(lower)
+                missing = list(range(len(shapes)))
+                displayed_bounds = getattr(self.viewer, "_get_shape_framing_bounds", None)
+                if displayed_bounds is not None and batches is not None:
+                    # Cache the selected display extents once. Following a moving
+                    # object only reduces its current poses on the device.
+                    local_bounds = {}
+                    missing = []
+                    slots = self.viewer._shape_to_slot
+                    for item, shape in enumerate(shapes):
+                        batch = batches[shape]
+                        if batch is None:
+                            missing.append(item)
+                            continue
+                        if batch not in local_bounds:
+                            local_bounds[batch] = displayed_bounds(batch)
+                        bounds_for_batch = local_bounds[batch]
+                        if bounds_for_batch is not None:
+                            slot = int(slots[shape] - slots[batch.model_shapes[0]])
+                            lower[item], upper[item] = (bound[slot] for bound in bounds_for_batch)
+                        else:
+                            missing.append(item)
+                if missing:
+                    # Unrendered shapes retain the model-bounds fallback. Restrict
+                    # its host readback to the range needed by this selection.
+                    indices = np.asarray(shapes)[missing]
+                    start, end = int(indices.min()), int(indices.max()) + 1
+                    lower[missing] = model.shape_collision_aabb_lower[start:end].numpy()[indices - start]
+                    upper[missing] = model.shape_collision_aabb_upper[start:end].numpy()[indices - start]
                 self._frame_bounds_buffers = (
                     wp.array(shapes, dtype=int, device=model.device),
                     wp.empty((2, 3), dtype=float, device=model.device),
                     wp.empty(0, dtype=wp.vec3, device=model.device),
+                    wp.array(lower, dtype=wp.vec3, device=model.device),
+                    wp.array(upper, dtype=wp.vec3, device=model.device),
                 )
-            indices, bounds, empty_offsets = self._frame_bounds_buffers
+                self._frame_bounds_key = frame_key
+            indices, bounds, empty_offsets, lower, upper = self._frame_bounds_buffers
             bounds[0:1].fill_(1e30)
             bounds[1:2].fill_(-1e30)
             wp.launch(
@@ -513,8 +585,8 @@ class ViewerWorkspace:
                 dim=len(shapes),
                 inputs=[
                     indices,
-                    model.shape_collision_aabb_lower,
-                    model.shape_collision_aabb_upper,
+                    lower,
+                    upper,
                     model.shape_type,
                     model.shape_body,
                     model.shape_transform,

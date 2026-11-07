@@ -1,0 +1,1 @@
+Speed up `SolverSteel` contact torsion in worlds with many dense rows: each matrix-free sweep visits only a torsion group's member contacts instead of scanning every dense row for every torsion row, with bitwise identical results. Dense-row capacities whose member lists would not fit in the solve kernel's static shared memory keep the full scan. No migration is required.

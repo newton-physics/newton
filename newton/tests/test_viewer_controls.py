@@ -34,8 +34,9 @@ from newton._src.viewer.gui.properties import (
 )
 from newton._src.viewer.gui.timeline import TimelineView
 from newton._src.viewer.gui.viewer_gui import ViewerGui
-from newton._src.viewer.gui.widgets import PhysicsWidgets
+from newton._src.viewer.gui.widgets import PhysicsWidgets, PropertyEdit
 from newton._src.viewer.gui.workspace import ViewerWorkspace
+from newton._src.viewer.viewer_attributes import AttributeRows
 from newton._src.viewer.viewer_bindings import InspectionBindings
 from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
 from newton._src.viewer.viewer_gl import ViewerGL
@@ -43,6 +44,18 @@ from newton._src.viewer.viewer_history import FrameHistory
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
 from newton.tests.unittest_utils import get_test_devices, import_pyglet_window, patch_sys_module
+
+
+@wp.kernel
+def _scale_history_display(
+    body_q: wp.array[wp.transform],
+    particle_q: wp.array[wp.vec3],
+    display_body_q: wp.array[wp.transform],
+    display_particle_q: wp.array[wp.vec3],
+) -> None:
+    i = wp.tid()
+    display_body_q[i] = wp.transform(wp.transform_get_translation(body_q[i]) * 0.01, wp.quat_identity())
+    display_particle_q[i] = particle_q[i] * 0.01
 
 
 class TestViewerUI(unittest.TestCase):
@@ -67,6 +80,150 @@ class TestViewerUI(unittest.TestCase):
         self.ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
         self.ui.is_available = True
         self.ui._frame_time = None
+
+    def test_custom_joint_property_storage(self) -> None:
+        """Native editors honor custom owners, flattened rows, and logical joint indices."""
+        ui = self.ui.imgui
+        self.ui.dpi_scale = 1.0
+        self.ui.io.mouse_double_click_time = 0.0
+        builder = newton.ModelBuilder()
+        for i in range(4):
+            body = builder.add_link(mass=1, inertia=wp.mat33(np.eye(3)))
+            joint = builder.add_joint_rod(-1, body) if i == 3 else builder.add_joint_revolute(-1, body)
+            if i < 2:
+                builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        for name, frequency, width in (
+            ("joint_q", Frequency.JOINT_COORD, 1),
+            ("joint_qd", Frequency.JOINT_DOF, 1),
+            ("offset", Frequency.JOINT_DOF, 1),
+            ("samples", Frequency.JOINT_DOF, 2),
+            ("targets", Frequency.JOINT_DOF, 2),
+        ):
+            count = model._attribute_frequency_count(frequency)
+            references = Frequency.BODY if name == "targets" else None
+            values = (
+                np.arange(count * width, dtype=np.int32) % model.body_count
+                if references is not None
+                else np.arange(count * width, dtype=np.float32) + 10
+            )
+            model.add_attribute(
+                name,
+                wp.array(values, device="cpu"),
+                frequency,
+                Assignment.STATE,
+                namespace="probe",
+                references=references,
+            )
+            if width > 1:
+                model._set_attribute_spec(
+                    f"probe:{name}",
+                    model.AttributeSpec(frequency, Assignment.STATE, row_width=width, references=references),
+                )
+        state = model.state()
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model = model
+        ws.viewer = SimpleNamespace(is_paused=lambda: True, _last_state=state)
+        ws.example = SimpleNamespace(state_0=state)
+        ws.history = ws._undo = ws._drag_undo = None
+        ws._cache, ws._live_cache, ws._drafts = {}, {}, {}
+        ws.gui = SimpleNamespace(ui=self.ui)
+        ws.widgets = widgets = PhysicsWidgets(ws.gui)
+        ws.tree = ModelTree(model)
+        inspector = PropertyInspector(ws)
+        number = widgets.number
+        core_q, core_qd, body_q = (
+            state.joint_q.numpy().copy(),
+            state.joint_qd.numpy().copy(),
+            state.body_q.numpy().copy(),
+        )
+        rows = []
+
+        def capture_number(label: str, value: float, **kwargs: object) -> PropertyEdit:
+            edit = number(label, value, **kwargs)
+            lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
+            rows.append((value, kwargs.get("editable", False), ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)))
+            return edit
+
+        for case, (name, joints) in enumerate(
+            (
+                ("joint_q", [0]),
+                ("joint_qd", [0]),
+                ("joint_q", [0, 1]),
+                ("joint_qd", [0, 1]),
+                ("offset", [0]),
+                ("offset", [2]),  # Unarticulated joints still own writable custom state.
+                ("offset", [3]),  # Rod material state is independent of forward kinematics.
+                ("samples", [1]),
+                ("samples", [0, 1]),  # Exercise the compact page prefetch path too.
+                ("samples", [3]),
+                ("targets", [3]),
+            )
+        ):
+            with self.subTest(name=name, joints=joints):
+                ws.selected = ("joint", joints[-1])
+                ws.selection = {("joint", joint) for joint in joints}
+                qualified = f"probe:{name}"
+                spec = model._attribute_spec(qualified)
+                array = getattr(state.probe, name)
+                original = array.numpy().copy()
+                offsets = model.joint_q_start if spec.frequency == Frequency.JOINT_COORD else model.joint_qd_start
+                spans = offsets.numpy()
+                expected = np.concatenate(
+                    [original[spans[j] * spec.row_width : spans[j + 1] * spec.row_width] for j in joints]
+                )
+                domain = AttributeRows(model, spec.frequency, joints, joints=True)
+
+                def draw(
+                    case: int = case,
+                    field: tuple[AttributeRows, str, newton.Model.AttributeSpec, object, str, wp.array] = (
+                        domain,
+                        qualified,
+                        spec,
+                        state.probe,
+                        name,
+                        array,
+                    ),
+                ) -> None:
+                    rows.clear()
+                    self.ui.begin_frame()
+                    ui.set_next_window_pos((0, 0))
+                    ui.set_next_window_size((620, 460))
+                    ui.begin("##custom_joint_fields", flags=ui.WindowFlags_.no_title_bar)
+                    ui.push_id(case)
+                    with patch.object(widgets, "number", capture_number):
+                        inspector._fields([field], Assignment.STATE)
+                    ui.pop_id()
+                    ui.end()
+                    ui.end_frame()
+
+                draw()
+                with patch.object(widgets, "compound", wraps=widgets.compound) as compounds:
+                    draw()
+                np.testing.assert_array_equal([row[0] for row in rows], expected)
+                self.assertTrue(all(row[1] == (spec.references is None) for row in rows))
+                if spec.row_width > 1 and joints == [3]:
+                    labels = [call.args[0] for call in compounds.call_args_list]
+                    for dof in range(int(spans[3]), int(spans[4])):
+                        self.assertIn(f"joint dof {dof}", labels)
+                if spec.references is not None:
+                    continue
+                x, y = rows[0][2]
+                self.ui.io.add_mouse_pos_event(x, y)
+                draw()
+                self.ui.io.add_mouse_button_event(0, True)
+                draw()
+                self.ui.io.add_mouse_pos_event(x + 20, y)
+                draw()
+                self.ui.io.add_mouse_button_event(0, False)
+                draw()
+                self.assertFalse(np.array_equal(array.numpy(), original))
+                np.testing.assert_array_equal(state.joint_q.numpy(), core_q)
+                np.testing.assert_array_equal(state.joint_qd.numpy(), core_qd)
+                np.testing.assert_array_equal(state.body_q.numpy(), body_q)
+                self.assertIs(ws._undo[0], state.probe)
+                self.assertTrue(ws.apply_edit(*ws._undo[:4], joint_index=ws._undo[4], save_undo=False))
+                np.testing.assert_array_equal(array.numpy(), original)
 
     def test_timeline_next_steps_at_live_end(self) -> None:
         """The real next-frame button traverses history, then requests live physics."""
@@ -1133,6 +1290,97 @@ class TestViewerProperties(unittest.TestCase):
                 self.assertIs(example.control, live_control)
                 np.testing.assert_array_equal(live_state.probe.sample.numpy(), [7.0])
                 np.testing.assert_array_equal(live_control.probe.drive.numpy(), [11.0])
+
+    def test_history_auxiliary_display_states(self) -> None:
+        """Replay mixed/body-only display buffers without null GPU outputs or live-state mutations."""
+        builder = newton.ModelBuilder()
+        builder.add_body(xform=wp.transform(wp.vec3(100, 0, 0), wp.quat_identity()))
+        builder.add_particle(wp.vec3(0, 100, 0), wp.vec3(0), 1.0)
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                model.add_attribute(
+                    "sample", wp.full(1, 3.0, device=device), Frequency.ONCE, Assignment.STATE, namespace="probe"
+                )
+                example = SimpleNamespace(
+                    viewer=SimpleNamespace(model=model),
+                    state_0=model.state(),
+                    state_1=model.state(),
+                    viz_state=model.state(),
+                    contact_state=model.state(),
+                    body_display=newton.State(),
+                    shared_particles=model.state(),
+                    sim_time=0.0,
+                )
+                example.body_display.body_q = wp.clone(example.state_0.body_q)
+                example.shared_particles.particle_q = example.viz_state.particle_q
+                example.viz_state.solver_scratch = wp.zeros(1, device=device)
+                example.primary_alias, example.alternate_alias = example.state_0, example.state_1
+                example.viz_alias, example.contact_alias = example.viz_state, example.contact_state
+                originals = {name: value for name, value in vars(example).items() if isinstance(value, newton.State)}
+                history = FrameHistory(example)
+                history.capture()
+                example.state_0.body_q.fill_(wp.transform(wp.vec3(200, 0, 0), wp.quat_identity()))
+                example.state_0.particle_q.fill_(wp.vec3(0, 200, 0))
+                example.viz_state.probe.sample.fill_(7.0)
+                example.sim_time = 1.0
+                history.capture()
+                history.select(0)
+
+                def render(
+                    *, example: SimpleNamespace = example, device: wp.Device = device, fail: bool = False
+                ) -> None:
+                    # Fail safely on missing output buffers before launching a
+                    # kernel: passing null destinations would poison CUDA.
+                    self.assertIsNotNone(example.viz_state.body_q)
+                    self.assertIsNotNone(example.viz_state.particle_q)
+                    self.assertIsNotNone(example.body_display.body_q)
+                    self.assertIsNotNone(example.shared_particles.body_q)
+                    self.assertIs(example.primary_alias, example.state_0)
+                    self.assertIs(example.alternate_alias, example.state_1)
+                    self.assertIs(example.viz_alias, example.viz_state)
+                    self.assertIs(example.contact_alias, example.contact_state)
+                    self.assertFalse(hasattr(example.viz_state, "solver_scratch"))
+                    np.testing.assert_array_equal(example.viz_state.probe.sample.numpy(), [3])
+                    np.testing.assert_array_equal(example.contact_state.probe.sample.numpy(), [3])
+                    wp.launch(
+                        _scale_history_display,
+                        dim=1,
+                        inputs=[example.state_0.body_q, example.state_0.particle_q],
+                        outputs=[example.viz_state.body_q, example.viz_state.particle_q],
+                        device=device,
+                    )
+                    wp.copy(example.body_display.body_q, example.viz_state.body_q)
+                    np.testing.assert_allclose(example.viz_state.body_q.numpy()[0, :3], [1, 0, 0])
+                    np.testing.assert_allclose(example.viz_state.particle_q.numpy()[0], [0, 1, 0])
+                    if fail:
+                        raise RuntimeError("display callback failed")
+
+                example.render = render
+                history.render()
+                example.render = lambda render=render: render(fail=True)
+                with self.assertRaisesRegex(RuntimeError, "display callback failed"):
+                    history.render()
+                for name, value in originals.items():
+                    self.assertIs(getattr(example, name), value)
+                np.testing.assert_array_equal(example.state_0.body_q.numpy()[0, :3], [200, 0, 0])
+                np.testing.assert_array_equal(example.state_0.particle_q.numpy()[0], [0, 200, 0])
+                np.testing.assert_array_equal(example.viz_state.body_q.numpy()[0, :3], [100, 0, 0])
+                np.testing.assert_array_equal(example.viz_state.particle_q.numpy()[0], [0, 100, 0])
+                np.testing.assert_array_equal(example.body_display.body_q.numpy()[0, :3], [100, 0, 0])
+                np.testing.assert_array_equal(example.viz_state.probe.sample.numpy(), [7])
+                self.assertEqual(
+                    set(history.frames[0].auxiliary_states), {"viz_state", "body_display", "shared_particles"}
+                )
+                # All auxiliary arrays count toward the bound before readback;
+                # aliases must not retain a second copy of an existing state.
+                limited = FrameHistory(example)
+                limited.memory_limit = 2 * history.frames[0].size - 1
+                with patch("newton._src.viewer.viewer_history._snapshot_array") as snapshot:
+                    limited.capture()
+                    snapshot.assert_not_called()
+                self.assertFalse(limited.frames)
+                self.assertTrue(limited._recording_blocked)
 
     def test_sparse_properties_and_joint_editor_ranges(self) -> None:
         """Discover only selected frequencies while retaining dynamic custom fields and bounded editors."""

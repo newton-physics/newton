@@ -2839,7 +2839,11 @@ class ViewerBase(ABC):
                     if not len(indices):
                         continue
                     transforms = shapes.world_xforms.numpy()[visible]
-                    if shapes._local_bounds is not None:
+                    displayed_bounds = self._get_shape_framing_bounds(shapes)
+                    if displayed_bounds is not None:
+                        lo, hi = (bound[visible] for bound in displayed_bounds)
+                        points = lo[:, None, :] + corners * (hi - lo)[:, None, :]
+                    elif shapes._local_bounds is not None:
                         lo, hi = shapes._local_bounds
                         points = (lo + corners * (hi - lo))[None] * shapes.scales.numpy()[visible, None, :]
                     else:
@@ -2905,6 +2909,14 @@ class ViewerBase(ABC):
                         include(scratch[0].numpy())
 
         return (lower, upper) if np.isfinite(lower).all() else None
+
+    def _get_shape_framing_bounds(self, shapes: ViewerBase.ShapeInstances) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return displayed per-instance local bounds, or use the model bounds.
+
+        Backends can account for geometry displayed in different units from
+        the collision model. Bounds include instance scale but exclude pose.
+        """
+        return None
 
     def _get_deformable_framing_points(
         self, layer: Layer, state: newton.State

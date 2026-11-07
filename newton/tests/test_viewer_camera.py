@@ -544,6 +544,59 @@ class TestViewerCameraOrbit(unittest.TestCase):
                         np.testing.assert_allclose(bounds, (points.min(0), points.max(0)), atol=2e-5)
                         self._frame(viewer, points)
 
+    def test_frame_gl_geometry_in_display_units(self) -> None:
+        """Framing follows rendered geometry when display and simulation units differ."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        for kind in ("box", "capsule", "mesh"):
+            with self.subTest(kind=kind):
+                builder = newton.ModelBuilder()
+                body = builder.add_body()
+                if kind == "box":
+                    builder.add_shape_box(body, hx=50.0, hy=25.0, hz=10.0)
+                    extent = (0.5, 0.25, 0.1)
+                elif kind == "capsule":
+                    builder.add_shape_capsule(body, radius=10.0, half_height=40.0)
+                    extent = (0.1, 0.1, 0.5)
+                else:
+                    builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(1, 1, 1), scale=(-50, 25, 10))
+                    extent = (0.5, 0.25, 0.1)
+                model = builder.finalize(device="cpu")
+                # Like cloth_franka, substitute meter-scale display geometry
+                # without modifying the centimeter-scale collision bounds.
+                model.shape_scale = wp.array(model.shape_scale.numpy() * 0.01, dtype=wp.vec3, device="cpu")
+                viewer.set_model(model)
+                viewer.log_state(model.state())
+                expected = np.array((-np.asarray(extent), extent))
+                for visual, collision in ((True, False), (True, True)):
+                    with self.subTest(visual=visual, collision=collision):
+                        viewer.show_visual, viewer.show_collision = visual, collision
+                        np.testing.assert_allclose(viewer._get_scene_bounds(), expected, atol=1.0e-6)
+                        self._frame(viewer, expected)
+
+                ws = ViewerWorkspace.__new__(ViewerWorkspace)
+                ws.viewer, ws.model, ws.selected = viewer, model, ("body", body)
+                ws.tree = ws._deformable_selection = ws._frame_bounds_buffers = None
+                ws._selection_shapes = (0,)
+                np.testing.assert_allclose(ws.selection_bounds(include_contacts=False), expected, atol=1.0e-6)
+                buffers = ws._frame_bounds_buffers
+                # Following changes poses without rereading prototype geometry.
+                viewer._last_state.body_q.assign([(1, 2, 3, 0, 0, 0, 1)])
+                with patch.object(viewer, "_get_shape_framing_bounds", side_effect=AssertionError("Repeated readback")):
+                    np.testing.assert_allclose(
+                        ws.selection_bounds(include_contacts=False), expected + np.array((1, 2, 3)), atol=1.0e-6
+                    )
+                self.assertIs(ws._frame_bounds_buffers, buffers)
+                # Geometry rebuilds on the same Model invalidate both focus caches.
+                model.shape_scale.assign(model.shape_scale.numpy() * 2)
+                state = viewer._last_state
+                viewer.set_model(model)
+                viewer.log_state(state)
+                resized = expected * 2 + np.array((1, 2, 3))
+                np.testing.assert_allclose(viewer._get_scene_bounds(), resized, atol=1.0e-6)
+                np.testing.assert_allclose(ws.selection_bounds(include_contacts=False), resized, atol=1.0e-6)
+                self.assertIsNot(ws._frame_bounds_buffers, buffers)
+
     def test_sync_pivot_to_view_tracks_fps_look(self):
         camera = Camera(pos=(0.0, 0.0, 0.0), up_axis="Z")
         camera.sync_pivot_to_view(distance=10.0)

@@ -121,10 +121,13 @@ class HistoryFrame:
     soft_shape_contacts: int = 0
     soft_self_contacts: int = 0
     observables: dict[str, np.ndarray] = field(default_factory=dict)
-    particle_states: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    auxiliary_states: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    """Declared arrays for additional States used by the example's render callback."""
+    state_aliases: dict[str, str] = field(default_factory=dict)
+    """Map alias attribute names to their canonical primary, contact, or auxiliary State name."""
     control: dict[str, np.ndarray] = field(default_factory=dict)
     contact_state: dict[str, np.ndarray] = field(default_factory=dict)
-    """Collision input poses and velocities when distinct from the displayed State."""
+    """Declared collision input State arrays when distinct from the displayed State."""
 
     @property
     def soft_touching(self) -> int:
@@ -168,7 +171,7 @@ class FrameHistory:
         self.display_state = None
         self.display_contact_state = None
         self.display_control = None
-        self.display_particle_states: dict[str, State] = {}
+        self.display_auxiliary_states: dict[str, State] = {}
         self.display_contacts = None
         self.display_observables = None
         self._observables_source = None
@@ -282,32 +285,31 @@ class FrameHistory:
         arrays = _component_arrays(state, model=self.model)
         control_arrays = _component_arrays(getattr(example, "control", None), model=self.model)
         contact_state = getattr(example, "contact_state", None)
-        contact_state_arrays = {
-            name: array
-            for name in ("body_q", "body_qd")
-            if contact_state is not state and (array := getattr(contact_state, name, None)) is not None
-        }
+        contact_state_arrays = _component_arrays(contact_state, model=self.model) if contact_state is not state else {}
         contact_state_bytes = sum(a.capacity for a in contact_state_arrays.values())
-        # Coupled examples can draw particles from a separate State. Retain
-        # those display arrays too, without copying solver grids or buffers.
-        particle_states = {}
-        seen = {id(state.particle_q)}
+        # Render callbacks may scale or populate a mixed body/particle State.
+        # Replay must preserve its complete declared layout, not just particles;
+        # an omitted destination array can otherwise cause an invalid GPU write.
+        auxiliary_states = {}
+        state_aliases = {}
+        owners = {id(state): "state_0"}
+        for name in ("state_1", "contact_state"):
+            value = getattr(example, name, None)
+            if isinstance(value, State):
+                owners.setdefault(id(value), name)
         for name, value in vars(example).items():
             if name in ("state", "state_0", "state_1", "contact_state") or not isinstance(value, State):
                 continue
-            if value.particle_q is None or id(value.particle_q) in seen:
+            if id(value) in owners:
+                state_aliases[name] = owners[id(value)]
                 continue
-            seen.add(id(value.particle_q))
-            particle_states[name] = {
-                field: getattr(value, field)
-                for field in ("particle_q", "particle_qd", "particle_f")
-                if getattr(value, field, None) is not None
-            }
-        particle_bytes = sum(a.capacity for fields in particle_states.values() for a in fields.values())
+            owners[id(value)] = name
+            auxiliary_states[name] = _component_arrays(value, model=self.model)
+        auxiliary_bytes = sum(a.capacity for fields in auxiliary_states.values() for a in fields.values())
         # Reject oversized snapshots before any device-to-host transfer.
         control_bytes = sum(a.capacity for a in control_arrays.values())
         if (
-            sum(a.capacity for a in arrays.values()) + particle_bytes + control_bytes + contact_state_bytes
+            sum(a.capacity for a in arrays.values()) + auxiliary_bytes + control_bytes + contact_state_bytes
             > self.memory_limit // 2
         ):
             self.message = "A state exceeds the 64 MiB snapshot limit. Recording stopped."
@@ -341,7 +343,7 @@ class FrameHistory:
                     observable_arrays[name] = (array, ranges)
         size = (
             sum(a.capacity for a in arrays.values())
-            + particle_bytes
+            + auxiliary_bytes
             + control_bytes
             + contact_state_bytes
             + sum(n * array.strides[0] for array, n in contact_arrays.values())
@@ -354,16 +356,16 @@ class FrameHistory:
         saved_state = {name: _snapshot_array(array) for name, array in arrays.items()}
         saved_control = {name: _snapshot_array(array) for name, array in control_arrays.items()}
         saved_contact_state = {name: _snapshot_array(array) for name, array in contact_state_arrays.items()}
-        saved_particle_states = {
+        saved_auxiliary_states = {
             name: {field: _snapshot_array(array) for field, array in fields.items()}
-            for name, fields in particle_states.items()
+            for name, fields in auxiliary_states.items()
         }
         saved_contacts = {name: _snapshot_array(array[:n]) for name, (array, n) in contact_arrays.items()}
         saved_observables = {
             name: self._snapshot_observable(array, ranges) for name, (array, ranges) in observable_arrays.items()
         }
         size = sum(a.nbytes for a in (*saved_state.values(), *saved_contacts.values(), *saved_observables.values()))
-        size += sum(a.nbytes for fields in saved_particle_states.values() for a in fields.values())
+        size += sum(a.nbytes for fields in saved_auxiliary_states.values() for a in fields.values())
         size += sum(a.nbytes for a in saved_control.values())
         size += sum(a.nbytes for a in saved_contact_state.values())
         frame = HistoryFrame(
@@ -377,7 +379,8 @@ class FrameHistory:
             soft_shape_contacts=soft_count,
             soft_self_contacts=self._soft_self_contact_count(contacts) if self.model.particle_count else 0,
             observables=saved_observables,
-            particle_states=saved_particle_states,
+            auxiliary_states=saved_auxiliary_states,
+            state_aliases=state_aliases,
             control=saved_control,
             contact_state=saved_contact_state,
         )
@@ -457,17 +460,10 @@ class FrameHistory:
                 _restore_component(self.display_contact_state, example.contact_state, frame.contact_state)
             if frame.control:
                 _restore_component(self.display_control, example.control, frame.control)
-            for name, fields in frame.particle_states.items():
-                if name not in self.display_particle_states:
-                    self.display_particle_states[name] = State()
-                display = self.display_particle_states[name]
-                for field, values in fields.items():
-                    array = getattr(display, field, None)
-                    live = getattr(getattr(example, name), field)
-                    if array is None or array.shape != live.shape:
-                        array = wp.empty_like(live)
-                        setattr(display, field, array)
-                    array.assign(values)
+            for name, fields in frame.auxiliary_states.items():
+                if name not in self.display_auxiliary_states:
+                    self.display_auxiliary_states[name] = State()
+                _restore_component(self.display_auxiliary_states[name], getattr(example, name), fields)
             self.display_contacts.rigid_contact_count.assign(np.array([count], dtype=np.int32))
             self.display_contacts.soft_contact_count.assign(np.array([soft_count], dtype=np.int32))
             for name, values in frame.contacts.items():
@@ -493,7 +489,8 @@ class FrameHistory:
             "solver_observables": self.display_observables,
             "sim_time": frame.time,
         }
-        display.update({name: self.display_particle_states[name] for name in frame.particle_states})
+        display.update({name: self.display_auxiliary_states[name] for name in frame.auxiliary_states})
+        display.update({name: display[owner] for name, owner in frame.state_aliases.items()})
         try:
             for name, value in display.items():
                 if hasattr(example, name):

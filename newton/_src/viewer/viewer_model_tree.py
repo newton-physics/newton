@@ -262,6 +262,24 @@ class ModelTree:
             return True
         return bool(self.children.get(key))
 
+    def refresh_shapes(self) -> set[TreeKey]:
+        """Update shape metadata and resources while retaining explorer topology.
+
+        Body variants can change geometry without changing object indices.
+        Read metadata only for worlds already materialized by the explorer;
+        resource payloads remain lazy. Return vanished resource keys so the
+        presenter can redirect an obsolete resource selection to its shape.
+        """
+        for world in self.loaded_worlds:
+            for first, end in self.ranges("shape", world):
+                for name in ("flags", "type", "opacity"):
+                    values = getattr(self.model, "shape_" + name)[first:end].numpy()
+                    for shape, value in enumerate(values, first):
+                        self.meta[("shape", shape)][name] = value.item()
+        removed = self.resources.refresh_shapes(self)
+        self.rebuild()
+        return removed
+
     def reveal_attribute(self, key: TreeKey) -> None:
         """Keep referenced domains without spatial tree nodes inspectable as rows."""
         if key in self.parents:

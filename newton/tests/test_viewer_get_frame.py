@@ -353,6 +353,57 @@ class TestViewerGLGetFrame(unittest.TestCase):
             batch = next(iter(viewer._sdf_isomesh_instances.values()))
             self.assertIn((viewer.objects[batch.name], 1), viewer.renderer._selection_instances)
 
+    def test_workspace_variant_resource_notification(self) -> None:
+        """Keep resource selection and metadata current through the public viewer notification."""
+        mesh = newton.Mesh.create_box(0.3)
+        mesh.texture = np.full((2, 2, 3), 255, dtype=np.uint8)
+        textured = newton.ModelBuilder()
+        textured.add_shape_mesh(textured.add_body(), mesh=mesh)
+        plain = newton.ModelBuilder()
+        plain.add_shape_sphere(plain.add_body(), radius=0.3)
+        builder = newton.ModelBuilder()
+        builder.add_body_variants(builder.add_body(), [textured, plain])
+        builder.add_shape_sphere(builder.add_body(), radius=0.2)
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        gui = SimpleNamespace(
+            _viewer=viewer,
+            ui=SimpleNamespace(dpi_scale=1.0),
+            console_capture=None,
+            stop_following_selection=mock.Mock(),
+        )
+        workspace = ViewerWorkspace(gui)
+        gui.workspace = workspace
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                viewer.set_model(model)
+                workspace.bind(None)
+                workspace.select(("body", 1))
+                workspace.select(("shape_texture", 0), toggle=True)
+                tree = workspace.tree
+                tree.expanded.add(("shape", 0))
+                flags = model.select_body_variants(wp.array([1, 0], dtype=int, device=device))
+                # The hidden GL context uses the same notification dispatch as
+                # the interactive viewer, without drawing a synthetic GUI.
+                with mock.patch.object(viewer, "gui", gui):
+                    viewer.notify_model_changed(flags)
+                self.assertIs(workspace.tree, tree)
+                self.assertEqual(workspace.selected, ("shape", 0))
+                self.assertEqual(workspace.selection, {("shape", 0), ("body", 1)})
+                self.assertNotIn(("shape_texture", 0), tree.labels)
+                self.assertEqual(tree.meta[("shape", 0)]["type"], int(newton.GeoType.SPHERE))
+                gui.stop_following_selection.reset_mock()
+                flags = model.select_body_variants(wp.array([0, 0], dtype=int, device=device))
+                with mock.patch.object(viewer, "gui", gui):
+                    viewer.notify_model_changed(flags)
+                self.assertEqual(workspace.selected, ("shape", 0))
+                self.assertEqual(workspace.selection, {("shape", 0), ("body", 1)})
+                self.assertIn(("shape", 0), tree.expanded)
+                self.assertIn(("shape_texture", 0), tree.labels)
+                self.assertIs(tree.resources.source(0), mesh)
+                gui.stop_following_selection.assert_not_called()
+
     def test_point_prototypes_follow_model_device(self) -> None:
         """Reuse device-local point/splat meshes across CPU/CUDA model changes."""
         if not wp.is_cuda_available():

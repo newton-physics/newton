@@ -55,55 +55,78 @@ class ViewportControls:
         self.joint_gizmo_scale: float = 1.0
         self.joint_gizmo_auto_size: bool = True
         self._model = None
-        self._inspection_model = None
+        self._models = ()
+        self._inspection_models = None
         self._roles_key = None
         self._roles = ()
 
     def clear_scene(self) -> None:
         """Release scene caches while retaining viewport preferences."""
-        self._model = self._inspection_model = None
-        self._roles_key = None
-        self._roles = ()
+        self._model = None
+        self._models = ()
+        self.invalidate_shapes()
         self.orientation._animation = None
 
+    def invalidate_shapes(self) -> None:
+        """Refresh cached shape roles and X-ray sizing after notified Model edits."""
+        self._inspection_models = None
+        self._roles_key = None
+        self._roles = ()
+
     def set_mode(self, mode: str) -> None:
-        """Apply a visual, collision, wire, or xray mode to viewer visibility and renderer flags."""
+        """Apply the viewport's mode to every layer and the shared renderer."""
         self.mode = mode
         viewer = self.workspace.viewer
-        viewer.show_visual = mode in ("visual", "xray", "wire")
-        viewer.show_collision = mode in ("collision", "xray")
+        self._set_layer_option("show_visual", mode in ("visual", "xray", "wire"))
+        self._set_layer_option("show_collision", mode in ("collision", "xray"))
         viewer.renderer.draw_wireframe = mode == "wire"
         viewer.renderer._physics_xray = mode == "xray"
+
+    def _set_layer_option(self, name: str, value: object) -> None:
+        """Update a shared display choice without changing the active logging layer."""
+        viewer = self.workspace.viewer
+        for layer in viewer.layers.values():
+            setattr(layer, name, value)
+        # Active runtime fields are also mirrored on the viewer itself.
+        setattr(viewer, name, value)
 
     def sync(self) -> None:
         """Propagate viewport preferences and classify shape batches for rendering.
 
-        Recompute inspection scale from host copies only when a new Model first
-        enters X-ray mode. Cache batch roles independently of per-frame motion.
+        Recompute inspection scale from host copies only when visible Models
+        change. Cache every layer's batch roles independently of per-frame motion.
         """
         viewer = self.workspace.viewer
         if viewer.model is not self._model:
             self._model = viewer.model
             self.orientation._animation = None
+        layers = tuple(viewer.layers.values())
+        models = tuple((layer.layer_id, layer.model) for layer in layers)
+        if models != self._models:
+            self._models = models
             self.set_mode(self.mode)
-            viewer.sdf_margin_mode = viewer.SDFMarginMode(self.margin_mode)
-            self._inspection_model = None
-            viewer.renderer._xray_inspection_radius = 0.0
-        if self.mode == "xray" and self._model is not self._inspection_model:
-            # One scale per model, independent of camera dolly and world count.
+            self._set_layer_option("sdf_margin_mode", viewer.SDFMarginMode(self.margin_mode))
+        visible_models = tuple(
+            dict.fromkeys(layer.model for layer in layers if layer.visible and layer.model is not None)
+        )
+        if self.mode == "xray" and visible_models != self._inspection_models:
+            # One scale across displayed models, independent of the active
+            # logging layer, camera dolly and replicated world count.
             # Small links and fasteners should fade alongside the larger bodies
             # they belong to. Ignore static terrain when movable shapes exist.
-            radius = 0.0
-            if self._model is not None and self._model.shape_count:
-                radii = self._model.shape_collision_radius.numpy()
-                bodies = self._model.shape_body.numpy()
-                types = self._model.shape_type.numpy()
+            radius = movable_radius = 0.0
+            for model in visible_models:
+                if not model.shape_count:
+                    continue
+                radii = model.shape_collision_radius.numpy()
+                bodies = model.shape_body.numpy()
+                types = model.shape_type.numpy()
                 valid = np.isfinite(radii) & (radii > 0) & (types != int(GeoType.PLANE))
                 movable = valid & (bodies >= 0)
-                chosen = radii[movable if np.any(movable) else valid]
-                radius = float(chosen.max()) if chosen.size else 0.0
-            viewer.renderer._xray_inspection_radius = radius
-            self._inspection_model = self._model
+                radius = max(radius, float(radii[valid].max(initial=0.0)))
+                movable_radius = max(movable_radius, float(radii[movable].max(initial=0.0)))
+            viewer.renderer._xray_inspection_radius = movable_radius or radius
+            self._inspection_models = visible_models
         renderer = viewer.renderer
         if not hasattr(renderer, "_xray_inspection_radius"):
             renderer._xray_inspection_radius = 0.0
@@ -119,32 +142,45 @@ class ViewportControls:
         renderer._xray_adaptive = self.adaptive_detail
         # Shape batches already separate flags, static status and opacity.
         # Tag their existing GL objects; no geometry duplication or scene copies.
-        key = (id(viewer._shape_instances), len(viewer._shape_instances), len(viewer._sdf_isomesh_instances))
+        key = tuple(
+            (
+                layer.layer_id,
+                layer.model,
+                id(layer._shape_instances),
+                len(layer._shape_instances),
+                id(layer._sdf_isomesh_instances),
+                len(layer._sdf_isomesh_instances),
+            )
+            for layer in layers
+        )
         if key != self._roles_key:
             roles = []
             collide = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-            for batch in viewer._shape_instances.values():
-                role = "collision" if batch.flags & collide else "visual"
-                sdf_indices = viewer._shape_sdf_index_host
-                if (
-                    not batch.flags & int(ShapeFlags.COLLIDE_SHAPES)
-                    and batch.flags & int(ShapeFlags.VISIBLE)
-                    and sdf_indices is not None
-                    and len(batch.model_shapes) > 0
-                    and sdf_indices[batch.model_shapes[0]] >= 0
-                    and viewer.model._texture_sdf_data is not None
-                ):
-                    role = "visual"
-                if batch.geo_type == GeoType.PLANE:
-                    role = "ground"
-                grid = 2 if batch.geo_type == GeoType.PLANE else 1 if batch.geo_type == GeoType.BOX else 0
-                roles.extend(
-                    (
-                        (batch.name, role, batch.static, grid),
-                        (batch.name + "/__transparent__", role, batch.static, grid),
+            for layer in layers:
+                for batch in layer._shape_instances.values():
+                    role = "collision" if batch.flags & collide else "visual"
+                    sdf_indices = layer._shape_sdf_index_host
+                    if (
+                        not batch.flags & int(ShapeFlags.COLLIDE_SHAPES)
+                        and batch.flags & int(ShapeFlags.VISIBLE)
+                        and sdf_indices is not None
+                        and len(batch.model_shapes) > 0
+                        and sdf_indices[batch.model_shapes[0]] >= 0
+                        and layer.model._texture_sdf_data is not None
+                    ):
+                        role = "visual"
+                    if batch.geo_type == GeoType.PLANE:
+                        role = "ground"
+                    grid = 2 if batch.geo_type == GeoType.PLANE else 1 if batch.geo_type == GeoType.BOX else 0
+                    roles.extend(
+                        (
+                            (batch.name, role, batch.static, grid),
+                            (batch.name + "/__transparent__", role, batch.static, grid),
+                        )
                     )
+                roles.extend(
+                    (batch.name, "collision", batch.static, 0) for batch in layer._sdf_isomesh_instances.values()
                 )
-            roles.extend((batch.name, "collision", batch.static, 0) for batch in viewer._sdf_isomesh_instances.values())
             self._roles, self._roles_key = roles, key
         for name, role, static, grid in self._roles:
             obj = viewer.objects.get(name)
@@ -321,7 +357,7 @@ class ViewportControls:
         )
         if edit.changed:
             self.margin_mode = edit.value
-            viewer.sdf_margin_mode = viewer.SDFMarginMode(edit.value)
+            self._set_layer_option("sdf_margin_mode", viewer.SDFMarginMode(edit.value))
 
     def _render_menu(self) -> None:
         """Dispatch the rendering, contact, joint, and camera settings tabs."""

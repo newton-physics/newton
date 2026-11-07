@@ -343,7 +343,7 @@ class PropertyInspector:
                     if domain.joints:
                         offsets = "joint_q_start" if domain.frequency == Frequency.JOINT_COORD else "joint_qd_start"
                         span = self.workspace.read(domain.model, offsets, first, 2)
-                        stop = int(span[1])
+                        stop = int(span[1]) * spec.row_width
                     else:
                         stop = (first + 1) * spec.row_width
                     if stop > len(value):
@@ -453,7 +453,7 @@ class PropertyInspector:
                     with group(name.split(":")[-1], default_open=component != Assignment.MODEL) as opened:
                         if opened:
                             visible = self._page(domain.indices)
-                            self._prefetch(domain, spec, owner, attr, array, visible, component)
+                            self._prefetch(domain, name, spec, owner, attr, array, visible, component)
                             for index in visible:
                                 self._field(domain, name, spec, owner, attr, array, int(index), component, nested=True)
                 else:
@@ -463,6 +463,7 @@ class PropertyInspector:
     def _prefetch(
         self,
         domain: AttributeRows,
+        name: str,
         spec: Model.AttributeSpec,
         owner: object,
         attr: str,
@@ -478,15 +479,15 @@ class PropertyInspector:
         # Sparse selections must not pull large intervening regions from other worlds.
         if last - first > 4 * len(indices):
             return
-        source = (
-            ws.joint_display_state() if component == Assignment.STATE and attr in ("joint_q", "joint_qd") else owner
-        )
+        joint_state = component == Assignment.STATE and name in ("joint_q", "joint_qd")
+        source = ws.joint_display_state() if joint_state else owner
         if domain.joints:
             offsets = "joint_q_start" if domain.frequency == Frequency.JOINT_COORD else "joint_qd_start"
             spans = ws.read(domain.model, offsets, first, last - first + 2).astype(int)
             rows = [(int(i), int(spans[i - first]), int(spans[i - first + 1] - spans[i - first])) for i in indices]
             for index, start, count in rows:
                 ws._cache[(id(domain.model), offsets, index, 2)] = np.array([start, start + count])
+            rows = [(index, start * spec.row_width, count * spec.row_width) for index, start, count in rows]
         else:
             rows = [(int(i), int(i) * spec.row_width, spec.row_width) for i in indices]
         start, stop = rows[0][1], rows[-1][1] + rows[-1][2]
@@ -544,12 +545,15 @@ class PropertyInspector:
         model = domain.model
         start, count = index * spec.row_width, spec.row_width
         joint = index if domain.joints else None
+        # Only built-in reduced coordinates participate in inverse/forward
+        # kinematics. A custom namespace can legitimately reuse their names.
+        joint_state = component == Assignment.STATE and name in ("joint_q", "joint_qd")
         if domain.joints:
             # A joint is one explorer item but owns a variable-length span in
             # coordinate/DOF storage. row_width alone cannot describe that span.
             offsets = "joint_q_start" if domain.frequency == Frequency.JOINT_COORD else "joint_qd_start"
             span = ws.read(model, offsets, index, 2).astype(int)
-            start, count = int(span[0]), int(span[1] - span[0])
+            start, count = int(span[0]) * spec.row_width, int(span[1] - span[0]) * spec.row_width
         if count <= 0:
             return
         label = attr
@@ -575,9 +579,7 @@ class PropertyInspector:
             if start < 0 or start + count > len(array):
                 ui.pop_id()
                 return
-            source = (
-                ws.joint_display_state() if component == Assignment.STATE and attr in ("joint_q", "joint_qd") else owner
-            )
+            source = ws.joint_display_state() if joint_state else owner
             values = ws.read(source, attr, start, count, live=component != Assignment.MODEL)
         elif isinstance(array, (list, tuple, np.ndarray)):
             values = np.asarray(array[start : start + count])
@@ -602,7 +604,7 @@ class PropertyInspector:
         if joint is not None:
             kind = JointType(int(ws.read(model, "joint_type", joint)[0]))
             art = int(ws.read(model, "joint_articulation", joint)[0])
-            if component == Assignment.STATE and (kind == JointType.ROD or art < 0):
+            if joint_state and (kind == JointType.ROD or art < 0):
                 editable = False
                 reason = "This joint is advanced by the solver, outside forward kinematics."
         if spec.references is not None:
@@ -611,6 +613,9 @@ class PropertyInspector:
         elif joint is not None and name in ("joint_q", "joint_qd", "joint_target_q", "joint_target_qd", "joint_f"):
             edit = self._joint_widget(label, values, model, joint, kind, attr, editable, reason)
         else:
+            # Joint offsets count logical coordinates/DOFs, whereas row_width
+            # counts flattened entries per row. Preserve that distinction in
+            # both the storage slice and the nested row labels.
             edit = self._typed(
                 label,
                 values,
@@ -619,10 +624,11 @@ class PropertyInspector:
                 reason,
                 name,
                 frequency=domain.frequency if domain.joints else None,
-                start=start,
+                start=start // spec.row_width if domain.joints else start,
+                row_width=spec.row_width if domain.joints else 1,
             )
         if editable:
-            live_owner = ws.live_state() if component == Assignment.STATE and joint is not None else owner
+            live_owner = ws.live_state() if joint_state else owner
             if edit.activated:
                 ws._drag_undo = (live_owner, attr, start, values.copy(), joint)
             if edit.changed:
@@ -697,6 +703,17 @@ class PropertyInspector:
 
         if flat.size == 1:
             row(label, flat[0])
+        elif domain.joints and spec.row_width > 1:
+            with w.compound(label, reason=reason):
+                for index in self._page(range(len(values) // spec.row_width)):
+                    ui.push_id(index)
+                    with w.compound(
+                        frequency_row_label(domain.frequency, start // spec.row_width + index), reason=reason
+                    ):
+                        entries = values[index * spec.row_width : (index + 1) * spec.row_width].reshape(-1)
+                        for component in self._page(range(len(entries))):
+                            row(str(component), entries[component])
+                    ui.pop_id()
         else:
             with w.compound(label, reason=reason):
                 for index in self._page(range(flat.size)):
@@ -716,10 +733,12 @@ class PropertyInspector:
         *,
         frequency: Model.AttributeFrequency | str | None = None,
         start: int = 0,
+        row_width: int = 1,
     ) -> PropertyEdit:
         """Choose widgets from array shape and dtype and return an unapplied PropertyEdit.
 
-        Preserve compound row structure, paginate repeated values, and use
+        Preserve compound row structure (including flattened ``row_width``
+        entries per logical frequency row), paginate repeated values, and use
         specialized physics widgets where the dtype identifies their meaning.
         The caller owns writing changed values back to the source array.
         """
@@ -737,18 +756,19 @@ class PropertyInspector:
             result = PropertyEdit(values.copy())
             ui.push_id(label)
             with w.compound(label, **args):
-                for index in self._page(range(len(values))):
+                for index in self._page(range(len(values) // row_width)):
                     ui.push_id(index)
+                    first, end = index * row_width, (index + 1) * row_width
                     edit = self._typed(
                         frequency_row_label(frequency, start + index),
-                        values[index : index + 1],
+                        values[first:end],
                         dtype,
                         editable,
                         reason,
                         attr,
                     )
                     if edit.changed:
-                        result.value[index] = np.asarray(edit.value).reshape(np.shape(values[index]))
+                        result.value[first:end] = np.asarray(edit.value).reshape(values[first:end].shape)
                     result.changed |= edit.changed
                     result.activated |= edit.activated
                     result.finished |= edit.finished

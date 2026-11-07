@@ -548,8 +548,6 @@ class DeformableCatalog:
             if positions is None or (not primary and source.hidden):
                 continue
             use_particles = particles if primary else True
-            if not primary and not viewer.show_particles:
-                continue
             display = viewer._workspace_deformables if primary else source
             hit, distance = self._pick_source(
                 workspace,
@@ -592,7 +590,7 @@ class DeformableCatalog:
         """
         viewer = workspace.viewer
         count = model.particle_count if particles else model.tri_count
-        if not count or (not particles and not viewer.show_triangles):
+        if not count or not (viewer.show_particles if particles else viewer.show_triangles):
             return None, limit
         device = model.device
         distances = wp.empty(count, dtype=float, device=device)

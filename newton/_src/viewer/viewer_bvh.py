@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Hashable
     from typing import Any
 
-    from newton import Model, State
+    from newton import Gaussian, Heightfield, Mesh, Model, State
     from newton._src.viewer.gui.workspace import ViewerWorkspace
     from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey, ViewerExample
@@ -246,6 +246,7 @@ class BvhResources:
         self.bindings = bindings if bindings is not None else InspectionBindings.from_example(example)
         self.entries = {}
         self._mesh_ids = None
+        self._source_pages = {}
         self._shape_pages = {}
         self._shape_pointers = None
         self._owners = {}
@@ -393,7 +394,8 @@ class BvhResources:
         Copy source pointers to the host only when their page is first needed;
         mesh IDs and resource references remain cached for this Model.
         """
-        if self.model.shape_source[shape] is None:
+        source = self.source(shape)
+        if source is None:
             return
         if self._mesh_ids is None:
             self._mesh_ids = {
@@ -405,7 +407,6 @@ class BvhResources:
             start = page * self.page_size
             self._shape_pages[page] = pointers[start : min(start + self.page_size, len(pointers))].numpy()
         mesh = self._mesh_ids.get(int(self._shape_pages[page][shape % self.page_size]))
-        source = self.model.shape_source[shape]
         entry = self._mesh(mesh) if mesh is not None else BvhResource(source, "bvh", "Gaussian raycasts", local=True)
         if entry.get() is not None:
             key = ("shape_bvh", shape)
@@ -417,6 +418,41 @@ class BvhResources:
                 ("shape", shape),
                 world=tree.world_for(("shape", shape)),
             )
+
+    def source(self, shape: int) -> Mesh | Heightfield | Gaussian | None:
+        """Resolve current source geometry, reading variant indices one page at a time.
+
+        Variant rows retain their initial Python source while their device
+        fields change. Resolve the selected variant instead and invalidate
+        these pages on the viewer's shape-change notification.
+        """
+        model = self.model
+        if not model._has_variant_rows:
+            return model.shape_source[shape]
+        page = shape // self.page_size
+        if page not in self._source_pages:
+            first = page * self.page_size
+            end = min(first + self.page_size, model.shape_count)
+            sources = list(model.shape_source[first:end])
+            held = model._shape_variant_shape[first:end].numpy()
+            rows = model._shape_variant_row[first:end].numpy()
+            for i, variant in enumerate(held):
+                if rows[i]:
+                    sources[i] = model._variant_shape_source[int(variant)] if variant >= 0 else None
+            self._source_pages[page] = sources
+        return self._source_pages[page][shape % self.page_size]
+
+    def invalidate_shapes(self) -> None:
+        """Discard shape/source mappings after geometry changes without releasing live BVHs."""
+        self._source_pages.clear()
+        self._shape_pages.clear()
+        self._shape_pointers = None
+        self._owners.clear()
+        self._instances.clear()
+        self._mesh_ids = None
+        for key in tuple(self.entries):
+            if key[0] == "shape_bvh":
+                del self.entries[key]
 
     def reveal(self, tree: ModelTree, key: TreeKey) -> None:
         """Materialize the owning shape or mesh-page chain needed to navigate to a resource."""
@@ -445,7 +481,13 @@ class BvhResources:
         if key[0] in ("shape_bvh", "bvh_gaussian"):
             return key[1]
         if self._shape_pointers is None:
-            self._shape_pointers = self.model.shape_source_ptr.numpy()
+            self._shape_pointers = self.model.shape_source_ptr.numpy().copy()
+            if self.model._has_variant_rows:
+                # Empty rows retain their previous geometry fields on device;
+                # they must not remain selectable instances of the old mesh.
+                rows = self.model._shape_variant_row.numpy()
+                held = self.model._shape_variant_shape.numpy()
+                self._shape_pointers[rows & (held < 0)] = 0
         if resource.id not in self._owners:
             self._owners[resource.id] = np.flatnonzero(self._shape_pointers == resource.id)
         owners = self._owners[resource.id]

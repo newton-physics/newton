@@ -80,12 +80,46 @@ class GeometryInspector:
         page = index // self.page_size
         if page not in self._shape_pages:
             start = page * self.page_size
-            self._shape_pages[page] = array[start : min(start + self.page_size, len(array))].numpy()
+            end = min(start + self.page_size, len(array))
+            values = array[start:end].numpy().copy()
+            if self.model._has_variant_rows:
+                rows = self.model._shape_variant_row[start:end].numpy()
+                held = self.model._shape_variant_shape[start:end].numpy()
+                values[rows & (held < 0)] = -1
+            self._shape_pages[page] = values
         return int(self._shape_pages[page][index % self.page_size])
 
     def source(self, shape: int) -> Mesh | Heightfield | Gaussian | None:
         """Return the Model-owned source geometry for a valid shape index."""
-        return self.model.shape_source[shape]
+        return self.bvhs.source(shape)
+
+    def refresh_shapes(self, tree: ModelTree) -> set[TreeKey]:
+        """Refresh materialized shape resources after an explicit geometry notification.
+
+        Drop stale source, SDF-page, and inverse-owner caches. Resource keys
+        keep their owning shape indices; return only vanished keys so a caller
+        can retain selection or navigate back to a resource's owning shape.
+        """
+        old = {key for key in tree.labels if self.shape_owner(key) is not None}
+        shapes = {key[1] for key in old}
+        shapes.update(key[1] for key in tree.expanded if key[0] == "shape")
+        self._shape_pages.clear()
+        self._rows.clear()
+        self._owners = None
+        self._users_cache.clear()
+        self.bvhs.invalidate_shapes()
+        for key in old:
+            parent = tree.parents.pop(key, None)
+            if parent is not None:
+                tree.children[parent].remove(key)
+            tree.children.pop(key, None)
+            tree.labels.pop(key, None)
+            tree.meta.pop(key, None)
+        for shape in shapes:
+            self.add_shape(tree, shape)
+        removed = old.difference(tree.labels)
+        tree.expanded.difference_update(removed)
+        return removed
 
     @staticmethod
     def color_texture_loaded(ws: ViewerWorkspace, shape: int) -> bool:
@@ -303,7 +337,11 @@ class GeometryInspector:
             # One index array read only when the user requests inverse references.
             if self._owners is None:
                 array = self.model._shape_sdf_index
-                self._owners = array.numpy() if array is not None else np.empty(0, dtype=int)
+                self._owners = array.numpy().copy() if array is not None else np.empty(0, dtype=int)
+                if len(self._owners) and self.model._has_variant_rows:
+                    rows = self.model._shape_variant_row.numpy()
+                    held = self.model._shape_variant_shape.numpy()
+                    self._owners[rows & (held < 0)] = -1
             if index not in self._users_cache:
                 self._users_cache[index] = np.flatnonzero(self._owners == index)
             owners = self._users_cache[index]

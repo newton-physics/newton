@@ -190,7 +190,12 @@ class Example:
                 self.sim_dt,
                 observables=self.solver_observables if last_substep else None,
             )
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # With an odd substep count, copy instead of swapping on the last
+            # substep so every CUDA graph replay starts from state_0.
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         """Advance the example by one frame."""
