@@ -12,6 +12,7 @@ from enum import IntEnum
 from types import MappingProxyType
 from typing import Any, ClassVar
 
+import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
@@ -981,6 +982,29 @@ class SolverBase:
         """
         return self.model.device
 
+    def _validate_body_gravity_scale(self, *, applies_scale: bool) -> None:
+        """Reject non-finite :attr:`~newton.Model.body_gravity_scale` values, and values other than 1 on
+        dynamic bodies unless the solver applies them.
+
+        Reads the model on the host, so it is skipped during CUDA graph capture.
+        """
+        model = self.model
+        scale = model.body_gravity_scale
+        if scale is None or scale.shape[0] == 0 or model.device.is_capturing:
+            return
+        scale = scale.numpy()
+        finite = np.isfinite(scale)
+        if not np.all(finite):
+            body = int(np.flatnonzero(~finite)[0])
+            raise ValueError(f"Model.body_gravity_scale of body {body} must be finite, got {scale[body]}")
+        if applies_scale:
+            return
+        dynamic = (model.body_inv_mass.numpy() > 0.0) & ((model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) == 0)
+        if np.any(dynamic & (scale != 1.0)):
+            raise NotImplementedError(
+                f"{type(self).__name__} does not support Model.body_gravity_scale values other than 1"
+            )
+
     def _init_kinematic_state(self):
         """Allocate and populate effective inverse mass/inertia arrays."""
         model = self.model
@@ -1218,8 +1242,8 @@ class SolverBase:
           ``Model.joint_rest_q``.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.
-        * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
-          tensors have changed.
+        * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass, inertia
+          tensors, or gravity scales have changed.
         * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms, scales, or
           materials have changed.
         * ``ModelFlags.SHAPE_TYPE_AND_SOURCE``: Shapes changed type or source,

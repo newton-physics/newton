@@ -259,6 +259,7 @@ def find_mujoco_body_from_newton_body(
 def eval_mujoco_coupling_gravity_acceleration_kernel(
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
+    body_gravity_scale: wp.array[wp.float32],
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_gravcomp: wp.array2d[float],
     option_world: int,
@@ -286,7 +287,8 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
     if mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
         gravcomp = body_gravcomp[mujoco_world, mjc_body]
 
-    out[body] = (1.0 - gravcomp) * g
+    # body_gravcomp already holds the scaled compensation s * gravcomp.
+    out[body] = (body_gravity_scale[body] - gravcomp) * g
 
 
 @wp.kernel
@@ -1639,21 +1641,38 @@ def apply_mjc_body_f_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_flags: wp.array[wp.int32],
     body_f: wp.array[wp.spatial_vector],
+    body_mass: wp.array[float],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    body_gravity_scale: wp.array[wp.float32],
     # outputs
     xfrc_applied: wp.array2d[wp.spatial_vector],
 ):
     """Apply Newton body forces to MuJoCo xfrc_applied array.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up the Newton body
-    index, and copies its force (zero if ``body_f`` is not given).
+    index, copies its force (if ``body_f`` is given), and adds ``m (s - 1) g``
+    for the body's gravity scale ``s``. The backend's gravity compensation is
+    ``s * gravcomp``, so the net gravity is ``s (1 - gravcomp) m g``.
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0 or not body_f:
+    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
         xfrc_applied[world, mjc_body] = wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
         return
 
-    xfrc_applied[world, mjc_body] = body_f[newton_body]
+    v = wp.vec3(0.0, 0.0, 0.0)
+    w = wp.vec3(0.0, 0.0, 0.0)
+    if body_f:
+        f = body_f[newton_body]
+        v = wp.vec3(f[0], f[1], f[2])
+        w = wp.vec3(f[3], f[4], f[5])
+
+    gravity_world = body_world[newton_body]
+    if gravity_world >= -1 and gravity_world < gravity.shape[0]:
+        v += body_mass[newton_body] * (body_gravity_scale[newton_body] - 1.0) * gravity[gravity_world]
+
+    xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
 
 
 @wp.kernel
@@ -1765,6 +1784,7 @@ def update_body_mass_ipos_kernel(
     body_com: wp.array[wp.vec3f],
     body_mass: wp.array[float],
     body_gravcomp: wp.array[float],
+    body_gravity_scale: wp.array[wp.float32],
     # outputs
     body_ipos: wp.array2d[wp.vec3f],
     body_mass_out: wp.array2d[float],
@@ -1773,7 +1793,7 @@ def update_body_mass_ipos_kernel(
     """Update MuJoCo body mass and inertial position from Newton body properties.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
-    and copies mass, COM, and gravcomp.
+    and copies mass, COM, and gravcomp scaled by the body's gravity scale.
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
@@ -1788,7 +1808,7 @@ def update_body_mass_ipos_kernel(
 
     # update gravcomp
     if body_gravcomp:
-        body_gravcomp_out[world, mjc_body] = body_gravcomp[newton_body]
+        body_gravcomp_out[world, mjc_body] = body_gravity_scale[newton_body] * body_gravcomp[newton_body]
 
 
 @wp.func

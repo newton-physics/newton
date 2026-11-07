@@ -15598,5 +15598,161 @@ class TestMuJoCoWithoutBodyForces(unittest.TestCase):
                 np.testing.assert_allclose(states[0].body_qd.numpy()[0], np.zeros(6), atol=1.0e-5)
 
 
+class TestMuJoCoBodyGravityScale(unittest.TestCase):
+    """Per-body gravity scales combined with MuJoCo's native gravity compensation."""
+
+    # (gravity scale, gravcomp) pairs of free unit-mass bodies.
+    PAIRS = ((1.0, 0.0), (1.0, 0.5), (0.0, 0.5), (0.5, 0.5), (-1.0, 0.5), (2.0, 0.25), (0.0, 1.0))
+    DT = 0.01
+
+    @staticmethod
+    def _builder(gravity):
+        builder = newton.ModelBuilder(gravity=gravity)
+        SolverMuJoCo.register_custom_attributes(builder)
+        return builder
+
+    @staticmethod
+    def _add_free_body(builder, scale, gravcomp, x=0.0):
+        return builder.add_body(
+            xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3) * 0.01),
+            gravity_scale=scale,
+            custom_attributes={"mujoco:gravcomp": gravcomp},
+        )
+
+    def test_scale_gravcomp_matrix(self):
+        """Scale gravity and compensate its gravcomp fraction for same, different and non-collinear world gravity."""
+        world_gravity = (0.0, 0.0, -5.0)
+        # Global bodies sit in the one MuJoCo world, whose gravity is the local world's.
+        cases = {
+            "same": (world_gravity, False),
+            "different": ((0.0, 0.0, -2.0), True),
+            "non_collinear": ((1.0, 0.0, -3.0), True),
+        }
+        for case, (body_gravity, global_bodies) in cases.items():
+            with self.subTest(case=case):
+                builder = self._builder(body_gravity)
+                if global_bodies:
+                    bodies = [self._add_free_body(builder, *pair, x=2.0 * i) for i, pair in enumerate(self.PAIRS)]
+                builder.begin_world(gravity=world_gravity)
+                local = [self._add_free_body(builder, *pair, x=2.0 * i) for i, pair in enumerate(self.PAIRS)]
+                builder.end_world()
+                if not global_bodies:
+                    bodies = local
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, separate_worlds=False)
+                observables = solver.observables(kinds={SolverMuJoCo.ObservableKind.BODY_PARENT_F})
+                state_0, state_1 = model.state(), model.state()
+                solver.step(state_0, state_1, model.control(), None, self.DT, observables=observables)
+                hook = wp.empty(model.body_count, dtype=wp.vec3, device=model.device)
+                solver.coupling_eval_gravity_acceleration(hook, None)
+
+                scale, gravcomp = (
+                    np.array(column, dtype=np.float32)[:, None] for column in zip(*self.PAIRS, strict=True)
+                )
+                acceleration = scale * (1.0 - gravcomp) * np.array(body_gravity)
+                np.testing.assert_allclose(state_1.body_qd.numpy()[bodies, :3], acceleration * self.DT, atol=1.0e-5)
+                np.testing.assert_allclose(hook.numpy()[bodies], acceleration, atol=1.0e-5)
+                # Only MuJoCo's native compensation, along its world's gravity, passes through the free joint.
+                native = -scale * gravcomp * np.array(world_gravity)
+                np.testing.assert_allclose(observables.body_parent_f.numpy()[bodies, :3], native, atol=1.0e-4)
+
+    def test_scale_changes_refresh_native_gravcomp(self):
+        """Refresh the scaled native gravcomp after 0 at construction, 1, 0 and 1 again."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = self._builder((0.0, 0.0, -10.0))
+                self._add_free_body(builder, 0.0, 0.5)
+                model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                states = [model.state(), model.state()]
+                for scale in (0.0, 1.0, 0.0, 1.0):
+                    model.body_gravity_scale.fill_(scale)
+                    solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                    np.testing.assert_allclose(solver.mjw_model.body_gravcomp.numpy()[0, 1], 0.5 * scale)
+                    before = states[0].body_qd.numpy()[0, 2]
+                    solver.step(states[0], states[1], model.control(), None, self.DT)
+                    states.reverse()
+                    dv = states[0].body_qd.numpy()[0, 2] - before
+                    np.testing.assert_allclose(dv, -10.0 * scale * 0.5 * self.DT, atol=1.0e-5)
+
+    def test_clamped_actuator_gravcomp(self):
+        """Clamp actuator gravity compensation of the scaled weight; the coupling hook ignores the clamp."""
+        for scale in (1.0, 0.5):
+            with self.subTest(scale=scale):
+                builder = self._builder((0.0, 0.0, -10.0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01), gravity_scale=scale)
+                joint = builder.add_joint_prismatic(
+                    -1,
+                    body,
+                    axis=(0.0, 0.0, 1.0),
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    target_ke=0.0,
+                    target_kd=0.0,
+                    effort_limit=4.0,
+                    custom_attributes={"mujoco:jnt_actgravcomp": True},
+                )
+                builder.add_articulation([joint])
+                model = builder.finalize()
+                model.mujoco.gravcomp.fill_(1.0)
+                solver = SolverMuJoCo(model)
+                observables = solver.observables(kinds={SolverMuJoCo.ObservableKind.BODY_PARENT_F})
+                state_0, state_1 = model.state(), model.state()
+                solver.step(state_0, state_1, model.control(), None, self.DT, observables=observables)
+
+                # The 4 N limit clamps the scaled 10 * scale N of compensation.
+                np.testing.assert_allclose(state_1.joint_qd.numpy()[0], (-10.0 * scale + 4.0) * self.DT, atol=1.0e-5)
+                np.testing.assert_allclose(observables.body_parent_f.numpy()[0, 2], 4.0, atol=1.0e-4)
+                hook = wp.empty(1, dtype=wp.vec3, device=model.device)
+                solver.coupling_eval_gravity_acceleration(hook, None)
+                np.testing.assert_allclose(hook.numpy()[0], 0.0, atol=1.0e-6)
+
+    def test_imu_at_rest_reads_world_gravity(self):
+        """Read the world-gravity specific force from a body at rest with no gravity."""
+        builder = self._builder((0.0, 0.0, -9.81))
+        body = self._add_free_body(builder, 0.0, 0.0)
+        site = builder.add_site(body)
+        model = builder.finalize()
+        imu = newton.sensors.SensorIMU(model, sites=[site], request_state_attributes=False)
+        solver = SolverMuJoCo(model)
+        observables = solver.observables(kinds=imu.solver_observable_kinds)
+        state_0, state_1 = model.state(), model.state()
+        solver.step(state_0, state_1, model.control(), None, self.DT, observables=observables)
+        imu.update(state_1, observables=observables)
+        np.testing.assert_allclose(state_1.body_qd.numpy()[0], np.zeros(6), atol=1.0e-6)
+        np.testing.assert_allclose(imu.accelerometer.numpy()[0], (0.0, 0.0, 9.81), atol=1.0e-4)
+
+    def test_free_joint_force_without_body_f(self):
+        """Replace, not accumulate, free-joint forces over steps when the state has no body forces."""
+        builder = self._builder((0.0, 0.0, -10.0))
+        self._add_free_body(builder, 1.0, 0.0)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        states = [model.state(), model.state()]
+        for state in states:
+            state.body_f = None
+        control = model.control()
+        control.joint_f.assign([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
+        for _ in range(3):
+            solver.step(states[0], states[1], control, None, self.DT)
+            states.reverse()
+        np.testing.assert_allclose(states[0].body_qd.numpy()[0], np.zeros(6), atol=1.0e-5)
+
+    def test_global_body_gravity_without_body_f(self):
+        """Apply a global body's own gravity when the state has no body forces."""
+        builder = self._builder((0.0, 0.0, -2.0))
+        body = self._add_free_body(builder, 1.0, 0.0)
+        builder.begin_world(gravity=(0.0, 0.0, -5.0))
+        self._add_free_body(builder, 1.0, 0.0)
+        builder.end_world()
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        state_0, state_1 = model.state(), model.state()
+        state_0.body_f = None
+        solver.step(state_0, state_1, None, None, self.DT)
+        np.testing.assert_allclose(state_1.body_qd.numpy()[body, 2], -2.0 * self.DT, atol=1.0e-6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

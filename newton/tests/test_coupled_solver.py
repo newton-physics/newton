@@ -3136,6 +3136,7 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
                     device=device,
                 )
                 body_world = wp.array((-1, 0, 1), dtype=wp.int32, device=device)
+                body_gravity_scale = wp.ones(3, dtype=wp.float32, device=device)
                 mjc_body_to_newton = wp.array(((1,), (2,)), dtype=wp.int32, device=device)
                 body_gravcomp = wp.array(((0.0,), (0.5,)), dtype=float, device=device)
                 acceleration = wp.empty(3, dtype=wp.vec3, device=device)
@@ -3143,7 +3144,7 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
                 wp.launch(
                     eval_mujoco_coupling_gravity_acceleration_kernel,
                     dim=3,
-                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp, 0],
+                    inputs=[gravity, body_world, body_gravity_scale, mjc_body_to_newton, body_gravcomp, 0],
                     outputs=[acceleration],
                     device=device,
                 )

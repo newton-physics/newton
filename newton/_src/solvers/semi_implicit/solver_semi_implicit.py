@@ -8,7 +8,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
-from ...sim import Contacts, Control, JointType, Model, State
+from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
@@ -123,6 +123,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             raise ValueError("SolverSemiImplicit does not support JointType.ROD joints.")
 
         super().__init__(model=model)
+        self._validate_body_gravity_scale(applies_scale=False)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
         if model.joint_count > 0:
@@ -177,6 +178,18 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         """Store the legacy value without changing the friction force."""
         warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._friction_smoothing = value
+
+    @override
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Reject gravity scales the solver does not apply after body or body inertial changes.
+
+        Args:
+            flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
+                changed.
+        """
+        # A kinematic body made dynamic brings its scale into the dynamics.
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._validate_body_gravity_scale(applies_scale=False)
 
     @override
     def step(

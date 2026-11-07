@@ -2390,6 +2390,8 @@ class ModelBuilder:
         """Per-body inertia-lock flags retained while composing bodies in the builder."""
         self.body_flags: list[int] = []
         """Body flags accumulated for :attr:`Model.body_flags`."""
+        self.body_gravity_scale: list[float] = []
+        """Body gravity scales accumulated for :attr:`Model.body_gravity_scale`."""
         self.body_shapes: dict[int, list[int]] = {-1: []}
         """Mapping from body index to attached shape indices, finalized into :attr:`Model.body_shapes`."""
         self._body_variants: dict[int, _BodyVariants] = {}
@@ -6352,6 +6354,7 @@ class ModelBuilder:
         label: str | None = None,
         lock_inertia: bool = False,
         is_kinematic: bool = False,
+        gravity_scale: float = 1.0,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
@@ -6373,6 +6376,8 @@ class ModelBuilder:
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
                 Only root bodies (bodies whose joint parent is ``-1``) may be kinematic.
+            gravity_scale: Scale of the gravity force on the body [dimensionless], see
+                :attr:`Model.body_gravity_scale`. Must be finite.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -6391,6 +6396,8 @@ class ModelBuilder:
             inertia = wp.mat33()
         else:
             inertia = self._coerce_mat33(inertia)
+        if not math.isfinite(gravity_scale):
+            raise ValueError(f"gravity_scale must be finite, got {gravity_scale}")
 
         body_id = len(self.body_mass)
 
@@ -6400,6 +6407,7 @@ class ModelBuilder:
         self.body_com.append(com)
         self.body_lock_inertia.append(lock_inertia)
         self.body_flags.append(int(BodyFlags.KINEMATIC) if is_kinematic else int(BodyFlags.DYNAMIC))
+        self.body_gravity_scale.append(float(gravity_scale))
 
         if mass > 0.0:
             self.body_inv_mass.append(1.0 / mass)
@@ -6437,6 +6445,7 @@ class ModelBuilder:
         label: str | None = None,
         lock_inertia: bool = False,
         is_kinematic: bool = False,
+        gravity_scale: float = 1.0,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
@@ -6462,6 +6471,8 @@ class ModelBuilder:
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
+            gravity_scale: Scale of the gravity force on the body [dimensionless], see
+                :attr:`Model.body_gravity_scale`. Must be finite.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -6476,6 +6487,7 @@ class ModelBuilder:
             label=label,
             lock_inertia=lock_inertia,
             is_kinematic=is_kinematic,
+            gravity_scale=gravity_scale,
             custom_attributes=custom_attributes,
         )
 
@@ -8292,6 +8304,9 @@ class ModelBuilder:
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
 
+        Fixed joints between bodies with different :attr:`body_gravity_scale` values are kept, since
+        one merged body cannot carry two scales.
+
         Note:
             Deformable labels do not change which fixed joints are collapsed. A curve's
             record describes its surviving segment bodies and joints. It is omitted with
@@ -8359,6 +8374,7 @@ class ModelBuilder:
                 "com": axis_to_vec3(self.body_com[i]),
                 "lock_inertia": self.body_lock_inertia[i],
                 "flags": self.body_flags[i],
+                "gravity_scale": self.body_gravity_scale[i],
                 "label": body_lbl,
                 "original_id": i,
             }
@@ -8498,6 +8514,11 @@ class ModelBuilder:
 
             # Don't merge fixed joints listed in joints_to_keep list
             joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
+            # One merged body cannot carry two gravity scales.
+            gravity_scale_differs = (
+                last_dynamic_body > -1
+                and body_data[child_body]["gravity_scale"] != body_data[last_dynamic_body]["gravity_scale"]
+            )
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Keep a body frame required by a constraint instead of merging it into world.
@@ -8535,7 +8556,12 @@ class ModelBuilder:
                         stacklevel=3,
                     )
 
-            if joint["type"] == JointType.FIXED and not should_skip_merge and not joint_in_keep_list:
+            if (
+                joint["type"] == JointType.FIXED
+                and not should_skip_merge
+                and not joint_in_keep_list
+                and not gravity_scale_differs
+            ):
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
@@ -8712,6 +8738,7 @@ class ModelBuilder:
         self.body_com.clear()
         self.body_lock_inertia.clear()
         self.body_flags.clear()
+        self.body_gravity_scale.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_world.clear()  # Clear body groups
@@ -8733,6 +8760,7 @@ class ModelBuilder:
             self.body_com.append(body["com"])
             self.body_lock_inertia.append(body["lock_inertia"])
             self.body_flags.append(body["flags"])
+            self.body_gravity_scale.append(body["gravity_scale"])
             if body["inv_mass"] is None:
                 # recompute inverse mass and inertia
                 if m > 0.0:
@@ -14263,6 +14291,15 @@ class ModelBuilder:
                     f"Invalid body flag for body {idx} ('{body_label}'): got {int(body_flags[idx])}, "
                     f"but expected exactly one of BodyFlags.DYNAMIC or BodyFlags.KINEMATIC."
                 )
+        with self._raw_array_access():
+            body_gravity_scale = np.asarray(self.body_gravity_scale, dtype=np.float32)
+        if body_gravity_scale.shape != (body_count,):
+            raise ValueError(
+                f"Invalid body_gravity_scale length: expected {body_count} entries, got {len(body_gravity_scale)}."
+            )
+        if not np.all(np.isfinite(body_gravity_scale)):
+            idx = int(np.flatnonzero(~np.isfinite(body_gravity_scale))[0])
+            raise ValueError(f"body_gravity_scale of body {idx} must be finite, got {body_gravity_scale[idx]}.")
 
         # Validate shape_body references: must be in [-1, body_count-1]
         if self.shape_count > 0:
@@ -16735,6 +16772,7 @@ class ModelBuilder:
             m.body_com = warp_array_from_values(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_label = self.body_label
             m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
+            m.body_gravity_scale = wp.array(self.body_gravity_scale, dtype=wp.float32, requires_grad=requires_grad)
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors
@@ -17279,6 +17317,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "body_mass": wp.float32,
     "body_inv_mass": wp.float32,
     "body_flags": wp.int32,
+    "body_gravity_scale": wp.float32,
     "body_world": wp.int32,
     "joint_q": wp.float32,
     "joint_qd": wp.float32,

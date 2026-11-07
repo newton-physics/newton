@@ -268,6 +268,7 @@ def _rnea_compensation_pass(
             model.joint_X_p,
             model.body_world,
             gravity,
+            model.body_gravity_scale,
         ],
         outputs=[
             scratch.body_qd_fk,
@@ -356,7 +357,7 @@ def _compute_gravity_force(
     """Compute the gravity force ``g(q) = ∂U/∂q``.
 
     Runs RNEA with joint velocities zeroed and gravity set to
-    :attr:`Model.gravity`, producing the joint-space force needed to hold the
+    :attr:`Model.gravity` scaled by :attr:`Model.body_gravity_scale`, producing the joint-space force needed to hold the
     articulation static under gravity.
 
     When ``mask`` is provided, only the selected articulations contribute;
@@ -504,6 +505,7 @@ def _compute_bias_forces_per_joint(
             body_solve_origin,
             model.body_world,
             model.gravity,
+            model.body_gravity_scale,
         ],
         outputs=[body_f_s],
         device=device,
@@ -569,7 +571,8 @@ def eval_inverse_dynamics_passive(
       :attr:`~newton.Model.joint_armature` added to the diagonal;
     * ``gravity_force`` ← the gravity force ``g(q) = ∂U/∂q`` [N or N·m,
       depending on joint type], where ``U(q)`` is the system's
-      gravitational potential energy ``sum_i -m_i * g . x_com_i``. This is
+      gravitational potential energy ``sum_i -s_i * m_i * g . x_com_i``
+      with ``s_i`` from :attr:`~newton.Model.body_gravity_scale`. This is
       the joint-space force that holds the articulation static under
       gravity;
     * ``coriolis_force`` ← the Coriolis + centrifugal force

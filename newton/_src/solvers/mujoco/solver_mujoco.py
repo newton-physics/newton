@@ -5570,7 +5570,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         out_body_acceleration: wp.array[wp.vec3] | None,
         out_particle_acceleration: wp.array[wp.vec3] | None,
     ) -> None:
-        """Evaluate MuJoCo's internally applied gravity acceleration for coupling."""
+        """Evaluate MuJoCo's internally applied gravity acceleration for coupling.
+
+        A body's acceleration is ``s * (1 - gravcomp) * g`` with its
+        :attr:`~newton.Model.body_gravity_scale` ``s``. When actuator gravity compensation saturates
+        an actuator's force limit, this overstates the compensation MuJoCo applies.
+        """
         if out_particle_acceleration is not None:
             super().coupling_eval_gravity_acceleration(None, out_particle_acceleration)
 
@@ -5588,6 +5593,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.model.gravity,
                 self.model.body_world,
+                self.model.body_gravity_scale,
                 self.mjc_body_to_newton,
                 body_gravcomp,
                 self._option_world,
@@ -5873,6 +5879,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._validate_compiled_actuator_gears()
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
+            self._validate_body_gravity_scale(applies_scale=True)
             self._update_model_inertial_properties()
             # set_const_fixed / set_const_0 (called below) recompute MuJoCo
             # constants that feed into contact solver parameters (invweight0,
@@ -6158,7 +6165,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return hasattr(data, "nworld")
 
     def _apply_mjc_control(self, model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
-        # Without applied forces only xfrc_applied is written, to clear the previous step's forces.
+        # Without applied forces only the per-body gravity terms are written.
         apply_control = (control is not None and control.joint_f is not None) or state.body_f is not None
         if not apply_control:
             control = None
@@ -6243,7 +6250,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=model.device,
             )
 
-        # Runs every step, also without body forces: the free-joint kernel below adds to xfrc_applied.
+        # Runs every step: it also applies the body gravity scales.
         nbody = self.mjc_body_to_newton.shape[1]
         wp.launch(
             apply_mjc_body_f_kernel,
@@ -6252,6 +6259,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjc_body_to_newton,
                 model.body_flags,
                 state.body_f,
+                model.body_mass,
+                model.body_world,
+                model.gravity,
+                model.body_gravity_scale,
             ],
             outputs=[
                 xfrc,
@@ -10174,6 +10185,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.body_com,
                 self.model.body_mass,
                 gravcomp,
+                self.model.body_gravity_scale,
             ],
             outputs=[
                 self.mjw_model.body_ipos,

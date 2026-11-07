@@ -843,6 +843,9 @@ The table below shows PhysX attribute remapping examples:
    * - ``physxArticulation:enabledSelfCollisions``
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
+   * - ``physxRigidBody:disableGravity``
+     - ``gravity_scale`` (per body)
+     - ``true`` → ``0.0``, ``false`` → ``1.0``
 
 For mesh colliders with ``physics:approximation = "convexDecomposition"`` and
 ``PhysxConvexDecompositionCollisionAPI`` applied, enabling
@@ -871,6 +874,14 @@ On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArtic
      - Direct mapping
 
 The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
+
+**Newton body remapping:**
+
+On rigid body prims, ``newton:gravityScale`` (float, default ``1.0``) resolves to the
+``gravity_scale`` key, as does ``physxRigidBody:disableGravity`` when
+:class:`newton.usd.SchemaResolverPhysx` is enabled. The resolved value sets
+:attr:`newton.Model.body_gravity_scale`. Authored ``mjc:gravcomp`` stays MuJoCo's gravity
+compensation in ``model.mujoco.gravcomp`` and is not converted to a gravity scale.
 
 **Newton Joint Attribute Remapping:**
 

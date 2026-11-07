@@ -1014,6 +1014,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             collision_frequency=collision_frequency,
             collision_frequency_type=collision_frequency_type,
         )
+        self._validate_body_gravity_scale(applies_scale=False)
         # The solver's warm-start setting is authoritative for an owned pipeline:
         # lambda/penalty restores ride the pipeline's matched contact indices, so
         # history without matching silently cold-starts every refresh (k times per
@@ -1626,6 +1627,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Refresh solver caches affected by the specified model-property flags."""
+        # A kinematic body made dynamic brings its scale into the dynamics.
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._validate_body_gravity_scale(applies_scale=False)
         self._apply_module_options()
         if flags & ModelFlags.TENDON_PROPERTIES:
             self._refresh_tendon_properties()
