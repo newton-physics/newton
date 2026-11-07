@@ -176,24 +176,10 @@ def compute_contact_predictive_score(
 
 
 @wp.func
-def _contact_passes_gap_check_precomputed(
-    contact_data: ContactData,
-    contact_normal_a_to_b: wp.vec3,
-    total_separation_needed: float,
-) -> bool:
-    """Check a contact gap using manifold-invariant precomputed values."""
-    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
-    )
-    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
-
-    diff = b_contact_world - a_contact_world
-    distance = wp.dot(diff, contact_normal_a_to_b)
-    d = distance - total_separation_needed
-
-    return d <= contact_data.gap_sum
+def contact_separation(contact_data: ContactData) -> float:
+    """Return the signed surface separation after margins [m]."""
+    # The effective radii in the endpoint displacement and offsets cancel.
+    return contact_data.contact_distance - (contact_data.margin_a + contact_data.margin_b)
 
 
 @wp.func
@@ -209,18 +195,7 @@ def contact_passes_gap_check(
     Returns:
         True if the contact distance is within the contact gap threshold, False otherwise
     """
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-
-    # Distance calculation matching box_plane_collision
-    contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
-
-    return _contact_passes_gap_check_precomputed(
-        contact_data,
-        contact_normal_a_to_b,
-        total_separation_needed,
-    )
+    return contact_separation(contact_data) <= contact_data.gap_sum
 
 
 @wp.func
@@ -233,11 +208,7 @@ def prepare_speculative_contact(contact_data: ContactData) -> tuple[wp.vec3, wp.
     point_b = contact_data.contact_point_center + normal * (
         0.5 * contact_data.contact_distance + contact_data.radius_eff_b
     )
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-    separation = wp.dot(point_b - point_a, normal) - total_separation_needed
-    return normal, point_a, point_b, separation
+    return normal, point_a, point_b, contact_separation(contact_data)
 
 
 @wp.func
