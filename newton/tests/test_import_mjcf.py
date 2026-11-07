@@ -2283,6 +2283,302 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
 
 
+class TestImportMjcfMeshInertia(unittest.TestCase):
+    """MJCF mesh ``inertia`` modes give the mass properties of native MuJoCo."""
+
+    # Two disjoint tetrahedra: legacy, exact, convex and shell all differ.
+    VERTICES = np.concatenate(
+        (
+            np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+            np.array([[3, 0.5, 0], [4, 0.5, 0], [3, 1.5, 0], [3, 0.5, 1]]),
+        )
+    )
+    FACES = (
+        np.concatenate((np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),) * 2) + np.repeat([0, 4], 4)[:, None]
+    )
+
+    def assert_matches_native(self, mjcf: str, asset_dir: str | None = None) -> newton.ModelBuilder:
+        """Compare the first body's mass, center of mass and inertia tensor with native MuJoCo.
+
+        Returns:
+            The builder of the imported model.
+        """
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        if asset_dir is None:
+            native = mujoco.MjModel.from_xml_string(mjcf)
+            source = mjcf
+        else:
+            source = os.path.join(asset_dir, "model.xml")
+            Path(source).write_text(mjcf)
+            native = mujoco.MjModel.from_xml_path(source)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(source)
+        rotation = np.zeros(9)
+        mujoco.mju_quat2Mat(rotation, native.body_iquat[1])
+        rotation = rotation.reshape(3, 3)
+        expected_inertia = rotation @ np.diag(native.body_inertia[1]) @ rotation.T
+        np.testing.assert_allclose(builder.body_mass[0], native.body_mass[1], rtol=1e-5)
+        np.testing.assert_allclose(builder.body_com[0], native.body_ipos[1], atol=1e-5)
+        np.testing.assert_allclose(
+            np.array(builder.body_inertia[0]).reshape(3, 3), expected_inertia, rtol=1e-5, atol=1e-6
+        )
+        return builder
+
+    def inline_mjcf(
+        self,
+        mesh_attributes: str = "",
+        defaults: str = "",
+        geom_attributes: str = "",
+        vertices: np.ndarray | None = None,
+        faces: np.ndarray | None = None,
+    ) -> str:
+        """Build an MJCF model with one free body and one inline mesh geom."""
+        vertex = " ".join(map(str, (self.VERTICES if vertices is None else vertices).flat))
+        face = " ".join(map(str, (self.FACES if faces is None else faces).flat))
+        return f"""<mujoco><default>{defaults}</default><asset>
+          <mesh name="mesh" vertex="{vertex}" face="{face}" {mesh_attributes}/></asset>
+          <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh" {geom_attributes}/></body></worldbody>
+        </mujoco>"""
+
+    def test_inline_mesh_inertia_modes(self):
+        """The default and each authored mode match native MuJoCo."""
+        for mode in (None, "legacy", "exact", "convex", "shell"):
+            with self.subTest(mode=mode):
+                self.assert_matches_native(self.inline_mjcf(f'inertia="{mode}"' if mode else ""))
+
+    def test_mesh_inertia_from_default_class(self):
+        """Mesh class defaults select the inertia mode."""
+        self.assert_matches_native(self.inline_mjcf(defaults='<mesh inertia="shell"/>'))
+        self.assert_matches_native(
+            self.inline_mjcf('class="hull"', defaults='<default class="hull"><mesh inertia="convex"/></default>')
+        )
+
+    def test_file_mesh_inertia_with_scale_ref_pose_and_mass(self):
+        """File meshes apply the mode after scale and reference pose; an authored mass sets the density.
+
+        Per-vertex colors split the file into one submesh per color unless a geom sets ``rgba``, so the
+        two geoms load the same mesh asset as different submeshes.
+        """
+        colors = np.repeat([[1, 0, 0], [0, 0, 1]], 4, axis=0)
+        obj = "".join(
+            f"v {x} {y} {z} {r} {g} {b}\n" for (x, y, z), (r, g, b) in zip(self.VERTICES, colors, strict=True)
+        )
+        obj += "".join(f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in self.FACES)
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "mesh.obj").write_text(obj)
+            for mesh_attributes, geom_attributes in (
+                ('scale="2 1 0.5"', ""),
+                ('refpos="0.5 0.2 0.1" refquat="0.9 0.1 0.3 0.2"', 'mass="2"'),
+                ('inertia="shell" scale="0.5 0.5 0.5"', 'mass="3"'),
+            ):
+                with self.subTest(mesh=mesh_attributes, geom=geom_attributes):
+                    mjcf = f"""<mujoco><asset><mesh name="mesh" file="mesh.obj" {mesh_attributes}/></asset>
+                      <worldbody><body name="body"><freejoint/>
+                        <geom type="mesh" mesh="mesh" {geom_attributes}/>
+                        <geom type="mesh" mesh="mesh" rgba="0.5 0.5 0.5 1" {geom_attributes}/></body></worldbody>
+                      </mujoco>"""
+                    self.assertEqual(self.assert_matches_native(mjcf, directory).shape_count, 3)
+
+    def test_mesh_inertia_computed_once_per_asset(self):
+        """Geoms sharing a mesh asset reuse its mass properties."""
+        import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
+
+        calls = []
+        original = import_mjcf._mesh_mass_properties
+
+        def counting(*args, **kwargs):
+            calls.append(args[2])
+            return original(*args, **kwargs)
+
+        mjcf = self.inline_mjcf(geom_attributes='pos="0 0 1"').replace(
+            "</body>",
+            '<geom type="mesh" mesh="mesh"/></body><body><freejoint/><geom type="mesh" mesh="mesh"/></body>',
+            1,
+        )
+        import_mjcf._mesh_mass_properties = counting
+        try:
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+        finally:
+            import_mjcf._mesh_mass_properties = original
+        self.assertEqual(builder.shape_count, 3)
+        self.assertEqual(calls, ["legacy"])
+
+    def test_invalid_mesh_inertia_mode_raises(self):
+        """Reject inertia keywords that MuJoCo does not accept."""
+        with self.assertRaisesRegex(ValueError, "unsupported inertia 'solid'"):
+            newton.ModelBuilder().add_mjcf(self.inline_mjcf('inertia="solid"'))
+
+    def test_convex_inertia_with_maxhullvert(self):
+        """A limited convex hull keeps the vertices MuJoCo's qhull options select before scale and pose."""
+        import trimesh
+        from scipy.spatial import ConvexHull
+
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        # Deterministic, irregular cloud: a Fibonacci sphere with varying radius.
+        index = np.arange(60)
+        z = 1.0 - (2.0 * index + 1.0) / 60.0
+        azimuth = index * np.pi * (3.0 - np.sqrt(5.0))
+        radius = 0.7 + 0.3 * ((index * 0.618034) % 1.0)
+        rho = np.sqrt(1.0 - z**2)
+        vertices = (radius[:, None] * np.stack((rho * np.cos(azimuth), rho * np.sin(azimuth), z), axis=1)).astype(
+            np.float32
+        )
+        faces = ConvexHull(vertices.astype(np.float64)).simplices
+        masses = []
+        for maxhullvert in (None, 8, 10):
+            hull = f'maxhullvert="{maxhullvert}"' if maxhullvert else ""
+            mjcf = self.inline_mjcf(f'inertia="convex" {hull}', vertices=vertices, faces=faces)
+            with self.subTest(maxhullvert=maxhullvert):
+                self.assert_matches_native(mjcf)
+            masses.append(mujoco.MjModel.from_xml_string(mjcf).body_mass[1])
+        # The limits must change the native mass, or the test would not cover them.
+        self.assertGreater(min(abs(masses[0] - masses[1]), abs(masses[0] - masses[2])), 0.01 * masses[0])
+        # MuJoCo builds the limited hull before a non-uniform or mirrored scale and a reference pose.
+        for pose in ('scale="2 0.5 1.5"', 'scale="-2 0.5 1.5"', 'refpos="0.1 0.2 0.3" refquat="0.9 0.1 0.3 0.2"'):
+            mjcf = self.inline_mjcf(f'inertia="convex" maxhullvert="12" {pose}', vertices=vertices, faces=faces)
+            with self.subTest(pose=pose):
+                self.assert_matches_native(mjcf)
+        # A mesh file, as in #3754's test: Newton's loader scales its vertices on load.
+        with tempfile.TemporaryDirectory() as directory:
+            trimesh.creation.icosphere(subdivisions=2).export(os.path.join(directory, "sphere.obj"))
+            mjcf = """<mujoco><asset>
+              <mesh name="mesh" file="sphere.obj" inertia="convex" maxhullvert="12" scale="2 0.5 1.5"/></asset>
+              <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh"/></body></worldbody></mujoco>"""
+            with self.subTest(file="sphere.obj"):
+                self.assert_matches_native(mjcf, directory)
+
+    def test_mesh_without_faces_uses_mujoco_hull(self):
+        """Take the mass of a mesh without faces from MuJoCo's hull of all its vertices, not the collision hull."""
+        # 100 points on a sphere: all lie on the hull, which then has more than the collision hull's 64 vertices.
+        index = np.arange(100)
+        z = 1.0 - (2.0 * index + 1.0) / 100.0
+        azimuth = index * np.pi * (3.0 - np.sqrt(5.0))
+        rho = np.sqrt(1.0 - z**2)
+        points = np.stack((rho * np.cos(azimuth), rho * np.sin(azimuth), z), axis=1).astype(np.float32)
+        vertex = " ".join(map(str, points.flat))
+        with tempfile.TemporaryDirectory() as directory:
+            header = np.array([len(points), 0, 0, 0], dtype=np.int32)
+            Path(directory, "points.msh").write_bytes(header.tobytes() + points.tobytes())
+            for source in (f'vertex="{vertex}"', 'file="points.msh"'):
+                for attributes in (
+                    "",
+                    'inertia="exact"',
+                    'inertia="shell"',
+                    'inertia="convex" maxhullvert="40"',
+                    'maxhullvert="40" scale="2 0.5 1.5"',
+                ):
+                    # Unit density keeps the float32 body inertia within the comparison's absolute tolerance.
+                    mjcf = f"""<mujoco><asset><mesh name="mesh" {source} {attributes}/></asset>
+                      <worldbody><body name="body"><freejoint/><geom type="mesh" mesh="mesh" density="1"/></body>
+                    </worldbody></mujoco>"""
+                    with self.subTest(source=source.split("=")[0], attributes=attributes):
+                        self.assert_matches_native(mjcf, directory)
+
+    def test_fitted_primitives_use_inertia_mode(self):
+        """Fit primitives to the equivalent inertia box of the mesh's mode, as MuJoCo does."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for mode in (None, "exact", "convex", "shell"):
+            for geom_type in ("box", "capsule"):
+                mjcf = self.inline_mjcf(f'inertia="{mode}"' if mode else "")
+                mjcf = mjcf.replace('type="mesh"', f'type="{geom_type}"')
+                with self.subTest(mode=mode, geom_type=geom_type):
+                    native = mujoco.MjModel.from_xml_string(mjcf)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    transform = builder.shape_transform[0]
+                    np.testing.assert_allclose(np.array(transform.p), native.geom_pos[0], atol=1e-5)
+                    axes = np.array([wp.quat_rotate(transform.q, wp.vec3(*axis)) for axis in np.eye(3)]).T
+                    native_axes = np.zeros(9)
+                    mujoco.mju_quat2Mat(native_axes, native.geom_quat[0])
+                    native_axes = native_axes.reshape(3, 3)
+                    size, native_size = np.array(builder.shape_scale[0]), native.geom_size[0]
+                    if geom_type == "box":
+                        # Compare the boxes independently of the order and signs of their axes.
+                        np.testing.assert_allclose(
+                            axes @ np.diag(size**2) @ axes.T,
+                            native_axes @ np.diag(native_size**2) @ native_axes.T,
+                            atol=1e-5,
+                        )
+                    else:
+                        np.testing.assert_allclose(size[:2], native_size[:2], rtol=1e-5)
+                        self.assertAlmostEqual(abs(axes[:, 2] @ native_axes[:, 2]), 1.0, places=5)
+
+    def test_exact_inertia_warns_about_inconsistent_orientation(self):
+        """Warn about faces with inconsistent orientation, which MuJoCo rejects for ``inertia="exact"``."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        flipped = self.FACES[:4].copy()
+        flipped[3] = flipped[3][::-1]
+        for faces, mode in ((flipped, "exact"), (flipped, "legacy"), (self.FACES[:4], "exact")):
+            mjcf = self.inline_mjcf(f'inertia="{mode}"', vertices=self.VERTICES[:4], faces=faces)
+            rejected = faces is flipped and mode == "exact"
+            with self.subTest(flipped=faces is flipped, mode=mode):
+                if rejected:
+                    with self.assertRaisesRegex(ValueError, "inconsistent orientation"):
+                        mujoco.MjModel.from_xml_string(mjcf)
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        newton.ModelBuilder().add_mjcf(mjcf)
+                    self.assertIn("inconsistent orientation", "\n".join(logs.output))
+                else:
+                    mujoco.MjModel.from_xml_string(mjcf)
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        newton.ModelBuilder().add_mjcf(mjcf)
+
+    def test_mesh_without_volume_adds_no_mass(self):
+        """A mesh that its mode gives no volume adds no mass, where MuJoCo rejects it; ``shell`` gives it mass."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        # A flat square away from the origin, where Newton's exact signed volume is not zero.
+        square = np.array([[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]])
+        triangles = np.array([[0, 1, 2], [0, 2, 3]])
+        # Non-colliding, so native MuJoCo does not need a collision hull of the flat mesh.
+        geom = 'contype="0" conaffinity="0"'
+        for mode in (None, "convex"):
+            mjcf = self.inline_mjcf(
+                f'inertia="{mode}"' if mode else "", geom_attributes=geom, vertices=square, faces=triangles
+            )
+            with self.subTest(mode=mode):
+                with self.assertRaises(ValueError):
+                    mujoco.MjModel.from_xml_string(mjcf)
+                builder = newton.ModelBuilder()
+                with self.assertLogs("newton", level="WARNING") as logs:
+                    builder.add_mjcf(mjcf)
+                self.assertIn("adds no mass", "\n".join(logs.output))
+                self.assertEqual(builder.body_mass[0], 0.0)
+        self.assert_matches_native(
+            self.inline_mjcf('inertia="shell"', geom_attributes=geom, vertices=square, faces=triangles)
+        )
+
+    def test_file_mesh_skips_exact_inertia(self):
+        """File meshes compute exact mass properties only for ``inertia="exact"``.
+
+        The geom's color override must not make the mass properties load the file a second time.
+        """
+        import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
+
+        obj = "".join(f"v {x} {y} {z}\n" for x, y, z in self.VERTICES)
+        obj += "".join(f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in self.FACES)
+        original = import_mjcf.load_meshes_from_file
+        requested = []
+
+        def recording(*args, **kwargs):
+            requested.append(kwargs["compute_inertia"])
+            return original(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "mesh.obj").write_text(obj)
+            import_mjcf.load_meshes_from_file = recording
+            try:
+                for mode in ("legacy", "exact"):
+                    with self.subTest(mode=mode):
+                        mjcf = f"""<mujoco><asset><mesh name="mesh" file="mesh.obj" inertia="{mode}"/></asset>
+                          <worldbody><body name="body"><freejoint/>
+                            <geom type="mesh" mesh="mesh" rgba="1 0 0 1"/></body></worldbody></mujoco>"""
+                        self.assert_matches_native(mjcf, directory)
+            finally:
+                import_mjcf.load_meshes_from_file = original
+        self.assertEqual(requested, [False, True])
+
+
 class TestImportMjcfInlineMesh(unittest.TestCase):
     """Tests for MJCF mesh assets authored with inline arrays."""
 
@@ -4554,15 +4850,13 @@ f 4 5 8
             s = builder.shape_scale[0]
             # Sorted half-extents should match the original box dims.
             np.testing.assert_allclose(sorted([s[0], s[1], s[2]]), [0.5, 1.0, 2.0], atol=0.05)
-            # Eigenvector signs are platform-dependent, so just verify the
-            # rotation is non-trivial.  Warp XYZW identity = [0, 0, 0, 1].
-            t = builder.shape_transform[0]
-            q = t.q
-            q_np = np.array([q[0], q[1], q[2], q[3]])
-            self.assertFalse(
-                np.allclose(np.abs(q_np), [0, 0, 0, 1], atol=0.1),
-                "Expected non-identity rotation for rotated mesh",
-            )
+            # The fitted box's longest axis (Z) is the mesh box's rotated x axis and its
+            # shortest (X) the rotated y axis; eigenvector signs are platform-dependent.
+            q = builder.shape_transform[0].q
+            long_axis = np.array(wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0)))
+            short_axis = np.array(wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0)))
+            self.assertAlmostEqual(abs(long_axis @ [cos_a, sin_a, 0.0]), 1.0, places=4)
+            self.assertAlmostEqual(abs(short_axis @ [-sin_a, cos_a, 0.0]), 1.0, places=4)
 
     def test_fit_with_fitscale(self):
         """fitscale attribute scales the fitted primitive."""
@@ -5658,11 +5952,13 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 self.assertTrue(np.allclose(value[0], expected))
 
     def test_option_numeric_once_parsing(self):
-        """Test parsing of ONCE frequency numeric options from MJCF (3 options)."""
+        """Test parsing of ONCE frequency numeric options from MJCF (5 options)."""
         test_cases = [
             ("ccd_iterations", "25", 25),
             ("sdf_iterations", "20", 20),
             ("sdf_initpoints", "50", 50),
+            ("noslip_iterations", "5", 5),
+            ("noslip_tolerance", "1e-10", 1e-10),
         ]
 
         for option_name, mjcf_value, expected in test_cases:
@@ -5677,7 +5973,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 value = getattr(model.mujoco, option_name).numpy()
                 # ONCE frequency: single value, not per-world
                 self.assertEqual(len(value), 1)
-                self.assertEqual(value[0], expected)
+                np.testing.assert_allclose(value[0], expected, rtol=1e-6)
 
     def test_option_enum_once_parsing(self):
         """Test parsing of ONCE frequency enum options from MJCF (4 options)."""
@@ -6289,6 +6585,218 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         np.testing.assert_allclose(converted_solver.mj_model.eq_data, legacy_solver.mj_model.eq_data, atol=1e-6)
         np.testing.assert_allclose(converted_solver.mj_model.eq_solref, legacy_solver.mj_model.eq_solref, atol=1e-6)
         np.testing.assert_allclose(converted_solver.mj_model.eq_solimp, legacy_solver.mj_model.eq_solimp, atol=1e-6)
+
+    def test_converted_weld_loop_joint_frames_follow_mujoco(self):
+        """Keep the reference relative pose, or body2's authored relpose in body1's frame, in converted weld frames."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="weld_frames">
+    <worldbody>
+        <body name="a" pos="0.1 0 0.5" euler="0 30 0">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05"/>
+            <body name="b" pos="0.3 0 0" euler="20 0 10">
+                <joint type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <weld name="ref" body1="a" body2="b" anchor="0.05 0.02 0"/>
+        <weld name="rel" body1="a" body2="b" anchor="0.05 0 0" relpose="0.1 0.2 0.3 0.9238795 0 0 0.3826834"/>
+        <weld name="world" body1="b" relpose="0.4 0 1 0.7071068 0.7071068 0 0"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            # The welds parallel the hinges.
+            warnings.filterwarnings(
+                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
+            )
+            builder.add_mjcf(mjcf)
+
+        def pose(body):
+            return builder.body_q[body] if body >= 0 else wp.transform_identity()
+
+        def assert_same_pose(actual, expected):
+            np.testing.assert_allclose(np.array(actual.p), np.array(expected.p), atol=1e-5)
+            q_a, q_e = np.array(actual.q), np.array(expected.q)
+            np.testing.assert_allclose(q_a * np.sign(q_a @ q_e), q_e, atol=1e-5)
+
+        def weld(label):
+            j = builder.joint_label.index(f"weld_frames/{label}")
+            self.assertEqual(builder.joint_type[j], newton.JointType.FIXED)
+            return builder.joint_parent[j], builder.joint_child[j], builder.joint_X_p[j], builder.joint_X_c[j]
+
+        a, b = (
+            builder.body_label.index("weld_frames/worldbody/a"),
+            builder.body_label.index("weld_frames/worldbody/a/b"),
+        )
+
+        # Default relpose: the two frames coincide at the reference pose, on body2's anchor.
+        parent, child, x_p, x_c = weld("ref")
+        self.assertEqual((parent, child), (a, b))
+        world_p = wp.transform_multiply(pose(parent), x_p)
+        assert_same_pose(world_p, wp.transform_multiply(pose(child), x_c))
+        np.testing.assert_allclose(
+            np.array(world_p.p), np.array(wp.transform_point(pose(b), wp.vec3(0.05, 0.02, 0.0))), atol=1e-5
+        )
+
+        # Explicit relpose: body2's anchor is held at relpose's position in body1's frame, with body2 at relpose's
+        # rotation relative to body1 (MuJoCo quaternions are w x y z).
+        relpose = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat(0.0, 0.0, 0.3826834, 0.9238795))
+        _, _, x_p, x_c = weld("rel")
+        held = wp.transform_multiply(relpose, wp.transform(wp.vec3(-0.05, 0.0, 0.0), wp.quat_identity()))
+        assert_same_pose(wp.transform_multiply(x_p, wp.transform_inverse(x_c)), held)
+
+        # Weld to the world: body1's held pose is the inverse of relpose.
+        relpose = wp.transform(wp.vec3(0.4, 0.0, 1.0), wp.quat(0.7071068, 0.0, 0.0, 0.7071068))
+        parent, child, x_p, x_c = weld("world")
+        self.assertEqual((parent, child), (-1, b))
+        assert_same_pose(wp.transform_multiply(x_p, wp.transform_inverse(x_c)), wp.transform_inverse(relpose))
+
+    def test_converted_weld_frames_follow_import_xform_and_scale(self):
+        """Hold MuJoCo's weld targets in converted weld frames after an import transform and scale."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="weld_xform">
+    <worldbody>
+        <body name="a" pos="0.1 0 0.5" euler="0 30 0">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05"/>
+            <body name="b" pos="0.3 0 0">
+                <joint type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+        <body name="c" pos="0.4 0 1">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+    <equality>
+        <weld name="pair" body1="a" body2="b" relpose="0.3 0 0 1 0 0 0"/>
+        <weld name="to_world" body1="c" relpose="-0.2 0 -1 0.9238795 0 0 0.3826834"/>
+        <weld name="from_world" body1="world" body2="c" relpose="0.6 0.1 0.9 0.9238795 0.3826834 0 0"/>
+        <weld name="pivot" body1="c" anchor="0.5 0 1.1" torquescale="0"/>
+    </equality>
+</mujoco>
+"""
+        xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
+        scale = 2.0
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING"), warnings.catch_warnings():
+            # The welds parallel the hinges.
+            warnings.filterwarnings(
+                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
+            )
+            builder.add_mjcf(mjcf, xform=xform, scale=scale)
+
+        def frames(label):
+            j = builder.joint_label.index(f"weld_xform/{label}")
+            return builder.joint_parent[j], builder.joint_child[j], builder.joint_X_p[j], builder.joint_X_c[j]
+
+        def assert_same_pose(actual, expected):
+            np.testing.assert_allclose(np.array(actual.p), np.array(expected.p), atol=1e-5)
+            q_a, q_e = np.array(actual.q), np.array(expected.q)
+            np.testing.assert_allclose(q_a * np.sign(q_a @ q_e), q_e, atol=1e-5)
+
+        def scaled(p, q):  # an MJCF relpose (w x y z quaternion) with its position scaled
+            return wp.transform(wp.vec3(*p) * scale, wp.quat(q[1], q[2], q[3], q[0]))
+
+        c = builder.body_label.index("weld_xform/worldbody/c")
+        with self.subTest(weld="pair"):
+            # Satisfied as authored: the frames coincide at the imported poses.
+            parent, child, x_p, x_c = frames("pair")
+            assert_same_pose(
+                wp.transform_multiply(builder.body_q[parent], x_p), wp.transform_multiply(builder.body_q[child], x_c)
+            )
+        # Not satisfied as authored: the world frames hold c at MuJoCo's targets, placed by the transform.
+        with self.subTest(weld="to_world"):
+            parent, child, x_p, x_c = frames("to_world")
+            self.assertEqual((parent, child), (-1, c))
+            target = wp.transform_inverse(scaled((-0.2, 0.0, -1.0), (0.9238795, 0.0, 0.0, 0.3826834)))
+            implied = wp.transform_multiply(x_p, wp.transform_inverse(x_c))
+            assert_same_pose(implied, wp.transform_multiply(xform, target))
+        with self.subTest(weld="from_world"):
+            parent, child, x_p, x_c = frames("from_world")
+            self.assertEqual((parent, child), (-1, c))
+            target = scaled((0.6, 0.1, 0.9), (0.9238795, 0.3826834, 0.0, 0.0))
+            implied = wp.transform_multiply(x_p, wp.transform_inverse(x_c))
+            assert_same_pose(implied, wp.transform_multiply(xform, target))
+        with self.subTest(weld="pivot"):
+            # torquescale 0 to the world pins the world anchor, placed by the transform, at the same point of c.
+            parent, child, x_p, x_c = frames("pivot")
+            self.assertEqual((parent, child), (-1, c))
+            pivot = np.array(wp.transform_point(xform, wp.vec3(0.5, 0.0, 1.1) * scale))
+            np.testing.assert_allclose(np.array(x_p.p), pivot, atol=1e-5)
+            np.testing.assert_allclose(np.array(wp.transform_point(builder.body_q[c], x_c.p)), pivot, atol=1e-5)
+
+    def test_converted_weld_torquescale_selects_the_loop_joint(self):
+        """Convert a weld to a BALL loop joint on its anchor for torquescale 0 and to FIXED otherwise, logging unless 1."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="weld_ts">
+    <worldbody>
+        <body name="a" pos="0.1 0 0.5" euler="0 30 0">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05"/>
+            <body name="b" pos="0.3 0 0" euler="20 0 10">
+                <joint type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <weld name="point" body1="a" body2="b" anchor="0.05 0.02 0" torquescale="0"/>
+        <weld name="scaled" body1="a" body2="b" torquescale="0.5"/>
+        <weld name="full" body1="a" body2="b"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as logs, warnings.catch_warnings():
+            # The welds parallel the hinges.
+            warnings.filterwarnings(
+                "ignore", "Adding a .* another joint already connects", newton.exceptions.NewtonWarning
+            )
+            builder.add_mjcf(mjcf)
+        torquescale_warnings = [line for line in logs.output if "torquescale" in line]
+        self.assertEqual(len(torquescale_warnings), 2, torquescale_warnings)
+        self.assertIn("'weld_ts/point' has torquescale=0", torquescale_warnings[0])
+        self.assertIn("'weld_ts/scaled' has torquescale=0.5", torquescale_warnings[1])
+
+        def joint(label):
+            return builder.joint_label.index(f"weld_ts/{label}")
+
+        self.assertEqual(builder.joint_type[joint("point")], newton.JointType.BALL)
+        self.assertEqual(builder.joint_type[joint("scaled")], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_type[joint("full")], newton.JointType.FIXED)
+
+        # The BALL joint pins body2's anchor where it is at the reference pose.
+        j = joint("point")
+        p, c = builder.joint_parent[j], builder.joint_child[j]
+        world_p = wp.transform_point(builder.body_q[p], builder.joint_X_p[j].p)
+        world_c = wp.transform_point(builder.body_q[c], builder.joint_X_c[j].p)
+        np.testing.assert_allclose(np.array(world_p), np.array(world_c), atol=1e-6)
+        np.testing.assert_allclose(
+            np.array(world_c), np.array(wp.transform_point(builder.body_q[c], wp.vec3(0.05, 0.02, 0.0))), atol=1e-6
+        )
+
+        # SolverMuJoCo keeps all three as weld rows with their torquescale.
+        model = builder.finalize()
+        np.testing.assert_allclose(model.mujoco.equality_constraint_torquescale.numpy(), [0.0, 0.5, 1.0])
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        solver = SolverMuJoCo(model)
+        mj_model = solver.mj_model
+        # Count only the rows between a and b; SolverMuJoCo can add its own weld from a root body to the world.
+        to_newton = solver.mjc_body_to_newton.numpy()[0]
+        a, b = builder.body_label.index("weld_ts/worldbody/a"), builder.body_label.index("weld_ts/worldbody/a/b")
+        rows = [
+            r
+            for r in range(mj_model.neq)
+            if {int(to_newton[mj_model.eq_obj1id[r]]), int(to_newton[mj_model.eq_obj2id[r]])} == {a, b}
+        ]
+        np.testing.assert_array_equal(mj_model.eq_type[rows], [int(mujoco.mjtEq.mjEQ_WELD)] * 3)
+        np.testing.assert_allclose(mj_model.eq_data[rows, 10], [0.0, 0.5, 1.0])
 
     def test_parse_mjcf_registers_converted_equality_attributes(self):
         """Direct parse_mjcf() calls register MuJoCo preservation attributes."""

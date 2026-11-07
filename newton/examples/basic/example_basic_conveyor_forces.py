@@ -15,11 +15,14 @@ Success criteria:
   belt pair.
 - After startup, every box has moved from its spawn location; the fleet does not stall at belt
   transitions.
-- Boxes remain supported on the circuit without non-finite poses or falling through the floor.
+- Every box stays on the circuit for the whole run: no box drops below the belt height
+  (MIN_SUPPORTED_HEIGHT) at any step, and no pose is non-finite.
 
 Runs:
 - `python -m newton.examples basic_conveyor_forces`
 - `python -m newton.examples basic_conveyor_forces --solver kamino`
+- `python -m newton.examples basic_conveyor_forces --solver mujoco`
+- `python -m newton.examples basic_conveyor_forces --solver vbd`
 """
 
 import math
@@ -174,7 +177,6 @@ def identify_belt_contact(
     body_q: wp.array[wp.transform],
     conv_surface_normal: wp.array[wp.vec3],
     conv_threshold: wp.array[wp.float32],
-    use_contact_offsets: wp.int32,
 ) -> BeltContact:
     """Decide whether contact ``i`` is a belt/body contact and extract its inputs for the force model."""
     out = BeltContact()
@@ -195,16 +197,12 @@ def identify_belt_contact(
     if conv0 >= 0 and conv1 < 0:
         conv = conv0
         body = shape_body[shape1]
-        body_point_local = rigid_contact_point1[i]
-        if use_contact_offsets != 0:
-            body_point_local += rigid_contact_offset1[i]
+        body_point_local = rigid_contact_point1[i] + rigid_contact_offset1[i]
         normal_toward_body = normal
     elif conv1 >= 0 and conv0 < 0:
         conv = conv1
         body = shape_body[shape0]
-        body_point_local = rigid_contact_point0[i]
-        if use_contact_offsets != 0:
-            body_point_local += rigid_contact_offset0[i]
+        body_point_local = rigid_contact_point0[i] + rigid_contact_offset0[i]
         normal_toward_body = -normal
     else:
         return out
@@ -247,7 +245,6 @@ def classify_belt_contacts(
     body_q: wp.array[wp.transform],
     conv_surface_normal: wp.array[wp.vec3],
     conv_threshold: wp.array[wp.float32],
-    use_contact_offsets: wp.int32,
     # output
     belt_contacts: wp.array[BeltContact],
     body_contact_count: wp.array[wp.int32],
@@ -270,11 +267,84 @@ def classify_belt_contacts(
         body_q,
         conv_surface_normal,
         conv_threshold,
-        use_contact_offsets,
     )
     belt_contacts[i] = c
     if c.valid == 1:
         wp.atomic_add(body_contact_count, c.body, 1)
+
+
+@wp.kernel
+def accumulate_belt_load(
+    belt_contacts: wp.array[BeltContact],
+    conv_velocity_group: wp.array[wp.int32],
+    # outputs
+    body_load: wp.array[wp.float32],
+    body_point_sum: wp.array[wp.vec3],
+    body_group_min: wp.array[wp.int32],
+    body_group_max: wp.array[wp.int32],
+):
+    """Accumulate each body's total belt normal load, contact centroid sum, and velocity-group range."""
+    i = wp.tid()
+    c = belt_contacts[i]
+    if c.valid == 0:
+        return
+    wp.atomic_min(body_group_min, c.body, conv_velocity_group[c.conv])
+    wp.atomic_max(body_group_max, c.body, conv_velocity_group[c.conv])
+    wp.atomic_add(body_load, c.body, c.normal_force)
+    wp.atomic_add(body_point_sum, c.body, c.point)
+
+
+@wp.kernel
+def accumulate_belt_load_moment(
+    belt_contacts: wp.array[BeltContact],
+    body_contact_count: wp.array[wp.int32],
+    body_point_sum: wp.array[wp.vec3],
+    # outputs
+    body_point_cov: wp.array[wp.mat33],
+    body_load_moment: wp.array[wp.vec3],
+):
+    """Accumulate each body's contact-point covariance and first moment of the normal load about the centroid."""
+    i = wp.tid()
+    c = belt_contacts[i]
+    if c.valid == 0:
+        return
+    d = c.point - body_point_sum[c.body] / float(body_contact_count[c.body])
+    wp.atomic_add(body_point_cov, c.body, wp.outer(d, d))
+    wp.atomic_add(body_load_moment, c.body, d * c.normal_force)
+
+
+@wp.kernel
+def redistribute_belt_load(
+    body_contact_count: wp.array[wp.int32],
+    body_load: wp.array[wp.float32],
+    body_point_sum: wp.array[wp.vec3],
+    body_point_cov: wp.array[wp.mat33],
+    body_load_moment: wp.array[wp.vec3],
+    body_group_min: wp.array[wp.int32],
+    body_group_max: wp.array[wp.int32],
+    # in/out
+    belt_contacts: wp.array[BeltContact],
+):
+    """Replace per-contact normal forces with the linear pressure field that has the same
+    total force and first moment, for bodies that span belts with different velocity fields.
+
+    A body resting on several coplanar contacts is statically indeterminate: solvers may
+    return any split with the right total and moment. Since the drive is bounded per contact
+    by friction times normal force, an uneven split would bias the drive between belts.
+    """
+    i = wp.tid()
+    c = belt_contacts[i]
+    if c.valid == 0:
+        return
+    if body_group_min[c.body] == body_group_max[c.body]:
+        return
+    n = float(body_contact_count[c.body])
+    cov = body_point_cov[c.body]
+    eps = 1.0e-4 * wp.trace(cov) + 1.0e-9
+    g = wp.inverse(cov + wp.identity(n=3, dtype=wp.float32) * eps) * body_load_moment[c.body]
+    d = c.point - body_point_sum[c.body] / n
+    c.normal_force = wp.max(body_load[c.body] / n + wp.dot(g, d), 0.0)
+    belt_contacts[i] = c
 
 
 @wp.kernel
@@ -380,8 +450,6 @@ class ConveyorForceModel:
         self.model = model
         self.solver_type = solver_type
         self.device = model.device
-        # MuJoCo reporting replaces Newton support points with geometry-surface points.
-        self._use_contact_offsets = solver_type != "mujoco"
         self._field_type: list[int] = []
         self._const_vel: list[wp.vec3] = []
         self._pivot_point: list[wp.vec3] = []
@@ -522,6 +590,21 @@ class ConveyorForceModel:
         self.conveyor_body_f = wp.zeros(self.model.body_count, dtype=wp.spatial_vector, device=d)
         self.belt_contacts = wp.empty(contacts.rigid_contact_max, dtype=BeltContact, device=d)
         self.contact_force_vec = wp.zeros(contacts.rigid_contact_max, dtype=wp.vec3, device=d)
+        # Belts with identical velocity fields (e.g. the segments of one turn) share a group.
+        groups: dict[tuple, int] = {}
+        conv_velocity_group = []
+        for field_type, const_vel, pivot_point, pivot_angvel in zip(
+            self._field_type, self._const_vel, self._pivot_point, self._pivot_angvel, strict=True
+        ):
+            key = (field_type, *(round(float(x), 6) for x in (*const_vel, *pivot_point, *pivot_angvel)))
+            conv_velocity_group.append(groups.setdefault(key, len(groups)))
+        self.conv_velocity_group = wp.array(conv_velocity_group, dtype=wp.int32, device=d)
+        self.body_group_min = wp.zeros(self.model.body_count, dtype=wp.int32, device=d)
+        self.body_group_max = wp.zeros(self.model.body_count, dtype=wp.int32, device=d)
+        self.body_load = wp.zeros(self.model.body_count, dtype=wp.float32, device=d)
+        self.body_point_sum = wp.zeros(self.model.body_count, dtype=wp.vec3, device=d)
+        self.body_point_cov = wp.zeros(self.model.body_count, dtype=wp.mat33, device=d)
+        self.body_load_moment = wp.zeros(self.model.body_count, dtype=wp.vec3, device=d)
         self._finalized = True
 
     def set_speed_scale(self, scale: float) -> None:
@@ -565,9 +648,48 @@ class ConveyorForceModel:
                 state_post.body_q,
                 self.conv_surface_normal,
                 self.conv_threshold,
-                int(self._use_contact_offsets),
             ],
             outputs=[self.belt_contacts, self.body_contact_count],
+            device=self.device,
+        )
+        self.body_group_min.fill_(np.iinfo(np.int32).max)
+        self.body_group_max.fill_(-1)
+        self.body_load.zero_()
+        self.body_point_sum.zero_()
+        self.body_point_cov.zero_()
+        self.body_load_moment.zero_()
+        wp.launch(
+            accumulate_belt_load,
+            dim=contacts.rigid_contact_max,
+            inputs=[self.belt_contacts, self.conv_velocity_group],
+            outputs=[
+                self.body_load,
+                self.body_point_sum,
+                self.body_group_min,
+                self.body_group_max,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            accumulate_belt_load_moment,
+            dim=contacts.rigid_contact_max,
+            inputs=[self.belt_contacts, self.body_contact_count, self.body_point_sum],
+            outputs=[self.body_point_cov, self.body_load_moment],
+            device=self.device,
+        )
+        wp.launch(
+            redistribute_belt_load,
+            dim=contacts.rigid_contact_max,
+            inputs=[
+                self.body_contact_count,
+                self.body_load,
+                self.body_point_sum,
+                self.body_point_cov,
+                self.body_load_moment,
+                self.body_group_min,
+                self.body_group_max,
+            ],
+            outputs=[self.belt_contacts],
             device=self.device,
         )
         wp.launch(
@@ -596,18 +718,51 @@ class ConveyorForceModel:
         )
 
 
+@wp.kernel
+def track_transported_bodies(
+    body_q: wp.array[wp.transform],
+    tracked_body_ids: wp.array[wp.int32],
+    start_pos: wp.array[wp.vec3],
+    min_supported_height: wp.float32,
+    sim_time: wp.float32,
+    # in/out
+    max_travel: wp.array[wp.float32],
+    fall_time: wp.array[wp.float32],
+    fall_pos: wp.array[wp.vec3],
+):
+    """Track each box's furthest displacement from its spawn and when it first leaves the circuit."""
+    i = wp.tid()
+    tf = body_q[tracked_body_ids[i]]
+    p = wp.transform_get_translation(tf)
+    max_travel[i] = wp.max(max_travel[i], wp.length(p - start_pos[i]))
+    # A non-finite pose also counts as leaving the circuit.
+    finite = wp.isfinite(p) and wp.isfinite(wp.transform_get_rotation(tf))
+    if (not finite or p[2] <= min_supported_height) and fall_time[i] < 0.0:
+        fall_time[i] = sim_time
+        fall_pos[i] = p
+
+
 # ---------------------------------------------------------------------------
 # Example scene configuration
 # ---------------------------------------------------------------------------
-# A small positive collision margin smooths the belt-to-belt seam transitions. VBD's
-# rigid-contact handling needs a larger margin than XPBD to keep bodies on the belts.
-SOLVER_MARGIN = {"xpbd": 0.015, "vbd": 0.05, "mujoco": 0.015, "kamino": 0.015}
+# A positive collision margin on the belts smooths the belt-to-belt seam transitions.
+# Boxes and guards get a much smaller margin: it cushions box-to-box pushes, but must stay
+# small so boxes riding side by side next to an angled guard still fit across the belt.
+BELT_COLLISION_MARGIN = 0.015  # [m]
+BODY_COLLISION_MARGIN = 0.005  # [m]
 XPBD_ITERATIONS = 4
 VBD_ITERATIONS = 4
+# Per-body contact capacity for VBD. A box crossing the turns touches several convex turn pieces
+# at once, so it can need more than 64 contacts.
+VBD_RIGID_BODY_CONTACT_BUFFER_SIZE = 128
 # A frictional-to-normal impedance ratio below 1 softens the friction
 # constraints so boxes slip through the tight 180 degree turn instead of
 # wedging against the guide walls.
 MUJOCO_IMPRATIO = 0.1
+SIM_SUBSTEPS = 2
+# The drive reads the contact forces of the previous substep. MuJoCo's soft contacts need a
+# shorter substep for that lag to stay small when one box shoves another.
+MUJOCO_SIM_SUBSTEPS = 4
 # Just above mujoco.mjMINMU, below which mujoco_warp warns about NaN-prone contacts.
 MUJOCO_MIN_FRICTION = 1.1e-5
 
@@ -615,6 +770,8 @@ MUJOCO_MIN_FRICTION = 1.1e-5
 # temporary slip at belt seams and turns.
 MIN_TRANSPORT_SPEED = 0.3  # [m/s]
 MIN_TRAVEL = 0.5  # [m]
+# Every belt surface is above this height, and a box resting on the ground is below it.
+MIN_SUPPORTED_HEIGHT = 0.5  # [m]
 
 STARTUP_DURATION = 1.0  # belts ramp from rest to full speed over this time [s]
 BELT_HALF_THICKNESS = 0.1  # [m]
@@ -748,7 +905,7 @@ class Example:
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 2
+        self.sim_substeps = MUJOCO_SIM_SUBSTEPS if self.solver_type == "mujoco" else SIM_SUBSTEPS
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
@@ -785,12 +942,6 @@ class Example:
                 builder.shape_material_ke[shape] = VBD_RIGID_CONTACT_KE
                 builder.shape_material_kd[shape] = VBD_RIGID_CONTACT_KD
 
-        mesh_types = (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
-        shape_type = builder.shape_type
-        for i in range(len(builder.shape_margin)):
-            if shape_type[i] not in mesh_types:
-                builder.shape_margin[i] = max(builder.shape_margin[i], SOLVER_MARGIN[self.solver_type])
-
         builder.color()
         self.model = builder.finalize()
 
@@ -809,7 +960,7 @@ class Example:
                 iterations=VBD_ITERATIONS,
                 rigid_joint_linear_ke=1.0e2,
                 rigid_joint_angular_ke=1.0e2,
-                rigid_body_contact_buffer_size=64,
+                rigid_body_contact_buffer_size=VBD_RIGID_BODY_CONTACT_BUFFER_SIZE,
             )
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
@@ -855,8 +1006,15 @@ class Example:
             )
         self.conveyor.finalize(self.contacts, self.solver_observables)
 
-        self.tracked_start_pos = self.state_0.body_q.numpy()[self.tracked_bodies, :3].copy()
-        self.max_travel = np.zeros(len(self.tracked_bodies))
+        # Per-box test bookkeeping, updated on the device by test_post_step.
+        num_tracked = len(self.tracked_bodies)
+        self.tracked_body_ids = wp.array(self.tracked_bodies, dtype=wp.int32, device=self.model.device)
+        self.tracked_start_pos = wp.array(
+            self.state_0.body_q.numpy()[self.tracked_bodies, :3], dtype=wp.vec3, device=self.model.device
+        )
+        self.max_travel = wp.zeros(num_tracked, dtype=wp.float32, device=self.model.device)
+        self.fall_time = wp.full(num_tracked, -1.0, dtype=wp.float32, device=self.model.device)
+        self.fall_pos = wp.zeros(num_tracked, dtype=wp.vec3, device=self.model.device)
 
         self.viewer.set_model(self.model)
         pos, pitch, yaw = _look_at(eye=(2.0, -14.0, 12.0), target=(-2.0, -4.0, 0.5))
@@ -870,8 +1028,10 @@ class Example:
         — plus the body indices of the transported boxes.
         """
         # The explicit conveyor forces provide all belt traction.
-        belt_cfg = newton.ModelBuilder.ShapeConfig(mu=0.0, mu_torsional=0.0, mu_rolling=0.0)
-        guard_cfg = newton.ModelBuilder.ShapeConfig(mu=GUARD_FRICTION)
+        belt_cfg = newton.ModelBuilder.ShapeConfig(
+            mu=0.0, mu_torsional=0.0, mu_rolling=0.0, margin=BELT_COLLISION_MARGIN
+        )
+        guard_cfg = newton.ModelBuilder.ShapeConfig(mu=GUARD_FRICTION, margin=BODY_COLLISION_MARGIN)
 
         straight_belts = []
         for label, pos, yaw, tilt, half_extents, speed in STRAIGHT_BELTS:
@@ -891,19 +1051,27 @@ class Example:
                 (shape, wp.quat_rotate(rot, wp.vec3(0.0, speed, 0.0)), wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0)))
             )
 
+        # Turns collide as convex sector pieces, which avoid the internal-edge contacts of a
+        # triangle mesh, and render as one smooth mesh without collision.
+        belt_collision_cfg = belt_cfg.copy()
+        belt_collision_cfg.is_visible = False
+        guard_collision_cfg = guard_cfg.copy()
+        guard_collision_cfg.is_visible = False
+        visual_cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False)
+
         turn_belts = []
         for label, pivot, start_angle, end_angle, radii, angular_speed in TURN_BELTS:
             inner_radius, outer_radius = radii
             xform = wp.transform(p=wp.vec3(*pivot), q=wp.quat_identity())
-            shape = builder.add_shape_mesh(
+            builder.add_shape_mesh(
                 body=-1,
                 xform=xform,
                 mesh=create_annular_sector_mesh(
                     inner_radius, outer_radius, BELT_HALF_THICKNESS, start_angle, end_angle, TURN_SEGMENTS
                 ),
-                cfg=belt_cfg,
+                cfg=visual_cfg,
                 color=BELT_COLOR,
-                label=label,
+                label=f"{label}_visual",
             )
             builder.add_shape_mesh(
                 body=-1,
@@ -916,11 +1084,30 @@ class Example:
                     end_angle,
                     TURN_SEGMENTS,
                 ),
-                cfg=guard_cfg,
+                cfg=visual_cfg,
                 color=GUARD_COLOR,
-                label=f"{label}_guard",
+                label=f"{label}_guard_visual",
             )
-            turn_belts.append((shape, wp.vec3(*pivot), wp.vec3(0.0, 0.0, angular_speed)))
+            step = (end_angle - start_angle) / TURN_SEGMENTS
+            for k in range(TURN_SEGMENTS):
+                a0, a1 = start_angle + k * step, start_angle + (k + 1) * step
+                shape = builder.add_shape_convex_hull(
+                    body=-1,
+                    xform=xform,
+                    mesh=create_annular_sector_mesh(inner_radius, outer_radius, BELT_HALF_THICKNESS, a0, a1, 1),
+                    cfg=belt_collision_cfg,
+                    label=f"{label}_{k}",
+                )
+                builder.add_shape_convex_hull(
+                    body=-1,
+                    xform=xform,
+                    mesh=create_annular_sector_mesh(
+                        outer_radius, outer_radius + GUARD_WALL_THICKNESS, GUARD_HALF_THICKNESS, a0, a1, 1
+                    ),
+                    cfg=guard_collision_cfg,
+                    label=f"{label}_guard_{k}",
+                )
+                turn_belts.append((shape, wp.vec3(*pivot), wp.vec3(0.0, 0.0, angular_speed)))
 
         for label, pos, yaw, tilt, half_extents in GUARDS:
             builder.add_shape_box(
@@ -966,7 +1153,9 @@ class Example:
         """Add a transported box, sizing its density so the shape carries the authored mass."""
         hx, hy, hz = half_extents
         body = builder.add_link(xform=wp.transform(p=wp.vec3(*pos), q=wp.quat_identity()), label=label)
-        cfg = newton.ModelBuilder.ShapeConfig(mu=BOX_FRICTION, density=mass / (8.0 * hx * hy * hz))
+        cfg = newton.ModelBuilder.ShapeConfig(
+            mu=BOX_FRICTION, density=mass / (8.0 * hx * hy * hz), margin=BODY_COLLISION_MARGIN
+        )
         builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg, color=BOX_COLOR, label=label)
         return body
 
@@ -1004,19 +1193,33 @@ class Example:
         self.viewer.end_frame()
 
     def test_post_step(self):
-        """Record each box's furthest displacement from its spawn pose."""
-        # Track how far each box has ever been from its spawn, so test_final can tell a
-        # box that is genuinely carried from one that never left the belt it started on.
-        travel = np.linalg.norm(self.state_0.body_q.numpy()[self.tracked_bodies, :3] - self.tracked_start_pos, axis=1)
-        np.maximum(self.max_travel, travel, out=self.max_travel)
+        """Record when a box first leaves the circuit and how far each box has traveled."""
+        wp.launch(
+            track_transported_bodies,
+            dim=len(self.tracked_bodies),
+            inputs=[
+                self.state_0.body_q,
+                self.tracked_body_ids,
+                self.tracked_start_pos,
+                MIN_SUPPORTED_HEIGHT,
+                self.sim_time,
+            ],
+            outputs=[self.max_travel, self.fall_time, self.fall_pos],
+            device=self.model.device,
+        )
 
     def test_final(self):
         """Verify every box stayed on the circuit and was actually carried by the belts."""
         body_q = self.state_0.body_q.numpy()
         assert np.all(np.isfinite(body_q)), "non-finite body pose"
-        for b in self.tracked_bodies:
-            z = float(body_q[b][2])
-            assert z > -0.5, f"transported body {b} fell through the floor: z={z:.4f}"
+        fall_time = self.fall_time.numpy()
+        fallen = np.flatnonzero(fall_time >= 0.0)
+        if len(fallen):
+            i = int(fallen[np.argmin(fall_time[fallen])])
+            raise AssertionError(
+                f"transported body {self.tracked_bodies[i]} left the circuit at t={fall_time[i]:.2f} s: "
+                f"position {np.array2string(self.fall_pos.numpy()[i], precision=3)}"
+            )
 
         # The transport checks below are the point of this test, so a run too short to
         # reach full belt speed must fail rather than silently skip them.
@@ -1026,10 +1229,11 @@ class Example:
         )
 
         # Pose validity alone does not establish transport, so require measurable displacement.
-        stalled = int(np.argmin(self.max_travel))
-        assert self.max_travel[stalled] > MIN_TRAVEL, (
+        max_travel = self.max_travel.numpy()
+        stalled = int(np.argmin(max_travel))
+        assert max_travel[stalled] > MIN_TRAVEL, (
             f"transported body {self.tracked_bodies[stalled]} was never carried off its start pose: "
-            f"{self.max_travel[stalled]:.3f} m"
+            f"{max_travel[stalled]:.3f} m"
         )
         # Individual boxes briefly slow at belt seams and in the turn, so this is a
         # fleet average rather than a per-box floor.

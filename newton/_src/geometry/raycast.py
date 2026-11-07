@@ -1024,40 +1024,39 @@ def intersect_ray(
             bvh_shape_id = wp.int32(0)
 
             while wp.bvh_query_next(query, bvh_shape_id, min_dist):
-                if bvh_shape_enabled[bvh_shape_id] == BVH_SHAPE_INACTIVE:
-                    continue
-                shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
-                geom_type = shape_type[shape_id]
+                if bvh_shape_enabled[bvh_shape_id] != BVH_SHAPE_INACTIVE:
+                    shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
+                    geom_type = shape_type[shape_id]
 
-                if geom_type == GeoType.MESH or geom_type == GeoType.CONVEX_MESH or geom_type == GeoType.HFIELD:
-                    geom_to_world = shape_transform_world[shape_id]
-                    ray_origin_local, ray_direction_local = map_ray_to_local(
-                        geom_to_world, origin, direction, shape_scale[shape_id]
-                    )
-                    hit_dist, hit_normal_local, _u, _v, _face = ray_intersect_mesh(
-                        ray_origin_local,
-                        ray_direction_local,
-                        shape_scale[shape_id],
-                        shape_source_ptr[shape_id],
-                        False,
-                        min_dist,
-                    )
-                    hit_normal = wp.vec3(0.0)
-                    if hit_dist >= 0.0:
-                        hit_normal = wp.normalize(wp.transform_vector(geom_to_world, hit_normal_local))
-                else:
-                    hit_dist, hit_normal = ray_intersect_shape(
-                        shape_transform_world[shape_id],
-                        shape_scale[shape_id],
-                        geom_type,
-                        origin,
-                        direction,
-                        False,
-                    )
-                if hit_dist >= 0.0 and hit_dist < min_dist:
-                    min_dist = hit_dist
-                    min_shape_id = shape_id
-                    min_normal = hit_normal
+                    if geom_type == GeoType.MESH or geom_type == GeoType.CONVEX_MESH or geom_type == GeoType.HFIELD:
+                        geom_to_world = shape_transform_world[shape_id]
+                        ray_origin_local, ray_direction_local = map_ray_to_local(
+                            geom_to_world, origin, direction, shape_scale[shape_id]
+                        )
+                        hit_dist, hit_normal_local, _u, _v, _face = ray_intersect_mesh(
+                            ray_origin_local,
+                            ray_direction_local,
+                            shape_scale[shape_id],
+                            shape_source_ptr[shape_id],
+                            False,
+                            min_dist,
+                        )
+                        hit_normal = wp.vec3(0.0)
+                        if hit_dist >= 0.0:
+                            hit_normal = wp.normalize(wp.transform_vector(geom_to_world, hit_normal_local))
+                    else:
+                        hit_dist, hit_normal = ray_intersect_shape(
+                            shape_transform_world[shape_id],
+                            shape_scale[shape_id],
+                            geom_type,
+                            origin,
+                            direction,
+                            False,
+                        )
+                    if hit_dist >= 0.0 and hit_dist < min_dist:
+                        min_dist = hit_dist
+                        min_shape_id = shape_id
+                        min_normal = hit_normal
 
         if wp.static(write_dist):
             out_dist[rayid] = wp.where(min_shape_id < 0, -1.0, min_dist)

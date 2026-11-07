@@ -130,7 +130,8 @@ repository examples spend tuning effort, not a shared solver API.
      - ``iterations``, ``ls_iterations``, ``solver``, ``integrator``, ``cone``,
        ``jacobian``, ``impratio``, ``tolerance``, ``ls_tolerance``,
        ``ccd_iterations``, ``ccd_tolerance``, ``sdf_iterations``,
-       ``sdf_initpoints``, ``nconmax``, ``njmax``, ``use_mujoco_contacts``,
+       ``sdf_initpoints``, ``noslip_iterations``, ``noslip_tolerance``,
+       ``nconmax``, ``njmax``, ``use_mujoco_contacts``,
        ``enable_multiccd``, ``disable_contacts``, ``use_mujoco_cpu``.
      - Uses MuJoCo or MuJoCo Warp semantics. Newton's constructor supports the
        listed options, not every option from external MuJoCo documentation.
@@ -236,6 +237,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
+       ``reuse_kinematics``,
        ``contact_regularization``, ``velocity_iterations``,
        ``contact_warmstart``, ``restitution_velocity_threshold``,
        ``contact_friction_scale``, ``contact_friction_position_iterations``,
@@ -329,7 +331,7 @@ repository examples spend tuning effort, not a shared solver API.
        (:ref:`passive-joint-springs`) act explicitly on REVOLUTE, PRISMATIC and
        D6 DOFs, so a stiff spring needs roughly
        ``dt * sqrt(stiffness / m_eff) < 2``, unlike the implicit drives.
-       Mimic joints and loop-closing BALL and REVOLUTE
+       Mimic joints and loop-closing BALL, REVOLUTE, and FIXED
        joints are bilateral rows that converge with ``iterations`` like the
        other rows; ``enable_bilateral_preelimination`` eliminates them before
        the sweep with a regularized Schur complement, which keeps closed chains
@@ -338,12 +340,22 @@ repository examples spend tuning effort, not a shared solver API.
        disables elimination for the whole solver with a warning. On CUDA,
        branched articulations of one shared
        topology select sparse mass factors automatically from the model's
-       structure when contacts use hard point friction
-       (``friction_anchor_beta=0``), not from a performance estimate
-       (depending on the topology and the world count they can be faster or
-       markedly slower);
+       structure when contacts use hard point friction or persistent friction
+       patches and the configuration meets the conditions in the
+       :class:`~newton.solvers.SolverSteel` docstring, not from a performance
+       estimate (depending on the topology and the world count they can be
+       faster or markedly slower); warm-started contacts
+       (``contact_warmstart=True``), a finite ``contact_friction_gap_max`` and
+       shapes with a positive restitution coefficient keep the dense factors;
        ``parallel_tree`` traverses independent tree branches in parallel and is
-       worth measuring on broad trees such as hands. The
+       worth measuring on broad trees such as hands. The opt-in
+       ``reuse_kinematics`` (off by default) carries the kinematics a step
+       publishes into the next step on CUDA when none of the restrictions in
+       the option's docstring apply (gradients, joint velocity limits, sleeping,
+       the parallel tree, a FREE or DISTANCE joint that is not its
+       articulation's first joint); the attribute reports whether it runs, and a
+       caller that writes joint or body state in place between steps then calls
+       ``notify_state_changed`` or ``reset`` with a world mask. The
        experimental ``enable_sleeping`` freezes settled, supported islands of
        articulations and skips their rows and dynamics until a force, state
        change, contact with a moving body or a tangentially moving mesh
