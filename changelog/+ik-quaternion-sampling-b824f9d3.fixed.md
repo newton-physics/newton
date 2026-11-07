@@ -1,0 +1,1 @@
+Reject IK seed sampling for BALL, FREE, and DISTANCE joints before launching kernels to prevent misapplied joint limits, invalid quaternion samples, and out-of-bounds reads; use `IKSampler.NONE` for these models.
