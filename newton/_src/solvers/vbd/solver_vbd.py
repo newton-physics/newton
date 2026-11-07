@@ -1625,7 +1625,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        """Refresh solver caches affected by the specified model-property flags."""
+        """Refresh solver caches affected by the specified model-property flags.
+
+        Shape-material validation is skipped during CUDA graph capture. Validate
+        host-side edits outside capture; captured updates must preserve finite,
+        nonnegative material coefficients.
+        """
         self._apply_module_options()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_contact_materials()
@@ -1998,7 +2003,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     def _validate_contact_materials(self) -> None:
         """Validate shape materials for particle contacts and compliant rigid contacts."""
-        if self.model.shape_count == 0:
+        if self.device.is_capturing or self.model.shape_count == 0:
             return
         if self.model.particle_count == 0 and not (self._integrates_rigid_bodies and self.rigid_compliant_alm):
             return

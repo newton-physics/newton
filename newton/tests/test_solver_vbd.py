@@ -10,6 +10,7 @@ import unittest
 import warnings
 from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -1704,6 +1705,7 @@ def _angular_contact_friction_isolates_channels(test, device):
             np.testing.assert_allclose(hessian_np, expected_hessian, rtol=1.0e-5, atol=1.0e-5)
 
             # No angular increment must preserve the reaction exactly, even away from identity.
+            body_q.fill_(wp.transform(wp.vec3(0.0), wp.normalize(wp.quat(0.2, -0.3, 0.5, 0.7))))
             wp.copy(body_q_prev, body_q)
             command.launch()
             np.testing.assert_array_equal(torque.numpy()[0], np.asarray(contact_lambda_angular))
@@ -3930,6 +3932,12 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
         array.assign(original)
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         test.assertFalse(solver._update_rigid_history)
+    if model.device.is_cuda:
+        with patch.object(solver, "_to_numpy", side_effect=AssertionError("Host read during CUDA capture")):
+            with wp.ScopedCapture(device=device) as capture:
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        wp.capture_launch(capture.graph)
+        wp.synchronize_device(device)
 
     builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.2), vel=wp.vec3(0.0), mass=1.0)
     builder.color()
