@@ -353,6 +353,102 @@ class TestViewerGLGetFrame(unittest.TestCase):
             batch = next(iter(viewer._sdf_isomesh_instances.values()))
             self.assertIn((viewer.objects[batch.name], 1), viewer.renderer._selection_instances)
 
+    def test_workspace_contact_selection_filter(self) -> None:
+        """Filter every contact glyph by either selected witness without changing contact slots."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.2)
+        builder.add_shape_sphere(body, radius=0.3)
+        builder.add_shape_sphere(builder.add_body(), radius=0.4)
+        builder.add_shape_sphere(-1, radius=0.5)
+        builder.add_body()  # Selecting a body with no shapes must show no contacts.
+        builder.end_world()
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        gui = SimpleNamespace(
+            _viewer=viewer,
+            ui=SimpleNamespace(dpi_scale=1.0),
+            console_capture=None,
+            stop_following_selection=lambda: None,
+            workspace_enabled=True,
+        )
+        workspace = ViewerWorkspace(gui)
+        gui.workspace = workspace
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                viewer.set_model(model)
+                workspace.bind(None)
+                state = model.state()
+                contacts = newton.Contacts(4, 0, device=device)
+                contacts.rigid_contact_count.assign([3])
+                contacts.rigid_contact_shape0.assign([0, 1, 2, 0])
+                contacts.rigid_contact_shape1.assign([2, 3, 3, 0])
+                contacts.rigid_contact_normal.fill_(wp.vec3(0, 0, 1))
+                contacts.force = wp.array(
+                    [wp.spatial_vector(0, 0, 1, 0, 0, 0)] * 4, dtype=wp.spatial_vector, device=device
+                )
+                viewer.show_contacts = viewer.show_contact_forces = True
+
+                def check(
+                    expected: tuple[int, ...], *, contacts: newton.Contacts = contacts, state: newton.State = state
+                ) -> None:
+                    """Check the actual kernel outputs, including capacity beyond the live count."""
+                    with mock.patch.object(viewer, "gui", gui):
+                        viewer.log_contacts(contacts, state)
+                    visible = np.zeros(4, dtype=bool)
+                    visible[list(expected)] = True
+                    for points in (
+                        viewer._contact_points0,
+                        viewer._contact_points1,
+                        viewer._contact_opposing_points,
+                        viewer._contact_force_starts,
+                        viewer._contact_force_ends,
+                    ):
+                        np.testing.assert_array_equal(np.isfinite(points.numpy()).all(axis=1), visible)
+                    scales = viewer._contact_disk_scales.numpy().reshape(4, 2, 3)
+                    np.testing.assert_array_equal(np.any(scales != 0, axis=2), np.repeat(visible[:, None], 2, axis=1))
+
+                check((0, 1, 2))
+                workspace.select(("shape", 2))  # First or second witness must match.
+                check((0, 2))
+                self.assertTrue(viewer.contact_selection_only)
+                with mock.patch.object(viewer, "gui", gui):
+                    mask = viewer._get_contact_shape_mask()
+                    self.assertIs(viewer._get_contact_shape_mask(), mask)
+                workspace.select(("body", 0))
+                check((0, 1))
+                with viewer._track_display_options():
+                    viewer.contact_selection_only = False
+                with viewer._preserve_display_options(switching=True):
+                    viewer.contact_selection_only = True
+                self.assertFalse(viewer.contact_selection_only)
+                check((0, 1, 2))
+                viewer.contact_selection_only = True
+                check((0, 1))
+                workspace.select(("shape", 3), toggle=True)
+                check((0, 1, 2))
+                workspace.select(("body", 2))
+                check(())
+                workspace.select(("shape", 0))
+                viewer._visible_worlds_mask = wp.array([0], dtype=int, device=device)
+                check(())
+                viewer._visible_worlds_mask = None
+                check((0,))
+                # Reordered live contact buffers must be filtered afresh on device.
+                contacts.rigid_contact_shape0.assign([2, 1, 0, 0])
+                contacts.rigid_contact_shape1.assign([3, 3, 2, 0])
+                check((2,))
+                workspace.select(("root", 0))
+                check((0, 1, 2))
+                workspace.select(None)
+                check((0, 1, 2))
+                workspace.select(("body", 0))
+                gui.workspace_enabled = False
+                check((0, 1, 2))
+                gui.workspace_enabled = True
+
     def test_workspace_variant_resource_notification(self) -> None:
         """Keep resource selection and metadata current through the public viewer notification."""
         mesh = newton.Mesh.create_box(0.3)

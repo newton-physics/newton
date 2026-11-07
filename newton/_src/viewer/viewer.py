@@ -77,6 +77,7 @@ _GLOBAL_DISPLAY_OPTIONS = (
     "show_contact_pairs",
     "show_contact_lines",
     "show_contact_labels",
+    "contact_selection_only",
 )
 _RENDERER_DISPLAY_OPTIONS = (
     "draw_sky",
@@ -1653,6 +1654,10 @@ class ViewerBase(ABC):
         self._log_joints(state)
         self._log_com(state)
 
+    def _get_contact_shape_mask(self) -> wp.array[int] | None:
+        """Return the backend's selected-shape mask, or show contacts from every shape."""
+        return None
+
     def log_contacts(
         self,
         contacts: newton.Contacts,
@@ -1748,6 +1753,9 @@ class ViewerBase(ABC):
         # Base glyph size as a multiplier of the smaller shape's collision
         # radius. Disks and force arrows preserve their existing proportions.
         contact_scale = 0.5 * float(self.contact_viz_scale)
+        # Mask glyphs in place: inspector labels and selection rings use the
+        # original contact slots, including when the simulation reorders them.
+        contact_shape_mask = self._get_contact_shape_mask()
         sides = 2 if self.show_contact_pairs else 1
         max_glyphs = sides * max_contacts
 
@@ -1772,6 +1780,7 @@ class ViewerBase(ABC):
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
+                    contact_shape_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -1841,6 +1850,7 @@ class ViewerBase(ABC):
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
+                    contact_shape_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -1899,6 +1909,7 @@ class ViewerBase(ABC):
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
+                    contact_shape_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,

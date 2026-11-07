@@ -11,6 +11,7 @@ particle visibility during picking, and apply viewport display modes across laye
 Inspect and edit custom joint-frequency attributes using their own namespace and row width.
 Preserve complete auxiliary render states during history replay, including mixed rigid/deformable scenes.
 Frame scenes and selections from displayed geometry when rendering uses different units from the collision model.
+Filter contact glyphs to selected shapes and bodies by default, with a toggle to show all contacts.
 Add experimental `ViewerBase.set_control()`, `set_solver()`, and
 `set_collision_pipeline()` methods for inspecting custom simulation loops,
 with State and Contacts supplied through the existing frame logging methods.

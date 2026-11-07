@@ -281,6 +281,8 @@ class ViewerGL(ViewerBase):
         super().__init__()
         self.show_contact_pairs = True
         self.show_contact_labels = True
+        self.contact_selection_only: bool = True
+        """Restrict contact glyphs to selected shapes/bodies in the inspection workspace."""
         self.camera_slowdown = 2.0
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
@@ -1627,6 +1629,15 @@ class ViewerGL(ViewerBase):
             )
         else:
             super()._log_particles(state)
+
+    @override
+    def _get_contact_shape_mask(self) -> wp.array[int] | None:
+        """Filter contacts on device without transferring live contact indices to the GUI."""
+        if self.contact_selection_only and self.gui is not None and self.gui.workspace_enabled:
+            workspace = self.gui.workspace
+            if workspace is not None:
+                return workspace.contact_shape_mask(self.model)
+        return None
 
     @override
     def _get_shape_framing_bounds(self, shapes: ViewerBase.ShapeInstances) -> tuple[np.ndarray, np.ndarray] | None:

@@ -411,6 +411,9 @@ class ViewportControls:
 
         _, viewer.show_contacts = ui.checkbox("Show contacts", viewer.show_contacts)
         ui.begin_disabled(not viewer.show_contacts)
+        _, viewer.contact_selection_only = ui.checkbox("Selected shapes and bodies only", viewer.contact_selection_only)
+        if ui.is_item_hovered():
+            ui.set_tooltip("Show contacts involving any selected shape or body; show all when none is selected.")
         ui.separator_text("Points")
         _, viewer.show_contact_disks = ui.checkbox("Mode disks", viewer.show_contact_disks)
         if ui.is_item_hovered():

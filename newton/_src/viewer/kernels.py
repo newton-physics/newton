@@ -355,6 +355,7 @@ def compute_contact_lines(
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
+    selected_shapes: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
@@ -380,7 +381,7 @@ def compute_contact_lines(
         return
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
+    if shape_a == shape_b or (selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b])):
         line_start[tid] = nan_line
         line_end[tid] = nan_line
         opposing_point[tid] = nan_line
@@ -442,6 +443,7 @@ def compute_contact_disk_transforms(
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
+    selected_shapes: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
@@ -486,8 +488,8 @@ def compute_contact_disk_transforms(
     With ``both_sides``, consecutive pairs of disks mark each body's witness
     point. Both disks use the same mode color and opposite orientations.
 
-    Inactive slots (beyond ``contact_count[0]`` or hidden by the visible-worlds
-    mask) receive a degenerate zero-scale transform and a black color.
+    Inactive slots (beyond ``contact_count[0]`` or hidden by world/shape
+    selection masks) receive a degenerate zero-scale transform and a black color.
     """
     glyph = wp.tid()
     tid = glyph // 2 if both_sides else glyph
@@ -505,7 +507,7 @@ def compute_contact_disk_transforms(
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
+    if shape_a == shape_b or (selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b])):
         transforms[glyph] = zero_xform
         scales[glyph] = zero_vec
         colors[glyph] = zero_vec
@@ -589,6 +591,7 @@ def compute_contact_force_arrows(
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
+    selected_shapes: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
@@ -619,7 +622,7 @@ def compute_contact_force_arrows(
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
+    if shape_a == shape_b or (selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b])):
         line_start[tid] = nan_line
         line_end[tid] = nan_line
         return

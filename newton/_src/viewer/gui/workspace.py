@@ -137,6 +137,8 @@ class ViewerWorkspace:
         self._selection_anchor: TreeKey | None = None
         self._deformable_selection = None
         self._selection_shapes: tuple[int, ...] = ()
+        self._contact_filter_shapes: tuple[int, ...] | None = None
+        self._contact_filter_masks: dict[Model, wp.array[int]] = {}
         self._frame_bounds_buffers = None
         self._selection_binding_key = None
         self._selection_bindings = ()
@@ -461,6 +463,14 @@ class ViewerWorkspace:
                 if kind in ("contact", "soft_contact", "collision_pair"):
                     self.viewer.show_contacts = True
         self._selection_shapes = tuple(sorted(shapes))
+        # Contact filtering follows explicit shape/body selections. Other tree
+        # objects and direct contact inspection retain the complete contact view.
+        owners = [item for item in self.selection if item[0] in ("shape", "body")]
+        contact_shapes = set()
+        for kind, index in owners:
+            contact_shapes.update((index,) if kind == "shape" else self.model.body_shapes.get(index, ()))
+        self._contact_filter_shapes = tuple(sorted(contact_shapes)) if owners else None
+        self._contact_filter_masks.clear()
         camera = getattr(self.viewer, "camera", None)
         if camera is not None:
             camera._navigation_filter = self._camera_motion if shapes else None
@@ -480,6 +490,22 @@ class ViewerWorkspace:
         self._drag_undo = None
         self.message = ""
         self._live_time = 0
+
+    def contact_shape_mask(self, model: Model) -> wp.array[int] | None:
+        """Cache a device mask per Model until shape/body selection changes.
+
+        A contact matches either witness. Models outside the inspected scene
+        receive an empty mask, so coincident shape indices cannot leak contacts.
+        No owner selection returns None; a selected empty body matches nothing.
+        """
+        if self._contact_filter_shapes is None:
+            return None
+        if model not in self._contact_filter_masks:
+            mask = np.zeros(model.shape_count, dtype=np.int32)
+            if model is self.model:
+                mask[list(self._contact_filter_shapes)] = 1
+            self._contact_filter_masks[model] = wp.array(mask, dtype=int, device=model.device)
+        return self._contact_filter_masks[model]
 
     def _camera_motion(self, start: wp.vec3, end: wp.vec3, **kwargs: Any) -> float:
         """Lazily create the selection-proximity filter and return its camera-motion multiplier."""
