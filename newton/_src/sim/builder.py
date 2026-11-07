@@ -5277,10 +5277,8 @@ class ModelBuilder:
                 Use for MJCF files authored against MuJoCo <= 3.8. Defaults
                 to False (identity translation matching MuJoCo 3.9 semantics).
         """
-        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
-        SolverMuJoCo.register_custom_attributes(self)
         return parse_mjcf(
             self,
             source,
@@ -5505,29 +5503,6 @@ class ModelBuilder:
         self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
-        # Builders allocate MJCF mask-domain IDs independently. Remap every
-        # incoming domain as one unit so its IDs cannot collide with domains
-        # already present in the destination builder.
-        collision_mask_domain_key = "mujoco:collision_mask_domain"
-        collision_mask_domain_remap: dict[int, int] = {}
-        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
-        if source_domain_attr is not None and source_domain_attr.values:
-            source_items = (
-                source_domain_attr.values.items()
-                if isinstance(source_domain_attr.values, dict)
-                else enumerate(source_domain_attr.values)
-            )
-            # Copied shape ranges never overlap, so the first destination shape
-            # in each source domain is already a unique, deterministic ID. This
-            # avoids rescanning the growing destination during replication.
-            shape_offset = entity_offsets["shape"]
-            for shape, value in source_items:
-                if value is None:
-                    continue
-                source_domain = int(value)
-                if source_domain >= 0:
-                    collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
-
         def get_offset(entity_or_key: Model.AttributeFrequency | str | None) -> int:
             if entity_or_key is None:
                 return 0
@@ -5561,7 +5536,6 @@ class ModelBuilder:
             use_current_world = reference == Model.AttributeFrequency.WORLD
             value_offset = 0 if use_current_world else get_offset(reference)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
-            is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             source_values = attr.values
             if attr.reference_value_transformer is not None:
                 # Remap all rows of this attribute in one call so the transformer
@@ -5595,9 +5569,7 @@ class ModelBuilder:
                     source_values = list(transformed)
                 needs_remap = False
             else:
-                needs_remap = (
-                    value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
-                )
+                needs_remap = value_offset != 0 or use_current_world or is_equality_target_attr
 
             if needs_remap:
 
@@ -5661,12 +5633,9 @@ class ModelBuilder:
                     entity_idx: int,
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
-                    is_collision_mask_domain: bool = is_collision_mask_domain_attr,
                 ) -> Any:
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
-                    if is_collision_mask_domain:
-                        return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
 
                 if value_offset and not self._custom_attribute_defaults_match(
