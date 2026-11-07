@@ -731,6 +731,43 @@ class TestModelView(unittest.TestCase):
 class TestSolverCoupledContactsAndMPM(unittest.TestCase):
     """Test coupled contact preparation and implicit MPM integration."""
 
+    def test_model_properties_refreshes_mpm_particle_materials(self):
+        """Verify parent particle properties reach child MPM arrays and derived material data."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        builder.begin_world()
+        for x in range(3):
+            builder.add_particle(pos=(float(x), 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        config = SolverImplicitMPM.Config(grid_type="fixed", grid_padding=1, max_iterations=1)
+        coupled = SolverCoupled(
+            model,
+            entries=[
+                SolverCoupled.Entry(name="other", solver=SolverXPBD, particles=[0]),
+                SolverCoupled.Entry(
+                    name="sand", solver=lambda view: SolverImplicitMPM(view, config), particles=[1, 2], in_place=True
+                ),
+            ],
+        )
+        mpm = coupled.solver("sand")
+        friction_ptr = mpm.model.mpm.friction.ptr
+        model.mpm.friction.assign([0.1, 0.7, 0.8])
+        model.mpm.young_modulus.assign([800.0, 2000.0, 3000.0])
+        model.mpm.viscosity.assign([0.0, 0.4, 0.0])
+        model.particle_mass.assign([1.0, 2.0, 3.0])
+        model.particle_inv_mass.assign([1.0, 0.5, 1.0 / 3.0])
+        model.particle_radius.assign([0.05, 0.05, 0.1])
+        coupled.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+        np.testing.assert_allclose(mpm.model.mpm.friction.numpy(), [0.1, 0.7, 0.8])
+        np.testing.assert_allclose(mpm.model.particle_inv_mass.numpy(), [0.0, 0.5, 1.0 / 3.0])
+        self.assertFalse(int(mpm.model.particle_flags.numpy()[0]) & int(ParticleFlags.ACTIVE))
+        self.assertEqual(mpm.model.mpm.friction.ptr, friction_ptr)
+        # These values control rheology specialization and particle-to-grid integration.
+        self.assertEqual(mpm._mpm_model.min_young_modulus, 2000.0)
+        self.assertTrue(mpm._mpm_model.has_viscosity)
+        np.testing.assert_allclose(mpm._mpm_model.particle_density.numpy(), [0.0, 2000.0, 375.0], rtol=1.0e-6)
+
     def test_graph_capture_setup_stays_solver_specific(self):
         """Verify coupled solvers do not expose a generic graph protocol."""
         for name in ("supports_graph_capture", "prepare_graph_capture", "check_status"):
@@ -1450,6 +1487,66 @@ class TestSolverCoupledBasic(unittest.TestCase):
             reused = coupled.entry_contacts("A", contacts)
             self.assertIs(reused, filtered)
             self.assertEqual(reused.contact_matching_mode, mode)
+
+    def test_configured_particle_masses_survive_model_notifications(self):
+        """Preserve authored particle masses while refreshing inherited masses on CPU and CUDA."""
+        for device in get_test_devices():
+            with self.subTest(device=str(device)):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                for i in range(9):
+                    builder.add_particle(pos=(float(i), 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+                model = builder.finalize(device=device)
+                values = wp.array([4.0, 0.0, 1.0], dtype=float, device=model.device)
+
+                def configure(view, values=values):
+                    # Include a zero mass and an explicit override equal to the parent value.
+                    view.set_particle_mass(wp.array([1, 2, 3], dtype=int, device=view.device), values)
+                    view.zero_particle_mass(wp.array([5], dtype=int, device=view.device))
+                    view.scale_particle_mass(wp.array([4], dtype=int, device=view.device), 2.0)
+                    view.scale_particle_mass_mask(
+                        wp.array([0, 0, 0, 0, 0, 0, 1, 0, 0], dtype=int, device=view.device), 3.0
+                    )
+                    view.add_particle_lumped_mass(
+                        wp.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0], dtype=float, device=view.device)
+                    )
+
+                def configure_other(view):
+                    masses = np.zeros(9, dtype=np.float32)
+                    masses[0] = 2.0
+                    view.particle_mass = wp.array(masses, dtype=float, device=view.device)
+                    masses[0] = 0.5
+                    view.particle_inv_mass = wp.array(masses, dtype=float, device=view.device)
+
+                coupled = SolverCoupled(
+                    model,
+                    entries=[
+                        SolverCoupled.Entry(
+                            "custom", SolverXPBD, particles=list(range(1, 9)), configure_view=configure
+                        ),
+                        SolverCoupled.Entry("other", SolverXPBD, particles=[0], configure_view=configure_other),
+                    ],
+                )
+                view = coupled.view("custom")
+                pointers = view.particle_mass.ptr, view.particle_inv_mass.ptr
+                values.fill_(99.0)
+                model.gravity.assign([[0.0, 0.0, -1.0]])
+                coupled.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+                expected = [0.0, 4.0, 0.0, 1.0, 2.0, 0.0, 3.0, 5.0, 1.0]
+                np.testing.assert_allclose(view.particle_mass.numpy(), expected)
+
+                for inherited in (11.0, 13.0):
+                    parent_masses = np.array([7.0, 3.0, 5.0, 7.0, 11.0, 13.0, 17.0, 19.0, inherited], dtype=np.float32)
+                    model.particle_mass.assign(parent_masses)
+                    model.particle_inv_mass.assign(1.0 / parent_masses)
+                    coupled.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+                    expected[-1] = inherited
+                    np.testing.assert_allclose(view.particle_mass.numpy(), expected)
+                    inverse = [1.0 / mass if mass else 0.0 for mass in expected]
+                    np.testing.assert_allclose(view.particle_inv_mass.numpy(), inverse)
+                    np.testing.assert_allclose(model.particle_mass.numpy(), parent_masses)
+                    np.testing.assert_allclose(coupled.view("other").particle_mass.numpy(), [2.0] + [0.0] * 8)
+                    np.testing.assert_allclose(coupled.view("other").particle_inv_mass.numpy(), [0.5] + [0.0] * 8)
+                    self.assertEqual((view.particle_mass.ptr, view.particle_inv_mass.ptr), pointers)
 
     def test_configure_view_applies_after_compaction(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -4353,6 +4450,38 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         self.assertEqual(src_view.particle_inv_mass.numpy()[1], 0.0)
         np.testing.assert_allclose(dst_view.particle_mass.numpy(), [1.0, 2.0])
         np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [1.0, 0.5])
+        np.testing.assert_allclose(self.model.particle_mass.numpy(), [2.0, 2.0])
+
+        self.model.particle_mass.assign([4.0, 6.0])
+        self.model.particle_inv_mass.assign([0.25, 1.0 / 6.0])
+        coupled.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+        np.testing.assert_allclose(src_view.particle_mass.numpy(), [4.0, 0.0])
+        np.testing.assert_allclose(dst_view.particle_mass.numpy(), [2.0, 6.0])
+        np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [0.5, 1.0 / 6.0])
+        self.assertTrue(int(dst_view.particle_flags.numpy()[0]) & int(ParticleFlags.PROXY))
+        self.assertFalse(int(src_view.particle_flags.numpy()[1]) & int(ParticleFlags.ACTIVE))
+
+    def test_particle_proxy_refreshes_on_effective_mass_flags(self):
+        """Refresh destination particle masses after a source effective-mass notification."""
+        coupled = SolverCoupledProxy(
+            self.model,
+            entries=[
+                SolverCoupled.Entry("src", SolverXPBD, particles=[0]),
+                SolverCoupled.Entry("dst", SolverXPBD, particles=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[SolverCoupledProxy.Proxy(source="src", destination="dst", particles=[0], mass_scale=0.5)]
+            ),
+        )
+        source = coupled.view("src")
+        destination = coupled.view("dst")
+        source.set_particle_mass(
+            wp.array([0], dtype=int, device=self.model.device),
+            wp.array([6.0], dtype=float, device=self.model.device),
+        )
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(destination.particle_mass.numpy(), [3.0, 2.0])
+        np.testing.assert_allclose(destination.particle_inv_mass.numpy(), [1.0 / 3.0, 0.5])
         np.testing.assert_allclose(self.model.particle_mass.numpy(), [2.0, 2.0])
 
     def test_particle_proxy_feedback_is_applied_on_next_step(self):

@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected
-from ...sim import JointType, StateFlags
+from ...sim import JointType, ModelFlags, StateFlags
 from .interface import (
     CouplingEndpointKind,
 )
@@ -1337,6 +1337,8 @@ class SolverCoupledProxy(SolverCoupled):
         super().notify_model_changed(flags)
         if int(flags) & self._effective_mass_refresh_flags():
             self._apply_proxy_body_effective_masses()
+        if int(flags) & (int(ModelFlags.MODEL_PROPERTIES) | self._effective_mass_refresh_flags()):
+            self._apply_proxy_particle_effective_masses()
 
     def _step_coupled(
         self,
