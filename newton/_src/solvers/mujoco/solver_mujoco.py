@@ -7339,9 +7339,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_RAW
             return bool(np.any(joint_solref_limit[dof_idx] != 0.0))
 
-        # Read the per-row equality arrays through the None-safe helper. finalize() materializes
-        # these as shape-stable empty arrays even with no constraints, but the None-safe path keeps
-        # this robust for models assembled without the standard custom-attribute pipeline.
+        # Read the per-row equality arrays through the None-safe helper; finalize() omits them
+        # when the model has no equality constraints.
         eq_constraint_type = get_custom_attribute("equality_constraint_type")
         eq_constraint_body1 = get_custom_attribute("equality_constraint_body1")
         eq_constraint_body2 = get_custom_attribute("equality_constraint_body2")
@@ -10764,6 +10763,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         model = self.model
         launch_args = {"dim": self.mjc_eq_to_newton_eq.shape, "device": model.device}
+        # Equality arrays are absent when the model has no equality rows; joint-connect
+        # constraints then map no MuJoCo equality to a Newton row, so the kernels never read them.
+        mujoco_attrs = getattr(model, "mujoco", None)
+        eq_type = getattr(mujoco_attrs, "equality_constraint_type", None)
 
         if update_anchor_rel_xform_at_ref_pose:
             ref_q = SolverMuJoCo._build_ref_q(model, self._notify_ref_q)
@@ -10779,9 +10782,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 inputs=[
                     self.mjc_eq_to_newton_eq,
                     self.mjc_eq_to_newton_jnt,
-                    model.mujoco.equality_constraint_type,
-                    model.mujoco.equality_constraint_body1,
-                    model.mujoco.equality_constraint_body2,
+                    eq_type,
+                    getattr(mujoco_attrs, "equality_constraint_body1", None),
+                    getattr(mujoco_attrs, "equality_constraint_body2", None),
                     model.joint_type,
                     model.joint_parent,
                     model.joint_child,
@@ -10798,8 +10801,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.mjc_eq_to_newton_eq,
                 self.mjc_eq_to_newton_jnt,
-                model.mujoco.equality_constraint_type,
-                model.mujoco.equality_constraint_anchor,
+                eq_type,
+                getattr(mujoco_attrs, "equality_constraint_anchor", None),
                 self.jnt_connect_hinge_side,
                 model.joint_X_p,
                 model.joint_axis,
@@ -11600,8 +11603,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         body_world = model.body_world.numpy()
         joint_world = model.joint_world.numpy()
-        # finalize() materializes this as an empty array at zero rows; guard on the count anyway
-        # so models assembled without the standard pipeline still work.
+        # finalize() omits the per-row equality arrays when there are no equality constraints.
         eq_constraint_world = (
             model.mujoco.equality_constraint_world.numpy()
             if model.mujoco.equality_constraint_count > 0

@@ -814,10 +814,6 @@ class ModelBuilder:
         "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
         "muscle_points": Model.AttributeSpec("muscle_point"),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
-        "_equality_constraint_world_start": Model.AttributeSpec(
-            Model.AttributeFrequency.WORLD,
-            compaction_policy="passthrough",
-        ),
         "_shape_collision_filter_pairs": Model.AttributeSpec(
             Model.AttributeFrequency.ONCE,
             compaction_policy="passthrough",
@@ -1818,6 +1814,34 @@ class ModelBuilder:
         these values like other entity labels.
         """
 
+        world_attribute: str | None = None
+        """Optional full key of the attribute that assigns each row to a world.
+
+        The key must be named ``<frequency>_world``.
+        The attribute must use this custom frequency, be assigned to the model,
+        use an integer dtype, and declare ``references="world"``.
+
+        When provided, the rows of this frequency are treated like built-in
+        per-world entities such as bodies:
+
+        - :meth:`ModelBuilder.finalize` validates that the world indices are
+          in ``[-1, world_count - 1]``, are grouped by world in ascending
+          order, and that global rows (world ``-1``) only appear at the
+          beginning or end.
+        - The finalized model exposes ``<name>_count`` (an ``int``) and
+          ``<name>_world_start`` (a ``wp.array[wp.int32]`` with
+          ``world_count + 2`` entries, laid out like
+          :attr:`Model.body_world_start <newton.Model.body_world_start>`) in
+          the frequency's namespace, or directly on the model if the
+          frequency has no namespace. Both are published even when the
+          frequency has no rows.
+
+        For example, a frequency named ``"constraint"`` in namespace
+        ``"my_solver"`` with ``world_attribute="my_solver:constraint_world"``
+        produces ``model.my_solver.constraint_count`` and
+        ``model.my_solver.constraint_world_start``.
+        """
+
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
             if not self.name or ":" in self.name:
@@ -1835,6 +1859,7 @@ class ModelBuilder:
                     f"{self.key}_articulation",
                 ),
                 ("label_attribute", self.label_attribute, f"{self.key}_label"),
+                ("world_attribute", self.world_attribute, f"{self.key}_world"),
             ):
                 if attribute_key is not None and attribute_key != expected_key:
                     raise ValueError(
@@ -2494,8 +2519,6 @@ class ModelBuilder:
         """Per-world joint starts accumulated for :attr:`Model.joint_world_start`."""
         self.articulation_world_start: list[int] = []
         """Per-world articulation starts accumulated for :attr:`Model.articulation_world_start`."""
-        self._equality_constraint_world_start: list[int] = []
-        """Per-world equality-constraint starts accumulated for ``model.mujoco.equality_constraint_world_start``."""
         self.joint_dof_world_start: list[int] = []
         """Per-world joint DoF starts accumulated for :attr:`Model.joint_dof_world_start`."""
         self.joint_coord_world_start: list[int] = []
@@ -2519,6 +2542,10 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
         self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
         """Row counts covered by the latest custom-frequency owner resolution."""
+        self._custom_frequency_world_start: dict[str, list[int]] = {}
+        """Per-world row starts for custom frequencies that declare
+        :attr:`CustomFrequency.world_attribute`, keyed by frequency and rebuilt by
+        :meth:`finalize`. Each list uses the layout of :attr:`body_world_start`."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
@@ -2669,6 +2696,7 @@ class ModelBuilder:
             and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
             and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
             and existing.label_attribute == incoming.label_attribute
+            and existing.world_attribute == incoming.world_attribute
         )
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
@@ -2912,6 +2940,71 @@ class ModelBuilder:
                 owners.append(owner_index)
             owner_attribute.values = owners
             self._custom_frequency_owner_resolved_counts[frequency_key] = count
+
+    def _custom_frequency_world_attributes(self) -> list[tuple[str, ModelBuilder.CustomAttribute]]:
+        """Return validated ``(frequency_key, attribute)`` pairs for declared world attributes."""
+        result = []
+        for frequency_key, frequency in self.custom_frequencies.items():
+            world_key = frequency.world_attribute
+            if world_key is None:
+                continue
+            attribute = self.custom_attributes.get(world_key)
+            if attribute is None:
+                raise ValueError(f"Custom frequency '{frequency_key}' declares unknown world attribute '{world_key}'")
+            if attribute.frequency != frequency_key:
+                raise ValueError(
+                    f"World attribute '{world_key}' uses frequency '{attribute.frequency}', expected '{frequency_key}'"
+                )
+            if attribute.assignment != Model.AttributeAssignment.MODEL:
+                raise ValueError(f"World attribute '{world_key}' must be assigned to Model")
+            if Model._normalize_attribute_reference(attribute.references) != Model.AttributeFrequency.WORLD:
+                raise ValueError(f"World attribute '{world_key}' must declare references='world'")
+            if not wp.types.type_is_int(attribute.dtype):
+                raise ValueError(f"World attribute '{world_key}' must use an integer dtype")
+            result.append((frequency_key, attribute))
+        return result
+
+    def _custom_frequency_world_values(self, frequency_key: str, attribute: CustomAttribute) -> list[int]:
+        """Return the dense, default-filled world index of every row of ``frequency_key``."""
+        count = self._custom_frequency_counts.get(frequency_key, 0)
+        return [int(value) for value in attribute._values_with_defaults(count)[:count]]
+
+    def _finalize_custom_frequency_world_starts(self, model: Model) -> None:
+        """Publish ``<name>_count`` and ``<name>_world_start`` for frequencies with a world attribute."""
+        for frequency_key, world_start in self._custom_frequency_world_start.items():
+            frequency = self.custom_frequencies[frequency_key]
+            if frequency.namespace:
+                target = getattr(model, frequency.namespace, None)
+                if target is None:
+                    target = Model.AttributeNamespace(frequency.namespace)
+                    setattr(model, frequency.namespace, target)
+                elif not isinstance(target, Model.AttributeNamespace):
+                    raise ValueError(
+                        f"Cannot publish metadata for custom frequency '{frequency_key}': "
+                        f"model.{frequency.namespace} is not an attribute namespace"
+                    )
+            else:
+                target = model
+            values = {
+                f"{frequency.name}_count": self._custom_frequency_counts.get(frequency_key, 0),
+                f"{frequency.name}_world_start": wp.array(world_start, dtype=wp.int32, device=model.device),
+            }
+            for name, value in values.items():
+                if isinstance(target, Model.AttributeNamespace):
+                    exists = (
+                        name in target.__dict__
+                        or name in target._deprecated_aliases
+                        or name in target._removed_attributes
+                    )
+                else:
+                    exists = hasattr(target, name)
+                if exists:
+                    location = f"{frequency.namespace}.{name}" if frequency.namespace else name
+                    raise ValueError(
+                        f"Cannot publish model.{location} for custom frequency '{frequency_key}': "
+                        "an attribute with that name already exists"
+                    )
+                setattr(target, name, value)
 
     def _finalize_custom_frequency_metadata(self, model: Model, device: Devicelike | None) -> None:
         """Materialize articulation ownership and label metadata on a model."""
@@ -5755,16 +5848,6 @@ class ModelBuilder:
                     label = label_attribute.values[row]
                     if label:
                         label_attribute.values[row] = f"{label_prefix}/{label}"
-
-            if builder._equality_constraint_count > 0:
-                label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
-                if label_attr is not None and label_attr.values:
-                    start = self._equality_constraint_count
-                    for i in range(start, start + builder._equality_constraint_count):
-                        if i < len(label_attr.values):
-                            label = label_attr.values[i]
-                            if label:
-                                label_attr.values[i] = f"{label_prefix}/{label}"
 
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:
@@ -13384,9 +13467,12 @@ class ModelBuilder:
                 ("shape_world", self.shape_world),
                 ("joint_world", self.joint_world),
                 ("articulation_world", self.articulation_world),
-                ("equality_constraint_world", self._eq_list("equality_constraint_world")),
                 ("constraint_mimic_world", self.constraint_mimic_world),
             ]
+        for frequency_key, world_attribute in self._custom_frequency_world_attributes():
+            world_arrays.append(
+                (world_attribute.key, self._custom_frequency_world_values(frequency_key, world_attribute))
+            )
 
         all_world_indices = set()
 
@@ -13713,14 +13799,98 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_gap) == 0
 
+    _VALIDATED_CUSTOM_REFERENCES: ClassVar[tuple[Model.AttributeFrequency, ...]] = (
+        Model.AttributeFrequency.PARTICLE,
+        Model.AttributeFrequency.BODY,
+        Model.AttributeFrequency.SHAPE,
+        Model.AttributeFrequency.JOINT,
+        Model.AttributeFrequency.ARTICULATION,
+    )
+
+    def _validate_custom_attribute_references(self) -> None:
+        """Check that integer custom attributes referencing built-in entities are in ``[-1, count)``.
+
+        Covers attributes whose :attr:`CustomAttribute.references` is ``"particle"``, ``"body"``,
+        ``"shape"``, ``"joint"``, or ``"articulation"``. ``-1`` denotes "no entity" (or the world for
+        bodies). Rows whose label is available, either through the custom frequency's
+        :attr:`CustomFrequency.label_attribute` or the built-in ``<entity>_label`` list, are named in
+        the error message.
+
+        Raises:
+            ValueError: If a reference is out of range.
+        """
+        counts: dict[str, int] | None = None
+        for key, attribute in self.custom_attributes.items():
+            reference = Model._normalize_attribute_reference(attribute.references)
+            if reference not in self._VALIDATED_CUSTOM_REFERENCES:
+                continue
+            dtype = attribute.dtype
+            scalar_dtype = getattr(dtype, "_wp_scalar_type_", dtype)
+            if dtype is str or not wp.types.type_is_int(scalar_dtype):
+                continue
+            if counts is None:
+                counts = self._builder_merge_counts(self)
+                counts["world"] = self.world_count
+                counts["once"] = 1
+            frequency = attribute.frequency
+            if attribute.is_custom_frequency:
+                row_count = self._custom_frequency_counts.get(frequency, 0)
+            else:
+                row_count = counts.get(self._builder_frequency_key(frequency), 0)
+            if row_count == 0:
+                continue
+            if attribute.is_custom_frequency:
+                rows = attribute._values_with_defaults(row_count)[:row_count]
+            else:
+                dense = attribute._values_with_defaults(row_count)
+                rows = [dense[row] for row in range(row_count)]
+            try:
+                values = np.asarray(rows, dtype=np.int64).reshape(row_count, -1)
+            except (TypeError, ValueError):
+                # Unresolved values (e.g. not yet converted to indices) are not validated here.
+                continue
+
+            entity = self._builder_frequency_key(reference)
+            entity_count = counts.get(entity, 0)
+            invalid = np.flatnonzero(np.any((values < -1) | (values >= entity_count), axis=1))
+            if len(invalid) == 0:
+                continue
+            row = int(invalid[0])
+            row_values = values[row]
+            bad_value = int(row_values[(row_values < -1) | (row_values >= entity_count)][0])
+            raise ValueError(
+                f"Invalid {entity} reference in custom attribute '{key}': row {row} "
+                f"('{self._custom_attribute_row_label(attribute, row)}') references {entity} {bad_value}, "
+                f"but valid range is [-1, {entity_count - 1}] ({entity}_count={entity_count})."
+            )
+
+    def _custom_attribute_row_label(self, attribute: CustomAttribute, row: int) -> str:
+        """Return a human-readable label for ``row`` of ``attribute``'s frequency."""
+        frequency = attribute.frequency
+        label = None
+        if attribute.is_custom_frequency:
+            custom_frequency = self.custom_frequencies.get(frequency)
+            label_key = custom_frequency.label_attribute if custom_frequency is not None else None
+            label_attribute = self.custom_attributes.get(label_key) if label_key is not None else None
+            if label_attribute is not None and isinstance(label_attribute.values, list):
+                if row < len(label_attribute.values):
+                    label = label_attribute.values[row]
+            name = frequency.rsplit(":", 1)[-1]
+        else:
+            name = self._builder_frequency_key(frequency)
+            labels = getattr(self, f"{name}_label", None)
+            if isinstance(labels, list) and row < len(labels):
+                label = labels[row]
+        return label or f"{name}_{row}"
+
     def _validate_structure(self) -> None:
         """Validate structural invariants of the model.
 
         This method performs consolidated validation of all structural constraints,
         using vectorized numpy operations for efficiency:
 
-        - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
-        - Joint references: equality_constraint_joint1/2
+        - Body references: shape_body, joint_parent, joint_child
+        - Custom attribute references to bodies, joints, shapes, articulations, and particles
         - Particle references: spring, triangle, edge, and tetrahedron connectivity
         - Self-referential joints: joint_parent[i] != joint_child[i]
         - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start, articulation_end
@@ -13809,61 +13979,8 @@ class ModelBuilder:
                     f"Self-referential joint: joint {idx} ('{joint_label}') has parent and child both set to body {joint_parent[idx]}."
                 )
 
-        # Validate equality constraint body/joint references
-        equality_count = self._equality_constraint_count
-        if equality_count > 0:
-            label_values = self._eq_values_raw("equality_constraint_label")
-
-            def _eq_label(idx: int) -> str:
-                label = label_values[idx] if idx < len(label_values) and label_values[idx] is not None else None
-                return label or f"equality_constraint_{idx}"
-
-            def _eq_index_array(name: str) -> np.ndarray:
-                # Coerce raw custom-attribute values straight into the int32 array, applying the
-                # attribute default for missing/``None`` rows, without an intermediate Python list.
-                values = self._eq_values_raw(name)
-                count, default = len(values), self._eq_attr(name).default
-                return np.fromiter(
-                    (values[i] if i < count and values[i] is not None else default for i in range(equality_count)),
-                    dtype=np.int32,
-                    count=equality_count,
-                )
-
-            eq_body1 = _eq_index_array("equality_constraint_body1")
-            invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{_eq_label(idx)}') references body {eq_body1[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-            eq_body2 = _eq_index_array("equality_constraint_body2")
-            invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{_eq_label(idx)}') references body {eq_body2[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-            eq_joint1 = _eq_index_array("equality_constraint_joint1")
-            invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{_eq_label(idx)}') references joint {eq_joint1[idx]}, "
-                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
-                )
-
-            eq_joint2 = _eq_index_array("equality_constraint_joint2")
-            invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{_eq_label(idx)}') references joint {eq_joint2[idx]}, "
-                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
-                )
+        # Validate entity references declared by custom attributes
+        self._validate_custom_attribute_references()
 
         # Validate start array monotonicity
         if joint_count > 0:
@@ -14146,9 +14263,9 @@ class ModelBuilder:
         Constructs the per-world entity start indices.
 
         This method validates that the per-world start index lists for various entities
-        (particles, bodies, shapes, joints, articulations, equality constraints and joint
-        coordinates/DOFs/constraints) are cumulative and match the total counts of those
-        entities. Moreover, it appends the start of tail-end global entities and the
+        (particles, bodies, shapes, joints, articulations, joint coordinates/DOFs/constraints,
+        and custom frequencies that declare :attr:`CustomFrequency.world_attribute`) are
+        cumulative and match the total counts of those entities. Moreover, it appends the start of tail-end global entities and the
         overall total counts to the end of each start index lists.
 
         The format of the start index lists is as follows (where `*` can be `body`, `shape`, `joint`, etc.):
@@ -14176,13 +14293,18 @@ class ModelBuilder:
             (self.shape_world_start, self.shape_count, self.shape_world, "shape"),
             (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
             (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
-            (
-                self._equality_constraint_world_start,
-                self._equality_constraint_count,
-                self._eq_list("equality_constraint_world"),
-                "equality constraint",
-            ),
         ]
+        self._custom_frequency_world_start = {}
+        for frequency_key, world_attribute in self._custom_frequency_world_attributes():
+            world_start = self._custom_frequency_world_start.setdefault(frequency_key, [])
+            world_entity_start_arrays.append(
+                (
+                    world_start,
+                    self._custom_frequency_counts.get(frequency_key, 0),
+                    self._custom_frequency_world_values(frequency_key, world_attribute),
+                    f"'{frequency_key}' row",
+                )
+            )
 
         def build_entity_start_array(
             entity_count: int, entity_world: list[int], world_entity_start: list[int], name: str
@@ -16338,14 +16460,6 @@ class ModelBuilder:
                 for suffix in references:
                     setattr(m, f"{family}_{suffix}", wp.array(getattr(self, f"_{family}_{suffix}"), dtype=wp.int32))
 
-            # ---------------------
-            # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
-            # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the
-            # standard custom-attribute pipeline below, which is exempted from the zero-count skip
-            # for this frequency so the arrays stay shape-stable (empty) even with no constraints.
-            if not hasattr(m, "mujoco"):
-                m.mujoco = Model.AttributeNamespace("mujoco")
-
             # deprecated sparse mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
@@ -16386,8 +16500,6 @@ class ModelBuilder:
             m.attachment_particle_body_count = self.attachment_particle_body_count
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
-            m.mujoco.equality_constraint_count = self._equality_constraint_count
-            m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             m._shape_contact_pair_data = _ShapeContactPairs(
@@ -16515,11 +16627,7 @@ class ModelBuilder:
 
                 freq_key = custom_attr.frequency
                 count = m._attribute_frequency_count(freq_key)
-
-                # Keep canonical MuJoCo equality attributes shape-stable at zero rows. This lets
-                # callers consume ``model.mujoco.equality_constraint_*`` without branching on
-                # whether the model contains any equality constraints.
-                if count == 0 and freq_key != "mujoco:equality_constraint":
+                if count == 0:
                     continue
 
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
@@ -16535,6 +16643,7 @@ class ModelBuilder:
                     custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
 
+            self._finalize_custom_frequency_world_starts(m)
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
 
