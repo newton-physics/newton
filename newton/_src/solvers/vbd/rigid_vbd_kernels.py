@@ -1636,6 +1636,7 @@ def _project_friction_disk_metric(trial: wp.vec3, n: wp.vec3, R: wp.mat22, limit
     # Initialize with the larger lower bound from Jensen's inequality and |f_l| <= limit.
     root = wp.max(wp.max((wp.sqrt(total) - 1.0) / mean_ratio, (wp.sqrt(low_sq) - 1.0) / ratio), 0.0)
     # Advance from the lower bound with Newton's method on 1 / sqrt(norm_sq(root)) - 1 = 0.
+    # Exit early on tolerance or stalled progress; 24 is only an iteration cap.
     for _ in range(24):
         ih = 1.0 / (1.0 + root)
         il = 1.0 / (1.0 + root * ratio)
