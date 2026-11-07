@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
-from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased, ClampingThermal
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .joint_space_response import JointSpaceResponse
@@ -15,6 +15,7 @@ __all__ = [
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
+    "ClampingThermal",
     "ComponentKind",
     "Delay",
     "DriveBase",

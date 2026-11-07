@@ -32,6 +32,7 @@ construction.
    ClampingDCMotor
    ClampingMaxEffort
    ClampingPositionBased
+   ClampingThermal
    ComponentKind
    Delay
    DriveBase
