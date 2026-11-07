@@ -221,9 +221,6 @@ def ray_intersect_ellipsoid(ray_origin: wp.vec3, ray_direction: wp.vec3, semi_ax
     return t_hit, normal
 
 
-_IFACE = wp.types.matrix((3, 2), dtype=wp.int32)(1, 2, 0, 2, 0, 1)
-
-
 @wp.func
 def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3) -> tuple[float, wp.vec3]:
     """Computes ray-box intersection in the box's local frame.
@@ -240,6 +237,11 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
     normal = wp.vec3(0.0)
     t_near = -1.0e10
     t_far = 1.0e10
+    inverse_direction = wp.vec3(0.0)
+    near_times = wp.vec3(0.0)
+    far_times = wp.vec3(0.0)
+    near_axis = int(-1)
+    far_axis = int(-1)
     hit = 1
 
     for i in range(3):
@@ -248,6 +250,7 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
                 hit = 0
         else:
             inv_d_i = 1.0 / ray_direction[i]
+            inverse_direction[i] = inv_d_i
             t1 = (-size[i] - ray_origin[i]) * inv_d_i
             t2 = (size[i] - ray_origin[i]) * inv_d_i
 
@@ -256,6 +259,12 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
                 t1 = t2
                 t2 = temp
 
+            near_times[i] = t1
+            far_times[i] = t2
+            if t1 > t_near:
+                near_axis = i
+            if t2 < t_far:
+                far_axis = i
             t_near = wp.max(t_near, t1)
             t_far = wp.min(t_far, t2)
 
@@ -266,21 +275,48 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
             t_hit = t_far
 
     if t_hit >= 0.0:
-        # Identify the hit face by matching the solved face distance to t_hit.
-        normal_local = wp.vec3(0.0)
+        selected_axis = near_axis if t_near >= 0.0 else far_axis
+        face_times = near_times if t_near >= 0.0 else far_times
+        direction_scale = wp.max(wp.abs(ray_direction[0]), wp.max(wp.abs(ray_direction[1]), wp.abs(ray_direction[2])))
+        # A max-component bound includes every Euclidean spatial tie.
+        spatial_tolerance = EPSILON / wp.max(direction_scale, MINVAL)
+        refine = selected_axis < 0
         for i in range(3):
-            if wp.abs(ray_direction[i]) > EPSILON:
-                for side in range(-1, 2, 2):
-                    sol = (float(side) * size[i] - ray_origin[i]) / ray_direction[i]
-                    if sol >= 0.0:
-                        id0 = _IFACE[i][0]
-                        id1 = _IFACE[i][1]
-                        p0 = ray_origin[id0] + sol * ray_direction[id0]
-                        p1 = ray_origin[id1] + sol * ray_direction[id1]
-                        if wp.abs(p0) <= size[id0] and wp.abs(p1) <= size[id1]:
-                            if wp.abs(sol - t_hit) < EPSILON:
-                                normal_local[i] = -1.0 if side < 0 else 1.0
-        normal = wp.normalize(normal_local)
+            if i != selected_axis and wp.abs(ray_direction[i]) >= MINVAL:
+                # Eight float32 epsilons conservatively cover both slab times
+                # (subtraction, reciprocal and multiplication rounding).
+                rounding_tolerance = 9.5367431640625e-7 * wp.max(wp.abs(face_times[i]), wp.abs(t_hit))
+                if wp.abs(face_times[i] - t_hit) <= spatial_tolerance + rounding_tolerance:
+                    refine = True
+
+        if not refine:
+            sign = -1.0 if ray_direction[selected_axis] > 0.0 else 1.0
+            normal[selected_axis] = sign if t_near >= 0.0 else -sign
+        else:
+            # Recenter at the hit to distinguish crossings whose large slab times
+            # round alike. Keep cancellation in double precision before converting
+            # the small face offsets back to float; no extra divisions are needed.
+            point = wp.vec3d(ray_origin) + wp.float64(t_hit) * wp.vec3d(ray_direction)
+            offsets = wp.vec3(0.0)
+            selected_offset = -1.0e10 if t_near >= 0.0 else 1.0e10
+            for i in range(3):
+                if wp.abs(ray_direction[i]) >= MINVAL:
+                    sign = -1.0 if ray_direction[i] > 0.0 else 1.0
+                    sign = sign if t_near >= 0.0 else -sign
+                    offsets[i] = float(wp.float64(sign * size[i]) - point[i]) * inverse_direction[i]
+                    if t_near >= 0.0:
+                        selected_offset = wp.max(selected_offset, offsets[i])
+                    else:
+                        selected_offset = wp.min(selected_offset, offsets[i])
+
+            normal_local = wp.vec3(0.0)
+            for i in range(3):
+                if wp.abs(ray_direction[i]) >= MINVAL:
+                    separation = (offsets[i] - selected_offset) * ray_direction
+                    if wp.dot(separation, separation) < EPSILON * EPSILON:
+                        sign = -1.0 if ray_direction[i] > 0.0 else 1.0
+                        normal_local[i] = sign if t_near >= 0.0 else -sign
+            normal = wp.normalize(normal_local)
 
     return t_hit, normal
 
