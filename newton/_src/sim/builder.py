@@ -16583,28 +16583,29 @@ class ModelBuilder:
         """Mask of the joints that imported MuJoCo equality constraints target, ``None`` without any.
 
         Such joints (MJCF equality welds and connects imported as loop joints) never place a body;
-        see :func:`~newton._src.utils.topology.tree_joint_mask`.
+        see :func:`~newton._src.utils.topology.tree_joint_mask`. The mask comes from
+        :func:`~newton._src.solvers.mujoco.equality.equality_loop_joint_mask`, which
+        :class:`~newton.solvers.SolverMuJoCo` applies to the finalized rows.
         """
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
         target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
         if target_kind_attr is None or target_attr is None or not target_attr.values:
             return None
+        from ..solvers.mujoco.equality import equality_loop_joint_mask  # noqa: PLC0415
+
         kinds = target_kind_attr.values or {}
         if not isinstance(kinds, dict):
             kinds = dict(enumerate(kinds))
         targets = target_attr.values
         if not isinstance(targets, dict):
             targets = dict(enumerate(targets))
-        mask = np.zeros(self.joint_count, dtype=bool)
-        for eq_idx, target in targets.items():
-            try:
-                # kind 1 targets a joint (MjcEqualityTargetKind.JOINT in the MuJoCo solver)
-                if target is None or int(kinds.get(eq_idx, 0)) != 1 or not 0 <= int(target) < self.joint_count:
-                    continue
-            except (TypeError, ValueError):
-                continue
-            mask[int(target)] = True
-        return mask
+        rows = [row for row, target in targets.items() if target is not None]
+        kind_default = target_kind_attr.default
+        return equality_loop_joint_mask(
+            [kind_default if kinds.get(row) is None else kinds[row] for row in rows],
+            [targets[row] for row in rows],
+            self.joint_count,
+        )
 
     def _weld_group_filter_pairs(self) -> np.ndarray:
         """Shape pairs that filtering joints add across weld groups, shape [pair_count, 2].
