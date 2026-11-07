@@ -2671,6 +2671,15 @@ class CollisionPipeline:
         The returned buffer uses this pipeline's ``requires_grad`` flag (resolved at
         construction from the argument or ``model.requires_grad``).
 
+        When soft self-contact is configured (:meth:`init_soft_self_contact`),
+        the buffer's self-contact storage is sized from the detector's budgets
+        at call time. Growing the budgets later
+        (:meth:`check_and_grow_soft_self_contact_buffers`, or
+        ``SolverVBD.check_and_grow_self_contact_buffers``) invalidates the
+        storage of buffers allocated earlier: each is resized automatically at
+        its next :meth:`collide` use, with a ``NewtonWarning`` and its previous
+        self-contact results discarded.
+
         Returns:
             A newly allocated contacts buffer sized for this pipeline.
 
@@ -2758,7 +2767,9 @@ class CollisionPipeline:
 
         This is the configuration entry point for standalone pipeline use; a
         solver that owns the pipeline calls this internally, seeded from its
-        own self-contact parameters.
+        own self-contact parameters. On overflow, excess pairs are dropped and
+        flagged; call :meth:`check_and_grow_soft_self_contact_buffers` between
+        steps to report the overflow and grow the storage.
 
         Args:
             margin: Self-contact interaction distance [m] (surface offset at
@@ -2770,10 +2781,12 @@ class CollisionPipeline:
                 in the rest shape (``model.particle_q``) are excluded from
                 detection — for meshes whose regions are close by design
                 (layered cloth, seams). ``0`` disables the filter.
-            vertex_buffer_pre_alloc: Per-vertex collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
-            edge_buffer_pre_alloc: Per-edge collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
+            vertex_buffer_pre_alloc: Sizes the global vertex-triangle contact
+                buffer shared by all vertices: capacity = this value x
+                ``particle_count``; excess pairs are dropped and flagged.
+            edge_buffer_pre_alloc: Sizes the global edge-edge contact buffer
+                shared by all edges: capacity = this value x ``edge_count``;
+                excess pairs are dropped and flagged.
             edge_edge_parallel_epsilon: Near-parallel edge-pair threshold.
             record_triangle_contacting_vertices: Also record per-triangle
                 contacting vertices.
@@ -2888,6 +2901,42 @@ class CollisionPipeline:
             detector.rebuild(new_pos)
         else:
             detector.refit(new_pos)
+
+    def check_and_grow_soft_self_contact_buffers(self, *, warn: bool = True) -> bool:
+        """Check self-contact overflow on the last detection and grow the storage.
+
+        For standalone pipeline use; the counterpart of
+        ``SolverVBD.check_and_grow_self_contact_buffers()`` (a solver that owns
+        the pipeline additionally refreshes its per-pair launch size, so solver
+        users should call that wrapper instead). Reads the overflow flags back,
+        which synchronizes the device: call it between steps at whatever
+        cadence suits the workload, never inside CUDA graph capture (while
+        capture is active it returns ``False`` without checking).
+
+        The check covers the buffer most recently detected into. After a
+        ``True`` return the budgets grew: that buffer's storage was replaced in
+        place, buffers from earlier :meth:`contacts` calls are resized
+        automatically at their next :meth:`collide` use (with a warning; their
+        previous self-contact results are discarded), and any previously
+        captured graph containing detection or contact kernels must be
+        re-created.
+
+        Args:
+            warn: Emit a ``NewtonWarning`` describing the overflow (per-family
+                demand versus capacity) before growing. Pass ``False`` to grow
+                silently and rely on the return value instead.
+
+        Returns:
+            True if the storage was reallocated. False when nothing
+            overflowed, no detection has run yet, or capture is active.
+
+        Raises:
+            ValueError: If ``init_soft_self_contact()`` was not called.
+        """
+        detector = self._ensure_soft_self_contact_detector()
+        if detector.collision_info is None:
+            return False
+        return detector.check_and_grow_collision_buffers(warn=warn)
 
     def _detect_soft_self_contact(self, particle_q: wp.array[wp.vec3], contacts: Contacts) -> None:
         """Detect tri-mesh self-contact into ``contacts`` at ``particle_q``."""
