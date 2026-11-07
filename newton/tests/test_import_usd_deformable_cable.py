@@ -1598,9 +1598,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertTrue(all(math.isfinite(value) and value > 0.0 for value in cable_stiffness))
 
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
-        """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment
-        (so mass scales with density and segment length), not add_rod's capsule mass whose
-        constant hemispherical caps overestimate short / thick segments."""
+        """Use cylindrical rest volumes so cable segment masses scale with density and length."""
         r = 0.05
         for rho in (1000.0, 2000.0):
             with self.subTest(density=rho):

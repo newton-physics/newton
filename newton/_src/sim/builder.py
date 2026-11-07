@@ -10726,6 +10726,8 @@ class ModelBuilder:
               arguments override the derived value per mode.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
               the cylindrical centerline, excluding the hemispherical caps.
+              A solid segment's mass is its density times the cross-sectional area times its rest
+              length. The capsule inertia tensor is scaled to that mass.
             - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized
               capsule centerline. The COM and shape are at local ``(0, 0, half_height)``, and the other
               centerline endpoint is at ``(0, 0, 2 * half_height)``. These offsets use rest lengths; the
@@ -10958,18 +10960,23 @@ class ModelBuilder:
             )
 
         # Create all edge bodies first.
+        capsule_cfg = cfg.copy()
         for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
             body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
 
+            rest_length = edge_len[e_idx]
+            if cfg.is_solid:
+                # Scale capsule mass and inertia by the cylinder-to-capsule volume ratio.
+                capsule_cfg.density = cfg.density * (rest_length / (rest_length + 4.0 * radius / 3.0))
             self.add_shape_capsule(
                 body_id,
                 xform=capsule_xform,
                 radius=radius,
-                half_height=0.5 * edge_len[e_idx],
-                cfg=cfg,
+                half_height=0.5 * rest_length,
+                cfg=capsule_cfg,
                 label=shape_label,
                 color=rod_color,
             )
