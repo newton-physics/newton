@@ -300,6 +300,31 @@ _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
             self.assertFalse(notes)
             self.assertIn("newton.solvers.SolverExample.step", symbols)
 
+    def test_resolves_known_viewer_lazy_export_map(self):
+        """Keep the known Newton lazy viewer facade equivalent to direct imports."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root,
+                {
+                    "newton/__init__.py": "from . import viewer\n__all__ = ['viewer']\n",
+                    "newton/viewer.py": "from ._src import viewer as _viewer\n__all__ = [*_viewer.__all__]\n",
+                    "newton/_src/__init__.py": "",
+                    "newton/_src/viewer/__init__.py": """
+__all__ = ["ViewerExample"]
+_LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
+    "ViewerExample": (".example", "ViewerExample"),
+}
+""",
+                    "newton/_src/viewer/example.py": "class ViewerExample:\n    def log_state(self, state: object) -> None: ...\n",
+                },
+            )
+
+            symbols, notes = _snapshot(root)
+
+            self.assertFalse(notes)
+            self.assertIn("newton.viewer.ViewerExample.log_state", symbols)
+
     def test_detects_newton_solver_custom_attribute_addition(self):
         """Detect the custom geom_group registration added by Newton PR 3283."""
         source = """

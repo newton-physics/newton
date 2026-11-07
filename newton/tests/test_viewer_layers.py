@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -9,9 +10,12 @@ import warp as wp
 
 import newton
 from newton._src.viewer.gl.frame_cache import FrameCache
+from newton._src.viewer.gui.viewport import ViewportControls
+from newton._src.viewer.gui.workspace import ViewerWorkspace
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
+from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
 from newton.viewer import ViewerNull
 
 
@@ -94,6 +98,142 @@ class _MinimalRTXViewer(ViewerRTX):
 
 
 class TestViewerLayers(unittest.TestCase):
+    def test_gl_picking_ignores_hidden_particles(self) -> None:
+        """Hidden particles cannot steal rigid hits, while visible cloth remains selectable."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        workspace = ViewerWorkspace(
+            SimpleNamespace(
+                _viewer=viewer,
+                ui=SimpleNamespace(dpi_scale=1.0),
+                console_capture=None,
+                stop_following_selection=lambda: None,
+            )
+        )
+        workspace.rect = (0, 0, 64, 48)
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            for kind in ("primary", "auxiliary", "cloth"):
+                with self.subTest(device=device, kind=kind):
+                    builder = newton.ModelBuilder()
+                    body = builder.add_body(xform=wp.transform((0, 1, 0), wp.quat_identity()))
+                    builder.add_shape_sphere(body, radius=0.3)
+                    particles = newton.ModelBuilder() if kind == "auxiliary" else builder
+                    points = ((-1, -1, -1), (1, -1, -1), (0, -1, 1)) if kind == "cloth" else ((0, -1, 0),)
+                    for position in points:
+                        particles.add_particle(pos=wp.vec3(position), vel=wp.vec3(0), mass=1.0, radius=0.1)
+                    if kind == "cloth":
+                        builder.add_triangle(0, 1, 2)
+                    model = builder.finalize(device=device)
+                    example = SimpleNamespace(model=model, viewer=viewer)
+                    if kind == "auxiliary":
+                        example.particle_model = particles.finalize(device=device)
+                        example.particle_state = example.particle_model.state()
+                    viewer.set_model(model)
+                    workspace.bind(example)
+                    viewer.show_triangles = True
+                    workspace.selection_mode = "body" if kind == "cloth" else "particle"
+                    viewer.set_camera((0, -4, 0), 0, 0)
+                    viewer.camera.look_at((0, 0, 0))
+                    for visible in (True, False, True):
+                        viewer.show_particles = visible
+                        viewer.begin_frame(0.0)
+                        viewer.log_state(model.state())
+                        workspace._ensure_tree()
+                        if kind == "auxiliary":
+                            points, radii, hidden = workspace.tree.deformables.logged_points(
+                                workspace,
+                                example.particle_state.particle_q,
+                                example.particle_model.particle_radius,
+                                False,
+                            )
+                            viewer.log_points("sand", points, radii=radii, hidden=hidden or not visible)
+                        viewer.end_frame()
+                        workspace.select_from_screen(32, 24, lambda x, y: (x, y))
+                        if kind == "cloth":
+                            self.assertEqual(workspace.selected[0], "surface")
+                        else:
+                            self.assertEqual(workspace.selected, ("particle", 0) if visible else ("body", body))
+                    if kind == "cloth":
+                        viewer.show_particles = viewer.show_triangles = False
+                        viewer.log_state(model.state())
+                        workspace.select_from_screen(32, 24, lambda x, y: (x, y))
+                        self.assertEqual(workspace.selected, ("body", body))
+
+    def test_gl_viewport_modes_cover_all_model_layers(self) -> None:
+        """Apply global modes and grids to inactive layers, including replacement models."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        controls = ViewportControls(SimpleNamespace(viewer=viewer))
+        states = {}
+        for name, size in (("large", 2.0), ("small", 0.1)):
+            builder = newton.ModelBuilder()
+            body = builder.add_body()
+            builder.add_shape_box(
+                body, hx=size, hy=size, hz=size, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False)
+            )
+            builder.add_shape_box(
+                body,
+                hx=size,
+                hy=size,
+                hz=size,
+                cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False),
+            )
+            viewer.activate(name)
+            viewer.set_model(builder.finalize(device="cpu"))
+            states[name] = viewer.model.state()
+            viewer.log_state(states[name])
+
+        for mode in ("xray", "collision", "wire", "visual"):
+            with self.subTest(mode=mode):
+                controls.set_mode(mode)
+                controls.sync()
+                for name, state in states.items():
+                    viewer.activate(name)
+                    self.assertEqual(viewer.show_visual, mode in ("visual", "xray", "wire"))
+                    self.assertEqual(viewer.show_collision, mode in ("collision", "xray"))
+                    viewer.log_state(state)
+                    roles = set()
+                    for batch in viewer._shape_instances.values():
+                        obj = viewer.objects[batch.name]
+                        role = getattr(obj, "_physics_role", None)
+                        roles.add(role)
+                        self.assertEqual(obj._surface_grid, 1)
+                        self.assertEqual(
+                            obj.hidden, not (viewer.show_visual if role == "visual" else viewer.show_collision)
+                        )
+                    self.assertEqual(roles, {"visual", "collision"})
+                if mode == "xray":
+                    self.assertAlmostEqual(viewer.renderer._xray_inspection_radius, 2 * np.sqrt(3), places=5)
+                    viewer.set_layer_visible("large", False)
+                    controls.sync()
+                    self.assertAlmostEqual(viewer.renderer._xray_inspection_radius, 0.1 * np.sqrt(3), places=5)
+                    viewer.set_layer_visible("large", True)
+                    controls.sync()
+                viewer.begin_frame(0.0)
+                viewer.end_frame()
+
+        # Replacing an inactive model must refresh its roles without changing
+        # the active model or the number of layers.
+        viewer.activate("large")
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        viewer.set_model(builder.finalize(device="cpu"))
+        viewer.log_state(viewer.model.state())
+        plane = next(iter(viewer._shape_instances.values()))
+        viewer.activate("small")
+        controls.set_mode("xray")
+        controls.sync()
+        self.assertEqual(viewer.objects[plane.name]._physics_role, "ground")
+        self.assertEqual(viewer.objects[plane.name]._surface_grid, 2)
+        self.assertAlmostEqual(viewer.renderer._xray_inspection_radius, 0.1 * np.sqrt(3), places=5)
+
+        # Shape-property edits retain Model identity; their explicit
+        # notification must invalidate the otherwise persistent sizing cache.
+        viewer.model.shape_collision_radius.fill_(0.5)
+        controls.invalidate_shapes()
+        controls.sync()
+        self.assertAlmostEqual(viewer.renderer._xray_inspection_radius, 0.5, places=5)
+
     def test_default_layer_uses_unprefixed_names(self):
         """Without activate(), object names remain unprefixed (legacy behavior)."""
         viewer = _RecordingViewer()

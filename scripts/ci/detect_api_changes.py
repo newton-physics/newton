@@ -27,8 +27,11 @@ from pathlib import Path
 
 PACKAGE = "newton"
 EXCLUDED = ("newton.examples", "newton.tests")
-KNOWN_FORWARD_ALL = {"newton.solvers": {"_solvers": "newton._src.solvers"}}
-KNOWN_LAZY_MAPS = {"newton._src.solvers": "_LAZY_IMPORTS"}
+KNOWN_FORWARD_ALL = {
+    "newton.solvers": {"_solvers": "newton._src.solvers"},
+    "newton.viewer": {"_viewer": "newton._src.viewer"},
+}
+KNOWN_LAZY_MAPS = {"newton._src.solvers": "_LAZY_IMPORTS", "newton._src.viewer": "_LAZY_IMPORTS"}
 VIRTUAL_MODULES = {"newton.solvers.experimental.coupled": "newton._src.solvers.coupled"}
 
 MAX_FILES = 2_000

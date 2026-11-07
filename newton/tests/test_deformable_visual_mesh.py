@@ -771,6 +771,45 @@ class TestDeformableVisualRecording(unittest.TestCase):
 
 
 class TestDeformableVisualViewer(unittest.TestCase):
+    def test_gl_skin_uses_xray_deformable_opacity(self) -> None:
+        """Fade model-owned skins with the same controls as simulation surfaces."""
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        from newton._src.viewer.gui.viewport import ViewportControls  # noqa: PLC0415
+
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self, width=128, height=96)
+        self.addCleanup(viewer.close)
+        builder = _particle_mesh()
+        _attach(builder)
+        model = builder.finalize("cpu")
+        viewer.set_model(model)
+        viewer.set_camera(pos=wp.vec3(0.3, -2, 2), pitch=-40, yaw=90)
+        viewer.show_particles = viewer.show_ground = viewer.show_triangles = False
+        viewer.renderer.draw_shadows = False
+        controls = ViewportControls(SimpleNamespace(viewer=viewer))
+        controls.set_mode("xray")
+        controls.deformable_edges = False
+        state = model.state()
+
+        def frame(opacity: float) -> np.ndarray:
+            controls.deformable_opacity = opacity
+            controls.sync()
+            viewer.begin_frame(0)
+            viewer.log_state(state)
+            viewer.end_frame()
+            return viewer.get_frame().numpy().copy()
+
+        opaque = frame(1.0)
+        faded = frame(0.1)
+        self.assertGreater(np.max(np.abs(opaque.astype(float) - faded.astype(float))), 10.0)
+        # Toggling visibility keeps the same mesh and its X-ray behavior.
+        viewer.show_deformable_visual_meshes = False
+        hidden = frame(0.1)
+        self.assertFalse(np.array_equal(faded, hidden))
+        viewer.show_deformable_visual_meshes = True
+        np.testing.assert_array_equal(frame(0.1), faded)
+
     def test_gl_render_motion_visibility_and_shared_output(self):
         """Render the skin, move it, and toggle it independently of ordinary visuals."""
         with wp.ScopedDevice("cpu"):

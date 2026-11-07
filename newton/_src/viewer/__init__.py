@@ -39,15 +39,31 @@ Layers:
     activated layer's model.
 """
 
-from .picking import Picking
+import importlib
+from typing import TYPE_CHECKING
+
 from .viewer import Layer, ViewerBase
-from .viewer_file import ViewerFile
-from .viewer_gl import ViewerGL
-from .viewer_null import ViewerNull
-from .viewer_rerun import ViewerRerun
-from .viewer_rtx import ViewerRTX
-from .viewer_usd import ViewerUSD
-from .viewer_viser import ViewerViser
+
+if TYPE_CHECKING:
+    from .picking import Picking
+    from .viewer_file import ViewerFile
+    from .viewer_gl import ViewerGL
+    from .viewer_null import ViewerNull
+    from .viewer_rerun import ViewerRerun
+    from .viewer_rtx import ViewerRTX
+    from .viewer_usd import ViewerUSD
+    from .viewer_viser import ViewerViser
+
+_LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
+    "Picking": (".picking", "Picking"),
+    "ViewerFile": (".viewer_file", "ViewerFile"),
+    "ViewerGL": (".viewer_gl", "ViewerGL"),
+    "ViewerNull": (".viewer_null", "ViewerNull"),
+    "ViewerRerun": (".viewer_rerun", "ViewerRerun"),
+    "ViewerRTX": (".viewer_rtx", "ViewerRTX"),
+    "ViewerUSD": (".viewer_usd", "ViewerUSD"),
+    "ViewerViser": (".viewer_viser", "ViewerViser"),
+}
 
 __all__ = [
     "Layer",
@@ -61,3 +77,18 @@ __all__ = [
     "ViewerUSD",
     "ViewerViser",
 ]
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _LAZY_IMPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    module = importlib.import_module(module_name, __name__)
+    value = module if attr_name is None else getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

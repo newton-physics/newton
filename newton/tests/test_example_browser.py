@@ -19,8 +19,6 @@ Usage:
 
 import argparse
 import fnmatch
-import gc
-import importlib
 import sys
 import time
 import traceback
@@ -47,13 +45,21 @@ CUDA_REQUIRED_EXAMPLES = {
 
 def _step_and_render(example, num_frames):
     viewer = example.viewer
-    if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
-        viewer.register_ui_callback(example.gui)
+    gui = getattr(viewer, "gui", None)
+    workspace = getattr(gui, "workspace", None)
+    if workspace is not None:
+        gui._workspace_example = example
+        workspace.bind(example)
     for _ in range(num_frames):
-        if viewer.should_step() and hasattr(example, "step"):
+        if viewer.should_step() and (workspace is None or workspace.before_step()) and hasattr(example, "step"):
             example.step()
         if hasattr(example, "render"):
-            example.render()
+            if workspace is None:
+                example.render()
+            else:
+                workspace.render_example()
+        if workspace is not None and gui.ui.section_errors:
+            raise RuntimeError(f"Example GUI failed: {gui.ui.section_errors}")
 
 
 def _get_skip_reason(name, cuda_available):
@@ -74,8 +80,6 @@ def main():
     cli_args = parser.parse_args()
 
     example_map = newton.examples.get_examples()
-    create_parser = newton.examples.create_parser
-    default_args = newton.examples.default_args
 
     selected = {
         name: module_path
@@ -102,6 +106,8 @@ def main():
         return 0
 
     viewer = newton.viewer.ViewerViser() if cli_args.viewer == "viser" else newton.viewer.ViewerGL()
+    browser = newton.examples._ExampleBrowser(viewer)
+    example = example_class = None
 
     results: list[dict] = []
     total = len(matched)
@@ -114,12 +120,12 @@ def main():
 
         # --- switch (instantiate from scratch) ---
         try:
-            viewer.clear_all_layers()
-            mod = importlib.import_module(module_path)
-            ex_parser = getattr(mod.Example, "create_parser", create_parser)()
-            args = default_args(ex_parser)
+            example = None
+            browser.switch_target = module_path
             t0 = time.perf_counter()
-            example = mod.Example(viewer, args)
+            example, example_class = browser.switch(example_class)
+            if example is None:
+                raise RuntimeError(browser.load_error)
             _step_and_render(example, cli_args.frames)
             dt = time.perf_counter() - t0
             entry["switch"] = "OK"
@@ -132,16 +138,13 @@ def main():
 
         # --- reset (re-instantiate same class) ---
         try:
-            example_class = type(example)
             example = None
-            viewer.clear_all_layers()
-            gc.collect()
-            ex_parser = getattr(example_class, "create_parser", create_parser)()
-            args = default_args(ex_parser)
             t0 = time.perf_counter()
-            example2 = example_class(viewer, args)
-            _step_and_render(example2, cli_args.frames)
-            example2 = None
+            example = browser.reset(example_class)
+            if example is None:
+                raise RuntimeError(browser.load_error)
+            _step_and_render(example, cli_args.frames)
+            example = None
             dt = time.perf_counter() - t0
             entry["reset"] = "OK"
             print(f"  reset:  OK ({dt:.2f}s)", flush=True)

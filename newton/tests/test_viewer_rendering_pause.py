@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from newton._src.viewer.viewer_gui import ViewerGui
+from newton._src.viewer.gui.viewer_gui import ViewerGui
 from newton.viewer import ViewerNull
 
 
