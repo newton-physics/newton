@@ -288,6 +288,8 @@ def _check_featherstone_mimic_determinism(device):
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_in, state_out, control, None, 1.0e-3)
     for _ in range(2):
+        state_out.joint_q.fill_(float("nan"))
+        state_out.joint_qd.fill_(float("nan"))
         wp.capture_launch(capture.graph)
         _assert_snapshots_equal(first, _snapshot(state_out, fields))
 

@@ -178,6 +178,9 @@ def test_featherstone_mimic_reduction(test, device):
     control = model.control()
     control.joint_f.assign(np.linspace(-1.0, 1.0, model.joint_dof_count, dtype=np.float32))
     solver = newton.solvers.SolverFeatherstone(model)
+    # Initialize the lazily allocated buffer, then verify the next step overwrites it.
+    solver.step(state_in, state_out, control, None, 1.0e-3)
+    solver.joint_tau_mimic.fill_(1.0)
     solver.step(state_in, state_out, control, None, 1.0e-3)
     test.assertTrue(np.isfinite(state_out.joint_qd.numpy()).all())
 
