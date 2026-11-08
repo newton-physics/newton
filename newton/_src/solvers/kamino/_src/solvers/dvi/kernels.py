@@ -1227,3 +1227,18 @@ def _unprecondition_dvi_solution(
     solution_v_plus[v_i] = solution_v_plus[v_i] / P_i
     state_v_aug[v_i] = state_v_aug[v_i] / P_i
     state_s[v_i] = state_s[v_i] / P_i
+
+
+@wp.kernel
+def _write_dvi_world_residual(
+    # Inputs:
+    solver_config: wp.array[DVIConfigStruct],
+    solver_status: wp.array[DVIStatus],
+    # Outputs:
+    world_residual: wp.array[wp.float32],
+):
+    """Write the largest terminal residual of each world relative to the DVI tolerance."""
+    wid = wp.tid()
+    status = solver_status[wid]
+    # r_d already includes the bilateral residual r_b.
+    world_residual[wid] = wp.max(wp.max(status.r_p, status.r_d), status.r_c) / solver_config[wid].tolerance

@@ -67,6 +67,7 @@ __all__ = [
     "_warmstart_desaxce_correction",
     "_warmstart_joint_constraints",
     "_warmstart_limit_constraints",
+    "_write_padmm_world_residual",
     "make_collect_solver_info_kernel",
     "make_collect_solver_info_kernel_sparse",
     "make_desaxce_correction_and_velocity_bias_kernel",
@@ -1960,3 +1961,21 @@ def _compute_solution_vectors(
 
     # Update constraint reactions: lambda = y
     solver_lambdas[thread_offset] = y
+
+
+@wp.kernel
+def _write_padmm_world_residual(
+    # Inputs:
+    solver_config: wp.array[PADMMConfigStruct],
+    solver_status: wp.array[PADMMStatus],
+    # Outputs:
+    world_residual: wp.array[wp.float32],
+):
+    """Write the largest terminal residual of each world relative to its stopping tolerance."""
+    wid = wp.tid()
+    config = solver_config[wid]
+    status = solver_status[wid]
+    world_residual[wid] = wp.max(
+        wp.max(status.r_p / config.primal_tolerance, status.r_d / config.dual_tolerance),
+        status.r_c / config.compl_tolerance,
+    )

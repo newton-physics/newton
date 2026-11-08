@@ -341,6 +341,7 @@ class TestSolverObservableFields(unittest.TestCase):
         contacts = pipeline.contacts()
         solver = object.__new__(newton.solvers.SolverKamino)
         SolverBase.__init__(solver, self.model)
+        solver._config = newton.solvers.SolverKamino.Config()
         solver._collision_detector_kamino = None
         solver._contact_observable_state = None
         kinds = {SolverBase.ObservableKind.CONTACT_F}

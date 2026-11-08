@@ -817,8 +817,10 @@ class TestSolverKaminoStatus(unittest.TestCase):
         solver: newton.solvers.SolverKamino,
         model: newton.Model,
     ) -> None:
-        """Advance one step and verify the public terminal-status contract."""
-        solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
+        """Advance one step and verify the public terminal-status and residual contracts."""
+        observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
+        solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT, observables=observables)
+        self._assert_residual_matches_status(solver, observables)
         status = solver.status
         common_fields = ("converged", "iterations", "r_p", "r_d", "r_c")
 
@@ -836,6 +838,88 @@ class TestSolverKaminoStatus(unittest.TestCase):
         for field in ("r_p", "r_d", "r_c"):
             self.assertTrue(np.all(np.isfinite(status_host[field])))
             self.assertTrue(np.all(status_host[field] >= 0.0))
+
+    def _assert_residual_matches_status(
+        self,
+        solver: newton.solvers.SolverKamino,
+        observables: newton.solvers.SolverBase.Observables,
+    ) -> None:
+        """Check the residual observable against the terminal status and stopping tolerances."""
+        solver_fd = solver._solver_kamino.solver_fd
+        status = solver.status.numpy()
+        world_count = solver.model.world_count
+        residual = observables.solver_residual.numpy()
+        world_rows = solver.model._attribute_frequency_count(newton.Model.AttributeFrequency.WORLD)
+        self.assertEqual(residual.shape, (world_rows,))
+        # Rows after the local worlds, such as one for global world -1, have no Kamino solve.
+        np.testing.assert_array_equal(residual[world_count:], 0.0)
+        residual = residual[:world_count]
+        self.assertTrue(np.all(residual >= 0.0))
+        if isinstance(solver_fd, PADMMSolver):
+            config = solver_fd.data.config.numpy()
+            expected = np.maximum.reduce(
+                [
+                    status["r_p"] / config["primal_tolerance"],
+                    status["r_d"] / config["dual_tolerance"],
+                    status["r_c"] / config["compl_tolerance"],
+                ]
+            )
+            np.testing.assert_allclose(residual, expected, rtol=1e-6)
+            # PADMM additionally requires more than one iteration before it converges.
+            self.assertTrue(np.all(residual[status["converged"] == 1] <= 1.0))
+            return
+        if "failed" in status.dtype.names:
+            self.assertTrue(np.all(np.isinf(residual[status["failed"] == 1])))
+        else:
+            config = solver_fd.data.config.numpy()
+            expected = np.maximum.reduce([status["r_p"], status["r_d"], status["r_c"]]) / config["tolerance"]
+            np.testing.assert_allclose(residual, expected, rtol=1e-6)
+        np.testing.assert_array_equal(residual <= 1.0, status["converged"] == 1)
+
+    def test_solver_residual_reports_unconverged_worlds(self):
+        """Report residuals above one for worlds that exhaust their iteration budget.
+
+        The contact-free status fixture converges trivially, so this uses a jointed
+        four-bar that starts in ground contact with Kamino's collision detector.
+        """
+        source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(source_builder)
+        build_boxes_fourbar(builder=source_builder)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        builder.replicate(source_builder, copy_count=2)
+        model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+        budgets = {
+            "padmm": {"padmm": kamino_config.PADMMSolverConfig(max_iterations=3)},
+            "dvi": {"dvi": kamino_config.DVISolverConfig(max_alternating_iterations=1)},
+            "lox": {"lox": kamino_config.LOXSolverConfig(max_iterations=2)},
+        }
+        for dynamics_solver, budget in budgets.items():
+            with self.subTest(dynamics_solver=dynamics_solver):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver=dynamics_solver, use_collision_detector=True, **budget
+                    ),
+                )
+                observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
+                state_0, state_1 = model.state(), model.state()
+                for _ in range(5):
+                    solver.step(state_0, state_1, None, None, SIM_DT, observables=observables)
+                    state_0, state_1 = state_1, state_0
+                self._assert_residual_matches_status(solver, observables)
+                residual = observables.solver_residual.numpy()[: model.world_count]
+                self.assertTrue(np.all(np.isfinite(residual)))
+                self.assertTrue(np.all(residual > 1.0))
+
+        config = newton.solvers.SolverKamino.Config(
+            dynamics_solver="lox", lox=kamino_config.LOXSolverConfig(fixed_iterations=True)
+        )
+        solver = newton.solvers.SolverKamino(model, config=config)
+        self.assertNotIn(solver.ObservableKind.SOLVER_RESIDUAL, solver.supported_observables)
+        with self.assertRaisesRegex(ValueError, "solver_residual"):
+            solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
 
     def test_padmm_status_is_always_available(self):
         """Verify PADMM terminal status is available regardless of detailed collection."""

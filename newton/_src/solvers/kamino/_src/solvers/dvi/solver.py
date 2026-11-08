@@ -47,6 +47,7 @@ from .kernels import (
     _solve_bilateral_contact_response,
     _solve_dvi_inequalities_colored_pgs,
     _unprecondition_dvi_solution,
+    _write_dvi_world_residual,
 )
 from .sparse import (
     SparseDVIPath,
@@ -502,6 +503,24 @@ class DVISolver:
                 )
             elif self._use_schur_complement:
                 self._data.state.allocate_dense_projection(self._size)
+
+    def write_world_residual(self, world_residual: wp.array[wp.float32]) -> None:
+        """Write the terminal residual of each world relative to its stopping tolerance.
+
+        The value is ``max(r_p, r_d, r_c) / tolerance`` of the latest solve, where
+        ``r_d`` includes the bilateral residual, so values at most one satisfy the
+        full-system convergence check.
+
+        Args:
+            world_residual: Output array of shape ``(num_worlds,)``.
+        """
+        wp.launch(
+            _write_dvi_world_residual,
+            dim=self._size.num_worlds,
+            inputs=[self.data.config, self.data.status],
+            outputs=[world_residual],
+            device=self._device,
+        )
 
     def solve(self, problem: DualProblem):
         """Solve the cone-complementarity problem defined by ``problem``.
