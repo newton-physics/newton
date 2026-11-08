@@ -457,6 +457,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
                             friction_epsilon,
                             dt,
                             edge_edge_parallel_epsilon,
+                            collision_info.edge_colliding_edges_anchor,
+                            collision_buffer_offset + collision_buffer_counter,
                         )
                     )
 
@@ -536,6 +538,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
                         soft_contact_mu,
                         friction_epsilon,
                         dt,
+                        collision_info.vertex_colliding_triangles_anchor,
+                        collision_buffer_offset + collision_buffer_counter,
                     )
 
                     if has_contact:
