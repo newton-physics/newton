@@ -509,10 +509,11 @@ class DVISolver:
 
         The value is ``max(r_p, r_d, r_c) / tolerance`` of the latest solve, where
         ``r_d`` includes the bilateral residual, so values at most one satisfy the
-        full-system convergence check.
+        full-system convergence check. With a zero tolerance, zero residuals report
+        zero and others infinity. A failed APGD line search reports infinity.
 
         Args:
-            world_residual: Output array of shape ``(num_worlds,)``.
+            world_residual: Output array with at least ``num_worlds`` entries.
         """
         wp.launch(
             _write_dvi_world_residual,

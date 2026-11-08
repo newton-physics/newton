@@ -201,6 +201,24 @@ class _ObservableField:
     kind: str | None
     dtype: type
     frequency: Model.AttributeFrequency | str
+    global_entry: bool = False
+    """Whether a ``WORLD`` array ends with an entry for global world ``-1``."""
+
+
+def _world_field_with_global_entry(dtype: type) -> Any:
+    """Declare a ``(world_count + 1,)`` observable whose final entry is global world ``-1``.
+
+    The layout matches per-world reset masks. The count is absolute, so it is
+    unaffected by how :attr:`~newton.Model.AttributeFrequency.WORLD` rows are counted.
+    """
+    return dataclass_field(
+        default=None,
+        init=False,
+        repr=False,
+        metadata={
+            "solver_observable": _ObservableField(None, dtype, Model.AttributeFrequency.WORLD, global_entry=True)
+        },
+    )
 
 
 def _normalize_observable_kinds(kinds: Iterable[str]) -> frozenset[str]:
@@ -381,11 +399,10 @@ class SolverBase:
         )
         """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)`` of the allocation contacts."""
 
-        solver_residual: wp.array[wp.float32] | None = field(  # noqa: RUF009
-            dtype=wp.float32, frequency=Model.AttributeFrequency.WORLD
-        )
-        """Per-world convergence residual of the latest step, one entry per :attr:`~newton.Model.AttributeFrequency.WORLD` row.
+        solver_residual: wp.array[wp.float32] | None = _world_field_with_global_entry(wp.float32)  # noqa: RUF009
+        """Per-world convergence residual of the latest step, shape ``(world_count + 1,)``.
 
+        The final entry is global world ``-1``, as in per-world reset masks.
         A nonnegative, solver-defined measure where smaller is closer to
         convergence. Each solver documents its definition and units; values are
         comparable only within one solver configuration. See
@@ -882,7 +899,11 @@ class SolverBase:
             if kind in contact_fields:
                 count = _contact_row_count(spec.frequency, contacts)
             else:
-                count = self.model._attribute_frequency_count(spec.frequency)
+                count = (
+                    self.model.world_count + 1
+                    if spec.global_entry
+                    else self.model._attribute_frequency_count(spec.frequency)
+                )
             setattr(
                 observables,
                 name,

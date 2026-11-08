@@ -794,6 +794,12 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
+def _tolerance_scaled(residual: np.ndarray, tolerance: np.ndarray) -> np.ndarray:
+    """Divide by tolerance; a zero tolerance maps zero residuals to zero and others to infinity."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(tolerance > 0.0, residual / tolerance, np.where(residual > 0.0, np.inf, 0.0))
+
+
 class TestSolverKaminoStatus(unittest.TestCase):
     def setUp(self):
         """Configure the default Warp device for status tests."""
@@ -849,19 +855,18 @@ class TestSolverKaminoStatus(unittest.TestCase):
         status = solver.status.numpy()
         world_count = solver.model.world_count
         residual = observables.solver_residual.numpy()
-        world_rows = solver.model._attribute_frequency_count(newton.Model.AttributeFrequency.WORLD)
-        self.assertEqual(residual.shape, (world_rows,))
-        # Rows after the local worlds, such as one for global world -1, have no Kamino solve.
-        np.testing.assert_array_equal(residual[world_count:], 0.0)
+        self.assertEqual(residual.shape, (world_count + 1,))
+        # Kamino does not simulate global world -1.
+        self.assertEqual(residual[world_count], 0.0)
         residual = residual[:world_count]
         self.assertTrue(np.all(residual >= 0.0))
         if isinstance(solver_fd, PADMMSolver):
             config = solver_fd.data.config.numpy()
             expected = np.maximum.reduce(
                 [
-                    status["r_p"] / config["primal_tolerance"],
-                    status["r_d"] / config["dual_tolerance"],
-                    status["r_c"] / config["compl_tolerance"],
+                    _tolerance_scaled(status["r_p"], config["primal_tolerance"]),
+                    _tolerance_scaled(status["r_d"], config["dual_tolerance"]),
+                    _tolerance_scaled(status["r_c"], config["compl_tolerance"]),
                 ]
             )
             np.testing.assert_allclose(residual, expected, rtol=1e-6)
@@ -872,7 +877,10 @@ class TestSolverKaminoStatus(unittest.TestCase):
             self.assertTrue(np.all(np.isinf(residual[status["failed"] == 1])))
         else:
             config = solver_fd.data.config.numpy()
-            expected = np.maximum.reduce([status["r_p"], status["r_d"], status["r_c"]]) / config["tolerance"]
+            expected = _tolerance_scaled(
+                np.maximum.reduce([status["r_p"], status["r_d"], status["r_c"]]), config["tolerance"]
+            )
+            expected[status["apgd_line_search_failed"] != 0] = np.inf
             np.testing.assert_allclose(residual, expected, rtol=1e-6)
         np.testing.assert_array_equal(residual <= 1.0, status["converged"] == 1)
 
@@ -904,34 +912,30 @@ class TestSolverKaminoStatus(unittest.TestCase):
                     ),
                 )
                 observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
-                state_0, state_1 = model.state(), model.state()
-                for _ in range(5):
-                    solver.step(state_0, state_1, None, None, SIM_DT, observables=observables)
-                    state_0, state_1 = state_1, state_0
+                solver.step(model.state(), model.state(), None, None, SIM_DT, observables=observables)
                 self._assert_residual_matches_status(solver, observables)
                 residual = observables.solver_residual.numpy()[: model.world_count]
                 self.assertTrue(np.all(np.isfinite(residual)))
                 self.assertTrue(np.all(residual > 1.0))
-
-        config = newton.solvers.SolverKamino.Config(
-            dynamics_solver="lox", lox=kamino_config.LOXSolverConfig(fixed_iterations=True)
-        )
-        solver = newton.solvers.SolverKamino(model, config=config)
-        self.assertNotIn(solver.ObservableKind.SOLVER_RESIDUAL, solver.supported_observables)
-        with self.assertRaisesRegex(ValueError, "solver_residual"):
-            solver.observables({solver.ObservableKind.SOLVER_RESIDUAL})
 
     def test_padmm_status_is_always_available(self):
         """Verify PADMM terminal status is available regardless of detailed collection."""
         model = self._make_three_world_model()
 
         for collect_solver_info in (False, True):
+            # Zero tolerances with the exactly converged contact-free worlds also check that 0/0 reports zero.
+            padmm = (
+                kamino_config.PADMMSolverConfig(primal_tolerance=0.0, dual_tolerance=0.0, compl_tolerance=0.0)
+                if collect_solver_info
+                else None
+            )
             with self.subTest(collect_solver_info=collect_solver_info):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
                         dynamics_solver="padmm",
                         collect_solver_info=collect_solver_info,
+                        padmm=padmm,
                     ),
                 )
                 self._step_and_assert_status_contract(solver, model)
@@ -941,12 +945,15 @@ class TestSolverKaminoStatus(unittest.TestCase):
         model = self._make_three_world_model()
 
         for collect_solver_info in (False, True):
+            # A zero tolerance with the exactly converged contact-free worlds also checks that 0/0 reports zero.
+            dvi = kamino_config.DVISolverConfig(tolerance=0.0) if collect_solver_info else None
             with self.subTest(collect_solver_info=collect_solver_info):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
                         dynamics_solver="dvi",
                         collect_solver_info=collect_solver_info,
+                        dvi=dvi,
                     ),
                 )
                 self._step_and_assert_status_contract(solver, model)

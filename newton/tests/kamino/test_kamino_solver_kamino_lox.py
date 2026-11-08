@@ -924,6 +924,8 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
         config.lox.max_iterations = 80
         config.lox.joint_proximal_relaxation = 1.0
         solver = SolverKamino(model, config=config)
+        # Fixed iterations skip the convergence check that the residual observable reports.
+        self.assertNotIn(solver.ObservableKind.SOLVER_RESIDUAL, solver.supported_observables)
 
         solver.step(state_in, state_out, model.control(), contacts=None, dt=0.01)
 

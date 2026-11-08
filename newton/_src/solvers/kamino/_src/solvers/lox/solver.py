@@ -514,7 +514,7 @@ class LOXSolver:
         report infinity. Requires adaptive iterations; fixed iterations skip the check.
 
         Args:
-            world_residual: Output array of shape ``(num_worlds,)``.
+            world_residual: Output array with at least ``num_worlds`` entries.
 
         Raises:
             RuntimeError: If the solver runs a fixed number of iterations.

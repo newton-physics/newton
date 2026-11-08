@@ -187,8 +187,10 @@ Solver residuals
 ^^^^^^^^^^^^^^^^
 
 ``SOLVER_RESIDUAL`` exposes one ``float32`` value per world through
-``observables.solver_residual``, with one entry per
-:attr:`~newton.Model.AttributeFrequency.WORLD` row. It is a nonnegative measure of how far the most recent step's solve is from
+``observables.solver_residual``, shape ``(model.world_count + 1,)``. As in
+:ref:`per-world reset masks <Per-world reset masks>`, entries
+``[0, world_count)`` are local worlds and the final entry is global world
+``-1``. It is a nonnegative measure of how far the most recent step's solve is from
 convergence; smaller is better. Iterative solvers measure convergence
 differently, so each solver defines the value below. Compare values within one
 solver configuration, for example to monitor convergence across steps, flag
@@ -217,11 +219,15 @@ and at most one when the world satisfies every tolerance:
   PADMM additionally requires more than one iteration before it reports
   ``converged``.
 - DVI: ``max(r_p, r_d, r_c) / tolerance``, where ``r_d`` includes the bilateral
-  residual ``r_b``.
+  residual ``r_b``. A failed APGD line search reports infinity.
 - LOX: the largest tolerance-scaled residual of its last convergence check,
   including terms not reported in :attr:`~newton.solvers.SolverKamino.status`.
   Failed worlds report infinity. With ``fixed_iterations=True`` LOX skips the
   convergence check and does not support this observable.
+
+With a zero PADMM or DVI tolerance, a zero residual reports zero and any other
+residual infinity. Kamino does not simulate global
+dynamic entities, so the global entry stays zero.
 
 The residual components ``r_p``, ``r_d``, and ``r_c`` and the iteration counts
 remain available through :attr:`~newton.solvers.SolverKamino.status`.

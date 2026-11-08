@@ -395,10 +395,11 @@ class PADMMSolver:
         """Write the terminal residual of each world relative to its stopping tolerances.
 
         The value is ``max(r_p / primal_tolerance, r_d / dual_tolerance, r_c / compl_tolerance)``
-        of the latest solve, so values at most one satisfy every tolerance.
+        of the latest solve, so values at most one satisfy every tolerance. With a
+        zero tolerance, a zero residual contributes zero and any other infinity.
 
         Args:
-            world_residual: Output array of shape ``(num_worlds,)``.
+            world_residual: Output array with at least ``num_worlds`` entries.
         """
         wp.launch(
             _write_padmm_world_residual,
