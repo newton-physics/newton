@@ -240,7 +240,8 @@ MuJoCo overflow diagnostics
 
 :class:`~newton.solvers.SolverMuJoCo` exposes
 :attr:`~newton.solvers.SolverMuJoCo.ObservableKind.OVERFLOW` through
-``observables.overflow``, an ``int32`` array with shape ``(model.world_count,)``.
+``observables.overflow``, an ``int32`` array with shape ``(model.world_count + 1,)``.
+The final entry, for global world ``-1``, is always zero.
 It reports capacity overflow after a step without synchronizing the device in
 the solver. Requesting it requires ``use_mujoco_cpu=False``.
 

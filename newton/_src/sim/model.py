@@ -380,7 +380,13 @@ class Model:
         CONSTRAINT_MIMIC = 14
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
-        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+        """Attribute frequency follows the number of worlds plus the global world.
+
+        Arrays have shape ``(world_count + 1,)`` (see :attr:`~newton.Model.world_count`):
+        entries ``[0, world_count)`` belong to local worlds and the final entry to
+        global world ``-1``, matching per-world reset masks. Consumers without
+        global-world semantics may ignore the final entry.
+        """
         ATTACHMENT_PARTICLE_BODY = 16
         """Attribute frequency follows the number of particle-body attachments."""
         CONTACT = 17
@@ -1782,12 +1788,11 @@ class Model:
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array[wp.vec3] | None = None
-        """Local-world and global gravity vectors [m/s²], dtype :class:`vec3`.
+        """Local-world and global gravity vectors [m/s²], shape [world_count + 1], dtype :class:`vec3`.
 
-        Models with explicit local worlds have shape [world_count + 1], where
-        the final element is the gravity for global world ``-1``. Legacy
-        implicit single-world models have shape [1], shared by world ``0``
-        and global world ``-1``.
+        Entries ``[0, world_count)`` are local-world gravities and the final
+        entry is the gravity of global world ``-1``, which is distinct from
+        world ``0`` also in models built without explicit worlds.
         """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
@@ -2638,6 +2643,9 @@ class Model:
 
         if frequency == Model.AttributeFrequency.ONCE:
             return 1
+        if frequency == Model.AttributeFrequency.WORLD:
+            # Local worlds followed by the global world -1.
+            return int(self.world_count) + 1
         if frequency in (
             Model.AttributeFrequency.CONTACT,
             Model.AttributeFrequency.CONTACT_RIGID,

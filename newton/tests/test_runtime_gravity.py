@@ -138,8 +138,11 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
     body_vel_default = state_0.body_qd.numpy()[0, :3]
     test.assertLess(body_vel_default[2], -0.5)  # Should be falling
 
-    # Step 2: Change gravity to horizontal
-    model.set_gravity((9.81, 0.0, 0.0))
+    # Step 2: Change the global gravity to horizontal. The body belongs to global world -1,
+    # so the opposing gravity of world 0 must not reach it.
+    test.assertEqual(int(model.body_world.numpy()[0]), -1)
+    model.set_gravity((9.81, 0.0, 0.0), world=-1)
+    model.set_gravity((0.0, 0.0, 9.81), world=0)
     solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Simulate with horizontal gravity
@@ -150,6 +153,7 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
 
     body_vel_horizontal = state_0.body_qd.numpy()[0, :3]
     test.assertGreater(body_vel_horizontal[0], 0.5)  # Should be accelerating in X direction
+    test.assertAlmostEqual(body_vel_horizontal[2], body_vel_default[2], delta=1.0e-3)
 
 
 def test_gravity_fallback(test, device):
@@ -568,25 +572,27 @@ def test_set_gravity_global_world(test, device):
     np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -6.0), (0.0, 0.0, -6.0)), atol=1.0e-6)
 
 
-def test_set_gravity_implicit_world_compatibility(test, device):
-    """Preserve legacy gravity updates for implicit single-world models."""
+def test_set_gravity_implicit_world_global_entry(test, device):
+    """Keep global gravity distinct from world 0 in a model without explicit worlds."""
     builder = newton.ModelBuilder()
     builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
     model = builder.finalize(device=device)
 
     test.assertEqual(model.world_count, 1)
-    test.assertEqual(model.gravity.shape, (1,))
+    test.assertEqual(model.gravity.shape, (2,))
+    test.assertEqual(int(model.particle_world.numpy()[0]), -1)
 
+    # The particle is global, so only the global entry accelerates it.
     model.set_gravity((0.0, 0.0, -2.0), world=0)
-    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -2.0),), atol=1.0e-6)
-
-    model.set_gravity(np.array(((0.0, 0.0, -3.0),), dtype=np.float32))
-    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -3.0),), atol=1.0e-6)
-
-    model.gravity.assign(np.array(((0.0, 0.0, -4.0),), dtype=np.float32))
+    model.set_gravity((0.0, 0.0, -4.0), world=-1)
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -2.0), (0.0, 0.0, -4.0)), atol=1.0e-6)
     state_in, state_out = model.state(), model.state()
     SolverSemiImplicit(model).step(state_in, state_out, model.control(), None, 0.1)
     test.assertAlmostEqual(state_out.particle_qd.numpy()[0, 2], -0.4, places=6)
+
+    # A single vector still updates world 0 and the global world.
+    model.set_gravity((0.0, 0.0, -3.0))
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -3.0), (0.0, 0.0, -3.0)), atol=1.0e-6)
 
 
 def test_set_gravity_invalid_world(test, device):
@@ -931,8 +937,8 @@ for device in devices:
     )
     add_function_test(
         TestRuntimeGravity,
-        "test_set_gravity_implicit_world_compatibility",
-        test_set_gravity_implicit_world_compatibility,
+        "test_set_gravity_implicit_world_global_entry",
+        test_set_gravity_implicit_world_global_entry,
         devices=[device],
     )
     add_function_test(
