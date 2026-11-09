@@ -52,6 +52,7 @@ class BatteryBase:
         self,
         actuator_start: wp.array[wp.int32],
         actuators: wp.array[wp.int32],
+        *,
         world: wp.array[wp.int32] | None = None,
         world_count: int = 0,
     ):

@@ -1003,6 +1003,7 @@ class ModelBuilder:
             drive_args: list[dict[str, Any]],
             delay_args: list[dict[str, Any]] | object = _ACTUATOR_ENTRY_DELAY_ARGS_UNSET,
             clamping_args: list[list[dict[str, Any]]] | None = None,
+            *,
             input_processor_classes: tuple = (),
             input_processor_shared_kwargs: tuple = (),
             input_processor_args: list[list[dict[str, Any]]] | None = None,
@@ -1523,7 +1524,7 @@ class ModelBuilder:
         def target_pos(self) -> float:
             """Deprecated position target.
 
-            .. deprecated:: 1.9
+            .. deprecated:: 1.8
                 Use :attr:`target_q` instead.
             """
             warnings.warn("target_pos is deprecated; use target_q instead.", NewtonDeprecationWarning, stacklevel=2)
@@ -1538,7 +1539,7 @@ class ModelBuilder:
         def target_vel(self) -> float:
             """Deprecated velocity target.
 
-            .. deprecated:: 1.9
+            .. deprecated:: 1.8
                 Use :attr:`target_qd` instead.
             """
             warnings.warn("target_vel is deprecated; use target_qd instead.", NewtonDeprecationWarning, stacklevel=2)
@@ -3586,10 +3587,7 @@ class ModelBuilder:
 
         _validate_spaces(
             resolved_drive.get("output_space", drive_class.output_space),
-            (
-                shared.get("input_space", cc.input_space)
-                for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
-            ),
+            (cc.input_space for cc in clamping_classes),
             motor is not None,
             clamping_classes,
         )
@@ -16672,6 +16670,7 @@ class ModelBuilder:
 
             # Create actuators from accumulated entries
             from ..actuators.actuator import Actuator  # noqa: PLC0415
+            from ..actuators.clamping.clamping_current_duty import ClampingCurrentDuty  # noqa: PLC0415
 
             m.actuators = []
             with_battery = self._actuators_with_battery()
@@ -16728,6 +16727,10 @@ class ModelBuilder:
                     zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
                 ):
                     comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
+                    if issubclass(comp_class, ClampingCurrentDuty):
+                        comp_args_per_actuator = ClampingCurrentDuty._complete_estimates(
+                            comp_args_per_actuator, entry.motor_args
+                        )
                     comp_arrays = self._stack_args_to_arrays(
                         comp_args_per_actuator, device=device, requires_grad=requires_grad
                     )

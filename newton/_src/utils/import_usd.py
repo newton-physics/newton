@@ -2926,7 +2926,13 @@ def parse_usd(
     if verbose and actuator_count > 0:
         logger.info("Added %s actuator(s) from USD", actuator_count)
     for battery_path in battery_actuators.keys() - batteries.keys():
-        raise ValueError(f"Actuators reference '{battery_path}' in 'newton:battery', which is not a battery prim")
+        # A battery may sit outside root_path, e.g. shared by several robots.
+        battery = None
+        if not any(re.match(pattern, battery_path) for pattern in ignore_paths):
+            battery = parse_battery_prim(stage.GetPrimAtPath(battery_path))
+        if battery is None:
+            raise ValueError(f"Actuators reference '{battery_path}' in 'newton:battery', which is not a battery prim")
+        batteries[battery_path] = battery
     for path, battery in batteries.items():
         if path in battery_actuators:
             builder.add_battery(battery.battery_class, battery_actuators[path], **battery.battery_kwargs)

@@ -96,10 +96,8 @@ def Xform "World"
             rel newton:targets = </World/Robot/knee>
             rel newton:outputJoint = </World/Robot/knee_backlash>
             rel newton:battery = </World/Robot/Battery>
-            token newton:outputSpace = "duty"
+            uniform token newton:outputSpace = "duty"
             float newton:kp = 0.5
-            float newton:ktEstimate = 0.6
-            float newton:resistanceEstimate = 2.0
             float newton:kt = 0.6
             float newton:resistance = 2.0
             float newton:vin = 6.0
@@ -119,10 +117,8 @@ def Xform "World"
         {
             rel newton:targets = </World/Robot/ankle>
             rel newton:battery = </World/Robot/Battery>
-            token newton:outputSpace = "duty"
+            uniform token newton:outputSpace = "duty"
             float newton:kp = 0.5
-            float newton:ktEstimate = 0.6
-            float newton:resistanceEstimate = 2.0
             float newton:kt = 0.6
             float newton:resistance = 2.0
             float newton:vin = 6.0
@@ -130,7 +126,7 @@ def Xform "World"
             int newton:delaySteps = 2
         }
 
-        # Toe servo: duty PD + current/duty limits + DC motor + delay, fixed supply vin
+        # Toe servo: duty PD + current/duty limits with firmware estimates off the motor + DC motor + delay, fixed supply vin
         def NewtonActuator "toe_actuator" (
             prepend apiSchemas = [
                 "NewtonPDControlAPI",
@@ -141,7 +137,7 @@ def Xform "World"
         )
         {
             rel newton:targets = </World/Robot/toe>
-            token newton:outputSpace = "duty"
+            uniform token newton:outputSpace = "duty"
             float newton:kp = 0.5
             float newton:maxDuty = 0.5
             float newton:ktEstimate = 0.8

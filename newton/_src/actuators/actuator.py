@@ -14,6 +14,7 @@ import warp as wp
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.deprecation import RemovedAttribute
 from .clamping.base import ClampingBase
+from .clamping.clamping_current_duty import ClampingCurrentDuty
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
@@ -463,6 +464,9 @@ class Actuator:
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
         self.motor = motor
+        for clamp in self.clamping:
+            if isinstance(clamp, ClampingCurrentDuty):
+                clamp._use_motor_parameters(motor)
         """Motor applied after the clamping, or ``None``."""
         self.control_supply_voltage_attr = control_supply_voltage_attr
         self.control_supply_current_attr = control_supply_current_attr

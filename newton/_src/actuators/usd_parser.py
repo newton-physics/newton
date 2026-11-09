@@ -127,20 +127,12 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
     defn = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
     schema_props = set(defn.GetPropertyNames()) if defn is not None else None
 
-    if schema_props is not None:
-        if schema_name in ("NewtonPDControlAPI", "NewtonPIDControlAPI", "NewtonNeuralControlAPI"):
-            schema_props.add("newton:outputSpace")
-        elif schema_name == "NewtonCurrentDutyClampingAPI":
-            schema_props.update(
-                (
-                    "newton:maxDuty",
-                    "newton:voltageSource",
-                    "newton:nominalVoltage",
-                    "newton:vMin",
-                    "newton:ktEstimate",
-                    "newton:resistanceEstimate",
-                )
-            )
+    if schema_props is not None and schema_name in (
+        "NewtonPDControlAPI",
+        "NewtonPIDControlAPI",
+        "NewtonNeuralControlAPI",
+    ):
+        schema_props.add("newton:outputSpace")
 
     kwargs: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace("newton"):

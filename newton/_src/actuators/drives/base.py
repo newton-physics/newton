@@ -18,6 +18,19 @@ _COMPUTE_FORCES_DEPRECATION_MSG = (
 )
 
 
+_CONST_EFFORT_DUTY_MSG = "const_effort is not supported with output_space=DUTY"
+
+
+def _resolve_const_effort(resolved: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    """Add ``const_effort`` to *resolved* for EFFORT drives; reject a nonzero value for DUTY drives."""
+    const_effort = args.get("const_effort", 0.0)
+    if resolved["output_space"] is DriveOutputSpace.EFFORT:
+        resolved["const_effort"] = const_effort
+    elif const_effort != 0.0:
+        raise ValueError(_CONST_EFFORT_DUTY_MSG)
+    return resolved
+
+
 def _rename_compute_output(compute: Any, legacy: bool) -> Any:
     """Wrap a drive's ``compute`` so ``forces=`` and ``output=`` reach the name it declares."""
 
@@ -149,7 +162,6 @@ class DriveBase:
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
-        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         """Compute the drive output and write it to ``output[i]``.
 
@@ -173,10 +185,6 @@ class DriveBase:
                 :attr:`custom_inputs`, keyed by attribute name. Values are
                 passed without validation and may be ``None`` when absent.
                 Empty when the drive names none.
-            supply_voltage: Supply voltage of each slot [V], from the
-                actuator's motor (see :meth:`MotorDC.compute_supply_voltage
-                <newton.actuators.MotorDC.compute_supply_voltage>`). Shape
-                ``(N,)``. Only passed when the actuator has a motor.
 
         .. deprecated:: 1.9
             The argument name ``forces``; use ``output``. Subclasses that

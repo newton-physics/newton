@@ -79,7 +79,7 @@ class BatteryConstantResistance(BatteryBase):
     :class:`~newton.actuators.MotorDC` behind a
     DUTY-configured :class:`~newton.actuators.DrivePD` and a
     :class:`~newton.actuators.ClampingCurrentDuty` without an active current
-    limit, it settles while ``resistance * sum(1 / motor resistance)
+    limit, it settles while ``resistance * sum(max_duty**2 / motor resistance)
     < 1`` over the actuators sharing a battery; above that bound, or while a
     current limit is active, the voltage may oscillate instead of
     converging.
@@ -121,6 +121,7 @@ class BatteryConstantResistance(BatteryBase):
         min_voltage: wp.array[float],
         actuator_start: wp.array[wp.int32],
         actuators: wp.array[wp.int32],
+        *,
         world: wp.array[wp.int32] | None = None,
         world_count: int = 0,
     ):
@@ -138,7 +139,7 @@ class BatteryConstantResistance(BatteryBase):
         Raises:
             ValueError: An array does not have one entry per battery.
         """
-        super().__init__(actuator_start, actuators, world, world_count)
+        super().__init__(actuator_start, actuators, world=world, world_count=world_count)
         self.nominal_voltage = nominal_voltage
         """Voltage without load [V], shape (B,)."""
         self.resistance = resistance

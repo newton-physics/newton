@@ -72,6 +72,7 @@ class InputProcessorEncoder(InputProcessorBase):
     def __init__(
         self,
         output_joint_indices: wp.array[wp.uint32],
+        *,
         output_joint_pos_indices: wp.array[wp.uint32] | None = None,
     ):
         """Initialize the encoder.

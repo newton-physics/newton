@@ -18,7 +18,7 @@ def _motor_dc_supply_voltage_kernel(
 ):
     i = wp.tid()
     voltage = vin[i]
-    if supply_from_battery[i] != 0.0:
+    if supply_from_battery[i] != 0.0 and battery_voltage:
         voltage = battery_voltage[actuator_indices[i]]
     supply_voltage[i] = voltage
 
@@ -48,7 +48,7 @@ def _motor_dc_kernel(
 
 
 class MotorDC:
-    """DC motor driven by a PWM voltage, as in BAM (Better Actuator Models).
+    """DC motor driven by an average terminal voltage, as in BAM (Better Actuator Models).
 
     Computes the effort from the commanded voltage :math:`u`, bounded by the
     supply voltage :math:`V`, since the motor cannot receive more:
@@ -60,7 +60,7 @@ class MotorDC:
         \\tau &= k_t\\, I
 
     where :math:`I` is the motor current [A], :math:`\\tau` the effort
-    [N·m or N], :math:`k_t` is ``kt`` and :math:`R` is ``resistance``.
+    [N or N·m], :math:`k_t` is ``kt`` and :math:`R` is ``resistance``.
 
     Standalone calls accept average terminal voltage. In an actuator, the
     actuator bounds signed duty to [-1, 1] and multiplies it by the actual
@@ -112,12 +112,13 @@ class MotorDC:
         kt: wp.array[float],
         resistance: wp.array[float],
         vin: wp.array[float],
+        *,
         supply_from_battery: wp.array[float] | None = None,
     ):
         """Initialize the DC motor.
 
         Args:
-            kt: Torque constant [N·m/A or N/A]. Shape ``(N,)``.
+            kt: Torque constant [N/A or N·m/A]. Shape ``(N,)``.
             resistance: Motor resistance [Ω]. Shape ``(N,)``.
             vin: Supply voltage [V] without a battery; unused with
                 ``supply_from_battery``. Shape ``(N,)``.

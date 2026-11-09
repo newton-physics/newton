@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 import warp as wp
 
 from ..space import DriveOutputSpace
-from .base import DriveBase
+from .base import _CONST_EFFORT_DUTY_MSG, DriveBase, _resolve_const_effort
 
 
 @wp.func
@@ -84,12 +84,12 @@ class DrivePD(DriveBase):
         kd = args.get("kd", 0.0)
         if kd < 0:
             raise ValueError(f"kd must be non-negative, got {kd}")
-        return {
+        resolved = {
             "kp": kp,
             "kd": kd,
-            "const_effort": args.get("const_effort", 0.0),
             "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
         }
+        return _resolve_const_effort(resolved, args)
 
     def __init__(
         self,
@@ -104,7 +104,8 @@ class DrivePD(DriveBase):
         Args:
             kp: Proportional gains [N/m or N·m/rad]. Shape ``(N,)``.
             kd: Derivative gains [N·s/m or N·m·s/rad]. Shape ``(N,)``.
-            const_effort: Constant bias in the selected output units. Shape ``(N,)``. ``None`` to skip.
+            const_effort: Constant bias effort [N or N·m]. Shape ``(N,)``. ``None`` to skip;
+                must be ``None`` with DUTY.
             output_space: EFFORT or DUTY. Gains and feedforward must produce
                 these units; DUTY gains use duty in place of N or N·m above.
         """
@@ -113,6 +114,8 @@ class DrivePD(DriveBase):
         if const_effort is not None and const_effort.shape != kp.shape:
             raise ValueError(f"const_effort shape {const_effort.shape} must match kp shape {kp.shape}")
         self.output_space = DriveOutputSpace(output_space)
+        if self.output_space is DriveOutputSpace.DUTY and const_effort is not None:
+            raise ValueError(_CONST_EFFORT_DUTY_MSG)
         self.kp = kp
         self.kd = kd
         self.const_effort = const_effort
@@ -163,7 +166,6 @@ class DrivePD(DriveBase):
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
-        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         wp.launch(
             kernel=_pd_effort_kernel,

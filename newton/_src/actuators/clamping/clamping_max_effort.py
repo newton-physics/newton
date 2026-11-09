@@ -8,7 +8,6 @@ from typing import Any
 
 import warp as wp
 
-from ..space import DriveOutputSpace
 from .base import ClampingBase
 
 
@@ -45,8 +44,6 @@ class ClampingMaxEffort(ClampingBase):
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        if DriveOutputSpace(args.get("input_space", cls.input_space)) is not DriveOutputSpace.EFFORT:
-            raise ValueError(f"{cls.__name__} accepts only EFFORT inputs")
         max_effort = args.get("max_effort", math.inf)
         if max_effort < 0:
             raise ValueError(f"max_effort must be non-negative, got {max_effort}")
@@ -78,8 +75,6 @@ class ClampingMaxEffort(ClampingBase):
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
-        *,
-        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         wp.launch(
             kernel=_box_clamp_kernel,

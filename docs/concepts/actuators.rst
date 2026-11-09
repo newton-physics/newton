@@ -478,7 +478,7 @@ does not support.
 Torch checkpoints
 ^^^^^^^^^^^^^^^^^
 
-.. deprecated:: 1.9
+.. deprecated:: 1.8
    Torch checkpoints and ``allow_unsafe_torch_checkpoints`` are deprecated and
    will be removed in a future release. Export the network to ONNX instead.
 
@@ -763,17 +763,30 @@ and voltage threshold.
 Motors
 ^^^^^^
 
-* :class:`MotorDC` — DC motor driven by a PWM voltage as in BAM (Better
-  Actuator Models): takes a voltage command and models the back-EMF,
-  optionally on a battery.  It models the back-EMF itself, so it cannot be
-  combined with :class:`ClampingDCMotor`.
+* :class:`MotorDC` — DC motor driven by the average terminal voltage
+  ``duty * V``, as in `BAM (Better Actuator Models)
+  <https://github.com/Rhoban/bam>`__: models the back-EMF, optionally on a
+  battery.  It models the back-EMF itself, so it cannot be combined with
+  :class:`ClampingDCMotor`.
+
+A voltage-controlled servo identified with BAM maps onto these components:
+
+* :class:`DrivePD` with ``output_space=DriveOutputSpace.DUTY``, ``kp`` set to
+  the firmware gain times the error gain of the servo, and ``kd = 0``;
+* :class:`ClampingCurrentDuty` with the firmware ``max_current`` and
+  ``max_duty`` of the servo;
+* :class:`MotorDC` with the fit's ``kt`` and ``R`` as ``kt`` and
+  ``resistance``, and the supply voltage of the servo as ``vin``;
+* the fit's armature as :attr:`~newton.Model.joint_armature`, and its command
+  delay as :class:`InputProcessorDelay`.
 
 BAM also identifies friction models of a servo, which the actuator does not
 model.  Model Coulomb friction with the joint's
 :attr:`~newton.Model.joint_friction`, viscous friction with
 :attr:`~newton.Model.joint_damping`, and the rotor inertia with
 :attr:`~newton.Model.joint_armature`.  Stribeck, load-dependent, directional
-and quadratic friction are not supported yet.
+and quadratic friction are not supported yet (see
+`newton#5220 <https://github.com/newton-physics/newton/issues/5220>`__).
 
 .. _actuator-battery:
 
@@ -835,7 +848,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
            output_space=DriveOutputSpace.DUTY,
            index=builder.joint_qd_start[joint],
            kp=0.5,
-           clamping=[(ClampingCurrentDuty, {"max_current": 2.0, "kt_estimate": 0.5, "resistance_estimate": 2.0})],
+           clamping=[(ClampingCurrentDuty, {"max_current": 2.0})],
            motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0, "supply_from_battery": True}),
        )
        actuators.append(actuator)
@@ -857,6 +870,41 @@ Below, the hip and knee share one battery and the ankle draws from another:
            battery.step(control)
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
+
+
+USD
+---
+
+:meth:`~newton.ModelBuilder.add_usd` imports ``NewtonActuator`` prims from
+the `newton-usd-schemas <https://github.com/newton-physics/newton-usd-schemas>`__
+package.  Each applied API schema becomes one component:
+
+.. list-table::
+   :header-rows: 1
+
+   * - USD
+     - Newton
+   * - ``NewtonPDControlAPI``, ``NewtonPIDControlAPI``, ``NewtonNeuralControlAPI``
+     - :class:`DrivePD`, :class:`DrivePID`, a neural drive; ``newton:outputSpace``
+       sets ``output_space``
+   * - ``NewtonMaxEffortClampingAPI``, ``NewtonDCMotorClampingAPI``,
+       ``NewtonPositionBasedClampingAPI``
+     - :class:`ClampingMaxEffort`, :class:`ClampingDCMotor`,
+       :class:`ClampingPositionBased`
+   * - ``NewtonCurrentDutyClampingAPI``
+     - :class:`ClampingCurrentDuty`
+   * - ``NewtonDCMotorAPI``
+     - :class:`MotorDC`
+   * - ``NewtonActuatorDelayAPI``, ``NewtonActuatorEncoderAPI`` with ``newton:outputJoint``
+     - :class:`InputProcessorDelay`, :class:`InputProcessorEncoder`
+   * - A ``NewtonConstantResistanceBattery`` prim, targeted by the actuator's
+       ``newton:battery`` relationship
+     - :class:`BatteryConstantResistance`, added with
+       :meth:`~newton.ModelBuilder.add_battery`
+
+:func:`parse_actuator_prim` and :func:`parse_battery_prim` return the parsed
+classes and arguments without building a model.  Register further schemas
+with :func:`register_actuator_component`.
 
 Customization
 -------------

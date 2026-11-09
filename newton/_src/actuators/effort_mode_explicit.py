@@ -78,8 +78,6 @@ class _EffortModeExplicit:
         compute_kwargs: dict[str, Any] = {"device": self._device}
         if self._drive.custom_inputs:
             compute_kwargs["custom_inputs"] = custom_inputs
-        if supply_voltage is not None:
-            compute_kwargs["supply_voltage"] = supply_voltage
         self._drive.compute(
             positions,
             velocities,
