@@ -248,7 +248,6 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
 _BASE_SCHEMAS = {
     "NewtonActuatorControlBaseAPI",
     "NewtonActuatorClampingBaseAPI",
-    "NewtonActuatorCommandClampingBaseAPI",
     "NewtonActuatorInputProcessorBaseAPI",
     "NewtonActuatorMotorBaseAPI",
 }
