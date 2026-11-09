@@ -4244,6 +4244,8 @@ def _link_launch(kernel, inputs, friction_start, row_phase):
             arr(np.full(dense, _LINK_RADIUS, np.float32)),
             zeros(dense),
             zeros((worlds, 1)),
+            # Nesterov momentum history: off.
+            zeros((1, 1)),
             6,
             1.0,
             0,
