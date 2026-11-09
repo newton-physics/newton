@@ -459,10 +459,10 @@ class Actuator:
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
         self.motor = motor
+        """Motor applied after the clamping, or ``None``."""
         for clamp in self.clamping:
             if isinstance(clamp, ClampingCurrentDuty):
                 clamp._use_motor_parameters(motor)
-        """Motor applied after the clamping, or ``None``."""
         self.control_supply_voltage_attr = control_supply_voltage_attr
         self.control_supply_current_attr = control_supply_current_attr
         self._uses_battery = motor is not None and motor.uses_battery

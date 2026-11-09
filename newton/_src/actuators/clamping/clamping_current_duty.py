@@ -211,6 +211,7 @@ class ClampingCurrentDuty(ClampingBase):
         Raises:
             ValueError: INPUT mode has no voltage array, or its shape does not
                 match the actuator slots. There is no fallback to nominal voltage.
+                Also raised when an estimate is unset outside an actuator with a motor.
         """
         if self.voltage_source is self.VoltageSource.NOMINAL:
             estimate = self.nominal_voltage
@@ -220,6 +221,10 @@ class ClampingCurrentDuty(ClampingBase):
                 raise ValueError("INPUT voltage_source requires a supplied voltage array")
         if estimate.shape != self.max_current.shape:
             raise ValueError(f"Voltage shape {estimate.shape} must match max_current shape {self.max_current.shape}")
+        if self.kt_estimate is None or self.resistance_estimate is None:
+            raise ValueError(
+                "kt_estimate and resistance_estimate are required unless the clamp belongs to an Actuator with a motor"
+            )
         wp.launch(
             kernel=_current_duty_clamp_kernel,
             dim=len(src_forces),
