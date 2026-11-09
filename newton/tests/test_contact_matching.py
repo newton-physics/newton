@@ -1472,10 +1472,10 @@ def test_sticky_soft_contact_drops_point_of_opposing_surface(test, device):
 
 
 def test_sticky_soft_contact_point_stays_near_thin_wall_plane(test, device):
-    """A record that crosses a thin wall keeps its old point only while it lies near the fresh contact plane.
+    """Restart anchors on the opposite face even when both faces lie within the matching threshold.
 
     A particle touches the top of a plate, then its bottom, still within reach of the top point. Keeping the
-    top point is harmless for a plate thinner than ``contact_matching_pos_threshold`` and wrong for a thicker one.
+    old point changes the normal penetration and force even for a plate thinner than the matching threshold.
     """
     pos_threshold = 0.0005
     for thickness in (0.0003, 0.0008):
@@ -1492,17 +1492,21 @@ def test_sticky_soft_contact_point_stays_near_thin_wall_plane(test, device):
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
 
-            state.particle_q.assign([[0.0, 0.0, -thickness - 0.009]])
+            penetration = 0.00031
+            state.particle_q.assign([[0.0, 0.0, -thickness - 0.01 + penetration]])
             pipeline.collide(state, contacts)
             np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[0], [0.0, 0.0, -1.0], atol=1.0e-6)
-            plane_distance = abs(contacts.soft_contact_body_pos.numpy()[0][2] + thickness)
-            test.assertLessEqual(plane_distance, pos_threshold, f"plate {thickness} m")
+            point = contacts.soft_contact_body_pos.numpy()[0]
+            np.testing.assert_allclose(point, [0.0, 0.0, -thickness], atol=1.0e-7)
+            normal = contacts.soft_contact_normal.numpy()[0]
+            actual_penetration = 0.01 - np.dot(normal, state.particle_q.numpy()[0] - point)
+            test.assertAlmostEqual(actual_penetration, penetration, delta=1.0e-7)
 
 
 def test_sticky_soft_contact_keeps_point_on_tilting_body(test, device):
     """A record keeps its point while the body turns under it, though its normal turns along.
 
-    The particle rides on a box that tilts 20 degrees between passes and slides a little along it.
+    The particle rides on a box that turns through 20 and 180 degrees and slides a little along it.
     """
     builder = newton.ModelBuilder()
     body = builder.add_body()
@@ -1515,11 +1519,12 @@ def test_sticky_soft_contact_keeps_point_on_tilting_body(test, device):
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
 
-        tilt = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.radians(20.0))
-        state.body_q.assign([wp.transform(wp.vec3(0.0), tilt)])
-        state.particle_q.assign([wp.quat_rotate(tilt, wp.vec3(0.0002, 0.0, 0.009))])
-        pipeline.collide(state, contacts)
-        np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[0], [0.0, 0.0, 0.0], atol=1.0e-6)
+        for angle in (20.0, 180.0):
+            tilt = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.radians(angle))
+            state.body_q.assign([wp.transform(wp.vec3(0.0), tilt)])
+            state.particle_q.assign([wp.quat_rotate(tilt, wp.vec3(0.0002, 0.0, 0.009))])
+            pipeline.collide(state, contacts)
+            np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[0], [0.0, 0.0, 0.0], atol=1.0e-6)
 
 
 def test_sticky_soft_contact_keeps_point_on_curved_surface(test, device):

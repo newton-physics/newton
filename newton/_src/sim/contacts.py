@@ -465,6 +465,8 @@ class Contacts:
             # the last reset of the record's worlds (stamp).
             self._soft_contact_history_owner = wp.full(1, -1, dtype=wp.int32)
             self._soft_contact_reset_stamp = wp.zeros(soft_contact_max, dtype=wp.int32)
+            # Keep normals in the body frame so replay can distinguish opposing faces even after rotation.
+            self._soft_contact_normal_body = wp.zeros(soft_contact_max, dtype=wp.vec3)
             # Replay index array for differentiable backward: recorded per launch *thread*, not per
             # contact, so it must span the full particle+edge+face candidate-pair space -- which can
             # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a

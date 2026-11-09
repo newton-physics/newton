@@ -520,7 +520,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contacts from a ``CollisionPipeline(contact_matching="sticky")`` instead measure slip from contact
                 points that persist across passes, and hold such a load. Up to the matching position
                 threshold, sliding friction then opposes the drift from those points rather than the
-                current slip direction.
+                current slip direction. For static holding, the pipeline's ``contact_matching_pos_threshold``
+                should be at least ``friction_epsilon * dt`` (with the solver substep duration ``dt``);
+                smaller thresholds can release anchors before sufficient friction develops.
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
                 (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
                 (``rigid_soft_enable_dat``). It scales every truncation scalar, and each side's motion

@@ -2703,8 +2703,11 @@ records, its mesh feature pair.  A matched record keeps its previous soft-side
 material point (:attr:`Contacts.soft_contact_barycentric`) and body-frame point
 (:attr:`Contacts.soft_contact_body_pos`) while the two still touch and have
 slipped apart tangentially by at most ``contact_matching_pos_threshold``, and
-the body point lies within that distance of the fresh contact plane.  A record
-that moves to an opposing wall of the same mesh therefore starts over.  Along
+the body point lies within that distance of the fresh contact plane.  Its previous
+and fresh normals must also point into the same hemisphere in the body's local
+frame, so moving to the opposite face of a thin wall restarts the record even
+when both faces lie within the distance threshold.  Rigid rotation does not
+change this comparison.  Along
 the surface the test compares the saved points with each other rather than with
 the fresh ones, because a soft edge or face lying flat on a surface has no
 unique closest point.
@@ -2725,15 +2728,24 @@ not pull a body back once it stops.  Other solvers
 read the kept points as contact geometry; their contact point may then lag the
 closest point by up to the threshold.
 
+For static holding, choose ``contact_matching_pos_threshold`` at least as large
+as ``SolverVBD.friction_epsilon * dt``, using the solver's substep duration for
+``dt`` and allowing margin for motion between collision passes.  Friction builds
+over that displacement scale.  A smaller matching
+threshold can release an anchor before it supports the tangential load, causing
+creep even with sticky matching.  This is a tuning constraint, not an automatic
+adjustment of either parameter.
+
 **Memory**
 
 Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
-``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 48 bytes
-per ``soft_contact_max`` slot (60 with full-surface mesh records) and 16 bytes per
+``contact_report=True`` adds 4.  With particles, ``"sticky"`` also keeps 60 bytes
+per ``soft_contact_max`` slot (72 with full-surface mesh records) and 16 bytes per
 particle for rigid-soft records.  Every :class:`~newton.Contacts` buffer carries
-4 bytes per ``soft_contact_max`` slot for the reset stamp of its records.
+16 bytes per ``soft_contact_max`` slot for the reset stamp and body-frame normal
+of its records.
 ``"disabled"`` allocates no matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,
