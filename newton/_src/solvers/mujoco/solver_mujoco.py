@@ -4704,6 +4704,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         The control kernel uses this to read the current world's child-anchor rotation from
         ``joint_X_c[world * joints_per_world + jnt % joints_per_world]``.
         Shape ``[nu]``, dtype ``int32``."""
+        self._mjc_actuator_effort_limited: wp.array[wp.int32] | None = None
+        """``1`` for BALL-joint actuators whose force range follows ``joint_effort_limit`` at runtime
+        (the range was not authored in MJCF), ``0`` otherwise. Shape ``[nu]``, dtype ``int32``."""
         self.mjc_eq_to_newton_eq: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
@@ -5919,6 +5922,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 joint_target = self.mjc_actuator_ctrl_source.numpy() == 0
                 self.mj_model.actuator_gainprm[joint_target] = self.mjw_model.actuator_gainprm.numpy()[0, joint_target]
                 self.mj_model.actuator_biasprm[joint_target] = self.mjw_model.actuator_biasprm.numpy()[0, joint_target]
+                self.mj_model.actuator_forcerange[joint_target] = self.mjw_model.actuator_forcerange.numpy()[
+                    0, joint_target
+                ]
             if update_force:
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
                 self.mj_model.dof_damping[:] = self.mjw_model.dof_damping.numpy()[0]
@@ -9131,6 +9137,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
         actuator_custom_attr_idx = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
+        actuator_effort_limited = np.zeros(len(mjc_actuator_ctrl_source_list), dtype=np.int32)
         for actuator, (ctrl_source, newton_idx) in enumerate(
             zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
         ):
@@ -9143,11 +9150,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 info = joint_target_ranges.get((dof, is_position))
                 if info is not None:
                     actuator_custom_attr_idx[actuator] = info["actuator_idx"]
+                # Ball actuators follow joint_effort_limit unless MJCF authored the force range.
+                if ball_joint >= 0 and (info is None or not info["has_forcerange"]):
+                    actuator_effort_limited[actuator] = 1
             elif newton_idx >= 0:
                 actuator_custom_attr_idx[actuator] = newton_idx
 
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:
+            self._mjc_actuator_effort_limited = wp.array(actuator_effort_limited, dtype=wp.int32, device=model.device)
             self.mjc_actuator_ctrl_source = wp.array(
                 np.array(mjc_actuator_ctrl_source_list, dtype=np.int32),
                 dtype=wp.int32,
@@ -9185,6 +9196,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_target_q_axis_idx = None
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
+            self._mjc_actuator_effort_limited = None
 
         # MuJoCo has no prescribed DOFs. A weld to the world without stiffness or damping
         # locks a kinematic root's acceleration, so it keeps the velocity pushed from Newton.
@@ -10526,11 +10538,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self.model.joint_target_ke,
                     self.model.joint_target_kd,
                     self.model.joint_target_mode,
+                    self._mjc_actuator_effort_limited,
+                    self.model.joint_effort_limit,
                     dofs_per_world,
                 ],
                 outputs=[
                     self.mjw_model.actuator_biasprm,
                     self.mjw_model.actuator_gainprm,
+                    self.mjw_model.actuator_forcerange,
                 ],
                 device=self.model.device,
             )

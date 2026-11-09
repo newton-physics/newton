@@ -1986,10 +1986,13 @@ def update_axis_properties_kernel(
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_mode: wp.array[wp.int32],
+    mjc_actuator_effort_limited: wp.array[wp.int32],
+    joint_effort_limit: wp.array[float],
     dofs_per_world: wp.int32,
     # outputs
     actuator_bias: wp.array2d[vec10],
     actuator_gain: wp.array2d[vec10],
+    actuator_forcerange: wp.array2d[wp.vec2],
 ):
     """Update MuJoCo actuator gains from Newton per-DOF arrays.
 
@@ -2012,6 +2015,11 @@ def update_axis_properties_kernel(
         joint_target_ke: Per-DOF position gains (kp)
         joint_target_kd: Per-DOF velocity/damping gains (kd)
         joint_target_mode: Per-DOF target mode from Model.joint_target_mode
+        mjc_actuator_effort_limited: 1 for ball-joint actuators whose force range follows
+            ``joint_effort_limit`` (not authored in MJCF), 0 otherwise
+        joint_effort_limit: Per-DOF effort limits; a ball actuator's force range is
+            ``(-limit, limit)`` for its DOF. Zero is not written (MuJoCo reads a [0, 0] range
+            as unset), so the existing range is kept; construction rejects a zero limit.
         dofs_per_world: Number of DOFs per world
     """
     world, actuator = wp.tid()
@@ -2035,6 +2043,10 @@ def update_axis_properties_kernel(
         if mode == JointTargetMode.POSITION:
             kd = joint_target_kd[world_dof]
             actuator_bias[world, actuator][2] = -kd
+        if mjc_actuator_effort_limited[actuator] != 0:
+            effort_limit = joint_effort_limit[world_dof]
+            if effort_limit != 0.0:
+                actuator_forcerange[world, actuator] = wp.vec2(-effort_limit, effort_limit)
     elif idx == -1:
         # Unmapped/skip
         return
@@ -2045,6 +2057,10 @@ def update_axis_properties_kernel(
         kd = joint_target_kd[world_dof]
         actuator_bias[world, actuator][2] = -kd
         actuator_gain[world, actuator][0] = kd
+        if mjc_actuator_effort_limited[actuator] != 0:
+            effort_limit = joint_effort_limit[world_dof]
+            if effort_limit != 0.0:
+                actuator_forcerange[world, actuator] = wp.vec2(-effort_limit, effort_limit)
 
 
 @wp.kernel
