@@ -46,9 +46,10 @@ from newton.actuators import (
     DrivePID,
     InputProcessorBase,
     InputProcessorDelay,
-    InputProcessorEncoder,
     JointSpaceResponse,
     MotorDC,
+    StateEncoderFixed,
+    TransmissionFixed,
     parse_actuator_prim,
     parse_battery_prim,
 )
@@ -341,8 +342,6 @@ def _delay_inputs(target_pos, target_vel, indices, feedforward=None):
         vel_indices=indices,
         target_pos_indices=indices,
         target_vel_indices=indices,
-        sim_positions=zeros,
-        sim_velocities=zeros,
     )
 
 
@@ -707,7 +706,7 @@ def _actuator_dofs(model):
     """Return the DOF of each actuator of *model*, indexed like per-actuator arrays."""
     dofs = np.full(model.actuator_count, -1)
     for actuator in model.actuators:
-        dofs[actuator.actuator_indices.numpy()] = actuator.indices.numpy()
+        dofs[actuator.actuator_indices.numpy()] = actuator.indices.numpy()[0]
     return dofs
 
 
@@ -925,7 +924,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         forces = wp.zeros(len(case.indices), dtype=wp.float32, device=self.device)
         custom_inputs = {"bias_force": feedforward} if feedforward is not None else None
         if target_vel_indices is None:
-            target_vel_indices = case.actuator.indices
+            target_vel_indices = case.actuator.indices[0]
         elif not isinstance(target_vel_indices, wp.array):
             target_vel_indices = wp.array(target_vel_indices, dtype=wp.uint32, device=self.device)
         case.actuator.drive.compute(
@@ -934,8 +933,8 @@ class TestDriveNeuralGRU(unittest.TestCase):
             case.control.joint_target_q,
             case.control.joint_target_qd,
             feedforward,
-            case.actuator.pos_indices,
-            case.actuator.indices,
+            case.actuator.pos_indices[0],
+            case.actuator.indices[0],
             case.actuator.target_pos_indices,
             target_vel_indices,
             forces,
@@ -2827,8 +2826,8 @@ class TestMotorDC(unittest.TestCase):
         }
         knee_servo = template.add_actuator(
             DrivePD,
-            index=knee,
-            input_processors=[(InputProcessorEncoder, {"output_joint": "backlash"})],
+            index=[knee, knee + 1],
+            encoder=(StateEncoderFixed, {"position_gear": [1.0, 1.0]}),
             **servo,
         )
         ankle_servos = [template.add_actuator(DrivePD, index=ankle, **servo) for _ in range(2)]
@@ -3032,30 +3031,28 @@ class TestInputProcessors(unittest.TestCase):
     """Input processors composed through ModelBuilder.add_actuator."""
 
     def test_add_actuator_rejects_invalid_targets(self):
-        """The actuated DOF and a backlash joint must belong to the current world or be global.
+        """Input and output DOFs must belong to the current world or be global.
 
-        The backlash joint must also have the type of the actuated joint.
+        Several input joints need an encoder and several output joints a transmission.
         """
         template = newton.ModelBuilder()
-        link = template.add_link()
-        template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        for _ in range(2):
+            template.add_joint_revolute(parent=-1, child=template.add_link(), axis=newton.Axis.Z)
         builder = newton.ModelBuilder()
         builder.add_world(template)
         builder.begin_world()
         builder.add_builder(template)
-        builder.add_actuator(DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 1})])
+        encoder = (StateEncoderFixed, {"position_gear": [1.0, 1.0]})
+        builder.add_actuator(DrivePD, index=[2, 3], kp=1.0, encoder=encoder)
 
         with self.assertRaisesRegex(ValueError, "DOF index 0 belongs to world 0"):
-            builder.add_actuator(DrivePD, index=0, kp=1.0)
-        with self.assertRaisesRegex(ValueError, "joint index 0 belongs to world 0"):
-            builder.add_actuator(
-                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 0})]
-            )
-        slider = builder.add_joint_prismatic(parent=-1, child=builder.add_link(), axis=newton.Axis.Z)
-        with self.assertRaisesRegex(ValueError, "must have the type of the actuated joint"):
-            builder.add_actuator(
-                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": slider})]
-            )
+            builder.add_actuator(DrivePD, index=[2, 0], kp=1.0, encoder=encoder)
+        with self.assertRaisesRegex(ValueError, "DOF index 1 belongs to world 0"):
+            builder.add_actuator(DrivePD, index=2, effort_index=[2, 1], kp=1.0, transmission=(TransmissionFixed, {}))
+        with self.assertRaisesRegex(ValueError, "add an encoder"):
+            builder.add_actuator(DrivePD, index=[2, 3], kp=1.0)
+        with self.assertRaisesRegex(ValueError, "add a transmission"):
+            builder.add_actuator(DrivePD, index=2, effort_index=[2, 3], kp=1.0)
 
     def test_processor_must_keep_vel_indices(self):
         """Actuator.step rejects a processor that replaces ``vel_indices``."""
@@ -3076,10 +3073,10 @@ class TestInputProcessors(unittest.TestCase):
             actuator.step(state, control, dt=0.01)
 
     def test_backlash_drive_reads_link_side_joint(self):
-        """The drive sees actuated + backlash joint position and the actuated velocity, in every replicated world.
+        """The drive sees actuated + backlash joint position and velocity, in every replicated world.
 
-        A processor that replaces ``positions`` runs first, so the backlash
-        joint must be read from the unprocessed simulation arrays.
+        The encoder runs before the input processors, so a processor that
+        replaces ``positions`` sees the measured position.
         """
         kp, kd, target, scale = 10.0, 2.0, 1.0, 2.0
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -3092,13 +3089,11 @@ class TestInputProcessors(unittest.TestCase):
         template.add_articulation([j_motor, j_backlash])
         template.add_actuator(
             DrivePD,
-            index=template.joint_qd_start[j_motor],
+            index=[template.joint_qd_start[j_motor], template.joint_qd_start[j_backlash]],
             kp=kp,
             kd=kd,
-            input_processors=[
-                (_ScalePositions, {"scale": scale}),
-                (InputProcessorEncoder, {"output_joint": "backlash"}),
-            ],
+            encoder=(StateEncoderFixed, {"position_gear": [1.0, 1.0]}),
+            input_processors=[(_ScalePositions, {"scale": scale})],
         )
 
         builder = newton.ModelBuilder()
@@ -3115,9 +3110,67 @@ class TestInputProcessors(unittest.TestCase):
         actuator = model.actuators[0]
         actuator.step(state, control, dt=0.01)
 
-        expected = [kp * (target - (scale * q[w] + q[w + 1])) - kd * qd[w] for w in (0, 2)]
+        expected = [kp * (target - scale * (q[w] + q[w + 1])) - kd * (qd[w] + qd[w + 1]) for w in (0, 2)]
         np.testing.assert_allclose(control.joint_f.numpy()[[0, 2]], expected, rtol=1e-5)
         np.testing.assert_array_equal(control.joint_f.numpy()[[1, 3]], [0.0, 0.0])
+
+
+class TestTransmission(unittest.TestCase):
+    """Transmissions mapping actuator effort onto several DOFs."""
+
+    def test_fixed_transmission_fans_effort_out(self):
+        """Applied and raw effort reach every DOF scaled by its gear; implicit mode is refused."""
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32),
+            drive=DrivePD(kp=wp.full(1, 2.0, dtype=float), kd=wp.zeros(1, dtype=float)),
+            clamping=[ClampingMaxEffort(max_effort=wp.full(1, 1.0, dtype=float))],
+            effort_indices=wp.array([[0], [2]], dtype=wp.uint32),
+            transmission=TransmissionFixed(gear=wp.array([[3.0], [-0.5]], dtype=float)),
+            control_computed_output_attr="raw_effort",
+        )
+        state = types.SimpleNamespace(joint_q=wp.zeros(3, dtype=float), joint_qd=wp.zeros(3, dtype=float))
+        control = types.SimpleNamespace(
+            joint_target_q=wp.full(3, 1.0, dtype=float),
+            joint_target_qd=wp.zeros(3, dtype=float),
+            joint_act=None,
+            joint_f=wp.zeros(3, dtype=float),
+            raw_effort=wp.zeros(3, dtype=float),
+        )
+        actuator.step(state, control, dt=0.01)
+
+        np.testing.assert_allclose(control.joint_f.numpy(), [3.0, 0.0, -0.5], rtol=1e-6)
+        np.testing.assert_allclose(control.raw_effort.numpy(), [6.0, 0.0, -1.0], rtol=1e-6)
+        with self.assertRaisesRegex(NotImplementedError, "TransmissionFixed"):
+            actuator.set_effort_mode_implicit(None)
+
+    def test_add_actuator_builds_transmission_in_every_world(self):
+        """Output DOFs are offset per world, and actuators with and without a transmission form separate groups."""
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        joints = []
+        for _ in range(3):
+            link = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+            joints.append(template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z))
+        template.add_articulation(joints)
+        template.add_actuator(
+            DrivePD,
+            index=0,
+            effort_index=[1, 2],
+            kp=2.0,
+            transmission=(TransmissionFixed, {"gear": [0.5, -1.0]}),
+        )
+        template.add_actuator(DrivePD, index=0, kp=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+        control.joint_target_q.fill_(1.0)
+        for actuator in model.actuators:
+            actuator.step(state, control, dt=0.01)
+
+        self.assertEqual(len(model.actuators), 2)
+        np.testing.assert_allclose(control.joint_f.numpy(), [1.0, 1.0, -2.0] * 2, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -4223,7 +4276,7 @@ class TestActuatorStep(unittest.TestCase):
         state_1 = actuator.state()
 
         qd_val = 2.0
-        dofs = actuator.indices.numpy().tolist()
+        dofs = actuator.indices.numpy()[0].tolist()
         _write_dof_values(model, state.joint_qd, dofs, [qd_val] * n)
 
         target_schedule = [10.0, 20.0, 30.0, 40.0, 50.0]
@@ -5450,8 +5503,8 @@ class TestActuatorBuilder(unittest.TestCase):
         n = 2 * num_envs
         self.assertEqual(act.num_actuators, n)
 
-        pos_idx = act.pos_indices.numpy()
-        vel_idx = act.indices.numpy()
+        pos_idx = act.pos_indices.numpy()[0]
+        vel_idx = act.indices.numpy()[0]
         self.assertFalse(
             np.array_equal(pos_idx, vel_idx),
             "pos_indices should differ from indices for free-joint articulations",
@@ -5589,9 +5642,7 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.replicate(template, 2)
         model = builder.finalize()
 
-        ankle_and_toe = next(
-            a for a in model.actuators if not any(isinstance(p, InputProcessorEncoder) for p in a.input_processors)
-        )
+        ankle_and_toe = next(a for a in model.actuators if a.encoder is None)
         limiter = next(c for c in ankle_and_toe.clamping if isinstance(c, ClampingCurrentDuty))
         np.testing.assert_allclose(limiter.kt_estimate.numpy(), [0.0, 0.8, 0.0, 0.8])
         np.testing.assert_allclose(limiter.resistance_estimate.numpy(), [0.0, 3.0, 0.0, 3.0])
@@ -6155,7 +6206,7 @@ class TestStateReset(unittest.TestCase):
         state = model.state()
         state_0 = actuator.state()
         state_1 = actuator.state()
-        dofs = actuator.indices.numpy().tolist()
+        dofs = actuator.indices.numpy()[0].tolist()
 
         control = model.control()
         for _step in range(3):

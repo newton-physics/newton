@@ -63,6 +63,8 @@ class _EffortModeExplicit:
         supply_voltage: wp.array[float] | None = None,
         supply_current: wp.array[float] | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
+        motor_velocities: wp.array[float] | None = None,
+        motor_vel_indices: wp.array[wp.uint32] | None = None,
     ) -> wp.array[float]:
         """Compute raw effort into *computed_forces*, clamp into *applied_forces*.
 
@@ -73,8 +75,12 @@ class _EffortModeExplicit:
         *supply_current*.
 
         Returns the buffer holding the final (clamped) effort.
+        Clamps and the motor read *motor_velocities* at *motor_vel_indices*,
+        which default to the drive's *velocities* and *vel_indices*.
         *bias_force* is ignored.
         """
+        if motor_velocities is None:
+            motor_velocities, motor_vel_indices = velocities, vel_indices
         compute_kwargs: dict[str, Any] = {"device": self._device}
         if self._drive.custom_inputs:
             compute_kwargs["custom_inputs"] = custom_inputs
@@ -100,9 +106,9 @@ class _EffortModeExplicit:
                 forces,
                 applied_forces,
                 positions,
-                velocities,
+                motor_velocities,
                 pos_indices,
-                vel_indices,
+                motor_vel_indices,
                 self._device,
                 **clamp_kwargs,
             )
@@ -119,8 +125,8 @@ class _EffortModeExplicit:
             self._motor.compute(
                 self._motor_voltage,
                 computed_forces,
-                velocities,
-                vel_indices,
+                motor_velocities,
+                motor_vel_indices,
                 supply_voltage,
                 actuator_indices,
                 supply_current,

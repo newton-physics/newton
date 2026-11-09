@@ -9,20 +9,23 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.deprecation import RemovedAttribute
+from .actuator_base import ActuatorBase
 from .clamping.base import ClampingBase
 from .clamping.clamping_current_duty import ClampingCurrentDuty
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
+from .encoders.base import StateEncoderBase
 from .input_processors.base import InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
-from .input_processors.input_processor_encoder import InputProcessorEncoder
 from .motor_dc import MotorDC
 from .space import _validate_spaces
+from .transmissions.base import TransmissionBase
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -56,6 +59,15 @@ def _scatter_add_kernel(
     wp.atomic_add(output, idx, forces[i])
     if computed_output:
         wp.atomic_add(computed_output, idx, computed_forces[i])
+
+
+def _as_rows(indices: Any, name: str) -> Any:
+    """Return an index array as ``(joints, N)``; a 1-D array is the single-joint case."""
+    if indices.ndim == 1:
+        return indices.reshape((1, indices.shape[0]))
+    if indices.ndim != 2:
+        raise ValueError(f"{name} must be 1-D or 2-D, got {indices.ndim} dimensions")
+    return indices
 
 
 def _assign_state_value(dst: Any, src: Any, name: str) -> None:
@@ -205,14 +217,17 @@ def _input_container_class(name: str, frequencies: tuple[tuple[str, Model.Attrib
     return cls
 
 
-class Actuator:
-    """Composed actuator: input processors → drive → clamping → motor.
+class Actuator(ActuatorBase):
+    """Composed actuator: encoder → input processors → drive → clamping → motor → transmission.
 
     An actuator reads from simulation state/control arrays, optionally
-    transforms them with input processors (e.g. a command delay), computes
+    measures the position and velocity through an encoder that combines
+    several input joints, transforms the inputs with input processors (e.g. a command
+    delay), computes
     effort via a drive, applies clamping (effort limits, saturation, etc.),
     optionally turns it into the effort of a motor, and **accumulates** the
-    result into the output array (scatter-add).  The caller must zero the
+    result into the output array (scatter-add), optionally through a
+    transmission that maps it onto several DOFs.  The caller must zero the
     output array before stepping actuators.
 
     Usage::
@@ -343,13 +358,13 @@ class Actuator:
 
     def __init__(
         self,
-        indices: wp.array[wp.uint32],
+        indices: wp.array[wp.uint32] | wp.array2d[wp.uint32],
         drive: DriveBase | None = None,
         delay: InputProcessorDelay | None = None,
         clamping: list[ClampingBase] | None = None,
-        pos_indices: wp.array[wp.uint32] | None = None,
+        pos_indices: wp.array[wp.uint32] | wp.array2d[wp.uint32] | None = None,
         target_pos_indices: wp.array[wp.uint32] | None = None,
-        effort_indices: wp.array[wp.uint32] | None = None,
+        effort_indices: wp.array[wp.uint32] | wp.array2d[wp.uint32] | None = None,
         state_pos_attr: str = "joint_q",
         state_vel_attr: str = "joint_qd",
         control_target_pos_attr: str | None = "joint_target_q",
@@ -361,6 +376,8 @@ class Actuator:
         *,
         input_processors: list[InputProcessorBase] | None = None,
         motor: MotorDC | None = None,
+        transmission: TransmissionBase | None = None,
+        encoder: StateEncoderBase | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
         control_supply_voltage_attr: str = "actuator_supply_voltage",
         control_supply_current_attr: str = "actuator_supply_current",
@@ -368,23 +385,30 @@ class Actuator:
         """Initialize actuator.
 
         Args:
-            indices: DOF indices into velocity-shaped arrays (velocities,
-                velocity targets, feedforward, effort output). Shape ``(N,)``.
+            indices: Input DOF indices into velocity-shaped arrays, shape
+                ``(joints, N)``: row ``j`` names the ``j``-th joint actuator
+                ``i`` reads. A 1-D array is the single-joint case ``(1, N)``.
+                Row 0 is the actuated DOF: velocity targets, feedforward and
+                custom inputs are indexed with it. With more than one row, an
+                *encoder* must combine the input joints into one position and
+                velocity per actuator.
             drive: Drive that computes effort without a motor, or duty with a motor.
             delay: Deprecated in Newton 1.9; pass the delay in
                 ``input_processors`` instead.
             clamping: Clamps applied in list order. Their input_space must match
                 the drive output: EFFORT without a motor, DUTY with one.
-            pos_indices: Indices into coordinate-shaped arrays (positions =
-                ``state.joint_q``). Defaults to *indices*. Differs from
-                *indices* when position and velocity arrays have different
-                layouts (e.g. floating-base or ball-joint articulations).
-            target_pos_indices: Indices into ``control.joint_target_q``.
-                Defaults to *pos_indices*. Override for custom target buffers
-                with a different index mapping.
-            effort_indices: DOF indices into effort output arrays. Defaults to
-                *indices*. Differs from *indices* for coupled transmissions
-                or tendon-driven joints.
+            pos_indices: Input indices into coordinate-shaped arrays
+                (positions = ``state.joint_q``), same shape as *indices*.
+                Defaults to *indices*. Differs from *indices* when position
+                and velocity arrays have different layouts (e.g.
+                floating-base or ball-joint articulations).
+            target_pos_indices: Indices into ``control.joint_target_q``, shape
+                ``(N,)``. Defaults to row 0 of *pos_indices*. Override for
+                custom target buffers with a different index mapping.
+            effort_indices: Output DOF indices into effort output arrays, shape
+                ``(joints, N)``; a 1-D array is the single-joint case.
+                Defaults to row 0 of *indices*. With more than one row, a
+                *transmission* must map the effort onto them.
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
@@ -405,6 +429,16 @@ class Actuator:
                 :class:`~newton.actuators.MotorDC`). With a motor, the drive
                 computes signed duty. The actuator converts duty to motor
                 voltage using the actual supply voltage.
+            transmission: Optional transmission that maps the effort of each
+                actuator onto the DOFs in *effort_indices* and gives the motor
+                velocity that clamps and the motor read (e.g.
+                :class:`~newton.actuators.TransmissionFixed`). ``None`` adds
+                the effort unscaled to the single row of *effort_indices* and
+                reads the motor velocity from it.
+            encoder: Optional encoder that measures the position and velocity
+                the drive reads from the input joints in *pos_indices* and
+                *indices* (e.g. :class:`~newton.actuators.StateEncoderFixed`).
+                ``None`` reads the single row of *pos_indices* and *indices*.
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the motor draws from a battery.
@@ -420,25 +454,51 @@ class Actuator:
             warnings.warn(_DELAY_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             input_processors.insert(0, delay)
 
-        self.indices = indices
-        self.pos_indices = pos_indices if pos_indices is not None else indices
-        self.target_pos_indices = target_pos_indices if target_pos_indices is not None else self.pos_indices
-        self.effort_indices = effort_indices if effort_indices is not None else indices
+        self.indices = _as_rows(indices, "indices")
+        """Input DOF indices into velocity-shaped arrays, shape ``(joints, N)``."""
+        num_actuators = self.indices.shape[1]
+        self.pos_indices = _as_rows(pos_indices, "pos_indices") if pos_indices is not None else self.indices
+        """Input indices into coordinate-shaped arrays, shape ``(joints, N)``."""
+        self.target_pos_indices = target_pos_indices if target_pos_indices is not None else self.pos_indices[0]
+        """Indices into the target position array, shape ``(N,)``."""
+        self.effort_indices = (
+            _as_rows(effort_indices, "effort_indices")
+            if effort_indices is not None
+            else self.indices[0].reshape((1, num_actuators))
+        )
+        """Output DOF indices into effort output arrays, shape ``(joints, N)``."""
+        self.transmission = transmission
+        """Transmission mapping actuator effort onto :attr:`effort_indices`, or ``None``."""
+        self.encoder = encoder
+        """Encoder measuring the position of each actuator from :attr:`pos_indices`, or ``None``."""
         self.actuator_indices = actuator_indices
         """Index of each actuator into per-actuator arrays, or ``None``."""
-        if actuator_indices is not None and actuator_indices.shape != indices.shape:
+        if actuator_indices is not None and actuator_indices.shape != (num_actuators,):
+            raise ValueError(f"actuator_indices shape {actuator_indices.shape} must be ({num_actuators},)")
+        if self.pos_indices.shape != self.indices.shape:
             raise ValueError(
-                f"actuator_indices shape {actuator_indices.shape} must match indices shape {indices.shape}"
+                f"pos_indices shape {self.pos_indices.shape} must match indices shape {self.indices.shape}"
             )
-        if self.pos_indices.shape != indices.shape:
-            raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
-        if self.target_pos_indices.shape != indices.shape:
+        if self.target_pos_indices.shape != (num_actuators,):
+            raise ValueError(f"target_pos_indices shape {self.target_pos_indices.shape} must be ({num_actuators},)")
+        if self.effort_indices.shape[1] != num_actuators:
             raise ValueError(
-                f"target_pos_indices shape {self.target_pos_indices.shape} must match indices shape {indices.shape}"
+                f"effort_indices has {self.effort_indices.shape[1]} columns; indices has {num_actuators} actuators"
             )
-        if self.effort_indices.shape != indices.shape:
+        if self.indices.shape[0] > 1 and encoder is None:
             raise ValueError(
-                f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
+                f"indices names {self.indices.shape[0]} input joints per actuator; add an encoder that "
+                "combines them, e.g. StateEncoderFixed"
+            )
+        if encoder is not None and drive.custom_inputs:
+            raise NotImplementedError(
+                f"{type(drive).__name__} declares custom inputs, which are indexed by DOF; "
+                "an encoder replaces the DOF indices, so they cannot be combined"
+            )
+        if self.effort_indices.shape[0] > 1 and transmission is None:
+            raise ValueError(
+                f"effort_indices names {self.effort_indices.shape[0]} output joints per actuator; add a transmission "
+                "that maps the effort onto them, e.g. TransmissionFixed"
             )
         self.drive = drive
         self.input_processors = input_processors
@@ -446,7 +506,7 @@ class Actuator:
         self._legacy_delay_updates = _legacy_delay_updates(input_processors)
         self.clamping = clamping or []
         _validate_spaces(drive.output_space, (c.input_space for c in self.clamping), motor is not None)
-        self.num_actuators = len(indices)
+        self.num_actuators = num_actuators
 
         self.state_pos_attr = state_pos_attr
         self.state_vel_attr = state_vel_attr
@@ -469,7 +529,7 @@ class Actuator:
         if self._uses_battery and actuator_indices is None:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
 
-        self.device = indices.device
+        self.device = self.indices.device
         self.requires_grad = requires_grad
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
@@ -496,6 +556,24 @@ class Actuator:
             clamp.finalize(self.device, self.num_actuators)
         if motor is not None:
             motor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
+        self._sequential_indices = None
+        if transmission is not None or encoder is not None:
+            self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=self.device)
+        self._motor_velocities = None
+        if transmission is not None:
+            transmission.finalize(self.device, self.num_actuators, self.effort_indices.shape[0])
+            self._motor_velocities = wp.zeros(
+                self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+            )
+        self._encoder_positions = self._encoder_velocities = None
+        if encoder is not None:
+            encoder.finalize(self.device, self.num_actuators, self.pos_indices.shape[0])
+            self._encoder_positions = wp.zeros(
+                self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+            )
+            self._encoder_velocities = wp.zeros(
+                self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+            )
 
         self.set_effort_mode_explicit()
 
@@ -619,11 +697,11 @@ class Actuator:
 
         Raises:
             NotImplementedError: The actuator was built with ``requires_grad=True``,
-                as the implicit solve is not differentiable, or has a motor,
-                which the implicit solve does not model.
+                as the implicit solve is not differentiable, or has a motor or
+                a transmission, which the implicit solve does not model.
 
         Warns:
-            NewtonWarning: The actuator has an :class:`~newton.actuators.InputProcessorEncoder`.
+            NewtonWarning: The actuator has an encoder.
                 The solve uses the motor-side response only, so it is inaccurate
                 while the output joint is not at its limit.
         """
@@ -635,14 +713,18 @@ class Actuator:
             )
         if self.motor is not None:
             raise NotImplementedError(f"Implicit actuation does not support the motor {type(self.motor).__name__}.")
+        if self.transmission is not None:
+            raise NotImplementedError(
+                f"Implicit actuation does not support the transmission {type(self.transmission).__name__}."
+            )
         if self.drive.custom_inputs and type(self.drive).prepare_implicit is DriveBase.prepare_implicit:
             raise NotImplementedError(
                 f"{type(self.drive).__name__} declares custom inputs but does not override prepare_implicit, "
                 "so the implicit solve would ignore them."
             )
-        if any(isinstance(p, InputProcessorEncoder) for p in self.input_processors):
+        if self.encoder is not None:
             warnings.warn(
-                "Implicit actuation with InputProcessorEncoder predicts the link-side state from the "
+                f"Implicit actuation with {type(self.encoder).__name__} predicts the link-side state from the "
                 "motor-side response only, so it is inaccurate while the output joint is not at its limit.",
                 NewtonWarning,
                 stacklevel=2,
@@ -654,7 +736,7 @@ class Actuator:
             options,
             self.num_actuators,
             self.device,
-            self.indices,
+            self.indices[0],
         )
 
     def set_effort_mode_explicit(self) -> None:
@@ -730,6 +812,8 @@ class Actuator:
     ) -> None:
         """Execute one control step.
 
+        0. **Encoder** — with several input joints, combine their positions
+           into the measured position of each actuator.
         1. **Input processors** — transform the state and command inputs
            in list order (e.g. read delayed targets from ``current_state``),
            and write each processor's ``next_state`` (e.g. push the current
@@ -745,7 +829,7 @@ class Actuator:
         5. **Motor** — convert duty to motor voltage, then compute effort. A motor that
            draws from a battery writes the current it draws.
         6. **Scatter-add** — *accumulate* applied (and optionally computed)
-           effort into the output array.  The caller must zero the output
+           effort into the output array, through the transmission if set.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
         7. **Drive state update** — write the drive's ``next_state``.
 
@@ -793,19 +877,39 @@ class Actuator:
         current_states = (current_act_state and current_act_state.input_processor_states) or no_states
         next_states = (next_act_state and next_act_state.input_processor_states) or no_states
 
+        # --- 0. Encoder and transmission: measured state and motor velocity ---
+        measured_positions, measured_pos_indices = positions, self.pos_indices[0]
+        measured_velocities, measured_vel_indices = velocities, self.indices[0]
+        if self.encoder is not None:
+            self.encoder.compute(
+                positions,
+                velocities,
+                self.pos_indices,
+                self.indices,
+                self._encoder_positions,
+                self._encoder_velocities,
+                device=self.device,
+            )
+            measured_positions, measured_pos_indices = self._encoder_positions, self._sequential_indices
+            measured_velocities, measured_vel_indices = self._encoder_velocities, self._sequential_indices
+        motor_velocities, motor_vel_indices = velocities, self.effort_indices[0]
+        if self.transmission is not None:
+            self.transmission.compute_velocity(
+                velocities, self.effort_indices, self._motor_velocities, device=self.device
+            )
+            motor_velocities, motor_vel_indices = self._motor_velocities, self._sequential_indices
+
         # --- 1. Input processors (read current_state, write next_state) ---
         inputs = InputProcessorBase.Inputs(
-            positions=positions,
-            velocities=velocities,
+            positions=measured_positions,
+            velocities=measured_velocities,
             target_pos=target_pos,
             target_vel=target_vel,
             feedforward=feedforward,
-            pos_indices=self.pos_indices,
-            vel_indices=self.indices,
+            pos_indices=measured_pos_indices,
+            vel_indices=measured_vel_indices,
             target_pos_indices=self.target_pos_indices,
-            target_vel_indices=self.indices,
-            sim_positions=positions,
-            sim_velocities=velocities,
+            target_vel_indices=self.indices[0],
         )
         for processor, current, nxt in zip(self.input_processors, current_states, next_states, strict=True):
             processed = processor.process(inputs, current, dt)
@@ -858,6 +962,8 @@ class Actuator:
             self._supply_voltage,
             supply_current,
             self.actuator_indices,
+            motor_velocities,
+            motor_vel_indices,
         )
 
         # --- 6. Scatter-add to output ---
@@ -868,17 +974,27 @@ class Actuator:
             and self.control_computed_output_attr != self.control_output_attr
         ):
             computed_output = _require_array(sim_control, self.control_computed_output_attr)
-        wp.launch(
-            kernel=_scatter_add_kernel,
-            dim=self.num_actuators,
-            inputs=[
+        if self.transmission is not None:
+            self.transmission.compute(
                 output_forces,
                 self._computed_forces,
                 self.effort_indices,
-            ],
-            outputs=[applied_output, computed_output],
-            device=self.device,
-        )
+                applied_output,
+                computed_output,
+                device=self.device,
+            )
+        else:
+            wp.launch(
+                kernel=_scatter_add_kernel,
+                dim=self.num_actuators,
+                inputs=[
+                    output_forces,
+                    self._computed_forces,
+                    self.effort_indices[0],
+                ],
+                outputs=[applied_output, computed_output],
+                device=self.device,
+            )
 
         # --- 7. State updates (write to next_state) ---
         if self.drive.is_stateful():

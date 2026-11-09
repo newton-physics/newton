@@ -3,10 +3,8 @@
 
 from .base import InputProcessorBase
 from .input_processor_delay import InputProcessorDelay
-from .input_processor_encoder import InputProcessorEncoder
 
 __all__ = [
     "InputProcessorBase",
     "InputProcessorDelay",
-    "InputProcessorEncoder",
 ]

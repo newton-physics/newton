@@ -2840,6 +2840,7 @@ def parse_usd(
         builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
 
     # Parse Newton actuator prims from the USD stage.
+    from ..actuators.encoders.base import StateEncoderBase  # noqa: PLC0415
     from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
     from ..actuators.motor_dc import MotorDC  # noqa: PLC0415
     from ..actuators.usd_parser import BatteryParsed, _parse_actuator_prim, parse_battery_prim  # noqa: PLC0415
@@ -2888,24 +2889,29 @@ def parse_usd(
             )
         dof_index = path_to_dof[target_path]
         coord_index = path_to_coord.get(target_path)
-        pos_index = coord_index if coord_index is not None and coord_index != dof_index else None
+        input_dofs = [dof_index]
+        input_coords = [coord_index if coord_index is not None else dof_index]
 
         input_processor_specs = []
         clamping_specs = []
         motor_spec = None
+        encoder_spec = None
         for comp_class, comp_kwargs in parsed.component_specs:
-            if issubclass(comp_class, InputProcessorBase):
-                proc_kwargs = dict(comp_kwargs)
-                for name in comp_class.JOINT_PARAMS:
-                    path = proc_kwargs.get(name)
-                    if isinstance(path, str):
-                        if path not in path_joint_map:
-                            raise ValueError(
-                                f"Actuator prim {prim.GetPath()}: '{name}' references '{path}', "
-                                "which is not a known joint"
-                            )
-                        proc_kwargs[name] = path_joint_map[path]
-                input_processor_specs.append((comp_class, proc_kwargs))
+            if issubclass(comp_class, StateEncoderBase):
+                encoder_kwargs = dict(comp_kwargs)
+                output_joint = encoder_kwargs.pop("output_joint", None)
+                if output_joint is not None:
+                    if output_joint not in path_to_dof:
+                        raise ValueError(
+                            f"Actuator prim {prim.GetPath()}: 'output_joint' references '{output_joint}', "
+                            "which is not a known joint"
+                        )
+                    input_dofs.append(path_to_dof[output_joint])
+                    input_coords.append(path_to_coord[output_joint])
+                    encoder_kwargs.setdefault("position_gear", [1.0] * len(input_dofs))
+                encoder_spec = (comp_class, encoder_kwargs)
+            elif issubclass(comp_class, InputProcessorBase):
+                input_processor_specs.append((comp_class, dict(comp_kwargs)))
             elif issubclass(comp_class, MotorDC):
                 motor_spec = (comp_class, dict(comp_kwargs))
             else:
@@ -2926,11 +2932,14 @@ def parse_usd(
             motor_spec = (motor_class, {k: v for k, v in motor_kwargs.items() if k in resolved_motor})
         actuator = builder.add_actuator(
             parsed.drive_class,
-            index=dof_index,
+            index=input_dofs if len(input_dofs) > 1 else dof_index,
             clamping=clamping_specs if clamping_specs else None,
-            pos_index=pos_index,
+            pos_index=(input_coords if len(input_coords) > 1 else input_coords[0])
+            if input_coords != input_dofs
+            else None,
             input_processors=input_processor_specs,
             motor=motor_spec,
+            encoder=encoder_spec,
             **drive_kwargs,
         )
         if battery_path is not None:

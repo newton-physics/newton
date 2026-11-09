@@ -43,9 +43,11 @@ class InputProcessorBase:
         Each actuator slot ``i`` reads ``positions[pos_indices[i]]``,
         ``velocities[vel_indices[i]]``, ``target_pos[target_pos_indices[i]]``,
         ``target_vel[target_vel_indices[i]]`` and
-        ``feedforward[target_vel_indices[i]]``. A processor that replaces a
-        target array with one entry per slot also replaces its index array.
-        A processor keeps :attr:`vel_indices` and the shape of
+        ``feedforward[target_vel_indices[i]]``. With an encoder,
+        :attr:`positions` and :attr:`velocities` hold the measured position
+        and velocity of each slot. A
+        processor that replaces an array with one entry per slot also replaces
+        its index array. A processor keeps :attr:`vel_indices` and the shape of
         :attr:`velocities`: drives also use those indices for
         ``joint_qd``-shaped custom inputs. :meth:`Actuator.step
         <newton.actuators.Actuator.step>` raises :class:`ValueError` otherwise.
@@ -69,25 +71,8 @@ class InputProcessorBase:
         """Index of each slot into :attr:`target_pos`."""
         target_vel_indices: wp.array[wp.uint32]
         """Index of each slot into :attr:`target_vel` and :attr:`feedforward`."""
-        sim_positions: wp.array[float]
-        """Unprocessed ``joint_q``-shaped simulation positions [m or rad].
-        Index with ``joint_q`` indices to read another joint."""
-        sim_velocities: wp.array[float]
-        """Unprocessed ``joint_qd``-shaped simulation velocities [m/s or rad/s].
-        Index with ``joint_qd`` indices to read another joint."""
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
-
-    JOINT_PARAMS: ClassVar[set[str]] = set()
-    """Names of parameters that reference a joint.
-
-    :meth:`~newton.ModelBuilder.add_actuator` accepts a joint index or a joint
-    label for each of these parameters, or ``None`` for the actuated joint.
-    The joint must be a single-DOF joint of the same type as the actuated joint.
-    It passes the joint to the constructor as two index arrays:
-    ``<name>_indices`` into ``joint_qd``-shaped arrays and
-    ``<name>_pos_indices`` into ``joint_q``-shaped arrays.
-    """
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -119,10 +104,7 @@ class InputProcessorBase:
         """Return the transformed actuator inputs.
 
         Return a copy of *inputs* made with :func:`dataclasses.replace`; do
-        not modify *inputs* in place. To read a joint other than the
-        actuated one, index :attr:`Inputs.sim_positions` and
-        :attr:`Inputs.sim_velocities`: earlier processors may have replaced
-        :attr:`Inputs.positions` and :attr:`Inputs.velocities`.
+        not modify *inputs* in place.
 
         Args:
             inputs: Actuator inputs.
