@@ -913,7 +913,12 @@ Actuator or tendon armature excludes only its owning articulation; unassigned
 ownership conservatively excludes the whole model. Those cases, unsupported
 topology, and singular or numerically ill-conditioned inertia retain deferred
 resolution through ``SolverMuJoCo``. Resolved articulations do not have their core
-coefficients rewritten by solver construction. Legacy MJCF joint targets resolve
+coefficients rewritten by solver construction. Deferred passive springs resolve
+once from each simulated world's physical inverse inertia after its properties
+are published to MuJoCo, preserving independent stiffness and damping overrides.
+Kinematic constraint locking does not contribute to their effective inertia.
+The CPU backend resolves only the world it simulates; unrepresented worlds retain
+their placeholders. Legacy MJCF joint targets resolve
 at solver construction, initializing zero damping entries and preserving nonzero
 overrides. Native imports track explicit overrides, including zeros, across both
 resolution paths.

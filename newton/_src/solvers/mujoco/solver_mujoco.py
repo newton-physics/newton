@@ -9277,20 +9277,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.solref = (0.0, 0.0)
             kinematic_welds.append(eq)
 
-        from .mjcf_parameters import _apply_native_parameters, _sync_native_parameters  # noqa: PLC0415
+        from .mjcf_parameters import (  # noqa: PLC0415
+            _apply_native_parameters,
+            _resolve_native_joint_parameters,
+            _sync_native_parameters,
+        )
 
-        resolved_native_joints = _apply_native_parameters(
+        has_native_parameters = _apply_native_parameters(
             model, spec, dof_to_mjc_joint, shape_mapping, actuator_custom_attr_idx
         )
         self.mj_model = spec.compile()
-        if (
-            resolved_native_joints is not None
-            and not self.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
-        ):
+        if has_native_parameters and not self.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_FILTERPARENT:
             if has_allowed_parent_collision(self.mj_model):
                 self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
                 spec.option.disableflags |= mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
-        _sync_native_parameters(model, self.mj_model, resolved_native_joints, mjc_eq_to_newton_eq_dict)
+        if has_native_parameters:
+            _sync_native_parameters(model, self.mj_model, mjc_eq_to_newton_eq_dict)
         if not self.use_mujoco_cpu and self.mj_model.opt.disableactuator:
             warnings.warn(
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator group disabling. "
@@ -9862,6 +9864,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eq_data[..., 11] = 0.0
                 self.mjw_model.eq_data.assign(eq_data)
                 self.mj_model.eq_data[:, 11] = 0.0
+            _resolve_native_joint_parameters(self, spec)
             self._resolve_joint_target_damping(spec, joint_target_position_rows)
             if not self.use_mujoco_cpu:
                 # Keep the host template coherent after construction. Runtime

@@ -248,9 +248,18 @@ def _reference_inverse_weights(model: Model, dofs: set[int], free_joints: list[i
     return weights
 
 
-def _finalize_native_core_parameters(builder: ModelBuilder, model: Model) -> None:
+def _spring_gains(springdamper: np.ndarray, inverse_weights: np.ndarray) -> tuple[float, float]:
     import mujoco
 
+    inertia = len(inverse_weights) / max(mujoco.mjMINVAL, np.sum(inverse_weights))
+    timeconst, ratio = map(float, springdamper)
+    return (
+        inertia / max(mujoco.mjMINVAL, timeconst * timeconst * ratio * ratio),
+        2 * inertia / max(mujoco.mjMINVAL, timeconst),
+    )
+
+
+def _finalize_native_core_parameters(builder: ModelBuilder, model: Model) -> None:
     from ...sim.enums import JointTargetMode, JointType  # noqa: PLC0415
 
     attrs = model.mujoco
@@ -300,10 +309,9 @@ def _finalize_native_core_parameters(builder: ModelBuilder, model: Model) -> Non
         if not np.any(auto_ke) and not np.any(auto_kd):
             springs[dof] = 0
         elif np.all(np.isfinite(weights[axes])):
-            inertia = width / max(mujoco.mjMINVAL, np.sum(weights[axes]))
-            timeconst, ratio = map(float, springs[dof])
-            stiffness[axes[auto_ke]] = inertia / max(mujoco.mjMINVAL, timeconst * timeconst * ratio * ratio)
-            damping[axes[auto_kd]] = 2 * inertia / max(mujoco.mjMINVAL, timeconst)
+            resolved_ke, resolved_kd = _spring_gains(springs[dof], weights[axes])
+            stiffness[axes[auto_ke]] = resolved_ke
+            damping[axes[auto_kd]] = resolved_kd
             springs[dof] = 0
     for row, axes, automatic in target_rows:
         pending = axes[automatic]
@@ -323,12 +331,12 @@ def _finalize_native_core_parameters(builder: ModelBuilder, model: Model) -> Non
         attrs.actuator_biasprm.assign(bias)
 
 
-def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joint) -> dict[int, int]:
+def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joint) -> None:
     import mujoco
 
     attrs = model.mujoco
     if not hasattr(attrs, "native_joint_type"):
-        return {}
+        return
     fields = {name: getattr(attrs, f"native_joint_{name}").numpy() for name in _NATIVE_JOINT_FIELDS}
     ranges = attrs.dof_limit_range.numpy()
     stiffness = model.joint_stiffness.numpy()
@@ -342,7 +350,6 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
         name: getattr(attrs, name).numpy()
         for name in ("solreffriction", "solimpfriction", "limit_margin", "solreflimit", "solimplimit")
     }
-    resolved = {}
     for dof, index in enumerate(dof_to_joint):
         if index < 0 or fields["type"][dof] < 0:
             continue
@@ -366,29 +373,61 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
             joint.margin = float(constraint_fields["limit_margin"][dof])
             joint.solref_limit[:] = constraint_fields["solreflimit"][dof]
             joint.solimp_limit[:] = constraint_fields["solimplimit"][dof]
-        if np.all(fields["springdamper"][dof] > 0):
-            resolved[dof] = int(index)
-    return resolved
 
 
-def _sync_native_joint_parameters(model: Model, native: mujoco.MjModel, resolved: dict[int, int]) -> None:
-    if not resolved:
+def _resolve_native_joint_parameters(solver, spec: mujoco.MjSpec) -> None:
+    from ...sim.enums import ModelFlags  # noqa: PLC0415
+
+    model, native = solver.model, solver.mj_model
+    spring_attr = getattr(getattr(model, "mujoco", None), "native_joint_springdamper", None)
+    if spring_attr is None:
         return
+    springs = spring_attr.numpy()
+    if not np.any(np.all(springs > 0, axis=1)):
+        return
+    types = model.mujoco.native_joint_type.numpy()
+    mapping = solver.mjc_jnt_to_newton_dof.numpy()
+    rows = [
+        (world, joint, int(dof))
+        for world in range(1 if solver.use_mujoco_cpu else len(mapping))
+        for joint, dof in enumerate(mapping[world])
+        if dof >= 0 and types[dof] == native.jnt_type[joint] and np.all(springs[dof] > 0)
+    ]
+    if not rows:
+        return
+
+    # Kinematic locking changes constraint weights, but spring gains use physical inertia.
+    locked = solver._kinematic_weld_eq is not None
+    try:
+        if locked:
+            solver._set_const_0(lock_kinematic=False)
+        weights = (
+            native.dof_invweight0[None].copy() if solver.use_mujoco_cpu else solver.mjw_model.dof_invweight0.numpy()
+        )
+    finally:
+        if locked:
+            solver._set_const_0()
+
     stiffness, damping = model.joint_stiffness.numpy(), model.joint_damping.numpy()
     baseline = model.mujoco.native_joint_gain_baseline.numpy()
-    springdamper = model.mujoco.native_joint_springdamper.numpy()
-    dofs_per_world = model.joint_dof_count // max(model.world_count, 1)
-    for dof, j in resolved.items():
-        width = 6 if native.jnt_type[j] == 0 else 3 if native.jnt_type[j] == 1 else 1
-        for offset in range(0, model.joint_dof_count, dofs_per_world):
-            if not np.all(springdamper[offset + dof] > 0):
-                continue
-            span = slice(offset + dof, offset + dof + width)
-            stiffness[span] = np.where(stiffness[span] == baseline[span, 0], native.jnt_stiffness[j], stiffness[span])
-            resolved_damping = native.dof_damping[native.jnt_dofadr[j] : native.jnt_dofadr[j] + width]
-            damping[span] = np.where(damping[span] == baseline[span, 1], resolved_damping, damping[span])
+    for world, joint, dof in rows:
+        width = 6 if native.jnt_type[joint] == 0 else 3 if native.jnt_type[joint] == 1 else 1
+        adr = native.jnt_dofadr[joint]
+        ke, kd = _spring_gains(springs[dof], weights[world, adr : adr + width])
+        span = slice(dof, dof + width)
+        stiffness[span] = np.where(stiffness[span] == baseline[span, 0], ke, stiffness[span])
+        damping[span] = np.where(damping[span] == baseline[span, 1], kd, damping[span])
+        springs[dof] = 0
+        if world == 0:
+            spec.joints[joint].springdamper[:] = 0
+            spec.joints[joint].stiffness[0] = stiffness[dof]
+            spec.joints[joint].damping[0] = damping[dof]
     model.joint_stiffness.assign(stiffness)
     model.joint_damping.assign(damping)
+    spring_attr.assign(springs)
+    solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    native.jnt_stiffness[:] = solver.mjw_model.jnt_stiffness.numpy()[0]
+    native.dof_damping[:] = solver.mjw_model.dof_damping.numpy()[0]
 
 
 def _sync_native_actuator_ranges(model: Model) -> None:
@@ -450,15 +489,12 @@ def _sync_native_equality_parameters(model, native, equality_rows):
 
 def _apply_native_parameters(model, spec, dof_to_joint, shapes, actuator_indices):
     if not hasattr(model, "mujoco") or not hasattr(model.mujoco, "native_option_enableflags"):
-        return None
-    resolved = _apply_native_joint_parameters(model, spec, dof_to_joint)
+        return False
+    _apply_native_joint_parameters(model, spec, dof_to_joint)
     _apply_native_element_parameters(model, spec, shapes, actuator_indices)
-    return resolved
+    return True
 
 
-def _sync_native_parameters(model, native, resolved_joints, equality_rows):
-    if resolved_joints is None:
-        return
-    _sync_native_joint_parameters(model, native, resolved_joints)
+def _sync_native_parameters(model, native, equality_rows):
     _sync_native_equality_parameters(model, native, equality_rows)
     _sync_native_actuator_ranges(model)

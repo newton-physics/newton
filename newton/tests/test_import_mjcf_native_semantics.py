@@ -197,6 +197,94 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         self.assertEqual(model.joint_stiffness.numpy()[1], stiffness[1])
         self.assertEqual(model.joint_damping.numpy()[1], damping[1])
 
+    def test_native_spring_fallback_worlds(self):
+        """Resolve each world's native inertia once and preserve independent gain edits."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body><joint name="j" springdamper="{timeconst} .7"/>
+            <geom type="box" size=".1 .2 .3" mass="{mass}"/></body></worldbody>
+            <tendon><fixed armature="{armature}"><joint joint="j" coef="1"/></fixed></tendon></mujoco>"""
+        for cpu in (False, True):
+            for first_armature in (0.0, 0.2):
+                for override in (False, True):
+                    with self.subTest(cpu=cpu, first_armature=first_armature, override=override):
+                        asset = newton.ModelBuilder()
+                        asset.add_mjcf_native(xml.format(timeconst=0.2, mass=1, armature=first_armature))
+                        builder = newton.ModelBuilder()
+                        builder.replicate(asset, 2, separate_worlds=not cpu)
+                        builder.body_mass[1] *= 2
+                        builder.body_inertia[1] = wp.mat33(np.asarray(builder.body_inertia[1]).reshape(3, 3) * 2)
+                        builder.custom_attributes["mujoco:tendon_armature"].values[1] = 0.6
+                        builder.custom_attributes["mujoco:native_joint_springdamper"].values[1] = (0.3, 0.7)
+                        references = [
+                            mujoco.MjModel.from_xml_string(xml.format(timeconst=t, mass=m, armature=a))
+                            for t, m, a in ((0.2, 1, first_armature), (0.3, 2, 0.6))
+                        ]
+                        ke = np.array([m.jnt_stiffness[0] for m in references])
+                        kd = np.array([m.dof_damping[0] for m in references])
+                        if override:
+                            builder.joint_stiffness[0] = ke[0] = 0
+                            builder.joint_damping[1] = kd[1] = 7
+                        model = builder.finalize()
+                        solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=not cpu, disable_contacts=True)
+                        np.testing.assert_allclose(model.joint_stiffness.numpy(), ke, rtol=3e-5)
+                        np.testing.assert_allclose(model.joint_damping.numpy(), kd, rtol=3e-5)
+                        np.testing.assert_allclose(solver.mjw_model.jnt_stiffness.numpy().reshape(-1), ke, rtol=3e-5)
+                        np.testing.assert_allclose(solver.mjw_model.dof_damping.numpy().reshape(-1), kd, rtol=3e-5)
+                        np.testing.assert_array_equal(model.mujoco.native_joint_springdamper.numpy(), 0)
+                        model.joint_stiffness.zero_()
+                        model.joint_damping.zero_()
+                        rebuilt = SolverMuJoCo(
+                            model, use_mujoco_cpu=cpu, separate_worlds=not cpu, disable_contacts=True
+                        )
+                        np.testing.assert_array_equal(rebuilt.mjw_model.jnt_stiffness.numpy(), 0)
+                        np.testing.assert_array_equal(rebuilt.mjw_model.dof_damping.numpy(), 0)
+
+    def test_native_spring_fallback_physical_inertia(self):
+        """Free and ball springs use physical inertia even when a root is kinematic."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body>
+            <joint type="free" springdamper=".2 .7"/><geom type="box" size=".2 .3 .4" mass="{base_mass}"/>
+            <body pos="0 0 1"><joint type="ball" springdamper=".3 .6"/>
+                <geom type="box" size=".1 .2 .3" mass="{mass}"/>
+                <body pos="0 0 1"><joint name="j" axis="0 1 0" springdamper=".4 .5"/>
+                    <geom size=".2" mass="{mass}"/></body></body></body></worldbody>{inertia}</mujoco>"""
+        for cpu, kind in ((False, "tendon"), (True, "tendon"), (True, "actuator")):
+            inertia = (
+                '<tendon><fixed armature=".2"><joint joint="j" coef="1"/></fixed></tendon>'
+                if kind == "tendon"
+                else '<actuator><motor joint="j" armature=".2"/></actuator>'
+            )
+            for kinematic in (False, True):
+                with self.subTest(cpu=cpu, kind=kind, kinematic=kinematic):
+                    asset = newton.ModelBuilder()
+                    asset.add_mjcf_native(xml.format(base_mass=3, mass=1, inertia=inertia))
+                    if kinematic:
+                        asset.body_flags[0] = int(newton.BodyFlags.KINEMATIC)
+                    builder = newton.ModelBuilder()
+                    builder.replicate(asset, 2, separate_worlds=not cpu)
+                    for body in range(3, 6):
+                        builder.body_mass[body] *= 2
+                        builder.body_inertia[body] = wp.mat33(np.asarray(builder.body_inertia[body]).reshape(3, 3) * 2)
+                    builder.custom_attributes[f"mujoco:{kind}_armature"].values[1] = 0.4
+                    reference = mujoco.MjModel.from_xml_string(xml.format(base_mass=3, mass=1, inertia=inertia))
+                    ke = np.repeat(reference.jnt_stiffness, (6, 3, 1))
+                    kd = reference.dof_damping
+                    model = builder.finalize()
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=not cpu, disable_contacts=True)
+                    np.testing.assert_allclose(model.joint_stiffness.numpy(), np.r_[ke, ke * 2], rtol=3e-5)
+                    np.testing.assert_allclose(model.joint_damping.numpy(), np.r_[kd, kd * 2], rtol=3e-5)
+                    np.testing.assert_allclose(
+                        solver.mjw_model.jnt_stiffness.numpy().reshape(-1),
+                        np.r_[reference.jnt_stiffness, reference.jnt_stiffness * 2],
+                        rtol=3e-5,
+                    )
+                    np.testing.assert_allclose(
+                        solver.mjw_model.dof_damping.numpy().reshape(-1), np.r_[kd, kd * 2], rtol=3e-5
+                    )
+                    np.testing.assert_array_equal(model.mujoco.native_joint_springdamper.numpy(), 0)
+
     def test_native_custom_attribute_mapping(self):
         """Extract inherited values before scaling and retain their filtered, reordered, copied rows."""
         frequency = newton.Model.AttributeFrequency
