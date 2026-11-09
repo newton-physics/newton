@@ -4873,9 +4873,11 @@ class ModelBuilder:
                 colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-                and finalize under ``model.mujoco.equality_constraint_*``.
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+                ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+                ``model.mujoco.equality_constraint_*``.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -5218,11 +5220,13 @@ class ModelBuilder:
             verbose: If True, log additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
-                and finalize under ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or
-                target a multi-DoF joint (such as joints sharing a body) are preserved this way even when True,
-                with a :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
+                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
+                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+                ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
+                ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
+                joint (such as joints sharing a body) are preserved this way even when True, with a
+                :class:`~newton.exceptions.NewtonWarning`; only SolverMuJoCo enforces them.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
                 Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
                 an identity rest orientation. Default is False.
@@ -7825,6 +7829,41 @@ class ModelBuilder:
             raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
         joints_to_keep = set(joints_to_keep or ())
 
+        # A FIXED joint outside every articulation whose child also has an articulated joint closes a loop (for
+        # example the weld of a link-break loop). The traversal below either merges across it or drops it, which
+        # opens the loop, so warn instead of failing silently.
+        incoming = {}
+        for j in range(self.joint_count):
+            incoming.setdefault(self.joint_child[j], []).append(j)
+        # A converted MuJoCo weld keeps its equality row, which SolverMuJoCo enforces and SolverSteel rejects once
+        # collapsing drops the joint (target kind 1 is a joint).
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        equality_joints = set()
+        if target_kind_attr is not None and target_attr is not None and target_attr.values:
+            for eq_idx, target in enumerate(target_attr.values):
+                kinds = target_kind_attr.values
+                if target is not None and kinds and eq_idx < len(kinds) and kinds[eq_idx] is not None:
+                    if int(kinds[eq_idx]) == 1:
+                        equality_joints.add(int(target))
+        loop_welds = [
+            j
+            for j in range(self.joint_count)
+            if self.joint_type[j] == JointType.FIXED
+            and self.joint_articulation[j] < 0
+            and j not in equality_joints
+            and any(k != j and self.joint_articulation[k] >= 0 for k in incoming[self.joint_child[j]])
+        ]
+        if loop_welds:
+            labels = ", ".join(repr(self.joint_label[j]) for j in loop_welds)
+            warnings.warn(
+                f"collapse_fixed_joints() does not preserve FIXED loop-closing joints ({labels}): it may merge or "
+                "drop them, which opens their loops. Build or import link-break models without collapsing fixed "
+                "joints (collapse_fixed_joints=False).",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+
         original_counts = self._builder_merge_counts(self)
         original_counts.update(once=1, world=max(1, self.world_count))
 
@@ -8609,7 +8648,12 @@ class ModelBuilder:
                 while len(relpose_values) <= i:
                     relpose_values.append(None)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
+                # relpose.p is the anchor's held position in body1's frame, which body2's merge leaves in
+                # place; only body2's orientation relative to body1 picks up the merge.
+                relpose_values[i] = wp.transform(
+                    wp.transform_get_translation(relpose),
+                    wp.transform_get_rotation(relpose) * wp.quat_inverse(wp.transform_get_rotation(merge_xform)),
+                )
 
             old_joint1 = _at(joint1_values, i, joint1_attr.default)
             old_joint2 = _at(joint2_values, i, joint2_attr.default)
