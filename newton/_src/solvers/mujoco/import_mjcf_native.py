@@ -39,7 +39,7 @@ from .collision_masks import (
 from .constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from .enums import EqType
 from .equality import _add_equality_constraint
-from .mjcf_parameters import _read_native_parameters, _register_native_attributes
+from .mjcf_parameters import _finalize_native_target_damping, _read_native_parameters, _register_native_attributes
 from .solver_mujoco import SolverMuJoCo
 from .utils import mjc_add_equality_loop_joint, mjc_add_equality_mimic, mjc_polycoef_has_higher_order
 
@@ -381,10 +381,17 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
         if mode == JointTargetMode.POSITION:
             builder.joint_target_ke[axis] = float(gain[0])
             if previous == JointTargetMode.NONE:
-                # Leave dampratio resolution to the shared solver after composition.
                 builder.joint_target_kd[axis] = float(max(0.0, -bias[2]))
                 if bias[2] > 0:
                     pending_damping.add(axis)
+                    if dof_count == 1:
+                        baseline = float(-model.actuator_biasprm[i, 2])
+                        if np.isfinite(baseline) and baseline > 0:
+                            builder.joint_target_kd[axis] = baseline
+                            values["mujoco:native_actuator_target_kd"] = baseline
+                            builder._add_custom_attribute_model_finalizer(
+                                "mujoco:actuator_biasprm", _finalize_native_target_damping
+                            )
         else:
             builder.joint_target_kd[axis] = float(gain[0])
         builder.joint_target_mode[axis] = (
@@ -1257,6 +1264,7 @@ def parse_mjcf(
         alternate = sites[source_alt] if source_alt >= 0 and transmission in (3, 5) else -1
         native_parameters = _read_native_parameters("actuator", spec.actuators[i])
         values = attributes(
+            native_actuator_target_kd=-1.0,
             actuator_label=f"{prefix}/{model.actuator(i).name or f'actuator_{i}'}",
             ctrl_source=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
             ctrl_type=int(

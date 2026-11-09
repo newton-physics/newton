@@ -20,6 +20,67 @@ from newton.solvers import SolverMuJoCo
 
 @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo is required")
 class TestImportMjcfNativeSemantics(unittest.TestCase):
+    def test_damping_resolves_before_solver_construction(self):
+        """Resolve composed damping at finalization while preserving overrides and builder intent."""
+        import mujoco
+
+        payload = '<body name="hand" pos="0 0 1"><geom size=".1" mass="2"/></body>'
+        source = """<mujoco><worldbody><body name="arm"><joint name="j" axis="0 1 0"/>
+            <geom type="box" size=".1 .2 .3" mass="1"/>{payload}</body></worldbody>
+            <actuator><position joint="j" kp="20" dampratio=".7"/></actuator></mujoco>"""
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native(source.format(payload=""))
+        baseline = asset.joint_target_kd[0]
+        self.assertGreater(baseline, 0)
+        isolated = asset.finalize()
+        np.testing.assert_allclose(isolated.joint_target_kd.numpy(), [baseline], rtol=3e-5)
+        builder = newton.ModelBuilder()
+        builder.add_builder(asset)
+        builder.add_mjcf_native(f"<mujoco><worldbody>{payload}</worldbody></mujoco>", parent_body=0)
+        expected = -mujoco.MjModel.from_xml_string(source.format(payload=payload)).actuator_biasprm[:, 2]
+        for collapse in (False, True):
+            with self.subTest(collapse=collapse):
+                if collapse:
+                    builder.collapse_fixed_joints()
+                model = builder.finalize()
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=3e-5)
+                self.assertEqual(builder.joint_target_kd, [baseline])
+                np.testing.assert_allclose(builder.finalize().joint_target_kd.numpy(), expected, rtol=3e-5)
+                self.assertLess(model.mujoco.actuator_biasprm.numpy()[0, 2], 0)
+        replicated = newton.ModelBuilder()
+        replicated.replicate(builder, 3)
+        np.testing.assert_allclose(replicated.finalize().joint_target_kd.numpy(), np.tile(expected, 3), rtol=3e-5)
+        for override in (0.0, 3.0):
+            builder.joint_target_kd[0] = override
+            model = builder.finalize()
+            np.testing.assert_array_equal(model.joint_target_kd.numpy(), [override])
+            self.assertEqual(model.mujoco.actuator_biasprm.numpy()[0, 2], -override)
+
+    def test_damping_finalization_coupled_joints(self):
+        """Use inverse inertia at the reference pose, including a mobile base and armature."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body pos="2 3 4" euler="10 20 30">{root}
+            <geom type="box" size=".2 .3 .4" mass="3"/>
+            <body pos="0 0 1"><joint name="j" axis="0 1 0" ref="30" armature=".03"/>
+                <geom type="box" size=".1 .2 .3" mass="1"/>
+                <body pos="0 0 1"><joint name="k" axis="0 1 0" armature=".04"/>
+                    <geom type="box" size=".2 .1 .4" mass="2"/>
+                </body></body></body></worldbody>
+            <actuator><position joint="k" kp="20" dampratio=".7"/>
+                <position joint="j" kp="10" dampratio=".4"/></actuator></mujoco>"""
+        for root in ("", "<freejoint/>"):
+            with self.subTest(root=root):
+                source = xml.format(root=root)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf_native(source)
+                initial_q = builder.joint_q.copy()
+                model = builder.finalize()
+                native = mujoco.MjModel.from_xml_string(source)
+                expected = -native.actuator_biasprm[::-1, 2]
+                np.testing.assert_allclose(model.joint_target_kd.numpy()[-2:], expected, rtol=3e-5)
+                np.testing.assert_allclose(model.joint_q.numpy(), initial_q)
+
     def test_native_custom_attribute_mapping(self):
         """Extract inherited values before scaling and retain their filtered, reordered, copied rows."""
         frequency = newton.Model.AttributeFrequency
@@ -74,6 +135,29 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         np.testing.assert_array_equal(model.joint_tag.numpy(), [1, 3, 9, -1] * 2)
         np.testing.assert_array_equal(model.dof_tag.numpy(), [2, 1, 3, 3, 3, 9, 9, 9, 9, 9, 9] * 2)
         np.testing.assert_allclose(model.source_size.numpy()[:, 0], [0.1, 0.2, 0.3, 0.02, 0.4] * 2)
+
+    def test_damping_finalization_inertia_boundaries(self):
+        """Retain native resolution for inertia missing from the core mass matrix."""
+        for extra_joint, tendon, armature in (
+            ("", '<tendon><fixed armature=".2"><joint joint="j" coef="1"/></fixed></tendon>', ""),
+            ("", "", 'armature=".2"'),
+            ('<joint type="slide" axis="0 1 0"/>', "", ""),
+        ):
+            with self.subTest(extra_joint=extra_joint, tendon=tendon, armature=armature):
+                joint_type = "slide" if extra_joint else "hinge"
+                xml = f"""<mujoco><worldbody><body>
+                    <joint name="j" type="{joint_type}" axis="0 1 0"/>{extra_joint}
+                    <geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody>{tendon}
+                    <actuator><position joint="j" kp="20" dampratio=".7" {armature}/></actuator></mujoco>"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf_native(xml)
+                model = builder.finalize()
+                self.assertEqual(model.joint_target_kd.numpy()[0], 0)
+                self.assertGreater(model.mujoco.actuator_biasprm.numpy()[0, 2], 0)
+                if not extra_joint:
+                    builder.joint_target_kd[0] = 0
+                    model = builder.finalize()
+                    self.assertEqual(model.mujoco.actuator_biasprm.numpy()[0, 2], 0)
 
     def test_native_custom_attribute_rows(self):
         """Map custom-frequency and option values through repeated imports and composition."""

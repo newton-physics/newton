@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -146,6 +147,7 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         ("native_equality_auto_relpose", "mujoco:equality_constraint", wp.bool, False, None),
         ("native_equality_site1", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_equality_site2", "mujoco:equality_constraint", wp.int32, -1, "shape"),
+        ("native_actuator_target_kd", "mujoco:actuator", wp.float32, -1.0, None),
     ):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -157,6 +159,86 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
                 references=reference,
             )
         )
+
+
+def _finalize_native_target_damping(builder: ModelBuilder, model: Model, attr: ModelBuilder.CustomAttribute) -> None:
+    count = model.custom_frequency_counts.get("mujoco:actuator", 0)
+    if not count:
+        return
+    values = attr.build_array(count, device=model.device, requires_grad=model.requires_grad)
+
+    def read(name, count=count):
+        return builder.custom_attributes[f"mujoco:{name}"].build_array(count, device="cpu").numpy()
+
+    baseline = read("native_actuator_target_kd")
+    rows = np.flatnonzero(baseline >= 0)
+    if len(rows):
+        from ...sim.articulation import _iter_mass_matrix_blocks, eval_fk  # noqa: PLC0415
+        from ...sim.enums import JointTargetMode, JointType  # noqa: PLC0415
+        from ...sim.state import State  # noqa: PLC0415
+
+        bias = values.numpy()
+        targets, sources = read("actuator_trnid")[:, 0], read("ctrl_source")
+        kd, ke = model.joint_target_kd.numpy(), model.joint_target_ke.numpy()
+        modes = model.joint_target_mode.numpy()
+        starts = model.joint_qd_start.numpy()
+        owners = model.joint_articulation.numpy()
+        pending = {}
+        supported = model._fk_articulation_level_start is not None and not builder._variant_shape_rows.variant_sets
+        supported = supported and not np.any(read("actuator_armature"))
+        tendon_count = model.custom_frequency_counts.get("mujoco:tendon", 0)
+        supported = supported and not np.any(read("tendon_armature", tendon_count))
+        for row in rows:
+            dof = int(targets[row])
+            if sources[row] != 0 or dof < 0 or modes[dof] != JointTargetMode.POSITION or bias[row, 2] <= 0:
+                continue
+            if kd[dof] != baseline[row]:
+                bias[row, 2] = -kd[dof]
+                continue
+            # The shared solver still resolves unsupported inertia cases from the authored ratio.
+            kd[dof] = 0
+            joint = int(np.searchsorted(starts, dof, side="right") - 1)
+            articulation = int(owners[joint])
+            if supported and articulation >= 0:
+                pending.setdefault(articulation, []).append((row, dof))
+        if pending:
+            q = model.joint_q.numpy().copy()
+            q_starts = model.joint_q_start.numpy()
+            for joint, kind in enumerate(model.joint_type.numpy()):
+                if kind == JointType.BALL:
+                    q[q_starts[joint] : q_starts[joint + 1]] = [0, 0, 0, 1]
+                elif kind in (JointType.PRISMATIC, JointType.REVOLUTE, JointType.D6):
+                    q[q_starts[joint] : q_starts[joint + 1]] = 0
+            state = State()
+            state.joint_q = wp.array(q, dtype=float, device=model.device)
+            state.body_q = wp.empty(model.body_count, dtype=wp.transform, device=model.device)
+            state.body_qd = wp.empty(model.body_count, dtype=wp.spatial_vector, device=model.device)
+            eval_fk(model, state.joint_q, model.joint_qd, state)
+            articulation_starts = model.articulation_start.numpy()
+            for indices, matrices in _iter_mass_matrix_blocks(model, state, list(pending)):
+                for articulation, matrix in zip(indices, matrices, strict=True):
+                    requests = pending[articulation]
+                    offset = starts[articulation_starts[articulation]]
+                    columns = np.array([dof - offset for _, dof in requests])
+                    rhs = np.zeros((len(matrix), len(columns)))
+                    rhs[columns, np.arange(len(columns))] = 1
+                    try:
+                        factor = np.linalg.cholesky(matrix.astype(np.float64))
+                        if np.min(np.diag(factor)) ** 2 <= 1e-6 * np.max(np.diag(matrix)):
+                            continue
+                        solved = np.linalg.solve(factor, rhs)
+                    except np.linalg.LinAlgError:
+                        continue
+                    inverse_weights = np.sum(solved * solved, axis=0)
+                    for (row, dof), weight in zip(requests, inverse_weights, strict=True):
+                        if not np.isfinite(weight) or weight <= 0 or not np.isfinite(ke[dof]) or ke[dof] < 0:
+                            continue
+                        kd[dof] = 2 * bias[row, 2] * np.sqrt(ke[dof] / weight)
+                        bias[row, 2] = -kd[dof]
+        model.joint_target_kd.assign(kd)
+        values.assign(bias)
+    model.add_attribute(attr.name, values, attr.frequency, attr.assignment, attr.namespace, attr.references)
+    model._set_attribute_spec(attr.key, replace(model.attribute_specs[attr.key], default=attr.default))
 
 
 def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joint) -> dict[int, int]:

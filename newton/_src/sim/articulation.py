@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import warnings
 
+import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning
@@ -1697,6 +1698,7 @@ def eval_articulation_mass_matrix_crba(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],
     articulation_mask: wp.array[bool],
+    articulation_indices: wp.array[int],
     joint_child: wp.array[int],
     joint_ancestor: wp.array[int],
     joint_qd_start: wp.array[int],
@@ -1716,7 +1718,10 @@ def eval_articulation_mass_matrix_crba(
     entry pair is written by one thread: c writes rows of strict ancestors and
     rows ``r <= c`` of its own joint.
     """
-    art_idx, col = wp.tid()
+    output_idx, col = wp.tid()
+    art_idx = output_idx
+    if articulation_indices:
+        art_idx = articulation_indices[output_idx]
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
@@ -1748,8 +1753,8 @@ def eval_articulation_mass_matrix_crba(
                     if dof_r == dof_c:
                         h += joint_armature[dof_c]
                 row = dof_r - articulation_dof_start
-                H[art_idx, row, col] = h
-                H[art_idx, col, row] = h
+                H[output_idx, row, col] = h
+                H[output_idx, col, row] = h
         a = joint_ancestor[a]
 
 
@@ -2043,6 +2048,111 @@ def eval_mass_matrix(
     )
 
 
+def _prepare_crba(model, state, body_I_s=None, joint_S_s=None, mask=None):
+    if body_I_s is None:
+        body_I_s = wp.zeros(model.body_count, dtype=wp.spatial_matrix, device=model.device)
+    if joint_S_s is None:
+        joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=model.device)
+    wp.launch(
+        kernel=eval_articulation_motion_subspace,
+        dim=model.joint_count,
+        inputs=[
+            model.joint_articulation,
+            mask,
+            model.joint_type,
+            model.joint_parent,
+            model.joint_child,
+            model.joint_q_start,
+            model.joint_qd_start,
+            model.joint_X_p,
+            model.joint_axis,
+            state.joint_q,
+            model.joint_dof_dim,
+            state.body_q,
+            model.body_com,
+        ],
+        outputs=[joint_S_s],
+        device=model.device,
+    )
+    wp.launch(
+        kernel=eval_articulation_body_inertia_about_root,
+        dim=(model.joint_count, 6),
+        inputs=[
+            model.joint_articulation,
+            model.articulation_start,
+            mask,
+            model.joint_child,
+            model.body_inertia,
+            model.body_mass,
+            model.body_com,
+            state.body_q,
+        ],
+        outputs=[body_I_s.view(float)],
+        device=model.device,
+    )
+    wp.launch(
+        kernel=eval_articulation_subtree_sum,
+        dim=(model.articulation_count, 36),
+        inputs=[
+            model._fk_articulation_level_start,
+            model._fk_level_joint_start,
+            model._fk_level_joints,
+            mask,
+            model.joint_parent,
+            model.joint_child,
+        ],
+        outputs=[body_I_s.view(float).reshape((model.body_count, 36))],
+        device=model.device,
+    )
+    return body_I_s, joint_S_s
+
+
+def _iter_mass_matrix_blocks(model, state, articulations, *, max_bytes=4 * 1024 * 1024):
+    """Bound dense storage by the batch budget or one larger articulation."""
+    if not len(articulations):
+        return
+    if model._fk_articulation_level_start is None:
+        raise ValueError("Selected mass matrices require tree articulations with an FK level schedule.")
+    selected = np.zeros(model.articulation_count, dtype=bool)
+    selected[articulations] = True
+    mask = wp.array(selected, dtype=bool, device=model.device)
+    body_I_s, joint_S_s = _prepare_crba(model, state, mask=mask)
+    starts, ends = model.articulation_start.numpy(), model.articulation_end.numpy()
+    dofs = model.joint_qd_start.numpy()
+    groups = {}
+    for articulation in articulations:
+        width = int(dofs[ends[articulation]] - dofs[starts[articulation]])
+        groups.setdefault(width, []).append(articulation)
+    for width, indices in groups.items():
+        if width == 0:
+            continue
+        batch_size = max(1, max_bytes // (4 * width * width))
+        for offset in range(0, len(indices), batch_size):
+            batch = indices[offset : offset + batch_size]
+            matrices = wp.zeros((len(batch), width, width), dtype=float, device=model.device)
+            wp.launch(
+                eval_articulation_mass_matrix_crba,
+                dim=(len(batch), width),
+                inputs=[
+                    model.articulation_start,
+                    model.articulation_end,
+                    mask,
+                    wp.array(batch, dtype=int, device=model.device),
+                    model.joint_child,
+                    model.joint_ancestor,
+                    model.joint_qd_start,
+                    state.body_q,
+                    joint_S_s,
+                    body_I_s,
+                    model.joint_armature,
+                ],
+                outputs=[matrices],
+                device=model.device,
+            )
+            yield batch, matrices.numpy()
+            del matrices
+
+
 def _eval_mass_matrix(
     model: Model,
     state: State,
@@ -2098,59 +2208,7 @@ def _eval_mass_matrix(
             )
         )
     if J is None and model._fk_articulation_level_start is not None and not requires_grad:
-        if joint_S_s is None:
-            joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=model.device)
-        wp.launch(
-            kernel=eval_articulation_motion_subspace,
-            dim=model.joint_count,
-            inputs=[
-                model.joint_articulation,
-                mask,
-                model.joint_type,
-                model.joint_parent,
-                model.joint_child,
-                model.joint_q_start,
-                model.joint_qd_start,
-                model.joint_X_p,
-                model.joint_axis,
-                state.joint_q,
-                model.joint_dof_dim,
-                state.body_q,
-                model.body_com,
-            ],
-            outputs=[joint_S_s],
-            device=model.device,
-        )
-        wp.launch(
-            kernel=eval_articulation_body_inertia_about_root,
-            dim=(model.joint_count, 6),
-            inputs=[
-                model.joint_articulation,
-                model.articulation_start,
-                mask,
-                model.joint_child,
-                model.body_inertia,
-                model.body_mass,
-                model.body_com,
-                state.body_q,
-            ],
-            outputs=[body_I_s.view(float)],
-            device=model.device,
-        )
-        wp.launch(
-            kernel=eval_articulation_subtree_sum,
-            dim=(model.articulation_count, 36),
-            inputs=[
-                model._fk_articulation_level_start,
-                model._fk_level_joint_start,
-                model._fk_level_joints,
-                mask,
-                model.joint_parent,
-                model.joint_child,
-            ],
-            outputs=[body_I_s.view(float).reshape((model.body_count, 36))],
-            device=model.device,
-        )
+        body_I_s, joint_S_s = _prepare_crba(model, state, body_I_s, joint_S_s, mask)
         wp.launch(
             kernel=eval_articulation_mass_matrix_crba,
             dim=(model.articulation_count, model.max_dofs_per_articulation),
@@ -2158,6 +2216,7 @@ def _eval_mass_matrix(
                 model.articulation_start,
                 model.articulation_end,
                 mask,
+                None,
                 model.joint_child,
                 model.joint_ancestor,
                 model.joint_qd_start,

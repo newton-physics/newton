@@ -175,7 +175,8 @@ no cutoff for boxes. Newton's final inertia validation still applies.
 Actuator ``dampratio`` and ``inheritrange``, joint ``springdamper``, muscle
 parameter placeholders, unspecified actuator length ranges, automatic tendon
 spring lengths, and automatic weld relative poses retain their authored values.
-They are resolved again when
+Scalar joint-target damping resolves at builder finalization as described below.
+The other parameters are resolved again when
 :class:`~newton.solvers.SolverMuJoCo` compiles the assembled builder. Attaching
 a hand therefore contributes its inertia to the arm's damping and muscle force
 scaling. Native parameters without a Newton core equivalent live in typed
@@ -889,13 +890,27 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
-For MJCF position-only drives with ``dampratio`` and the default joint-target
-control mapping, solver construction resolves damping using each world's
-initial physical inertia, authored armature, and position gain. It replaces the imported
-damping-ratio placeholder with the resulting coefficient and initializes zero entries in
-:attr:`~newton.Model.joint_target_kd`; nonzero explicit damping is preserved.
-Subsequent gain edits use the joint-target arrays and
-:attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` as usual.
+For native MJCF scalar position-only drives with ``dampratio`` and unit gear,
+:meth:`~newton.ModelBuilder.finalize` resolves :attr:`~newton.Model.joint_target_kd`
+from the composed articulation's reference-pose inertia, joint armature, and
+position gain. Other Newton solvers can use the resulting damping without
+constructing ``SolverMuJoCo``. Import stores source-compiled damping in the builder;
+changing it before finalization, including to zero, overrides automatic resolution.
+Assigning the same value leaves it automatic. Finalization leaves the builder
+unchanged, so it can be copied, composed, and finalized again.
+
+Ball targets, body variants, actuator or tendon armature, unsupported topology,
+and singular or numerically ill-conditioned inertia retain deferred resolution
+through ``SolverMuJoCo``. Legacy MJCF joint targets also resolve at solver
+construction. That fallback initializes zero damping entries and preserves
+nonzero overrides. Native scalar overrides made before finalization are consumed
+there, including explicit zeros.
+
+Once resolved, joint-target damping is a concrete coefficient: later inertia or
+gain edits do not recompute it. Set ``joint_target_kd`` explicitly, or edit and
+finalize the builder again. With ``SolverMuJoCo``, notify
+:attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` after model gain edits.
+Direct MuJoCo actuators retain their existing runtime ``dampratio`` resolution.
 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is

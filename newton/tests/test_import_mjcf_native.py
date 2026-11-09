@@ -1291,8 +1291,9 @@ class TestImportMjcfNative(unittest.TestCase):
         with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "zero or negative mass"):
             builder.add_mjcf_native(f"<mujoco><worldbody>{hand}</worldbody></mujoco>", parent_body=0)
         self.assertEqual(builder.custom_attributes["mujoco:ctrl_source"].values, [SolverMuJoCo.CtrlSource.JOINT_TARGET])
-        np.testing.assert_array_equal(builder.joint_target_kd, [0])
+        self.assertGreater(builder.joint_target_kd[0], 0)
         model = builder.finalize()
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), -reference.actuator_biasprm[:, 2], rtol=3e-5)
         solver = SolverMuJoCo(model, disable_contacts=True)
         np.testing.assert_allclose(model.joint_target_kd.numpy(), -reference.actuator_biasprm[:, 2], rtol=3e-5)
         for field in ("jnt_stiffness", "dof_damping", "actuator_biasprm"):

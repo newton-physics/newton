@@ -12064,11 +12064,18 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
                 }
                 skipped_row["mujoco:actuator_target_label"] = "/missing"
                 builder.add_custom_values(**skipped_row)
+                ratios = np.array([0.5, 2.0, 1.0])
+                if importer == "add_mjcf_native":
+                    for row, ratio in enumerate(ratios):
+                        attr = builder.custom_attributes["mujoco:actuator_biasprm"]
+                        bias = list(attr.values[row])
+                        bias[2] = ratio
+                        attr.values[row] = bias
                 model = builder.finalize()
                 worlds = model.mujoco.actuator_world.numpy()
                 biasprm = model.mujoco.actuator_biasprm.numpy()
-                ratios = np.array([0.5, 2.0, 1.0])
-                biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
+                if importer == "add_mjcf":
+                    biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
                 biasprm[worlds < 0, 2] = 0.75
                 model.mujoco.actuator_biasprm.assign(biasprm)
 
