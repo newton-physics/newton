@@ -66,7 +66,11 @@ def advect_grains(
     grid_vel: fem.Field,
     dt: float,
     positions: wp.array[wp.vec3],
+    particle_flags: wp.array[int],
+    grains_per_particle: int,
 ):
+    if particle_flags and (particle_flags[s.qp_index // grains_per_particle] & newton.ParticleFlags.ACTIVE) == 0:
+        return
     x = domain(s)
     vel = grid_vel(s)
     pos_adv = x + dt * vel
@@ -80,8 +84,11 @@ def advect_grains_from_particles(
     particle_pos: wp.array[wp.vec3],
     particle_vel_grad: wp.array[wp.mat33],
     positions: wp.array2d[wp.vec3],
+    particle_flags: wp.array[int],
 ):
     pid, k = wp.tid()
+    if particle_flags and (particle_flags[pid] & newton.ParticleFlags.ACTIVE) == 0:
+        return
 
     p_pos = particle_pos[pid]
     p_pos_prev = particle_pos_prev[pid]
@@ -100,8 +107,11 @@ def project_grains(
     particle_pos: wp.array[wp.vec3],
     particle_frames: wp.array[wp.mat33],
     positions: wp.array2d[wp.vec3],
+    particle_flags: wp.array[int],
 ):
     pid, k = wp.tid()
+    if particle_flags and (particle_flags[pid] & newton.ParticleFlags.ACTIVE) == 0:
+        return
 
     pos_adv = positions[pid, k]
 
@@ -159,6 +169,7 @@ def update_render_grains(
     dt: float,
     *,
     particle_environment: wp.array[int] | None = None,
+    particle_flags: wp.array[int] | None = None,
     temporary_store: fem.TemporaryStore | None = None,
 ):
     """Advect grain samples with the grid velocity and keep them inside the deformed particle.
@@ -180,6 +191,7 @@ def update_render_grains(
          particle_radius: Per-particle radius used for projection.
          dt: Time step duration.
          particle_environment: Per-particle world IDs for isolated multi-world advection.
+         particle_flags: Optional activity mask; inactive particles keep their grains.
          temporary_store: Temporary storage used by grain binning and interpolation.
     """
 
@@ -220,6 +232,7 @@ def update_render_grains(
                 state.particle_q,
                 state.mpm.particle_qd_grad,
                 grains,
+                particle_flags,
             ],
             device=grains.device,
         )
@@ -230,6 +243,8 @@ def update_render_grains(
             values={
                 "dt": dt,
                 "positions": grain_pos,
+                "particle_flags": particle_flags,
+                "grains_per_particle": grains.shape[1],
             },
             fields={
                 "grid_vel": state.velocity_field,
@@ -246,6 +261,7 @@ def update_render_grains(
                 state.particle_q,
                 state.mpm.particle_transform,
                 grains,
+                particle_flags,
             ],
             device=grains.device,
         )

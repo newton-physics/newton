@@ -1,0 +1,377 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Protect captured sleeping, compact particle identity, and fail-closed capacity handling."""
+
+import unittest
+
+import numpy as np
+import warp as wp
+
+import newton
+from newton.solvers import SolverImplicitMPM
+from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
+
+HISTORY_FIELDS = ("particle_qd_grad", "particle_Jp", "particle_stress", "particle_elastic_strain", "particle_transform")
+
+
+def _make_scene(device, *, worlds=1, collider=False, particle_bases=False):
+    """Build a small heterogeneous bed whose logical and spatial particle orders differ."""
+    local = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverImplicitMPM.register_custom_attributes(local)
+    locations = [(x, y, z) for x in range(24) for y in range(2) for z in range(2)]
+    for index in np.random.default_rng(17).permutation(len(locations)):
+        x, y, z = locations[index]
+        local.add_particle(
+            pos=(0.0125 + 0.025 * x, 0.0125 + 0.025 * y, 0.0125 + 0.025 * z),
+            vel=(0.0, 0.0, 0.0),
+            mass=0.0075 + 0.0025 * (index % 4),
+            radius=0.01 + 0.001 * (index % 3),
+            custom_attributes={
+                "mpm:young_modulus": 8000.0 + 1500.0 * (index % 5),
+                "mpm:poisson_ratio": 0.15 + 0.02 * (index % 4),
+                "mpm:yield_pressure": 1.0e7,
+                "mpm:yield_stress": 1.0e7,
+                "mpm:tensile_yield_ratio": 1.0,
+            },
+        )
+    local.add_particle(pos=(0.2625, 0.0125, 0.0125), vel=(0.0, 0.0, 0.0), mass=1000.0, radius=0.0125, flags=0)
+    local.add_ground_plane(height=-0.05)
+    if collider:
+        body = local.add_body(xform=wp.transform(wp.vec3(2.0, 0.025, 0.025), wp.quat_identity()), is_kinematic=True)
+        local.add_shape_sphere(body, radius=0.025, cfg=local.ShapeConfig(density=0.0))
+    if worlds > 1:
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        for _ in range(worlds):
+            builder.add_world(local)
+    else:
+        builder = local
+    model = builder.finalize(device=device)
+
+    def make_solver():
+        solver = SolverImplicitMPM(
+            model,
+            SolverImplicitMPM.Config(
+                grid_type="sparse",
+                voxel_size=0.05,
+                max_active_cell_count=512,
+                velocity_basis="Q1",
+                strain_basis="pic8" if particle_bases else "P0",
+                collider_basis="pic8" if particle_bases else "Q1",
+                max_iterations=5,
+                tolerance=0.0,
+                warmstart_mode="particles",
+                separate_worlds=worlds > 1,
+                reuse_grid_topology=True,
+            ),
+            enable_timers=False,
+        )
+        solver.set_particle_sleeping(
+            sleep_time=0.02,
+            collider_margin=0.025,
+            velocity_threshold=0.1,
+            strain_threshold=1.0e6,
+            stress_threshold=1.0e6,
+        )
+        return solver
+
+    return model, make_solver
+
+
+def _snapshot(state):
+    return {
+        "particle_q": state.particle_q.numpy().copy(),
+        "particle_qd": state.particle_qd.numpy().copy(),
+        **{name: getattr(state.mpm, name).numpy().copy() for name in HISTORY_FIELDS},
+    }
+
+
+def _assert_state(state, expected, *, mask=slice(None), exact=True):
+    for name, values in expected.items():
+        array = getattr(state, name) if name in ("particle_q", "particle_qd") else getattr(state.mpm, name)
+        if exact:
+            np.testing.assert_array_equal(array.numpy()[mask], values[mask])
+        else:
+            np.testing.assert_allclose(array.numpy()[mask], values[mask], rtol=2.0e-4, atol=2.0e-5)
+
+
+def _require_capture(test, device):
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture requires the Warp memory pool")
+
+
+def test_captured_sleep_support_and_dirty_wake(test, device):
+    """Retain evolved dormant history while a moving collider changes the cached active region."""
+    _require_capture(test, device)
+    model, make_solver = _make_scene(device, collider=True)
+    solver, state = make_solver(), model.state()
+    positions = model.particle_q.numpy()
+    flags, masses = model.particle_flags.numpy().copy(), model.particle_mass.numpy().copy()
+    materials = {name: getattr(model.mpm, name).numpy().copy() for name in ("young_modulus", "poisson_ratio")}
+    eligible = (flags & int(newton.ParticleFlags.ACTIVE)) != 0
+    force = np.zeros((model.particle_count, 3), dtype=np.float32)
+    force[np.flatnonzero(eligible & (positions[:, 0] < 0.1))[0], 0] = 0.003
+    state.particle_f.assign(force)
+    for _ in range(3):
+        solver.step(state, state, None, None, 0.005)
+    test.assertGreater(np.linalg.norm(state.mpm.particle_stress.numpy()), 1.0e-6)
+    state.clear_forces()
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state, state, None, None, 0.005)
+    graph = capture.graph
+    pointers = (state.particle_q.ptr, state.particle_qd.ptr, state.mpm.particle_Jp.ptr, solver.step_status.ptr)
+    for _ in range(10):
+        wp.capture_launch(graph)
+    np.testing.assert_array_equal(solver.particle_activity.numpy()[eligible], 0)
+    test.assertEqual(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 0)
+    frozen = _snapshot(state)
+    grains = solver.sample_render_grains(state, grains_per_particle=2)
+    frozen_grains = grains.numpy().copy()
+    solver.update_render_grains(state, state, grains, dt=0.005)
+    np.testing.assert_array_equal(grains.numpy(), frozen_grains)
+    for _ in range(3):
+        wp.capture_launch(graph)
+    _assert_state(state, frozen)
+    # Out-of-place output starts with fresh buffers and must inherit dormant history.
+    copied = model.state()
+    solver.step(state, copied, None, None, 0.005)
+    _assert_state(copied, frozen)
+
+    state.body_q.assign([wp.transform(wp.vec3(0.55, 0.025, 0.025), wp.quat_identity())])
+    state.body_qd.assign([wp.spatial_vector(-0.5, 0.0, 0.0, 0.0, 0.0, 0.0)])
+    for _ in range(3):
+        wp.capture_launch(graph)
+    modes = solver.particle_activity.numpy()
+    test.assertTrue(np.any(modes[eligible & (positions[:, 0] > 0.45)] == 2))
+    test.assertTrue(np.any(modes == 1))
+    remote = eligible & (positions[:, 0] < 0.1)
+    np.testing.assert_array_equal(modes[remote], 0)
+    _assert_state(state, frozen, mask=remote)
+    test.assertGreater(np.linalg.norm(state.particle_qd.numpy()[positions[:, 0] > 0.45]), 1.0e-6)
+    test.assertGreater(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 0)
+    test.assertEqual(
+        pointers, (state.particle_q.ptr, state.particle_qd.ptr, state.mpm.particle_Jp.ptr, solver.step_status.ptr)
+    )
+    np.testing.assert_array_equal(model.particle_flags.numpy(), flags)
+    np.testing.assert_array_equal(model.particle_mass.numpy(), masses)
+    for name, values in materials.items():
+        np.testing.assert_array_equal(getattr(model.mpm, name).numpy(), values)
+    solver.check_sparse_grid_rebuild_status()
+    with wp.ScopedCapture(device=device) as reset_capture:
+        solver.reset(state, flags=0)
+    wp.capture_launch(reset_capture.graph)
+    wp.capture_launch(graph)
+    np.testing.assert_array_equal(solver.particle_activity.numpy()[eligible], 2)
+    test.assertEqual(int(solver.step_status.numpy()[0]), 0)
+
+
+def test_working_set_equivalence(test, device, *, particle_bases=False, page_size=0):
+    """Match full sleeping storage when compact evaluation changes IDs across overlapping worlds."""
+    _require_capture(test, device)
+    model, make_solver = _make_scene(device, worlds=2, particle_bases=particle_bases)
+    variants = 3 if page_size else 2
+    solvers, states = [make_solver() for _ in range(variants)], [model.state() for _ in range(variants)]
+    positions, worlds = model.particle_q.numpy(), model.particle_world.numpy()
+    flags, masses = model.particle_flags.numpy().copy(), model.particle_mass.numpy().copy()
+    eligible = (flags & int(newton.ParticleFlags.ACTIVE)) != 0
+    targets = [
+        np.flatnonzero(eligible & (worlds == world) & (positions[:, 0] > x) & (positions[:, 0] < x + 0.05))[0]
+        for world, x in ((0, 0.25), (1, 0.5), (1, 0.1))
+    ]
+    if page_size:
+        # Logical pages intentionally contain spatially distant particles. One
+        # lane must sleep while its distant page neighbor remains awake.
+        for first in np.flatnonzero(eligible & (worlds == 1) & (positions[:, 0] > 0.45)):
+            same_page = np.arange(model.particle_count) // page_size == first // page_size
+            neighbors = np.flatnonzero(same_page & eligible & (worlds == 1) & (positions[:, 0] < 0.2))
+            if len(neighbors):
+                targets[1], targets[2] = first, neighbors[0]
+                break
+        else:
+            test.fail("The scene must contain distant active IDs in one logical page")
+    force = np.zeros((model.particle_count, 3), dtype=np.float32)
+    force[targets[:2], 0] = 0.0003
+    if particle_bases:
+        mesh = wp.Mesh(
+            points=wp.array(
+                [(-2.0, -2.0, 0.02), (2.0, -2.0, 0.02), (2.0, 2.0, 0.02), (-2.0, 2.0, 0.02)],
+                dtype=wp.vec3,
+                device=device,
+            ),
+            indices=wp.array([0, 1, 2, 0, 2, 3], dtype=int, device=device),
+            velocities=wp.zeros(4, dtype=wp.vec3, device=device),
+        )
+        contact = eligible & (positions[:, 0] > 0.2) & (positions[:, 0] < 0.4) & (positions[:, 2] < 0.02)
+        force[contact, 0], force[contact, 2] = 0.002, -0.01
+        for solver in solvers:
+            solver.setup_collider(collider_meshes=[mesh], collider_friction=[0.3])
+    for solver, state in zip(solvers, states, strict=True):
+        state.mpm.particle_Jp.assign(np.linspace(0.73, 0.97, model.particle_count, dtype=np.float32))
+        state.particle_f.assign(force)
+        for _ in range(10):
+            solver.step(state, state, None, None, 0.005)
+    reference, compact = solvers[0], solvers[-1]
+    capacity = 192 if particle_bases else 160
+    for index, (solver, state) in enumerate(zip(solvers[1:], states[1:], strict=True), start=1):
+        variant_page_size = page_size if index == len(solvers) - 1 else 0
+        variant_capacity = (
+            ((model.particle_count + page_size - 1) // page_size) * page_size if variant_page_size else capacity
+        )
+        solver.set_particle_working_set(
+            state, particle_capacity=variant_capacity, page_size=variant_page_size, max_active_cell_count=128
+        )
+    if not page_size:
+        test.assertLess(compact.particle_working_set_capacity, model.particle_count)
+    if particle_bases:
+        for solver in solvers:
+            solver._last_step_data.ws_impulse_field.dof_values.zero_()
+    graphs = []
+    for solver, state in zip(solvers, states, strict=True):
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(state, state, None, None, 0.005)
+        graphs.append(capture.graph)
+    for step in range(10 if page_size else 6):
+        if step == 2:
+            force[targets[1], 0], force[targets[2], 1] = 0.0, -0.0003
+            for state in states:
+                state.particle_f.assign(force)
+        frozen = _snapshot(states[-1])
+        for graph in graphs:
+            wp.capture_launch(graph)
+        for state in states[1:]:
+            _assert_state(state, _snapshot(states[0]), exact=False)
+        modes = compact.particle_activity.numpy()
+        np.testing.assert_array_equal(modes, reference.particle_activity.numpy())
+        _assert_state(states[-1], frozen, mask=modes != 2)
+    if page_size:
+        test.assertEqual(targets[1] // page_size, targets[2] // page_size)
+        test.assertEqual(modes[targets[1]], 0)
+        test.assertEqual(modes[targets[2]], 2)
+    test.assertTrue(np.any(compact.particle_activity.numpy() == 1))
+    for solver in solvers:
+        solver.check_sparse_grid_rebuild_status()
+    if particle_bases:
+        impulses = [solver._last_step_data.ws_impulse_field.dof_values.numpy() for solver in solvers]
+        for values in impulses:
+            test.assertEqual(values.shape, (model.particle_count, 3))
+            test.assertGreater(np.linalg.norm(values, axis=1).max(), 1.0e-8)
+            np.testing.assert_array_equal(values[~eligible], 0.0)
+        np.testing.assert_allclose(impulses[1], impulses[0], rtol=2.0e-4, atol=2.0e-5)
+    np.testing.assert_array_equal(model.particle_flags.numpy(), flags)
+    np.testing.assert_array_equal(model.particle_mass.numpy(), masses)
+
+
+def test_captured_overflow_reset(test, device, *, grid_overflow=False):
+    """Freeze the full state on either capacity fault until an explicit captured reset."""
+    _require_capture(test, device)
+    model, make_solver = _make_scene(device, worlds=1 if grid_overflow else 2)
+    solver, state = make_solver(), model.state()
+    for _ in range(10):
+        solver.step(state, state, None, None, 0.005)
+    eligible = (model.particle_flags.numpy() & int(newton.ParticleFlags.ACTIVE)) != 0
+    np.testing.assert_array_equal(solver.particle_activity.numpy()[eligible], 0)
+    state.mpm.particle_Jp.fill_(0.81)
+    page_size = 0 if grid_overflow else 8
+    solver.set_particle_working_set(
+        state,
+        particle_capacity=model.particle_count if grid_overflow else page_size,
+        page_size=page_size,
+        max_active_cell_count=1 if grid_overflow else 512,
+    )
+    solver.step(state, state, None, None, 0.005)
+    test.assertEqual(int(solver.step_status.numpy()[0]), 0)
+    previous = _snapshot(state)
+    with wp.ScopedCapture(device=device) as step_capture:
+        solver.step(state, state, None, None, 0.005)
+    graph = step_capture.graph
+    force = np.zeros((model.particle_count, 3), dtype=np.float32)
+    force[eligible, 0] = 0.0001
+    state.particle_f.assign(force)
+    wp.capture_launch(graph)
+    test.assertNotEqual(int(solver.step_status.numpy()[0]), 0)
+    with test.assertRaises(RuntimeError):
+        solver.check_sparse_grid_rebuild_status()
+    _assert_state(state, previous)
+    state.clear_forces()
+    wp.capture_launch(graph)
+    test.assertNotEqual(int(solver.step_status.numpy()[0]), 0)
+    _assert_state(state, previous)
+    reset_mask = None if grid_overflow else wp.zeros(model.world_count + 1, dtype=wp.bool, device=device)
+    with wp.ScopedCapture(device=device) as reset_capture:
+        solver.reset(state, world_mask=reset_mask, flags=0)
+    if reset_mask is not None:
+        wp.capture_launch(reset_capture.graph)
+        test.assertNotEqual(int(solver.step_status.numpy()[0]), 0)
+        _assert_state(state, previous)
+        selected_worlds = np.zeros(model.world_count + 1, dtype=bool)
+        selected_worlds[0] = True
+        reset_mask.assign(selected_worlds)
+    wp.capture_launch(reset_capture.graph)
+    test.assertEqual(int(solver.step_status.numpy()[0]), 0)
+    np.testing.assert_array_equal(solver.particle_activity.numpy()[eligible], 2)
+    if reset_mask is not None:
+        # The reset changes no active ID: the same oversized population must
+        # be rejected again, rather than reusing an empty pool as valid.
+        wp.capture_launch(graph)
+        test.assertNotEqual(int(solver.step_status.numpy()[0]), 0)
+        with test.assertRaises(RuntimeError):
+            solver.check_particle_working_set_status()
+        _assert_state(state, previous)
+    del graph, step_capture, reset_capture
+    capacity = ((model.particle_count + page_size - 1) // page_size) * page_size if page_size else model.particle_count
+    solver.set_particle_working_set(state, particle_capacity=capacity, page_size=page_size, max_active_cell_count=512)
+    state.particle_f.assign(force)
+    solver.step(state, state, None, None, 0.005)
+    with wp.ScopedCapture(device=device) as recovered:
+        solver.step(state, state, None, None, 0.005)
+    wp.capture_launch(recovered.graph)
+    solver.check_sparse_grid_rebuild_status()
+    test.assertEqual(int(solver.step_status.numpy()[0]), 0)
+    test.assertGreater(np.linalg.norm(state.particle_qd.numpy()[eligible]), 0.0)
+
+
+class TestImplicitMPMActivity(unittest.TestCase):
+    """Exercise graph replay through public sleeping, working-set, and reset APIs."""
+
+
+for function in (
+    test_captured_sleep_support_and_dirty_wake,
+    test_working_set_equivalence,
+    test_captured_overflow_reset,
+):
+    add_function_test(
+        TestImplicitMPMActivity,
+        function.__name__,
+        function,
+        devices=get_selected_cuda_test_devices(mode="basic"),
+        check_output=False,
+    )
+add_function_test(
+    TestImplicitMPMActivity,
+    "test_working_set_pages",
+    test_working_set_equivalence,
+    devices=get_selected_cuda_test_devices(mode="basic"),
+    page_size=8,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMActivity,
+    "test_working_set_point_bases",
+    test_working_set_equivalence,
+    devices=get_selected_cuda_test_devices(mode="basic"),
+    particle_bases=True,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMActivity,
+    "test_grid_overflow_reset",
+    test_captured_overflow_reset,
+    devices=get_selected_cuda_test_devices(mode="basic"),
+    grid_overflow=True,
+    check_output=False,
+)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2, failfast=True)

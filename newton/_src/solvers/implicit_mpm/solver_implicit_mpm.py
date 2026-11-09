@@ -10,6 +10,7 @@ import operator
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from itertools import pairwise
 from typing import Any, Literal
 
@@ -52,14 +53,18 @@ from .implicit_mpm_solver_kernels import (
     average_elastic_parameters,
     build_active_particle_mask,
     collision_weight_field,
+    compact_particle_indices,
     compliance_form,
     compute_bounds,
     compute_color_offsets,
     compute_lattice_node_keys,
     compute_nodal_diagonalization,
     compute_unilateral_strain_offset,
+    count_particle_working_set,
+    expand_particle_pages,
     fill_uniform_color_block_indices,
     free_velocity,
+    gather_particle_working_set,
     gather_point_dof_values,
     gather_sorted_node_values,
     gimp_domain_corners,
@@ -101,14 +106,17 @@ from .implicit_mpm_solver_kernels import (
     reset_mpm_point_warmstart,
     reset_particle_values,
     reset_values_by_lattice_key,
+    restore_particle_quadrature_indices,
     rotate_matrix_columns,
     rotate_matrix_rows,
     scatter_field_dof_values,
+    scatter_particle_cell_indices,
     scatter_point_dof_values,
     strain_delta_form,
     strain_rhs,
     transfer_gimp_impulses,
     update_particle_frames,
+    update_particle_page_mask,
     update_particle_strains,
     voxel_coordinates,
 )
@@ -167,11 +175,25 @@ def _clear_sparse_grid_rebuild_status_masked(
     world_mask: wp.array[wp.bool],
     status: wp.array[wp.uint32],
     accumulated_status: wp.array[wp.uint32],
+    particle_overflow: wp.array[int],
+    working_membership: wp.array[int],
+    step_status: wp.array[wp.uint32],
+    step_valid: wp.array[int],
+    topology_invalid: wp.array[int],
 ):
     for world in range(world_mask.shape[0]):
         if world_mask[world]:
             status[0] = wp.uint32(0)
             accumulated_status[0] = wp.uint32(0)
+            if particle_overflow:
+                particle_overflow[0] = 0
+            if working_membership:
+                # One invalid entry forces exact membership reconstruction on
+                # the next step, even if the rejected population is unchanged.
+                working_membership[0] = -1
+            step_status[0] = wp.uint32(0)
+            step_valid[0] = 1
+            topology_invalid[0] = 1
             return
 
 
@@ -237,6 +259,47 @@ class _PicQuadrature(fem.PicQuadrature):
         return f"{super().name}_{self.domain.name}"
 
 
+class _CompactPicQuadrature(_PicQuadrature):
+    """Fixed-capacity evaluations retaining original particle quadrature IDs."""
+
+    def __init__(self, *args, particle_indices: wp.array[int], particle_count: int, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Warp finalizes coordinates and measures using compact IDs first. FEM
+        # explicitly permits point IDs and evaluation IDs to have different ranges.
+        wp.launch(
+            restore_particle_quadrature_indices,
+            dim=self.cell_particle_indices.shape[0],
+            inputs=[particle_indices, self.cell_particle_indices, particle_count],
+            device=particle_indices.device,
+        )
+        self._unique_point_count = particle_count
+
+    @property
+    def name(self):
+        return f"Compact_{super().name}"
+
+
+class _ParticleWorkingSet:
+    """Persistent buffers for a bounded standard-PIC evaluation pool."""
+
+    def __init__(self, particle_count: int, capacity: int, separate_worlds: bool, device: wp.Device, page_size: int):
+        self.page_size = page_size
+        self.mask = wp.full(particle_count, -1, dtype=int, device=device)
+        self.changed = wp.ones(1, dtype=int, device=device)
+        page_count = (particle_count + page_size - 1) // page_size if page_size else 0
+        self.page_mask = wp.full(page_count, -1, dtype=int, device=device) if page_size else None
+        self.pages = wp.empty(capacity // page_size, dtype=int, device=device) if page_size else None
+        self.offsets = wp.empty(page_count if page_size else particle_count, dtype=int, device=device)
+        self.indices = wp.full(capacity, -1, dtype=int, device=device)
+        self.positions = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        self.flags = wp.zeros(capacity, dtype=int, device=device)
+        self.volumes = wp.zeros(capacity, dtype=float, device=device)
+        self.environments = wp.zeros(capacity, dtype=int, device=device) if separate_worlds else None
+        self.particle_cells = wp.empty(particle_count, dtype=int, device=device)
+        self.count = wp.zeros(1, dtype=int, device=device)
+        self.overflow = wp.zeros(1, dtype=int, device=device)
+
+
 def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
     try:
         max_points_per_cell = int(basis_str[3:])
@@ -247,6 +310,92 @@ def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
         raise RuntimeError("Uncapped 'pic' requires a host read; use an explicit 'picN' limit for graph capture.")
 
     return fem.PointBasisSpace(pic, max_nodes_per_element=max_points_per_cell, use_evaluation_point_index=True)
+
+
+def _make_topology_mask_kernel(grid: fem.Geometry, separate_worlds: bool):
+    lookup = grid.cell_lookup
+
+    @fem.cache.dynamic_kernel(suffix=(grid.name, separate_worlds))
+    def mark(
+        arg: grid.CellArg,
+        positions: wp.array[wp.vec3],
+        flags: wp.array[int],
+        environments: wp.array[int],
+        mask: wp.array[int],
+        changed: wp.array[int],
+    ):
+        p = wp.tid()
+        x = positions[p]
+        if flags[p] & newton.ParticleFlags.ACTIVE and wp.isfinite(x[0]) and wp.isfinite(x[1]) and wp.isfinite(x[2]):
+            if wp.static(isinstance(grid, fem.Nanogrid)):
+                uvw = wp.volume_world_to_index(arg.cell_grid, x) + wp.vec3(0.5)
+                ijk = wp.vec3i(int(wp.floor(uvw[0])), int(wp.floor(uvw[1])), int(wp.floor(uvw[2])))
+                if wp.static(separate_worlds):
+                    ijk += arg.env_offsets[environments[p]]
+                cell = wp.volume_lookup_index(arg.cell_grid, ijk[0], ijk[1], ijk[2])
+                if wp.static(separate_worlds):
+                    if cell != fem.NULL_ELEMENT_INDEX and arg.cell_env[cell] != environments[p]:
+                        cell = fem.NULL_ELEMENT_INDEX
+            else:
+                if wp.static(separate_worlds):
+                    sample = lookup(arg, x, environments[p])
+                else:
+                    sample = lookup(arg, x)
+                cell = sample.element_index
+            if cell == fem.NULL_ELEMENT_INDEX:
+                wp.atomic_max(changed, 0, 1)
+            else:
+                wp.atomic_max(mask, cell, 1)
+
+    return mark
+
+
+@wp.kernel(enable_backward=False)
+def _compare_topology_masks(current: wp.array[int], previous: wp.array[int], changed: wp.array[int]):
+    cell = wp.tid()
+    if current[cell] != previous[cell]:
+        wp.atomic_max(changed, 0, 1)
+
+
+def _capture_cached(condition, operation):
+    # Eager setup does not need a scalar download to select a cache branch.
+    if condition.device.is_capturing and wp.is_conditional_graph_supported():
+        wp.capture_if(condition, operation)
+    else:
+        operation()
+
+
+@wp.kernel(enable_backward=False)
+def _record_step_validity(
+    grid_status: wp.array[wp.uint32],
+    grid_history: wp.array[wp.uint32],
+    overflow: wp.array[int],
+    status: wp.array[wp.uint32],
+    valid: wp.array[int],
+):
+    value = wp.uint32(0)
+    if grid_status:
+        value |= grid_status[0]
+    if grid_history:
+        value |= grid_history[0]
+    if overflow and overflow[0] != 0:
+        value |= wp.uint32(1) << wp.uint32(31)
+    status[0] |= value
+    valid[0] = int(status[0] == wp.uint32(0))
+
+
+@wp.kernel(enable_backward=False)
+def _detect_working_membership(
+    positions: wp.array[wp.vec3], flags: wp.array[int], mask: wp.array[int], changed: wp.array[int]
+):
+    i = wp.tid()
+    x = positions[i]
+    active = int(
+        (flags[i] & newton.ParticleFlags.ACTIVE) != 0 and wp.isfinite(x[0]) and wp.isfinite(x[1]) and wp.isfinite(x[2])
+    )
+    if mask[i] != active:
+        wp.atomic_max(changed, 0, 1)
+    mask[i] = active
 
 
 _RheologySolverName = Literal[
@@ -349,6 +498,8 @@ class ImplicitMPMScratchpad:
         self.velocity_environment_offsets = None
         self.collider_environment_offsets = None
         self.strain_environment_offsets = None
+        self._topology_changed = None
+        self._persistent_colors = False
 
     def rebuild_function_spaces(
         self,
@@ -360,10 +511,12 @@ class ImplicitMPMScratchpad:
         environment_first: bool,
         temporary_store: fem.TemporaryStore,
         contact_pic: fem.PicQuadrature | None = None,
+        topology_changed: wp.array | None = None,
     ):
         """Define velocity and strain function spaces over the given geometry."""
 
         self.domain = pic.domain
+        self._topology_changed = topology_changed
 
         use_pic_collider_basis = collider_basis_str[:3] == "pic"
         use_pic_strain_basis = strain_basis_str[:3] == "pic"
@@ -393,7 +546,10 @@ class ImplicitMPMScratchpad:
                 topologies[id(self._collision_basis.topology)] = self._collision_basis.topology
             for topology in topologies.values():
                 if hasattr(topology, "rebuild"):
-                    topology.rebuild()
+                    if topology_changed is None:
+                        topology.rebuild()
+                    else:
+                        _capture_cached(topology_changed, topology.rebuild)
 
         # Point-based basis space needs to be rebuilt even when the geo does not change
         if use_pic_strain_basis:
@@ -410,6 +566,9 @@ class ImplicitMPMScratchpad:
         self, temporary_store: fem.TemporaryStore, max_cell_count: int, environment_first: bool
     ):
         """Create velocity and fraction spaces and their partition/restriction."""
+        if self._topology_changed is not None and self.velocity_test is not None:
+            self._refresh_grid_space(self._vel_space_restriction, temporary_store)
+            return
         domain = self.domain
 
         velocity_space = fem.make_collocated_function_space(self._velocity_basis, dtype=wp.vec3)
@@ -439,6 +598,9 @@ class ImplicitMPMScratchpad:
         self, temporary_store: fem.TemporaryStore, max_cell_count: int, environment_first: bool
     ):
         """Create collider function space and its partition/restriction."""
+        if self._topology_changed is not None and self.collider_fraction_test is not None:
+            self._refresh_grid_space(self._collision_space_restriction, temporary_store)
+            return
 
         if self._velocity_basis == self._collision_basis:
             self._collision_space = self._velocity_space
@@ -478,6 +640,9 @@ class ImplicitMPMScratchpad:
         self, temporary_store: fem.TemporaryStore, max_cell_count: int, environment_first: bool
     ):
         """Create symmetric strain space (P0 or Q1) and its partition/restriction."""
+        if self._topology_changed is not None and self.sym_strain_test is not None:
+            self._refresh_grid_space(self._strain_space_restriction, temporary_store)
+            return
         domain = self.domain
 
         sym_strain_space = fem.make_collocated_function_space(
@@ -505,6 +670,15 @@ class ImplicitMPMScratchpad:
         self._sym_strain_space = sym_strain_space
         self._strain_space_restriction = strain_space_restriction
         self.strain_environment_offsets = strain_space_partition.env_offsets if environment_first else None
+
+    def _refresh_grid_space(self, restriction: fem.SpaceRestriction, temporary_store: fem.TemporaryStore):
+        # Capacity-bounded FEM rebuilds retain their output buffers. Keeping the
+        # owner alive makes both branches of a captured step use the same arrays.
+        def rebuild():
+            restriction.space_partition.rebuild(device=self._topology_changed.device, temporary_store=temporary_store)
+            restriction.rebuild(device=self._topology_changed.device, temporary_store=temporary_store)
+
+        _capture_cached(self._topology_changed, rebuild)
 
     def require_velocity_space_fields(self, has_compliant_particles: bool):
         velocity_basis = self._velocity_basis
@@ -708,8 +882,14 @@ class ImplicitMPMScratchpad:
             # particles make that count exceed the particle-based strain node count.
             partition_cell_count = self._strain_space_restriction.space_partition.geo_partition.cell_count()
             color_block_capacity = max(strain_node_count, partition_cell_count)
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_block_capacity), dtype=int)
-            self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
+            self._persistent_colors = self._topology_changed is not None
+            if self._persistent_colors:
+                if self.color_indices is None:
+                    self.color_indices = wp.empty((2, color_block_capacity), dtype=int)
+                    self.color_offsets = wp.empty(max_colors + 1, dtype=int)
+            else:
+                self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_block_capacity), dtype=int)
+                self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
         if self.contact_pic is not None:
             self.gimp_particle_contact_nodes = fem.borrow_temporary(
@@ -733,7 +913,7 @@ class ImplicitMPMScratchpad:
         if self.collider_total_volumes is not None:
             self.collider_total_volumes.release()
 
-        if self.color_indices is not None:
+        if self.color_indices is not None and not self._persistent_colors:
             self.color_indices.release()
             self.color_offsets.release()
 
@@ -787,10 +967,16 @@ class LastStepData:
         else:
             return fem.make_polynomial_space(scratch.grid, degree=1, dof_mapper=sym_strain_space.dof_mapper)
 
-    def require_strain_space_fields(self, scratch: ImplicitMPMScratchpad, smoothed: bool):
+    def require_strain_space_fields(
+        self, scratch: ImplicitMPMScratchpad, smoothed: bool, particle_count: int | None = None
+    ):
         """Ensure strain-space fields exist and match current spaces."""
         if self.ws_stress_field is None:
             self.ws_stress_field = self._ws_stress_space(scratch, smoothed).make_field()
+            if particle_count is not None and isinstance(self.ws_stress_field.space.basis, fem.PointBasisSpace):
+                # Point warm starts are stored by original particle ID, rather
+                # than the compact field's cell-sorted evaluation-node ID.
+                self.ws_stress_field.dof_values = wp.zeros(particle_count, dtype=self.ws_stress_field.dof_dtype)
 
     def rebind_strain_space_fields(self, scratch: ImplicitMPMScratchpad, smoothed: bool):
         if self.ws_stress_field.geometry != scratch.sym_strain_test.space.geometry:
@@ -802,10 +988,12 @@ class LastStepData:
                 ),
             )
 
-    def require_collision_space_fields(self, scratch: ImplicitMPMScratchpad):
+    def require_collision_space_fields(self, scratch: ImplicitMPMScratchpad, particle_count: int | None = None):
         """Ensure collision-space fields exist and match current spaces."""
         if self.ws_impulse_field is None:
             self.ws_impulse_field = scratch.impulse_field.space.make_field()
+            if particle_count is not None and isinstance(self.ws_impulse_field.space.basis, fem.PointBasisSpace):
+                self.ws_impulse_field.dof_values = wp.zeros(particle_count, dtype=self.ws_impulse_field.dof_dtype)
 
     def rebind_collision_space_fields(self, scratch: ImplicitMPMScratchpad):
         if self.ws_impulse_field.geometry != scratch.impulse_field.space.geometry:
@@ -964,6 +1152,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         collider_velocity_mode: Literal["forward", "backward"] = "forward"
         """Collider velocity computation mode. ``'forward'`` uses the current velocity,
         ``'backward'`` uses the previous timestep position."""
+
+        reuse_grid_topology: bool = dataclass_field(default=False, kw_only=True)
+        """Reuse unchanged bounded grid partitions and function-space structure.
+
+        Exact GPU occupancy checks invalidate the cache; current particle
+        assignments, weights, contacts and material values still update.
+        Supported on CUDA rebuildable sparse grids with standard PIC,
+        grid-based strain/contact bases and no gradients. Other modes rebuild.
+        This experimental runtime option has no USD representation.
+        """
 
         # grid
         voxel_size: float = 0.1
@@ -1629,6 +1827,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._particle_world_ranges = particle_world_ranges
 
         self._mpm_model = ImplicitMPMModel(model, config)
+        self._particle_activity = None
+        self._particle_working_set = None
 
         self.max_iterations = config.max_iterations
         self.tolerance = float(config.tolerance)
@@ -1667,6 +1867,24 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             and strain_rebuild_safe
             and collider_rebuild_safe
         )
+        self._device_guarded = bool(
+            model.device.is_cuda
+            and not model.requires_grad
+            and config.integration_scheme == "pic"
+            and self.max_active_cell_count > 0
+            and self._sparse_rebuildable
+            and wp.is_conditional_graph_supported()
+            and not strain_basis.startswith("pic")
+            and not collider_basis.startswith("pic")
+        )
+        self.reuse_grid_topology = bool(config.reuse_grid_topology and self._device_guarded)
+        self._topology_partition = None
+        self._topology_mask = None
+        self._topology_previous_mask = None
+        self._topology_changed = wp.ones(1, dtype=int, device=model.device)
+        self._topology_invalid = wp.ones(1, dtype=int, device=model.device)
+        self._step_status = wp.zeros(1, dtype=wp.uint32, device=model.device)
+        self._step_valid = wp.ones(1, dtype=int, device=model.device)
         self._grid_status = None
         self._grid_accumulated_status = None
         self._grid_point_mask = None
@@ -1784,6 +2002,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 global body-backed collider is dynamic. Replicate a global dynamic collider per
                 world, make it static or kinematic, or disable ``Config.separate_worlds``.
         """
+        if self._particle_activity is not None:
+            self._particle_activity.restore()
         self._mpm_model.setup_collider(
             collider_meshes=collider_meshes,
             collider_body_ids=collider_body_ids,
@@ -1802,6 +2022,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
 
         self._last_step_data.save_collider_current_position(self._mpm_model.collider_body_q)
+        if self._particle_activity is not None:
+            self._particle_activity.refresh(self._mpm_model)
 
     def collider_face_materials(self, collider_id: int) -> wp.array[int]:
         """Return a writable view of the per-face material ids of a collider.
@@ -1860,18 +2082,398 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Grid voxel size used by the solver."""
         return self._mpm_model.voxel_size
 
+    @property
+    def step_status(self) -> wp.array[wp.uint32] | None:
+        """Persistent device validity for guarded CUDA standard-PIC grid layouts.
+
+        Zero means no capacity failure; nonzero is sticky until reset. On a
+        fault the in-place particle state freezes before failed grid indexing
+        or physics, rather than advancing a clipped working set. Consume on
+        the GPU, or call check_sparse_grid_rebuild_status at a diagnostic or
+        final validation boundary. None means legacy host checks are required.
+        Experimental: configure capacities before capture and resolve this
+        solver-owned view again after changing layout.
+        """
+        return self._step_status if self._device_guarded else None
+
+    @property
+    def particle_activity(self) -> wp.array[wp.int32] | None:
+        """Per-particle sleep state: 0 sleeping, 1 support boundary, 2 awake.
+
+        Return ``None`` when automatic sleeping is disabled. The array is
+        solver-owned and updated by :meth:`step`; do not modify it.
+
+        .. experimental::
+
+            Particle sleeping and its diagnostic representation may change.
+        """
+        return None if self._particle_activity is None else self._particle_activity.activity
+
+    def set_particle_sleeping(
+        self,
+        *,
+        enabled: bool = True,
+        patch_size: float | None = None,
+        velocity_threshold: float = 0.01,
+        strain_threshold: float | None = None,
+        stress_threshold: float = 0.05,
+        stress_filter_time: float = 0.0,
+        stress_min_strain_rate: float = 0.02,
+        sleep_time: float = 0.5,
+        collider_margin: float | None = None,
+        collider_lookahead: float = 0.1,
+        planning_interval: int = 1,
+        min_moving_particles: int = 1,
+        spill_velocity_threshold: float = 0.3,
+    ) -> None:
+        """Enable or disable automatic sleeping of settled particle patches.
+
+        Sleeping patches are excluded from the sparse simulation grid. Moving
+        particles, applied forces, and approaching colliders wake nearby
+        patches along their predicted travel. Stress changes keep their own
+        patch awake without propagating wake requests. A surrounding layer of
+        stationary kinematic particles supports the awake material. Sleeping and support particles
+        retain their constitutive history and stored velocities for reactivation.
+        Caller-owned particle flags and masses are preserved.
+
+        This runtime optimization is disabled by default and has no USD
+        authoring representation. Configure it before CUDA graph capture;
+        changing it requires recapturing graphs. Only CUDA sparse grids are
+        supported. Choose thresholds for the material: low-speed creep can be
+        frozen, and velocity and stress criteria do not establish equilibrium.
+
+        Args:
+            enabled: Enable sleeping, or restore all eligible particles when false.
+            patch_size: Activity patch edge length [m]. Defaults to two voxels;
+                must be at least two voxels to support the transfer stencil.
+            velocity_threshold: Maximum quiet particle speed [m/s].
+            strain_threshold: Maximum quiet velocity-gradient Frobenius norm [1/s].
+                Defaults to ``velocity_threshold / voxel_size``, bounding
+                affine velocity variation over one voxel by the speed threshold.
+            stress_threshold: Maximum relative quiet stress change per step.
+                Pressure and deviatoric stress use independent scales, each
+                with a 100 Pa floor.
+            stress_filter_time: Signed stress exponential averaging time [s].
+                Zero disables filtering. Filtering can suppress contact chatter
+                but delay waking under gradually changing loads.
+            stress_min_strain_rate: Minimum symmetric velocity-gradient norm
+                for filtered stress changes to wake a patch [1/s]. Does not
+                suppress velocity, affine motion, force, or non-finite wake requests.
+            sleep_time: Continuous quiet time before a patch can sleep [s].
+            collider_margin: Additional collider wake distance [m]. Defaults
+                to two voxels. Unmoving colliders allow material to sleep.
+            collider_lookahead: Collider and particle motion prediction interval [s].
+                Particle sweeps also include two voxels of forward support.
+            planning_interval: Number of substeps between full motion and stress
+                planning passes. Applied forces, fast particles, non-finite
+                velocities, and moving colliders are checked every substep.
+                Affine motion and stress, including non-finite values, are
+                evaluated on planning passes.
+            min_moving_particles: Ordinary translating particles required to
+                keep an activity patch awake. Prescribed and affine motion,
+                stress changes, and urgent requests bypass this count.
+            spill_velocity_threshold: Speed above which particles bypass count
+                gating and request a swept wake every substep [m/s].
+
+        Raises:
+            ValueError: If the grid or device is unsupported, a distance or
+                threshold is invalid, or configuration occurs during capture.
+
+        .. experimental::
+
+            Automatic particle sleeping, its thresholds, and support behavior
+            may change without prior notice.
+        """
+        if self.model.device.is_capturing:
+            raise ValueError("Configure particle sleeping before CUDA graph capture.")
+        if not enabled:
+            if self._particle_activity is not None:
+                self._particle_activity.restore()
+                self._particle_activity = None
+            return
+        if not self.model.device.is_cuda or self.grid_type != "sparse":
+            raise ValueError("Particle sleeping requires a CUDA sparse grid.")
+
+        patch_size = 2.0 * self.voxel_size if patch_size is None else float(patch_size)
+        collider_margin = 2.0 * self.voxel_size if collider_margin is None else float(collider_margin)
+        strain_threshold = (
+            float(velocity_threshold) / self.voxel_size if strain_threshold is None else float(strain_threshold)
+        )
+        parameters = {
+            "patch_size": patch_size,
+            "velocity_threshold": velocity_threshold,
+            "strain_threshold": strain_threshold,
+            "stress_threshold": stress_threshold,
+            "stress_filter_time": stress_filter_time,
+            "stress_min_strain_rate": stress_min_strain_rate,
+            "sleep_time": sleep_time,
+            "collider_margin": collider_margin,
+            "collider_lookahead": collider_lookahead,
+            "spill_velocity_threshold": spill_velocity_threshold,
+        }
+        parameters = {name: float(value) for name, value in parameters.items()}
+        for name, value in parameters.items():
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"Particle sleeping {name} must be finite and non-negative, got {value}.")
+        if patch_size < 2.0 * self.voxel_size:
+            raise ValueError("Particle sleeping patch_size must be at least two voxels.")
+        for name, value in (("planning_interval", planning_interval), ("min_moving_particles", min_moving_particles)):
+            if isinstance(value, (bool, np.bool_)):
+                raise ValueError(f"Particle sleeping {name} must be a positive integer.")
+            try:
+                integer_value = operator.index(value)
+            except TypeError as error:
+                raise ValueError(f"Particle sleeping {name} must be a positive integer.") from error
+            if not 0 < integer_value <= np.iinfo(np.int32).max:
+                raise ValueError(f"Particle sleeping {name} must be a positive 32-bit integer.")
+            parameters[name] = integer_value
+
+        from .particle_activity import ParticleActivity  # noqa: PLC0415
+
+        if self._particle_activity is not None:
+            self._particle_activity.restore()
+        self._particle_activity = ParticleActivity(
+            self.model, self._mpm_model, voxel_size=self.voxel_size, **parameters
+        )
+
+    @property
+    def particle_working_set_capacity(self) -> int | None:
+        """Maximum evaluated particles, or ``None`` when compact PIC is disabled.
+
+        .. experimental::
+
+            This capacity belongs to the experimental bounded particle
+            working-set API in :meth:`set_particle_working_set`.
+        """
+        return None if self._particle_working_set is None else self._particle_working_set.indices.shape[0]
+
+    @property
+    def particle_working_set_required_count(self) -> wp.array | None:
+        """Device scalar containing the latest required evaluation-slot count.
+
+        Paged working sets include inactive lanes and final-page padding in
+        this count. Read it outside the hot loop for capacity diagnostics;
+        the backing particle count and constitutive state remain unchanged.
+
+        .. experimental::
+
+            This device count belongs to the experimental bounded particle
+            working-set API in :meth:`set_particle_working_set`.
+        """
+        return None if self._particle_working_set is None else self._particle_working_set.count
+
+    def set_particle_working_set(
+        self,
+        state: newton.State,
+        *,
+        particle_capacity: int,
+        page_size: int = 0,
+        max_active_cell_count: int | None = None,
+        max_leaf_node_count: int | None = None,
+    ) -> None:
+        """Reserve a bounded PIC working set without changing particle resolution.
+
+        Active particles, including stationary support particles, occupy a
+        fixed-capacity quadrature pool. With ``page_size=0``, their original
+        IDs are compacted when membership changes. Positive page sizes compact
+        requested contiguous original-ID pages instead; page membership is
+        cached while individual lane activity still refreshes every substep.
+        Every particle keeps
+        its original model index, material properties, and full state on the
+        device. Dormant particles retain their constitutive history. This
+        reduces FEM evaluation and workspace capacities; activity planning and
+        state preservation still inspect the full particle backing arrays.
+
+        Call after settling and activity classification, outside graph capture.
+        Destroy existing captured graphs before calling and capture again after
+        an uncaptured warm-up. Reconfiguration discards grid-backed warm starts
+        while retaining particle history, activity timers, and collider poses.
+        The current active population must fit; future overflow suppresses the
+        entire particle update and is reported by
+        :meth:`check_particle_working_set_status` or
+        :meth:`check_sparse_grid_rebuild_status`. Check after graph replay before
+        using the resulting state, then increase capacities and recapture.
+
+        Args:
+            state: Current particle state, used to rebuild the grid.
+            particle_capacity: Maximum evaluation slots, including inactive
+                page lanes. It must not exceed the model particle count rounded
+                up to a complete page, and must be divisible by ``page_size``
+                when paging is enabled.
+            page_size: Number of original particle IDs per evaluation page;
+                zero selects dense compaction. Paging retains full device
+                backing state and does not provide out-of-core storage.
+            max_active_cell_count: Optional replacement sparse cell capacity.
+            max_leaf_node_count: Optional replacement sparse leaf-node capacity;
+                ``-1`` selects automatic sizing.
+
+        Raises:
+            ValueError: If called during capture, capacities are invalid, the
+                current active population exceeds capacity, or the solver is
+                not using CUDA, standard PIC, and a rebuildable sparse grid.
+
+        .. experimental::
+
+            Bounded particle working sets and their capacity API may change
+            without prior notice.
+        """
+        if self.model.device.is_capturing:
+            raise ValueError("Configure the particle working set before CUDA graph capture.")
+        if not self.model.device.is_cuda or not self._sparse_rebuildable or self.gimp:
+            raise ValueError("Particle working sets require CUDA standard PIC and a rebuildable sparse grid.")
+        self._validate_reset_inputs(state)
+        if isinstance(page_size, (bool, np.bool_)):
+            raise ValueError("page_size must be a non-negative integer.")
+        try:
+            page_size = operator.index(page_size)
+        except TypeError as error:
+            raise ValueError("page_size must be a non-negative integer.") from error
+        if not 0 <= page_size <= np.iinfo(np.int32).max:
+            raise ValueError("page_size must be a non-negative 32-bit integer.")
+        if isinstance(particle_capacity, (bool, np.bool_)):
+            raise ValueError("particle_capacity must be a positive integer within the particle backing capacity.")
+        try:
+            capacity = operator.index(particle_capacity)
+        except TypeError as error:
+            raise ValueError("particle_capacity must be a positive integer.") from error
+        maximum_capacity = self._initial_particle_count
+        if page_size:
+            maximum_capacity = ((maximum_capacity + page_size - 1) // page_size) * page_size
+            if maximum_capacity > np.iinfo(np.int32).max:
+                raise ValueError("Paged particle backing capacity exceeds the supported integer indexing range.")
+            if capacity % page_size != 0:
+                raise ValueError("particle_capacity must be divisible by page_size.")
+        if not 0 < capacity <= min(maximum_capacity, np.iinfo(np.int32).max):
+            raise ValueError("particle_capacity must be a positive integer within the particle backing capacity.")
+        cell_capacity = self.max_active_cell_count
+        if max_active_cell_count is not None:
+            cell_capacity = _validate_sparse_grid_node_capacity("max_active_cell_count", max_active_cell_count)
+            if cell_capacity < 1:
+                raise ValueError("max_active_cell_count must be positive for a particle working set.")
+        leaf_capacity = self.max_leaf_node_count
+        if max_leaf_node_count is not None:
+            leaf_capacity = _validate_sparse_grid_node_capacity("max_leaf_node_count", max_leaf_node_count)
+
+        flags = self._mpm_model.particle_flags.numpy()
+        positions = state.particle_q.numpy()
+        active = ((flags & int(newton.ParticleFlags.ACTIVE)) != 0) & np.isfinite(positions).all(axis=1)
+        required_count = (
+            int(np.unique(np.flatnonzero(active) // page_size).size) * page_size
+            if page_size
+            else int(np.count_nonzero(active))
+        )
+        if required_count > capacity:
+            raise ValueError(
+                f"Particle working set requires {required_count} slots, but particle_capacity is {capacity}."
+            )
+
+        previous_cache = (
+            self._topology_partition,
+            self._topology_mask,
+            self._topology_previous_mask,
+            getattr(self, "_topology_mark_kernel", None),
+            self._step_status,
+            self._step_valid,
+        )
+        previous = (
+            self._particle_working_set,
+            self._scratchpad,
+            self._last_step_data,
+            self._grid_status,
+            self._grid_accumulated_status,
+            self._grid_point_mask,
+            self.max_active_cell_count,
+            self.max_leaf_node_count,
+        )
+        with wp.ScopedDevice(self.model.device):
+            try:
+                self._particle_working_set = _ParticleWorkingSet(
+                    self._initial_particle_count, capacity, self._separate_worlds, self.model.device, page_size
+                )
+                self.max_active_cell_count = cell_capacity
+                self.max_leaf_node_count = leaf_capacity
+                self._grid_status = None
+                self._grid_accumulated_status = None
+                self._grid_point_mask = None
+                self._topology_partition = None
+                self._topology_mask = None
+                self._topology_previous_mask = None
+                self._step_status = wp.zeros(1, dtype=wp.uint32, device=self.model.device)
+                self._step_valid = wp.ones(1, dtype=int, device=self.model.device)
+                self._topology_invalid.fill_(1)
+                self._scratchpad = ImplicitMPMScratchpad()
+                self._last_step_data = LastStepData()
+                self._last_step_data.body_q_prev = previous[2].body_q_prev
+                pic = self._particles_to_cells(state.particle_q)
+                self._rebuild_scratchpad(pic)
+                self._require_velocity_space_fields(self._scratchpad, self._mpm_model.has_compliant_particles)
+                self._require_collision_space_fields(self._scratchpad, self._last_step_data)
+                self._require_strain_space_fields(self._scratchpad, self._last_step_data)
+                if self.collider_basis[:3] != "pic":
+                    self._last_step_data.require_keyed_impulses(self._scratchpad.collider_node_count, self.model.device)
+            except Exception:
+                (
+                    self._particle_working_set,
+                    self._scratchpad,
+                    self._last_step_data,
+                    self._grid_status,
+                    self._grid_accumulated_status,
+                    self._grid_point_mask,
+                    self.max_active_cell_count,
+                    self.max_leaf_node_count,
+                ) = previous
+                (
+                    self._topology_partition,
+                    self._topology_mask,
+                    self._topology_previous_mask,
+                    self._topology_mark_kernel,
+                    self._step_status,
+                    self._step_valid,
+                ) = previous_cache
+                raise
+
+    def check_particle_working_set_status(self) -> None:
+        """Synchronize and raise on compact particle capacity overflow.
+
+        Failures accumulate until :meth:`reset` or working-set reconfiguration.
+        An overflowing step retains particle state rather than evaluating a
+        clipped subset. Check outside capture before accepting a rollout;
+        guarded layouts also expose :attr:`step_status` to GPU consumers.
+
+        Raises:
+            RuntimeError: If called during graph capture or a particle working
+                set has exceeded its reserved capacity.
+
+        .. experimental::
+
+            This status check belongs to the experimental bounded particle
+            working-set API in :meth:`set_particle_working_set`.
+        """
+        if self._particle_working_set is None:
+            return
+        if self.model.device.is_capturing:
+            raise RuntimeError("Cannot inspect particle working set status during graph capture.")
+        required = int(self._particle_working_set.overflow.numpy()[0])
+        if required:
+            raise RuntimeError(
+                f"Implicit MPM particle working set requires {required} slots "
+                f"(capacity {self.particle_working_set_capacity}). Increase particle_capacity and recapture."
+            )
+
     def check_sparse_grid_rebuild_status(self) -> None:
         """Raise if a rebuildable sparse grid exceeded its reserved capacity.
 
         Rebuildable sparse-grid failures accumulate until a valid
         :meth:`reset`. Call this method outside graph capture after replay; the
-        check synchronizes the solver device. It is a no-op when the solver has
-        no asynchronous sparse-grid status buffer.
+        check synchronizes the solver device. Guarded layouts can defer this
+        check to a validation boundary while consuming :attr:`step_status`
+        on the GPU. Legacy layouts require checking after each replay.
 
         Raises:
             RuntimeError: If rebuild status is inspected during graph capture,
                 or if a rebuild reported a capacity or topology failure.
         """
+        self.check_particle_working_set_status()
         if self._grid_status is None:
             return
         if self.model.device.is_capturing:
@@ -1884,21 +2486,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             raise _sparse_grid_rebuild_error(status)
 
     def _clear_sparse_grid_rebuild_status(self) -> None:
-        """Clear the latest and accumulated sparse-grid rebuild status.
-
-        Call this outside graph capture after handling a reported rebuild
-        failure. A subsequent :meth:`check_sparse_grid_rebuild_status` then
-        reports only failures produced after this boundary.
-
-        Raises:
-            RuntimeError: If called while the solver device is capturing a graph.
-        """
-        if self.model.device.is_capturing:
-            raise RuntimeError("Cannot clear sparse grid rebuild status during graph capture")
+        """Clear sticky device faults at an explicit reset/reconfiguration boundary."""
         if self._grid_status is not None:
             self._grid_status.zero_()
         if self._grid_accumulated_status is not None:
             self._grid_accumulated_status.zero_()
+        if self._particle_working_set is not None:
+            working_set = self._particle_working_set
+            working_set.overflow.zero_()
+            if working_set.page_size:
+                working_set.page_mask.fill_(-1)
+            else:
+                working_set.mask.fill_(-1)
+        self._step_status.zero_()
+        self._step_valid.fill_(1)
+        self._topology_invalid.fill_(1)
 
     @staticmethod
     def _validate_reset_array(
@@ -2013,7 +2615,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 reset_partitions.append(None)
                 continue
 
-            expected_shape = (field.space_partition.node_count(),)
+            expected_shape = (
+                self._initial_particle_count
+                if self._particle_working_set is not None and isinstance(field.space.basis, fem.PointBasisSpace)
+                else field.space_partition.node_count(),
+            )
             if field.dof_values.shape != expected_shape:
                 raise ValueError(
                     f"last-step {name}.dof_values has shape {field.dof_values.shape}, expected {expected_shape}."
@@ -2147,10 +2753,23 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if world_mask is None:
             self._clear_sparse_grid_rebuild_status()
         elif self._grid_status is not None:
+            working_membership = None
+            if self._particle_working_set is not None:
+                working_set = self._particle_working_set
+                working_membership = working_set.page_mask if working_set.page_size else working_set.mask
             wp.launch(
                 _clear_sparse_grid_rebuild_status_masked,
                 dim=1,
-                inputs=[world_mask, self._grid_status, self._grid_accumulated_status],
+                inputs=[
+                    world_mask,
+                    self._grid_status,
+                    self._grid_accumulated_status,
+                    None if self._particle_working_set is None else self._particle_working_set.overflow,
+                    working_membership,
+                    self._step_status,
+                    self._step_valid,
+                    self._topology_invalid,
+                ],
                 device=self.model.device,
             )
 
@@ -2190,6 +2809,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 world_count=self._initial_world_count,
             )
             self._last_step_data.gimp_warmstart_state = state
+            if self._particle_activity is not None:
+                self._particle_activity.reset(state, world_mask)
 
     @override
     def step(
@@ -2227,26 +2848,60 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         model = self.model
 
         with wp.ScopedDevice(model.device):
-            last_step_data = self._last_step_data
-            # Overlap history belongs to the state it was produced for, or the
-            # last reset state; fresh history is already invalid.
-            if (
-                last_step_data.gimp_stress is not None
-                and last_step_data.gimp_warmstart_state is not None
-                and last_step_data.gimp_warmstart_state is not state_in
-            ):
-                last_step_data.gimp_stress[1].zero_()
-            pic = self._particles_to_cells(state_in.particle_q)
+            if self._device_guarded:
+                if state_out is not state_in:
+                    wp.copy(state_out.particle_q, state_in.particle_q)
+                    wp.copy(state_out.particle_qd, state_in.particle_qd)
+                    for name in (
+                        "particle_elastic_strain",
+                        "particle_transform",
+                        "particle_qd_grad",
+                        "particle_stress",
+                        "particle_Jp",
+                    ):
+                        wp.copy(getattr(state_out.mpm, name), getattr(state_in.mpm, name))
+                wp.capture_if(self._step_valid, lambda: self._advance_guarded(state_in, state_out, dt))
+            else:
+                self._advance_guarded(state_in, state_out, dt)
+
+    def _advance_guarded(self, state_in, state_out, dt):
+        last_step_data = self._last_step_data
+        if self._particle_activity is not None:
+            if not math.isfinite(dt) or dt <= 0.0:
+                raise ValueError("Particle sleeping requires a finite positive timestep.")
+            with self._timer("Particle activity"):
+                self._particle_activity.update(
+                    state_in, dt, self._mpm_model.collider, last_step_data.body_q_prev, self._separate_worlds
+                )
+        # Overlap history belongs to the state it was produced for, or the
+        # last reset state; fresh history is already invalid.
+        if (
+            last_step_data.gimp_stress is not None
+            and last_step_data.gimp_warmstart_state is not None
+            and last_step_data.gimp_warmstart_state is not state_in
+        ):
+            last_step_data.gimp_stress[1].zero_()
+        grid_data = self._prepare_particle_grid(state_in.particle_q)
+
+        def solve():
+            pic = self._bin_particles(state_in.particle_q, *grid_data)
             scratch = self._rebuild_scratchpad(pic)
             self._step_impl(state_in, state_out, dt, pic, scratch)
             scratch.release_temporaries()
             if last_step_data.gimp_stress is not None:
                 last_step_data.gimp_warmstart_state = state_out
 
+        if self._device_guarded:
+            wp.capture_if(self._step_valid, solve)
+        else:
+            solve()
+
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
+            if self._particle_activity is not None:
+                self._particle_activity.refresh(self._mpm_model)
 
     @override
     def coupling_eval_gravity_acceleration(
@@ -2358,35 +3013,40 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         contacts: newton.Contacts | None,
         dt: float,
     ) -> None:
-        """Convert MPM collider grid impulses to proxy-body wrenches."""
+        """Convert current valid MPM collider impulses to proxy-body wrenches."""
         del body_qd_before, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
         out_body_f.zero_()
 
-        impulses, positions, collider_ids = self.collect_collider_impulses(state)
-        if collider_ids.shape[0] == 0:
-            return
-        body_q = state.body_q if state.body_q is not None else self.model.body_q
+        def harvest():
+            impulses, positions, collider_ids = self.collect_collider_impulses(state)
+            if collider_ids.shape[0] == 0:
+                return
+            body_q = state.body_q if state.body_q is not None else self.model.body_q
+            wp.launch(
+                _harvest_mpm_proxy_wrenches_kernel,
+                dim=collider_ids.shape[0],
+                inputs=[
+                    float(dt),
+                    collider_ids,
+                    impulses,
+                    positions,
+                    self.collider_body_index,
+                    body_local_to_proxy_global,
+                    int(newton.BodyFlags.PROXY),
+                    self.model.body_flags,
+                    self.model.body_com,
+                    body_q,
+                    out_body_f,
+                ],
+                device=self.model.device,
+            )
 
-        wp.launch(
-            _harvest_mpm_proxy_wrenches_kernel,
-            dim=collider_ids.shape[0],
-            inputs=[
-                float(dt),
-                collider_ids,
-                impulses,
-                positions,
-                self.collider_body_index,
-                body_local_to_proxy_global,
-                int(newton.BodyFlags.PROXY),
-                self.model.body_flags,
-                self.model.body_com,
-                body_q,
-                out_body_f,
-            ],
-            device=self.model.device,
-        )
+        if self._device_guarded:
+            wp.capture_if(self._step_valid, harvest)
+        else:
+            harvest()
 
     def coupling_rewind_proxy_particle(
         self,
@@ -2442,52 +3102,58 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if particle_local_to_proxy_global.shape[0] == 0:
             return
 
-        super().coupling_harvest_proxy_particle_forces(
-            particle_local_to_proxy_global,
-            out_particle_f,
-            particle_qd_before=particle_qd_before,
-            state=state,
-            state_out=state_out,
-            contacts=contacts,
-            dt=dt,
-        )
+        parent_harvest = super().coupling_harvest_proxy_particle_forces
 
-        if not self._mpm_model.deformable_collider_vertex_ranges:
-            return
-
-        wp.launch(
-            _clear_inactive_mpm_proxy_particle_forces_kernel,
-            dim=particle_local_to_proxy_global.shape[0],
-            inputs=[
+        def harvest():
+            parent_harvest(
                 particle_local_to_proxy_global,
-                self._mpm_model.particle_flags,
-                int(newton.ParticleFlags.PROXY),
-                int(newton.ParticleFlags.ACTIVE),
                 out_particle_f,
-            ],
-            device=self.model.device,
-        )
+                particle_qd_before=particle_qd_before,
+                state=state,
+                state_out=state_out,
+                contacts=contacts,
+                dt=dt,
+            )
+            if not self._mpm_model.deformable_collider_vertex_ranges:
+                return
 
-        impulses, positions, collider_ids = self.collect_collider_impulses(state)
-        if collider_ids.shape[0] == 0:
-            return
+            wp.launch(
+                _clear_inactive_mpm_proxy_particle_forces_kernel,
+                dim=particle_local_to_proxy_global.shape[0],
+                inputs=[
+                    particle_local_to_proxy_global,
+                    self._mpm_model.particle_flags,
+                    int(newton.ParticleFlags.PROXY),
+                    int(newton.ParticleFlags.ACTIVE),
+                    out_particle_f,
+                ],
+                device=self.model.device,
+            )
+            impulses, positions, collider_ids = self.collect_collider_impulses(state)
+            if collider_ids.shape[0] == 0:
+                return
 
-        wp.launch(
-            _harvest_mpm_proxy_particle_forces_kernel,
-            dim=collider_ids.shape[0],
-            inputs=[
-                float(dt),
-                collider_ids,
-                impulses,
-                positions,
-                self._mpm_model.collider,
-                particle_local_to_proxy_global,
-                int(newton.ParticleFlags.PROXY),
-                self._mpm_model.particle_flags,
-                out_particle_f,
-            ],
-            device=self.model.device,
-        )
+            wp.launch(
+                _harvest_mpm_proxy_particle_forces_kernel,
+                dim=collider_ids.shape[0],
+                inputs=[
+                    float(dt),
+                    collider_ids,
+                    impulses,
+                    positions,
+                    self._mpm_model.collider,
+                    particle_local_to_proxy_global,
+                    int(newton.ParticleFlags.PROXY),
+                    self._mpm_model.particle_flags,
+                    out_particle_f,
+                ],
+                device=self.model.device,
+            )
+
+        if self._device_guarded:
+            wp.capture_if(self._step_valid, harvest, out_particle_f.zero_)
+        else:
+            harvest()
 
     def collect_collider_impulses(self, state: newton.State | None) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
@@ -2528,6 +3194,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             gap: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
         """
 
+        if self._device_guarded:
+            if state_out is not state_in:
+                wp.copy(state_out.particle_q, state_in.particle_q)
+                wp.copy(state_out.particle_qd, state_in.particle_qd)
+                wp.copy(state_out.mpm.particle_qd_grad, state_in.mpm.particle_qd_grad)
+            wp.capture_if(self._step_valid, lambda: self._project_outside_valid(state_in, state_out, dt, gap))
+        else:
+            self._project_outside_valid(state_in, state_out, dt, gap)
+
+    def _project_outside_valid(self, state_in, state_out, dt, gap):
         if gap is not None:
             # Update max query dist if provided
             prev_gap, self._mpm_model.collider.query_max_dist = self._mpm_model.collider.query_max_dist, gap
@@ -2540,7 +3216,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 state_in.particle_q,
                 state_in.particle_qd,
                 state_in.mpm.particle_qd_grad,
-                self._mpm_model.particle_flags,
+                (
+                    self._mpm_model.particle_flags
+                    if self._particle_activity is None
+                    else self._particle_activity.advect_flags
+                ),
                 self.model.particle_mass,
                 self._particle_environment,
                 self._mpm_model.collider,
@@ -2583,7 +3263,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 dt,
                 min_stretch,
                 max_stretch,
-                self._mpm_model.particle_flags,
+                (
+                    self._mpm_model.particle_flags
+                    if self._particle_activity is None
+                    else self._particle_activity.advect_flags
+                ),
                 state.mpm.particle_qd_grad,
                 state_prev.mpm.particle_transform,
                 state.mpm.particle_transform,
@@ -2629,6 +3313,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self._mpm_model.particle_radius,
                 dt,
                 particle_environment=self._particle_environment,
+                particle_flags=None if self._particle_activity is None else self._particle_activity.advect_flags,
                 temporary_store=self.temporary_store,
             )
 
@@ -2703,7 +3388,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             Mesh buffers and device-resident logical counts.
         """
         if particle_flags is None:
-            particle_flags = self._mpm_model.particle_flags
+            particle_flags = (
+                self._mpm_model.particle_flags
+                if self._particle_activity is None
+                else self._particle_activity.base_flags
+            )
         if extrapolate_into_colliders and surface.field_mode != "sdf":
             raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
 
@@ -2766,12 +3455,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             point_environment = self._particle_environment
         with self._timer("Allocate grid"):
             if self.grid_type == "sparse":
+                point_mask = self._update_grid_point_mask(positions, particle_flags)
                 if self._separate_worlds:
                     if self._sparse_rebuildable:
                         if self._grid_status is None:
                             self._grid_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
                             self._grid_accumulated_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
-                        point_mask = self._update_grid_point_mask(positions, particle_flags)
                         guard_cells = 3
                         capacity_kwargs = _rebuild_capacity(
                             positions,
@@ -2806,6 +3495,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                                 positions[begin * particle_range_scale : end * particle_range_scale],
                                 voxel_size,
                                 padding_voxels=padding_voxels,
+                                point_mask=point_mask[begin * particle_range_scale : end * particle_range_scale],
                             )
                             if begin != end
                             else wp.empty(0, dtype=wp.vec3i, device=positions.device)
@@ -2826,6 +3516,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                                 )
                                 cell_environment[cell_offset : cell_offset + environment_cell_count].fill_(environment)
                             cell_offset += environment_cell_count
+                        if cell_count == 0:
+                            # FEM requires one cell even when every particle is inactive.
+                            cell_ijk = wp.zeros(1, dtype=wp.vec3i, device=positions.device)
+                            cell_environment = wp.zeros(1, dtype=wp.int32, device=positions.device)
                         grid = fem.Nanogrid.from_environment_voxels(
                             cell_ijk,
                             cell_environment,
@@ -2835,12 +3529,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                             device=positions.device,
                         )
                 else:
-                    point_mask = None
                     if self._sparse_rebuildable:
                         if self._grid_status is None:
                             self._grid_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
                             self._grid_accumulated_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
-                        point_mask = self._update_grid_point_mask(positions, particle_flags)
                     volume = allocate_by_voxels(
                         positions,
                         voxel_size,
@@ -2857,6 +3549,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         self.check_sparse_grid_rebuild_status()
                         grid = fem.Nanogrid(volume, temporary_store=temporary_store, rebuildable=True)
                     else:
+                        if volume.get_voxel_count() == 0:
+                            # Keep empty simulations valid without allocating around inactive particles.
+                            volume = wp.Volume.allocate_by_voxels(
+                                wp.zeros(1, dtype=wp.vec3i, device=positions.device), voxel_size=voxel_size
+                            )
                         grid = fem.Nanogrid(volume, temporary_store=temporary_store)
             else:
                 # Compute bounds and transfer to host
@@ -2969,6 +3666,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             max_side_count=0,
             temporary_store=self.temporary_store,
         )
+        if self._device_guarded:
+            self._topology_partition = partition
+            self._topology_mask = wp.empty_like(active_cells)
+            self._topology_previous_mask = wp.clone(active_cells)
+            self._topology_mark_kernel = _make_topology_mask_kernel(grid, self._separate_worlds)
         active_cells.release()
 
         return partition
@@ -2992,6 +3694,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 max_cell_count=self.max_active_cell_count,
                 environment_first=self._separate_worlds,
                 contact_pic=scratch.contact_pic,
+                topology_changed=self._topology_changed if self.reuse_grid_topology else None,
                 temporary_store=self.temporary_store,
             )
 
@@ -3004,11 +3707,88 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             )
 
             if self.coloring:
-                self._compute_coloring(pic, scratch=scratch)
+                if scratch._persistent_colors:
+                    _capture_cached(self._topology_changed, lambda: self._compute_coloring(pic, scratch=scratch))
+                else:
+                    self._compute_coloring(pic, scratch=scratch)
 
         return scratch
 
-    def _particles_to_cells(self, positions: wp.array) -> fem.PicQuadrature:
+    def _record_validity(self):
+        if not self._device_guarded:
+            return
+        wp.launch(
+            _record_step_validity,
+            dim=1,
+            inputs=[
+                self._grid_status,
+                self._grid_accumulated_status,
+                None if self._particle_working_set is None else self._particle_working_set.overflow,
+                self._step_status,
+                self._step_valid,
+            ],
+            device=self.model.device,
+        )
+
+    def _update_topology_cache(self, grid, positions, flags, environments):
+        def mark():
+            wp.launch(
+                self._topology_mark_kernel,
+                dim=positions.shape[0],
+                inputs=[
+                    grid.cell_arg_value(positions.device),
+                    positions,
+                    flags,
+                    environments,
+                    self._topology_mask,
+                    self._topology_changed,
+                ],
+                device=positions.device,
+            )
+
+        if self.reuse_grid_topology:
+            wp.copy(self._topology_changed, self._topology_invalid)
+            self._topology_mask.zero_()
+            mark()
+            wp.launch(
+                _compare_topology_masks,
+                dim=self._topology_mask.shape[0],
+                inputs=[self._topology_mask, self._topology_previous_mask, self._topology_changed],
+                device=positions.device,
+            )
+        else:
+            self._topology_changed.fill_(1)
+
+        def rebuild():
+            if self._sparse_rebuildable:
+                grid.rebuild(
+                    positions,
+                    point_envs=environments,
+                    status=self._grid_status,
+                    point_mask=self._update_grid_point_mask(positions, flags),
+                )
+                wp.launch(
+                    record_volume_rebuild_status,
+                    dim=1,
+                    inputs=[self._grid_status, self._grid_accumulated_status],
+                    device=positions.device,
+                )
+            self._record_validity()
+
+            def partition():
+                self._topology_mask.zero_()
+                mark()
+                self._topology_partition.rebuild(self._topology_mask, temporary_store=self.temporary_store)
+                if self.reuse_grid_topology:
+                    wp.copy(self._topology_previous_mask, self._topology_mask)
+                    self._topology_invalid.zero_()
+
+            wp.capture_if(self._step_valid, partition)
+
+        _capture_cached(self._topology_changed, rebuild)
+        return self._topology_partition
+
+    def _prepare_particle_grid(self, positions: wp.array):
         """Rebuild the grid and grid partition around particles, then assign particles to grid cells."""
 
         grid_positions, grid_flags, grid_environment, point_stride = self._grid_points(positions)
@@ -3020,7 +3800,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # particles. Plain sparse (no rebuild support) reallocates the grid each step.
         if self._scratchpad.grid is not None and (self.grid_type == "fixed" or self._sparse_rebuildable):
             grid = self._scratchpad.grid
-            if self._sparse_rebuildable:
+            if self._sparse_rebuildable and not self._device_guarded:
                 point_mask = self._update_grid_point_mask(grid_positions, grid_flags)
                 grid.rebuild(
                     grid_positions,
@@ -3049,7 +3829,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # sparse use a capacity-bounded partition that masks to the active cells (the
         # rebuildable grid's cell buffers are capacity-sized and include unused slots).
         with self._timer("Build active partition"):
-            if self.grid_type == "sparse" and not self._sparse_rebuildable:
+            if self._topology_partition is not None:
+                geo_partition = self._update_topology_cache(grid, grid_positions, grid_flags, grid_environment)
+            elif self.grid_type == "sparse" and not self._sparse_rebuildable:
                 max_cell_count = -1
                 geo_partition = grid
             else:
@@ -3058,6 +3840,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     grid, grid_positions, grid_flags, max_cell_count, grid_environment
                 )
 
+        self._record_validity()
+        return grid_positions, grid_flags, grid_environment, geo_partition
+
+    def _bin_particles(self, positions, grid_positions, grid_flags, grid_environment, geo_partition):
         # Bin particles to grid cells
         with self._timer("Bin particles"):
             domain = fem.Cells(geo_partition)
@@ -3088,27 +3874,151 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 if self.collider_basis[:3] == "pic":
                     self._scratchpad.contact_pic = _PicQuadrature(
                         domain=domain,
-                        positions=self._particle_cell_locations(domain, positions, self._particle_environment),
+                        positions=self._particle_cell_locations(
+                            domain, positions, self._particle_environment, self._mpm_model.particle_flags
+                        ),
                         measures=self._mpm_model.particle_volume,
                         temporary_store=self.temporary_store,
                         use_domain_element_indices=use_domain_element_indices,
                     )
             else:
-                particle_locations = self._particle_cell_locations(domain, positions, self._particle_environment)
-                self._scratchpad.particle_cells = particle_locations[0].reshape((-1, 1))
-                pic = _PicQuadrature(
-                    domain=domain,
-                    positions=particle_locations,
-                    measures=self._mpm_model.particle_volume,
-                    temporary_store=self.temporary_store,
-                    use_domain_element_indices=use_domain_element_indices,
-                )
+                working_set = self._particle_working_set
+                if working_set is None:
+                    # Inactive points must not become point-basis nodes: a
+                    # coincident inactive point otherwise duplicates an active
+                    # radial basis function even when transfer integrands mask it.
+                    particle_locations = self._particle_cell_locations(
+                        domain, positions, self._particle_environment, self._mpm_model.particle_flags
+                    )
+                    self._scratchpad.particle_cells = particle_locations[0].reshape((-1, 1))
+                    pic = _PicQuadrature(
+                        domain=domain,
+                        positions=particle_locations,
+                        measures=self._mpm_model.particle_volume,
+                        temporary_store=self.temporary_store,
+                        use_domain_element_indices=use_domain_element_indices,
+                    )
+                else:
+                    particle_locations = self._particle_cell_locations(
+                        domain, grid_positions, grid_environment, grid_flags
+                    )
+                    working_set.particle_cells.fill_(fem.NULL_ELEMENT_INDEX)
+                    wp.launch(
+                        scatter_particle_cell_indices,
+                        dim=working_set.indices.shape[0],
+                        inputs=[
+                            working_set.indices,
+                            working_set.flags,
+                            particle_locations[0],
+                            working_set.particle_cells,
+                        ],
+                        device=positions.device,
+                    )
+                    self._scratchpad.particle_cells = working_set.particle_cells.reshape((-1, 1))
+                    pic = _CompactPicQuadrature(
+                        domain=domain,
+                        positions=particle_locations,
+                        measures=working_set.volumes,
+                        particle_indices=working_set.indices,
+                        particle_count=self._initial_particle_count,
+                        temporary_store=self.temporary_store,
+                        use_domain_element_indices=use_domain_element_indices,
+                    )
 
         return pic
+
+    def _particles_to_cells(self, positions: wp.array) -> fem.PicQuadrature:
+        return self._bin_particles(positions, *self._prepare_particle_grid(positions))
 
     def _grid_points(self, positions: wp.array):
         """Points whose cells are activated: particle centers, or the corners of the GIMP particle domains."""
         flags = self._mpm_model.particle_flags
+        working_set = self._particle_working_set
+        if working_set is not None:
+            working_set.changed.zero_()
+            if working_set.page_size:
+                wp.launch(
+                    update_particle_page_mask,
+                    dim=working_set.page_mask.shape[0],
+                    inputs=[
+                        positions,
+                        flags,
+                        working_set.page_size,
+                        working_set.mask,
+                        working_set.page_mask,
+                        working_set.changed,
+                    ],
+                    device=positions.device,
+                )
+                membership = working_set.page_mask
+                indices = working_set.pages
+            else:
+                wp.launch(
+                    _detect_working_membership,
+                    dim=positions.shape[0],
+                    inputs=[positions, flags, working_set.mask, working_set.changed],
+                    device=positions.device,
+                )
+                membership = working_set.mask
+                indices = working_set.indices
+            stride = working_set.page_size or 1
+
+            def compact():
+                wp.utils.array_scan(membership, working_set.offsets, inclusive=False)
+                wp.launch(
+                    count_particle_working_set,
+                    dim=1,
+                    inputs=[
+                        membership,
+                        working_set.offsets,
+                        working_set.indices.shape[0],
+                        stride,
+                        working_set.count,
+                        working_set.overflow,
+                    ],
+                    device=positions.device,
+                )
+                wp.launch(
+                    compact_particle_indices,
+                    dim=membership.shape[0],
+                    inputs=[membership, working_set.offsets, working_set.count, indices, stride],
+                    device=positions.device,
+                )
+                if working_set.page_size:
+                    wp.launch(
+                        expand_particle_pages,
+                        dim=working_set.indices.shape[0],
+                        inputs=[
+                            working_set.pages,
+                            working_set.count,
+                            working_set.page_size,
+                            positions.shape[0],
+                            working_set.indices,
+                        ],
+                        device=positions.device,
+                    )
+
+            _capture_cached(working_set.changed, compact)
+            wp.launch(
+                gather_particle_working_set,
+                dim=working_set.indices.shape[0],
+                inputs=[
+                    positions,
+                    flags,
+                    self._mpm_model.particle_volume,
+                    self._particle_environment,
+                    working_set.indices,
+                    working_set.mask,
+                    working_set.count,
+                    working_set.overflow,
+                    working_set.positions,
+                    working_set.flags,
+                    working_set.volumes,
+                    working_set.environments,
+                ],
+                device=positions.device,
+            )
+            return working_set.positions, working_set.flags, working_set.environments, 1
         if not self.gimp:
             return positions, flags, self._particle_environment, 1
 
@@ -3142,6 +4052,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         domain: fem.GeometryDomain,
         positions: wp.array,
         particle_environment: wp.array | None,
+        particle_flags: wp.array | None = None,
     ):
         """Bin particle centers to the cells containing them; particles outside every cell are left unbinned."""
 
@@ -3155,24 +4066,25 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             domain_index_arg_value: domain.ElementIndexArg,
             positions: wp.array[wp.vec3],
             particle_environment: wp.array[int],
+            particle_flags: wp.array[int],
             cell_index: wp.array[fem.ElementIndex],
             cell_coords: wp.array[fem.Coords],
         ):
             p = wp.tid()
-            domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
-            if wp.static(separate_worlds):
-                sample = cell_lookup(domain_arg, positions[p], int(particle_environment[p]))
-            else:
-                sample = cell_lookup(domain_arg, positions[p])
-
             cell_index[p] = fem.NULL_ELEMENT_INDEX
             cell_coords[p] = fem.Coords(fem.OUTSIDE)
-            if sample.element_index != fem.NULL_ELEMENT_INDEX:
-                # Grid lookups clamp outside points to boundary cells, where coordinates extrapolate.
-                coords = cell_coordinates(cell_arg_value, sample.element_index, positions[p])
-                if wp.min(coords) >= 0.0 and wp.max(coords) <= 1.0:
-                    cell_index[p] = domain.element_partition_index(domain_index_arg_value, sample.element_index)
-                    cell_coords[p] = coords
+            if not particle_flags or particle_flags[p] & newton.ParticleFlags.ACTIVE:
+                domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
+                if wp.static(separate_worlds):
+                    sample = cell_lookup(domain_arg, positions[p], int(particle_environment[p]))
+                else:
+                    sample = cell_lookup(domain_arg, positions[p])
+                if sample.element_index != fem.NULL_ELEMENT_INDEX:
+                    # Lookups clamp outside points to boundary cells, where coordinates extrapolate.
+                    coords = cell_coordinates(cell_arg_value, sample.element_index, positions[p])
+                    if wp.min(coords) >= 0.0 and wp.max(coords) <= 1.0:
+                        cell_index[p] = domain.element_partition_index(domain_index_arg_value, sample.element_index)
+                        cell_coords[p] = coords
 
         device = positions.device
         cell_indices = fem.borrow_temporary(self.temporary_store, shape=positions.shape, dtype=fem.ElementIndex)
@@ -3185,6 +4097,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 domain.element_index_arg_value(device=device),
                 positions,
                 particle_environment,
+                particle_flags,
             ],
             outputs=[cell_indices, cell_coords],
             device=device,
@@ -3217,12 +4130,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             positions: wp.array[wp.vec3],
             particle_radius: wp.array[float],
             particle_environment: wp.array[int],
+            particle_flags: wp.array[int],
             voxel_size: float,
             cell_index: wp.array2d[fem.ElementIndex],
             cell_coords: wp.array2d[fem.Coords],
             cell_fractions: wp.array2d[float],
         ):
             p = wp.tid()
+            if ~particle_flags[p] & newton.ParticleFlags.ACTIVE:
+                return
             domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
             center = positions[p]
 
@@ -3316,6 +4232,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 positions,
                 particle_radius,
                 particle_environment,
+                self._mpm_model.particle_flags,
                 voxel_size,
                 cell_indices,
                 cell_coords,
@@ -3409,7 +4326,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 quadrature=pic,
                 fields={"u": scratch.velocity_test},
                 values={
-                    "velocities": state_in.particle_qd,
+                    "velocities": (
+                        state_in.particle_qd
+                        if self._particle_activity is None
+                        else self._particle_activity.transfer_velocity
+                    ),
                     "dt": dt,
                     "gravity": model.gravity,
                     "particle_world": model.particle_world,
@@ -3429,7 +4350,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     quadrature=pic,
                     fields={"u": scratch.velocity_test},
                     values={
-                        "velocity_gradients": state_in.mpm.particle_qd_grad,
+                        "velocity_gradients": (
+                            state_in.mpm.particle_qd_grad
+                            if self._particle_activity is None
+                            else self._particle_activity.transfer_gradient
+                        ),
                         "particle_density": mpm_model.particle_density,
                         "particle_flags": mpm_model.particle_flags,
                         "inv_cell_volume": inv_cell_volume,
@@ -4075,8 +5000,18 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         has_compliant_particles = mpm_model.min_young_modulus < INFINITY
         has_hardening = mpm_model.max_hardening > 0.0
+        update_strains = self._stress_warmstart == "particles" or has_compliant_particles or has_hardening
+        advect_flags = (
+            mpm_model.particle_flags if self._particle_activity is None else self._particle_activity.advect_flags
+        )
+        if self._particle_activity is not None or self._particle_working_set is not None:
+            state_out.mpm.particle_transform.assign(state_in.mpm.particle_transform)
+            if not update_strains:
+                state_out.mpm.particle_Jp.assign(state_in.mpm.particle_Jp)
+                state_out.mpm.particle_stress.assign(state_in.mpm.particle_stress)
+                state_out.mpm.particle_elastic_strain.assign(state_in.mpm.particle_elastic_strain)
 
-        if self._stress_warmstart == "particles" or has_compliant_particles or has_hardening:
+        if update_strains:
             with self._timer("Particle strain update"):
                 # Update particle elastic strain from grid strain delta
 
@@ -4142,7 +5077,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     dim=model.particle_count,
                     inputs=[
                         scratch.particle_cells,
-                        mpm_model.particle_flags,
+                        advect_flags,
                         mpm_model.particle_density,
                         False,
                         previous,
@@ -4155,7 +5090,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 advect_particles,
                 at=pic,
                 values={
-                    "particle_flags": mpm_model.particle_flags,
+                    "particle_flags": advect_flags,
                     "particle_volume": mpm_model.particle_volume,
                     "pos": state_out.particle_q,
                     "vel": state_out.particle_qd,
@@ -4200,7 +5135,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def _require_collision_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Ensure collision-space fields exist and match current spaces."""
         scratch.require_collision_space_fields()
-        last_step_data.require_collision_space_fields(scratch)
+        last_step_data.require_collision_space_fields(
+            scratch, particle_count=self._initial_particle_count if self._particle_working_set is not None else None
+        )
         last_step_data.require_collider_previous_position(self._mpm_model.collider_body_q)
 
     def _require_strain_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
@@ -4210,7 +5147,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             and self.strain_basis not in ("Q1", "S2")
             and scratch.strain_nodes_per_element > 1
         )
-        last_step_data.require_strain_space_fields(scratch, smoothed=self._stress_warmstart == "smoothed")
+        last_step_data.require_strain_space_fields(
+            scratch,
+            smoothed=self._stress_warmstart == "smoothed",
+            particle_count=self._initial_particle_count if self._particle_working_set is not None else None,
+        )
         if (
             self.gimp
             and self._stress_warmstart
