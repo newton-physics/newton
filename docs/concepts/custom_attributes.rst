@@ -764,6 +764,80 @@ Frequencies that do not declare articulation ownership remain unavailable throug
 ``ArticulationView``. This is appropriate for global rows or relationships that can
 span multiple articulations, such as contact pairs.
 
+Per-World Custom Frequencies
+----------------------------
+
+A custom frequency can declare that each of its rows belongs to one world, like
+bodies, shapes, and joints do. Set
+:attr:`~newton.ModelBuilder.CustomFrequency.world_attribute` to the full key
+``<frequency>_world`` of an integer attribute that uses the same custom frequency,
+is assigned to :class:`~newton.Model`, and declares ``references="world"``.
+
+For such a frequency, :meth:`~newton.ModelBuilder.finalize` validates the world
+indices the same way as for built-in entities: they must lie in
+``[-1, world_count - 1]``, rows must be grouped by world in ascending order, and
+global rows (world ``-1``) may only appear at the beginning or end. The finalized
+model also exposes two attributes next to the frequency's arrays, even when the
+frequency has no rows:
+
+* ``<name>_count``: the number of rows (an ``int``).
+* ``<name>_world_start``: a ``wp.array[wp.int32]`` of length ``world_count + 2``
+  with the same layout as :attr:`~newton.Model.body_world_start`. Rows of world
+  ``w`` are in ``[world_start[w], world_start[w + 1])``.
+
+The attributes are placed in the frequency's namespace, or directly on the model
+for a frequency without a namespace. Their names must not collide with existing
+attributes. MuJoCo equality constraints use this mechanism to publish
+``model.mujoco.equality_constraint_count`` and
+``model.mujoco.equality_constraint_world_start``.
+
+.. testcode:: custom-world-frequency
+
+   import newton
+   import warp as wp
+
+   template = newton.ModelBuilder()
+   template.add_custom_frequency(
+       newton.ModelBuilder.CustomFrequency(
+           name="sensor",
+           namespace="demo",
+           world_attribute="demo:sensor_world",
+       )
+   )
+   template.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_world",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.int32,
+           references="world",
+       )
+   )
+   template.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_value",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.float32,
+       )
+   )
+   # The world is inferred from the active world and remapped when replicated.
+   template.add_custom_values_batch([{"demo:sensor_value": 1.0}, {"demo:sensor_value": 2.0}])
+
+   scene = newton.ModelBuilder()
+   scene.replicate(template, 3)
+   model = scene.finalize(device="cpu")
+
+   print(model.demo.sensor_world.numpy())
+   print(model.demo.sensor_count)
+   print(model.demo.sensor_world_start.numpy())
+
+.. testoutput:: custom-world-frequency
+
+   [0 0 1 1 2 2]
+   6
+   [0 2 4 6 6]
+
 USD Parsing Support
 -------------------
 
@@ -1023,6 +1097,13 @@ Supported reference types:
 * ``"world"`` — inferred from ``current_world`` during direct row authoring and
   replaced with the destination builder's ``current_world`` during merging
 * Custom frequency keys (e.g., ``"mujoco:pair"``) — offset by that frequency's count
+
+At :meth:`~newton.ModelBuilder.finalize`, integer attributes that reference
+``"particle"``, ``"body"``, ``"shape"``, ``"joint"``, or ``"articulation"`` are
+checked to lie in ``[-1, count - 1]``, where ``-1`` denotes no entity (or the
+world for bodies). An out-of-range value raises a ``ValueError`` that names the
+attribute, the row, and the row's label when the frequency declares a
+:attr:`~newton.ModelBuilder.CustomFrequency.label_attribute`.
 
 Querying Counts
 ---------------

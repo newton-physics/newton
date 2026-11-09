@@ -1,0 +1,1 @@
+Omit the per-row `model.mujoco.equality_constraint_*`, `model.mujoco.eq_solref`, and `model.mujoco.eq_solimp` arrays when a model has no MuJoCo equality constraints, like other empty custom frequencies. `model.mujoco.equality_constraint_count` and `model.mujoco.equality_constraint_world_start` are still published; check the count before accessing the per-row arrays.

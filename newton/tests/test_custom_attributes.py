@@ -2592,6 +2592,217 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(len(arr), model.body_count)
         self.assertTrue(all(v == 7 for v in arr))
 
+    @staticmethod
+    def _add_world_item_frequency(
+        builder: ModelBuilder, namespace: str | None = "test", **world_overrides
+    ) -> tuple[str, str]:
+        """Register an ``item`` frequency that declares a world attribute; return its world and value keys."""
+        prefix = f"{namespace}:" if namespace else ""
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(name="item", namespace=namespace, world_attribute=f"{prefix}item_world")
+        )
+        world_spec = {"dtype": wp.int32, "references": "world", **world_overrides}
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world", frequency=f"{prefix}item", namespace=namespace, **world_spec
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value", frequency=f"{prefix}item", namespace=namespace, dtype=wp.int32
+            )
+        )
+        return f"{prefix}item_world", f"{prefix}item_value"
+
+    def test_custom_frequency_world_attribute_publishes_world_starts(self):
+        """Publish per-world starts and counts for frequencies that declare a world attribute."""
+        template = ModelBuilder()
+        _world_key, value_key = self._add_world_item_frequency(template)
+        template.add_custom_values(**{value_key: 1})
+        template.add_custom_values(**{value_key: 2})
+        self._add_world_item_frequency(template, namespace=None)
+
+        main = ModelBuilder()
+        self._add_world_item_frequency(main)
+        main.add_custom_values(**{value_key: 0})
+        main.replicate(template, 2)
+        main.add_world(template)
+        main.add_custom_values(**{value_key: 3})
+
+        model = main.finalize(device=self.device)
+        self.assertEqual(model.test.item_count, 8)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, 0, 0, 1, 1, 2, 2, -1])
+        # [leading globals, world 0 end, world 1 end, world 2 end (trailing-global start), total]
+        np.testing.assert_array_equal(model.test.item_world_start.numpy(), [1, 3, 5, 7, 8])
+        self.assertEqual(model.test.item_world_start.dtype, wp.int32)
+
+        # A frequency without a namespace publishes on the model and still does so with zero rows.
+        self.assertEqual(model.item_count, 0)
+        np.testing.assert_array_equal(model.item_world_start.numpy(), [0, 0, 0, 0, 0])
+        self.assertFalse(hasattr(model, "item_world"))
+
+    def test_custom_frequency_world_attribute_validates_world_ordering(self):
+        """Reject out-of-range or unordered world indices of frequencies that declare a world attribute."""
+        cases = {
+            "out of range": ([0, 2], "Invalid world index in test:item_world"),
+            "decreasing": ([1, 0], "test:item_world"),
+            "global in middle": ([0, -1, 1], "Invalid world ordering in test:item_world"),
+        }
+        for name, (worlds, message) in cases.items():
+            with self.subTest(name):
+                builder = ModelBuilder()
+                world_key, _value_key = self._add_world_item_frequency(builder)
+                for _ in range(2):
+                    builder.begin_world()
+                    builder.add_body()
+                    builder.end_world()
+                builder.add_custom_values_batch([{world_key: world} for world in worlds])
+                with self.assertRaisesRegex(ValueError, message):
+                    builder.finalize(device=self.device)
+
+        # Ordering is only enforced for frequencies that opt in through ``world_attribute``.
+        builder = ModelBuilder()
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world", frequency="test:item", namespace="test", dtype=wp.int32, references="world"
+            )
+        )
+        for _ in range(2):
+            builder.begin_world()
+            builder.add_body()
+            builder.end_world()
+        builder.add_custom_values_batch([{"test:item_world": 1}, {"test:item_world": 0}])
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [1, 0])
+        self.assertFalse(hasattr(model.test, "item_world_start"))
+
+    def test_custom_frequency_world_attribute_rejects_invalid_declarations(self):
+        """Reject world attributes with the wrong name, frequency, assignment, dtype, or references."""
+        with self.assertRaisesRegex(ValueError, "test:item_world"):
+            ModelBuilder.CustomFrequency(name="item", namespace="test", world_attribute="test:world")
+
+        builder = ModelBuilder()
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(name="item", namespace="test", world_attribute="test:item_world")
+        )
+        with self.assertRaisesRegex(ValueError, "already registered"):
+            builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        with self.assertRaisesRegex(ValueError, "unknown world attribute 'test:item_world'"):
+            builder.finalize(device=self.device)
+
+        cases = {
+            "dtype": ({"dtype": wp.float32}, "integer dtype"),
+            "references": ({"references": None}, "references='world'"),
+            "assignment": ({"assignment": AttributeAssignment.STATE}, "assigned to Model"),
+        }
+        for name, (overrides, message) in cases.items():
+            with self.subTest(name):
+                builder = ModelBuilder()
+                self._add_world_item_frequency(builder, **overrides)
+                with self.assertRaisesRegex(ValueError, message):
+                    builder.finalize(device=self.device)
+
+        with self.subTest("frequency"):
+            builder = ModelBuilder()
+            builder.add_custom_frequency(
+                ModelBuilder.CustomFrequency(name="item", namespace="test", world_attribute="test:item_world")
+            )
+            builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="other", namespace="test"))
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="item_world", frequency="test:other", namespace="test", dtype=wp.int32, references="world"
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "uses frequency 'test:other'"):
+                builder.finalize(device=self.device)
+
+        with self.subTest("name collision"):
+            builder = ModelBuilder()
+            self._add_world_item_frequency(builder)
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="item_count", frequency=AttributeFrequency.ONCE, namespace="test", dtype=wp.int32
+                )
+            )
+            with self.assertRaisesRegex(ValueError, r"model\.test\.item_count"):
+                builder.finalize(device=self.device)
+
+    def test_custom_attribute_references_are_validated(self):
+        """Reject custom-attribute references to missing bodies, joints, shapes, articulations, or particles."""
+
+        def make_builder() -> ModelBuilder:
+            builder = ModelBuilder()
+            builder.add_custom_frequency(
+                ModelBuilder.CustomFrequency(name="link", namespace="test", label_attribute="test:link_label")
+            )
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="link_label", frequency="test:link", namespace="test", dtype=str, default=""
+                )
+            )
+            for entity in ("body", "joint", "shape", "articulation", "particle"):
+                builder.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(
+                        name=f"link_{entity}",
+                        frequency="test:link",
+                        namespace="test",
+                        dtype=wp.int32,
+                        default=-1,
+                        references=entity,
+                    )
+                )
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="shape_pair",
+                    frequency=AttributeFrequency.BODY,
+                    namespace="test",
+                    dtype=wp.vec2i,
+                    default=wp.vec2i(-1, -1),
+                    references="shape",
+                )
+            )
+            body = builder.add_link(label="link_body")
+            builder.add_shape_sphere(body, radius=0.1)
+            joint = builder.add_joint_revolute(parent=-1, child=body)
+            builder.add_articulation([joint])
+            builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+            entities = ("body", "joint", "shape", "articulation", "particle")
+            builder.add_custom_values_batch(
+                [
+                    {"test:link_label": label, **{f"test:link_{entity}": index for entity in entities}}
+                    for label, index in (("first", 0), ("second", -1), ("", -1))
+                ]
+            )
+            return builder
+
+        # Valid indices and the -1 sentinel are accepted.
+        model = make_builder().finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.link_body.numpy(), [0, -1, -1])
+
+        for entity in ("body", "joint", "shape", "articulation", "particle"):
+            with self.subTest(entity):
+                builder = make_builder()
+                builder.custom_attributes[f"test:link_{entity}"].values[1] = 1
+                with self.assertRaises(ValueError) as context:
+                    builder.finalize(device=self.device)
+                message = str(context.exception)
+                self.assertIn(f"Invalid {entity} reference in custom attribute 'test:link_{entity}'", message)
+                self.assertIn("row 1 ('second')", message)
+                self.assertIn(f"valid range is [-1, 0] ({entity}_count=1)", message)
+
+        with self.subTest("unlabeled row"):
+            builder = make_builder()
+            builder.custom_attributes["test:link_body"].values[2] = -2
+            with self.assertRaisesRegex(ValueError, r"row 2 \('link_2'\) references body -2"):
+                builder.finalize(device=self.device)
+
+        with self.subTest("vector reference on built-in frequency"):
+            builder = make_builder()
+            builder.custom_attributes["test:shape_pair"].values = {0: wp.vec2i(0, 3)}
+            with self.assertRaisesRegex(ValueError, r"'test:shape_pair': row 0 \('link_body'\) references shape 3"):
+                builder.finalize(device=self.device)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
