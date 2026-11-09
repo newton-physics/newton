@@ -985,6 +985,37 @@ def test_contact_report_requires_matching(test, device):
 # ---------------------------------------------------------------------------
 
 
+def test_sticky_common_translation(test, device, use_capture=False):
+    """Preserve body-local contact history during shared translation."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        for z in (0.0, 0.198):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z)))
+            builder.add_shape_sphere(body=body, radius=0.1)
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
+        contacts = pipeline.contacts()
+        test.assertEqual(_collide_once(pipeline, state, contacts), 1)
+        points = [getattr(contacts, f"rigid_contact_point{i}").numpy()[0].copy() for i in (0, 1)]
+        if use_capture:
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts)
+        for _ in range(3):
+            q = state.body_q.numpy()
+            q[:, 0] += 0.01
+            q[:, 1] -= 0.02
+            state.body_q.assign(q)
+            if use_capture:
+                wp.capture_launch(capture.graph)
+            else:
+                pipeline.collide(state, contacts)
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+            test.assertEqual(int(contacts.rigid_contact_match_index.numpy()[0]), 0)
+            for i in (0, 1):
+                np.testing.assert_array_equal(getattr(contacts, f"rigid_contact_point{i}").numpy()[0], points[i])
+
+
 def test_sticky_matched_rows_replayed(test, device):
     """STICKY mode: matched rows carry exact previous-frame geometry even when
     the narrow phase's fresh output differs on a perturbed second frame.
@@ -1139,9 +1170,16 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
             pipeline.collide(state, contacts)
         test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
         match_index = contacts.rigid_contact_match_index.numpy()[:count]
-        test.assertTrue(np.all(match_index >= 0), "The geometric contacts must still match")
-        test.assertEqual(int(contacts.rigid_contact_new_count.numpy()[0]), 0)
-        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), 0)
+        # Rotation moves the saved material witnesses even when the geometric
+        # surface stays put. Match only while their transported midpoint remains
+        # inside the configured radius; otherwise retain the fresh geometry.
+        if expect_replay:
+            test.assertTrue(np.all(match_index >= 0))
+        else:
+            np.testing.assert_array_equal(match_index, MATCH_BROKEN)
+        unmatched = int(np.count_nonzero(match_index < 0))
+        test.assertEqual(int(contacts.rigid_contact_new_count.numpy()[0]), unmatched)
+        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), unmatched)
         for field in fields:
             current = getattr(contacts, f"rigid_contact_{field}").numpy()[:count]
             if expect_replay:
@@ -1445,6 +1483,19 @@ add_function_test(
     TestContactMatchingSticky,
     "test_sticky_rotated_witness_cuda_graph",
     test_sticky_rotated_witness_cuda_graph,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_common_translation",
+    test_sticky_common_translation,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_common_translation_cuda_graph",
+    partial(test_sticky_common_translation, use_capture=True),
     devices=cuda_devices,
 )
 

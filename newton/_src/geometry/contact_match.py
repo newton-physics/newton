@@ -14,7 +14,9 @@ sorted keys for the ``(shape_a, shape_b)`` pair range — ignoring the
 range whose normal also passes the dot-product threshold.  "Closest" is
 measured in world space between the contact *midpoints*
 ``0.5 * (world(point0) + world(point1))``, i.e. symmetric in shape 0 and
-shape 1.  The result is a per-contact match index:
+shape 1. In sticky mode, previous body-local witnesses are transformed with
+the current poses before comparison, so shared body motion does not age the
+contact history. The result is a per-contact match index:
 
 - ``>= 0``: index of the matched contact in the previous frame's sorted buffer.
 - ``MATCH_NOT_FOUND (-1)``: shape pair has no prior contacts.
@@ -224,6 +226,9 @@ class _MatchData:
     # shape 1's contact points, saved by the previous frame's save kernel.
     prev_keys: wp.array[wp.int64]
     prev_pos_world: wp.array[wp.vec3]
+    prev_point0: wp.array[wp.vec3]
+    prev_point1: wp.array[wp.vec3]
+    sticky: int
     prev_normal: wp.array[wp.vec3]
     prev_count: wp.array[wp.int32]
     # ``[buffer id, contact generation]`` of the previous frame.
@@ -298,10 +303,8 @@ def _match_contacts_kernel(data: _MatchData):
 
     target_key = data.new_keys[tid]
 
-    # World-space midpoint of the two contact points (symmetric in shape 0 /
-    # shape 1).  Matches the quantity persisted by ``_save_sorted_state_kernel``
-    # for the previous frame, so both sides of ``diff`` below measure the same
-    # physical quantity.
+    # World-space midpoint, symmetric in the endpoints. Sticky candidates are
+    # transported to the current poses before comparison below.
     p0 = data.new_point0[tid]
     bid0 = data.shape_body[data.new_shape0[tid]]
     if bid0 == -1:
@@ -340,6 +343,14 @@ def _match_contacts_kernel(data: _MatchData):
     best_dist_sq = float(data.pos_threshold_sq)
     for old_idx in range(range_lo, range_hi):
         old_pos = data.prev_pos_world[old_idx]
+        if data.sticky != 0:
+            old_p0 = data.prev_point0[old_idx]
+            old_p1 = data.prev_point1[old_idx]
+            if bid0 >= 0:
+                old_p0 = wp.transform_point(data.body_q[bid0], old_p0)
+            if bid1 >= 0:
+                old_p1 = wp.transform_point(data.body_q[bid1], old_p1)
+            old_pos = 0.5 * (old_p0 + old_p1)
         diff = new_pos_w - old_pos
         dist_sq = wp.dot(diff, diff)
 
@@ -664,8 +675,10 @@ class ContactMatcher:
         pos_threshold: World-space distance threshold [m] between the
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
-            moved more than this between frames are considered broken. In sticky mode,
-            also bounds the distance between each saved witness and its fresh contact point.
+            moved more than this between frames are considered broken. Sticky mode
+            transports previous body-local witnesses with the current poses before
+            comparing midpoints. It also bounds the distance between each saved
+            witness and its fresh contact point.
         normal_dot_threshold: Minimum dot product between old and new contact
             normals.  Below this the contact is considered broken.
         contact_report: Allocate the ``prev_was_matched`` flag array needed
@@ -839,7 +852,8 @@ class ContactMatcher:
 
         Distance is measured between world-space contact midpoints
         (``0.5 * (world(point0) + world(point1))``) so the metric is symmetric
-        in shape 0 / shape 1.
+        in shape 0 / shape 1. Sticky mode transforms previous body-local witnesses
+        with the current poses before comparison, excluding shared body motion.
 
         Args:
             sort_keys: Current frame's sorted int64 keys (use
@@ -864,6 +878,9 @@ class ContactMatcher:
         data = _MatchData()
         data.prev_keys = self._prev_sorted_keys
         data.prev_pos_world = self._prev_pos_world
+        data.prev_point0 = self._prev_point0 if self._sticky else self._prev_pos_world
+        data.prev_point1 = self._prev_point1 if self._sticky else self._prev_pos_world
+        data.sticky = int(self._sticky)
         data.prev_normal = self._prev_normal
         data.prev_count = self._prev_count
         data.prev_frame = self._prev_frame
