@@ -1,1 +1,1 @@
-Tests only: regression tests for GJK small-simplex normals, MJCF and USD joint-spring import, a kinematic free base pushing an articulation, and capturing a Steel solver's first step.
+Tests only: extend the GJK small-triangle, USD springref and Steel capture tests, and test a kinematic free body pushing a dense articulation in SolverSteel.

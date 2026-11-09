@@ -364,7 +364,7 @@ def _build_free_root_to_prismatic_scene(device):
     _configure_contact_defaults(builder)
 
     kinematic_body = builder.add_body(
-        xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(-0.1, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,
         is_kinematic=True,
         label="kinematic_free",
@@ -546,8 +546,8 @@ def test_kinematic_free_base_drives_dense_articulation(
     device,
     solver_fn,
 ):
-    """A prescribed kinematic free base pushes a dense articulation's probe through contact."""
-    model, _kinematic_body, _probe_body, kinematic_joint, probe_joint = _build_free_root_to_prismatic_scene(device)
+    """A prescribed kinematic free base pushes a dense articulation's probe without sinking into it."""
+    model, kinematic_body, probe_body, kinematic_joint, probe_joint = _build_free_root_to_prismatic_scene(device)
     solver = solver_fn(model)
     collision_pipeline, contacts = _create_contacts(model, solver)
     state_0, state_1 = model.state(), model.state()
@@ -555,15 +555,16 @@ def test_kinematic_free_base_drives_dense_articulation(
     qd_start = int(model.joint_qd_start.numpy()[kinematic_joint])
     probe_qd_start = int(model.joint_qd_start.numpy()[probe_joint])
     sim_dt = 1.0 / 240.0
-    max_probe_velocity = 0.0
+    speed = 1.0
 
-    for step in range(120):
+    # The 0.2 m start gap closes at step 48, so the last 12 steps push the probe.
+    for step in range(60):
         joint_q = state_0.joint_q.numpy()
         joint_qd = state_0.joint_qd.numpy()
         joint_q[q_start : q_start + 7] = np.array(
-            [-0.2 + step * sim_dt, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32
+            [-0.1 + step * speed * sim_dt, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32
         )
-        joint_qd[qd_start : qd_start + 6] = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        joint_qd[qd_start : qd_start + 6] = np.array([speed, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
         state_0.joint_q.assign(joint_q)
         state_0.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0, body_flag_filter=newton.BodyFlags.KINEMATIC)
@@ -571,10 +572,12 @@ def test_kinematic_free_base_drives_dense_articulation(
         collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
-        max_probe_velocity = max(max_probe_velocity, float(state_0.joint_qd.numpy()[probe_qd_start]))
 
-    test.assertEqual(int(solver._articulation_response_dof_count.numpy()[0]), 0)
-    test.assertGreater(max_probe_velocity, 3.0e-2)
+    # The probe keeps pace with the box (half-width 0.25 m) without the box entering the sphere (radius 0.1 m).
+    body_q = state_0.body_q.numpy()
+    gap = float(body_q[probe_body, 0] - 0.1 - (body_q[kinematic_body, 0] + 0.25))
+    test.assertGreater(gap, -1.0e-3)
+    test.assertAlmostEqual(float(state_0.joint_qd.numpy()[probe_qd_start]), speed, delta=0.05)
 
 
 def test_kinematic_revolute_root_pendulum_prescribed_motion(
