@@ -9707,6 +9707,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             np.testing.assert_array_equal(qd[0], 0.0)
             np.testing.assert_allclose(qd[1], 5.0 * dt, rtol=1.0e-4)
 
+            model.joint_effort_limit.assign(np.array([0.0, 1.0, 3.0, 5.0, 3.0, 1.0], dtype=np.float32))
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            qd = step_qd(model, solver)
+            np.testing.assert_allclose(qd[0], [0.0, 1.0 * dt, 3.0 * dt], rtol=1.0e-3, atol=1.0e-9)
+            np.testing.assert_allclose(qd[1], [5.0 * dt, 3.0 * dt, 1.0 * dt], rtol=1.0e-3, atol=1.0e-9)
+
         with self.subTest("authored forcelimited=false"):
             mjcf = """<mujoco><worldbody><body><joint name="b" type="ball"/><geom size="0.1" mass="1"/></body></worldbody>
             <actuator><velocity joint="b" kv="10" forcelimited="false"/></actuator></mujoco>"""
