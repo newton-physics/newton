@@ -512,6 +512,7 @@ def update_particle_frames(
     vel_grad: wp.array[wp.mat33],
     transform_prev: wp.array[wp.mat33],
     transform: wp.array[wp.mat33],
+    step_valid: wp.array[int],
 ):
     i = wp.tid()
 
@@ -519,7 +520,7 @@ def update_particle_frames(
     F_prev = transform_prev[i]
 
     # Inactive particles keep their frame while frozen
-    if ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
+    if (step_valid and step_valid[0] == 0) or ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
         transform[i] = F_prev
         return
 

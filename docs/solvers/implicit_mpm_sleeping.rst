@@ -15,7 +15,9 @@ simulation grid. Its persistent device state retains every original particle
 identity, material, position, velocity, and constitutive history. This reduces
 the active solve; it does not remove the full particle backing allocation.
 
-Configure sleeping before capturing the simulation:
+Configure sleeping before capturing the simulation. Guarded construction checks
+Warp conditional-body allocation support once per device and reports an explicit
+error when that optional capability is missing; replay performs no capability check.
 
 The device runtime requires ``Config.reuse_grid_topology=True``, CUDA,
 standard PIC, positive bounded grid capacities, and no gradients. Sleeping

@@ -67,9 +67,12 @@ def advect_grains(
     dt: float,
     positions: wp.array[wp.vec3],
     particle_flags: wp.array[int],
+    step_valid: wp.array[int],
     grains_per_particle: int,
 ):
-    if particle_flags and (particle_flags[s.qp_index // grains_per_particle] & newton.ParticleFlags.ACTIVE) == 0:
+    if (step_valid and step_valid[0] == 0) or (
+        particle_flags and (particle_flags[s.qp_index // grains_per_particle] & newton.ParticleFlags.ACTIVE) == 0
+    ):
         return
     x = domain(s)
     vel = grid_vel(s)
@@ -85,9 +88,12 @@ def advect_grains_from_particles(
     particle_vel_grad: wp.array[wp.mat33],
     positions: wp.array2d[wp.vec3],
     particle_flags: wp.array[int],
+    step_valid: wp.array[int],
 ):
     pid, k = wp.tid()
-    if particle_flags and (particle_flags[pid] & newton.ParticleFlags.ACTIVE) == 0:
+    if (step_valid and step_valid[0] == 0) or (
+        particle_flags and (particle_flags[pid] & newton.ParticleFlags.ACTIVE) == 0
+    ):
         return
 
     p_pos = particle_pos[pid]
@@ -108,9 +114,12 @@ def project_grains(
     particle_frames: wp.array[wp.mat33],
     positions: wp.array2d[wp.vec3],
     particle_flags: wp.array[int],
+    step_valid: wp.array[int],
 ):
     pid, k = wp.tid()
-    if particle_flags and (particle_flags[pid] & newton.ParticleFlags.ACTIVE) == 0:
+    if (step_valid and step_valid[0] == 0) or (
+        particle_flags and (particle_flags[pid] & newton.ParticleFlags.ACTIVE) == 0
+    ):
         return
 
     pos_adv = positions[pid, k]
@@ -170,6 +179,7 @@ def update_render_grains(
     *,
     particle_environment: wp.array[int] | None = None,
     particle_flags: wp.array[int] | None = None,
+    step_valid: wp.array[int] | None = None,
     temporary_store: fem.TemporaryStore | None = None,
 ):
     """Advect grain samples with the grid velocity and keep them inside the deformed particle.
@@ -192,6 +202,7 @@ def update_render_grains(
          dt: Time step duration.
          particle_environment: Per-particle world IDs for isolated multi-world advection.
          particle_flags: Optional activity mask; inactive particles keep their grains.
+         step_valid: Optional device capacity status; invalid steps retain every grain.
          temporary_store: Temporary storage used by grain binning and interpolation.
     """
 
@@ -233,6 +244,7 @@ def update_render_grains(
                 state.mpm.particle_qd_grad,
                 grains,
                 particle_flags,
+                step_valid,
             ],
             device=grains.device,
         )
@@ -244,6 +256,7 @@ def update_render_grains(
                 "dt": dt,
                 "positions": grain_pos,
                 "particle_flags": particle_flags,
+                "step_valid": step_valid,
                 "grains_per_particle": grains.shape[1],
             },
             fields={
@@ -262,6 +275,7 @@ def update_render_grains(
                 state.mpm.particle_transform,
                 grains,
                 particle_flags,
+                step_valid,
             ],
             device=grains.device,
         )

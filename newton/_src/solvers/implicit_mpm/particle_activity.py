@@ -20,7 +20,6 @@ class _PatchTable:
     particle_slot: wp.array[int]
     requested: wp.array[int]
     urgent: wp.array[int]
-    awake: wp.array[int]
     boundary: wp.array[int]
     motion_counts: wp.array[int]
     motion_particles: wp.array[int]
@@ -114,9 +113,7 @@ def _check_patch_keys(
     if active != 0:
         cell = _patch_coordinates(table, i)
     world = _patch_world(table, i)
-    previous = cells[i]
-    different = previous[0] != cell[0] or previous[1] != cell[1] or previous[2] != cell[2]
-    if valid[0] == 0 or int(table.particle_slot[i] >= 0) != active or different or worlds[i] != world:
+    if valid[0] == 0 or int(table.particle_slot[i] >= 0) != active or not (cells[i] == cell) or worlds[i] != world:
         wp.atomic_max(changed, 0, 1)
     cells[i] = cell
     worlds[i] = world
@@ -158,11 +155,7 @@ def _request_swept_patches(table: _PatchTable, particle: int, displacement: wp.v
             interval[axis] = wp.abs(1.0 / travel[axis])
             crossing[axis] = (float(coordinates[axis] + wp.where(step[axis] > 0, 1, 0)) - start[axis]) / travel[axis]
     crossings = int(0)
-    while (
-        coordinates[0] != target_coordinates[0]
-        or coordinates[1] != target_coordinates[1]
-        or coordinates[2] != target_coordinates[2]
-    ) and crossings < _MAX_SWEEP_CELLS:
+    while not (coordinates == target_coordinates) and crossings < _MAX_SWEEP_CELLS:
         # Near-tied crossings at the endpoint must not advance a completed axis.
         for axis in range(3):
             if coordinates[axis] == target_coordinates[axis]:
@@ -179,11 +172,7 @@ def _request_swept_patches(table: _PatchTable, particle: int, displacement: wp.v
         if target >= 0:
             wp.atomic_max(table.urgent, target, 1)
             wp.atomic_max(table.requested, target, 1)
-    if (
-        coordinates[0] != target_coordinates[0]
-        or coordinates[1] != target_coordinates[1]
-        or coordinates[2] != target_coordinates[2]
-    ):
+    if not (coordinates == target_coordinates):
         wp.atomic_max(table.sweep_fallback, fallback_world, 1)
 
 
@@ -208,56 +197,11 @@ def _advance_planning(
 
 
 @wp.kernel(enable_backward=False)
-def _advance_activity(
-    table: _PatchTable,
-    planning_due: wp.array[int],
-    activity: wp.array[int],
-    base_material_flags: wp.array[int],
-    base_density: wp.array[float],
-    velocities: wp.array[wp.vec3],
-    forces: wp.array[wp.vec3],
-    quiet_time: wp.array[float],
-    stress_elapsed: wp.array[float],
-    dt: float,
-    sleep_time: float,
-    spill_velocity_threshold: float,
-    lookahead: float,
-    travel_padding: float,
-):
-    i = wp.tid()
-    slot = table.particle_slot[i]
-    if slot < 0:
-        return
-    quiet_time[i] = wp.min(quiet_time[i] + dt, sleep_time)
-    stress_elapsed[i] += dt
-    if (
-        planning_due[0] == 0
-        and activity[i] == 2
-        and base_density[i] > 0.0
-        and (base_material_flags[i] & newton.ParticleFlags.ACTIVE) != 0
-    ):
-        wp.atomic_max(table.requested, slot, 1)
-    velocity = velocities[i]
-    speed = wp.length(velocity)
-    forced = bool(False)
-    if forces:
-        force_squared = wp.length_sq(forces[i])
-        forced = force_squared > 0.0 or not wp.isfinite(force_squared)
-    if forced or not wp.isfinite(speed) or speed > spill_velocity_threshold:
-        wp.atomic_max(table.requested, slot, 1)
-        wp.atomic_max(table.urgent, slot, 1)
-        quiet_time[i] = 0.0
-        if wp.isfinite(speed) and speed > 1.0e-12:
-            displacement = velocity * (wp.max(dt, lookahead) + travel_padding / speed)
-            if wp.isfinite(wp.length_sq(displacement)):
-                _request_swept_patches(table, i, displacement)
-
-
-@wp.kernel(enable_backward=False)
-def _request_motion(
+def _request_particles(
     table: _PatchTable,
     planning_due: wp.array[int],
     planning_dt: wp.array[float],
+    activity: wp.array[int],
     velocities: wp.array[wp.vec3],
     gradients: wp.array[wp.mat33],
     stresses: wp.array[wp.mat33],
@@ -268,6 +212,7 @@ def _request_motion(
     stress_filter_valid: wp.array[int],
     quiet_time: wp.array[float],
     stress_elapsed: wp.array[float],
+    dt: float,
     sleep_time: float,
     velocity_threshold: float,
     strain_threshold: float,
@@ -279,13 +224,35 @@ def _request_motion(
     min_moving_particles: int,
     spill_velocity_threshold: float,
 ):
-    if planning_due[0] == 0:
-        return
+    """Advance quiet timers and combine urgent and scheduled motion requests."""
     i = wp.tid()
-    if min_moving_particles > 1:
+    planning = planning_due[0] != 0
+    if planning and min_moving_particles > 1:
         table.motion_particles[i] = 0
     slot = table.particle_slot[i]
     if slot < 0:
+        return
+    quiet_time[i] = wp.min(quiet_time[i] + dt, sleep_time)
+    stress_elapsed[i] += dt
+    velocity = velocities[i]
+    speed = wp.length(velocity)
+    forced = bool(False)
+    if forces:
+        force_squared = wp.length_sq(forces[i])
+        forced = force_squared > 0.0 or not wp.isfinite(force_squared)
+    if not planning:
+        # Retain awake material between planning passes, while urgent forces
+        # and fast particles can wake and sweep into new patches every tick.
+        if activity[i] == 2 and base_density[i] > 0.0 and (base_material_flags[i] & newton.ParticleFlags.ACTIVE) != 0:
+            wp.atomic_max(table.requested, slot, 1)
+        if forced or not wp.isfinite(speed) or speed > spill_velocity_threshold:
+            wp.atomic_max(table.requested, slot, 1)
+            wp.atomic_max(table.urgent, slot, 1)
+            quiet_time[i] = 0.0
+            if wp.isfinite(speed) and speed > 1.0e-12:
+                displacement = velocity * (wp.max(dt, lookahead) + travel_padding / speed)
+                if wp.isfinite(wp.length_sq(displacement)):
+                    _request_swept_patches(table, i, displacement)
         return
     raw_stress = stresses[i]
     stress = raw_stress
@@ -304,13 +271,8 @@ def _request_motion(
     old_shear = old_stress - old_pressure * identity
     shear_delta = shear - old_shear
     gradient_norm = wp.sqrt(wp.ddot(gradients[i], gradients[i]))
-    speed = wp.length(velocities[i])
     invalid = not wp.isfinite(speed) or not finite_stress or not wp.isfinite(gradient_norm)
     moving = speed > velocity_threshold or gradient_norm > strain_threshold
-    forced = bool(False)
-    if forces:
-        force_squared = wp.length_sq(forces[i])
-        forced = force_squared > 0.0 or not wp.isfinite(force_squared)
     prescribed = base_density[i] <= 0.0 or (base_material_flags[i] & newton.ParticleFlags.ACTIVE) == 0
     bypass = (
         invalid
@@ -344,12 +306,18 @@ def _request_motion(
         if speed > 1.0e-12 and wp.isfinite(speed):
             # Anticipate transport into sleeping material without waking an
             # isotropic ring around stationary affine motion or applied forces.
-            displacement = velocities[i] * (wp.max(planning_dt[0], lookahead) + travel_padding / speed)
+            displacement = velocity * (wp.max(planning_dt[0], lookahead) + travel_padding / speed)
+            if not wp.isfinite(wp.length_sq(displacement)) and (forced or speed > spill_velocity_threshold):
+                # Retain urgent per-tick transport if the longer planning sweep overflows.
+                displacement = velocity * (wp.max(dt, lookahead) + travel_padding / speed)
             if wp.isfinite(wp.length_sq(displacement)):
                 _request_swept_patches(table, i, displacement)
     elif moving:
-        wp.atomic_add(table.motion_counts, slot, 1)
+        count = wp.atomic_add(table.motion_counts, slot, 1)
         table.motion_particles[i] = 1
+        if count == min_moving_particles - 1:
+            wp.atomic_max(table.requested, slot, 1)
+            wp.atomic_max(table.urgent, slot, 1)
     if (
         direct
         or changing
@@ -360,17 +328,6 @@ def _request_motion(
         )
     ):
         wp.atomic_max(table.requested, slot, 1)
-
-
-@wp.kernel(enable_backward=False)
-def _apply_motion_requests(table: _PatchTable, planning_due: wp.array[int], min_moving_particles: int):
-    if planning_due[0] == 0:
-        return
-    i = wp.tid()
-    slot = table.particle_slot[i]
-    if slot >= 0 and table.slots[slot] == i and table.motion_counts[slot] >= min_moving_particles:
-        wp.atomic_max(table.requested, slot, 1)
-        wp.atomic_max(table.urgent, slot, 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -427,7 +384,7 @@ def _mesh_bounds(
 
 @wp.kernel(enable_backward=False)
 def _reset_mesh_bounds(
-    mutable: wp.array[int],
+    mutable_meshes: wp.array[int],
     initialize: bool,
     collider: Collider,
     lower: wp.array[wp.vec3],
@@ -438,7 +395,7 @@ def _reset_mesh_bounds(
 ):
     c = wp.tid()
     speed[c] = 0.0
-    if initialize or mutable[c] != 0:
+    if initialize or mutable_meshes[c] != 0:
         lower[c] = wp.vec3(wp.inf)
         upper[c] = wp.vec3(-wp.inf)
         radius[c] = 0.0
@@ -502,7 +459,7 @@ def _collider_wake_bounds(
                 velocity = prescribed_velocity
                 moving = True
             moving = moving or wp.length(wp.spatial_bottom(body_qd[body])) > 1.0e-7
-        predicted_center = center + lookahead * velocity
+        predicted_center = center + wp.max(dt, lookahead) * velocity
         if not wp.isfinite(wp.length_sq(center) + wp.length_sq(previous_center) + wp.length_sq(predicted_center)):
             # Nonfinite transforms conservatively wake every occupied patch.
             wake_mode[c] = 3
@@ -519,7 +476,7 @@ def _collider_wake_bounds(
         swept_upper = wp.max(wp.max(center, previous_center), predicted_center) + wp.vec3(radius)
     if not moving:
         return
-    padding = margin + mesh_speed[c] * lookahead + wp.max(0.0, collider.collider_max_thickness[c])
+    padding = margin + mesh_speed[c] * wp.max(dt, lookahead) + wp.max(0.0, collider.collider_max_thickness[c])
     swept_lower -= wp.vec3(padding)
     swept_upper += wp.vec3(padding)
     wake_lower[c] = swept_lower
@@ -670,7 +627,7 @@ def _classify_particles(
         mode = 2
         slot = table.particle_slot[i]
         if slot >= 0 and base_density[i] > 0.0 and (base_material_flags[i] & active) != 0:
-            mode = wp.where(table.awake[slot] != 0, 2, wp.where(table.boundary[slot] != 0, 1, 0))
+            mode = wp.where(table.requested[slot] != 0, 2, wp.where(table.boundary[slot] != 0, 1, 0))
             if table.urgent[slot] != 0:
                 quiet_time[i] = 0.0
     activity[i] = mode
@@ -773,7 +730,6 @@ class ParticleActivity:
         self.table.particle_slot = wp.full(count, -1, dtype=int, device=device)
         for name in ("requested", "urgent", "boundary"):
             setattr(self.table, name, wp.zeros(capacity, dtype=int, device=device))
-        self.table.awake = self.table.requested
         self.table.motion_counts = wp.zeros(capacity if min_moving_particles > 1 else 0, dtype=int, device=device)
         self.table.motion_particles = wp.zeros(count if min_moving_particles > 1 else 0, dtype=int, device=device)
         self.table.sweep_fallback = wp.zeros(model.world_count + 1, dtype=int, device=device)
@@ -923,7 +879,7 @@ class ParticleActivity:
                 device=self.model.device,
             )
 
-    def update(self, state, dt, collider, body_q_prev, separate_worlds):
+    def update(self, state, dt, collider, body_q_prev, separate_worlds, *, collider_velocity_mode="forward"):
         """Classify current patches without changing caller-owned model arrays."""
         table = self.table
         table.positions = state.particle_q
@@ -969,33 +925,13 @@ class ParticleActivity:
             device=device,
         )
         wp.launch(
-            _advance_activity,
-            dim=count,
-            inputs=[
-                table,
-                self.planning_due,
-                self.activity,
-                self.base_material_flags,
-                self.base_density,
-                state.particle_qd,
-                state.particle_f,
-                self.quiet_time,
-                self.stress_elapsed,
-                dt,
-                self.sleep_time,
-                self.spill_velocity_threshold,
-                self.collider_lookahead,
-                2.0 * self.voxel_size,
-            ],
-            device=device,
-        )
-        wp.launch(
-            _request_motion,
+            _request_particles,
             dim=count,
             inputs=[
                 table,
                 self.planning_due,
                 self.planning_dt,
+                self.activity,
                 state.particle_qd,
                 state.mpm.particle_qd_grad,
                 state.mpm.particle_stress,
@@ -1006,6 +942,7 @@ class ParticleActivity:
                 self.stress_filter_valid,
                 self.quiet_time,
                 self.stress_elapsed,
+                dt,
                 self.sleep_time,
                 self.velocity_threshold,
                 self.strain_threshold,
@@ -1020,12 +957,6 @@ class ParticleActivity:
             device=device,
         )
         if self.min_moving_particles > 1:
-            wp.launch(
-                _apply_motion_requests,
-                dim=count,
-                inputs=[table, self.planning_due, self.min_moving_particles],
-                device=device,
-            )
             wp.launch(
                 _request_motion_transport,
                 dim=count,
@@ -1048,7 +979,7 @@ class ParticleActivity:
             inputs=[
                 collider,
                 state.body_q,
-                state.body_qd,
+                state.body_qd if collider_velocity_mode == "forward" else None,
                 body_q_prev,
                 self.lower,
                 self.upper,
@@ -1085,7 +1016,7 @@ class ParticleActivity:
         wp.launch(
             _dilate_patches,
             dim=count,
-            inputs=[table, table.awake, table.boundary],
+            inputs=[table, table.requested, table.boundary],
             device=device,
         )
         wp.launch(

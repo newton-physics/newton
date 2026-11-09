@@ -15,12 +15,17 @@ from newton.tests.unittest_utils import add_function_test, get_selected_cuda_tes
 HISTORY_FIELDS = ("particle_qd_grad", "particle_Jp", "particle_stress", "particle_elastic_strain", "particle_transform")
 
 
-def _make_scene(device, *, worlds=1, collider=False, particle_bases=False):
+def _make_scene(device, *, worlds=1, collider=False, particle_bases=False, colored_contacts=False):
     """Build a small heterogeneous bed whose logical and spatial particle orders differ."""
     local = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(local)
     locations = [(x, y, z) for x in range(24) for y in range(2) for z in range(2)]
-    for index in np.random.default_rng(17).permutation(len(locations)):
+    order = np.random.default_rng(17).permutation(len(locations))
+    if colored_contacts:
+        # Keep a forced contact at the last eligible ID, beyond a compact pool's last slot.
+        contact_slot = int(np.flatnonzero(order == locations.index((12, 0, 0)))[0])
+        order[-1], order[contact_slot] = order[contact_slot], order[-1]
+    for index in order:
         x, y, z = locations[index]
         local.add_particle(
             pos=(0.0125 + 0.025 * x, 0.0125 + 0.025 * y, 0.0125 + 0.025 * z),
@@ -49,7 +54,7 @@ def _make_scene(device, *, worlds=1, collider=False, particle_bases=False):
         builder = local
     model = builder.finalize(device=device)
 
-    def make_solver():
+    def make_solver(*, collider_velocity_mode="forward"):
         solver = SolverImplicitMPM(
             model,
             SolverImplicitMPM.Config(
@@ -58,12 +63,13 @@ def _make_scene(device, *, worlds=1, collider=False, particle_bases=False):
                 max_active_cell_count=512,
                 velocity_basis="Q1",
                 strain_basis="pic8" if particle_bases else "P0",
-                collider_basis="pic8" if particle_bases else "Q1",
+                collider_basis="pic8" if particle_bases or colored_contacts else "Q1",
                 max_iterations=5,
                 tolerance=0.0,
                 warmstart_mode="particles",
                 separate_worlds=worlds > 1,
                 reuse_grid_topology=True,
+                collider_velocity_mode=collider_velocity_mode,
             ),
             enable_timers=False,
         )
@@ -73,6 +79,7 @@ def _make_scene(device, *, worlds=1, collider=False, particle_bases=False):
             velocity_threshold=0.1,
             strain_threshold=1.0e6,
             stress_threshold=1.0e6,
+            collider_lookahead=0.0,
         )
         return solver
 
@@ -99,6 +106,8 @@ def _assert_state(state, expected, *, mask=slice(None), exact=True):
 def _require_capture(test, device):
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture requires the Warp memory pool")
+    if not wp.is_conditional_graph_supported():
+        test.skipTest("Guarded MPM requires CUDA conditional graphs")
 
 
 def test_captured_sleep_support_and_dirty_wake(test, device):
@@ -138,6 +147,13 @@ def test_captured_sleep_support_and_dirty_wake(test, device):
     solver.step(state, copied, None, None, 0.005)
     _assert_state(copied, frozen)
 
+    # With zero optional lookahead, the current step still sweeps to x=0.4.
+    # Neither the current sphere at x=0.8 nor its previous pose touches the bed.
+    state.body_q.assign([wp.transform(wp.vec3(0.8, 0.025, 0.025), wp.quat_identity())])
+    state.body_qd.assign([wp.spatial_vector(-80.0, 0.0, 0.0, 0.0, 0.0, 0.0)])
+    wp.capture_launch(graph)
+    test.assertTrue(np.any(solver.particle_activity.numpy()[eligible & (positions[:, 0] > 0.45)] == 2))
+    # Enter the SDF query band to exercise the resulting contact response.
     state.body_q.assign([wp.transform(wp.vec3(0.55, 0.025, 0.025), wp.quat_identity())])
     state.body_qd.assign([wp.spatial_vector(-0.5, 0.0, 0.0, 0.0, 0.0, 0.0)])
     for _ in range(3):
@@ -148,7 +164,7 @@ def test_captured_sleep_support_and_dirty_wake(test, device):
     remote = eligible & (positions[:, 0] < 0.1)
     np.testing.assert_array_equal(modes[remote], 0)
     _assert_state(state, frozen, mask=remote)
-    test.assertGreater(np.linalg.norm(state.particle_qd.numpy()[positions[:, 0] > 0.45]), 1.0e-6)
+    test.assertGreater(np.linalg.norm(state.particle_qd.numpy()[positions[:, 0] > 0.3]), 1.0e-6)
     test.assertGreater(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 0)
     test.assertEqual(
         pointers, (state.particle_q.ptr, state.particle_qd.ptr, state.mpm.particle_Jp.ptr, solver.step_status.ptr)
@@ -165,11 +181,25 @@ def test_captured_sleep_support_and_dirty_wake(test, device):
     np.testing.assert_array_equal(solver.particle_activity.numpy()[eligible], 2)
     test.assertEqual(int(solver.step_status.numpy()[0]), 0)
 
+    # Backward mode must ignore stale prescribed velocity and follow pose motion.
+    backward, backward_state = make_solver(collider_velocity_mode="backward"), model.state()
+    backward_state.body_q.assign([wp.transform(wp.vec3(1.2, 0.025, 0.025), wp.quat_identity())])
+    for _ in range(10):
+        backward.step(backward_state, backward_state, None, None, 0.005)
+    np.testing.assert_array_equal(backward.particle_activity.numpy()[eligible], 0)
+    backward_state.body_q.assign([wp.transform(wp.vec3(0.8, 0.025, 0.025), wp.quat_identity())])
+    backward_state.body_qd.assign([wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)])
+    with wp.ScopedCapture(device=device) as backward_capture:
+        backward.step(backward_state, backward_state, None, None, 0.005)
+    wp.capture_launch(backward_capture.graph)
+    test.assertTrue(np.any(backward.particle_activity.numpy()[eligible & (positions[:, 0] > 0.45)] == 2))
+    backward.check_sparse_grid_rebuild_status()
 
-def test_working_set_equivalence(test, device, *, particle_bases=False, page_size=0):
+
+def test_working_set_equivalence(test, device, *, particle_bases=False, page_size=0, colored_contacts=False):
     """Match full sleeping storage when compact evaluation changes IDs across overlapping worlds."""
     _require_capture(test, device)
-    model, make_solver = _make_scene(device, worlds=2, particle_bases=particle_bases)
+    model, make_solver = _make_scene(device, worlds=2, particle_bases=particle_bases, colored_contacts=colored_contacts)
     variants = 3 if page_size else 2
     solvers, states = [make_solver() for _ in range(variants)], [model.state() for _ in range(variants)]
     positions, worlds = model.particle_q.numpy(), model.particle_world.numpy()
@@ -192,7 +222,7 @@ def test_working_set_equivalence(test, device, *, particle_bases=False, page_siz
             test.fail("The scene must contain distant active IDs in one logical page")
     force = np.zeros((model.particle_count, 3), dtype=np.float32)
     force[targets[:2], 0] = 0.0003
-    if particle_bases:
+    if particle_bases or colored_contacts:
         mesh = wp.Mesh(
             points=wp.array(
                 [(-2.0, -2.0, 0.02), (2.0, -2.0, 0.02), (2.0, 2.0, 0.02), (-2.0, 2.0, 0.02)],
@@ -212,7 +242,7 @@ def test_working_set_equivalence(test, device, *, particle_bases=False, page_siz
         for _ in range(10):
             solver.step(state, state, None, None, 0.005)
     reference, compact = solvers[0], solvers[-1]
-    capacity = 192 if particle_bases else 160
+    capacity = 192 if particle_bases or colored_contacts else 160
     for index, (solver, state) in enumerate(zip(solvers[1:], states[1:], strict=True), start=1):
         variant_page_size = page_size if index == len(solvers) - 1 else 0
         variant_capacity = (
@@ -223,7 +253,7 @@ def test_working_set_equivalence(test, device, *, particle_bases=False, page_siz
         )
     if not page_size:
         test.assertLess(compact.particle_working_set_capacity, model.particle_count)
-    if particle_bases:
+    if particle_bases or colored_contacts:
         for solver in solvers:
             solver._last_step_data.ws_impulse_field.dof_values.zero_()
     graphs = []
@@ -239,6 +269,12 @@ def test_working_set_equivalence(test, device, *, particle_bases=False, page_siz
         frozen = _snapshot(states[-1])
         for graph in graphs:
             wp.capture_launch(graph)
+        if colored_contacts and step == 0:
+            scratch = compact._scratchpad
+            rows = np.flatnonzero(np.diff(scratch.collider_matrix.offsets.numpy()) > 0)
+            nodes = scratch._collision_space_restriction.space_partition.space_node_indices().numpy()[rows]
+            contact_ids = scratch.collision_pic.cell_particle_indices.numpy()[nodes]
+            test.assertTrue(np.any(contact_ids >= compact.particle_working_set_capacity))
         for state in states[1:]:
             _assert_state(state, _snapshot(states[0]), exact=False)
         modes = compact.particle_activity.numpy()
@@ -251,7 +287,7 @@ def test_working_set_equivalence(test, device, *, particle_bases=False, page_siz
     test.assertTrue(np.any(compact.particle_activity.numpy() == 1))
     for solver in solvers:
         solver.check_sparse_grid_rebuild_status()
-    if particle_bases:
+    if particle_bases or colored_contacts:
         impulses = [solver._last_step_data.ws_impulse_field.dof_values.numpy() for solver in solvers]
         for values in impulses:
             test.assertEqual(values.shape, (model.particle_count, 3))
@@ -272,6 +308,7 @@ def test_captured_overflow_reset(test, device, *, grid_overflow=False):
     eligible = (model.particle_flags.numpy() & int(newton.ParticleFlags.ACTIVE)) != 0
     np.testing.assert_array_equal(solver.particle_activity.numpy()[eligible], 0)
     state.mpm.particle_Jp.fill_(0.81)
+    state.mpm.particle_qd_grad.fill_(wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1))
     page_size = 0 if grid_overflow else 8
     solver.set_particle_working_set(
         state,
@@ -282,8 +319,12 @@ def test_captured_overflow_reset(test, device, *, grid_overflow=False):
     solver.step(state, state, None, None, 0.005)
     test.assertEqual(int(solver.step_status.numpy()[0]), 0)
     previous = _snapshot(state)
+    grains = solver.sample_render_grains(state, grains_per_particle=2)
+    previous_grains = grains.numpy().copy()
     with wp.ScopedCapture(device=device) as step_capture:
         solver.step(state, state, None, None, 0.005)
+        solver.update_particle_frames(state, state, 0.005)
+        solver.update_render_grains(state, state, grains, 0.005)
     graph = step_capture.graph
     force = np.zeros((model.particle_count, 3), dtype=np.float32)
     force[eligible, 0] = 0.0001
@@ -293,10 +334,15 @@ def test_captured_overflow_reset(test, device, *, grid_overflow=False):
     with test.assertRaises(RuntimeError):
         solver.check_sparse_grid_rebuild_status()
     _assert_state(state, previous)
+    np.testing.assert_array_equal(grains.numpy(), previous_grains)
+    copied = model.state()
+    solver.update_particle_frames(state, copied, 0.005)
+    np.testing.assert_array_equal(copied.mpm.particle_transform.numpy(), previous["particle_transform"])
     state.clear_forces()
     wp.capture_launch(graph)
     test.assertNotEqual(int(solver.step_status.numpy()[0]), 0)
     _assert_state(state, previous)
+    np.testing.assert_array_equal(grains.numpy(), previous_grains)
     reset_mask = None if grid_overflow else wp.zeros(model.world_count + 1, dtype=wp.bool, device=device)
     with wp.ScopedCapture(device=device) as reset_capture:
         solver.reset(state, world_mask=reset_mask, flags=0)
@@ -331,6 +377,47 @@ def test_captured_overflow_reset(test, device, *, grid_overflow=False):
     test.assertGreater(np.linalg.norm(state.particle_qd.numpy()[eligible]), 0.0)
 
 
+def test_material_change_retains_velocity_partition(test, device):
+    """Allocate elasticity when rigid material becomes compliant on a retained partition."""
+    _require_capture(test, device)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for x in (0.0125, 0.0375):
+        builder.add_particle(
+            pos=(x, 0.0125, 0.0125),
+            vel=(0.0, 0.0, 0.0),
+            mass=0.01,
+            radius=0.01,
+            custom_attributes={"mpm:young_modulus": 1.0e15},
+        )
+    model = builder.finalize(device=device)
+    solver = SolverImplicitMPM(
+        model,
+        SolverImplicitMPM.Config(
+            voxel_size=0.05,
+            max_active_cell_count=128,
+            velocity_basis="Q1",
+            strain_basis="P0",
+            collider_basis="Q1",
+            max_iterations=5,
+            warmstart_mode="none",
+            reuse_grid_topology=True,
+        ),
+    )
+    state = model.state()
+    solver.step(state, state, None, None, 0.005)
+    model.mpm.young_modulus.fill_(1.0e4)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    state.particle_f.assign(np.array([[0.001, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32))
+    solver.step(state, state, None, None, 0.005)
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state, state, None, None, 0.005)
+    wp.capture_launch(capture.graph)
+    solver.check_sparse_grid_rebuild_status()
+    test.assertTrue(np.isfinite(state.mpm.particle_stress.numpy()).all())
+    test.assertGreater(np.linalg.norm(state.mpm.particle_stress.numpy()), 1.0e-6)
+
+
 class TestImplicitMPMActivity(unittest.TestCase):
     """Exercise graph replay through public sleeping, working-set, and reset APIs."""
 
@@ -339,6 +426,7 @@ for function in (
     test_captured_sleep_support_and_dirty_wake,
     test_working_set_equivalence,
     test_captured_overflow_reset,
+    test_material_change_retains_velocity_partition,
 ):
     add_function_test(
         TestImplicitMPMActivity,
@@ -369,6 +457,15 @@ add_function_test(
     test_captured_overflow_reset,
     devices=get_selected_cuda_test_devices(mode="basic"),
     grid_overflow=True,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPMActivity,
+    "test_working_set_colored_contacts",
+    test_working_set_equivalence,
+    devices=get_selected_cuda_test_devices(mode="basic"),
+    colored_contacts=True,
     check_output=False,
 )
 

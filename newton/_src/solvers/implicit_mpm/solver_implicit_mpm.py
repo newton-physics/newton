@@ -11,6 +11,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from functools import cache
 from itertools import pairwise
 from typing import Any, Literal
 
@@ -365,6 +366,21 @@ def _capture_cached(condition, operation):
         operation()
 
 
+@cache
+def _require_conditional_allocations(device_alias: str) -> None:
+    """Validate optional Warp allocation support once per device, before building guarded graphs."""
+    device = wp.get_device(device_alias)
+    condition = wp.ones(1, dtype=int, device=device)
+    try:
+        with wp.ScopedCapture(device=device, force_module_load=False):
+            wp.capture_if(condition, lambda: wp.zeros(1, device=device))
+    except RuntimeError as error:
+        raise ValueError(
+            "Guarded MPM requires a Warp build supporting allocations in conditional graph callbacks "
+            "(NVIDIA/warp#2267). The setup capability check failed."
+        ) from error
+
+
 @wp.kernel(enable_backward=False)
 def _record_step_validity(
     grid_status: wp.array[wp.uint32],
@@ -687,10 +703,20 @@ class ImplicitMPMScratchpad:
         domain = vel_space_restriction.domain
         vel_space_partition = vel_space_restriction.space_partition
 
-        if (
+        reuse_partition = (
             self.velocity_test is not None
             and self.velocity_test.space_restriction.space_partition == vel_space_partition
+        )
+        if has_compliant_particles and (
+            self.elastic_parameters_field is None
+            or self.elastic_parameters_field.space_partition != vel_space_partition
         ):
+            elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
+            if self.elastic_parameters_field is None:
+                self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
+            else:
+                self.elastic_parameters_field.rebind(elastic_parameters_space, vel_space_partition)
+        if reuse_partition:
             return
 
         fraction_space = fem.make_collocated_function_space(velocity_basis, dtype=float)
@@ -712,13 +738,6 @@ class ImplicitMPMScratchpad:
             self.velocity_trial.rebind(velocity_space, vel_space_partition, domain)
             self.fraction_trial.rebind(fraction_space, vel_space_partition, domain)
             self.fraction_field.rebind(fraction_space, vel_space_partition)
-
-        if has_compliant_particles:
-            elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
-            if self.elastic_parameters_field is None:
-                self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
-            else:
-                self.elastic_parameters_field.rebind(elastic_parameters_space, vel_space_partition)
 
         self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
 
@@ -1877,6 +1896,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             and self._sparse_rebuildable
             and wp.is_conditional_graph_supported()
         )
+        if self._device_guarded:
+            if model.device.is_capturing:
+                raise ValueError("Construct guarded MPM before CUDA graph capture.")
+            if not wp.is_mempool_enabled(model.device):
+                raise ValueError("Guarded MPM requires the Warp CUDA memory pool.")
+            _require_conditional_allocations(model.device.alias)
         self.reuse_grid_topology = bool(
             self._device_guarded and not strain_basis.startswith("pic") and not collider_basis.startswith("pic")
         )
@@ -2167,6 +2192,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             collider_margin: Additional collider wake distance [m]. Defaults
                 to two voxels. Unmoving colliders allow material to sleep.
             collider_lookahead: Collider and particle motion prediction interval [s].
+                Collider sweeps always cover at least the current substep.
                 Particle sweeps also include two voxels of forward support.
             planning_interval: Number of substeps between full motion and stress
                 planning passes. Applied forces, fast particles, non-finite
@@ -2378,24 +2404,25 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 f"Particle working set requires {required_count} slots, but particle_capacity is {capacity}."
             )
 
-        previous_cache = (
-            self._topology_partition,
-            self._topology_mask,
-            self._topology_previous_mask,
-            getattr(self, "_topology_mark_kernel", None),
-            self._step_status,
-            self._step_valid,
-        )
-        previous = (
-            self._particle_working_set,
-            self._scratchpad,
-            self._last_step_data,
-            self._grid_status,
-            self._grid_accumulated_status,
-            self._grid_point_mask,
-            self.max_active_cell_count,
-            self.max_leaf_node_count,
-        )
+        previous = {
+            name: getattr(self, name, None)
+            for name in (
+                "_particle_working_set",
+                "_scratchpad",
+                "_last_step_data",
+                "_grid_status",
+                "_grid_accumulated_status",
+                "_grid_point_mask",
+                "max_active_cell_count",
+                "max_leaf_node_count",
+                "_topology_partition",
+                "_topology_mask",
+                "_topology_previous_mask",
+                "_topology_mark_kernel",
+                "_step_status",
+                "_step_valid",
+            )
+        }
         with wp.ScopedDevice(self.model.device):
             try:
                 self._particle_working_set = _ParticleWorkingSet(
@@ -2414,7 +2441,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self._topology_invalid.fill_(1)
                 self._scratchpad = ImplicitMPMScratchpad()
                 self._last_step_data = LastStepData()
-                self._last_step_data.body_q_prev = previous[2].body_q_prev
+                self._last_step_data.body_q_prev = previous["_last_step_data"].body_q_prev
                 pic = self._particles_to_cells(state.particle_q)
                 self._rebuild_scratchpad(pic)
                 self._require_velocity_space_fields(self._scratchpad, self._mpm_model.has_compliant_particles)
@@ -2423,24 +2450,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 if self.collider_basis[:3] != "pic":
                     self._last_step_data.require_keyed_impulses(self._scratchpad.collider_node_count, self.model.device)
             except Exception:
-                (
-                    self._particle_working_set,
-                    self._scratchpad,
-                    self._last_step_data,
-                    self._grid_status,
-                    self._grid_accumulated_status,
-                    self._grid_point_mask,
-                    self.max_active_cell_count,
-                    self.max_leaf_node_count,
-                ) = previous
-                (
-                    self._topology_partition,
-                    self._topology_mask,
-                    self._topology_previous_mask,
-                    self._topology_mark_kernel,
-                    self._step_status,
-                    self._step_valid,
-                ) = previous_cache
+                self.__dict__.update(previous)
                 raise
 
     def check_particle_working_set_status(self) -> None:
@@ -2859,21 +2869,25 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         model = self.model
 
         with wp.ScopedDevice(model.device):
-            if self._device_guarded:
-                if state_out is not state_in:
-                    wp.copy(state_out.particle_q, state_in.particle_q)
-                    wp.copy(state_out.particle_qd, state_in.particle_qd)
-                    for name in (
-                        "particle_elastic_strain",
-                        "particle_transform",
-                        "particle_qd_grad",
-                        "particle_stress",
-                        "particle_Jp",
-                    ):
-                        wp.copy(getattr(state_out.mpm, name), getattr(state_in.mpm, name))
-                wp.capture_if(self._step_valid, lambda: self._advance_guarded(state_in, state_out, dt))
-            else:
-                self._advance_guarded(state_in, state_out, dt)
+            if self._device_guarded and state_out is not state_in:
+                wp.copy(state_out.particle_q, state_in.particle_q)
+                wp.copy(state_out.particle_qd, state_in.particle_qd)
+                for name in (
+                    "particle_elastic_strain",
+                    "particle_transform",
+                    "particle_qd_grad",
+                    "particle_stress",
+                    "particle_Jp",
+                ):
+                    wp.copy(getattr(state_out.mpm, name), getattr(state_in.mpm, name))
+            self._run_if_valid(lambda: self._advance_guarded(state_in, state_out, dt))
+
+    def _run_if_valid(self, operation, on_invalid=None):
+        """Keep eager and captured capacity guards consistent across particle-state consumers."""
+        if self._device_guarded:
+            wp.capture_if(self._step_valid, operation, on_invalid)
+        else:
+            operation()
 
     def _advance_guarded(self, state_in, state_out, dt):
         last_step_data = self._last_step_data
@@ -2882,7 +2896,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 raise ValueError("Particle sleeping requires a finite positive timestep.")
             with self._timer("Particle activity"):
                 self._particle_activity.update(
-                    state_in, dt, self._mpm_model.collider, last_step_data.body_q_prev, self._separate_worlds
+                    state_in,
+                    dt,
+                    self._mpm_model.collider,
+                    last_step_data.body_q_prev,
+                    self._separate_worlds,
+                    collider_velocity_mode=self.collider_velocity_mode,
                 )
         # Overlap history belongs to the state it was produced for, or the
         # last reset state; fresh history is already invalid.
@@ -2902,10 +2921,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             if last_step_data.gimp_stress is not None:
                 last_step_data.gimp_warmstart_state = state_out
 
-        if self._device_guarded:
-            wp.capture_if(self._step_valid, solve)
-        else:
-            solve()
+        self._run_if_valid(solve)
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -3054,10 +3070,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-        if self._device_guarded:
-            wp.capture_if(self._step_valid, harvest)
-        else:
-            harvest()
+        self._run_if_valid(harvest)
 
     def coupling_rewind_proxy_particle(
         self,
@@ -3161,10 +3174,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-        if self._device_guarded:
-            wp.capture_if(self._step_valid, harvest, out_particle_f.zero_)
-        else:
-            harvest()
+        self._run_if_valid(harvest, out_particle_f.zero_)
 
     def collect_collider_impulses(self, state: newton.State | None) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
@@ -3210,9 +3220,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 wp.copy(state_out.particle_q, state_in.particle_q)
                 wp.copy(state_out.particle_qd, state_in.particle_qd)
                 wp.copy(state_out.mpm.particle_qd_grad, state_in.mpm.particle_qd_grad)
-            wp.capture_if(self._step_valid, lambda: self._project_outside_valid(state_in, state_out, dt, gap))
-        else:
-            self._project_outside_valid(state_in, state_out, dt, gap)
+        self._run_if_valid(lambda: self._project_outside_valid(state_in, state_out, dt, gap))
 
     def _project_outside_valid(self, state_in, state_out, dt, gap):
         if gap is not None:
@@ -3274,14 +3282,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 dt,
                 min_stretch,
                 max_stretch,
-                (
-                    self._mpm_model.particle_flags
-                    if self._particle_activity is None
-                    else self._particle_activity.advect_flags
-                ),
+                self._mpm_model.particle_flags
+                if self._particle_activity is None
+                else self._particle_activity.advect_flags,
                 state.mpm.particle_qd_grad,
                 state_prev.mpm.particle_transform,
                 state.mpm.particle_transform,
+                self._step_valid if self._device_guarded else None,
             ],
             device=state.mpm.particle_qd_grad.device,
         )
@@ -3317,7 +3324,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
 
         with wp.ScopedDevice(grains.device):
-            return update_render_grains(
+            update_render_grains(
                 state_prev,
                 state,
                 grains,
@@ -3325,6 +3332,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 dt,
                 particle_environment=self._particle_environment,
                 particle_flags=None if self._particle_activity is None else self._particle_activity.advect_flags,
+                step_valid=self._step_valid if self._device_guarded else None,
                 temporary_store=self.temporary_store,
             )
 
@@ -3771,19 +3779,18 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._topology_changed.fill_(1)
 
         def rebuild():
-            if self._sparse_rebuildable:
-                grid.rebuild(
-                    positions,
-                    point_envs=environments,
-                    status=self._grid_status,
-                    point_mask=self._update_grid_point_mask(positions, flags),
-                )
-                wp.launch(
-                    record_volume_rebuild_status,
-                    dim=1,
-                    inputs=[self._grid_status, self._grid_accumulated_status],
-                    device=positions.device,
-                )
+            grid.rebuild(
+                positions,
+                point_envs=environments,
+                status=self._grid_status,
+                point_mask=self._update_grid_point_mask(positions, flags),
+            )
+            wp.launch(
+                record_volume_rebuild_status,
+                dim=1,
+                inputs=[self._grid_status, self._grid_accumulated_status],
+                device=positions.device,
+            )
             self._record_validity()
 
             def partition():
@@ -3794,7 +3801,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     wp.copy(self._topology_previous_mask, self._topology_mask)
                     self._topology_invalid.zero_()
 
-            wp.capture_if(self._step_valid, partition)
+            self._run_if_valid(partition)
 
         _capture_cached(self._topology_changed, rebuild)
         return self._topology_partition
@@ -4931,6 +4938,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             contact_cell_rows = None
             if self.gs_colored_contacts:
                 contact_pic = scratch.collision_pic
+                contact_cells = (
+                    contact_pic.cell_indices
+                    if self._particle_working_set is None
+                    else self._particle_working_set.particle_cells
+                )
                 partition = scratch._strain_space_restriction.space_partition
                 cell_count = partition.node_count() // scratch.strain_nodes_per_element
                 node_count = scratch.collider_node_count
@@ -4952,7 +4964,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         partition.partition_arg_value(device=self.model.device),
                         scratch._collision_space_restriction.space_partition.space_node_indices(),
                         contact_pic.cell_particle_indices,
-                        contact_pic.cell_indices,
+                        contact_cells,
                         scratch.collider_matrix.offsets,
                         keys,
                         contact_cell_rows,
