@@ -9713,6 +9713,54 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             np.testing.assert_allclose(qd[0], [0.0, 1.0 * dt, 3.0 * dt], rtol=1.0e-3, atol=1.0e-9)
             np.testing.assert_allclose(qd[1], [5.0 * dt, 3.0 * dt, 1.0 * dt], rtol=1.0e-3, atol=1.0e-9)
 
+        for use_mujoco_cpu in (False, True):
+            with self.subTest("ball after a prismatic joint", use_mujoco_cpu=use_mujoco_cpu):
+                # The ball DOFs start at DOF 1 in every world; each axis must still follow its own limit.
+                template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                base = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                slide = template.add_joint_prismatic(-1, base, axis=(1.0, 0.0, 0.0))
+                tip = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                ball = template.add_joint_ball(base, tip, actuator_mode=newton.JointTargetMode.VELOCITY)
+                template.add_articulation([slide, ball])
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                world_count = 1 if use_mujoco_cpu else 2
+                builder.replicate(template, world_count)
+                model = builder.finalize()
+                model.joint_target_kd.fill_(10.0)
+                world_limits = ([1.0, 2.0, 3.0], [0.0, 3.0, 1.0])
+                model.joint_effort_limit.assign(
+                    np.array([[1.0e6, *lim] for lim in world_limits[:world_count]], dtype=np.float32)
+                )
+                solver = SolverMuJoCo(
+                    model, use_mujoco_cpu=use_mujoco_cpu, separate_worlds=world_count > 1, disable_contacts=True
+                )
+
+                def step_ball_qd(model, solver, world_count):
+                    state_in, state_out = model.state(), model.state()
+                    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                    control = model.control()
+                    control.joint_target_qd.fill_(1.0)
+                    solver.step(state_in, state_out, control, None, dt)
+                    return state_out.joint_qd.numpy().reshape(world_count, 4)[:, 1:]
+
+                np.testing.assert_allclose(
+                    step_ball_qd(model, solver, world_count),
+                    np.array(world_limits[:world_count]) * dt,
+                    rtol=1.0e-3,
+                    atol=1.0e-9,
+                )
+                world_limits = ([3.0, 0.0, 2.0], [1.0, 2.0, 0.0])
+                model.joint_effort_limit.assign(
+                    np.array([[1.0e6, *lim] for lim in world_limits[:world_count]], dtype=np.float32)
+                )
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                np.testing.assert_allclose(
+                    step_ball_qd(model, solver, world_count),
+                    np.array(world_limits[:world_count]) * dt,
+                    rtol=1.0e-3,
+                    atol=1.0e-9,
+                )
+
         with self.subTest("authored forcelimited=false"):
             mjcf = """<mujoco><worldbody><body><joint name="b" type="ball"/><geom size="0.1" mass="1"/></body></worldbody>
             <actuator><velocity joint="b" kv="10" forcelimited="false"/></actuator></mujoco>"""
