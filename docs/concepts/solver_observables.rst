@@ -241,7 +241,10 @@ MuJoCo overflow diagnostics
 :class:`~newton.solvers.SolverMuJoCo` exposes
 :attr:`~newton.solvers.SolverMuJoCo.ObservableKind.OVERFLOW` through
 ``observables.overflow``, an ``int32`` array with shape ``(model.world_count + 1,)``.
-The final entry, for global world ``-1``, is always zero.
+Entries follow the Newton world each MuJoCo world simulates: a single MuJoCo
+world that simulates global entities, as in models built without
+:meth:`~newton.ModelBuilder.begin_world`, reports in the final entry for global
+world ``-1``; otherwise the final entry is zero.
 It reports capacity overflow after a step without synchronizing the device in
 the solver. Requesting it requires ``use_mujoco_cpu=False``.
 

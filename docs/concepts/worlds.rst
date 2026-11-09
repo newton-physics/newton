@@ -387,10 +387,14 @@ same layout as reset masks: shape ``(world_count + 1,)``, with entries
 ``-1``. Global world ``-1`` is never an alias of world ``0``, so kernels can
 index these arrays directly with an entity's world index: Warp wraps ``-1`` to
 the final entry. Builder values use the same keys: values authored or imported
-outside a world context, or merged by :meth:`~newton.ModelBuilder.add_builder`
-outside one, belong to key ``-1``, and :meth:`~newton.ModelBuilder.add_world`
-moves a source builder's global value to its destination world. Unset entries hold
-the attribute default. Consumers without global entities may ignore the final
+outside a world context belong to key ``-1``. Like the builder's gravity, the
+global value is also the default of local worlds without their own value, unless
+the attribute stores references; other unset entries hold the attribute default.
+Merging a builder with :meth:`~newton.ModelBuilder.add_builder`,
+:meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate`
+places all its entities in one world, so the destination entry takes the source's
+global value, or else its world ``0`` value; values for other source worlds raise
+:class:`ValueError`. Consumers without global entities may ignore the final
 entry; a single :class:`~newton.solvers.SolverMuJoCo` world reads world ``0``
 options when that world owns bodies and global options otherwise.
 

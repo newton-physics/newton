@@ -1658,6 +1658,9 @@ class ModelBuilder:
         """Storage for specific values (overrides).
 
         For enum frequencies (BODY, SHAPE, etc.): dict[int, Any] mapping entity indices to values.
+        For ``WORLD``, keys are world indices, and key ``-1`` is global world ``-1``, whose value is
+        also the default of local worlds without one unless the attribute has
+        :attr:`references`.
         For string frequencies ("mujoco:pair", etc.): list[Any] for sequential custom data.
 
         If None, the attribute is not initialized with any values. Values can be assigned in subsequent
@@ -1844,8 +1847,14 @@ class ModelBuilder:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
                 if self.frequency == Model.AttributeFrequency.WORLD and count > 0 and -1 in self.values:
-                    # Key -1 is global world -1, stored after the local worlds.
-                    arr[-1] = self.values[-1]
+                    # Key -1 is global world -1, stored after the local worlds. Like builder
+                    # gravity, it is also the default of local worlds without their own value.
+                    global_value = self.values[-1]
+                    if self.references is None:
+                        arr = [self.values.get(i, global_value) for i in range(count - 1)]
+                        arr.append(global_value)
+                    else:
+                        arr[-1] = global_value
 
             # String dtype: return as Python list instead of warp array
             if self.dtype is str:
@@ -4613,20 +4622,25 @@ class ModelBuilder:
         """
         return self.current_world if attribute.frequency == Model.AttributeFrequency.WORLD else 0
 
-    @staticmethod
-    def _merged_value_key(frequency: Model.AttributeFrequency, index_offset: int, index: int) -> int:
-        """Return the destination key of a source value row when merging builders.
+    def _check_merged_world_values(self, key: str, values: dict[int, Any] | None) -> None:
+        """Reject source ``WORLD`` values that a merge cannot keep.
 
-        ``WORLD`` keys are world indices, and ``index_offset`` is the destination
-        world. All source rows of a global merge go to global world ``-1``. A merge
-        into a local world maps the source's global row ``-1`` to that world and
-        offsets the source's local-world rows.
+        A merge places all source entities in one destination world, so the source
+        contributes one value: its global value (key ``-1``), or else its world-0 value.
         """
-        if frequency == Model.AttributeFrequency.WORLD:
-            if index_offset < 0:
-                return -1
-            return index_offset if index < 0 else index_offset + index
-        return index_offset + index
+        if not values:
+            return
+        other_worlds = sorted(world for world in values if world not in (-1, 0))
+        if other_worlds:
+            raise ValueError(
+                f"Custom attribute '{key}' has values for source worlds {other_worlds}. Merging places all "
+                "source entities in one world, so only the source's world 0 or global (-1) value can be kept."
+            )
+        if -1 in values and 0 in values and not self._custom_attribute_defaults_match(values[-1], values[0]):
+            raise ValueError(
+                f"Custom attribute '{key}' has different values for source world 0 and global world -1, "
+                "which merge into the same destination world."
+            )
 
     @staticmethod
     @functools.cache
@@ -5944,8 +5958,9 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
             elif attr.frequency == Model.AttributeFrequency.WORLD:
-                # Keys are world indices; see _merged_value_key for the global world -1.
+                # The destination entry: the destination world, or global world -1.
                 index_offset = world
+                self._check_merged_world_values(full_key, attr.values)
             else:
                 index_offset = get_offset(attr.frequency)
 
@@ -6068,8 +6083,10 @@ class ModelBuilder:
                         # Implicit source defaults must not replace an existing global value.
                         count = int(full_key not in self.custom_attributes)
                     elif freq_key == Model.AttributeFrequency.WORLD:
-                        # Each copy fills one destination entry: its world or the global world.
-                        count = 1
+                        # Each copy fills its destination world. Like ONCE, an implicit source
+                        # default must not replace an existing global value.
+                        existing = self.custom_attributes.get(full_key)
+                        count = int(world >= 0 or existing is None or -1 not in (existing.values or {}))
                     else:
                         if source_counts is None:
                             source_counts = self._builder_merge_counts(builder)
@@ -6080,16 +6097,18 @@ class ModelBuilder:
                         )
                     source_values = attr._values_with_defaults(count)
 
-            if not isinstance(freq_key, str):
-                source_items = source_values.items()
-                if freq_key == Model.AttributeFrequency.WORLD:
-                    # Apply the source's global-world entry last so it wins on a shared destination.
-                    source_items = sorted(source_items, key=lambda item: item[0] == -1)
+            if freq_key == Model.AttributeFrequency.WORLD:
+                # All source entities join one destination entry, which takes the source's
+                # global value, or else its world-0 value.
+                source_key = -1 if -1 in source_values else 0
+                enum_values = {}
+                if source_key in source_values:
+                    value = source_values[source_key]
+                    enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
+            elif not isinstance(freq_key, str):
                 enum_values = {
-                    self._merged_value_key(freq_key, index_offset, idx): (
-                        transform_enum_value(idx, value) if needs_remap else value
-                    )
-                    for idx, value in source_items
+                    index_offset + idx: transform_enum_value(idx, value) if needs_remap else value
+                    for idx, value in source_values.items()
                 }
 
             merged = self.custom_attributes.get(full_key)

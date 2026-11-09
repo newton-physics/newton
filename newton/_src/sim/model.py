@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from ..exceptions import NewtonDeprecationWarning
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
@@ -2733,6 +2733,8 @@ class Model:
                 raise ValueError("Expected single gravity vector (3,) when world is specified")
             if world < -1 or world >= self.world_count:
                 raise IndexError(f"world {world} out of range; expected -1 or [0, {self.world_count})")
+            if world == 0:
+                self._warn_global_gravity_unchanged("set_gravity(..., world=0)")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
@@ -2746,11 +2748,34 @@ class Model:
             if gravity_np.shape == full_shape:
                 self.gravity.assign(gravity_np)
             elif gravity_np.shape == local_shape:
+                self._warn_global_gravity_unchanged(f"set_gravity() with shape {local_shape}")
                 current = self.gravity.numpy()
                 current[: self.world_count] = gravity_np
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    def _warn_global_gravity_unchanged(self, call: str) -> None:
+        """Warn when a local-world gravity update reaches no entity because only global entities are dynamic.
+
+        Models built without :meth:`ModelBuilder.begin_world` place every entity in global
+        world ``-1``, whose gravity entry is separate from world ``0``.
+        """
+        worlds = [
+            array.numpy()
+            for array in (self.body_world, self.particle_world)
+            if array is not None and array.shape[0] > 0
+        ]
+        if not worlds:
+            return
+        worlds = np.concatenate(worlds)
+        if np.any(worlds == -1) and not np.any(worlds >= 0):
+            warnings.warn(
+                f"{call} does not affect this model's bodies or particles, which all belong to global "
+                "world -1; pass world=-1 or a single gravity vector for every world.",
+                NewtonWarning,
+                stacklevel=3,
+            )
 
     def select_body_variants(self, variants: wp.array[wp.int32], *, bodies: wp.array[wp.int32] | None = None) -> int:
         """Select the shape variant of bodies declared with

@@ -5983,6 +5983,14 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         direct.end_world()
         np.testing.assert_allclose(direct.finalize().mujoco.impratio.numpy(), [2.0, 1.0], atol=1e-6)
 
+        # Options imported outside a world context also apply to local worlds without their own.
+        scene = newton.ModelBuilder()
+        scene.add_mjcf(robot_b_mjcf)
+        robot = newton.ModelBuilder()
+        robot.add_body()
+        scene.replicate(robot, 2)
+        np.testing.assert_allclose(scene.finalize().mujoco.impratio.numpy(), [2.0, 2.0, 2.0], atol=1e-6)
+
     def test_option_vector_world_parsing(self):
         """Test parsing of WORLD frequency vector options from MJCF (2 options)."""
         test_cases = [

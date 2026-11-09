@@ -8,6 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverKamino, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -142,7 +143,8 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
     # so the opposing gravity of world 0 must not reach it.
     test.assertEqual(int(model.body_world.numpy()[0]), -1)
     model.set_gravity((9.81, 0.0, 0.0), world=-1)
-    model.set_gravity((0.0, 0.0, 9.81), world=0)
+    with test.assertWarns(NewtonWarning):
+        model.set_gravity((0.0, 0.0, 9.81), world=0)
     solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Simulate with horizontal gravity
@@ -582,8 +584,11 @@ def test_set_gravity_implicit_world_global_entry(test, device):
     test.assertEqual(model.gravity.shape, (2,))
     test.assertEqual(int(model.particle_world.numpy()[0]), -1)
 
-    # The particle is global, so only the global entry accelerates it.
-    model.set_gravity((0.0, 0.0, -2.0), world=0)
+    # The particle is global, so only the global entry accelerates it, and world 0 updates warn.
+    with test.assertWarns(NewtonWarning):
+        model.set_gravity((0.0, 0.0, -2.0), world=0)
+    with test.assertWarns(NewtonWarning):
+        model.set_gravity(np.array(((0.0, 0.0, -2.0),), dtype=np.float32))
     model.set_gravity((0.0, 0.0, -4.0), world=-1)
     np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -2.0), (0.0, 0.0, -4.0)), atol=1.0e-6)
     state_in, state_out = model.state(), model.state()

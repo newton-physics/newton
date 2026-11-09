@@ -2494,12 +2494,22 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
                 else:
                     main.replicate(sub, 2)
                 main.add_builder(ground)
+                # A second global merge keeps the global entry rather than its own reference default.
+                main.add_builder(ground)
                 model = main.finalize(device=self.device)
                 self.assertEqual(model.world_count, 2)
                 # The global merge writes only the global-world entry, which follows the local
                 # worlds; ground's root-body default references its own body 4.
                 np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42, 7])
                 np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2, 4])
+
+        # A merge places all source entities in one world, so other source world values are rejected.
+        sub.custom_attributes["test:world_data"].values = {1: 5}
+        with self.assertRaisesRegex(ValueError, "source worlds \\[1\\]"):
+            ModelBuilder().add_builder(sub)
+        sub.custom_attributes["test:world_data"].values = {-1: 5, 0: 6}
+        with self.assertRaisesRegex(ValueError, "world 0 and global world -1"):
+            ModelBuilder().add_world(sub)
 
     def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
         builder = ModelBuilder()

@@ -699,7 +699,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count + 1,)``.
 
-        The final entry, for global world ``-1``, is always zero.
+        Entries follow the Newton world each MuJoCo world simulates. A single MuJoCo
+        world that simulates global entities, as in models built without
+        :meth:`~newton.ModelBuilder.begin_world`, reports in the final entry, for
+        global world ``-1``; otherwise the final entry is zero.
         """
 
     class OverflowBits(IntFlag):
@@ -5242,6 +5245,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     else:
                         rigid_contact_count = self._zero_contact_count
                         rigid_contact_max = 0
+                    # Report each MuJoCo world in the entry of the Newton world it simulates; a
+                    # single world that simulates global entities reports in the global entry.
+                    overflow_out = observables.overflow
+                    overflow_out.zero_()
+                    if self._option_world < 0:
+                        world_count = self.model.world_count
+                        overflow_out = overflow_out[world_count : world_count + 1]
                     wp.launch(
                         collect_overflow_kernel,
                         dim=self.mjw_data.nworld,
@@ -5252,7 +5262,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             newton_contacts,
                             self.mjw_data.overflow,
                         ],
-                        outputs=[observables.overflow],
+                        outputs=[overflow_out],
                         device=self.model.device,
                     )
                 if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):

@@ -14604,18 +14604,21 @@ class TestMuJoCoSolverOverflowObservable(unittest.TestCase):
 
         pipeline.collide(s0, contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), solver.mjw_data.naconmax)
+        # A reused container must not keep values from before the step.
+        obs.overflow.fill_(int(bits.CONTACT_PIPELINE))
         solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
         overflow = obs.overflow.numpy()
-        self.assertTrue(int(overflow[0]) & bits.SOLVER_NCONMAX)
-        # WORLD rows end with an entry for global world -1, which MuJoCo leaves zero.
+        # The scene's bodies are global, so the single MuJoCo world reports in the global world entry.
         self.assertEqual(overflow.shape, (solver.model.world_count + 1,))
-        self.assertEqual(int(overflow[-1]), 0)
+        self.assertEqual(int(overflow[0]), 0)
+        self.assertEqual(int(overflow[-1]) & bits.CONTACT_PIPELINE, 0)
+        self.assertTrue(int(overflow[-1]) & bits.SOLVER_NCONMAX)
 
         # A flag left in MuJoCo Warp's accumulator (bits 0-15, OR-ed in by the backend) must not leak into the next step.
         stale = self.mjw.OverflowType.NEFC
         solver.mjw_data.overflow.fill_(int(stale))
         solver.step(s1, s0, ctrl, pipeline.contacts(), dt, observables=obs)
-        self.assertEqual(int(obs.overflow.numpy()[0]), 0)
+        self.assertEqual(int(obs.overflow.numpy()[-1]), 0)
 
         # The graph replays the same computation, including the reset.
         pipeline.collide(s0, contacts)
@@ -14623,7 +14626,7 @@ class TestMuJoCoSolverOverflowObservable(unittest.TestCase):
             solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
         obs.overflow.zero_()
         wp.capture_launch(capture.graph)
-        self.assertTrue(int(obs.overflow.numpy()[0]) & bits.SOLVER_NCONMAX)
+        self.assertTrue(int(obs.overflow.numpy()[-1]) & bits.SOLVER_NCONMAX)
 
     def test_pipeline_capacity_overflow(self):
         """The pipeline bit fires when contacts exceed ``rigid_contact_max``, independently of nconmax."""
@@ -14631,7 +14634,7 @@ class TestMuJoCoSolverOverflowObservable(unittest.TestCase):
         pipeline.collide(s0, contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), contacts.rigid_contact_max)
         solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0, observables=obs)
-        mask = int(obs.overflow.numpy()[0])
+        mask = int(obs.overflow.numpy()[-1])
         self.assertTrue(mask & solver.OverflowBits.CONTACT_PIPELINE)
         self.assertFalse(mask & solver.OverflowBits.SOLVER_NCONMAX)
 
@@ -14644,12 +14647,12 @@ class TestMuJoCoSolverOverflowObservable(unittest.TestCase):
             solver, pipeline, s0, s1, ctrl, contacts, obs = self._make_scene(nconmax=9999)
             pipeline.collide(s0, contacts)
             solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
-            self.assertEqual(int(obs.overflow.numpy()[0]), 0)
+            self.assertEqual(int(obs.overflow.numpy()[-1]), 0)
 
         with self.subTest(source="mujoco contacts, contacts=None"):
             solver, _, s0, s1, ctrl, _, obs = self._make_scene(nconmax=1, use_mujoco_contacts=True)
             solver.step(s0, s1, ctrl, None, dt, observables=obs)
-            mask = int(obs.overflow.numpy()[0])
+            mask = int(obs.overflow.numpy()[-1])
             self.assertEqual(mask & newton_bits, 0)
             # MuJoCo Warp's own broadphase overflow (bits 0-15) must reach the observable.
             self.assertTrue(mask & int(self.mjw.OverflowType.BROADPHASE))
