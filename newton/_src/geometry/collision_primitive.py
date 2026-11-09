@@ -456,52 +456,63 @@ def collide_plane_box(
         contact_normal: contact normal vector
     """
 
-    corner = wp.vec3()
     center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
+    # The contacts are the corners of the incident face: the face whose outward
+    # normal is most anti-parallel to the plane normal, onto which the box
+    # settles. Its corners span the box's support area and include the deepest
+    # corner, and every other corner lies above its twin on this face. Ranking
+    # all eight corners by depth instead weights face alignment by the box
+    # half-extents, so a thin plate tilted by only atan(thickness / width)
+    # reports both corner pairs of one edge and loses the support of the
+    # opposite edge. Slots left by incident corners beyond the margin go to the
+    # deepest opposite corners, which bound the adjacent faces of the low edge.
+    alignment = wp.transpose(box_rot) @ plane_normal
+    face_axis = wp.int32(0)
+    if wp.abs(alignment[1]) > wp.abs(alignment[face_axis]):
+        face_axis = 1
+    if wp.abs(alignment[2]) > wp.abs(alignment[face_axis]):
+        face_axis = 2
+    face_side = wp.where(alignment[face_axis] > 0.0, -1.0, 1.0)
+
+    axis1 = (face_axis + 1) % 3
+    axis2 = (face_axis + 2) % 3
     dist = wp.vec4(MAXVAL)
     pos = _mat43f()
-
-    # Test all corners and keep up to 4 deepest (most negative) contacts.
-    # Track the current worst kept contact by index for O(1) replacement checks.
     ncontact = wp.int32(0)
+    nface = wp.int32(0)
     worst_idx = wp.int32(0)
     for i in range(8):
-        # get corner in local coordinates
-        corner.x = wp.where((i & 1) != 0, box_size.x, -box_size.x)
-        corner.y = wp.where((i & 2) != 0, box_size.y, -box_size.y)
-        corner.z = wp.where((i & 4) != 0, box_size.z, -box_size.z)
-
-        # get corner in global coordinates relative to box center
+        # Incident-face corners first (i < 4), then the opposite face.
+        corner = wp.vec3()
+        side = wp.where(i < 4, face_side, -face_side)
+        corner[face_axis] = side * box_size[face_axis]
+        corner[axis1] = wp.where((i & 1) != 0, box_size[axis1], -box_size[axis1])
+        corner[axis2] = wp.where((i & 2) != 0, box_size[axis2], -box_size[axis2])
         corner = box_rot @ corner
 
-        # Compute distance to plane and skip corners beyond margin.
-        ldist = wp.dot(plane_normal, corner)
-        cdist = center_dist + ldist
+        # Skip corners beyond the margin.
+        cdist = center_dist + wp.dot(plane_normal, corner)
         if cdist > margin:
             continue
-
         cpos = corner + box_pos - 0.5 * plane_normal * cdist
 
         if ncontact < 4:
             dist[ncontact] = cdist
             pos[ncontact] = cpos
-            if ncontact == 0 or cdist > dist[worst_idx]:
+            if i < 4:
+                nface += 1
+            elif ncontact == nface or cdist > dist[worst_idx]:
                 worst_idx = ncontact
             ncontact += 1
-        else:
-            if cdist < dist[worst_idx]:
-                dist[worst_idx] = cdist
-                pos[worst_idx] = cpos
-
-                # Recompute worst index (largest distance among kept contacts).
-                worst_idx = 0
-                if dist[1] > dist[worst_idx]:
-                    worst_idx = 1
-                if dist[2] > dist[worst_idx]:
-                    worst_idx = 2
-                if dist[3] > dist[worst_idx]:
-                    worst_idx = 3
+        elif nface < 4 and cdist < dist[worst_idx]:
+            # Replace the shallowest opposite corner kept so far.
+            dist[worst_idx] = cdist
+            pos[worst_idx] = cpos
+            worst_idx = nface
+            for j in range(4):
+                if j > nface and dist[j] > dist[worst_idx]:
+                    worst_idx = j
 
     return dist, pos, plane_normal
 
