@@ -218,6 +218,21 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
+    def test_steel_benchmarks_stay_out_of_pr_gate(self):
+        """Discover every Steel benchmark and keep them all out of the PR gate."""
+        benchmark_names = (
+            "simulation.bench_steel.SteelFrictionPatches.time_simulate",
+            "simulation.bench_steel.SteelFrictionPatchBuild.time_build",
+            "simulation.bench_steel.SteelFrictionPair.time_pair_update",
+            "simulation.bench_steel.SteelContactTorsionPreparation.time_prepare",
+        )
+        inventory = {entry["name"] for entry in self._discover_benchmarks(pr_gate=False)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for benchmark_name in benchmark_names:
+            with self.subTest(benchmark_name=benchmark_name):
+                self.assertIn(benchmark_name, inventory)
+                self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
+
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
         """Keep nightly collisions out of the gate with finite timing statistics."""
         benchmark_names = (
