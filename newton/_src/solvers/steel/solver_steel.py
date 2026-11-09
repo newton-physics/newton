@@ -1498,7 +1498,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     64 DOFs, joint velocity-limit and joint friction rows are disabled, the model has no mimic or loop-closing
     joints, drives are augmented and contacts use hard point friction or persistent friction patches
     (no warm start, regularization, velocity-only iterations, friction gap threshold, restitution,
-    contact torsion or compliance): the mass matrix is assembled and factored in
+    contact torsion, compliance or Nesterov momentum): the mass matrix is assembled and factored in
     the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
     that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
@@ -1510,7 +1510,8 @@ class SolverSteel(SolverBase, CouplingInterface):
     factorization and solve each DOF by division, bitwise identical to the dense ``loop``
     kernels and equal to the ``tiled`` kernels up to float32 rounding, and take precedence
     over sparse factors. ``parallel_tree=True`` additionally traverses the independent
-    branches of each tree in parallel.
+    branches of each tree in parallel. ``nesterov_momentum=True`` keeps the dense factors and
+    skips the diagonal path.
 
     Constraint rows are stored per world with fixed capacities (``articulation_constraint_max``
     for rows of articulated bodies, ``free_body_constraint_max`` for free-body contacts, and
