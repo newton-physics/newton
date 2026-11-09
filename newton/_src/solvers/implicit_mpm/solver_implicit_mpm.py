@@ -1154,8 +1154,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         ``'backward'`` uses the previous timestep position."""
 
         reuse_grid_topology: bool = dataclass_field(default=False, kw_only=True)
-        """Reuse unchanged bounded grid partitions and function-space structure.
+        """Opt into guarded device runtime and unchanged grid-structure reuse.
 
+        Required by :meth:`set_particle_sleeping` and :meth:`set_particle_working_set`.
         Exact GPU occupancy checks invalidate the cache; current particle
         assignments, weights, contacts and material values still update.
         Supported on CUDA rebuildable sparse grids with standard PIC,
@@ -1868,16 +1869,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             and collider_rebuild_safe
         )
         self._device_guarded = bool(
-            model.device.is_cuda
+            config.reuse_grid_topology
+            and model.device.is_cuda
             and not model.requires_grad
             and config.integration_scheme == "pic"
             and self.max_active_cell_count > 0
             and self._sparse_rebuildable
             and wp.is_conditional_graph_supported()
-            and not strain_basis.startswith("pic")
-            and not collider_basis.startswith("pic")
         )
-        self.reuse_grid_topology = bool(config.reuse_grid_topology and self._device_guarded)
+        self.reuse_grid_topology = bool(
+            self._device_guarded and not strain_basis.startswith("pic") and not collider_basis.startswith("pic")
+        )
         self._topology_partition = None
         self._topology_mask = None
         self._topology_previous_mask = None
@@ -2137,10 +2139,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Caller-owned particle flags and masses are preserved.
 
         This runtime optimization is disabled by default and has no USD
-        authoring representation. Configure it before CUDA graph capture;
-        changing it requires recapturing graphs. Only CUDA sparse grids are
-        supported. Choose thresholds for the material: low-speed creep can be
-        frozen, and velocity and stress criteria do not establish equilibrium.
+        authoring representation. Set ``Config.reuse_grid_topology=True`` to
+        enable its guarded device runtime before capture; changing runtime
+        configuration requires recapturing graphs. CUDA standard PIC with a
+        bounded sparse grid and no gradients is required. Choose thresholds
+        for the material: low-speed creep can be frozen, and velocity and
+        stress criteria do not establish equilibrium.
 
         Args:
             enabled: Enable sleeping, or restore all eligible particles when false.
@@ -2191,8 +2195,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self._particle_activity.restore()
                 self._particle_activity = None
             return
-        if not self.model.device.is_cuda or self.grid_type != "sparse":
-            raise ValueError("Particle sleeping requires a CUDA sparse grid.")
+        if not self._device_guarded:
+            raise ValueError(
+                "Particle sleeping requires Config.reuse_grid_topology=True, CUDA standard PIC, "
+                "a bounded sparse grid, and no gradients."
+            )
 
         patch_size = 2.0 * self.voxel_size if patch_size is None else float(patch_size)
         collider_margin = 2.0 * self.voxel_size if collider_margin is None else float(collider_margin)
@@ -2284,6 +2291,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         reduces FEM evaluation and workspace capacities; activity planning and
         state preservation still inspect the full particle backing arrays.
 
+        Requires ``Config.reuse_grid_topology=True`` for guarded device stepping.
         Call after settling and activity classification, outside graph capture.
         Destroy existing captured graphs before calling and capture again after
         an uncaptured warm-up. Reconfiguration discards grid-backed warm starts
@@ -2319,8 +2327,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
         if self.model.device.is_capturing:
             raise ValueError("Configure the particle working set before CUDA graph capture.")
-        if not self.model.device.is_cuda or not self._sparse_rebuildable or self.gimp:
-            raise ValueError("Particle working sets require CUDA standard PIC and a rebuildable sparse grid.")
+        if not self._device_guarded:
+            raise ValueError(
+                "Particle working sets require Config.reuse_grid_topology=True, CUDA standard PIC, "
+                "a bounded sparse grid, and no gradients."
+            )
         self._validate_reset_inputs(state)
         if isinstance(page_size, (bool, np.bool_)):
             raise ValueError("page_size must be a non-negative integer.")

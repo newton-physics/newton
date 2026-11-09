@@ -17,11 +17,13 @@ the active solve; it does not remove the full particle backing allocation.
 
 Configure sleeping before capturing the simulation:
 
-The fully captured path requires CUDA, standard PIC, and positive bounded
-grid capacities. It also requires a Warp runtime supporting persistent
-allocations during conditional-body capture; stock Warp versions without that
-support reject allocation nodes in these branches. Unsupported solver layouts
-retain their ordinary stepping path.
+The device runtime requires ``Config.reuse_grid_topology=True``, CUDA,
+standard PIC, positive bounded grid capacities, and no gradients. Sleeping
+and working-set setters reject unsupported layouts. It also requires a Warp
+runtime supporting persistent allocations during conditional-body capture;
+stock Warp versions without that
+support reject allocation nodes in these branches. Without the opt-in,
+ordinary solver layouts retain their stepping path.
 
 .. code-block:: python
 
@@ -78,6 +80,8 @@ Device occupancy checks rebuild dirty structure while particle assignments,
 interpolation weights, material values, and contact values remain current.
 The cache does not lower resolution, change the timestep, or activate extra
 particles. It requires a supported grid, standard PIC, and no gradients.
+Point-based strain/contact bases retain their ordinary structure rebuilds
+while using the same guarded device stepping and compact particle IDs.
 
 The captured stepping path requires no device-to-host residency count.
 The persistent :attr:`~newton.solvers.SolverImplicitMPM.step_status` device
