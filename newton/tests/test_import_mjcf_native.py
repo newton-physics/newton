@@ -1294,7 +1294,14 @@ class TestImportMjcfNative(unittest.TestCase):
         self.assertGreater(builder.joint_target_kd[0], 0)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_target_kd.numpy(), -reference.actuator_biasprm[:, 2], rtol=3e-5)
+        np.testing.assert_allclose(model.joint_stiffness.numpy(), reference.jnt_stiffness, rtol=3e-5)
+        np.testing.assert_allclose(model.joint_damping.numpy(), reference.dof_damping, rtol=3e-5)
+        before = [a.numpy().copy() for a in (model.joint_stiffness, model.joint_damping, model.joint_target_kd)]
         solver = SolverMuJoCo(model, disable_contacts=True)
+        for array, expected in zip(
+            (model.joint_stiffness, model.joint_damping, model.joint_target_kd), before, strict=True
+        ):
+            np.testing.assert_array_equal(array.numpy(), expected)
         np.testing.assert_allclose(model.joint_target_kd.numpy(), -reference.actuator_biasprm[:, 2], rtol=3e-5)
         for field in ("jnt_stiffness", "dof_damping", "actuator_biasprm"):
             np.testing.assert_allclose(getattr(solver.mj_model, field), getattr(reference, field), rtol=3e-5)

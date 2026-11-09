@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -14,6 +13,7 @@ import warp as wp
 from ...core.types import MAXVAL, vec5
 from ...sim import ModelBuilder
 from ...sim.model import Model
+from .constants import MJ_MINVAL
 
 if TYPE_CHECKING:
     import mujoco
@@ -148,6 +148,8 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         ("native_equality_site1", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_equality_site2", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_actuator_target_kd", "mujoco:actuator", wp.float32, -1.0, None),
+        ("native_joint_gain_baseline", Model.AttributeFrequency.JOINT_DOF, wp.vec2, (-1.0, -1.0), None),
+        ("native_target_kd_override", Model.AttributeFrequency.JOINT_DOF, wp.bool, False, None),
     ):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -161,84 +163,164 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         )
 
 
-def _finalize_native_target_damping(builder: ModelBuilder, model: Model, attr: ModelBuilder.CustomAttribute) -> None:
-    count = model.custom_frequency_counts.get("mujoco:actuator", 0)
-    if not count:
-        return
-    values = attr.build_array(count, device=model.device, requires_grad=model.requires_grad)
+def _native_inertia_exclusions(model: Model) -> set[int]:
+    excluded = set()
+    for kind in ("actuator", "tendon"):
+        armature = getattr(model.mujoco, f"{kind}_armature", None)
+        if armature is None:
+            continue
+        rows = np.flatnonzero(armature.numpy() != 0)
+        if len(rows):
+            owners = getattr(model.mujoco, f"{kind}_articulation").numpy()[rows]
+            if np.any(owners < 0):
+                return set(range(model.articulation_count))
+            excluded.update(map(int, owners))
+    return excluded
 
-    def read(name, count=count):
-        return builder.custom_attributes[f"mujoco:{name}"].build_array(count, device="cpu").numpy()
 
-    baseline = read("native_actuator_target_kd")
-    rows = np.flatnonzero(baseline >= 0)
-    if len(rows):
-        from ...sim.articulation import _iter_mass_matrix_blocks, eval_fk  # noqa: PLC0415
-        from ...sim.enums import JointTargetMode, JointType  # noqa: PLC0415
-        from ...sim.state import State  # noqa: PLC0415
+def _reference_inverse_weights(model: Model, dofs: set[int], free_joints: list[int]) -> np.ndarray:
+    from ...sim.articulation import _iter_mass_matrix_blocks, eval_fk  # noqa: PLC0415
+    from ...sim.enums import JointType  # noqa: PLC0415
+    from ...sim.state import State  # noqa: PLC0415
 
-        bias = values.numpy()
-        targets, sources = read("actuator_trnid")[:, 0], read("ctrl_source")
-        kd, ke = model.joint_target_kd.numpy(), model.joint_target_ke.numpy()
-        modes = model.joint_target_mode.numpy()
-        starts = model.joint_qd_start.numpy()
-        owners = model.joint_articulation.numpy()
-        pending = {}
-        supported = model._fk_articulation_level_start is not None and not builder._variant_shape_rows.variant_sets
-        supported = supported and not np.any(read("actuator_armature"))
-        tendon_count = model.custom_frequency_counts.get("mujoco:tendon", 0)
-        supported = supported and not np.any(read("tendon_armature", tendon_count))
-        for row in rows:
+    weights = np.full(model.joint_dof_count, np.nan)
+    if not dofs or model._fk_articulation_level_start is None:
+        return weights
+    starts = model.joint_qd_start.numpy()
+    owners = model.joint_articulation.numpy()
+    excluded = _native_inertia_exclusions(model)
+    pending = {}
+    for dof in sorted(dofs):
+        joint = int(np.searchsorted(starts, dof, side="right") - 1)
+        articulation = int(owners[joint])
+        if articulation >= 0 and articulation not in excluded:
+            pending.setdefault(articulation, []).append(dof)
+    if not pending:
+        return weights
+    q = model.joint_q.numpy().copy()
+    q_starts = model.joint_q_start.numpy()
+    for joint, kind in enumerate(model.joint_type.numpy()):
+        if kind == JointType.BALL:
+            q[q_starts[joint] : q_starts[joint + 1]] = [0, 0, 0, 1]
+        elif kind in (JointType.PRISMATIC, JointType.REVOLUTE, JointType.D6):
+            q[q_starts[joint] : q_starts[joint + 1]] = 0
+    state = State()
+    state.joint_q = wp.array(q, dtype=float, device=model.device)
+    state.body_q = wp.empty(model.body_count, dtype=wp.transform, device=model.device)
+    state.body_qd = wp.empty(model.body_count, dtype=wp.spatial_vector, device=model.device)
+    eval_fk(model, state.joint_q, model.joint_qd, state)
+    origin_rows = {}
+    if free_joints:
+        poses, coms = state.body_q.numpy(), model.body_com.numpy()
+        parents, children = model.joint_parent.numpy(), model.joint_child.numpy()
+        anchors = model.joint_X_p.numpy()
+        for joint in free_joints:
+            parent = wp.transform(*anchors[joint])
+            if parents[joint] >= 0:
+                parent = wp.transform(*poses[parents[joint]]) * parent
+            offset = wp.transform_vector(wp.transform(*poses[children[joint]]), wp.vec3(coms[children[joint]]))
+            x, y, z = wp.transform_vector(wp.transform_inverse(parent), offset)
+            # MuJoCo's free-joint translation is at the body origin; Newton's is at its COM.
+            cross = np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]])
+            for axis in range(3):
+                origin_rows[int(starts[joint]) + axis] = (int(starts[joint]) + 3, cross[axis])
+    articulation_starts = model.articulation_start.numpy()
+    for indices, matrices in _iter_mass_matrix_blocks(model, state, list(pending)):
+        for articulation, matrix in zip(indices, matrices, strict=True):
+            requested = pending[articulation]
+            offset = starts[articulation_starts[articulation]]
+            columns = np.array(requested) - offset
+            rhs = np.zeros((len(matrix), len(columns)))
+            rhs[columns, np.arange(len(columns))] = 1
+            for column, dof in enumerate(requested):
+                if dof in origin_rows:
+                    angular, cross = origin_rows[dof]
+                    rhs[angular - offset : angular - offset + 3, column] += cross
+            try:
+                factor = np.linalg.cholesky(matrix.astype(np.float64))
+                if np.min(np.diag(factor)) ** 2 <= 1e-6 * np.max(np.diag(matrix)):
+                    continue
+                solved = np.linalg.solve(factor, rhs)
+            except np.linalg.LinAlgError:
+                continue
+            result = np.sum(solved * solved, axis=0)
+            weights[requested] = np.where(np.isfinite(result) & (result > 0), result, np.nan)
+    return weights
+
+
+def _finalize_native_core_parameters(builder: ModelBuilder, model: Model) -> None:
+    import mujoco
+
+    from ...sim.enums import JointTargetMode, JointType  # noqa: PLC0415
+
+    attrs = model.mujoco
+    types, starts = model.joint_type.numpy(), model.joint_qd_start.numpy()
+    native_types = attrs.native_joint_type.numpy()
+    springs = attrs.native_joint_springdamper.numpy()
+    baseline = attrs.native_joint_gain_baseline.numpy()
+    stiffness, damping = model.joint_stiffness.numpy(), model.joint_damping.numpy()
+    ke, kd = model.joint_target_ke.numpy(), model.joint_target_kd.numpy()
+    modes = model.joint_target_mode.numpy()
+    spring_rows = []
+    target_rows = []
+    requested = set()
+    free_joints = []
+    for dof in np.flatnonzero(np.all(springs > 0, axis=1)):
+        width = 6 if native_types[dof] == 0 else 3 if native_types[dof] == 1 else 1
+        span = slice(dof, dof + width)
+        auto_ke = stiffness[span] == baseline[span, 0]
+        auto_kd = damping[span] == baseline[span, 1]
+        spring_rows.append((dof, width, auto_ke, auto_kd))
+        if np.any(auto_ke) or np.any(auto_kd):
+            requested.update(range(dof, dof + width))
+            if native_types[dof] == 0:
+                free_joints.append(int(np.searchsorted(starts, dof, side="right") - 1))
+    bias = None
+    overrides = attrs.native_target_kd_override.numpy()
+    if model.custom_frequency_counts.get("mujoco:actuator", 0):
+        target_baseline = attrs.native_actuator_target_kd.numpy()
+        targets, sources = attrs.actuator_trnid.numpy()[:, 0], attrs.ctrl_source.numpy()
+        bias = attrs.actuator_biasprm.numpy()
+        for row in np.flatnonzero(target_baseline >= 0):
             dof = int(targets[row])
-            if sources[row] != 0 or dof < 0 or modes[dof] != JointTargetMode.POSITION or bias[row, 2] <= 0:
+            if sources[row] != 0 or dof < 0 or bias[row, 2] <= 0:
                 continue
-            if kd[dof] != baseline[row]:
-                bias[row, 2] = -kd[dof]
-                continue
-            # The shared solver still resolves unsupported inertia cases from the authored ratio.
-            kd[dof] = 0
             joint = int(np.searchsorted(starts, dof, side="right") - 1)
-            articulation = int(owners[joint])
-            if supported and articulation >= 0:
-                pending.setdefault(articulation, []).append((row, dof))
-        if pending:
-            q = model.joint_q.numpy().copy()
-            q_starts = model.joint_q_start.numpy()
-            for joint, kind in enumerate(model.joint_type.numpy()):
-                if kind == JointType.BALL:
-                    q[q_starts[joint] : q_starts[joint + 1]] = [0, 0, 0, 1]
-                elif kind in (JointType.PRISMATIC, JointType.REVOLUTE, JointType.D6):
-                    q[q_starts[joint] : q_starts[joint + 1]] = 0
-            state = State()
-            state.joint_q = wp.array(q, dtype=float, device=model.device)
-            state.body_q = wp.empty(model.body_count, dtype=wp.transform, device=model.device)
-            state.body_qd = wp.empty(model.body_count, dtype=wp.spatial_vector, device=model.device)
-            eval_fk(model, state.joint_q, model.joint_qd, state)
-            articulation_starts = model.articulation_start.numpy()
-            for indices, matrices in _iter_mass_matrix_blocks(model, state, list(pending)):
-                for articulation, matrix in zip(indices, matrices, strict=True):
-                    requests = pending[articulation]
-                    offset = starts[articulation_starts[articulation]]
-                    columns = np.array([dof - offset for _, dof in requests])
-                    rhs = np.zeros((len(matrix), len(columns)))
-                    rhs[columns, np.arange(len(columns))] = 1
-                    try:
-                        factor = np.linalg.cholesky(matrix.astype(np.float64))
-                        if np.min(np.diag(factor)) ** 2 <= 1e-6 * np.max(np.diag(matrix)):
-                            continue
-                        solved = np.linalg.solve(factor, rhs)
-                    except np.linalg.LinAlgError:
-                        continue
-                    inverse_weights = np.sum(solved * solved, axis=0)
-                    for (row, dof), weight in zip(requests, inverse_weights, strict=True):
-                        if not np.isfinite(weight) or weight <= 0 or not np.isfinite(ke[dof]) or ke[dof] < 0:
-                            continue
-                        kd[dof] = 2 * bias[row, 2] * np.sqrt(ke[dof] / weight)
-                        bias[row, 2] = -kd[dof]
-        model.joint_target_kd.assign(kd)
-        values.assign(bias)
-    model.add_attribute(attr.name, values, attr.frequency, attr.assignment, attr.namespace, attr.references)
-    model._set_attribute_spec(attr.key, replace(model.attribute_specs[attr.key], default=attr.default))
+            width = 3 if types[joint] == JointType.BALL else 1
+            axes = np.arange(dof, dof + width)
+            if np.any(modes[axes] != JointTargetMode.POSITION):
+                continue
+            automatic = kd[axes] == target_baseline[row]
+            overrides[axes] = ~automatic
+            target_rows.append((row, axes, automatic))
+            requested.update(map(int, axes[automatic]))
+    weights = _reference_inverse_weights(model, requested, free_joints)
+    for dof, width, auto_ke, auto_kd in spring_rows:
+        axes = np.arange(dof, dof + width)
+        if not np.any(auto_ke) and not np.any(auto_kd):
+            springs[dof] = 0
+        elif np.all(np.isfinite(weights[axes])):
+            inertia = width / max(mujoco.mjMINVAL, np.sum(weights[axes]))
+            timeconst, ratio = map(float, springs[dof])
+            stiffness[axes[auto_ke]] = inertia / max(mujoco.mjMINVAL, timeconst * timeconst * ratio * ratio)
+            damping[axes[auto_kd]] = 2 * inertia / max(mujoco.mjMINVAL, timeconst)
+            springs[dof] = 0
+    for row, axes, automatic in target_rows:
+        pending = axes[automatic]
+        valid = np.isfinite(weights[pending]) & np.isfinite(ke[pending]) & (ke[pending] >= 0)
+        kd[pending] = 0
+        resolved = pending[valid]
+        inertia = np.divide(1.0, weights[resolved], out=np.zeros(len(resolved)), where=weights[resolved] > MJ_MINVAL)
+        kd[resolved] = 2 * bias[row, 2] * np.sqrt(ke[resolved] * inertia)
+        if np.all(valid):
+            bias[row, 2] = -kd[axes[0]]
+    model.joint_stiffness.assign(stiffness)
+    model.joint_damping.assign(damping)
+    model.joint_target_kd.assign(kd)
+    attrs.native_joint_springdamper.assign(springs)
+    attrs.native_target_kd_override.assign(overrides)
+    if bias is not None:
+        attrs.actuator_biasprm.assign(bias)
 
 
 def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joint) -> dict[int, int]:
@@ -293,14 +375,18 @@ def _sync_native_joint_parameters(model: Model, native: mujoco.MjModel, resolved
     if not resolved:
         return
     stiffness, damping = model.joint_stiffness.numpy(), model.joint_damping.numpy()
+    baseline = model.mujoco.native_joint_gain_baseline.numpy()
+    springdamper = model.mujoco.native_joint_springdamper.numpy()
     dofs_per_world = model.joint_dof_count // max(model.world_count, 1)
     for dof, j in resolved.items():
         width = 6 if native.jnt_type[j] == 0 else 3 if native.jnt_type[j] == 1 else 1
         for offset in range(0, model.joint_dof_count, dofs_per_world):
-            stiffness[offset + dof : offset + dof + width] = native.jnt_stiffness[j]
-            damping[offset + dof : offset + dof + width] = native.dof_damping[
-                native.jnt_dofadr[j] : native.jnt_dofadr[j] + width
-            ]
+            if not np.all(springdamper[offset + dof] > 0):
+                continue
+            span = slice(offset + dof, offset + dof + width)
+            stiffness[span] = np.where(stiffness[span] == baseline[span, 0], native.jnt_stiffness[j], stiffness[span])
+            resolved_damping = native.dof_damping[native.jnt_dofadr[j] : native.jnt_dofadr[j] + width]
+            damping[span] = np.where(damping[span] == baseline[span, 1], resolved_damping, damping[span])
     model.joint_stiffness.assign(stiffness)
     model.joint_damping.assign(damping)
 

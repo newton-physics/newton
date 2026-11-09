@@ -12109,6 +12109,8 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
                 getattr(builder, importer)(xml)
                 builder.body_flags[0] = int(BodyFlags.KINEMATIC)
                 model = builder.finalize(device="cpu" if cpu else self.model.device)
+                if importer == "add_mjcf_native":
+                    np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                 np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
                 np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)

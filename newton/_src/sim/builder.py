@@ -2521,6 +2521,7 @@ class ModelBuilder:
         self._custom_attribute_model_finalizers: dict[
             str, Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None]
         ] = {}
+        self._model_finalizers: dict[Callable[[ModelBuilder, Model], None], None] = {}
         # Registered custom frequencies (must be registered before adding attributes with that frequency)
         self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         """Registered custom string frequencies keyed by ``namespace:name`` or bare name."""
@@ -2786,6 +2787,10 @@ class ModelBuilder:
                 f"({existing!r} != {finalizer!r})."
             )
         self._custom_attribute_model_finalizers[key] = finalizer
+
+    def _add_model_finalizer(self, finalizer: Callable[[ModelBuilder, Model], None]) -> None:
+        """Resolve composed properties after custom attributes and initial body variants."""
+        self._model_finalizers[finalizer] = None
 
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
@@ -5383,8 +5388,10 @@ class ModelBuilder:
         With ``ctrl_direct=False``, representable position/velocity servos use
         joint targets. Ball servos drive all three Newton angular axes, replacing
         the authored gear transmission. Position-only drives with ``dampratio``
-        retain joint-target control; ``SolverMuJoCo`` resolves their damping
-        after composition. Other actuators retain direct MuJoCo controls.
+        retain joint-target control. Finalization resolves their damping and
+        automatic passive springs from composed inertia; native-only inertia
+        and unsupported articulations retain deferred MuJoCo resolution.
+        Other actuators retain direct MuJoCo controls.
 
         A missing source file raises :class:`FileNotFoundError`. Missing includes
         detected by MuJoCo raise :class:`ValueError`, preserving its diagnostic.
@@ -5894,6 +5901,7 @@ class ModelBuilder:
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
+        self._model_finalizers.update(builder._model_finalizers)
 
     def _merge_builder_actuators(
         self,
@@ -16648,6 +16656,8 @@ class ModelBuilder:
 
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
+            for finalizer in self._model_finalizers:
+                finalizer(self, m)
 
             m.bvh_build_shapes(
                 m,

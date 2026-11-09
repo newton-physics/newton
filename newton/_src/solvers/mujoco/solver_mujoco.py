@@ -11552,6 +11552,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dofs_per_world = self.model.joint_dof_count // nworld
         kd = self.model.joint_target_kd.numpy().reshape(nworld, dofs_per_world)
         modes = self.model.joint_target_mode.numpy()
+        overrides = getattr(attrs, "native_target_kd_override", None)
+        overrides = overrides.numpy() if overrides is not None else None
         damping = []
         for actuator, dof in enumerate(dofs):
             if sources[actuator] != SolverMuJoCo.CtrlSource.JOINT_TARGET or dof < 0 or source_rows[actuator] < 0:
@@ -11573,7 +11575,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._allocate_dampratio_scratch()
         ratio = self._actuator_dampratio.numpy()
         for world, actuator, dof, _, r in damping:
-            ratio[world, actuator] = r if kd[world, dof] == 0.0 else 0.0
+            automatic = kd[world, dof] == 0.0 and (overrides is None or not overrides[world * dofs_per_world + dof])
+            ratio[world, actuator] = r if automatic else 0.0
         self._actuator_dampratio.assign(ratio)
         direct = self._dampratio_actuators
         self._dampratio_actuators = sorted({*(direct or ()), *(actuator for _, actuator, *_ in damping)})
@@ -11587,7 +11590,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             bias[0] = self.mj_model.actuator_biasprm
         for world, actuator, dof, row, _ in damping:
             ratio[world, actuator] = 0.0
-            if kd[world, dof] == 0.0:
+            if kd[world, dof] == 0.0 and (overrides is None or not overrides[world * dofs_per_world + dof]):
                 kd[world, dof] = -bias[world, actuator, 2]
             # Consume the placeholder so rebuilding a solver respects later kd edits, including zero.
             biasprm[row, 2] = -kd[world, dof]

@@ -39,7 +39,7 @@ from .collision_masks import (
 from .constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from .enums import EqType
 from .equality import _add_equality_constraint
-from .mjcf_parameters import _finalize_native_target_damping, _read_native_parameters, _register_native_attributes
+from .mjcf_parameters import _finalize_native_core_parameters, _read_native_parameters, _register_native_attributes
 from .solver_mujoco import SolverMuJoCo
 from .utils import mjc_add_equality_loop_joint, mjc_add_equality_mimic, mjc_polycoef_has_higher_order
 
@@ -384,14 +384,14 @@ def _joint_target(builder, model, i, dof, bias, values, pending_damping, *, dof_
                 builder.joint_target_kd[axis] = float(max(0.0, -bias[2]))
                 if bias[2] > 0:
                     pending_damping.add(axis)
-                    if dof_count == 1:
-                        baseline = float(-model.actuator_biasprm[i, 2])
-                        if np.isfinite(baseline) and baseline > 0:
-                            builder.joint_target_kd[axis] = baseline
-                            values["mujoco:native_actuator_target_kd"] = baseline
-                            builder._add_custom_attribute_model_finalizer(
-                                "mujoco:actuator_biasprm", _finalize_native_target_damping
-                            )
+                    baseline = float(-model.actuator_biasprm[i, 2])
+                    if dof_count == 3:
+                        native_dof = model.jnt_dofadr[model.actuator_trnid[i, 0]]
+                        baseline = float(2 * bias[2] * np.sqrt(gain[0] / model.dof_invweight0[native_dof]))
+                    if np.isfinite(baseline) and baseline > 0:
+                        builder.joint_target_kd[axis] = baseline
+                        values["mujoco:native_actuator_target_kd"] = baseline
+                        builder._add_model_finalizer(_finalize_native_core_parameters)
         else:
             builder.joint_target_kd[axis] = float(gain[0])
         builder.joint_target_mode[axis] = (
@@ -1037,6 +1037,12 @@ def parse_mjcf(
                     builder.joint_stiffness[dof + k] = float(model.jnt_stiffness[native_joint])
                     builder.joint_armature[dof + k] = float(model.dof_armature[source_dof + k]) * armature_scale
                     builder.joint_friction[dof + k] = float(model.dof_frictionloss[source_dof + k])
+                    if np.all(source_joint.springdamper > 0):
+                        builder.custom_attributes["mujoco:native_joint_gain_baseline"].values[dof + k] = (
+                            builder.joint_stiffness[dof + k],
+                            builder.joint_damping[dof + k],
+                        )
+                        builder._add_model_finalizer(_finalize_native_core_parameters)
                     if model.jnt_type[native_joint] != mujoco.mjtJoint.mjJNT_FREE:
                         builder.joint_limit_ke[dof + k] = gains[0]
                         builder.joint_limit_kd[dof + k] = gains[1]

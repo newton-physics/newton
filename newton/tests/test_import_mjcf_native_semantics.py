@@ -81,6 +81,122 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 np.testing.assert_allclose(model.joint_target_kd.numpy()[-2:], expected, rtol=3e-5)
                 np.testing.assert_allclose(model.joint_q.numpy(), initial_q)
 
+    def test_passive_spring_finalization(self):
+        """Resolve scalar, ball, and free spring inertia per world without losing overrides."""
+        import mujoco
+
+        payload = '<body pos="0 0 1"><geom size=".1" mass="2"/></body>'
+        xml = """<mujoco><worldbody><body><joint type="{kind}" springdamper="{timeconst} .7"/>
+            <geom type="box" size=".1 .2 .3" pos=".2 .1 .4" mass="1"/>{payload}
+            </body></worldbody></mujoco>"""
+        for kind, width, timeconst in (("hinge", 1, 0.2), ("ball", 3, 0.2), ("free", 6, 0.2), ("hinge", 1, 1e-8)):
+            with self.subTest(kind=kind, timeconst=timeconst):
+                asset = newton.ModelBuilder()
+                asset.add_mjcf_native(xml.format(kind=kind, timeconst=timeconst, payload=""))
+                asset.add_mjcf_native(f"<mujoco><worldbody>{payload}</worldbody></mujoco>", parent_body=0)
+                builder = newton.ModelBuilder()
+                builder.replicate(asset, 2)
+                for body in range(builder.body_count // 2, builder.body_count):
+                    builder.body_mass[body] *= 2
+                    builder.body_inertia[body] = wp.mat33(np.asarray(builder.body_inertia[body]).reshape(3, 3) * 2)
+                reference = mujoco.MjModel.from_xml_string(xml.format(kind=kind, timeconst=timeconst, payload=payload))
+                expected_ke = np.repeat(reference.jnt_stiffness, width)
+                expected_kd = reference.dof_damping
+                model = builder.finalize()
+                np.testing.assert_allclose(
+                    model.joint_stiffness.numpy(), np.r_[expected_ke, expected_ke * 2], rtol=3e-5
+                )
+                np.testing.assert_allclose(model.joint_damping.numpy(), np.r_[expected_kd, expected_kd * 2], rtol=3e-5)
+                for dof in range(width):
+                    builder.joint_stiffness[dof] = 0
+                    builder.joint_damping[width + dof] = 7
+                model = builder.finalize()
+                np.testing.assert_allclose(
+                    model.joint_stiffness.numpy(), np.r_[np.zeros(width), expected_ke * 2], rtol=3e-5
+                )
+                np.testing.assert_allclose(
+                    model.joint_damping.numpy(), np.r_[expected_kd, np.full(width, 7)], rtol=3e-5
+                )
+                np.testing.assert_array_equal(model.mujoco.native_joint_springdamper.numpy(), 0)
+                before = [a.numpy().copy() for a in (model.joint_stiffness, model.joint_damping, model.joint_target_kd)]
+                solver = SolverMuJoCo(model, disable_contacts=True)
+                for array, expected in zip(
+                    (model.joint_stiffness, model.joint_damping, model.joint_target_kd), before, strict=True
+                ):
+                    np.testing.assert_array_equal(array.numpy(), expected)
+                np.testing.assert_allclose(solver.mjw_model.dof_damping.numpy(), before[1].reshape(2, width), rtol=3e-5)
+                np.testing.assert_allclose(
+                    solver.mjw_model.jnt_stiffness.numpy(), before[0].reshape(2, width)[:, :1], rtol=3e-5
+                )
+
+    def test_ball_target_damping_overrides(self):
+        """Preserve per-axis zero and nonzero overrides before finalization."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body><joint name="j" type="ball"/>
+            <geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody>
+            <actuator>{actuators}</actuator></mujoco>"""
+        actuator = '<position joint="j" kp="20" dampratio=".7" gear="{axis}"/>'
+        template = newton.ModelBuilder()
+        template.add_mjcf_native(xml.format(actuators=actuator.format(axis="1 0 0")))
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        builder.joint_target_kd[0] = 0
+        builder.joint_target_kd[4] = 3
+        model = builder.finalize()
+        reference = mujoco.MjModel.from_xml_string(
+            xml.format(actuators="".join(actuator.format(axis=a) for a in ("1 0 0", "0 1 0", "0 0 1")))
+        )
+        expected = np.tile(-reference.actuator_biasprm[:, 2], 2)
+        expected[0], expected[4] = 0, 3
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=3e-5)
+        before = model.joint_target_kd.numpy().copy()
+        SolverMuJoCo(model, disable_contacts=True)
+        np.testing.assert_array_equal(model.joint_target_kd.numpy(), before)
+        template.custom_attributes["mujoco:actuator_armature"].values[0] = 0.2
+        template.joint_target_kd[1] = 0
+        fallback = template.finalize()
+        SolverMuJoCo(fallback, use_mujoco_cpu=True, disable_contacts=True)
+        self.assertEqual(fallback.joint_target_kd.numpy()[1], 0)
+        self.assertTrue(np.all(fallback.joint_target_kd.numpy()[[0, 2]] > 0))
+
+    def test_damping_uses_initial_body_variant(self):
+        """Resolve after the selected variant has contributed its inertia."""
+        import mujoco
+
+        geom = '<geom type="box" size=".1 .2 .3" mass="{mass}"/>'
+        xml = '<mujoco><worldbody><body><joint name="j" axis="0 1 0"/>{geom}</body></worldbody><actuator><position joint="j" kp="20" dampratio=".7"/></actuator></mujoco>'
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml.format(geom=geom.format(mass=1)))
+        variant = newton.ModelBuilder()
+        variant.add_shape_box(
+            variant.add_body(), hx=0.1, hy=0.2, hz=0.3, cfg=newton.ModelBuilder.ShapeConfig(density=2 / 0.048)
+        )
+        builder.add_body_variants(0, [variant])
+        copied = newton.ModelBuilder()
+        copied.replicate(builder, 2)
+        model = copied.finalize()
+        reference = mujoco.MjModel.from_xml_string(xml.format(geom=geom.format(mass=3)))
+        np.testing.assert_allclose(
+            model.joint_target_kd.numpy(), np.tile(-reference.actuator_biasprm[:, 2], 2), rtol=3e-5
+        )
+
+    def test_native_spring_fallback_preserves_resolved_world(self):
+        """Native inertia in one world must not overwrite another world's resolved springs."""
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native("""<mujoco><worldbody><body><joint name="j" springdamper=".2 .7"/>
+            <geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody>
+            <tendon><fixed><joint joint="j" coef="1"/></fixed></tendon></mujoco>""")
+        builder = newton.ModelBuilder()
+        builder.replicate(asset, 2)
+        builder.custom_attributes["mujoco:tendon_armature"].values[0] = 0.2
+        model = builder.finalize()
+        stiffness, damping = model.joint_stiffness.numpy().copy(), model.joint_damping.numpy().copy()
+        SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, disable_contacts=True)
+        self.assertGreater(model.joint_stiffness.numpy()[0], stiffness[0])
+        self.assertEqual(model.joint_stiffness.numpy()[1], stiffness[1])
+        self.assertEqual(model.joint_damping.numpy()[1], damping[1])
+
     def test_native_custom_attribute_mapping(self):
         """Extract inherited values before scaling and retain their filtered, reordered, copied rows."""
         frequency = newton.Model.AttributeFrequency
@@ -158,6 +274,12 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     builder.joint_target_kd[0] = 0
                     model = builder.finalize()
                     self.assertEqual(model.mujoco.actuator_biasprm.numpy()[0, 2], 0)
+                    builder.add_mjcf_native("""<mujoco><worldbody><body><joint name="other"/>
+                        <geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody>
+                        <actuator><position joint="other" kp="20" dampratio=".7"/></actuator></mujoco>""")
+                    model = builder.finalize()
+                    self.assertGreater(model.joint_target_kd.numpy()[1], 0)
+                    self.assertLess(model.mujoco.actuator_biasprm.numpy()[1, 2], 0)
 
     def test_native_custom_attribute_rows(self):
         """Map custom-frequency and option values through repeated imports and composition."""
