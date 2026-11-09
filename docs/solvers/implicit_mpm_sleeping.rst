@@ -2,7 +2,7 @@
 .. SPDX-License-Identifier: CC-BY-4.0
 
 Implicit MPM sleeping
-====================
+=====================
 
 .. experimental::
 
@@ -51,7 +51,7 @@ reference for the intended material. Rendering and surface reconstruction
 continue to include sleeping material.
 
 Bounded working sets and graph replay
-------------------------------------
+-------------------------------------
 
 After initial settling and classification, call
 :meth:`~newton.solvers.SolverImplicitMPM.set_particle_working_set` outside
