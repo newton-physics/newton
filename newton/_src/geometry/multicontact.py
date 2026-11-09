@@ -165,6 +165,10 @@ def update_incremental_plane_tracker(
     elif current_point_id == 1:
         tracker.previous_point = current_point
     else:
+        # Preserve a nonzero segment when the reference vertex is revisited.
+        reference = tracker.reference_point
+        if current_point[0] == reference[0] and current_point[1] == reference[1] and current_point[2] == reference[2]:
+            return tracker
         if check_planarity and tracker.largest_area_sq > 0.0:
             offset = wp.dot(tracker.normal, current_point - tracker.reference_point)
             if offset * offset > EPS * EPS * tracker.largest_area_sq:
@@ -714,6 +718,27 @@ def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.ve
     return arr_count + 1, True
 
 
+@wp.func
+def add_contact_feature_point(
+    projected: wp.array[wp.vec2],
+    points: _SamplePoints,
+    count: int,
+    point_2d: wp.vec2,
+    point_3d: wp.vec3,
+    eps: float,
+) -> tuple[int, bool]:
+    """Append a projection unless its source or projected position is already present.
+
+    The caller stores accepted source points in ``points`` at the returned index minus one.
+    """
+    # Repeated support vertices can project differently after floating-point rounding.
+    for i in range(count):
+        previous = points[i]
+        if point_3d[0] == previous[0] and point_3d[1] == previous[1] and point_3d[2] == previous[2]:
+            return count, False
+    return add_avoid_duplicates_vec2(projected, count, point_2d, eps)
+
+
 def create_build_manifold(support_func: Any, writer_func: Any, post_process_contact: Any, _support_funcs: Any = None):
     """
     Factory function to create manifold generation functions with a specific support mapping function.
@@ -1146,7 +1171,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_a_3d = support_contact_feature(geom_a, dir_a, feature_normal_a, data_provider)
             projected_a = pt_a_3d - center
             pt_a_2d = wp.vec2(wp.dot(tangent_a, projected_a), wp.dot(tangent_b, projected_a))
-            a_count, was_added_a = add_avoid_duplicates_vec2(a_buffer, a_count, pt_a_2d, EPS)
+            a_count, was_added_a = add_contact_feature_point(a_buffer, points_a, a_count, pt_a_2d, pt_a_3d, EPS)
             if was_added_a:
                 points_a[a_count - 1] = pt_a_3d
                 plane_tracker_a = update_incremental_plane_tracker(plane_tracker_a, pt_a_3d, a_count - 1, planar_a)
@@ -1157,7 +1182,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_b_3d = wp.quat_rotate(relative_orientation_b, pt_b_local) + relative_position_b
             projected_b = pt_b_3d - center
             pt_b_2d = wp.vec2(wp.dot(tangent_a, projected_b), wp.dot(tangent_b, projected_b))
-            b_count, was_added_b = add_avoid_duplicates_vec2(b_buffer, b_count, pt_b_2d, EPS)
+            b_count, was_added_b = add_contact_feature_point(b_buffer, points_b, b_count, pt_b_2d, pt_b_3d, EPS)
             if was_added_b:
                 points_b[b_count - 1] = pt_b_3d
                 plane_tracker_b = update_incremental_plane_tracker(plane_tracker_b, pt_b_3d, b_count - 1, planar_b)
