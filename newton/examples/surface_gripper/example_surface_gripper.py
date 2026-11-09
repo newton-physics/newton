@@ -26,7 +26,7 @@ What this example decides (this file)
       engaged    - sealed to a body. The seal carries load and resists drift from the pose it
                    formed at; the seal-quality metric reports how far the surface has since pulled off.
       disengaged - neither of the above. No seal force, and the quality metric reports -1.
-    The drive targets and the mode of each pad are read from assets/palletizer_trajectory.csv.
+    The drive targets and the mode of each pad are read from assets/fanuc_palletizer/palletizer_trajectory.csv.
   - Which body and shape to grab: a fixed pick order -- one wide panel, then six crates -- advanced
     on each release.
   - When the seal fractures under load, via one of two interchangeable criteria (BREAK_ON_SEAL_QUALITY):
@@ -139,7 +139,7 @@ ROBOT_ARTICULATION_PATTERN = f"*{ROBOT_ROOT_NAME}*"
 # Pick scene (2 static pallets + panel + 6 crates as box colliders at their waiting poses).
 PICK_SCENE_USD = ASSETS / "palletizer_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
-RECORDING_CSV = ASSETS / "palletizer_trajectory.csv"
+RECORDING_CSV = ASSETS / "fanuc_palletizer" / "palletizer_trajectory.csv"
 
 # rendered frames per second
 FPS = 60
