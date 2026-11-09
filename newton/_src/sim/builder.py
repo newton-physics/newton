@@ -10590,6 +10590,10 @@ class ModelBuilder:
               the cylindrical centerline, excluding the hemispherical caps.
               A solid segment's mass is its density times the cross-sectional area times its rest
               length. The capsule inertia tensor is scaled to that mass.
+              For hollow segments (``cfg.is_solid=False``), mass and inertia include the hemispherical
+              shells at both ends of every segment. Their total mass can therefore increase under
+              refinement even when the rod's total rest length, radius, shell thickness, and density
+              are fixed.
             - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized
               capsule centerline. The COM and shape are at local ``(0, 0, half_height)``, and the other
               centerline endpoint is at ``(0, 0, 2 * half_height)``. These offsets use rest lengths; the
