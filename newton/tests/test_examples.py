@@ -37,6 +37,10 @@ import warp as wp
 
 import newton.examples
 import newton.tests.unittest_utils
+from newton.examples.multiphysics import (
+    example_franka_cable_ik_pick_place,
+    example_mujoco_franka_vbd_cable_admm_solver,
+)
 from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
@@ -1755,6 +1759,47 @@ add_example_test(
     use_viewer=True,
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
+
+
+class TestCoupledExampleCapture(unittest.TestCase):
+    pass
+
+
+def _test_cable_examples_odd_substep_capture_matches_eager(test, device):
+    """Replay a captured frame with an odd substep count like eager stepping in both cable pick-and-place examples."""
+    cases = (
+        (example_franka_cable_ik_pick_place, ["--world-count", "1"]),
+        (
+            example_mujoco_franka_vbd_cable_admm_solver,
+            ["--world-count", "1", "--admm-iterations", "1", "--payload-segments", "3", "--xpbd-iterations", "2"],
+        ),
+    )
+    # The payloads only drift apart once the arm reaches them.
+    frames = 20
+    for module, args in cases:
+        body_q = []
+        for capture in (True, False):
+            parsed = module.Example.create_parser().parse_args(
+                [*args, "--substeps", "3", *([] if capture else ["--no-graph-capture"])]
+            )
+            with wp.ScopedDevice(device):
+                example = module.Example(ViewerNull(num_frames=frames), parsed)
+                test.assertEqual(example.graph is not None, capture)
+                for _ in range(frames):
+                    example.step()
+                body_q.append(example.state_0.body_q.numpy())
+        np.testing.assert_allclose(body_q[0], body_q[1], atol=1.0e-5, err_msg=module.__name__)
+
+
+add_function_test(
+    TestCoupledExampleCapture,
+    "test_cable_examples_odd_substep_capture_matches_eager",
+    _test_cable_examples_odd_substep_capture_matches_eager,
+    devices=cuda_test_devices,
+    check_output=False,
+)
+
+
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_mpm_coupled_solver",
