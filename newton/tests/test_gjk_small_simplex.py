@@ -61,31 +61,30 @@ def test_triangle_interior_distance_is_scale_relative(test, device):
             dtype=np.float64,
         ),
     }
-    for (name, vertices), scale, axes in itertools.product(
-        triangles.items(), (0.5, 1.0, 2.0), ((0, 1, 2), (2, 0, 1), (1, 2, 0))
-    ):
-        with test.subTest(triangle=name, scale=scale, axes=axes):
-            a, b, c = vertices[:, axes] * scale
-            normal = np.cross(b - a, c - a)
-            normal /= np.linalg.norm(normal)
-            signed_distance = float(normal @ a)
-            closest = signed_distance * normal
-            weights = np.linalg.lstsq(np.stack([b - a, c - a], axis=1), closest - a, rcond=None)[0]
-            test.assertGreater(float(weights.min()), 0.0)
-            test.assertLess(float(weights.sum()), 1.0)
-            expected_normal = -closest / np.linalg.norm(closest)
-            output = wp.zeros(5, dtype=float, device=device)
-            wp.launch(
-                _query_triangle_point,
-                dim=1,
-                inputs=[wp.vec3(*vertex) for vertex in (a, b, c)],
-                outputs=[output],
-                device=device,
-            )
-            actual = output.numpy()
-            test.assertEqual(actual[0], 1.0)
-            test.assertAlmostEqual(float(actual[1]), abs(signed_distance), delta=1e-7 * scale)
-            np.testing.assert_allclose(actual[2:5], expected_normal, atol=2e-5)
+    for name, vertices in triangles.items():
+        for scale, axes in itertools.product((0.5, 1.0, 2.0), ((0, 1, 2), (2, 0, 1), (1, 2, 0))):
+            with test.subTest(triangle=name, scale=scale, axes=axes):
+                a, b, c = vertices[:, axes] * scale
+                normal = np.cross(b - a, c - a)
+                normal /= np.linalg.norm(normal)
+                signed_distance = float(normal @ a)
+                closest = signed_distance * normal
+                weights = np.linalg.lstsq(np.stack([b - a, c - a], axis=1), closest - a, rcond=None)[0]
+                test.assertGreater(float(weights.min()), 0.0)
+                test.assertLess(float(weights.sum()), 1.0)
+                expected_normal = -closest / np.linalg.norm(closest)
+                output = wp.zeros(5, dtype=float, device=device)
+                wp.launch(
+                    _query_triangle_point,
+                    dim=1,
+                    inputs=[wp.vec3(*vertex) for vertex in (a, b, c)],
+                    outputs=[output],
+                    device=device,
+                )
+                actual = output.numpy()
+                test.assertEqual(actual[0], 1.0)
+                test.assertAlmostEqual(float(actual[1]), abs(signed_distance), delta=1e-7 * scale)
+                np.testing.assert_allclose(actual[2:5], expected_normal, atol=2e-5)
 
 
 def test_short_segment_distance(test, device):
