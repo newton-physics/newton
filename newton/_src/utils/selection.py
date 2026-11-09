@@ -426,7 +426,7 @@ class FrequencyLayout:
 
     A regular layout addresses row ``offset + world * stride_between_worlds + articulation *
     stride_within_worlds + index`` for each selected ``index``. When the articulations' start rows
-    are not regularly spaced across worlds, ``model_starts`` gives the absolute start row of each
+    are not regularly spaced within or between worlds, ``model_starts`` gives the absolute start row of each
     ``(world, articulation)`` instead, and attributes are gathered and scattered through
     :meth:`get_model_indices`. When the selected values are not at the same offsets in every
     articulation, ``model_indices`` gives the absolute row of each selected value of each
