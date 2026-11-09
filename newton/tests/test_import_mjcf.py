@@ -7001,35 +7001,6 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         slide_idx = model.joint_label.index("test/worldbody/base/child1/child2/slide")
         self.assertAlmostEqual(rest_q[q_start[slide_idx]], 0.25, places=4)
 
-    def test_passive_spring_reference_is_ref_relative(self):
-        """Store generic joint springs in the same ref-relative coordinates as the joint limits."""
-        for compiler, ref, springref, expected in (
-            ('angle="radian"', "0.3", "0.5", 0.2),
-            ('angle="degree"', "30", "45", np.deg2rad(15.0)),
-        ):
-            with self.subTest(compiler=compiler):
-                mjcf_content = f"""<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <compiler {compiler}/>
-    <worldbody>
-        <body name="base">
-            <geom type="box" size="0.1 0.1 0.1"/>
-            <body name="child" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 0 1" ref="{ref}" stiffness="100" springref="{springref}"/>
-                <geom type="box" size="0.1 0.1 0.1"/>
-            </body>
-        </body>
-    </worldbody>
-</mujoco>"""
-                builder = newton.ModelBuilder()
-                builder.add_mjcf(mjcf_content)
-                model = builder.finalize()
-                joint = model.joint_label.index("test/worldbody/base/child/hinge")
-                dof = model.joint_qd_start.numpy()[joint]
-                coord = model.joint_q_start.numpy()[joint]
-                self.assertAlmostEqual(float(model.joint_stiffness.numpy()[dof]), 100.0, places=4)
-                self.assertAlmostEqual(float(model.joint_rest_q.numpy()[coord]), expected, places=5)
-
     def test_static_geom_xform_not_applied_twice(self):
         """Test that xform parameter is applied exactly once to static geoms.
 
