@@ -5221,14 +5221,6 @@ class TestActuatorBuilder(unittest.TestCase):
                 {
                     "motor": motor,
                     "output_space": DriveOutputSpace.DUTY,
-                    "clamping": [(ClampingCurrentDuty, {}), (ClampingCurrentDuty, {})],
-                },
-                "only clamp",
-            ),
-            (
-                {
-                    "motor": motor,
-                    "output_space": DriveOutputSpace.DUTY,
                     "clamping": [(ClampingDCMotor, {"saturation_effort": 1.0, "velocity_limit": 10.0})],
                 },
                 "EFFORT clamps",
@@ -5674,6 +5666,38 @@ def Xform "World"
         messages = [str(w.message) for w in caught if "actuator schema" in str(w.message)]
         self.assertEqual(len(messages), 1)
         self.assertIn("NewtonFooAPI", messages[0])
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_usd_clamping_input_space(self):
+        """Accept a newton:inputSpace equal to the space the clamp bounds and reject any other."""
+        for input_space, valid in (("effort", True), ("duty", False)):
+            with self.subTest(input_space=input_space):
+                stage = Usd.Stage.CreateInMemory()
+                stage.GetRootLayer().ImportFromString(
+                    f"""#usda 1.0
+def Xform "World"
+{{
+    def PhysicsRevoluteJoint "Joint"
+    {{
+    }}
+    def NewtonActuator "Actuator" (
+        prepend apiSchemas = ["NewtonPDControlAPI", "NewtonMaxEffortClampingAPI"]
+    )
+    {{
+        rel newton:targets = </World/Joint>
+        uniform token newton:inputSpace = "{input_space}"
+        float newton:maxEffort = 5.0
+    }}
+}}
+"""
+                )
+                prim = stage.GetPrimAtPath("/World/Actuator")
+                if valid:
+                    parsed = parse_actuator_prim(prim)
+                    self.assertEqual(parsed.component_specs, [(ClampingMaxEffort, {"max_effort": 5.0})])
+                else:
+                    with self.assertRaisesRegex(ValueError, "newton:inputSpace 'duty'"):
+                        parse_actuator_prim(prim)
 
 
 # ---------------------------------------------------------------------------

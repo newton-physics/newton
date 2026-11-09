@@ -445,12 +445,7 @@ class Actuator:
         """Input processors, applied in list order before the drive."""
         self._legacy_delay_updates = _legacy_delay_updates(input_processors)
         self.clamping = clamping or []
-        _validate_spaces(
-            drive.output_space,
-            (c.input_space for c in self.clamping),
-            motor is not None,
-            (type(c) for c in self.clamping),
-        )
+        _validate_spaces(drive.output_space, (c.input_space for c in self.clamping), motor is not None)
         self.num_actuators = len(indices)
 
         self.state_pos_attr = state_pos_attr

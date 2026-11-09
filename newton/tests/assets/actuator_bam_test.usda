@@ -139,6 +139,7 @@ def Xform "World"
             rel newton:targets = </World/Robot/toe>
             uniform token newton:outputSpace = "duty"
             float newton:kp = 0.5
+            uniform token newton:inputSpace = "duty"
             float newton:maxDuty = 0.5
             float newton:ktEstimate = 0.8
             float newton:resistanceEstimate = 3.0

@@ -63,8 +63,6 @@ class ClampingCurrentDuty(ClampingBase):
     over the current window. Overspeed or an inaccurate voltage estimate can therefore
     cause motor current to exceed the limit.
     This is a quasi-static current estimate, not an inductive current controller.
-
-    This clamp must be the only clamp of its actuator.
     """
 
     class VoltageSource(str, Enum):

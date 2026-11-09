@@ -127,12 +127,15 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
     defn = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
     schema_props = set(defn.GetPropertyNames()) if defn is not None else None
 
-    if schema_props is not None and schema_name in (
-        "NewtonPDControlAPI",
-        "NewtonPIDControlAPI",
-        "NewtonNeuralControlAPI",
-    ):
-        schema_props.add("newton:outputSpace")
+    if schema_props is not None:
+        if schema_name in ("NewtonPDControlAPI", "NewtonPIDControlAPI", "NewtonNeuralControlAPI"):
+            schema_props.add("newton:outputSpace")
+        elif schema_name in (
+            "NewtonMaxEffortClampingAPI",
+            "NewtonDCMotorClampingAPI",
+            "NewtonPositionBasedClampingAPI",
+        ):
+            schema_props.add("newton:inputSpace")
 
     kwargs: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace("newton"):
@@ -440,6 +443,14 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
             targets = _get_relationship_targets(prim, "newton:" + head + "".join(part.title() for part in rest))
             if targets:
                 kwargs[name] = targets[0]
+
+        if entry.kind is ComponentKind.CLAMPING and "input_space" in kwargs:
+            input_space = kwargs.pop("input_space")
+            if input_space != cls.input_space.value:
+                raise ValueError(
+                    f"Actuator prim '{prim.GetPath()}': newton:inputSpace '{input_space}' of {schema_name} "
+                    f"must be '{cls.input_space.value}', the space {cls.__name__} bounds"
+                )
 
         if entry.kind is ComponentKind.DRIVE:
             if drive_class is not None:

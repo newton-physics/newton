@@ -68,9 +68,8 @@ An actuator is composed of four building blocks, applied in this order:
 **Clamping**
    Clamps the drive output in list order. Each clamp's ``input_space`` must
    match the drive's ``output_space``. Effort clamps cannot be combined with a
-   motor, and :class:`ClampingCurrentDuty` must be the only clamp of its
-   actuator. There are no post-motor effort clamps. Current limiting uses firmware estimates of
-   the motor parameters, configured independently of the physical motor.
+   motor. There are no post-motor effort clamps. Current limiting uses firmware
+   estimates of the motor parameters, by default the motor's own.
 
 **Motor**
    Provides the supply voltage, and turns the motor voltage into the effort a
@@ -750,9 +749,8 @@ Clamping
   to ``[-max_duty, max_duty]``. The duty bound takes precedence, so current is
   not guaranteed to remain within the limit.
 
-Multiple effort clamping objects can be stacked on a single actuator; they are
+Multiple clamping objects can be stacked on a single actuator; they are
 applied in sequence and must match its drive's output space.
-:class:`ClampingCurrentDuty` must be the only clamp of its actuator.
 
 ``ClampingCurrentDuty.voltage_source`` selects ``VoltageSource.INPUT`` (the
 supplied voltage, by default) or ``NOMINAL`` (requiring ``nominal_voltage``).
@@ -901,6 +899,10 @@ package.  Each applied API schema becomes one component:
        ``newton:battery`` relationship
      - :class:`BatteryConstantResistance`, added with
        :meth:`~newton.ModelBuilder.add_battery`
+
+A clamping schema's ``newton:inputSpace`` must be the space its class bounds
+(``"effort"``, or ``"duty"`` for ``NewtonCurrentDutyClampingAPI``), and the
+import raises ``ValueError`` otherwise.
 
 :func:`parse_actuator_prim` and :func:`parse_battery_prim` return the parsed
 classes and arguments without building a model.  Register further schemas

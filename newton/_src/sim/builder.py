@@ -3589,7 +3589,6 @@ class ModelBuilder:
             resolved_drive.get("output_space", drive_class.output_space),
             (cc.input_space for cc in clamping_classes),
             motor is not None,
-            clamping_classes,
         )
 
         # --- Build entry key: identifies a group of compatible actuators ---
