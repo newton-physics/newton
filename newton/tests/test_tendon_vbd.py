@@ -12,7 +12,7 @@ import warp as wp
 import newton
 from newton import Axis, TendonGuideType
 from newton._src.solvers.vbd.rigid_vbd_kernels import create_solve_rigid_body
-from newton._src.solvers.vbd.tendon_kernels import _rolling_spin_axis_component
+from newton._src.solvers.vbd.tendon_kernels import TendonForceElementAdjacencyInfo, evaluate_tendon_force_hessians
 from newton.tests.test_tendon_capstan import (
     _moving_rolling_route_material_error,
     build_dynamic_pulley_atwood,
@@ -85,8 +85,10 @@ def _make_tendon_vbd_solver(test, model, **overrides):
 
 
 @wp.kernel
-def _evaluate_roller_spin(
+def _evaluate_roller_reaction(
     poses: wp.array[wp.transform],
+    com: wp.array[wp.vec3],
+    adjacency: TendonForceElementAdjacencyInfo,
     guide_body: wp.array[int],
     guide_type: wp.array[int],
     offsets: wp.array[wp.vec3],
@@ -104,13 +106,13 @@ def _evaluate_roller_spin(
     guide_r: wp.array[int],
     result: wp.array[wp.vec3],
 ):
-    seg = wp.tid()
-    tension = wp.max((1.0 - rest[seg]) / compliance[seg], 0.0)
-    result[seg] = _rolling_spin_axis_component(
+    force, torque, _h_ll, _h_al, _h_aa = evaluate_tendon_force_hessians(
+        0,
         1.0 / 60.0,
         poses,
         poses,
-        offsets,
+        com,
+        adjacency,
         guide_body,
         guide_type,
         offsets,
@@ -126,50 +128,71 @@ def _evaluate_roller_spin(
         active,
         guide_l,
         guide_r,
-        1,
-        seg,
-        tension,
-        wp.vec3(0.5, 1.0, 0.0),
-        wp.vec3(1.0, 0.0, 0.0),
     )
+    result[0] = force
+    result[1] = torque
 
 
 def test_vbd_spin_reaction_matches_capstan_projection(test, device):
-    """Transmit the full sticking moment and limit only an out-of-cone trial."""
-    for rho, tensions in ((1.0, [4, 3]), (2.0, [4, 3]), (2.0, [9, 1]), (2.0, [1, 9]), (2.0, [9, 0])):
-        with test.subTest(rho=rho, tensions=tensions):
+    """Bound the actual rim torque, including off-tangent VBD trial poses."""
+    device = wp.get_device(device)
+    adjacency = TendonForceElementAdjacencyInfo()
+    adjacency.body_adj_segments = wp.array([0, 1], dtype=int, device=device)
+    adjacency.body_adj_segments_offsets = wp.array([0, 2], dtype=int, device=device)
+    cases = [
+        (rho, tensions, 0.0, 0.0, 1.0)
+        for rho, tensions in ((1.0, [4, 3]), (2.0, [4, 3]), (2.0, [9, 1]), (2.0, [1, 9]), (2.0, [9, 0]))
+    ]
+    cases += [
+        (np.exp(0.001 * np.pi), [10, 10], np.pi / 4, 0.0, 1.0),
+        (np.exp(0.001 * np.pi), [10, 10], 0.0, np.pi / 4, 0.2),
+        (1.0, [10, 10], np.pi / 4, 0.0, 0.2),
+        (2.0, [4, 3], np.pi / 4, 0.0, 1.0),
+    ]
+    for rho, tensions, angle_l, angle_r, radius in cases:
+        with test.subTest(rho=rho, tensions=tensions, angle_l=angle_l, angle_r=angle_r, radius=radius):
+            center = np.array([0.5, 0, 0])
+            contact_l, contact_r = center + np.array([0, radius, 0]), center + np.array([radius, 0, 0])
+            direction_l = np.array([np.cos(angle_l), np.sin(angle_l), 0])
+            direction_r = np.array([np.sin(angle_r), -np.cos(angle_r), 0])
             rest = 1.0 - 0.01 * np.array(tensions, dtype=np.float32)
             output = wp.zeros(2, dtype=wp.vec3, device=device)
-            wp.launch(
-                _evaluate_roller_spin,
-                dim=2,
-                inputs=[
-                    wp.array([wp.transform_identity()] * 3, dtype=wp.transform, device=device),
-                    wp.array([-1, 1, -1], dtype=int, device=device),
-                    wp.array(
-                        [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
-                        dtype=int,
-                        device=device,
-                    ),
-                    wp.array([[0, 0, 0], [0.5, 0, 0], [0, 0, 0]], dtype=wp.vec3, device=device),
-                    wp.array([[0, 0, 1]] * 3, dtype=wp.vec3, device=device),
-                    wp.array([-1, 0, -1], dtype=int, device=device),
-                    wp.array([-1, 1, -1], dtype=int, device=device),
-                    wp.array([1, rho, 1], dtype=float, device=device),
-                    wp.array(rest, device=device),
-                    wp.array([[-0.5, 1, 0], [1.5, 0, 0]], dtype=wp.vec3, device=device),
-                    wp.array([[0.5, 1, 0], [1.5, -1, 0]], dtype=wp.vec3, device=device),
-                    wp.full(2, 0.01, device=device),
-                    wp.zeros(2, device=device),
-                    wp.ones(2, dtype=int, device=device),
-                    wp.array([0, 1], dtype=int, device=device),
-                    wp.array([1, 2], dtype=int, device=device),
-                    output,
-                ],
-                device=device,
-            )
-            scale = min(1.0, (rho - 1.0) / (rho + 1.0) * sum(tensions) / abs(tensions[0] - tensions[1]))
-            np.testing.assert_allclose(output.numpy(), [[0, 0, -(1 - scale)]] * 2, atol=2.0e-6, rtol=0)
+            inputs = [
+                wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+                wp.zeros(1, dtype=wp.vec3, device=device),
+                adjacency,
+                wp.array([-1, 0, -1], dtype=int, device=device),
+                wp.array(
+                    [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
+                    dtype=int,
+                    device=device,
+                ),
+                wp.array([[0, 0, 0], [0.5, 0, 0], [0, 0, 0]], dtype=wp.vec3, device=device),
+                wp.array([[0, 0, 1]] * 3, dtype=wp.vec3, device=device),
+                wp.array([-1, 0, -1], dtype=int, device=device),
+                wp.array([-1, 1, -1], dtype=int, device=device),
+                wp.array([1, rho, 1], dtype=float, device=device),
+                wp.array(rest, device=device),
+                wp.array([contact_l - direction_l, contact_r], dtype=wp.vec3, device=device),
+                wp.array([contact_l, contact_r + direction_r], dtype=wp.vec3, device=device),
+                wp.full(2, 0.01, device=device),
+                wp.zeros(2, device=device),
+                wp.ones(2, dtype=int, device=device),
+                wp.array([0, 1], dtype=int, device=device),
+                wp.array([1, 2], dtype=int, device=device),
+                output,
+            ]
+            wp.launch(_evaluate_roller_reaction, dim=1, inputs=inputs, device=device)
+            expected_force = -tensions[0] * direction_l + tensions[1] * direction_r
+            bound = radius * (rho - 1.0) / (rho + 1.0) * sum(tensions)
+            rim_torque = radius * (tensions[0] * np.cos(angle_l) - tensions[1] * np.cos(angle_r))
+            expected_torque = np.cross(center, expected_force) + np.array([0, 0, np.clip(rim_torque, -bound, bound)])
+            np.testing.assert_allclose(output.numpy(), [expected_force, expected_torque], atol=2.0e-5, rtol=0)
+            if device.is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    wp.launch(_evaluate_roller_reaction, dim=1, inputs=inputs, device=device)
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(output.numpy(), [expected_force, expected_torque], atol=2.0e-5, rtol=0)
 
 
 def test_vbd_no_tendon_specialization(test, device):

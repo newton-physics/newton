@@ -4,7 +4,6 @@
 """Material-sweep regressions independent of rigid-body convergence."""
 
 import math
-import subprocess
 import sys
 import unittest
 
@@ -15,7 +14,7 @@ import newton
 from newton._src.sim.tendon import TendonGuideType
 from newton._src.solvers.tendon_kernels import _material_sweep_contact_error, solve_tendon_material
 from newton.tests.test_tendon_capstan import build_explicit_inactive_dynamic_route, build_kinematic_rolling_transport
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_test_devices
 
 
 def solve_material_case(
@@ -125,27 +124,20 @@ def solve_material_case(
 
 def test_rolling_material_exhaustion_diagnostic(test, device):
     """Report an exhausted wrap budget once, at the accepted pose, including graph replay."""
-    # Native CPU/CUDA printf buffering cannot reliably be nested inside the
-    # test runner's stdout capture on Windows. Process exit flushes both.
-    script = (
-        "import sys, unittest; import warp as wp; "
-        "from newton.tests.test_tendon_material_sweeps import _run_material_exhaustion_cases; "
-        "_run_material_exhaustion_cases(unittest.TestCase(), wp.get_device(sys.argv[1]), bool(int(sys.argv[2])))"
-    )
     for exhausted in (False, True):
         with test.subTest(exhausted=exhausted):
-            result = subprocess.run(
-                [sys.executable, "-c", script, str(device), str(int(exhausted))],
-                capture_output=True,
-                text=True,
-                timeout=180,
-                check=False,
-            )
-            test.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            diagnostic = result.stdout + result.stderr
-            expected = (8 if device.is_cuda else 4) if exhausted else 0
-            test.assertEqual(diagnostic.count("ERROR: Tendon 0 material rest-length floor"), expected, diagnostic)
-            test.assertNotIn("supported wrap range", diagnostic)
+            capture = StdOutCapture()
+            capture.begin()
+            try:
+                _run_material_exhaustion_cases(test, device, exhausted)
+            finally:
+                diagnostic = capture.end()
+            # Windows cannot reliably capture native CPU/CUDA printf. Numerical
+            # conservation and exhaustion assertions still run on every device.
+            if sys.platform != "win32":
+                expected = (8 if device.is_cuda else 4) if exhausted else 0
+                test.assertEqual(diagnostic.count("ERROR: Tendon 0 material rest-length floor"), expected, diagnostic)
+                test.assertNotIn("supported wrap range", diagnostic)
 
 
 def _run_material_exhaustion_cases(test, device, exhausted):
@@ -202,13 +194,15 @@ def _run_material_exhaustion_cases(test, device, exhausted):
                             solver.step(state, output, control, None, 1.0 / 60.0)
                         if dynamic:
                             test.assertTrue(bool(output.tendon_guide_active.numpy()[candidate]))
-                        if not exhausted:
-                            arc = initial_arc + 0.1 * angle
-                            if dynamic:
-                                radial_l = solver.tendon_segment_attachment_r.numpy()[0]
-                                radial_r = solver.tendon_segment_attachment_l.numpy()[1]
-                                arc = 0.1 * abs(math.atan2(np.cross(radial_l, radial_r)[1], np.dot(radial_l, radial_r)))
-                            total_material = float(output.tendon_segment_rest_length.numpy().sum()) + arc
+                        arc = initial_arc + 0.1 * angle
+                        if dynamic:
+                            radial_l = solver.tendon_segment_attachment_r.numpy()[0]
+                            radial_r = solver.tendon_segment_attachment_l.numpy()[1]
+                            arc = 0.1 * abs(math.atan2(np.cross(radial_l, radial_r)[1], np.dot(radial_l, radial_r)))
+                        total_material = float(output.tendon_segment_rest_length.numpy().sum()) + arc
+                        if exhausted:
+                            test.assertGreater(total_material - (free_rest + initial_arc), 1.0e-4)
+                        else:
                             test.assertAlmostEqual(total_material, free_rest + initial_arc, delta=2.0e-7)
     wp.synchronize_device(device)
 
@@ -256,6 +250,41 @@ def test_adaptive_sweeps_replenished_donor(test, device):
             np.testing.assert_allclose(force, expected, atol=3.0e-5, rtol=0)
             np.testing.assert_allclose(rest.sum(), initial.sum(), atol=2.0e-7, rtol=0)
             test.assertGreater(rest[1], 1.0e-6)
+
+
+def test_adaptive_sweeps_rest_floor_roundoff(test, device):
+    """Accept depleted-span convergence without a false material-exhaustion error."""
+    cases = [
+        {
+            "tensions": [15.58, 2.69, 10.72, 10.28, -0.266, 9.26, 7.70, 12.79],
+            "ratios": [1.148, 1.483, 1.423, 1.240, 1.374, 1.373, 1.334],
+            "segment_lengths": [1, 1, 1, 1, 0.002, 1, 1, 1],
+            "segment_compliance": [0.000404, 0.003513, 0.000907, 0.002589, 0.000396, 0.000792, 0.0000732, 0.001602],
+            "rolling_left": [0, -0.00723, 0.01114, -0.01219, 0.02693, 0.02498, -0.00115, -0.01030],
+            "rolling_right": [0.00723, -0.01114, 0.01219, -0.02693, -0.02498, 0.00115, 0.01030, 0],
+        },
+        {
+            # Retain these float32-sensitive inputs: draining the 2 mm slack
+            # span used to overshoot its floor enough to print an ERROR.
+            "tensions": [14.751089715672919, 19.9, -0.00589664940819655, -0.9815034265618756, -3.573101602159288],
+            "ratios": [1.4849929919374645, 1.9556574016447539, 1.4258567912671964, 1.3688375035007576],
+            "segment_lengths": [1, 1, 0.002, 1, 1],
+            "segment_compliance": 0.01,
+        },
+    ]
+    for case in cases:
+        with test.subTest(spans=len(case["tensions"])):
+            tension, rest, initial, count = solve_material_case(device, **case, tol=1.0e-3)
+            reference, _, _, _ = solve_material_case(device, **case, tol=0.0, sweeps=4096, capture=False)
+            test.assertLess(count, 256, "A depleted span must not force the full sweep budget")
+            np.testing.assert_allclose(tension, reference, atol=1.0e-6, rtol=2.0e-3)
+            np.testing.assert_allclose(rest.sum(), initial.sum(), atol=8.0e-7, rtol=0)
+            donor = len(tension) // 2
+            compliance = np.broadcast_to(np.float32(case["segment_compliance"]), tension.shape)
+            # Recover the unclamped rest from the reported stretch tension.
+            # It must respect the floor before reconstruction clamps it.
+            raw_rest = float(np.float32(0.002)) - float(tension[donor]) * float(compliance[donor])
+            test.assertAlmostEqual(raw_rest, 1.0e-6, delta=8.0e-10)
 
 
 def test_adaptive_sweeps_coincident_pinholes(test, device):
@@ -584,11 +613,18 @@ add_function_test(
     "test_rolling_material_exhaustion_diagnostic",
     test_rolling_material_exhaustion_diagnostic,
     devices=devices,
+    check_output=False,
 )
 add_function_test(
     TestTendonMaterialSweeps,
     "test_adaptive_sweeps_replenished_donor",
     test_adaptive_sweeps_replenished_donor,
+    devices=devices,
+)
+add_function_test(
+    TestTendonMaterialSweeps,
+    "test_adaptive_sweeps_rest_floor_roundoff",
+    test_adaptive_sweeps_rest_floor_roundoff,
     devices=devices,
 )
 add_function_test(

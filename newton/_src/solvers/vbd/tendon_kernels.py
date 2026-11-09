@@ -207,9 +207,9 @@ def _rolling_spin_axis_component(
 ) -> wp.vec3:
     """Remove only the rim moment forbidden by the material cone.
 
-    Sticking transmits the full tension difference. A body trial outside the
-    cone is limited by its current adjacent span forces; cached diagnostic
-    tensions would be stale after a preceding VBD body update.
+    Bound the combined axial moment at the current trial pose. Cached contact
+    points can cease to be tangent after another body updates, so a bound on
+    tension difference alone does not bound the moment.
     """
     if tendon_guide_type[guide] != int(TendonGuideType.ROLLER):
         return wp.vec3(0.0)
@@ -222,6 +222,11 @@ def _rolling_spin_axis_component(
     if seg_active_guide_r[seg_left] != guide or seg_active_guide_l[seg_right] != guide:
         return wp.vec3(0.0)
 
+    pose = tendon_body_pose(body_q, tendon_guide_body[guide])
+    center = wp.transform_point(pose, tendon_guide_offset[guide])
+    normal = wp.normalize(wp.transform_vector(pose, tendon_guide_axis[guide]))
+    radial = attachment - center
+    moment = wp.dot(wp.cross(radial, direction), normal)
     spin_scale = float(0.0)
     # The two local contact radii rotate together during a body update, so the
     # cached cone angle stays valid until the route is retangented.
@@ -247,15 +252,24 @@ def _rolling_spin_axis_component(
             seg_active_guide_l,
             seg_active_guide_r,
         )
+        neighbor_l = wp.transform_point(
+            tendon_body_pose(body_q, tendon_guide_body[seg_active_guide_l[neighbor]]),
+            seg_attachment_l_local[neighbor],
+        )
+        neighbor_r = wp.transform_point(
+            tendon_body_pose(body_q, tendon_guide_body[seg_active_guide_r[neighbor]]),
+            seg_attachment_r_local[neighbor],
+        )
+        neighbor_direction = wp.normalize(neighbor_r - neighbor_l)
+        neighbor_attachment = neighbor_l if neighbor == seg_right else neighbor_r
+        neighbor_moment = wp.dot(wp.cross(neighbor_attachment - center, neighbor_direction), normal)
         beta = (cap_ratio - 1.0) / (cap_ratio + 1.0)
-        allowed_difference = beta * (tension + neighbor_tension)
-        spin_scale = wp.min(1.0, allowed_difference / wp.max(wp.abs(tension - neighbor_tension), 1.0e-8))
+        bound = wp.length(radial) * beta * (tension + neighbor_tension)
+        # The two spans pull in opposite route directions at this guide.
+        net_moment = tension * moment - neighbor_tension * neighbor_moment
+        spin_scale = wp.min(1.0, bound / wp.max(wp.abs(net_moment), 1.0e-8))
 
-    pose = tendon_body_pose(body_q, tendon_guide_body[guide])
-    center = wp.transform_point(pose, tendon_guide_offset[guide])
-    normal = wp.normalize(wp.transform_vector(pose, tendon_guide_axis[guide]))
-    radial = attachment - center
-    return (1.0 - spin_scale) * wp.dot(wp.cross(radial, direction), normal) * normal
+    return (1.0 - spin_scale) * moment * normal
 
 
 @wp.func

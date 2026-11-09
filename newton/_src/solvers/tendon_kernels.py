@@ -59,15 +59,17 @@ def _material_sweep_guide_converged(
     damping_r = damping[right] if compliance[right] > 0.0 else 0.0
     tension_l = wp.max(stretch[left] / wp.max(compliance[left], 1.0e-30) + damping_l, 0.0)
     tension_r = wp.max(stretch[right] / wp.max(compliance[right], 1.0e-30) + damping_r, 0.0)
-    # Compare bounds at stretch scale; reconstructed rest lengths can round
-    # a depleted span slightly above its floor.
+    # Allow a few float32 ulps at stretch scale when classifying a donor bound.
+    # Exact comparisons can keep requesting material from a depleted span.
+    roundoff_l = 1.0e-6 * wp.max(wp.max(wp.abs(length[left]), wp.abs(stretch[left])), min_rest)
+    roundoff_r = 1.0e-6 * wp.max(wp.max(wp.abs(length[right]), wp.abs(stretch[right])), min_rest)
     error = _material_sweep_contact_error(
         tension_l,
         tension_r,
         ratio[guide],
         transfer[guide],
-        stretch[left] < length[left] - min_rest,
-        stretch[right] < length[right] - min_rest,
+        (length[left] - min_rest) - stretch[left] > roundoff_l,
+        (length[right] - min_rest) - stretch[right] > roundoff_r,
     )
     return error <= atol + rtol * wp.max(tension_l, tension_r)
 
@@ -1405,8 +1407,28 @@ def solve_tendon_material(
                             comp_l + cap_ratio * comp_r
                         )
                         delta = previous_transfer + change
-                seg_stretch[seg_left] = current_l - change
-                seg_stretch[seg_right] = current_r + change
+                next_l = current_l - change
+                next_r = current_r + change
+                limit_l = len_l - min_rest
+                limit_r = len_r - min_rest
+                # Retraction of a large net transfer can round a small donor
+                # past its rest floor. Apply active bounds directly at stretch
+                # scale and give the same correction to the opposite span.
+                change_lower = current_l - limit_l
+                change_upper = limit_r - current_r
+                if change_lower <= change_upper:
+                    if change <= change_lower or next_l > limit_l:
+                        change = change_lower
+                        next_l = limit_l
+                        next_r = current_r + change
+                        delta = previous_transfer + change
+                    elif change >= change_upper or next_r > limit_r:
+                        change = change_upper
+                        next_l = current_l - change
+                        next_r = limit_r
+                        delta = previous_transfer + change
+                seg_stretch[seg_left] = next_l
+                seg_stretch[seg_right] = next_r
                 guide_material_transfer[guide_idx] = delta
 
                 # For ordinary routes the preceding guide is final after its
