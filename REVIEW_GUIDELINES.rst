@@ -40,7 +40,8 @@ size. The Fit gates below add depth for large proposals.
    Question each new parameter, mode, alias, public symbol, and file, and
    prefer an existing mechanism. Check whether ``main`` or another open pull
    request already covers the change, and whether unrelated parts should be
-   split out.
+   split out. Unjustified public surface, new modes or options, or machinery
+   that must be maintained is at least P1.
 #. **Principled:** Does it fix the cause at the right layer rather than a
    symptom, proxy, or workaround? Prefer designs that are correct by
    construction over detecting and reporting bad states, and upstream fixes
@@ -69,9 +70,10 @@ size. The Fit gates below add depth for large proposals.
 Review feedback
 ---------------
 
-Separate discovery order from reporting order. When practical, first inspect
-the exact change and perform a correctness-first Requirements pass before
-evaluating Fit or reading existing review comments. Then use the existing
+Separate discovery order from reporting order. When practical, first sketch
+the smallest fix for the stated problem without reading the change, then
+inspect the exact change and perform a correctness-first Requirements pass
+before evaluating Fit or reading existing review comments. Then use the existing
 discussion to refine or deduplicate the independently discovered concerns.
 
 In the final review, raise project-Fit and architectural concerns before
