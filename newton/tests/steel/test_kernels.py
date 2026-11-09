@@ -1832,7 +1832,10 @@ def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, dev
                 output = getattr(state_out, name)
                 output.assign(np.full_like(output.numpy(), np.nan))
             wp.capture_launch(capture.graph)
-            outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
+            snapshot = tuple(getattr(state_out, name).numpy().copy() for name in names)
+            for name, value in zip(names, snapshot, strict=True):
+                test.assertTrue(np.all(np.isfinite(value)), f"replay left non-finite {name}")
+            outputs.append(snapshot)
         return solver, outputs
 
     _, reference = replays(False)
