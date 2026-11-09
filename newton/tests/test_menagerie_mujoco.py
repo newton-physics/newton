@@ -791,7 +791,7 @@ def compare_geom_fields_unordered(
         assert newton_np.shape == native_np.shape, f"{field_name}: shape {newton_np.shape} != {native_np.shape}"
         for w in range(newton_np.shape[0]):
             mismatch = ~np.isclose(newton_np[w], native_np[w], rtol=0.0, atol=tol, equal_nan=True)
-            bad = np.flatnonzero(mismatch.reshape(ngeom, -1).any(axis=1) & geom_mask)
+            bad = np.flatnonzero(mismatch.any(axis=tuple(range(1, mismatch.ndim))) & geom_mask)
             assert bad.size == 0, (
                 f"{field_name}[world={w}] differs for newton geoms {bad.tolist()}: "
                 f"newton={newton_np[w, bad[0]]} vs native={native_np[w, bad[0]]}"
@@ -2630,6 +2630,11 @@ class TestCompareGeomFieldsUnordered(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "geom_size"):
                 compare_geom_fields_unordered(ref, changed)
             compare_geom_fields_unordered(ref, changed, skip_fields={"geom_size"})
+
+    def test_empty_models_compare_equal(self):
+        """A model without geoms compares equal to itself."""
+        empty = _mujoco_warp.put_model(_mujoco.MjModel.from_xml_string("<mujoco/>"))
+        compare_models(empty, empty, skip_fields=DEFAULT_MODEL_SKIP_FIELDS)
 
 
 # =============================================================================
