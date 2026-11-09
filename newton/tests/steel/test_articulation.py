@@ -2269,7 +2269,7 @@ def test_captured_spring_notifications_apply_in_place_edits(test, device):
 
 
 def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial"):
-    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs, across construction and notifications."""
+    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs and warn about the rest, across construction and notifications."""
     builder, loop_joint = _build_square_loop("revolute")
     inertia = wp.mat33(np.eye(3) * 0.01)
     links = [
@@ -2292,49 +2292,27 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
     sprung = np.zeros(model.joint_dof_count, dtype=bool)
     sprung[qd_start[joints[2]]] = True
     sprung[: qd_start[loop_joint]] = True
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", newton.NewtonWarning)
-        solver = SolverSteel(model, solve_mode=solve_mode)
-        np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
-        model.joint_stiffness.fill_(7.0)
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+
+    def warnings_of(call):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", newton.NewtonWarning)
+            result = call()
+        return result, " | ".join(str(w.message) for w in caught)
+
+    # The FREE and BALL joints' 9 DOFs warn here; the REVOLUTE loop warns about its own inputs.
+    solver, messages = warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode))
+    test.assertRegex(messages, "stiffness on 9 DOF")
+    test.assertRegex(messages, "loop-closing REVOLUTE joint .* spring stiffness")
+    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
+    model.joint_stiffness.fill_(7.0)
+    _, messages = warnings_of(lambda: solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
+    test.assertRegex(messages, "stiffness on 9 DOF")
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
 
-
-def test_ignored_spring_stiffness_warns(test, device):
-    """Warn at construction about spring stiffness on a BALL joint, which Steel ignores, but not on a REVOLUTE joint."""
-
-    def single_joint(kind):
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        if kind == "ball":
-            joint = builder.add_joint_ball(-1, link)
-            builder.joint_stiffness[-3:] = [10.0] * 3
-        else:
-            joint = builder.add_joint_revolute(-1, link, axis=wp.vec3(1.0, 0.0, 0.0), stiffness=10.0)
-        builder.add_articulation([joint])
-        model = builder.finalize(device=device)
-        state_0 = model.state()
-        q = state_0.joint_q.numpy()
-        if kind == "ball":
-            q[:4] = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.4)
-        else:
-            q[0] = 0.4
-        state_0.joint_q.assign(q)
-        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-        return model, state_0
-
-    model, state_0 = single_joint("ball")
+    builder, _ = _build_square_loop("ball")
+    builder.joint_stiffness = [5.0] * builder.joint_dof_count
     with test.assertWarnsRegex(newton.NewtonWarning, "stiffness on 3 DOF"):
-        solver = SolverSteel(model)
-    state_1 = model.state()
-    solver.step(state_0, state_1, model.control(), None, DT)
-    np.testing.assert_allclose(state_1.joint_qd.numpy(), 0.0)
-
-    model, _ = single_joint("revolute")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.NewtonWarning)
-        SolverSteel(model)
+        SolverSteel(builder.finalize(device=device), solve_mode=solve_mode)
 
 
 def test_registration_adds_no_spring_attributes(test, device):
@@ -2397,12 +2375,6 @@ add_function_test(
     TestSteelSprings,
     "test_springs_skip_unsupported_joint_types",
     test_springs_skip_unsupported_joint_types,
-    devices=get_test_devices(),
-)
-add_function_test(
-    TestSteelSprings,
-    "test_ignored_spring_stiffness_warns",
-    test_ignored_spring_stiffness_warns,
     devices=get_test_devices(),
 )
 add_function_test(

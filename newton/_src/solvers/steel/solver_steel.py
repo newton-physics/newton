@@ -1414,8 +1414,8 @@ class SolverSteel(SolverBase, CouplingInterface):
       :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
       explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
       independently of drives and joint limits. Unlike the implicit drives, explicit springs
-      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF. Construction
-      warns about stiffness on other joint types, which is ignored.
+      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF. Construction and
+      :meth:`notify_model_changed` warn about stiffness on other DOFs, which is ignored.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -3331,6 +3331,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
         if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
+            if flags & dof_force:
+                self._warn_ignored_spring_stiffness(stacklevel=3)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
@@ -4587,21 +4589,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             joint_type = model.joint_type.numpy()
             qd_start = model.joint_qd_start.numpy()
             sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
-            tree_joint = self._model_plan.loop_joint_articulation < 0
-            sprung &= tree_joint
+            sprung &= self._model_plan.loop_joint_articulation < 0
             for joint in np.flatnonzero(sprung):
                 spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
-            if model.joint_stiffness is not None:
-                # Loop-closing joints warn about their ignored inputs separately.
-                unsprung_tree_dof = np.repeat(tree_joint & ~sprung, np.diff(qd_start))
-                ignored = int(np.count_nonzero((model.joint_stiffness.numpy() != 0.0) & unsprung_tree_dof))
-                if ignored:
-                    warnings.warn(
-                        f"SolverSteel ignores the passive spring stiffness on {ignored} DOF(s) of joint types "
-                        "other than PRISMATIC, REVOLUTE and D6.",
-                        NewtonWarning,
-                        stacklevel=3,
-                    )
+            # Loop-closing REVOLUTE joints warn about their ignored inputs separately.
+            unsprung = ~sprung
+            unsprung[self._revolute_loop_joints] = False
+            self._spring_ignored_dof_mask = np.repeat(unsprung, np.diff(qd_start))
+        else:
+            self._spring_ignored_dof_mask = np.zeros(0, dtype=bool)
+        self._warn_ignored_spring_stiffness(stacklevel=4)
         self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._passive_spring_rest_q = wp.zeros(
@@ -4609,6 +4606,20 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         self._refresh_passive_spring_stiffness()
         self._refresh_passive_spring_rest_q()
+
+    def _warn_ignored_spring_stiffness(self, stacklevel: int) -> None:
+        """Warn about nonzero spring stiffness on DOFs that carry no Steel spring."""
+        stiffness = self.model.joint_stiffness
+        if stiffness is None or not self._spring_ignored_dof_mask.any():
+            return
+        ignored = int(np.count_nonzero((stiffness.numpy() != 0.0) & self._spring_ignored_dof_mask))
+        if ignored:
+            warnings.warn(
+                f"SolverSteel ignores the passive spring stiffness on {ignored} DOF(s) of joints other than "
+                "tree PRISMATIC, REVOLUTE and D6 joints.",
+                NewtonWarning,
+                stacklevel=stacklevel,
+            )
 
     def _refresh_passive_spring_stiffness(self) -> None:
         """Copy the model's passive spring stiffness of sprung DOFs into the solver's fixed buffer."""
