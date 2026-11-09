@@ -2048,27 +2048,6 @@ def update_axis_properties_kernel(
 
 
 @wp.kernel
-def update_ball_actuator_forcerange_kernel(
-    mjc_actuator_effort_dof: wp.array[wp.int32],
-    joint_effort_limit: wp.array[float],
-    dofs_per_world: wp.int32,
-    # outputs
-    actuator_forcerange: wp.array2d[wp.vec2],
-):
-    """Write ball-joint actuator force ranges from Newton's per-DOF effort limits.
-
-    Rows with ``mjc_actuator_effort_dof < 0`` (not a ball actuator, or a force
-    range authored in MJCF) are left unchanged.
-    """
-    world, actuator = wp.tid()
-    dof = mjc_actuator_effort_dof[actuator]
-    if dof < 0:
-        return
-    effort_limit = joint_effort_limit[world * dofs_per_world + dof]
-    actuator_forcerange[world, actuator] = wp.vec2(-effort_limit, effort_limit)
-
-
-@wp.kernel
 def update_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
