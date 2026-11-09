@@ -25,6 +25,7 @@ from ..geometry.contact_data import (
     prepare_speculative_contact,
 )
 from ..geometry.contact_match import ContactMatcher
+from ..geometry.contact_reduction import MAX_CONTACTS_PER_PAIR, NUM_NORMAL_BINS
 from ..geometry.contact_reduction_body_pairs import (
     BodyPairReduction,
     build_group_reduction_config,
@@ -53,7 +54,11 @@ from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
-from ..sim.shape_contact_pairs import _shape_contact_pair_count_for_mask, _shape_contact_pair_counts
+from ..sim.shape_contact_pairs import (
+    _shape_contact_pair_count_for_mask,
+    _shape_contact_pair_counts,
+    _shape_contact_pair_override,
+)
 from ..sim.state import State
 
 if TYPE_CHECKING:
@@ -149,6 +154,18 @@ def _shape_may_be_mesh(model: Model, shape_types: np.ndarray, variant_options: _
     return (
         np.isin(shape_types, mesh_types) if variant_options is None else variant_options.may_be(shape_types, mesh_types)
     )
+
+
+def _shape_may_have_sdf_edges(model: Model, shape_count: int, variant_options: _VariantOptions | None) -> np.ndarray:
+    """Shapes that have, or as variant rows can hold a colliding shape with, texture-SDF edge data."""
+    if getattr(model, "_shape_sdf_index", None) is None or getattr(model, "_shape_edge_range", None) is None:
+        return np.zeros(shape_count, dtype=bool)
+    mask = (model._shape_sdf_index.numpy() >= 0) & (model._shape_edge_range.numpy()[:, 1] > 0)
+    if variant_options is not None:
+        geometry = model._variant_shape_geometry
+        variant_edges = (geometry["_shape_sdf_index"].numpy() >= 0) & (geometry["_shape_edge_range"].numpy()[:, 1] > 0)
+        mask |= variant_options.any(variant_options.variant_collides & variant_edges)
+    return mask
 
 
 _ANALYTIC_PRIMITIVE_PAIRS = frozenset(
@@ -708,6 +725,12 @@ _RIGID_CONTACT_MIN_CAPACITY = 1000
 # Base Contacts storage: four int32, six vec3, and two float32 values per slot.
 _RIGID_CONTACT_BASE_BYTES_PER_SLOT = 96
 _RIGID_CONTACT_LARGE_BUFFER_BYTES = 256 * 1024 * 1024
+# Per-pair worst cases of the narrow phase. Convex pairs write at most 4 manifold points plus the deepest
+# contact. Mesh, heightfield and SDF pairs keep at most MAX_CONTACTS_PER_PAIR after contact reduction.
+# Hydroelastic pairs can add one anchor contact per normal bin to their reduced contacts.
+_CONVEX_PAIR_MAX_CONTACTS = 5
+_MESH_PAIR_MAX_CONTACTS = MAX_CONTACTS_PER_PAIR
+_HYDRO_PAIR_MAX_CONTACTS = MAX_CONTACTS_PER_PAIR + NUM_NORMAL_BINS
 
 
 @dataclasses.dataclass(frozen=True)
@@ -721,21 +744,22 @@ class _RigidContactCountEstimate:
     plane_count: int
     pair_count: int
     pair_estimate_contacts_per_pair: int
-    source: Literal["fallback", "minimum", "neighbor heuristic", "precomputed pairs"]
+    source: Literal["fallback", "minimum", "neighbor heuristic", "precomputed pairs", "pair caps", "pair locality"]
 
 
 def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
     """Estimate rigid-contact capacity and retain its diagnostic inputs.
 
-    Uses a linear neighbor-budget estimate assuming each non-plane shape contacts
-    at most ``MAX_NEIGHBORS_PER_SHAPE`` others (spatial locality).  The non-plane
-    term is additive across independent worlds so a single-pool computation is
-    correct.  The plane term (each plane vs all non-planes in its world) would be
-    quadratic if computed globally, so it is evaluated per world when metadata is
-    available.
+    With contact pairs, the estimate sums the narrow phase's per-pair contact cap over the pairs: 5 for
+    convex pairs, ``MAX_CONTACTS_PER_PAIR`` for mesh, heightfield and SDF pairs, plus one anchor contact
+    per normal bin for hydroelastic pairs. Every broad phase mode only produces pairs from this set, so
+    the sum bounds the contact count when contact reduction is enabled. The non-plane pairs are capped
+    by a spatial-locality budget of ``_RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE`` neighbors per shape at the
+    shape's own cap; where that cap binds, the capacity is an estimate rather than a bound.
 
-    When precomputed contact pairs are available their count is used as an
-    alternative tighter bound (``min`` of heuristic and pair-based estimate).
+    Without contact pairs, a linear neighbor-budget estimate assumes each non-plane shape contacts at
+    most ``_RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE`` others. The plane term (each plane vs all non-planes
+    in its world) is evaluated per world when metadata is available.
 
     Args:
         model: The simulation model.
@@ -763,6 +787,13 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
     colliding_mask = _shape_collide_mask(model, len(shape_types))
 
     mesh_mask = colliding_mask & _shape_may_be_mesh(model, shape_types, variant_options)
+    if pair_count > 0 and int(getattr(model, "shape_count", 0) or 0) == len(shape_types):
+        estimate = _estimate_rigid_contact_from_pair_caps(
+            model, shape_types, variant_options, colliding_mask, mesh_mask
+        )
+        if estimate is not None:
+            return estimate
+
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
     non_plane_mask = colliding_mask & ~plane_mask
     num_meshes = int(np.count_nonzero(mesh_mask))
@@ -854,6 +885,88 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
     )
 
 
+def _estimate_rigid_contact_from_pair_caps(
+    model: Model,
+    shape_types: np.ndarray,
+    variant_options: _VariantOptions | None,
+    colliding_mask: np.ndarray,
+    mesh_mask: np.ndarray,
+) -> _RigidContactCountEstimate | None:
+    """Sum the per-pair contact caps over the model's contact pairs, capped by a spatial-locality budget."""
+    shape_count = len(shape_types)
+    # Pairs of two shapes with SDF edges, except box-box pairs, take the mesh-mesh SDF path.
+    sdf_edge_mask = colliding_mask & ~mesh_mask & _shape_may_have_sdf_edges(model, shape_count, variant_options)
+    fixed_box_mask = shape_types == int(GeoType.BOX)
+    if variant_options is not None:
+        fixed_box_mask &= ~variant_options.row_mask
+    shape_flags = getattr(model, "shape_flags", None)
+    hydro_mask = (
+        (shape_flags.numpy() & int(ShapeFlags.HYDROELASTIC)) != 0
+        if shape_flags is not None
+        else np.zeros(shape_count, dtype=bool)
+    )
+
+    def count(mask):
+        return _shape_contact_pair_count_for_mask(model, mask)
+
+    def pair_caps(within):
+        """Count the pairs with both shapes in ``within`` and sum their per-pair caps."""
+        pairs = count(within)
+        # Pairs of two hydroelastic shapes take the hydroelastic path; other mesh-involved pairs are reduced.
+        hydro = count(within & hydro_mask)
+        mesh = pairs - count(within & ~mesh_mask) - (hydro - count(within & hydro_mask & ~mesh_mask))
+        sdf_edge = within & sdf_edge_mask
+        sdf_edge_box = sdf_edge & fixed_box_mask
+        mesh += count(sdf_edge) - count(sdf_edge_box)
+        mesh -= count(sdf_edge & hydro_mask) - count(sdf_edge_box & hydro_mask)
+        convex = pairs - mesh - hydro
+        caps = convex * _CONVEX_PAIR_MAX_CONTACTS + mesh * _MESH_PAIR_MAX_CONTACTS + hydro * _HYDRO_PAIR_MAX_CONTACTS
+        return pairs, caps
+
+    total_pairs, pair_contacts = pair_caps(np.ones(shape_count, dtype=bool))
+    if total_pairs == 0:
+        return None
+
+    # Dense pair graphs grow quadratically while a shape only touches a few neighbors at once. Plane pairs keep
+    # their caps, since a ground plane can touch every shape on it; each non-plane shape gets
+    # _RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE neighbors at its own cap, halved because a pair has two shapes.
+    plane_shape = shape_types == int(GeoType.PLANE)
+    nonplane_pairs, nonplane_pair_contacts = pair_caps(~plane_shape)
+    nonplane_locality = 0
+    if nonplane_pairs > 0:
+        supplied, supplied_pairs = _shape_contact_pair_override(model)
+        if supplied and supplied_pairs is not None:
+            # A supplied pair array also pairs shapes whose collision flags are off.
+            pairs = supplied_pairs.numpy().reshape(-1, 2)
+            pairs = pairs[~(plane_shape[pairs[:, 0]] | plane_shape[pairs[:, 1]])]
+            active = np.zeros(shape_count, dtype=bool)
+            active[pairs.ravel()] = True
+        else:
+            active = colliding_mask & ~plane_shape
+        shape_cap = np.full(int(np.count_nonzero(active)), _CONVEX_PAIR_MAX_CONTACTS, dtype=np.int64)
+        shape_cap[(mesh_mask | sdf_edge_mask)[active]] = _MESH_PAIR_MAX_CONTACTS
+        shape_cap[hydro_mask[active]] = _HYDRO_PAIR_MAX_CONTACTS
+        nonplane_locality = int(shape_cap.sum()) * _RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE // 2
+    locality_cap = pair_contacts - nonplane_pair_contacts + nonplane_locality
+
+    total_contacts = min(pair_contacts, locality_cap)
+    source = "pair caps" if pair_contacts <= locality_cap else "pair locality"
+    if total_contacts < _RIGID_CONTACT_MIN_CAPACITY:
+        source = "minimum"
+    plane_count = int(np.count_nonzero(colliding_mask & plane_shape))
+    mesh_count = int(np.count_nonzero(mesh_mask))
+    return _RigidContactCountEstimate(
+        capacity=max(_RIGID_CONTACT_MIN_CAPACITY, total_contacts),
+        world_count=int(getattr(model, "world_count", 0) or 0),
+        primitive_count=int(np.count_nonzero(colliding_mask)) - plane_count - mesh_count,
+        mesh_count=mesh_count,
+        plane_count=plane_count,
+        pair_count=int(model.shape_contact_pair_count),
+        pair_estimate_contacts_per_pair=pair_contacts // total_pairs,
+        source=source,
+    )
+
+
 def _estimate_rigid_contact_max(model: Model) -> int:
     """Estimate the rigid-contact capacity for the collision pipeline."""
     return _estimate_rigid_contact_details(model).capacity
@@ -866,6 +979,16 @@ def _warn_large_rigid_contact_estimate(estimate: _RigidContactCountEstimate) -> 
         return
 
     allocation_mib = allocation_bytes / (1024 * 1024)
+    if estimate.source in ("pair caps", "pair locality"):
+        weighting = (
+            f"per-pair caps: {_CONVEX_PAIR_MAX_CONTACTS} per convex pair, {_MESH_PAIR_MAX_CONTACTS} per mesh or SDF "
+            f"pair and {_HYDRO_PAIR_MAX_CONTACTS} per hydroelastic pair"
+        )
+    else:
+        weighting = (
+            f"contact weighting: {_RIGID_CONTACTS_PER_PRIMITIVE_PAIR} per primitive pair and "
+            f"{_RIGID_CONTACTS_PER_MESH_PAIR} per mesh-involved pair"
+        )
     warnings.warn(
         f"CollisionPipeline automatically selected {estimate.capacity:,} rigid contact slots, "
         f"requiring approximately {allocation_mib:,.1f} MiB for the base rigid-contact buffers "
@@ -873,8 +996,7 @@ def _warn_large_rigid_contact_estimate(estimate: _RigidContactCountEstimate) -> 
         f"world count: {estimate.world_count:,}; colliding shapes: "
         f"{estimate.primitive_count:,} primitives, {estimate.mesh_count:,} meshes/heightfields, "
         f"and {estimate.plane_count:,} planes; precomputed contact pairs: {estimate.pair_count:,}; "
-        f"contact weighting: {_RIGID_CONTACTS_PER_PRIMITIVE_PAIR} per primitive pair and "
-        f"{_RIGID_CONTACTS_PER_MESH_PAIR} per mesh-involved pair; pair-estimate average: "
+        f"{weighting}; pair-estimate average: "
         f"{estimate.pair_estimate_contacts_per_pair}; selected estimate: {estimate.source}. "
         "Optional pipeline and solver features may allocate additional memory. Pass rigid_contact_max "
         "explicitly to CollisionPipeline to choose the capacity and silence this warning.",
