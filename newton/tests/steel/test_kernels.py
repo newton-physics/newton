@@ -3,6 +3,7 @@
 
 """Kernel selection, launch configuration, streams and double buffering of SolverSteel."""
 
+import gc
 import itertools
 import types
 import unittest
@@ -1801,7 +1802,10 @@ def test_reused_kinematics_follow_a_timestep_change(test, device):
 
 
 def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, device):
-    """A step captured on a fresh solver and replayed from the same input gives the same result every replay."""
+    """A step captured on a fresh solver and replayed from the same input gives the same result every replay.
+
+    A later capture of the same step still replays it after the first graph is released.
+    """
     model = _build_contact_scene(device)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
     contacts = pipeline.contacts()
@@ -1820,12 +1824,21 @@ def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, dev
         for _ in range(3):
             wp.capture_launch(capture.graph)
             outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
+        with wp.ScopedCapture(device) as later:
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+        del capture
+        gc.collect()
+        for name in names:
+            output = getattr(state_out, name)
+            output.assign(np.full_like(output.numpy(), np.nan))
+        wp.capture_launch(later.graph)
+        outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
         return solver, outputs
 
     _, reference = replays(False)
     carried_solver, carried = replays(True)
     test.assertTrue(carried_solver._reuse_kinematics_enabled)
-    for replay in (1, 2):
+    for replay in (1, 2, 3):
         for name, first, later in zip(names, carried[0], carried[replay], strict=True):
             np.testing.assert_array_equal(later, first, err_msg=f"{name} changed on replay {replay}")
     _assert_histories_close(test, reference, carried)
