@@ -3,7 +3,7 @@
 
 """Steel contact-friction benchmarks: captured steps, patch construction, pair updates and torsion preparation.
 
-None of these are in the PR gate; run them with e.g. ``uvx --with virtualenv asv run --bench SteelFriction``.
+None of these are in the PR gate; run them with e.g. ``uvx --with virtualenv asv run --launch-method spawn --bench bench_steel``.
 """
 
 import numpy as np
@@ -269,10 +269,11 @@ class SteelContactTorsionPreparation:
     """Captured device preparation of contact torsion rows for one contact-dense world, including validation.
 
     Uses the synthetic contact tables of the Steel torsion tests; the solver's row buffers are restored
-    before every sample, outside the timed region.
+    before every sample, outside the timed region. Without patches one thread groups each world's contacts
+    in a quadratic scan, so the contact counts stop at 1024.
     """
 
-    params = [[64, 1024, 4096], [True, False]]
+    params = [[64, 1024], [True, False]]
     param_names = ["contacts", "patches"]
     number = 1
     rounds = 2
