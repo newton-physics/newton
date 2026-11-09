@@ -679,6 +679,9 @@ class PADMMSolver:
         """
         Warm-starts the bilateral joint constraint variables from the model data container.
 
+        The data container holds the impulses of the original rows, so this also applies the change
+        of variables of the problem's joint decoupling, if any.
+
         Args:
             model: The model associated with the problem.
             data: The model data associated with the problem.
@@ -725,6 +728,9 @@ class PADMMSolver:
             ],
             device=self.device,
         )
+
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.decouple_warmstart(problem.data.P, x_0, y_0, z_0)
 
     def _warmstart_limit_constraints(
         self,

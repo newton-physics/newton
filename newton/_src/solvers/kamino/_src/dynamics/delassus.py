@@ -73,6 +73,7 @@ from ..core.data import DataKamino
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import FloatType, to_warp_int32_array, vec6f
+from ..dynamics.joint_decoupling import DecoupledJointDof, DynamicJointDecoupling, compute_body_share
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.constraints import get_max_constraints_per_world
 from ..kinematics.jacobians import ColMajorSparseConstraintJacobians, DenseSystemJacobians, SparseSystemJacobians
@@ -823,6 +824,198 @@ def _make_block_sparse_gemv_regularization_kernel(alpha: wp.float32):
     return _block_sparse_gemv_regularization_kernel
 
 
+@wp.kernel
+def _compute_body_share_sparse(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    inv_m_j: wp.array[wp.float32],
+    jacobian_diag: wp.array[wp.float32],
+    # Outputs:
+    body_share: wp.array[wp.float32],
+):
+    """Compute the body share of each decoupled DoF from the body-space Delassus diagonal."""
+    tid = wp.tid()
+    dof = dofs[tid]
+    row = wp.where(dof.friction_row >= 0, dof.friction_row, dof.effort_row)
+    body_share[tid] = compute_body_share(jacobian_diag[row], inv_m_j[dof.dynamic_cts])
+
+
+@wp.kernel
+def _scale_decoupled_jacobian_rows(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    body_share: wp.array[wp.float32],
+    # Outputs:
+    row_scale: wp.array[wp.float32],
+):
+    """Scale the body Jacobian of the friction and effort rows of each decoupled DoF by its body share."""
+    tid = wp.tid()
+    dof = dofs[tid]
+    s = body_share[tid]
+    if dof.friction_row >= 0:
+        row_scale[dof.friction_row] *= s
+    if dof.effort_row >= 0:
+        row_scale[dof.effort_row] *= s
+
+
+@wp.func
+def _add_decoupled_regularization_row(
+    row: wp.int32,
+    compliance: wp.float32,
+    preconditioner: wp.array[wp.float32],
+    combined_regularization: wp.array[wp.float32],
+):
+    """Add the joint-space compliance of one friction or effort row, if any."""
+    if row < 0:
+        return
+    value = compliance
+    if preconditioner:
+        p = preconditioner[row]
+        value *= p * p
+    combined_regularization[row] += value
+
+
+@wp.kernel
+def _add_decoupled_regularization(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    body_share: wp.array[wp.float32],
+    inv_m_j: wp.array[wp.float32],
+    preconditioner: wp.array[wp.float32],
+    # Outputs:
+    combined_regularization: wp.array[wp.float32],
+):
+    """Add the joint-space compliance ``c^2 r`` of the friction and effort rows of each decoupled DoF."""
+    tid = wp.tid()
+    dof = dofs[tid]
+    c = body_share[tid] - 1.0
+    compliance = c * c * inv_m_j[dof.dynamic_cts]
+    _add_decoupled_regularization_row(dof.friction_row, compliance, preconditioner, combined_regularization)
+    _add_decoupled_regularization_row(dof.effort_row, compliance, preconditioner, combined_regularization)
+
+
+@wp.kernel
+def _set_decoupled_diagonal(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    body_share: wp.array[wp.float32],
+    inv_m_j: wp.array[wp.float32],
+    # Outputs:
+    diag: wp.array[wp.float32],
+):
+    """Apply the change of variables to the body-space Delassus diagonal of the friction and effort rows."""
+    tid = wp.tid()
+    dof = dofs[tid]
+    s = body_share[tid]
+    c = s - 1.0
+    compliance = c * c * inv_m_j[dof.dynamic_cts]
+    if dof.friction_row >= 0:
+        diag[dof.friction_row] = s * s * diag[dof.friction_row] + compliance
+    if dof.effort_row >= 0:
+        diag[dof.effort_row] = s * s * diag[dof.effort_row] + compliance
+
+
+@wp.func
+def _decoupled_preconditioner(row: wp.int32, preconditioner: wp.array[wp.float32]) -> wp.float32:
+    """Preconditioner entry of a row, or one without preconditioner or row."""
+    if preconditioner and row >= 0:
+        return preconditioner[row]
+    return wp.float32(1.0)
+
+
+@wp.kernel
+def _apply_decoupled_coupling(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    body_share: wp.array[wp.float32],
+    inv_m_j: wp.array[wp.float32],
+    preconditioner: wp.array[wp.float32],
+    alpha: wp.float32,
+    x: wp.array[wp.float32],
+    world_mask: wp.array[wp.bool],
+    # Outputs:
+    y: wp.array[wp.float32],
+):
+    """Add the joint-space couplings of the rows of each decoupled DoF: ``y += alpha * D_c @ x``.
+
+    The friction and effort rows couple with ``c r`` to the joint dynamics row and with
+    ``c^2 r`` to each other.
+    """
+    tid = wp.tid()
+    dof = dofs[tid]
+    if not world_mask[dof.wid]:
+        return
+    c = body_share[tid] - 1.0
+    coupling = c * alpha * inv_m_j[dof.dynamic_cts]
+    sibling_coupling = c * coupling
+    p_q = _decoupled_preconditioner(dof.dynamic_row, preconditioner)
+    p_f = _decoupled_preconditioner(dof.friction_row, preconditioner)
+    p_e = _decoupled_preconditioner(dof.effort_row, preconditioner)
+    # Preconditioned entries of x, and zeros for missing rows
+    px_q = p_q * x[dof.dynamic_row]
+    px_f = wp.float32(0.0)
+    if dof.friction_row >= 0:
+        px_f = p_f * x[dof.friction_row]
+    px_e = wp.float32(0.0)
+    if dof.effort_row >= 0:
+        px_e = p_e * x[dof.effort_row]
+    y[dof.dynamic_row] += p_q * coupling * (px_f + px_e)
+    if dof.friction_row >= 0:
+        y[dof.friction_row] += p_f * (coupling * px_q + sibling_coupling * px_e)
+    if dof.effort_row >= 0:
+        y[dof.effort_row] += p_e * (coupling * px_q + sibling_coupling * px_f)
+
+
+@wp.kernel
+def _set_decoupled_coupled_rows(
+    # Inputs:
+    dofs: wp.array[DecoupledJointDof],
+    body_share: wp.array[wp.float32],
+    inv_m_j: wp.array[wp.float32],
+    vio: wp.array[wp.int32],
+    preconditioner: wp.array[wp.float32],
+    # Outputs:
+    coupled_row: wp.array2d[wp.int32],
+    coupled_coef: wp.array2d[wp.float32],
+):
+    """Write the joint-space couplings of the rows of each decoupled DoF into the per-row coupled-row table.
+
+    The couplings are those of :func:`_apply_decoupled_coupling`. The joint dynamics row uses
+    slot 0 for the friction row and slot 1 for the effort row, and the friction and effort rows
+    use slot 0 for the joint dynamics row and slot 1 for each other. Each coefficient applies to
+    the coupled row's entry of the row-scaled vector ``P S x`` that the solver already holds, so
+    the coupling ``P_i C_ij P_j`` of row ``i`` to the coupled row ``j`` is stored as
+    ``P_i C_ij / s_j``, with ``s_j = 1`` for joint dynamics rows.
+    """
+    tid = wp.tid()
+    dof = dofs[tid]
+    offset = vio[dof.wid]
+    s = body_share[tid]
+    c = s - 1.0
+    coupling = c * inv_m_j[dof.dynamic_cts]
+    row_q = dof.dynamic_row
+    row_f = dof.friction_row
+    row_e = dof.effort_row
+    p_q = _decoupled_preconditioner(row_q, preconditioner)
+    p_f = _decoupled_preconditioner(row_f, preconditioner)
+    p_e = _decoupled_preconditioner(row_e, preconditioner)
+    if row_f >= 0:
+        coupled_row[row_q, 0] = row_f - offset
+        coupled_coef[row_q, 0] = p_q * coupling / s
+        coupled_row[row_f, 0] = row_q - offset
+        coupled_coef[row_f, 0] = p_f * coupling
+    if row_e >= 0:
+        coupled_row[row_q, 1] = row_e - offset
+        coupled_coef[row_q, 1] = p_q * coupling / s
+        coupled_row[row_e, 0] = row_q - offset
+        coupled_coef[row_e, 0] = p_e * coupling
+        if row_f >= 0:
+            coupled_row[row_f, 1] = row_e - offset
+            coupled_coef[row_f, 1] = p_f * c * coupling / s
+            coupled_row[row_e, 1] = row_f - offset
+            coupled_coef[row_e, 1] = p_e * c * coupling / s
+
+
 ###
 # Interfaces
 ###
@@ -1500,6 +1693,16 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         # Combined regularization vector for implicit joint dynamics
         self._combined_regularization: wp.array[wp.float32] | None = None
 
+        # Decoupling of joint friction and effort rows from joint dynamics rows (see `set_joint_decoupling`)
+        self._joint_decoupling: DynamicJointDecoupling | None = None
+        # Row scale of the Jacobian copies, i.e. the preconditioner with the decoupled friction and
+        # effort rows scaled by their body share, and the body-space diagonal used to compute it
+        self._jacobian_row_scale: wp.array[wp.float32] | None = None
+        self._jacobian_diag: wp.array[wp.float32] | None = None
+        # Per-row table of joint-space couplings, for solvers that consume the raw Jacobian
+        self._decoupled_coupled_row: wp.array2d[wp.int32] | None = None
+        self._decoupled_coupled_coef: wp.array2d[wp.float32] | None = None
+
         # Allocate the Delassus operator data if at least the model is provided
         if model is not None:
             self.finalize(
@@ -1644,6 +1847,119 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
 
         self.set_needs_update()
 
+    def set_joint_decoupling(self, decoupling: DynamicJointDecoupling):
+        """
+        Decouples joint friction and effort rows from the joint dynamics rows of the same DoFs.
+
+        The friction and effort rows of a decoupled DoF have the body Jacobian ``s J``, the
+        compliance ``c^2 r``, the coupling ``c r`` to the joint dynamics row of the DoF, and the
+        coupling ``c^2 r`` to each other (see :class:`DynamicJointDecoupling`).
+
+        Args:
+            decoupling: The decoupling, whose body share :meth:`update_joint_decoupling` updates.
+        """
+        self._joint_decoupling = decoupling
+        num_rows = self._model.size.sum_of_max_total_cts
+        self._jacobian_row_scale = wp.ones((num_rows,), dtype=wp.float32, device=self._device)
+        self._jacobian_diag = wp.zeros_like(self._jacobian_row_scale)
+        if not self._assemble_preconditioned_jacobians:
+            self._decoupled_coupled_row = wp.full((num_rows, 2), -1, dtype=wp.int32, device=self._device)
+            self._decoupled_coupled_coef = wp.zeros((num_rows, 2), dtype=wp.float32, device=self._device)
+        self.set_needs_update()
+
+    def update_joint_decoupling(self):
+        """
+        Updates the body share of each decoupled DoF from the current Jacobian and body inertias
+        (see :meth:`set_joint_decoupling`).
+        """
+        decoupling = self._joint_decoupling
+        if decoupling is None:
+            return
+        self._jacobian_diag.zero_()
+        self._compute_jacobian_diagonal(self._jacobian_diag)
+        wp.launch(
+            _compute_body_share_sparse,
+            dim=decoupling.num_dofs,
+            inputs=[decoupling.dofs, self._data.joints.inv_m_j, self._jacobian_diag],
+            outputs=[decoupling.body_share],
+            device=self._device,
+        )
+        self.set_needs_update()
+
+    def update_decoupled_coupled_rows(self) -> tuple[wp.array2d[wp.int32], wp.array2d[wp.float32]] | None:
+        """
+        Updates and returns the per-row table of joint-space couplings of the decoupled friction
+        and effort rows, for solvers that consume the raw Jacobian (see :meth:`set_joint_decoupling`).
+
+        Each constraint row has up to two coupled rows: a friction or effort row couples to the joint
+        dynamics row of its DoF and to the other of the two, and a joint dynamics row to the
+        friction and effort rows of its DoF. ``coupled_row[g, k]`` is the world-local index of the
+        ``k``-th coupled row of the global row ``g``, or ``-1``, and ``coupled_coef[g, k]`` its
+        preconditioned coupling coefficient, relative to the coupled row's entry of the row-scaled
+        vector ``P S x`` (see :meth:`_update_jacobian_row_scale`).
+
+        Returns:
+            The ``(coupled_row, coupled_coef)`` arrays, or ``None`` without decoupled rows.
+        """
+        decoupling = self._joint_decoupling
+        if decoupling is None:
+            return None
+        wp.launch(
+            _set_decoupled_coupled_rows,
+            dim=decoupling.num_dofs,
+            inputs=[
+                decoupling.dofs,
+                decoupling.body_share,
+                self._data.joints.inv_m_j,
+                self._info.vio,
+                self._preconditioner,
+            ],
+            outputs=[self._decoupled_coupled_row, self._decoupled_coupled_coef],
+            device=self._device,
+        )
+        return self._decoupled_coupled_row, self._decoupled_coupled_coef
+
+    def _update_jacobian_row_scale(self) -> wp.array[wp.float32] | None:
+        """Returns the row scale of the Jacobian copies after refreshing it from the preconditioner."""
+        decoupling = self._joint_decoupling
+        if decoupling is None:
+            return self._preconditioner
+        if self._preconditioner is not None:
+            wp.copy(self._jacobian_row_scale, self._preconditioner)
+        else:
+            self._jacobian_row_scale.fill_(1.0)
+        wp.launch(
+            _scale_decoupled_jacobian_rows,
+            dim=decoupling.num_dofs,
+            inputs=[decoupling.dofs, decoupling.body_share],
+            outputs=[self._jacobian_row_scale],
+            device=self._device,
+        )
+        return self._jacobian_row_scale
+
+    def _apply_decoupled_coupling(
+        self, x: wp.array[wp.float32], y: wp.array[wp.float32], world_mask: wp.array[wp.bool], alpha: float = 1.0
+    ):
+        """Adds the joint-space couplings of the decoupled friction and effort rows, ``y += alpha * D_c @ x``."""
+        decoupling = self._joint_decoupling
+        if decoupling is None:
+            return
+        wp.launch(
+            _apply_decoupled_coupling,
+            dim=decoupling.num_dofs,
+            inputs=[
+                decoupling.dofs,
+                decoupling.body_share,
+                self._data.joints.inv_m_j,
+                self._preconditioner,
+                wp.float32(alpha),
+                x,
+                world_mask,
+            ],
+            outputs=[y],
+            device=self._device,
+        )
+
     def set_needs_update(self):
         """
         Flags the operator as needing to update its data structure.
@@ -1682,6 +1998,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 self._col_major_jacobian.update(self._model, self._jacobians, self._limits, self._contacts)
 
         # Apply inverse mass and row preconditioning while copying the Jacobian.
+        row_scale = self._update_jacobian_row_scale()
         wp.launch(
             kernel=_merge_inv_mass_matrix_kernel,
             dim=(self.bsm.num_matrices, self.bsm.max_of_num_nzb),
@@ -1695,14 +2012,14 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 self.bsm.nzb_coords,
                 self.constraint_jacobian.nzb_values,
                 self.bsm.row_start,
-                self._preconditioner,
+                row_scale,
                 # Outputs:
                 self.bsm.nzb_values,
             ],
             device=self.bsm.device,
         )
 
-        if self._preconditioner is not None:
+        if row_scale is not None:
             if not self._use_raw_transpose:
                 # Apply preconditioner to column-major constraint Jacobian
                 wp.launch(
@@ -1714,7 +2031,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                         self._transpose_op_matrix.nzb_start,
                         self._transpose_op_matrix.nzb_coords,
                         self._transpose_op_matrix.row_start,
-                        self._preconditioner,
+                        row_scale,
                         # Outputs:
                         self._transpose_op_matrix.nzb_values,
                     ],
@@ -1808,6 +2125,15 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                         ],
                         device=self._device,
                     )
+            decoupling = self._joint_decoupling
+            if decoupling is not None:
+                wp.launch(
+                    kernel=_add_decoupled_regularization,
+                    dim=decoupling.num_dofs,
+                    inputs=[decoupling.dofs, decoupling.body_share, self._data.joints.inv_m_j, self._preconditioner],
+                    outputs=[self._combined_regularization],
+                    device=self._device,
+                )
 
         if self._compliance is not None:
             wp.launch(
@@ -1867,25 +2193,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         self._preconditioner = preconditioner
         self.set_needs_update()
 
-    def diagonal(self, diag: wp.array[wp.float32]):
-        """Stores the diagonal of the Delassus matrix in the given array.
-
-        Note:
-            Returns the diagonal of the physical Delassus matrix. Armature,
-            effort and material compliance terms are included; proximal
-            regularization (``eta``) and preconditioning are not.
-
-        Args:
-            diag: Output vector for the Delassus matrix diagonal entries.
-                Shape of ``(sum_of_max_total_cts,)``.
-        """
-        if self._model is None or self._data is None:
-            raise RuntimeError("ModelKamino and data must be assigned before computing diagonal.")
-        if self._jacobians is None:
-            raise RuntimeError("Jacobian must be assigned before computing diagonal.")
-
-        diag.zero_()
-
+    def _compute_jacobian_diagonal(self, diag: wp.array[wp.float32]):
+        """Accumulates the body-space diagonal ``J M^-1 J^T`` of the Delassus matrix into ``diag``."""
         # Launch kernel over all non-zero blocks (read from the raw constraint Jacobian, which is
         # always present even when the assembled ``bsm`` copy is skipped).
         wp.launch(
@@ -1904,6 +2213,39 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             ],
             device=self._device,
         )
+
+    def diagonal(self, diag: wp.array[wp.float32]):
+        """Stores the diagonal of the Delassus matrix in the given array.
+
+        Note:
+            Returns the diagonal of the physical Delassus matrix. Armature,
+            effort and material compliance terms, and the change of variables of
+            decoupled joint friction and effort rows, are included; proximal
+            regularization (``eta``) and preconditioning are not.
+
+        Args:
+            diag: Output vector for the Delassus matrix diagonal entries.
+                Shape of ``(sum_of_max_total_cts,)``.
+        """
+        if self._model is None or self._data is None:
+            raise RuntimeError("ModelKamino and data must be assigned before computing diagonal.")
+        if self._jacobians is None:
+            raise RuntimeError("Jacobian must be assigned before computing diagonal.")
+
+        diag.zero_()
+        self._compute_jacobian_diagonal(diag)
+
+        # Apply the change of variables to the body-space terms of the decoupled friction and
+        # effort rows, before adding the compliance terms that it leaves unchanged
+        decoupling = self._joint_decoupling
+        if decoupling is not None:
+            wp.launch(
+                kernel=_set_decoupled_diagonal,
+                dim=decoupling.num_dofs,
+                inputs=[decoupling.dofs, decoupling.body_share, self._data.joints.inv_m_j],
+                outputs=[diag],
+                device=self._device,
+            )
 
         # Add physical material, armature, and effort diagonal terms.
         if self._compliance is not None:
@@ -2129,7 +2471,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             jacobian.nzb_values,
             jacobian.row_start,
             jacobian.col_start,
-            self._preconditioner,
+            self._jacobian_row_scale if self._jacobian_row_scale is not None else self._preconditioner,
             x,
             world_mask,
             y,
@@ -2247,6 +2589,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 device=self.device,
             )
 
+        self._apply_decoupled_coupling(x, y, world_mask)
+
     def matvec_transpose(self, y: wp.array[wp.float32], x: wp.array[wp.float32], world_mask: wp.array[wp.bool]):
         """
         Performs the sparse matrix-transpose-vector product `x = D^T @ y`.
@@ -2321,6 +2665,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 ],
                 device=self.device,
             )
+
+        self._apply_decoupled_coupling(x, y, world_mask, alpha)
 
     def gemv_transpose(
         self,

@@ -314,7 +314,7 @@ def build_transpose_index(
 
 
 @functools.cache
-def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_dim: int = 0):
+def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_dim: int = 0, coupled_rows: bool = False):
     """Build the single-kernel sparse CR solver.
 
     Each block solves one world with ``block_dim`` threads; each thread owns
@@ -327,10 +327,13 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         max_cols: Static upper bound on body DoFs per world.
         max_blocks: Static maximum number of blocks per constraint row.
         block_dim: Threads per block. Defaults to ``max_rows``.
+        coupled_rows: Whether to add the joint-space couplings of decoupled joint rows from a per-row
+            table (see :meth:`.delassus.BlockSparseMatrixFreeDelassusOperator.update_decoupled_coupled_rows`).
 
     Launch with ``wp.launch_tiled(dim=n_worlds, block_dim=block_dim)``.
     """
 
+    _coupled_rows = coupled_rows
     _max_rows = max_rows
     _max_cols = max_cols
     _max_blocks = max_blocks
@@ -408,10 +411,14 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         inv_m: wp.array[wp.float32],
         inv_I: wp.array[wp.mat33f],
         bodies_offset: wp.array[wp.int32],
+        coupled_row: wp.array2d[wp.int32],
+        coupled_coef: wp.array2d[wp.float32],
+        use_coupled_rows: wp.int32,
     ) -> ThreadRowsVector:
         # A @ vv = P (J M^-1 J^T (P vv)) + eta vv, kept in shared memory via wp.tile (logical index
         # e lives at tile element [e // BD, e % BD]; the tile carries Warp's barrier on cross-lane
-        # gathers and overwrites, so no per-call zeroing).
+        # gathers and overwrites, so no per-call zeroing). With decoupled joint rows, the joint-space
+        # couplings add C vv, with coefficients relative to the coupled row's entry of sv.
         pv = ThreadRowsVector()
         for i in range(wp.static(rows_per_thread)):
             pv[i] = p_rowv[i] * vv[i]
@@ -474,6 +481,12 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
                         bl = packed >> 24  # high bits: within-world body index
                         acc += wp.dot(nzb_values[gb], st[bl])  # st[bl] = M^-1 (J^T P v) for the body
                 av = p_rowv[i] * acc + eta_rowv[i] * vv[i]
+                if wp.static(_coupled_rows):
+                    if use_coupled_rows != 0:
+                        for k in range(2):
+                            coupled = coupled_row[roff + row, k]
+                            if coupled >= 0:
+                                av += coupled_coef[roff + row, k] * sv[coupled // _block_dim, coupled % _block_dim]
             out[i] = av
         return out
 
@@ -504,6 +517,10 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         precond: wp.array[wp.float32],
         use_precond: wp.int32,
         eta: wp.array[wp.float32],
+        # Joint-space couplings of decoupled joint rows (only read if ``coupled_rows``):
+        coupled_row: wp.array2d[wp.int32],
+        coupled_coef: wp.array2d[wp.float32],
+        use_coupled_rows: wp.int32,
         # RHS / solution:
         b: wp.array[wp.float32],
         x: wp.array[wp.float32],
@@ -577,6 +594,9 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             inv_m,
             inv_I,
             bodies_offset,
+            coupled_row,
+            coupled_coef,
+            use_coupled_rows,
         )
         r_rowv = ThreadRowsVector()
         for i in range(wp.static(rows_per_thread)):
@@ -603,6 +623,9 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             inv_m,
             inv_I,
             bodies_offset,
+            coupled_row,
+            coupled_coef,
+            use_coupled_rows,
         )
         ap_rowv = ar_rowv
 
@@ -660,6 +683,9 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
                 inv_m,
                 inv_I,
                 bodies_offset,
+                coupled_row,
+                coupled_coef,
+                use_coupled_rows,
             )
 
             rAr_new_local = wp.float32(0.0)

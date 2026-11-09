@@ -69,7 +69,29 @@ def _make_world(rng, ncts, nbodies):
     }
 
 
-def _solve_fused(worlds, use_precond, device, rng):
+def _add_coupled_rows(rng, wd, R, offset, eta, P, coupled_row, coupled_coef, A):
+    """Add rank-1 joint-space couplings ``r g g^T`` on row triplets, like a joint dynamics row
+    with friction and effort rows of the same DoF (see ``update_decoupled_coupled_rows``).
+
+    The kernel applies each coefficient to the coupled row's entry of the row-scaled vector ``P v``.
+    """
+    n = wd["ncts"]
+    # Spread each triplet's rows over different thread strips of the 64-thread block
+    for start in range(0, n // 3, 4):
+        rows = (start, start + n // 3, start + 2 * (n // 3))
+        r = 1.0 + rng.random()
+        g = np.array([1.0, -rng.random(), -rng.random()], np.float32)
+        C = (r * np.outer(g, g)).astype(np.float32)
+        for a, ra in enumerate(rows):
+            eta[offset + ra] += C[a, a]
+            A[ra, ra] += C[a, a]
+            for k, b in enumerate(i for i in range(3) if i != a):
+                coupled_row[offset + ra, k] = rows[b]
+                coupled_coef[offset + ra, k] = C[a, b] / P[offset + rows[b]]
+                A[ra, rows[b]] += C[a, b]
+
+
+def _solve_fused(worlds, use_precond, device, rng, coupled_rows=False):
     """Run the fused CR kernel on packed synthetic worlds; return (x, P, b_ref, A_ref)."""
     W = len(worlds)
     R = 256
@@ -93,6 +115,8 @@ def _solve_fused(worlds, use_precond, device, rng):
     P = np.ones(W * R, np.float32)
     inv_m = np.zeros(W * maxbodies, np.float32)
     inv_I = np.tile(np.eye(3, dtype=np.float32), (W * maxbodies, 1, 1))
+    coupled_row = np.full((W * R, 2), -1, np.int32)
+    coupled_coef = np.zeros((W * R, 2), np.float32)
     b_ref, A_ref, P_ref = [], [], []
     for wi, wd in enumerate(worlds):
         for k, (r, c, blk) in enumerate(wd["blocks"]):
@@ -109,6 +133,8 @@ def _solve_fused(worlds, use_precond, device, rng):
         inv_I[wi * maxbodies : wi * maxbodies + wd["nbodies"]] = wd["inv_I"]
         PJ = Pw[:, None] * wd["J"]
         A_ref.append(PJ @ wd["Minv"] @ PJ.T + np.diag(wd["eta"]))
+        if coupled_rows:
+            _add_coupled_rows(rng, wd, R, wi * R, eta, P, coupled_row, coupled_coef, A_ref[-1])
 
     d = lambda a, dt: wp.array(a, dtype=dt, device=device)  # noqa: E731
     cj_num_nzb = d(num_nzb, wp.int32)
@@ -146,7 +172,7 @@ def _solve_fused(worlds, use_precond, device, rng):
     rtol = wp.full(W, 1e-10, dtype=wp.float32, device=device)
     # block_dim < R so each thread owns NR = R / block_dim > 1 rows (multi-row-per-thread path).
     block_dim = 64
-    kernel = make_fused_cr_kernel(R, C, MB, block_dim)
+    kernel = make_fused_cr_kernel(R, C, MB, block_dim, coupled_rows=coupled_rows)
     wp.launch_tiled(
         kernel,
         dim=W,
@@ -170,6 +196,9 @@ def _solve_fused(worlds, use_precond, device, rng):
             d(P, wp.float32),
             int(use_precond),
             d(eta, wp.float32),
+            wp.array(coupled_row, dtype=wp.int32, device=device),
+            wp.array(coupled_coef, dtype=wp.float32, device=device),
+            int(coupled_rows),
             d(b, wp.float32),
             x,
             maxiter,
@@ -191,12 +220,12 @@ class TestFusedCRKernel(unittest.TestCase):
         setup_tests(clear_cache=False)
         cls.device = wp.get_preferred_device()
 
-    def _check(self, use_precond):
+    def _check(self, use_precond, coupled_rows=False):
         rng = np.random.default_rng(7 if use_precond else 11)
         R = 256
         # Include a world with more rows than block_dim (64) so threads span multiple row-strips.
         worlds = [_make_world(rng, n, nb) for n, nb in [(40, 9), (17, 5), (96, 18), (200, 30)]]
-        x, b_ref, A_ref = _solve_fused(worlds, use_precond, self.device, rng)
+        x, b_ref, A_ref = _solve_fused(worlds, use_precond, self.device, rng, coupled_rows)
         for wi, wd in enumerate(worlds):
             xw = x[wi * R : wi * R + wd["ncts"]]
             xref = np.linalg.solve(A_ref[wi].astype(np.float64), b_ref[wi].astype(np.float64))
@@ -214,6 +243,12 @@ class TestFusedCRKernel(unittest.TestCase):
         if not self.device.is_cuda:
             self.skipTest("requires CUDA")
         self._check(use_precond=True)
+
+    def test_fused_cr_vs_numpy_decoupled_joint_coupled_rows(self):
+        """Fused CR with joint-space couplings of decoupled joint rows must match numpy's dense solve."""
+        if not self.device.is_cuda:
+            self.skipTest("requires CUDA")
+        self._check(use_precond=True, coupled_rows=True)
 
 
 def _run_padmm_sparse(solver_cls, device):
