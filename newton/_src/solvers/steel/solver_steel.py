@@ -1414,7 +1414,8 @@ class SolverSteel(SolverBase, CouplingInterface):
       :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
       explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
       independently of drives and joint limits. Unlike the implicit drives, explicit springs
-      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF.
+      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF. Construction
+      warns about stiffness on other joint types, which is ignored.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -4586,9 +4587,21 @@ class SolverSteel(SolverBase, CouplingInterface):
             joint_type = model.joint_type.numpy()
             qd_start = model.joint_qd_start.numpy()
             sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
-            sprung &= self._model_plan.loop_joint_articulation < 0
+            tree_joint = self._model_plan.loop_joint_articulation < 0
+            sprung &= tree_joint
             for joint in np.flatnonzero(sprung):
                 spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
+            if model.joint_stiffness is not None:
+                # Loop-closing joints warn about their ignored inputs separately.
+                unsprung_tree_dof = np.repeat(tree_joint & ~sprung, np.diff(qd_start))
+                ignored = int(np.count_nonzero((model.joint_stiffness.numpy() != 0.0) & unsprung_tree_dof))
+                if ignored:
+                    warnings.warn(
+                        f"SolverSteel ignores the passive spring stiffness on {ignored} DOF(s) of joint types "
+                        "other than PRISMATIC, REVOLUTE and D6.",
+                        NewtonWarning,
+                        stacklevel=3,
+                    )
         self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._passive_spring_rest_q = wp.zeros(
